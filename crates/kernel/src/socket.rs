@@ -1,7 +1,62 @@
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+
+// ── host_net_handle cross-process refcount ───────────────────────────────
+//
+// `SocketInfo::host_net_handle` is a host-side network handle (returned by
+// `host_net_connect` / `host_net_accept`). When fork or non-forking-spawn
+// gives a child process a SocketInfo carrying this handle, both parent and
+// child reference the same host-side connection. The first close-side
+// `host_net_close` would then kill the connection for the other process —
+// this table refcounts inherited references so only the *last* close
+// actually tears down the connection.
+//
+// Mirrors the `host_handle_fork_ref` / `host_handle_close_ref` pattern in
+// `crates/kernel/src/ofd.rs` for plain-file host handles.
+
+struct HostNetRefs(UnsafeCell<Option<BTreeMap<i32, u32>>>);
+unsafe impl Sync for HostNetRefs {}
+
+static HOST_NET_REFS: HostNetRefs = HostNetRefs(UnsafeCell::new(None));
+
+fn get_host_net_refs() -> &'static mut BTreeMap<i32, u32> {
+    let opt = unsafe { &mut *HOST_NET_REFS.0.get() };
+    opt.get_or_insert_with(BTreeMap::new)
+}
+
+/// Register that a host net handle is now shared by one more process
+/// (fork or spawn child). If the handle is being inherited for the first
+/// time, sets the count to 2 (parent + child). Otherwise increments by 1.
+pub fn host_net_handle_fork_ref(h: i32) {
+    let refs = get_host_net_refs();
+    let count = refs.entry(h).or_insert(1); // 1 = the parent already has it
+    *count += 1; // +1 for the child
+}
+
+/// Decrement the cross-process refcount for a host net handle. Returns
+/// `true` if `host_net_close` should now run (the count reached 0, or the
+/// handle was never shared in the first place).
+pub fn host_net_handle_close_ref(h: i32) -> bool {
+    let refs = get_host_net_refs();
+    if let Some(count) = refs.get_mut(&h) {
+        *count -= 1;
+        if *count == 0 {
+            refs.remove(&h);
+            return true;
+        }
+        return false;
+    }
+    // Not in the table → single owner, safe to close.
+    true
+}
+
+#[cfg(test)]
+pub fn host_net_handle_ref_count(h: i32) -> u32 {
+    get_host_net_refs().get(&h).copied().unwrap_or(0)
+}
 
 /// Socket address family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +84,7 @@ pub enum SocketState {
 }
 
 /// A received UDP datagram.
+#[derive(Clone)]
 pub struct Datagram {
     pub data: Vec<u8>,
     pub src_addr: [u8; 4],
@@ -36,6 +92,11 @@ pub struct Datagram {
 }
 
 /// Per-socket kernel state.
+///
+/// `Clone` is hand-written (not derived) so that fork/spawn cloning
+/// discards consume-once state that should not double-fire in the child.
+/// See the `impl Clone for SocketInfo` block below for which fields are
+/// reset.
 pub struct SocketInfo {
     pub domain: SocketDomain,
     pub sock_type: SocketType,
@@ -139,7 +200,58 @@ impl SocketInfo {
     }
 }
 
+/// Hand-written so fork/spawn child inheritance discards consume-once
+/// state. POSIX-wise these are properties of the underlying connection
+/// (one OOB byte per socket; one queue of pending datagrams; one queue
+/// of pending AF_UNIX same-process pre-accepted connections), but our
+/// per-process SocketInfo can't truly share — duplicating them would let
+/// both parent and child consume the "same" data.
+///
+/// Discarded in the child:
+///   * `dgram_queue` — buffered UDP datagrams.
+///   * `oob_byte` — pending TCP out-of-band byte.
+///   * `listen_backlog` — pre-accepted AF_UNIX same-process connections.
+///     Indices reference other entries in this process's SocketTable; if
+///     both parent and child kept them, both could `accept()` the same
+///     pending connection. After fork/spawn, the parent retains them;
+///     child gets fresh state. New connections that arrive post-fork are
+///     added to whichever process the connecting peer wires up to.
+///
+/// Everything else is value-cloned. `host_net_handle` and
+/// `shared_backlog_idx` are still inherited; the cross-process refcount
+/// bumps for those live in `process_table::bump_inherited_resource_refcounts`.
+impl Clone for SocketInfo {
+    fn clone(&self) -> Self {
+        SocketInfo {
+            domain: self.domain,
+            sock_type: self.sock_type,
+            protocol: self.protocol,
+            state: self.state,
+            peer_idx: self.peer_idx,
+            recv_buf_idx: self.recv_buf_idx,
+            send_buf_idx: self.send_buf_idx,
+            shut_rd: self.shut_rd,
+            shut_wr: self.shut_wr,
+            host_net_handle: self.host_net_handle,
+            options: self.options.clone(),
+            bind_addr: self.bind_addr,
+            bind_port: self.bind_port,
+            peer_addr: self.peer_addr,
+            peer_port: self.peer_port,
+            listen_backlog: Vec::new(), // consume-once: don't double-accept
+            shared_backlog_idx: self.shared_backlog_idx,
+            dgram_queue: Vec::new(),    // consume-once: don't double-deliver
+            global_pipes: self.global_pipes,
+            oob_byte: None,             // consume-once: don't double-deliver
+            recv_timeout_us: self.recv_timeout_us,
+            send_timeout_us: self.send_timeout_us,
+            bind_path: self.bind_path.clone(),
+        }
+    }
+}
+
 /// Table of socket state, indexed by socket slot.
+#[derive(Clone)]
 pub struct SocketTable {
     entries: Vec<Option<SocketInfo>>,
 }

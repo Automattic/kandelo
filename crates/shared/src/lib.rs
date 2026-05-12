@@ -17,7 +17,7 @@
 /// commit.
 ///
 /// See `docs/abi-versioning.md` for the full policy.
-pub const ABI_VERSION: u32 = 7;
+pub const ABI_VERSION: u32 = 8;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -988,6 +988,35 @@ pub mod abi {
     pub const ABI_VALUE_CAPTURE_PREFIXES: &[&str] = &[
         "__abi_",
     ];
+
+    /// Host-intercepted syscall numbers (caught by `host/src/kernel-worker.ts`
+    /// before reaching the kernel's syscall dispatcher). The kernel never sees
+    /// these on the channel — the host calls the corresponding `kernel_*`
+    /// export directly.
+    ///
+    /// These exist outside the [`crate::Syscall`] enum because that enum is for
+    /// kernel-dispatched syscalls only. Adding/removing a value here is an ABI
+    /// change and requires bumping [`crate::ABI_VERSION`].
+    pub mod host_intercepted {
+        /// Non-forking `posix_spawn` (this kernel's invention; no Linux
+        /// equivalent). Host calls `kernel_spawn_process`. See
+        /// `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`.
+        ///
+        /// Numbered 500 to sit clear of every Linux syscall numbering
+        /// scheme and of our kernel-side dispatch table in `wasm_api.rs`
+        /// (highest used: 415). The original plan picked 214 to neighbour
+        /// SYS_FORK, but 214 collides with the kernel's existing
+        /// SYS_GETPGID handler — host-interception alone wouldn't help
+        /// because every legitimate getpgid call would also be caught.
+        pub const SYS_SPAWN: u32 = 500;
+
+        /// Documented for completeness — also defined in
+        /// `glue/channel_syscall.c` and `host/src/kernel-worker.ts`.
+        pub const SYS_EXECVE: u32 = 211;
+        pub const SYS_FORK: u32 = 212;
+        pub const SYS_VFORK: u32 = 213;
+        pub const SYS_EXECVEAT: u32 = 386;
+    }
 
     /// Decide whether a kernel-wasm export name should appear in the
     /// snapshot. Implementation-detail symbols (per

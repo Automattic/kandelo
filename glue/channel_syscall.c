@@ -133,6 +133,7 @@ uintptr_t __get_channel_base_addr(void) {
  * in browser web workers. */
 #define SYS_FORK  212
 #define SYS_VFORK 213
+#define SYS_SPAWN 500  /* non-forking posix_spawn — see docs/plans/2026-05-04-non-forking-posix-spawn-design.md */
 
 __attribute__((import_module("kernel"), import_name("kernel_fork")))
 int32_t kernel_fork(void);

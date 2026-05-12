@@ -4,6 +4,8 @@
 //!
 //!   * [`wasm_posix_shared::ABI_VERSION`] — the integer version number
 //!   * [`wasm_posix_shared::Syscall`] — named syscall number table
+//!   * [`wasm_posix_shared::abi::host_intercepted`] — syscall numbers
+//!     handled in the host before reaching the kernel dispatcher
 //!   * [`wasm_posix_shared::channel`] — channel header byte layout
 //!   * Marshalled repr(C) structs — offsets via `core::mem::offset_of!`
 //!   * [`wasm_posix_shared::abi`] — asyncify save slots, global names,
@@ -170,6 +172,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
 
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("syscalls".into(), syscalls());
+    root.insert("host_intercepted_syscalls".into(), host_intercepted_syscalls());
     root.insert("channel_status_codes".into(), channel_status_codes());
     root.insert("asyncify_save_slots".into(), asyncify_save_slots());
     root.insert("custom_sections".into(), custom_sections());
@@ -339,6 +342,29 @@ fn syscalls() -> Value {
             m.insert("name".into(), json!(format!("{s:?}")));
             list.push(Value::Object(m.into_iter().collect()));
         }
+    }
+    Value::Array(list)
+}
+
+fn host_intercepted_syscalls() -> Value {
+    // These syscall numbers are caught by the host *before* reaching the
+    // kernel's dispatcher (see `host/src/kernel-worker.ts`). They live
+    // outside `shared::Syscall` because they don't go through the same
+    // channel handler. The snapshot still tracks them so add/remove/renumber
+    // is caught by the structural drift check.
+    use shared::abi::host_intercepted::*;
+    let mut list = Vec::new();
+    for (n, name) in [
+        (SYS_EXECVE, "SYS_EXECVE"),
+        (SYS_FORK, "SYS_FORK"),
+        (SYS_VFORK, "SYS_VFORK"),
+        (SYS_SPAWN, "SYS_SPAWN"),
+        (SYS_EXECVEAT, "SYS_EXECVEAT"),
+    ] {
+        let mut m: JsonMap = BTreeMap::new();
+        m.insert("number".into(), json!(n));
+        m.insert("name".into(), json!(name));
+        list.push(Value::Object(m.into_iter().collect()));
     }
     Value::Array(list)
 }

@@ -79,6 +79,21 @@ const suite: BenchmarkSuite = {
     if (clone.exitCode !== 0) throw new Error(`clone-bench failed: ${clone.stderr}`);
     Object.assign(results, parseMetrics(clone.stdout));
 
+    // posix_spawn — the non-forking SYS_SPAWN fast path. Distinct from
+    // exec_ms (which times execve replacing the same process) and
+    // fork_ms (which times fork's asyncify rewind). spawn_ms exists
+    // because popen / system / shell pipelines all go through
+    // posix_spawn, and that path used to cost a fork-instrument unwind
+    // we no longer pay.
+    const spawnBench = await runCentralizedProgram({
+      programPath: resolve(wasmDir, "spawn-bench.wasm"),
+      argv: ["spawn-bench"],
+      execPrograms,
+      timeout: 30_000,
+    });
+    if (spawnBench.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawnBench.stderr}`);
+    Object.assign(results, parseMetrics(spawnBench.stdout));
+
     return results;
   },
 };

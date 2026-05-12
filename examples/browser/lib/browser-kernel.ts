@@ -369,11 +369,23 @@ export class BrowserKernel {
 
   /**
    * Spawn a new process and return a promise that resolves with the exit code.
+   *
+   * `onStarted(pid)` fires once the kernel has registered the process and the
+   * spawn request is acknowledged — but BEFORE awaiting the exit promise. Use
+   * this to capture the pid for follow-up calls like `getForkCount(pid)` (the
+   * spawn-regression-guardrail pattern; see `examples/browser/main.ts`).
+   * Mirrors `NodeKernelHost.spawn`'s `onStarted` option.
    */
   async spawn(
     programBytes: ArrayBuffer,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; stdin?: Uint8Array; pty?: boolean },
+    options?: {
+      env?: string[];
+      cwd?: string;
+      stdin?: Uint8Array;
+      pty?: boolean;
+      onStarted?: (pid: number) => void | Promise<void>;
+    },
   ): Promise<number> {
     const pid = this.nextPid++;
     const requestId = this.nextRequestId++;
@@ -403,7 +415,31 @@ export class BrowserKernel {
       this.sendToKernel({ type: "register_pty_output", pid });
     }
 
+    if (options?.onStarted) {
+      await options.onStarted(pid);
+    }
+
     return exitPromise;
+  }
+
+  /**
+   * Read the kernel's per-process fork counter. Used by the spawn
+   * regression tests to assert a `SYS_SPAWN` call didn't fall back to
+   * fork — `getForkCount(parentPid)` should return the same value
+   * before and after a `posix_spawn`.
+   *
+   * Returns `u64::MAX` (as `bigint`) if the pid does not exist; callers
+   * should compare against an explicit before-value rather than treating
+   * "no process" as "0 forks". Mirrors `NodeKernelHost.getForkCount`.
+   */
+  async getForkCount(pid: number): Promise<bigint> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_fork_count",
+      requestId,
+      pid,
+    });
+    return typeof result === "bigint" ? result : BigInt(result as number);
   }
 
   /**

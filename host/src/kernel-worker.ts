@@ -60,6 +60,7 @@ const SYS_EXECVE = 211;
 const SYS_EXECVEAT = 386;
 const SYS_FORK = 212;
 const SYS_VFORK = 213;
+const SYS_SPAWN = 500;
 const SYS_CLONE = 201;
 const SYS_EXIT = 34;
 const SYS_EXIT_GROUP = 387;
@@ -213,6 +214,62 @@ interface ArgDesc {
   argIndex: number;
   direction: "in" | "out" | "inout";
   size: SizeSpec;
+}
+
+/**
+ * Decode just the argv and envp strings out of a SYS_SPAWN blob. The kernel
+ * does the authoritative parsing (file actions, attrs); this minimal
+ * decoder exists because `onSpawn` needs `string[]` for the worker-launch
+ * path.
+ *
+ * Wire format mirrors `crates/kernel/src/spawn.rs::parse_blob` — see
+ * `docs/plans/2026-05-04-non-forking-posix-spawn-design.md` Section 1.
+ *
+ * Throws on malformed input. Callers should treat the throw as EINVAL.
+ */
+function decodeSpawnBlobStrings(blob: Uint8Array): { argv: string[]; envp: string[] } {
+  const HEADER_LEN = 40;
+  const ACTION_RECORD_LEN = 28;
+  if (blob.byteLength < HEADER_LEN) {
+    throw new Error("blob too short for header");
+  }
+  const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+  const argc      = view.getUint32(0, true);
+  const envc      = view.getUint32(4, true);
+  const nActions  = view.getUint32(8, true);
+
+  // Cap counts to mirror the kernel parser's adversarial-input cap.
+  if (argc > 4096 || envc > 4096 || nActions > 1024) {
+    throw new Error("blob count exceeds limit");
+  }
+
+  const argvOffsetsAt = HEADER_LEN;
+  const envpOffsetsAt = argvOffsetsAt + argc * 4;
+  const actionsAt     = envpOffsetsAt + envc * 4;
+  const stringsAt     = actionsAt + nActions * ACTION_RECORD_LEN;
+
+  if (stringsAt > blob.byteLength) {
+    throw new Error("blob truncated before strings region");
+  }
+  const stringsLen = blob.byteLength - stringsAt;
+  const decoder = new TextDecoder();
+
+  const decodeAt = (off: number): string => {
+    if (off > stringsLen) throw new Error("string offset OOB");
+    let end = off;
+    while (end < stringsLen && blob[stringsAt + end] !== 0) end++;
+    return decoder.decode(blob.slice(stringsAt + off, stringsAt + end));
+  };
+
+  const argv: string[] = [];
+  for (let i = 0; i < argc; i++) {
+    argv.push(decodeAt(view.getUint32(argvOffsetsAt + i * 4, true)));
+  }
+  const envp: string[] = [];
+  for (let i = 0; i < envc; i++) {
+    envp.push(decodeAt(view.getUint32(envpOffsetsAt + i * 4, true)));
+  }
+  return { argv, envp };
 }
 
 /** Per-syscall pointer arg descriptors.
@@ -640,6 +697,37 @@ export interface CentralizedKernelCallbacks {
    * Returns 0 on success, negative errno on error.
    */
   onExec?: (pid: number, path: string, argv: string[], envp: string[]) => Promise<number>;
+
+  /**
+   * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
+   * for `path`, or `null` for ENOENT. **Must NOT have side effects** —
+   * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
+   * actions never run on a doomed PATH-iteration. POSIX requires
+   * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
+   * issues one `posix_spawn` per candidate; without this preflight the
+   * kernel applies file_actions on every failed iteration (sortix
+   * `basic/spawn/posix_spawnp` exercises an `addopen(O_EXCL)` "once"
+   * file that would conflict on iteration 2).
+   *
+   * Required if `onSpawn` is set; together they form the spawn surface.
+   */
+  onResolveSpawn?: (path: string) => Promise<ArrayBuffer | null>;
+
+  /**
+   * Launch a worker for the spawned child with already-resolved bytes
+   * (from `onResolveSpawn`). The kernel has constructed the child Process
+   * descriptor under `childPid` and applied file actions + attrs by the
+   * time this is called. The callback instantiates a fresh Worker and
+   * registers it via `registerProcess({ skipKernelCreate: true })`.
+   *
+   * Returns 0 on success, negative errno on failure. On non-zero return
+   * the kernel descriptor is rolled back via `kernel_remove_process`.
+   *
+   * Distinct from `onExec` (which replaces the calling worker) and
+   * `onFork` (which clones the parent's Memory): `onSpawn` always
+   * creates a fresh Memory and runs the new program from `_start`.
+   */
+  onSpawn?: (childPid: number, programBytes: ArrayBuffer, argv: string[], envp: string[]) => Promise<number>;
 
   /**
    * Called when a process calls clone (thread creation). The callback should
@@ -1716,6 +1804,12 @@ export class CentralizedKernelWorker {
     if (syscallNr === SYS_FORK || syscallNr === SYS_VFORK) {
       if (logging) console.error(logEntry);
       this.handleFork(channel, origArgs);
+      return;
+    }
+
+    if (syscallNr === SYS_SPAWN) {
+      if (logging) console.error(logEntry);
+      this.handleSpawn(channel, origArgs);
       return;
     }
 
@@ -5280,6 +5374,171 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Handle SYS_SPAWN: read the blob and `path` from caller memory, copy
+   * the blob to kernel scratch, ask the kernel to allocate a child pid +
+   * build the child Process descriptor, then call `onSpawn` to launch a
+   * fresh worker for that pid.
+   *
+   * Channel arg layout (per docs/plans/2026-05-04-non-forking-posix-spawn-design.md):
+   *   arg0 = path_ptr (caller memory; PATH-resolved)
+   *   arg1 = path_len
+   *   arg2 = blob_ptr (caller memory)
+   *   arg3 = blob_len
+   *   arg4 = pid_out_ptr (caller writes child pid here on success)
+   *   arg5 = 0 (reserved)
+   *
+   * Returns 0 on success / -errno on failure via the channel; the child
+   * pid is delivered through `pid_out_ptr` rather than the return value
+   * so callers can distinguish "kernel error" (negative) from "got a
+   * child" (zero, then read pid_out).
+   *
+   * If `onSpawn` returns non-zero or rejects, the kernel-side child
+   * descriptor is rolled back via `kernel_remove_process` so the spawn
+   * attempt leaves no trace.
+   */
+  private handleSpawn(channel: ChannelInfo, origArgs: number[]): void {
+    const parentPid = channel.pid;
+    const pathPtr = origArgs[0];
+    const pathLen = origArgs[1];
+    const blobPtr = origArgs[2];
+    const blobLen = origArgs[3];
+    const pidOutPtr = origArgs[4];
+
+    if (!this.callbacks.onSpawn || !this.callbacks.onResolveSpawn) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 38); // ENOSYS
+      return;
+    }
+
+    // ── Read path + blob from caller memory ──
+    const processMem = new Uint8Array(channel.memory.buffer);
+    let path = "";
+    if (pathPtr !== 0 && pathLen > 0) {
+      path = new TextDecoder().decode(processMem.slice(pathPtr, pathPtr + pathLen));
+      // Strip trailing NUL if the user copied a C string with the terminator.
+      if (path.endsWith("\0")) path = path.slice(0, -1);
+    }
+    if (path && !path.startsWith("/")) {
+      path = this.resolveExecPathAgainstCwd(parentPid, path);
+    }
+
+    if (blobLen <= 0 || (blobPtr === 0 && blobLen > 0)) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 22); // EINVAL
+      return;
+    }
+    // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
+    const blobBytes = processMem.slice(blobPtr, blobPtr + blobLen);
+
+    // ── Decode argv + envp host-side ──
+    // The kernel parses the blob too, but onSpawn needs string[] for the
+    // worker launch path. We don't redo action/attr parsing here; the
+    // kernel is the authoritative parser for that surface.
+    let argv: string[];
+    let envp: string[];
+    try {
+      const decoded = decodeSpawnBlobStrings(blobBytes);
+      argv = decoded.argv;
+      envp = decoded.envp;
+    } catch (_e) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 22); // EINVAL
+      return;
+    }
+
+    // ── PRE-FLIGHT: resolve program bytes BEFORE calling the kernel ──
+    // POSIX requires file_actions to run "exactly once." `posix_spawnp`'s
+    // PATH search emits one `posix_spawn` per candidate; if we let the
+    // kernel apply file_actions on each iteration, the side effects
+    // (e.g. `addopen(O_EXCL)`) accumulate and the second iteration sees
+    // its own state from the first. Resolve bytes via the host's
+    // side-effect-free preflight first; only call the kernel if the
+    // program actually exists.
+    this.callbacks.onResolveSpawn(path).then((programBytes) => {
+      if (!programBytes) {
+        this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
+        return;
+      }
+      this.handleSpawnAfterResolve(
+        channel, origArgs, parentPid, pidOutPtr, blobBytes, blobLen, argv, envp, programBytes,
+      );
+    }).catch((err) => {
+      console.error(`[kernel] spawn resolve error for parent ${parentPid}:`, err);
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 5); // EIO
+    });
+  }
+
+  /**
+   * Continuation of `handleSpawn` after `onResolveSpawn` has returned
+   * actual program bytes. Now safe to ask the kernel to build the child
+   * (which will apply file_actions exactly once).
+   */
+  private handleSpawnAfterResolve(
+    channel: ChannelInfo,
+    origArgs: number[],
+    parentPid: number,
+    pidOutPtr: number,
+    blobBytes: Uint8Array,
+    blobLen: number,
+    argv: string[],
+    envp: string[],
+    programBytes: ArrayBuffer,
+  ): void {
+    // ── Copy blob to kernel scratch ──
+    const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
+    if (blobLen > kernelMem.byteLength - this.scratchOffset) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 22); // EINVAL
+      return;
+    }
+    kernelMem.set(blobBytes, this.scratchOffset);
+
+    // ── Ask the kernel to build the child descriptor ──
+    const kernelSpawn = this.kernelInstance!.exports.kernel_spawn_process as
+      (parentPid: number, blobPtr: bigint, blobLen: bigint) => number;
+    const result = kernelSpawn(parentPid, BigInt(this.scratchOffset), BigInt(blobLen));
+    if (result < 0) {
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, (-result) >>> 0);
+      return;
+    }
+    const childPid = result >>> 0;
+
+    // Bump host-side nextChildPid watermark so a subsequent fork() in the
+    // parent can't collide with the kernel's allocation.
+    if (childPid >= this.nextChildPid) this.nextChildPid = childPid + 1;
+
+    // Track parent-child for waitpid.
+    this.childToParent.set(childPid, parentPid);
+    let children = this.parentToChildren.get(parentPid);
+    if (!children) { children = new Set(); this.parentToChildren.set(parentPid, children); }
+    children.add(childPid);
+
+    // ── Launch the worker async (with already-resolved bytes) ──
+    this.callbacks.onSpawn!(childPid, programBytes, argv, envp).then((rc) => {
+      if (rc < 0) {
+        const removeProcess = this.kernelInstance!.exports.kernel_remove_process as
+          (pid: number) => number;
+        removeProcess(childPid);
+        this.childToParent.delete(childPid);
+        const set = this.parentToChildren.get(parentPid);
+        if (set) set.delete(childPid);
+        this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, (-rc) >>> 0);
+        return;
+      }
+      // Write the child pid through pid_out_ptr in caller memory.
+      if (pidOutPtr !== 0) {
+        new DataView(channel.memory.buffer).setInt32(pidOutPtr, childPid, true);
+      }
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, 0, 0);
+    }).catch((err) => {
+      console.error(`[kernel] spawn error for parent ${parentPid}:`, err);
+      const removeProcess = this.kernelInstance!.exports.kernel_remove_process as
+        (pid: number) => number;
+      removeProcess(childPid);
+      this.childToParent.delete(childPid);
+      const set = this.parentToChildren.get(parentPid);
+      if (set) set.delete(childPid);
+      this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 5); // EIO
+    });
+  }
+
+  /**
    * Read a null-terminated string from process memory at the given pointer.
    */
   private readCStringFromProcess(mem: Uint8Array, ptr: number, maxLen = 4096): string {
@@ -6663,6 +6922,22 @@ export class CentralizedKernelWorker {
   /** Get the kernel Wasm instance. */
   getKernelInstance(): WebAssembly.Instance | null {
     return this.kernelInstance;
+  }
+
+  /**
+   * Per-process fork counter (parent side, incremented inside
+   * `kernel_fork_process` on success). Used by the spawn regression tests
+   * to assert that a SYS_SPAWN call did NOT fall back to the fork path.
+   *
+   * Returns `u64::MAX` (as `bigint`) if the pid does not exist; callers
+   * should compare against an explicit before-value rather than treating
+   * "no process" as "0 forks".
+   */
+  getForkCount(pid: number): bigint {
+    const fn = this.kernelInstance?.exports.kernel_get_fork_count as
+      ((pid: number) => bigint) | undefined;
+    if (!fn) return BigInt(0);
+    return fn(pid);
   }
 
   /**

@@ -28,6 +28,7 @@ import fileWasmUrl from "../../../../benchmarks/wasm/file-throughput.wasm?url";
 import syscallWasmUrl from "../../../../benchmarks/wasm/syscall-latency.wasm?url";
 import forkWasmUrl from "../../../../benchmarks/wasm/fork-bench.wasm?url";
 import cloneWasmUrl from "../../../../benchmarks/wasm/clone-bench.wasm?url";
+import spawnBenchWasmUrl from "../../../../benchmarks/wasm/spawn-bench.wasm?url";
 import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 
 // Kernel
@@ -142,6 +143,36 @@ async function runProgram(
   return { exitCode, stdout };
 }
 
+/**
+ * Like runProgram but pre-stages additional VFS entries via
+ * `registerLazyFiles` so child programs can resolve them via
+ * posix_spawn / execve. Used by `spawn-bench` (needs /bin/hello).
+ */
+async function runProgramWithExecMap(
+  programBytes: ArrayBuffer,
+  argv: string[],
+  execMap: Array<{ path: string; url: string; size: number }>,
+): Promise<{ exitCode: number; stdout: string }> {
+  let stdout = "";
+  const kernel = new BrowserKernel({
+    maxWorkers: 4,
+    fsSize: 4 * 1024 * 1024,
+    onStdout: (data) => { stdout += new TextDecoder().decode(data); },
+    onStderr: () => {},
+  });
+  await kernel.init();
+  try { kernel.fs.mkdir("/tmp", 0o777); } catch {};
+
+  if (execMap.length > 0) {
+    kernel.registerLazyFiles(execMap.map(e => ({
+      path: e.path, url: e.url, size: e.size, mode: 0o755,
+    })));
+  }
+
+  const exitCode = await kernel.spawn(programBytes, argv);
+  return { exitCode, stdout };
+}
+
 // ─── syscall-io ─────────────────────────────────────────────────────────────
 
 async function runSyscallIo(): Promise<Record<string, number>> {
@@ -191,6 +222,20 @@ async function runProcessLifecycle(): Promise<Record<string, number>> {
   const clone = await runProgram(cloneBytes, ["clone-bench"]);
   if (clone.exitCode !== 0) throw new Error("clone-bench failed");
   Object.assign(results, parseMetrics(clone.stdout));
+
+  log("  Running spawn-bench...");
+  // posix_spawn — non-forking SYS_SPAWN fast path. The child is the
+  // existing hello.wasm; pre-stage it at /bin/hello via registerLazyFiles
+  // so libc-side path resolution finds it. Distinct from exec_ms (no
+  // exec exists on the browser bench page anyway) and fork_ms.
+  const helloHead = await fetch(helloWasmUrl, { method: "HEAD" });
+  const helloSize = parseInt(helloHead.headers.get("content-length") ?? "0", 10) || 1 << 20;
+  const spawnBenchBytes = await fetchWasm(spawnBenchWasmUrl);
+  const spawn = await runProgramWithExecMap(spawnBenchBytes, ["spawn-bench"], [
+    { path: "/bin/hello", url: helloWasmUrl, size: helloSize },
+  ]);
+  if (spawn.exitCode !== 0) throw new Error(`spawn-bench failed: ${spawn.stdout}`);
+  Object.assign(results, parseMetrics(spawn.stdout));
 
   return results;
 }

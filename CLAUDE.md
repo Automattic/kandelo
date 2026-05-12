@@ -157,9 +157,24 @@ The real performance lever is the **dedicated worker thread architecture** (`Nod
 ## Build
 
 ```bash
-bash build.sh          # Build kernel wasm + musl sysroot
-scripts/build-programs.sh  # Build test/example C programs
+bash scripts/build-musl.sh   # Build the wasm32 musl sysroot (one-time / on overlay changes)
+bash build.sh                # Build kernel wasm + host TypeScript + programs
+scripts/build-programs.sh    # Re-build test/example C programs
 ```
+
+**`bash build.sh` does NOT rebuild musl.** It rebuilds the kernel
+(`crates/kernel/`), the host TS package (`host/dist/`), and — if
+`programs/*.c` exists — user programs. After editing anything under
+`musl-overlay/` or `glue/channel_syscall.c`, run
+`scripts/build-musl.sh` first; otherwise user programs link against a
+stale `sysroot/lib/libc.a` and the kernel-side and libc-side ABI
+constants can drift silently. Vitest will pick up the stale binary and
+fail with cryptic ESRCH / EINVAL errors.
+
+**Future work:** make `build.sh` detect overlay-source mtime drift and
+trigger a musl rebuild automatically. Tracked here so the next devloop
+gotcha doesn't bite again — last bit during the SYS_SPAWN renumber
+(commit `1da06b2cc`).
 
 ### Always use `scripts/dev-shell.sh`, not bare `nix develop`
 

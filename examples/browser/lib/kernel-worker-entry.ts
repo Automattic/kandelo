@@ -335,6 +335,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         handleFork(parentPid, childPid, parentMemory),
       onExec: async (pid, path, argv, envp) =>
         handleExec(pid, path, argv, envp),
+      onResolveSpawn: async (path) => handlePosixSpawnResolve(path),
+      onSpawn: async (childPid, programBytes, argv, envp) =>
+        handlePosixSpawn(childPid, programBytes, argv, envp),
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
@@ -757,6 +760,92 @@ async function handleExec(
   // request, sed inside wp-config-init, etc.) leaves the kernel believing
   // the process is alive and the parent's waitpid blocks forever.
   installProcessWorkerListeners(newWorker, pid);
+
+  return 0;
+}
+
+/**
+ * Handle SYS_SPAWN (non-forking posix_spawn) on the browser host.
+ *
+ * The kernel has already constructed the child Process descriptor under
+ * `childPid` with attrs and file actions applied. This callback resolves
+ * `path` to bytes via the shared MemoryFileSystem, allocates a fresh
+ * Memory for the child, registers it with the kernel
+ * (`skipKernelCreate: true` — kernel did its half), and spawns a Worker.
+ *
+ * Distinct from handleExec (which replaces the calling worker) and
+ * handleFork (which clones the parent's Memory): this always creates a
+ * fresh Memory and runs the new program from `_start`.
+ *
+ * Mirrors handlePosixSpawn in host/src/node-kernel-worker-entry.ts —
+ * per CLAUDE.md the two hosts must move in lockstep.
+ *
+ * Returns 0 on success, negative errno on failure.
+ */
+/**
+ * Pre-flight resolver — see node-kernel-worker-entry.ts:handlePosixSpawnResolve.
+ * Browser-side equivalent: materialize the lazy file (async fetch via
+ * the memfs lazy-loader, avoiding sync-XHR + SW deadlocks) then read its
+ * contents from the VFS. Side-effect-free; safe to call on PATH search
+ * iterations that may not resolve.
+ */
+async function handlePosixSpawnResolve(path: string): Promise<ArrayBuffer | null> {
+  await memfs.ensureMaterialized(path);
+  const bytes = readFileFromFs(path);
+  return bytes ?? null;
+}
+
+/**
+ * Launch a worker for a SYS_SPAWN child whose program bytes have already
+ * been resolved by `handlePosixSpawnResolve`. Mirrors the Node entry's
+ * `handlePosixSpawn`.
+ */
+async function handlePosixSpawn(
+  childPid: number,
+  programBytes: ArrayBuffer,
+  argv: string[],
+  envp: string[],
+): Promise<number> {
+  const ptrWidth = detectPtrWidth(programBytes);
+  const newMemory = createProcessMemory(ptrWidth, maxPages);
+  const newChannelOffset = (maxPages - 2) * PAGE_SIZE;
+  new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
+
+  // Kernel already created the child via kernel_spawn_process.
+  kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
+    skipKernelCreate: true,
+    ptrWidth,
+  });
+
+  const heapBase = extractHeapBase(programBytes);
+  if (heapBase !== null) {
+    kernelWorker.setBrkBase(childPid, heapBase);
+  }
+
+  const initData: CentralizedWorkerInitMessage = {
+    type: "centralized_init",
+    pid: childPid,
+    ppid: 0,
+    programBytes,
+    memory: newMemory,
+    channelOffset: newChannelOffset,
+    argv,
+    env: envp,
+    ptrWidth,
+  };
+
+  const newWorker = workerAdapter.createWorker(initData);
+  newWorker.on("error", (err: Error) => {
+    console.error(`[kernel-worker] spawn worker error pid=${childPid}:`, err.message);
+  });
+
+  processes.set(childPid, {
+    memory: newMemory,
+    programBytes,
+    worker: newWorker,
+    channelOffset: newChannelOffset,
+    ptrWidth,
+  });
 
   return 0;
 }
@@ -1451,6 +1540,18 @@ sw.onmessage = (e: MessageEvent) => {
     case "destroy": handleDestroy(msg); break;
     case "register_lazy_files": memfs.importLazyEntries(msg.entries); break;
     case "register_lazy_archives": memfs.importLazyArchiveEntries(msg.entries); break;
+    case "get_fork_count": {
+      // Round-trip access to the kernel's per-process fork counter for
+      // tests asserting SYS_SPAWN didn't fall back to fork. Mirrors the
+      // Node-side `get_fork_count` request in node-kernel-worker-entry.ts.
+      try {
+        const count = kernelWorker.getForkCount(msg.pid);
+        respond(msg.requestId, count);
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;

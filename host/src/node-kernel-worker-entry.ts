@@ -250,6 +250,8 @@ async function handleInit(msg: InitMessage) {
     {
       onFork: handleFork,
       onExec: handleExec,
+      onResolveSpawn: handlePosixSpawnResolve,
+      onSpawn: handlePosixSpawn,
       onClone: handleClone,
       onExit: handleExit,
     },
@@ -570,6 +572,98 @@ async function handleExec(
   return 0;
 }
 
+/**
+ * Handle SYS_SPAWN (non-forking posix_spawn).
+ *
+ * The kernel has already constructed the child Process descriptor in its
+ * ProcessTable under `childPid` (with attrs and file actions applied).
+ * This callback resolves the program bytes for `path`, allocates a fresh
+ * Memory for the child, registers it with the kernel via
+ * `registerProcess({ skipKernelCreate: true })`, and launches a Worker
+ * for it.
+ *
+ * Distinct from handleExec (which replaces the calling worker) and
+ * handleFork (which clones the parent's Memory): handlePosixSpawn always
+ * creates a fresh Memory and runs the new program from `_start`.
+ *
+ * Returns 0 on success, negative errno on failure (e.g. -ENOENT).
+ */
+/**
+ * Pre-flight resolver for SYS_SPAWN. Side-effect-free: looks up program
+ * bytes for `path` (via the same execPrograms map + main-thread fallback
+ * `resolveExec` already uses for execve). Returns null on ENOENT.
+ *
+ * `handleSpawn` in `host/src/kernel-worker.ts` calls this BEFORE
+ * `kernel_spawn_process` so that file_actions (which the kernel runs
+ * inside `spawn_child`) never execute on a doomed PATH iteration —
+ * see the POSIX "exactly once" rule.
+ */
+async function handlePosixSpawnResolve(path: string): Promise<ArrayBuffer | null> {
+  return resolveExec(path);
+}
+
+/**
+ * Launch a worker for a SYS_SPAWN child whose program bytes have already
+ * been resolved by `handlePosixSpawnResolve`. The kernel has built the
+ * child Process descriptor + applied file actions by the time we get
+ * here, so this just allocates a Memory, registers the process, and
+ * spawns the worker.
+ */
+async function handlePosixSpawn(
+  childPid: number,
+  programBytes: ArrayBuffer,
+  argv: string[],
+  envp: string[],
+): Promise<number> {
+  const ptrWidth = detectPtrWidth(programBytes);
+  const memory = createProcessMemory(ptrWidth);
+  const channelOffset = (maxPages - 2) * 65536;
+  growToMax(memory, ptrWidth, 17);
+  new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
+
+  // The kernel already created the child Process via kernel_spawn_process,
+  // so skip the kernelCreate side of registerProcess.
+  kernelWorker.registerProcess(childPid, memory, [channelOffset], {
+    skipKernelCreate: true,
+    ptrWidth,
+  });
+
+  const heapBase = extractHeapBase(programBytes);
+  if (heapBase !== null) {
+    kernelWorker.setBrkBase(childPid, heapBase);
+  }
+
+  const initData: CentralizedWorkerInitMessage = {
+    type: "centralized_init",
+    pid: childPid,
+    ppid: 0,
+    programBytes,
+    memory,
+    channelOffset,
+    argv,
+    env: envp,
+    ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+  };
+
+  const newWorker = workerAdapter.createWorker(initData);
+  processes.set(childPid, {
+    memory,
+    programBytes,
+    worker: newWorker,
+    channelOffset,
+    ptrWidth,
+  });
+
+  newWorker.on("error", (err: Error) => {
+    console.error(`[spawn] worker error for pid ${childPid}:`, err.message);
+    kernelWorker.unregisterProcess(childPid);
+    processes.delete(childPid);
+  });
+
+  return 0;
+}
+
 async function handleClone(
   pid: number,
   tid: number,
@@ -769,6 +863,23 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "destroy":
       handleDestroy(msg);
       break;
+    case "get_fork_count": {
+      // Round-trip access to the kernel's per-process fork counter for
+      // tests asserting SYS_SPAWN didn't fall back to fork. Result is a
+      // u64 BigInt (kernel returns u64::MAX as a "pid not found" sentinel).
+      try {
+        const count = kernelWorker.getForkCount(msg.pid);
+        post({ type: "response", requestId: msg.requestId, result: count });
+      } catch (err) {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+      break;
+    }
     case "resolve_exec_response": {
       const resolve = pendingExecResolves.get(msg.requestId);
       if (resolve) {

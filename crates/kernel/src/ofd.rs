@@ -89,6 +89,7 @@ pub struct OpenFileDesc {
     pub dir_entry_offset: i64,
 }
 
+#[derive(Clone)]
 pub struct OfdTable {
     entries: Vec<Option<OpenFileDesc>>,
 }

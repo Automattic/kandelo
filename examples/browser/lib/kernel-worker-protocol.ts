@@ -198,6 +198,17 @@ export interface RegisterLazyArchivesMessage {
   }>;
 }
 
+/** Read kernel-side per-process fork counter. Mirrors the Node host's
+ * `get_fork_count` request in node-kernel-protocol.ts. The kernel-worker
+ * forwards to `kernel_get_fork_count` and posts a `response` whose
+ * `result` is a `bigint`. Used by the spawn regression tests to assert
+ * SYS_SPAWN didn't fall back to fork. */
+export interface GetForkCountRequestMessage {
+  type: "get_fork_count";
+  requestId: number;
+  pid: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -219,7 +230,8 @@ export type MainToKernelMessage =
   | DestroyMessage
   | RegisterPtyOutputMessage
   | RegisterLazyFilesMessage
-  | RegisterLazyArchivesMessage;
+  | RegisterLazyArchivesMessage
+  | GetForkCountRequestMessage;
 
 // ── Kernel Worker → Main Thread ──
 

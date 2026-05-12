@@ -80,6 +80,16 @@ export interface DestroyMessage {
   requestId: number;
 }
 
+/** Request the kernel's per-process fork counter. The kernel-worker entry
+ * forwards this to `kernel_get_fork_count` and posts a `response` message
+ * with `result` set to a `bigint` (u64 as BigInt). Used by the spawn
+ * regression tests to assert SYS_SPAWN doesn't bump the counter. */
+export interface GetForkCountRequestMessage {
+  type: "get_fork_count";
+  requestId: number;
+  pid: number;
+}
+
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
@@ -95,6 +105,7 @@ export type MainToKernelMessage =
   | PtyResizeMessage
   | TerminateProcessMessage
   | DestroyMessage
+  | GetForkCountRequestMessage
   | ResolveExecResponseMessage;
 
 // ── Kernel Worker → Main Thread ──

@@ -499,11 +499,13 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                 w.write_u32(sock.bind_port as u32)?;
                 w.write_bytes(&sock.peer_addr)?;
                 w.write_u32(sock.peer_port as u32)?;
-                // Listen backlog (socket indices)
-                w.write_u32(sock.listen_backlog.len() as u32)?;
-                for &bl_idx in &sock.listen_backlog {
-                    w.write_u32(bl_idx as u32)?;
-                }
+                // Listen backlog: write 0-length. Pre-accepted AF_UNIX
+                // same-process connections are consume-once and stay with
+                // the parent — see SocketInfo's hand-written Clone. This
+                // field is preserved in the wire format (always 0) for
+                // backward compatibility with the deserialize side, which
+                // reads-and-discards.
+                w.write_u32(0u32)?;
                 // Global pipes flag (cross-process loopback)
                 w.write_u32(if sock.global_pipes { 1 } else { 0 })?;
                 // Shared listener backlog idx (AF_INET listening sockets).
@@ -843,11 +845,15 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             let mut peer_addr = [0u8; 4];
             peer_addr.copy_from_slice(r.read_bytes(4)?);
             let peer_port = r.read_u32()? as u16;
-            // Listen backlog
+            // Listen backlog: read-and-discard. The serialize side now
+            // always writes 0; this loop tolerates older blobs (in case
+            // any in-flight serialize/deserialize crosses the format
+            // change). Pre-accepted AF_UNIX same-process connections are
+            // consume-once and stay with the parent — see SocketInfo's
+            // hand-written Clone.
             let bl_count = r.read_u32()? as usize;
-            let mut listen_backlog = Vec::new();
             for _ in 0..bl_count {
-                listen_backlog.push(r.read_u32()? as usize);
+                let _ = r.read_u32()?;
             }
 
             let mut sock = SocketInfo::new(domain, sock_type, protocol);
@@ -863,18 +869,19 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             sock.bind_port = bind_port;
             sock.peer_addr = peer_addr;
             sock.peer_port = peer_port;
-            sock.listen_backlog = listen_backlog;
+            // sock.listen_backlog stays at default (Vec::new()) — see the
+            // read-and-discard block above.
             sock.global_pipes = r.read_u32()? != 0;
-            // Shared listener backlog idx (AF_INET listening sockets).
-            // Increment refcount so the child holds an additional reference
-            // — close()/exit drop one ref, last drop frees the slot.
+            // Shared listener backlog idx (AF_INET listening sockets). The
+            // refcount bump for inherited references happens in
+            // `process_table::bump_inherited_resource_refcounts`, which both
+            // fork and spawn call after building the child — keeping
+            // refcount logic in one place.
             let sb_raw = r.read_u32()?;
             sock.shared_backlog_idx = if sb_raw == 0xFFFFFFFF {
                 None
             } else {
-                let idx = sb_raw as usize;
-                unsafe { crate::socket::shared_listener_backlog_table().add_ref(idx) };
-                Some(idx)
+                Some(sb_raw as usize)
             };
             // bind_path for AF_UNIX
             if r.remaining() >= 4 {
@@ -949,6 +956,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         // registered as a host display target. fbDOOM doesn't fork
         // mid-game; documented limitation in the design doc.
         fb_binding: None,
+        fork_count: 0,
     })
 }
 
@@ -1333,6 +1341,12 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         // exec wipes any prior framebuffer binding — the new program
         // must open and mmap /dev/fb0 itself.
         fb_binding: None,
+        // The fork counter exists as a kernel-side regression guardrail.
+        // Resetting on exec keeps semantics simple: the next spawn-from-this-pid
+        // test starts from a clean slate. The plan's regression check inspects
+        // the *parent* process's counter, not the post-exec child, so this
+        // reset is safe.
+        fork_count: 0,
     })
 }
 

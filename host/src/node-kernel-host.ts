@@ -186,6 +186,25 @@ export class NodeKernelHost {
     this.sendToWorker({ type: "pty_resize", pid, rows, cols });
   }
 
+  /**
+   * Read the kernel's per-process fork counter. Used by the spawn
+   * regression tests to assert a SYS_SPAWN call didn't fall back to
+   * fork — `getForkCount(parent)` should return the same value before
+   * and after a `posix_spawn`.
+   *
+   * Returns `u64::MAX` (as `bigint`) if the pid does not exist; callers
+   * should compare against an explicit before-value.
+   */
+  async getForkCount(pid: number): Promise<bigint> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_fork_count",
+      requestId,
+      pid,
+    });
+    return typeof result === "bigint" ? result : BigInt(result as number);
+  }
+
   /** Terminate a specific process */
   async terminateProcess(pid: number, status = -1): Promise<void> {
     const requestId = this._nextRequestId++;
