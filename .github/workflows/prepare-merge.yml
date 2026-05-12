@@ -1148,8 +1148,24 @@ jobs:
           exit "$status"
 
       - name: Comment on original PR
+        # Purely informational — the merge already succeeded by this
+        # point. A transient `gh pr comment` failure (e.g. GitHub API
+        # 504) must NOT trigger the `if: failure()` handler below,
+        # which would post a misleading "merge-gate failed; re-apply
+        # ready-to-ship" message and remove the label from an
+        # already-merged PR. continue-on-error: true contains the
+        # blast radius; the inner retry recovers most transients.
+        continue-on-error: true
         run: |
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge: no package archives needed publishing this run (every \`cache_key_sha\` is already on [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }})). \`merge-gate=success\` posted on PR HEAD; auto-merge enabled."
+          set +e
+          for attempt in 1 2 3; do
+            if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge: no package archives needed publishing this run (every \`cache_key_sha\` is already on [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }})). \`merge-gate=success\` posted on PR HEAD; auto-merge enabled."; then
+              exit 0
+            fi
+            echo "::warning::gh pr comment failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          echo "::warning::gh pr comment failed after 3 attempts; PR is already merged but the explanatory comment was not posted"
 
       - name: Drop label + comment on failure
         if: failure()
@@ -1240,8 +1256,21 @@ jobs:
         # by the bot PR. The original PR will be closed by the squash
         # merge of the bot PR (which contains the original commits +
         # the amend on top), so contributors don't need to re-target.
+        #
+        # Purely informational by this point — the bot PR has auto-merge
+        # enabled. A transient `gh pr comment` failure (e.g. GitHub API
+        # 504) must NOT trigger the `if: failure()` handler below.
+        continue-on-error: true
         run: |
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge published per-file archives to [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}) and opened bot PR #${BOT_PR_NUMBER} amending the affected \`package.toml\` files. Auto-merge enabled on the bot PR; this PR will be closed when the bot PR squash-merges."
+          set +e
+          for attempt in 1 2 3; do
+            if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge published per-file archives to [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}) and opened bot PR #${BOT_PR_NUMBER} amending the affected \`package.toml\` files. Auto-merge enabled on the bot PR; this PR will be closed when the bot PR squash-merges."; then
+              exit 0
+            fi
+            echo "::warning::gh pr comment failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          echo "::warning::gh pr comment failed after 3 attempts; bot PR is already open with auto-merge but the explanatory comment was not posted"
 
       - name: Wait for bot PR to merge
         if: steps.automerge.outputs.manual_merge_required != 'true'
