@@ -236,7 +236,7 @@ Step 6 is required: without it, `MemoryManager` falls back to a hardcoded 16MB `
 POSIX `posix_spawn` is normally fork+exec done atomically. Our kernel
 ships a custom syscall (`SYS_SPAWN = 500`, host-intercepted in
 `host/src/kernel-worker.ts`) that builds the child directly — no fork,
-no asyncify rewind, no exec replay. This is the fast path popen,
+no `wpk_fork_*` rewind, no exec replay. This is the fast path popen,
 `system`, shell pipelines, nginx-FastCGI, and any direct posix_spawn
 caller now take.
 
