@@ -33,10 +33,11 @@ url = "https://wordpress.org/about/gpl/"
 [build]
 script_path = "examples/libs/wordpress/build-wordpress.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "38512c586399bf2440aafe789aedf30b689a9d04"
 
 [[outputs]]
 name = "wordpress"
 wasm = "wordpress.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/wordpress-6.8-rev2-abi7-wasm32-32f7061d.tar.zst"
-archive_sha256 = "79f4e15fe833373e1146182d01db0c79c4008ac4734d63afc26243c370ff6ffb"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/wordpress-6.8-rev2-abi8-wasm32-4a37878e.tar.zst"
+archive_sha256 = "a3a997355498162806b3d3b1725c538c66de603a2d81250f8a08295ca66602b4"
