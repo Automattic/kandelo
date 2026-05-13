@@ -776,7 +776,15 @@ jobs:
 
   generate-index:
     needs: [preflight, publish]
-    if: needs.publish.result == 'success'
+    # `!cancelled()` is load-bearing: the implicit `success()` gate
+    # propagates a skip through the DAG, so even when `publish` ran
+    # successfully (via its own `!cancelled()` override after a
+    # skipped `lib-matrix-build`), the skip-taint still poisons this
+    # job's default gate. The explicit `result == 'success'` check
+    # preserves the original "only run if publish succeeded" intent.
+    if: |
+      !cancelled() &&
+      needs.publish.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write   # gh release upload index.toml
@@ -873,7 +881,12 @@ jobs:
 
   amend-package-toml:
     needs: [preflight, publish, generate-index]
-    if: needs.publish.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
+    # See `generate-index` above for why `!cancelled()` is required.
+    if: |
+      !cancelled() &&
+      needs.publish.result == 'success' &&
+      needs.generate-index.result == 'success' &&
+      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     permissions:
       contents: write          # push bot branch
@@ -1189,9 +1202,13 @@ jobs:
     # success means the bot PR exists. The empty-matrix case is
     # handled by `merge-gate-empty-matrix` instead — that job is the
     # one that fires when these `needs` are all `skipped`.
+    #
+    # See `generate-index` for why `!cancelled()` is required.
     if: |
+      !cancelled() &&
       (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') &&
       needs.publish.result == 'success' &&
+      needs.generate-index.result == 'success' &&
       needs.amend-package-toml.result == 'success'
     runs-on: ubuntu-latest
     permissions:
