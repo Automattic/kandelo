@@ -18,7 +18,7 @@ The current authoritative state of unsupported patterns also lives in `docs/fork
 - **Why:** The fork-instrument tool's call-graph analysis is rooted at the `kernel.kernel_fork` import. Supporting `setcontext()` requires generalising save/restore to arbitrary suspend/resume points, with the target frame possibly unrelated to the current fork-path. The save buffer becomes multi-context.
 - **Impossible?** No — a generalisation of the fork-from-anywhere problem.
 - **Effort:** Large. Probably 50–100% extra on top of the current fork-instrument: broader reachability (every function reachable from a `setcontext` call), per-program annotation of context-switch boundaries (since ucontext is library-mediated, the instrument tool can't auto-discover boundaries from the wasm alone), multi-context save buffer layout.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Accept as known limit.** The POSIX API is deprecated in POSIX.1-2008 and the major coroutine users (Erlang/BEAM, Ruby fibers, Python `greenlet`) already implement their own user-space context switching at the runtime level, bypassing libc's ucontext entirely. Existing documentation in `docs/posix-status.md` (the ucontext row under Wasm-Inherent gaps) and `docs/fork-instrumentation.md:725-727` is sufficient. Revisit only if a real program forces the issue.
 
 ### A2. Multi-target `*_ref` try_tables
 
@@ -26,7 +26,7 @@ The current authoritative state of unsupported patterns also lives in `docs/fork
 - **Why:** The 6d rewriter emits a single dispatch path for `catch_ref` clauses. Multiple `catch_ref`/`catch_all_ref` clauses pointing at different labels would need per-clause dispatch tables.
 - **Impossible?** No.
 - **Effort:** ~1–3 days. The design parallels B1 stage 2's multi-arm dispatch.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Plan as prerequisite for C5.** A2 must land in the same PR as the modern wasm-EH SDK flip (C5) — without it, the flip would ship binaries with silently-carved-out functions whose fork-path catch handlers stop working. Bundle into the C5 plan doc when written.
 
 ### A3. Multi-target plain-catch try_tables
 
@@ -34,7 +34,7 @@ The current authoritative state of unsupported patterns also lives in `docs/fork
 - **Why:** Multiple plain catches whose handlers branch to different labels need per-target capture-blocks. B1 stage 2 chose carve-out over the dispatcher to avoid silent miscompilation.
 - **Impossible?** No.
 - **Effort:** ~1–2 weeks. Extension of B1 stage 2 with per-target capture-blocks; includes fuzz oracle coverage.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Bundle into the C5 PR alongside A2.** Keeps the catch-handler-resume work coherent in one PR — A2 (multi-target `*_ref`), A3 (multi-target plain catch), and the modern wasm-EH SDK flip land together. ~1–2 weeks added to C5 scope. Plain catches exist under both lowerings so A3 doesn't strictly depend on C5, but co-locating the work matches the review surface (catch-handler dispatch) and avoids two near-simultaneous PRs touching `instrument::plan_b1_scratch` and the 6d rewriter.
 
 ### A4. Plain-catch arms with ref-typed operands
 
@@ -42,7 +42,7 @@ The current authoritative state of unsupported patterns also lives in `docs/fork
 - **Why:** Spilling ref-typed catch operands to linear memory isn't legal (refs cannot be stored to linear memory). Would need a per-arm auxiliary *table* with index-based save/restore.
 - **Impossible?** For funcref/externref: no, supportable with a dedicated aux table. For abstract GC refs: see A5.
 - **Effort:** ~1 week for funcref/externref. Design + implementation + fuzz coverage.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Bundle into the C5 PR. Scope clarified after A5 review: funcref / externref only.** Original decision was "all ref types including GC"; subsequent A5 review established that no current or near-term program (including the SpiderMonkey port, which uses linear-memory GC) exercises wasm-GC reference types in catch operands. GC refs remain under A5's accepted limit (the `classify_ref` panic persists for any GC ref position). C5 scope: modern wasm-EH SDK flip + libcxx rebuild + A2 (multi-target `*_ref`) + A3 (multi-target plain catch) + A4 funcref/externref catch operands. If a wasm-GC-using program later appears, A4's aux-table mechanism is the natural extension point.
 
 ### A5. Wasm-GC refs (`any` / `eq` / `struct` / `array` / `i31`, concrete GC types)
 
@@ -50,7 +50,7 @@ The current authoritative state of unsupported patterns also lives in `docs/fork
 - **Why:** Wasm-GC's reference model has no in-tool way to enumerate live refs across a fork boundary. The GC heap is host-managed; the instrument tool sees only the module bytes.
 - **Impossible?** Today, effectively yes — without host-managed GC root pinning. The instrument tool alone cannot save/restore GC heap state.
 - **Effort:** Multi-week + cross-cutting: a host-side GC root table API exposed to the kernel, plus coordination with whatever runtime hosts GC (SpiderMonkey, V8 GC, etc.). Likely deferred until a real GC-using program is in scope.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Accept as known limit.** Clarification during review: SpiderMonkey is a pre-wasm-GC engine — its JS heap lives in linear memory (`JSValue` is a tagged i64 SpiderMonkey allocates/traces/frees itself), so wasm-GC reference types are not exercised by the SpiderMonkey port either. The wasm-GC proposal is reserved for new languages targeting wasm with native GC (Java/Kotlin/Dart to wasm), none of which are on any roadmap. The `classify_ref` panic stays — it's a fail-fast for an unimplemented feature, not a silent miscompilation. Revisit only if a real wasm-GC-using program is in scope. Document this in `docs/fork-instrumentation.md` as the rationale for the panic (currently the doc only says "Add classes... when a real program needs them").
 
 ---
 
@@ -64,7 +64,7 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Why:** Atomic ops have cross-process observability — a no-op REWIND replay would still hit the shared address but with stale reads. The "frame-save the result, conditional `state==NORMAL`" pattern doesn't preserve cross-process ordering.
 - **Impossible?** Hard. Atomics have observable side effects beyond the calling process; correct gating requires recording the atomic value on NORMAL and replaying it on REWIND, plus careful ordering.
 - **Effort:** ~1–2 weeks. Per-op design with cross-process semantics.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13, revised):** **Subsumed by the "eliminate guard-dispatch" architectural pivot — see B2, B3, B4.** B1 disappears as an instance once guard-dispatch is removed, because REWIND no longer re-executes the body.
 
 ### B2. `throw` / `throw_ref` outside instrumented regions
 
@@ -72,7 +72,7 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Why:** A throw from a non-fork-path function inside a fork-path try region is a control-flow side effect. The current gating reach is the fork-path call graph; throws from outside that reach aren't gated.
 - **Impossible?** No — extend instrumentation reach. Indirect throws from uninstrumented libraries are harder.
 - **Effort:** Medium. Depends on how much of the call graph we expand.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Subsumed by the "eliminate guard-dispatch" architectural pivot.** See *Architectural pivot* below. B2 disappears as an instance once guard-dispatch is removed.
 
 ### B3. `table.grow`, `table.fill`, `table.init`, `table.copy`
 
@@ -80,7 +80,7 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Why:** Tables don't have a single scalar slot to round-trip a result through; the standard gating shape doesn't directly apply.
 - **Impossible?** No.
 - **Effort:** ~3–5 days. Design + per-op gating scheme, similar in spirit to memory-op gating.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Subsumed by the "eliminate guard-dispatch" architectural pivot.** See *Architectural pivot* below.
 
 ### B4. Direct `Call` with non-nullable `Ref` return type
 
@@ -88,7 +88,34 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Why:** The frame-saved-result trick uses a scalar default (0); non-nullable refs have no zero value.
 - **Impossible?** No, with caveats. Either skip-gate only when the result is consumed, or introduce a nullable mirror slot.
 - **Effort:** ~1 week.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Subsumed by the "eliminate guard-dispatch" architectural pivot.** See *Architectural pivot* below.
+
+---
+
+## Architectural pivot — Eliminate guard-dispatch
+
+**Decided 2026-05-13.** B1–B4 are all instances of the same architectural hazard: guard-dispatch re-executes the body on REWIND, so every side-effect instruction class has to be gated individually. Eliminating guard-dispatch removes the class.
+
+**Approach:**
+- Extend switch-dispatch (already preferred; Path A landed in Phase 7) to cover every fork-path function. Today, the planner falls back to guard-dispatch when (a) fork-path calls live inside Loop/TryTable bodies with unsupported nesting, (b) the function has top-level stack carryovers (`*(sp + K) = call(...)`-style patterns LLVM emits routinely), or (c) fork-path calls are reached via `call_indirect`.
+- Replace the (a)/(b)/(c) fallback with a **runtime-dispatcher trampoline**: post-call chunks are extracted into separate per-site functions registered in a per-function (or per-module) dispatch table. On REWIND, function entry sees `state == REWIND`, looks up the resume site ID from the save buffer, and `call_indirect`s into the matching post-call function.
+- This eliminates the inline POST_K blocks for code-size, at the cost of a single `call_indirect` on the REWIND path (~5–20ns penalty per fork — well under noise floor for any realistic fork rate).
+
+**Why now:**
+- Phase 7 + Path A benchmark already shows switch-dispatch produces smaller, faster outputs than guard-dispatch (`fork_ms −9.8%`, `file_read_mbps +7.1%`). Extending the scheme across the residual fork-path functions amplifies the win.
+- B1–B4 disappear as a class. Future side-effect instruction classes (proposals in flight: stack-switching, shared-everything-threads, GC) introduce new instruction shapes; under guard-dispatch each would need its own gating audit. Under switch-dispatch with trampoline they need no gating because the body doesn't re-execute.
+
+**Cost / risk:**
+- ~3–4 weeks focused implementation: extend `classify_nested_pattern` reach + add trampoline emission + delete guard-dispatch + re-run port validation across all shipping fork-using programs.
+- Loss of graceful degradation: today, guard-dispatch is the safety net when switch-dispatch can't apply. After elimination, the trampoline IS the fallback for hard cases; if it has a bug there's no second-line defence. Mitigation: extensive fuzz coverage before deletion (the existing fork-instrument fuzz oracle is the right home).
+- Re-validation of every shipping port (dash, bash, git, nginx, php-fpm, php, mariadb, vim, quickjs, cpython, redis, erlang, ruby) under the new scheme — none should regress per the small empirical evidence (Path A), but the full audit is required.
+
+**Sequencing:**
+- This becomes its own PR, **before** C5 (the modern wasm-EH SDK flip). Sequence:
+  1. **PR-eliminate-guard-dispatch:** extend switch-dispatch + runtime trampoline + delete guard-dispatch. B1–B4 close as a class.
+  2. **C5 PR:** modern wasm-EH SDK flip + libcxx rebuild + A2 + A3 + A4 (funcref/externref). Lands after eliminate-guard-dispatch so the new EH patterns can use the unified scheme without inheriting guard-dispatch hazards.
+
+**Code-size reduction option added per user request:** the runtime-dispatcher trampoline is incorporated into the plan. It impacts NORMAL mode at near-zero cost (a single function-entry branch on state) and adds only a small REWIND-mode penalty (one `call_indirect`).
 
 ---
 
