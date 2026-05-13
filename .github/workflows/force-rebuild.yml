@@ -1094,7 +1094,7 @@ jobs:
           fetch-depth: 1
 
       - name: Wait for durable release turn
-        run: bash .github/scripts/durable-release-lock.sh acquire
+        run: bash .github/scripts/state-lock.sh acquire durable-release
 
       - name: Post merge-gate=success on bot PR HEAD
         # Branch protection on `main` requires a `merge-gate` status
@@ -1158,4 +1158,4 @@ jobs:
 
       - name: Release durable release turn
         if: always()
-        run: bash .github/scripts/durable-release-lock.sh release
+        run: bash .github/scripts/state-lock.sh release
