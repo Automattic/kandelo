@@ -106,6 +106,23 @@ slowlog = /dev/null
 request_slowlog_trace_depth = 0
 `;
 
+// opcache: each php-fpm worker keeps its own bytecode cache (no cross-
+// process SHM in our wasm port — the static worker pool is small and
+// warmups are fast). validate_timestamps=0 is safe because VFS files
+// don't change at runtime.
+// opcache.so is loaded via `zend_extension=` from the VFS path we
+// stage below. Without that line PHP doesn't load opcache and the
+// [opcache] INI section is a no-op.
+const PHP_INI = `zend_extension=/usr/lib/php/extensions/opcache.so
+
+[opcache]
+opcache.enable=1
+opcache.enable_cli=1
+opcache.memory_consumption=64
+opcache.max_accelerated_files=2000
+opcache.validate_timestamps=0
+`;
+
 const FPM_ROUTER_PHP = `<?php
 $uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
 $docRoot = $_SERVER['DOCUMENT_ROOT'];
@@ -189,6 +206,7 @@ sort($extensions);
 async function main() {
   const NGINX_WASM = resolveBinary("programs/nginx.wasm");
   const PHP_FPM_WASM = resolveBinary("programs/php/php-fpm.wasm");
+  const OPCACHE_SO = resolveBinary("programs/php/opcache.so");
 
   const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
@@ -206,11 +224,17 @@ async function main() {
   // Binaries
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_WASM)));
   writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_WASM)));
+  ensureDirRecursive(fs, "/usr/lib/php/extensions");
+  writeVfsBinary(
+    fs, "/usr/lib/php/extensions/opcache.so",
+    new Uint8Array(readFileSync(OPCACHE_SO)),
+  );
 
   // Config + content
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
   writeVfsFile(fs, "/etc/nginx/fastcgi_params", FASTCGI_PARAMS);
   writeVfsFile(fs, "/etc/php-fpm.conf", PHP_FPM_CONF);
+  writeVfsFile(fs, "/etc/php.ini", PHP_INI);
   writeVfsFile(fs, "/var/www/fpm-router.php", FPM_ROUTER_PHP);
   writeVfsFile(fs, "/var/www/html/index.php", INDEX_PHP);
 
@@ -220,7 +244,7 @@ async function main() {
     {
       name: "php-fpm",
       type: "process",
-      command: "/usr/sbin/php-fpm --nodaemonize --fpm-config /etc/php-fpm.conf",
+      command: "/usr/sbin/php-fpm --nodaemonize --fpm-config /etc/php-fpm.conf -c /etc/php.ini",
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },

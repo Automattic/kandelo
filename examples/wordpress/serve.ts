@@ -58,8 +58,29 @@ async function main() {
   console.log(`WordPress server starting on http://localhost:${port}`);
   console.log("Waiting for PHP built-in server to initialize...");
 
+  // Load opcache as a Zend extension so the cli-server SAPI caches
+  // parsed bytecode across requests instead of re-parsing every .php
+  // file on every hit (~50 files for WordPress install per page).
+  // opcache.so is a third [[outputs]] entry in examples/libs/php/
+  // package.toml; the resolver places it at programs/php/opcache.so
+  // alongside php.wasm. Pass that directory as `extension_dir`.
+  const opcachePath = tryResolveBinary("programs/php/opcache.so");
+  const enableOpcache = process.env.NO_OPCACHE !== "1" && opcachePath !== null;
+  const opcacheArgs = enableOpcache ? [
+    "-d", `extension_dir=${dirname(opcachePath!)}`,
+    "-d", "zend_extension=opcache",
+    "-d", "opcache.enable=1",
+    "-d", "opcache.enable_cli=1",
+    "-d", "opcache.memory_consumption=128",
+    "-d", "opcache.validate_timestamps=0",
+  ] : [];
+  if (!enableOpcache && process.env.NO_OPCACHE !== "1") {
+    console.warn("WARN: opcache.so not found via resolver — running without opcache");
+  }
   const exitPromise = host.spawn(programBytes, [
-    "php", "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript,
+    "php",
+    ...opcacheArgs,
+    "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript,
   ], {
     env: ["HOME=/tmp", "TMPDIR=/tmp"],
   });

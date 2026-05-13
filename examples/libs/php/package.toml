@@ -1,12 +1,17 @@
 kind = "program"
 name = "php"
 version = "8.3.2"
-revision = 2
+revision = 4
 kernel_abi = 7
 depends_on = ["zlib@1.3.1", "openssl@3.3.2", "sqlite@3.49.1", "libxml2@2.13.8"]
-# Opt into wasm64 — see memory/wasm64-build-policy.md. Both the CLI
-# and php-fpm outputs ship per-arch.
-arches = ["wasm32", "wasm64"]
+# wasm32 only. PHP previously declared wasm64 too (per
+# memory/wasm64-build-policy.md), but no demo actually consumes
+# `programs/wasm64/php/...` — only mariadb needs the 4 GB address
+# space its wasm64 build provides. build-php.sh hard-codes the
+# wasm32 SDK toolchain; if a wasm64 PHP build is reintroduced later,
+# add `--wasm64` dispatch parallel to mariadb's pattern and stage
+# opcache.so under `local-binaries/programs/wasm64/php/`.
+arches = ["wasm32"]
 
 [source]
 url = "https://www.php.net/distributions/php-8.3.2.tar.xz"
@@ -19,6 +24,7 @@ url = "https://github.com/php/php-src/blob/master/LICENSE"
 [build]
 script_path = "examples/libs/php/build-php.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "38512c586399bf2440aafe789aedf30b689a9d04"
 
 [[outputs]]
 name = "php"
@@ -34,9 +40,17 @@ wasm = "php.wasm"
 [[outputs]]
 name = "php-fpm"
 wasm = "php-fpm.wasm"
+
+# opcache shipped as a third output: a Zend extension side module
+# (.so) that PHP loads via dlopen at MINIT. Demos that want bytecode
+# caching point opcache.optimization_level + extension_dir at the
+# directory containing this file and pass `-d zend_extension=opcache`.
+# build-php.sh links it directly with `wasm32posix-cc -shared` from
+# PIC-compiled `ext/opcache/.libs/*.o` because PHP's bundled libtool
+# refuses to emit a shared module on this cross-compile target.
+[[outputs]]
+name = "opcache"
+wasm = "opcache.so"
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/php-8.3.2-rev2-abi7-wasm32-34ebb236.tar.zst"
-archive_sha256 = "5e20c113fa020f1eff3ec486397f16141e45538060128163de517ef6150f6b9f"
-[binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/php-8.3.2-rev2-abi7-wasm64-d236493e.tar.zst"
-archive_sha256 = "89162456cb700db042f9e53ea5e0a95b1c0cc2ae49f288c3681e9dba6ffdd9b8"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/php-8.3.2-rev4-abi8-wasm32-2cb84ee1.tar.zst"
+archive_sha256 = "1fa924263b923cce39665d7c9b90c5f9972a18e8e68fdf1f48588ae9246cb865"

@@ -43,10 +43,11 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 [build]
 script_path = "examples/libs/lamp/build-lamp.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "38512c586399bf2440aafe789aedf30b689a9d04"
 
 [[outputs]]
 name = "lamp"
 wasm = "lamp.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/lamp-0.1.0-rev2-abi7-wasm32-e1eb4293.tar.zst"
-archive_sha256 = "6eff1a2d3b0a8d566575dcaa2cf0b5295645123757455769ca9e2b9c0a25d0b5"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/lamp-0.1.0-rev2-abi8-wasm32-a4d6d432.tar.zst"
+archive_sha256 = "e2f6c51657050d9571953276e24c7493e892ebc105f6e901a1ebe5c6ff279489"

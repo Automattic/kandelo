@@ -52,6 +52,7 @@ const SQLITE_DIR = ensureExtract({
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
+const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
 const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const SED_PATH = resolveBinary("programs/sed.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
@@ -264,6 +265,30 @@ request_slowlog_trace_depth = 0
 
   writeVfsFile(fs, "/etc/php-fpm.conf", phpFpmConf);
 
+  // opcache: each php-fpm worker keeps its own bytecode cache (no cross-
+  // process SHM in our wasm port — the static worker pool is small and
+  // warmups are fast). validate_timestamps=0 is safe because VFS files
+  // don't change at runtime.
+  // Stage opcache.so (a Zend extension side module) into the VFS and
+  // load it via `zend_extension=`. Without this PHP doesn't load
+  // opcache at all — the [opcache] INI section below is a no-op.
+  ensureDirRecursive(fs, "/usr/lib/php/extensions");
+  writeVfsBinary(
+    fs,
+    "/usr/lib/php/extensions/opcache.so",
+    new Uint8Array(readFileSync(OPCACHE_SO_PATH)),
+  );
+  const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
+
+[opcache]
+opcache.enable=1
+opcache.enable_cli=1
+opcache.memory_consumption=64
+opcache.max_accelerated_files=2000
+opcache.validate_timestamps=0
+`;
+  writeVfsFile(fs, "/etc/php.ini", phpIni);
+
   // FPM router script
   const fpmRouter = `<?php
 $uri = urldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH));
@@ -340,10 +365,11 @@ function buildServices(): DinitService[] {
     {
       name: "php-fpm",
       type: "process",
-      // -c /dev/null suppresses default php.ini lookup (which lands on
-      // /usr/local/lib/php/php.ini-development by default and trips
-      // unsupported-config errors on our wasm port).
-      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /dev/null --nodaemonize",
+      // -c /etc/php.ini points at the VFS-shipped ini that enables the
+      // built-in opcache extension. Using an explicit path also avoids
+      // the default /usr/local/lib/php/php.ini-development lookup, which
+      // trips unsupported-config errors on our wasm port.
+      command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
       dependsOn: ["wp-config-init"],
       logfile: "/var/log/php-fpm.log",
       restart: false,
