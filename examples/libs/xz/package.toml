@@ -16,10 +16,11 @@ url = "https://github.com/tukaani-project/xz/blob/main/COPYING"
 [build]
 script_path = "examples/libs/xz/build-xz.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "xz"
 wasm = "xz.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/xz-5.6.2-rev1-abi7-wasm32-b7bf15e5.tar.zst"
-archive_sha256 = "92e8777553f5ac5cf607b6ba99124b0dae5e61932c2a72a205994317ecf8afba"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/xz-5.6.2-rev1-abi8-wasm32-c312befd.tar.zst"
+archive_sha256 = "1b596cf89096b98e40ab2b2148c12a59004bda880870a526e830272b7c451c8a"

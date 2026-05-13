@@ -16,10 +16,11 @@ url = "https://git.savannah.gnu.org/cgit/bc.git/tree/COPYING"
 [build]
 script_path = "examples/libs/bc/build-bc.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "bc"
 wasm = "bc.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/bc-1.07.1-rev1-abi7-wasm32-b73bc322.tar.zst"
-archive_sha256 = "32b0dbd317cf4f74778afd620d9621912b988282ee405217740094dfdf7c7360"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/bc-1.07.1-rev1-abi8-wasm32-5e51ec47.tar.zst"
+archive_sha256 = "5111fdf4c3380b42d4a22a870a6a4b09c9ca83612c40aab9340415b5ed1b6165"

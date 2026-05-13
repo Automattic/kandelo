@@ -16,10 +16,11 @@ url = "https://git.savannah.gnu.org/cgit/sed.git/tree/COPYING?h=v4.9"
 [build]
 script_path = "examples/libs/sed/build-sed.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "sed"
 wasm = "sed.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/sed-4.9-rev1-abi7-wasm32-a92a11d1.tar.zst"
-archive_sha256 = "545719ae4edbafa39166fb6b6d251d88e9bd6a8e3da1743818b77514b981613f"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/sed-4.9-rev1-abi8-wasm32-c8986855.tar.zst"
+archive_sha256 = "fd35192abaadfa46e1893ad0191f0b8b62bdf1d9ad59b4230837ab79fd51a23e"

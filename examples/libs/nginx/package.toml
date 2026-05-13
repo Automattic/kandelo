@@ -19,10 +19,11 @@ url = "https://nginx.org/LICENSE"
 [build]
 script_path = "examples/libs/nginx/build-nginx.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "nginx"
 wasm = "nginx.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/nginx-1.24.0-rev1-abi7-wasm32-e94bb3fe.tar.zst"
-archive_sha256 = "2e3bf3398c463dd2c9cddf7c1fd0786a8070c34e95065d8e4c9f9ae124ac9a96"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/nginx-1.24.0-rev1-abi8-wasm32-d84fe105.tar.zst"
+archive_sha256 = "06d60a5fa4e38708ef389a4c93bbe6b4fc0a536b49a94461469e935674c7932b"

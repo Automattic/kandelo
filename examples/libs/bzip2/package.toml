@@ -16,10 +16,11 @@ url = "https://gitlab.com/bzip2/bzip2/-/blob/master/LICENSE"
 [build]
 script_path = "examples/libs/bzip2/build-bzip2.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "bzip2"
 wasm = "bzip2.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/bzip2-1.0.8-rev1-abi7-wasm32-9e7c897b.tar.zst"
-archive_sha256 = "7232f73a5e1187f776b54c77618604efd6989d3d4e67ba1948981fbbfab1432e"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/bzip2-1.0.8-rev1-abi8-wasm32-dfe5dd57.tar.zst"
+archive_sha256 = "5c2c1ed9ee98151722062ca3a440f559dd97b2ef34b2df1463c8772a2112b3ec"

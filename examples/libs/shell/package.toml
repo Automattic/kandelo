@@ -43,10 +43,11 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 [build]
 script_path = "examples/libs/shell/build-shell.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "shell"
 wasm = "shell.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/shell-0.1.0-rev2-abi7-wasm32-a1439be9.tar.zst"
-archive_sha256 = "dec3609eb7b3d1812a63daffa81b68aa6ea682afea5808822565d413f138a74f"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/shell-0.1.0-rev2-abi8-wasm32-276099ce.tar.zst"
+archive_sha256 = "a48a5dee1dfe6ba9b6c61b28e76f3895bb444b7e2cad892a54a8e64dbd70449c"

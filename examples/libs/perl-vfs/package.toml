@@ -31,10 +31,11 @@ url = "https://dev.perl.org/licenses/"
 [build]
 script_path = "examples/libs/perl-vfs/build-perl-vfs.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "perl-vfs"
 wasm = "perl-vfs.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/perl-vfs-0.1.0-rev2-abi7-wasm32-374b6d84.tar.zst"
-archive_sha256 = "51ecdece56627a9d1d69fb7b26415083404805328afe1f5eb796e2d266c74888"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/perl-vfs-0.1.0-rev2-abi8-wasm32-595c61b9.tar.zst"
+archive_sha256 = "5b20ae700aeb41d6964e3b75744352574fe471283f28b008553859a4c51cedf4"

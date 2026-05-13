@@ -18,6 +18,7 @@ url = "https://github.com/MariaDB/server/blob/10.5/COPYING"
 [build]
 script_path = "examples/libs/mariadb/build-mariadb.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "mariadbd"
@@ -27,8 +28,8 @@ wasm = "mariadbd.wasm"
 name = "mysqltest"
 wasm = "mysqltest.wasm"
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm32-45f4092f.tar.zst"
-archive_sha256 = "92de70447042a65706f77674244d1f6766cd730dc946ae256915c11e67d9e088"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/mariadb-10.5.28-rev1-abi8-wasm32-210b544a.tar.zst"
+archive_sha256 = "4077da1b5ba724d8f88b164ca10211b702644eb29aee583ad292a9dd43554903"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm64-a1180336.tar.zst"
-archive_sha256 = "8ab959abfde98656f20f46afe2a1f4a422b1a12a4fc274dca8d0c3c2c0af8ad6"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/mariadb-10.5.28-rev1-abi8-wasm64-4a5e87a3.tar.zst"
+archive_sha256 = "a6d449b5e5de013d12e72aa8740a95ee11ae2192d0d16ad969a496668031b488"

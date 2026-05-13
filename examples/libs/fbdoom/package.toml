@@ -22,6 +22,7 @@ url = "https://github.com/maximevince/fbDOOM/blob/master/COPYING"
 [build]
 script_path = "examples/libs/fbdoom/build-fbdoom.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "fbdoom"
@@ -38,5 +39,5 @@ name = "doom1"
 wasm = "doom1.wad"
 
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/fbdoom-0.1.0-rev2-abi7-wasm32-2ebd1752.tar.zst"
-archive_sha256 = "545f8dce946b6def8054a973251bf0e779e87957c972398727f2ddc2ca5d787d"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/fbdoom-0.1.0-rev2-abi8-wasm32-e385b4c4.tar.zst"
+archive_sha256 = "72f5cd021970293a10d2dfb95b634c678f9b13f0189d2b8d4a2f883631390091"

@@ -23,14 +23,15 @@ url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"
 [build]
 script_path = "examples/libs/zlib/build-zlib.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [outputs]
 libs = ["lib/libz.a"]
 headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/zlib-1.3.1-rev1-abi7-wasm32-d380c4e6.tar.zst"
-archive_sha256 = "b79d2b3324dc9c9b59fa634bb74faab0d6378daa269e05648a62d551768bbb39"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst"
+archive_sha256 = "490d73769a8ed96e27291e68d9cad11fed9062da6c375027f845ccf1dc918a77"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/zlib-1.3.1-rev1-abi7-wasm64-63339372.tar.zst"
-archive_sha256 = "ca7cf6ffda0a3cba76313f64eaa6c19be68173ae9283f41fc24f7e659a635da0"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/zlib-1.3.1-rev1-abi8-wasm64-e6c7a02b.tar.zst"
+archive_sha256 = "22bdfb2fe34c4f0cf6f4bb2ade8492dc2ba1012eb38ae180fcad5944dde5270f"

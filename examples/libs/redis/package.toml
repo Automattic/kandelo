@@ -16,6 +16,7 @@ url = "https://github.com/redis/redis/blob/7.2/COPYING"
 [build]
 script_path = "examples/libs/redis/build-redis.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "redis-server"
@@ -25,5 +26,5 @@ wasm = "redis-server.wasm"
 name = "redis-cli"
 wasm = "redis-cli.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/redis-7.2.5-rev1-abi7-wasm32-4be6ec59.tar.zst"
-archive_sha256 = "4c4fa86719981c29e27f33fff405755424fcf9ca9e3af2c67a36db388815c89d"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/redis-7.2.5-rev1-abi8-wasm32-67201218.tar.zst"
+archive_sha256 = "bd04c8081e509532ce1bed0a5f5e938118ab41bacf326116935881c897bc60c3"

@@ -16,10 +16,11 @@ url = "https://git.savannah.gnu.org/cgit/grep.git/tree/COPYING?h=v3.11"
 [build]
 script_path = "examples/libs/grep/build-grep.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "grep"
 wasm = "grep.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/grep-3.11-rev1-abi7-wasm32-58d4de6a.tar.zst"
-archive_sha256 = "1ad2ec0f6ff9d4e2b188ed1f33d10f84c8efc4c416293165b5a97dd142d68793"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/grep-3.11-rev1-abi8-wasm32-f8f3f6f7.tar.zst"
+archive_sha256 = "a6075d90d6df1f0c41f40614ee91ae8784c3492b3bcb79c44359bddb01f7d965"

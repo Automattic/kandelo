@@ -16,10 +16,11 @@ url = "https://git.savannah.gnu.org/cgit/coreutils.git/tree/COPYING?h=v9.6"
 [build]
 script_path = "examples/libs/coreutils/build-coreutils.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "coreutils"
 wasm = "coreutils.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/coreutils-9.6-rev1-abi7-wasm32-0c0442c6.tar.zst"
-archive_sha256 = "382130f09791a637da34129ea04079da52114c05cb643345caea9fd795046af5"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/coreutils-9.6-rev1-abi8-wasm32-9ff5a846.tar.zst"
+archive_sha256 = "ca8ada759d4209a985a5c8da08aeea6b139b05186de4e0ff889fbbc9ac7ced48"

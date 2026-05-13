@@ -16,6 +16,7 @@ url = "https://github.com/file/file/blob/master/COPYING"
 [build]
 script_path = "examples/libs/file/build-file.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "file"
@@ -33,5 +34,5 @@ name = "file-magic"
 wasm = "magic.lite"
 
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/file-5.45-rev1-abi7-wasm32-47d8174f.tar.zst"
-archive_sha256 = "49de1208e13d7ae6399947dbca2bc7377df17d927e32a4714c5c23298e95873a"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/file-5.45-rev1-abi8-wasm32-e884efac.tar.zst"
+archive_sha256 = "4184223bc460c9763d2ee7921c7ad9e0ef25a4b9737bdd1c5e8ced4f02678976"

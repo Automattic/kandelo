@@ -25,10 +25,11 @@ url = "https://github.com/erlang/otp/blob/maint/LICENSE.txt"
 [build]
 script_path = "examples/libs/erlang-vfs/build-erlang-vfs.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "erlang-vfs"
 wasm = "erlang-vfs.vfs.zst"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/erlang-vfs-0.1.0-rev2-abi7-wasm32-0e23d050.tar.zst"
-archive_sha256 = "c0c0a4424800005c56437af5fff0f2d4a0ccccb9daf861839b40a6e50f2581e2"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/erlang-vfs-0.1.0-rev2-abi8-wasm32-f6eb686e.tar.zst"
+archive_sha256 = "7db82ae2f29f3c1c7829063f0026f408265e2346eea25925b2378cc9128033c3"

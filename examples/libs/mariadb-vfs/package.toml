@@ -35,13 +35,14 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 [build]
 script_path = "examples/libs/mariadb-vfs/build-mariadb-vfs.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "mariadb-vfs"
 wasm = "mariadb-vfs.vfs.zst"
 [binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-vfs-0.1.0-rev2-abi7-wasm32-72102d15.tar.zst"
-archive_sha256 = "3884b65560ba5f2b24a72bdd4bbbcecb9789887f91e1cca496e08b7c24fbf640"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/mariadb-vfs-0.1.0-rev2-abi8-wasm32-fba024a8.tar.zst"
+archive_sha256 = "bb3348acaa3965f4523fd7c572f531a889a03eccb1d247de93c129a875dcbae2"
 [binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-vfs-0.1.0-rev2-abi7-wasm64-99dbcb77.tar.zst"
-archive_sha256 = "0802e2a3001ac5eb269832456cee141e83621515f25d58c2a156f5024f92772c"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/mariadb-vfs-0.1.0-rev2-abi8-wasm64-ee0b8c40.tar.zst"
+archive_sha256 = "d1cb8bc1013847478ee3de89722460a616f6352a9618c387251d75f95266f5ac"

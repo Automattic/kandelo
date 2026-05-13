@@ -16,10 +16,11 @@ url = "https://git.savannah.gnu.org/cgit/nano.git/tree/COPYING"
 [build]
 script_path = "examples/libs/nano/build-nano.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "nano"
 wasm = "nano.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/nano-8.0-rev1-abi7-wasm32-e7becefb.tar.zst"
-archive_sha256 = "0b5ea34a159220d54ec108ff8d360c52fe636d2b0c814379096c8ea13276364e"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/nano-8.0-rev1-abi8-wasm32-20ff174d.tar.zst"
+archive_sha256 = "094b415a320f33346af7374b2871712117a502f0cd9970c8f368f39635748d0f"

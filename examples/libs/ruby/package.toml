@@ -16,10 +16,11 @@ url = "https://github.com/ruby/ruby/blob/master/COPYING"
 [build]
 script_path = "examples/libs/ruby/build-ruby.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit = "691b02ef99d28a48e2dd5b15c19e0dc9e0894eb1"
 
 [[outputs]]
 name = "ruby"
 wasm = "ruby.wasm"
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/ruby-3.3.5-rev1-abi7-wasm32-a580be92.tar.zst"
-archive_sha256 = "9b151f2eb32c88c5c6ac3157ae17866840047523942c4bf988489ef9d2bd0d95"
+archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/ruby-3.3.5-rev1-abi8-wasm32-94118709.tar.zst"
+archive_sha256 = "23db68e0cb49db373441905ecbd17cd7cabcc260beee47eaa914d6ebaad1bc1f"
