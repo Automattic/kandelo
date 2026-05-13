@@ -2613,4 +2613,94 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
                 if index_url == "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
         ));
     }
+
+    #[test]
+    fn parses_build_toml_with_direct_url() {
+        let toml = r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[binary]
+url = "https://example.com/foo.tar.zst"
+sha256 = "abc"
+"#;
+        let bt = BuildToml::parse(toml).unwrap();
+        assert!(matches!(
+            bt.binary,
+            BinarySource::Direct { ref url, ref sha256 }
+                if url == "https://example.com/foo.tar.zst" && sha256 == "abc"
+        ));
+    }
+
+    #[test]
+    fn rejects_build_toml_with_both_indexed_and_direct() {
+        let toml = r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[binary]
+index_url = "https://example.com/index.toml"
+url = "https://example.com/x.tar.zst"
+sha256 = "abc"
+"#;
+        let err = BuildToml::parse(toml).unwrap_err();
+        assert!(err.contains("exactly one of"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_build_toml_with_empty_binary() {
+        let toml = r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[binary]
+"#;
+        let err = BuildToml::parse(toml).unwrap_err();
+        assert!(err.contains("one of"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_build_toml_direct_url_without_sha() {
+        let toml = r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[binary]
+url = "https://example.com/x.tar.zst"
+"#;
+        let err = BuildToml::parse(toml).unwrap_err();
+        assert!(err.contains("requires sha256"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_build_toml_with_unknown_top_level_field() {
+        // deny_unknown_fields — typos at the top level fail loud
+        // rather than being silently ignored.
+        let toml = r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+typo_field = "oops"
+[binary]
+index_url = "https://example.com/index.toml"
+"#;
+        let err = BuildToml::parse(toml).unwrap_err();
+        assert!(err.contains("typo_field") || err.contains("unknown"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_build_toml_with_unknown_binary_field() {
+        // deny_unknown_fields on BinaryRaw catches legacy "source"
+        // syntax from the original design's Form 1, plus any typo
+        // inside the [binary] block.
+        let toml = r#"
+script_path = "x"
+repo_url = "y"
+commit = "z"
+[binary]
+source = "first-party"
+"#;
+        let err = BuildToml::parse(toml).unwrap_err();
+        assert!(err.contains("source") || err.contains("unknown"), "got: {err}");
+    }
 }
