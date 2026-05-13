@@ -2703,4 +2703,169 @@ source = "first-party"
         let err = BuildToml::parse(toml).unwrap_err();
         assert!(err.contains("source") || err.contains("unknown"), "got: {err}");
     }
+
+    // ------------------------------------------------------------------
+    // package.toml — source manifests rejecting legacy fields that move
+    // to other files in the binary-resolution-via-index-ledger design:
+    //   * revision → moved to index.toml's per-package entry
+    //   * [binary] → moved to build.toml + index.toml
+    //   * [build].repo_url, [build].commit → moved to build.toml
+    //
+    // validate_archived (parser path for manifest.toml inside .tar.zst
+    // archives) continues to accept the legacy shape so already-published
+    // archives still parse.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn source_package_toml_rejects_legacy_revision_field() {
+        let toml = r#"
+kind = "library"
+name = "foo"
+version = "1.0"
+revision = 1
+kernel_abi = 8
+
+[source]
+url = "https://example.test/foo-1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "examples/libs/foo/build.sh"
+
+[outputs]
+libs = ["lib/libfoo.a"]
+"#;
+        let err = DepsManifest::parse(toml, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("revision"),
+            "expected error mentioning revision, got: {err}"
+        );
+    }
+
+    #[test]
+    fn source_package_toml_rejects_legacy_binary_block() {
+        let toml = r#"
+kind = "library"
+name = "foo"
+version = "1.0"
+kernel_abi = 8
+
+[source]
+url = "https://example.test/foo-1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "examples/libs/foo/build.sh"
+
+[outputs]
+libs = ["lib/libfoo.a"]
+
+[binary.wasm32]
+archive_url = "https://example.com/foo-wasm32.tar.zst"
+archive_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+"#;
+        let err = DepsManifest::parse(toml, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("[binary]") || err.contains("binary"),
+            "expected error mentioning [binary], got: {err}"
+        );
+    }
+
+    #[test]
+    fn source_package_toml_rejects_legacy_build_repo_url() {
+        let toml = r#"
+kind = "library"
+name = "foo"
+version = "1.0"
+kernel_abi = 8
+
+[source]
+url = "https://example.test/foo-1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "examples/libs/foo/build.sh"
+repo_url = "https://github.com/example/foo.git"
+
+[outputs]
+libs = ["lib/libfoo.a"]
+"#;
+        let err = DepsManifest::parse(toml, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("repo_url"),
+            "expected error mentioning repo_url, got: {err}"
+        );
+    }
+
+    #[test]
+    fn source_package_toml_rejects_legacy_build_commit() {
+        let toml = r#"
+kind = "library"
+name = "foo"
+version = "1.0"
+kernel_abi = 8
+
+[source]
+url = "https://example.test/foo-1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "examples/libs/foo/build.sh"
+commit = "abc123"
+
+[outputs]
+libs = ["lib/libfoo.a"]
+"#;
+        let err = DepsManifest::parse(toml, PathBuf::from("/x")).unwrap_err();
+        assert!(
+            err.contains("commit"),
+            "expected error mentioning commit, got: {err}"
+        );
+    }
+
+    #[test]
+    fn source_package_toml_accepts_minimal_new_format() {
+        // The post-migration shape: no revision, no [binary], no
+        // [build].repo_url, no [build].commit. validate_source accepts
+        // it; validate_common defaults revision to 1.
+        let toml = r#"
+kind = "library"
+name = "foo"
+version = "1.0"
+kernel_abi = 8
+
+[source]
+url = "https://example.test/foo-1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+
+[build]
+script_path = "examples/libs/foo/build.sh"
+
+[outputs]
+libs = ["lib/libfoo.a"]
+"#;
+        let m = DepsManifest::parse(toml, PathBuf::from("/x")).expect("should parse");
+        assert_eq!(m.name, "foo");
+        assert_eq!(m.version, "1.0");
+        // revision defaults to 1 — source manifests no longer carry it;
+        // index.toml is the source of truth post-migration.
+        assert_eq!(m.revision, 1);
+        // binary map is empty: source manifests don't declare archives.
+        assert!(m.binary.is_empty());
+    }
 }
