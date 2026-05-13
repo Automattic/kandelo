@@ -2482,4 +2482,43 @@ archive_sha256 = "{base_wasm64_sha}"
             "wasm64 sha must be the base's, untouched by the overlay"
         );
     }
+
+    // ------------------------------------------------------------------
+    // build.toml — project's view of how a package was built and where
+    // its binary is published. See
+    // docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.2.
+    //
+    // Two `[binary]` forms (the design's "named source" / Form 1 was
+    // dropped during implementation review — the named indirection
+    // through .wasm-posix-pkg.toml didn't pull its weight given that
+    // `{abi}` substitution already isolates the only field that
+    // varies across publish targets):
+    //   * Indexed { index_url } — fetch index.toml at index_url, then
+    //     look up this package's archive. `{abi}` is substituted with
+    //     the current ABI_VERSION at fetch time so build.toml URLs are
+    //     stable across ABI bumps.
+    //   * Direct { url, sha256 } — point at one specific archive; no
+    //     index involved.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parses_build_toml_with_indexed_binary() {
+        let toml = r#"
+script_path = "examples/libs/foo/build-foo.sh"
+repo_url = "https://github.com/example/foo.git"
+commit = "abc123"
+
+[binary]
+index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
+"#;
+        let bt = BuildToml::parse(toml).expect("should parse");
+        assert_eq!(bt.script_path, "examples/libs/foo/build-foo.sh");
+        assert_eq!(bt.repo_url, "https://github.com/example/foo.git");
+        assert_eq!(bt.commit, "abc123");
+        assert!(matches!(
+            bt.binary,
+            BinarySource::Indexed { ref index_url }
+                if index_url == "https://example.com/releases/download/binaries-abi-v{abi}/index.toml"
+        ));
+    }
 }
