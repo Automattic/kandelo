@@ -501,6 +501,98 @@ impl Default for Build {
     }
 }
 
+/// build.toml — project's view of how a package was built and where its
+/// binary is published. Sibling to `package.toml` (which is the recipe).
+/// See `docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md` §3.2.
+#[derive(Clone, Debug)]
+pub struct BuildToml {
+    pub script_path: String,
+    pub repo_url: String,
+    pub commit: String,
+    pub binary: BinarySource,
+}
+
+/// `[binary]` declaration inside a `build.toml`. Exactly one of two
+/// forms; the parser rejects mixed forms and a missing `sha256` when
+/// `url` is given.
+///
+/// The design doc's Form 1 ("named source" with `source = "<name>"`)
+/// was dropped during implementation review — see the test mod for
+/// rationale.
+#[derive(Clone, Debug)]
+pub enum BinarySource {
+    /// `[binary] index_url = "<URL>"` — fetch index.toml at index_url,
+    /// then look up this package's archive. `{abi}` in the URL is
+    /// substituted with the current ABI_VERSION at fetch time.
+    Indexed { index_url: String },
+    /// `[binary] url = "<URL>"` + `sha256 = "<sha>"` — direct archive
+    /// URL, bypassing index lookup. Useful for one-off legacy archives.
+    Direct { url: String, sha256: String },
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuildTomlRaw {
+    script_path: String,
+    repo_url: String,
+    commit: String,
+    binary: BinaryRaw,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BinaryRaw {
+    index_url: Option<String>,
+    url: Option<String>,
+    sha256: Option<String>,
+}
+
+impl BuildToml {
+    /// Parse a `build.toml` from a TOML string. The returned value is
+    /// validated: `[binary]` declares exactly one of `index_url` or
+    /// `url` (and `url` requires `sha256`).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let raw: BuildTomlRaw =
+            toml::from_str(s).map_err(|e| format!("build.toml parse: {e}"))?;
+        let binary = match (raw.binary.index_url, raw.binary.url) {
+            (Some(index_url), None) => BinarySource::Indexed { index_url },
+            (None, Some(url)) => {
+                let sha256 = raw.binary.sha256.ok_or_else(|| {
+                    "build.toml [binary] url requires sha256".to_string()
+                })?;
+                BinarySource::Direct { url, sha256 }
+            }
+            (Some(_), Some(_)) => {
+                return Err(
+                    "build.toml [binary] must specify exactly one of: index_url, url"
+                        .to_string(),
+                )
+            }
+            (None, None) => {
+                return Err(
+                    "build.toml [binary] must specify one of: index_url, url"
+                        .to_string(),
+                )
+            }
+        };
+        Ok(BuildToml {
+            script_path: raw.script_path,
+            repo_url: raw.repo_url,
+            commit: raw.commit,
+            binary,
+        })
+    }
+
+    /// Load a `build.toml` from a package directory (i.e.
+    /// `<package_dir>/build.toml`).
+    pub fn load(package_dir: &Path) -> Result<Self, String> {
+        let path = package_dir.join("build.toml");
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Outputs {
     #[serde(default)]
