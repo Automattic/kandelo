@@ -1130,6 +1130,24 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Verify package.toml URLs point at target_tag
+        # Guard against the #439 failure mode: preflight saw every
+        # cache_key_sha already on target_tag (because an earlier
+        # abandoned run pre-populated it) and emitted both matrices
+        # as `[]`, but `package.toml` URLs on PR HEAD still pointed at
+        # the previous release tag. amend-package-toml never runs in
+        # the empty-matrix path, so merging here without this check
+        # ships `main` with stale URLs that the resolver rejects on
+        # ABI mismatch.
+        run: |
+          bash scripts/check-package-toml-tags.sh \
+            "${{ needs.preflight.outputs.target_tag }}"
+
       - name: Post merge-gate=success on original PR HEAD
         run: |
           gh api \
@@ -1226,11 +1244,26 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BOT_PR_NUMBER: ${{ needs.amend-package-toml.outputs.bot_pr_number }}
       BOT_HEAD_SHA: ${{ needs.amend-package-toml.outputs.bot_head_sha }}
+      BOT_BRANCH: ${{ needs.amend-package-toml.outputs.bot_branch }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
+
+      - name: Verify package.toml URLs on bot branch point at target_tag
+        # Re-check after amend-package-toml ran. amend only walks the
+        # library + program matrix entries; any package whose archive
+        # was already on target_tag pre-publish (and therefore not in
+        # the matrix) is skipped — but its `archive_url` may still
+        # point at an older release tag from an even earlier run.
+        # This guard catches that residual stale state before we post
+        # merge-gate=success on the bot PR HEAD.
+        run: |
+          git fetch --depth 1 origin "$BOT_BRANCH"
+          git checkout "$BOT_HEAD_SHA" -- examples/libs/
+          bash scripts/check-package-toml-tags.sh \
+            "${{ needs.preflight.outputs.target_tag }}"
 
       - name: Wait for durable release turn
         run: bash .github/scripts/durable-release-lock.sh acquire
