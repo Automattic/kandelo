@@ -46,6 +46,7 @@ mod pkg_manifest;
 mod dump_abi;
 mod host_tool_probe;
 mod index_toml;
+mod index_update;
 mod remote_fetch;
 mod source_extract;
 mod update_pkg_manifest;
@@ -73,6 +74,7 @@ fn main() -> ExitCode {
         "build-index" => build_index::run(rest),
         "set-build-commit" => update_pkg_manifest::run(rest),
         "set-package-binary" => update_pkg_manifest::run_set_package_binary(rest),
+        "index-update" => index_update::run_index_update(&rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);
