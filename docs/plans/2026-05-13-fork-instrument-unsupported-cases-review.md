@@ -159,6 +159,7 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Plan:** Identify `pthread_cleanup_push` registrants; treat as fork-path roots. Add a fixture + test.
 - **Effort:** ~1 week.
 - **Decision (2026-05-13):** **Covered by C3 + add fixture in this PR.** C4 is structurally identical to C3 from the instrumenter's perspective — cleanup handlers are address-taken functions reached via host-managed callback registration. C3's conservative rule (treat every address-taken function as a fork-path root) covers cleanup handlers incidentally. Add a `pthread_cleanup_push` + fork fixture as a regression test in the same C3 PR work to prove the coverage holds. ~1 day for the fixture. **Future work flagged:** the precise variant described under C3's future-improvement entry must also extend to `pthread_cleanup_push` registrants when implemented.
+- **Empirical update (2026-05-13, commit 1 of mega-PR):** K-03 fixture (`programs/k_03_fork_in_pthread_cleanup.c`) hangs ≥20s — parent reaches `PRE_FORK` inside cleanup, never returns from `fork()`. Test marked `it.fails(... timeout: 7_000)` for now. K-01, K-02, K-04 (signal-handler + qsort comparator) all PASS today, so C3's "discovery" rule is incidentally working via libc's call-graph reach; the C4 hang is a different problem — likely a pthread-cancel-unwind / fork interaction, not a discovery gap. Mega-PR plan updated to add **commit 8** as the dedicated slot for C3 conservative-rule formalisation + K-03 root-cause investigation + fix.
 
 ### C5. Modern wasm-EH SDK flip
 

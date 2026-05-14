@@ -127,13 +127,17 @@ These tests prove that **accepted limits fail gracefully** — either the tool r
 
 The PR's commit history is structured so each commit is independently buildable and each test addition can be run against the implementation that follows.
 
-1. **Commit 1:** Land the test program scaffolding (driver + all D/C/S/K/P/F test IDs). Initially all pass cases are `#[ignore]` and all fail cases assert the current (pre-refactor) behavior. Establishes the regression contract.
+1. **Commit 1:** Land the test program scaffolding (driver + all D/C/S/K/P/F test IDs). Initially all pass cases are `#[ignore]` and all fail cases assert the current (pre-refactor) behavior. Establishes the regression contract.  ✅ landed as `c4ae805b0`.
 2. **Commits 2–4:** Eliminate-guard-dispatch core (extend `classify_nested_pattern`, implement runtime-dispatcher trampoline, delete `instrument_one_function_guard_dispatch`). D-05 through D-09 un-`ignore` and pass.
 3. **Commits 5–6:** A2 (multi-target `*_ref` rewrite) + A3 (multi-target plain-catch capture-blocks). C-06 and C-07 un-`ignore` and pass.
 4. **Commit 7:** A4 funcref/externref aux table. C-08 and C-09 un-`ignore` and pass.
-5. **Commit 8:** Modern wasm-EH SDK flip + libcxx rebuild + binaries-abi bump. cpp_throw_test, vim, mariadb, php, quickjs all rebuilt. C-05 onwards exercise the new lowering.
-6. **Commit 9:** Update `docs/fork-instrumentation.md` — delete §*Not guaranteed* lines 728–746 (multi-target `*_ref`, multi-target plain-catch, ref-typed catch operand carve-outs all gone); delete §*Not-yet-gated side effects* (B1–B4 gone); update §*Dispatch schemes* (guard-dispatch removed).
-7. **Commit 10:** Update `docs/posix-status.md` fork-from-catch entry to "Full" + new ucontext/A5 wording. Update review doc with implementation-complete cross-references.
+5. **Commit 8:** C3/C4 — fork-from-handler hardening. Two pieces:
+   - **C3 conservative-rule discovery:** extend `instrument::discover_fork_path` to treat every address-taken function as a fork-path root. Surprisingly K-01, K-02, K-04 already pass on commit 1 because libc's call-graph reach catches the address-taken handlers transitively; this commit makes the coverage explicit (a future libc / pthread refactor mustn't silently drop the discovery) and emits a clear instrumentation-trace marker the test suite can assert.
+   - **C4 + K-03 root-cause fix:** fork from inside a `pthread_cleanup_push` cleanup handler currently hangs (see commit 1's empirical findings: parent reaches `PRE_FORK` inside cleanup, never returns from `fork()`, ≥20s timeout). Investigation must determine whether the hang is in the cancel-unwind path (pthread state corruption when fork is called from a cancellation point), in the kernel's per-thread fork copy when the calling thread is being cancelled, or in waitpid's SIGCHLD delivery from a thread that's also being torn down. Fix accordingly. K-03's `it.fails(... timeout: 7_000)` flips to `it()` with a normal program timeout when this commit lands.
+   - Validation: K-01..K-04 all pass under `it()` (no `it.fails`), and a new K-05 fixture exercising fork from a thread cancellation point that *isn't* a cleanup handler (to discriminate "cancel + fork" from "cleanup + fork").
+6. **Commit 9:** Modern wasm-EH SDK flip + libcxx rebuild + binaries-abi bump. cpp_throw_test, vim, mariadb, php, quickjs all rebuilt. C-05 onwards exercise the new lowering.
+7. **Commit 10:** Update `docs/fork-instrumentation.md` — delete §*Not guaranteed* lines 728–746 (multi-target `*_ref`, multi-target plain-catch, ref-typed catch operand carve-outs all gone); delete §*Not-yet-gated side effects* (B1–B4 gone); update §*Dispatch schemes* (guard-dispatch removed); add §*Fork from handler context* documenting the C3 conservative rule and the K-03 fix.
+8. **Commit 11:** Update `docs/posix-status.md` fork-from-catch entry to "Full" + new ucontext/A5 wording. Update review doc with implementation-complete cross-references.
 
 ## Open design questions (must be resolved before implementation starts)
 

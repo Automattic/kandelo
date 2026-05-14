@@ -315,9 +315,12 @@ describe("fork_instrument_coverage / K-* callback fork roots", () => {
   // K-03: fork-inside-pthread-cleanup hangs in the parent post-fork.
   // Empirical behavior on this branch: occasionally completes in ~5s
   // (one observed run during scaffolding) but generally times out at
-  // ≥20s. Treating as broken — the C4 conservative-rule work in the
-  // pivot is the planned fix. Tight timeout keeps the test fast.
-  it.fails("K-03 fork from pthread_cleanup_push handler (C4) [pivot]", async () => {
+  // ≥20s. Treating as broken; **commit 8** of the mega-PR is the
+  // dedicated slot for the C4 root-cause investigation + fix (likely
+  // a pthread-cancel-unwind / fork interaction, not a discovery gap —
+  // K-01/K-02/K-04 all pass today via libc's call-graph reach). Tight
+  // timeout keeps the test fast.
+  it.fails("K-03 fork from pthread_cleanup_push handler (C4) [commit 8]", async () => {
     await runFixture("programs/k_03_fork_in_pthread_cleanup.wasm", {
       contains: ["THREAD_STARTED", "IN_CLEANUP arg=42", "PRE_FORK", "CHILD: ok", "PASS: K-03"],
       timeout: 7_000,
