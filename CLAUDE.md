@@ -207,29 +207,48 @@ not for tools.
 
 ## Package system
 
-Every artifact under `examples/libs/<name>/` is a **package** with its
-own `package.toml` declaring source, deps, outputs, and a pinned
-`[binary]` archive. The resolver (`cargo xtask build-deps ...`) is
-the only thing that decides where binaries land, what to fetch, and
-when to source-build. No central lockfile (no `binaries.lock`, no
-`manifest.json`) — per-package is the source of truth.
+Every artifact under `examples/libs/<name>/` is a **package** with two
+TOML files:
+- **`package.toml`** — the **recipe** (project-agnostic): name,
+  version, source pin, license, deps, `[build].script_path`.
+- **`build.toml`** — this project's **build + publish state**:
+  `script_path`, `repo_url`, `commit`, `revision`, and `[binary]`
+  pointing at where binaries are published (typically
+  `index_url = "https://.../binaries-abi-v{abi}/index.toml"`).
+
+Archive URLs are NOT in either of those files. They live in a
+per-release `index.toml` ledger, keyed by `(name, version, arch)`.
+The resolver (`cargo xtask build-deps ...`) fetches the index,
+looks up the entry, downloads the archive, and verifies. No central
+lockfile (no `binaries.lock`, no `manifest.json`). See
+[docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md](docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md)
+for the full design.
 
 **Hard rules:**
 
-- **Never hand-edit `[binary]` URLs.** The amend-package-toml step in
-  `prepare-merge.yml` rewrites them after every durable-release
-  publish. Manual edits get clobbered. For a one-shot recovery use
-  `xtask set-package-binary` (see PR #445's amend script for the
-  pattern); for a normal flow let CI do it.
-- **Bumping `revision = N` invalidates every cached archive for that
-  package.** Bump only when output bytes legitimately change (build
-  flag tweaks, asyncify pass, etc.). Don't bump for doc-only
-  changes — that triggers a needless rebuild across the matrix.
+- **Never hand-edit `index.toml`.** It's mutated atomically by
+  per-matrix-build jobs running `scripts/index-update.sh` under a
+  workflow-level state-lock. A manual edit will be clobbered by the
+  next matrix run. For a one-shot recovery (composing the initial
+  ledger from existing archives, e.g. during a migration), use
+  `scripts/compose-initial-index.sh <target-tag> <abi>`.
+- **`build.toml.index_url` should template `{abi}`**, not hardcode the
+  ABI generation. The resolver substitutes `{abi}` with `ABI_VERSION`
+  from `crates/shared/src/lib.rs` at fetch time, so a single
+  build.toml survives ABI bumps.
+- **Bumping `build.toml.revision = N` invalidates every cached
+  archive for that package.** Bump only when output bytes
+  legitimately change (build flag tweaks, asyncify pass, etc.).
+  Don't bump for doc-only changes — that triggers a needless
+  rebuild across the matrix. Revision lives in `build.toml`
+  because it's a publish-time counter (project state), not a
+  recipe property — `package.toml` doesn't carry it.
 - **ABI bumps (`ABI_VERSION` in `crates/shared/src/lib.rs`) require
-  the full release to be re-published.** v6 archives don't satisfy
-  v7 verifications. The matrix flow handles this automatically on
-  the next prepare-merge run; just remember the v(N-1) release stays
-  stale until the bot PR closes the loop.
+  a new release tag.** v(N-1) archives don't satisfy v(N)
+  verifications. The matrix flow handles this automatically: each
+  matrix entry publishes its archive + index entry to
+  `binaries-abi-v<N>/` atomically; the v(N-1) release stays as
+  historical state.
 - **Multi-output packages land under `binaries/programs/<arch>/<pkg>/<out>`,
   single-output under `binaries/programs/<arch>/<out>`.** Never
   hardcode this convention in scripts; query via
@@ -241,19 +260,23 @@ when to source-build. No central lockfile (no `binaries.lock`, no
 
 | Task | Command |
 |---|---|
-| Resolve a single package (fetch or source-build, cache) | `cargo xtask build-deps resolve <name>` |
+| Resolve a single package (fetch via index or source-build, cache) | `cargo xtask build-deps resolve <name>` |
 | Materialize all consumer-facing symlinks under `binaries/` | `scripts/fetch-binaries.sh --allow-stale` |
 | Where does a package's output land? | `cargo xtask build-deps output-path <name> <wasm-basename>` |
 | Stage a single archive (matrix-build's per-entry step) | `cargo xtask archive-stage --package examples/libs/<name> --arch <arch> --out <dir>` |
 | Force a re-publish of selected packages | dispatch `.github/workflows/force-rebuild.yml` with the comma list |
-| Pin a fresh archive URL into a package.toml | `cargo xtask set-package-binary --package-toml <path> --arch <a> --archive-url <u> --archive-sha256 <s>` |
+| Atomically publish one archive + index entry (matrix-build sequence) | `scripts/index-update.sh --target-tag <tag> --package <p> --version <v> --revision <r> --arch <a> --status success --archive-path <f> --archive-name <n> --cache-key-sha <s>` |
+| Compose initial index.toml from existing archives (migration only) | `scripts/compose-initial-index.sh <target-tag> <abi>` |
 
 **When something looks wrong:**
 
-- Source build firing for a package you expect to be cached → its
-  `[binary]` URL probably points at an old ABI or wrong sha. Check
-  `cargo xtask build-deps resolve <name>` output for the warning
-  line — it names the URL it tried.
+- Source build firing for a package you expect to be cached →
+  `cargo xtask build-deps resolve <name>` logs the reason. Common
+  causes: cache_key_sha mismatch (recipe drift since the archive was
+  published; bump `build.toml.revision` if intentional, or wait for
+  CI to re-publish), the `index.toml` entry's status is `failed`
+  with no fallback, or the index fetch itself failed (offline /
+  unreachable URL).
 - `fetch-binaries.sh` reports N failures → those packages will
   source-build on the matrix runners. With `--allow-stale` (CI
   default) the script still exits 0 since per-target builds gate
@@ -269,8 +292,9 @@ when to source-build. No central lockfile (no `binaries.lock`, no
 - **`docs/binary-releases.md`** — operational doc for the release
   flow + `index.toml` shape + consumer-side fetch behavior.
 - **`docs/abi-versioning.md`** — when `ABI_VERSION` must bump.
-- **`docs/package-management-future-work.md`** — backlog of
-  acknowledged gaps (signing, GC, etc.).
+- **`docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md`** —
+  why the index-ledger split (vs the prior `[binary]`-in-package.toml
+  shape), with the four-bug postmortem.
 
 ## Cross-Compilation and Configure Scripts
 

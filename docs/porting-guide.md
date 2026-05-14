@@ -514,24 +514,25 @@ the cached-build + URL-addressable archive flow described in
 
 ```
 examples/libs/<name>/
-    package.toml        # required — schema declaration
+    package.toml        # required — recipe (project-agnostic)
+    build.toml          # required (unless source-only) — project view + binary source
     build-<name>.sh     # required — produces the outputs
     bin/                # created by build script; never committed
 ```
 
 ### 2. Write `package.toml`
 
-Minimum viable shape. See `examples/libs/zlib/package.toml` (single
-library) and `examples/libs/dinit/package.toml` (multi-output program
-with a library dep) for two canonical references; the schema reference
-is in [docs/package-management.md §Schema](package-management.md#schema-packagetoml).
+The **recipe** — project-agnostic identity, source pin, deps,
+outputs. See `examples/libs/zlib/package.toml` (single library) and
+`examples/libs/dinit/package.toml` (multi-output program with a
+library dep) for canonical references; the schema reference is in
+[docs/package-management.md §Schema](package-management.md#schema-packagetoml).
 
 ```toml
 kind = "program"           # or "library" or "source"
 name = "myprog"
 version = "1.2.3"
-revision = 1
-kernel_abi = 7             # current ABI_VERSION; required for source-having pkgs
+kernel_abi = 8             # current ABI_VERSION; required for packages with a [build] block
 depends_on = ["zlib@1.3.1"]   # transitive deps the resolver will pull first
 
 [source]
@@ -544,7 +545,6 @@ url = "https://example.test/LICENSE"
 
 [build]
 script_path = "examples/libs/myprog/build-myprog.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 # One [[outputs]] per produced file. Programs typically have 1 wasm;
 # multi-output packages (dinit, mariadb, php) declare each separately.
@@ -554,19 +554,49 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 [[outputs]]
 name = "myprog"
 wasm = "myprog.wasm"
-
-# [binary] is the published archive URL the resolver fetches from.
-# Leave commented out on first commit; CI's amend-package-toml step
-# fills it in after the matrix flow publishes the archive.
-# [binary]
-# archive_url = "..."
-# archive_sha256 = "..."
 ```
 
+`package.toml` MUST NOT carry `revision`, `[binary]`, `[build].repo_url`,
+or `[build].commit` — those moved to `build.toml` during the
+binary-resolution-via-index-ledger migration (see the
+[design doc](plans/2026-05-13-binary-resolution-via-index-ledger-design.md)).
+`validate_source` rejects them with a clear error pointing at the
+new home.
+
 For source-only packages (`kind = "source"`), omit `[[outputs]]` and
-`[binary]`; the resolver extracts the tarball into the cache and
-exports the extracted dir as `WASM_POSIX_DEP_<NAME>_SRC_DIR` for
+skip `build.toml`; the resolver extracts the tarball into the cache
+and exports the extracted dir as `WASM_POSIX_DEP_<NAME>_SRC_DIR` for
 consumers to reach into.
+
+### 2b. Write `build.toml`
+
+The **project view** — sits next to `package.toml`. Declares this
+project's script path + repo + commit + revision + where the binary
+is published. Source-only packages don't need one.
+
+```toml
+script_path = "examples/libs/myprog/build-myprog.sh"
+repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+commit      = "<commit at which the recipe was last touched>"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+```
+
+- `{abi}` in `index_url` is substituted with the current
+  `ABI_VERSION` at resolve time — one `build.toml` survives ABI bumps.
+- `revision` bumps invalidate every cached archive for this
+  package; bump only when output bytes legitimately change (build
+  flag tweaks, asyncify pass). Don't bump for doc-only changes.
+- `commit` is informational provenance; the matrix-build CI step
+  reads `git rev-parse HEAD` at publish time and writes the result
+  back into the archive's internal manifest's `[compatibility]`
+  block.
+- For a one-off legacy archive that doesn't live in an index,
+  replace the `[binary]` block with the direct form:
+  `url = "https://..."` + `sha256 = "..."`. The resolver fetches that
+  archive directly without consulting any `index.toml`.
 
 ### 3. Write `build-<name>.sh`
 
@@ -620,13 +650,16 @@ CI runs `staging-build.yml` on the PR, which:
 
 1. Detects the new package in `preflight` (its `compute-cache-key-sha`
    yields an archive name not yet on the durable release).
-2. Runs `archive-stage` for it in `matrix-build`, uploads the
-   `.tar.zst` to the PR's staging release.
+2. Runs `archive-stage` for it in `matrix-build`, then invokes
+   `scripts/index-update.sh` per matrix entry to atomically upload
+   the `.tar.zst` AND mutate the PR's staging `index.toml` entry
+   under a workflow-level state-lock.
 3. `test-gate` runs the full 5-suite test gate against the union of
    matrix-built + durable-release archives.
-4. On `ready-to-ship` + `prepare-merge.yml`, the archive ships to the
-   durable `binaries-abi-v<N>` release and the bot PR amends
-   `[binary]` in the `package.toml` to pin the new URL + sha.
+4. On `ready-to-ship` + `prepare-merge.yml`, each matrix entry ships
+   its archive + index update to the durable `binaries-abi-v<N>`
+   release directly — no bot PR amends anything; the `index.toml`
+   ledger on the release IS the consumer-visible state.
 
 ### 6. Register in `run.sh` (optional)
 

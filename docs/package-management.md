@@ -35,9 +35,9 @@ Most readers want one of these. Detailed sections follow further down.
 | Find where an output lands | `cargo xtask build-deps output-path <name> <wasm-basename>` — single source of truth for the layout convention (flat for 1-output packages, nested under `<pkg>/` for ≥2-output packages). |
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern. |
 | Override a published archive locally | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these. |
-| Override an archive in a PR for testing | Write `examples/libs/<pkg>/package.pr.toml` with `[binary.<arch>]` pointing at the alternate `archive_url` + `archive_sha256`. Gitignored; CI uses this internally. |
+| Override an archive in a PR for testing | The matrix-build flow handles this automatically: per-PR builds publish to `pr-<N>-staging` tags (separate state-lock subject from the durable release), and the resolver picks up the staging index via the same `build.toml.index_url` template. For a local override write `examples/libs/<pkg>/package.pr.toml` with `[binary.<arch>]` — the legacy overlay path still injects into the in-memory `DepsManifest`. |
 | Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
-| Bump a package's revision number | Edit `revision = N` in its `package.toml`. Invalidates the cache for that package. Only bump when output bytes legitimately change. |
+| Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
 | Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
 | Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
 | See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |
