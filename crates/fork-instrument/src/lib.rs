@@ -127,13 +127,11 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // No-op when `fork_path` is empty (module doesn't use fork).
     instrument::instrument_functions(&mut module, &runtime, &fork_path, &b1_plan);
 
-    // --- Future phases will mutate `module` further here. ---
-    // Phase 4c: wrap call sites with state-machine gating + br $unwind_save.
-    // Phase 4d: wrap non-call ops with `if state == NORMAL`, spill scalar locals.
-    // Phase 4e: save/restore mutable globals at unwind/rewind begin.
-    // Phase 4f: spill ref-typed locals via auxiliary tables.
-    // Phase 5:  inject auxiliary tables.
-    // Phase 6:  instrument try_table catch regions for resume-in-catch.
+    // Historical phase list (Phase 4b/4c/4d/4e/4f/5/6) was an artefact
+    // of guard-dispatch's body-rewriting approach. Post-commit-4 those
+    // phases are folded into `instrument::instrument_functions` itself;
+    // see `instrument_one_function_switch` / `instrument_one_function_nested_switch`
+    // for the actual transform.
 
     let output = module.emit_wasm();
     Ok(output)

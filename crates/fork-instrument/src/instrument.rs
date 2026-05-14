@@ -740,8 +740,8 @@ fn has_nested_fork_calls(
 /// (forcing the post-commit-3 panic) if an unknown-type slot reaches
 /// a carryover; otherwise switch-dispatch handles it.
 /// Likewise for stack underflows — which shouldn't happen in valid
-/// wasm, but we defensively route to guard-dispatch if the input is
-/// malformed in a way we can't analyze.
+/// wasm, but we defensively route to the post-commit-3 panic path if
+/// the input is malformed in a way we can't analyze.
 fn has_top_level_stack_carryovers(
     module: &Module,
     func_id: FunctionId,
@@ -779,7 +779,10 @@ fn has_top_level_stack_carryovers(
                 if depth < pops {
                     // Underflow — input wasm is ill-formed from our
                     // perspective, or we mis-analyzed an instruction.
-                    // Either way, fall back to guard-dispatch.
+                    // Conservatively report a carryover (forcing the
+                    // caller to invoke compute_carryover_types, which
+                    // will likely also return None and trigger the
+                    // post-commit-3 panic).
                     return true;
                 }
                 depth = depth - pops + pushes;
@@ -955,8 +958,8 @@ fn top_level_stack_effect(
         | Instr::Rethrow(_) => Terminator,
 
         // --- Wasm-GC and legacy EH: not produced by our LLVM toolchain
-        //     today. Report Unknown so we conservatively route to
-        //     guard-dispatch if any ever appears. ---
+        //     today. Report Unknown so we conservatively force the
+        //     post-commit-3 panic path if any ever appears. ---
         Instr::StructNew(_)
         | Instr::StructNewDefault(_)
         | Instr::StructGet(_)
@@ -2907,8 +2910,8 @@ pub fn plan_b1_scratch(module: &Module, targets: &[FunctionId]) -> B1ScratchPlan
                 debug_assert!(
                     arm.operand_tys.iter().all(|t| !matches!(t, ValType::Ref(_))),
                     "B1 plan_b1_scratch invariant: caller must filter ref-payload arms via Stage 2 \
-                     fallback-to-guard-dispatch before reaching the planner. Affected function has \
-                     a tag with a ref-typed operand."
+                     b2_carveout (excluded from fork-path) before reaching the planner. Affected \
+                     function has a tag with a ref-typed operand."
                 );
                 let payload_size: u32 = arm.operand_tys.iter().map(|t| scalar_size(*t)).sum();
                 let tuple_size = 4 + payload_size;
