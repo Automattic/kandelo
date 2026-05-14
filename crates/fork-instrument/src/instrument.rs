@@ -1184,6 +1184,229 @@ fn compute_carryover_types(
     Some(carryovers)
 }
 
+/// Like `compute_carryover_types` but for nested switch-dispatch:
+/// covers fork-path call landings inside ANY fork-bearing seq in the
+/// function, not just the top-level entry body.
+///
+/// Each seq is walked independently with a fresh, initially-empty
+/// typed operand stack. Block/Loop/IfElse/TryTable instructions
+/// encountered during a walk are treated as opaque at their parent
+/// level: they contribute only their declared type-params/results to
+/// the parent seq's stack depth. Their bodies are walked separately
+/// when they appear as fork-bearing seqs of their own (i.e., when
+/// they directly contain a fork-path Call/CallIndirect).
+///
+/// Returns a map keyed by `call_idx` — the call ordinal assigned by
+/// `discover_calls_and_regions` in DFS order. Each value is the list
+/// of carryover ValTypes (deepest stack slot first) for that call
+/// site; an empty vec means the call has no carryover.
+///
+/// Returns `None` if any producer instruction in any walked seq
+/// pushes a value whose type can't be determined statically (e.g. a
+/// non-fork-path `CallIndirect` / `CallRef`, a wasm-GC ref, a
+/// multi-value or ref-typed `Block`/`Loop`/`IfElse`/`TryTable`
+/// result). The caller (sub-commit 2.5c) keeps the existing rejection
+/// in `seq_has_unsupported_carryover` for the `None` case.
+#[allow(dead_code)] // Wired in sub-commit 2.5b.
+fn compute_nested_carryover_types(
+    module: &Module,
+    func_id: FunctionId,
+    fork_path: &HashSet<FunctionId>,
+) -> Option<HashMap<u32, Vec<ValType>>> {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return Some(HashMap::new()),
+    };
+
+    let (sites, _regions) = discover_calls_and_regions(module, func_id, fork_path);
+    if sites.is_empty() {
+        return Some(HashMap::new());
+    }
+
+    // Group call_idxs by the seq that directly contains them. DFS-order
+    // assignment in `discover_calls_and_regions` guarantees the per-seq
+    // call_idxs are in source-order — matching the order
+    // `walk_seq_for_carryovers` produces below.
+    let mut direct_idxs_per_seq: HashMap<InstrSeqId, Vec<u32>> = HashMap::new();
+    for site in &sites {
+        direct_idxs_per_seq
+            .entry(site.seq_id)
+            .or_default()
+            .push(site.call_idx);
+    }
+
+    let mut result: HashMap<u32, Vec<ValType>> = HashMap::new();
+    for (&seq_id, direct_idxs) in &direct_idxs_per_seq {
+        let per_seq = walk_seq_for_carryovers(module, local, seq_id, fork_path)?;
+        if per_seq.len() != direct_idxs.len() {
+            // Mismatch implies the walk terminated early (e.g., hit a
+            // terminator before the last fork-path call). Conservative
+            // fallback: report unanalyzable.
+            return None;
+        }
+        for (cr, &idx) in per_seq.into_iter().zip(direct_idxs.iter()) {
+            result.insert(idx, cr);
+        }
+    }
+
+    Some(result)
+}
+
+/// Walk a single seq's top-level instructions and compute the
+/// carryover types at each direct fork-path landing (`Call` to a
+/// fork-path callee or `CallIndirect`). Block/Loop/IfElse/TryTable
+/// instructions are treated as opaque — see
+/// `compute_nested_carryover_types`.
+fn walk_seq_for_carryovers(
+    module: &Module,
+    f: &LocalFunction,
+    seq: InstrSeqId,
+    fork_path: &HashSet<FunctionId>,
+) -> Option<Vec<Vec<ValType>>> {
+    let mut stack: Vec<ValType> = Vec::new();
+    let mut carryovers: Vec<Vec<ValType>> = Vec::new();
+
+    for (instr, _) in &f.block(seq).instrs {
+        // Fork-path call landings — the partition points.
+        match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => {
+                let sig = module.types.get(module.funcs.get(c.func).ty());
+                let n_args = sig.params().len();
+                if stack.len() < n_args {
+                    return None;
+                }
+                let n_cr = stack.len() - n_args;
+                carryovers.push(stack[..n_cr].to_vec());
+                stack.truncate(n_cr);
+                for &ty in sig.results() {
+                    stack.push(ty);
+                }
+                continue;
+            }
+            Instr::CallIndirect(ci) => {
+                let sig = module.types.get(ci.ty);
+                let n_args = sig.params().len() + 1; // +1 table index
+                if stack.len() < n_args {
+                    return None;
+                }
+                let n_cr = stack.len() - n_args;
+                carryovers.push(stack[..n_cr].to_vec());
+                stack.truncate(n_cr);
+                for &ty in sig.results() {
+                    stack.push(ty);
+                }
+                continue;
+            }
+            _ => {}
+        }
+
+        match top_level_stack_effect(module, f, instr) {
+            StackEffect::Delta { pops, pushes } => {
+                if stack.len() < pops {
+                    return None;
+                }
+                stack.truncate(stack.len() - pops);
+                if pushes == 0 {
+                    continue;
+                }
+                // Determine pushed type(s). Multi-push instructions are
+                // only Call / CallIndirect / CallRef and structured
+                // control flow with a multi-value result; the latter is
+                // already rejected upstream so we only handle the
+                // single-result cases here.
+                match instr {
+                    Instr::Call(c) => {
+                        let sig = module.types.get(module.funcs.get(c.func).ty());
+                        for &ty in sig.results() {
+                            stack.push(ty);
+                        }
+                        continue;
+                    }
+                    Instr::CallIndirect(_) | Instr::CallRef(_) => {
+                        // Fork-path CallIndirect was already handled
+                        // above. A non-fork-path CallIndirect / CallRef
+                        // landing inside the chunk is unanalyzable in
+                        // the same conservative spirit as
+                        // `compute_carryover_types`.
+                        return None;
+                    }
+                    Instr::Block(b) => {
+                        match f.block(b.seq).ty {
+                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
+                                stack.push(ty);
+                            }
+                            _ => return None,
+                        }
+                        continue;
+                    }
+                    Instr::Loop(l) => {
+                        match f.block(l.seq).ty {
+                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
+                                stack.push(ty);
+                            }
+                            _ => return None,
+                        }
+                        continue;
+                    }
+                    Instr::IfElse(ie) => {
+                        match f.block(ie.consequent).ty {
+                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
+                                stack.push(ty);
+                            }
+                            _ => return None,
+                        }
+                        continue;
+                    }
+                    Instr::TryTable(t) => {
+                        match f.block(t.seq).ty {
+                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
+                                stack.push(ty);
+                            }
+                            _ => return None,
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+                // Single-push, non-call, non-block-typed producers.
+                debug_assert_eq!(
+                    pushes, 1,
+                    "multi-push non-call/non-structured-control should not reach here"
+                );
+                let ty = match instr {
+                    Instr::Const(c) => match c.value {
+                        Value::I32(_) => ValType::I32,
+                        Value::I64(_) => ValType::I64,
+                        Value::F32(_) => ValType::F32,
+                        Value::F64(_) => ValType::F64,
+                        Value::V128(_) => ValType::V128,
+                    },
+                    Instr::LocalGet(LocalGet { local: l })
+                    | Instr::LocalTee(LocalTee { local: l }) => module.locals.get(*l).ty(),
+                    Instr::GlobalGet(GlobalGet { global: g }) => module.globals.get(*g).ty,
+                    Instr::Load(load) => load_pushes(&load.kind),
+                    Instr::Binop(b) => binop_pushes(&b.op),
+                    Instr::MemorySize(_) | Instr::TableSize(_) => ValType::I32,
+                    _ => return None,
+                };
+                stack.push(ty);
+            }
+            StackEffect::Terminator => {
+                // Post-terminator code in this seq is unreachable.
+                // Don't push further carryover entries; the per-seq
+                // call_idx list will mismatch in `compute_nested_*`
+                // and force a conservative `None`. (Reachable fork-
+                // path calls before the terminator are already in
+                // `carryovers`.)
+                return Some(carryovers);
+            }
+            StackEffect::Unknown => return None,
+        }
+    }
+
+    Some(carryovers)
+}
+
 /// Split the original entry body at top-level fork-path calls.
 ///
 /// Returns `(chunks, call_sites)`:
@@ -6645,6 +6868,231 @@ mod trampoline_tests {
         // helper has 2 i32 args; $sp on the stack below them is the
         // carryover. Expected: one call site with carryover [i32].
         assert_eq!(result, Some(vec![vec![ValType::I32]]));
+    }
+
+    // Sub-commit 2.5a: nested-aware carryover analyser. The analyser
+    // walks each fork-bearing seq independently and reports per-call_idx
+    // carryover types. Block/Loop/IfElse/TryTable instructions are
+    // opaque at their parent level — their bodies are walked separately
+    // when they appear as fork-bearing seqs of their own.
+
+    fn build_fork_path(module: &Module, names: &[&str]) -> HashSet<FunctionId> {
+        let mut fp = HashSet::new();
+        for n in names {
+            let id = module
+                .funcs
+                .iter()
+                .find(|f| f.name.as_deref() == Some(*n))
+                .unwrap_or_else(|| panic!("function `{n}` not found"))
+                .id();
+            fp.insert(id);
+        }
+        fp
+    }
+
+    fn find_func_id(module: &Module, name: &str) -> FunctionId {
+        module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("function `{name}` not found"))
+            .id()
+    }
+
+    #[test]
+    fn compute_nested_carryover_types_no_calls_returns_empty_map() {
+        // No fork-path calls anywhere → empty map.
+        let wat = r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (func $main (export "_start") (result i32)
+                (i32.const 0)))
+        "#;
+        let bytes = wat::parse_str(wat).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let main = find_func_id(&module, "main");
+        let fork_path = build_fork_path(&module, &["fork", "main"]);
+        let result = compute_nested_carryover_types(&module, main, &fork_path);
+        assert_eq!(result, Some(HashMap::new()));
+    }
+
+    #[test]
+    fn compute_nested_carryover_types_top_level_no_carryover_reports_empty_vec() {
+        // One top-level fork-path call, no carryover. The analyser
+        // walks the entry block (which IS a fork-bearing seq) and
+        // returns `{call_idx: vec![]}`.
+        let wat = r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (func $main (export "_start") (result i32)
+                (call $fork)))
+        "#;
+        let bytes = wat::parse_str(wat).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let main = find_func_id(&module, "main");
+        let fork_path = build_fork_path(&module, &["fork", "main"]);
+        let result = compute_nested_carryover_types(&module, main, &fork_path).unwrap();
+        assert_eq!(result.len(), 1);
+        // The single call gets call_idx=0; carryover must be empty.
+        assert_eq!(result.get(&0), Some(&Vec::<ValType>::new()));
+    }
+
+    #[test]
+    fn compute_nested_carryover_types_direct_call_in_block_with_i32_carryover() {
+        // The case 2.5 is built for: a direct fork-path Call inside a
+        // nested Block, with an i32 pushed BEFORE the call's args and
+        // consumed AFTER. The outer Block returns 0 results (so the
+        // carryover sits on the parent's stack across the inner Block).
+        //
+        // Pre-2.5: nested switch-dispatch's analyser pushed 0 for any
+        // direct-call landing. After 2.5a, this returns `[i32]`.
+        let wat = r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (memory (export "memory") 1)
+              (func $helper (param i32 i32) (result i32)
+                (drop (call $fork))
+                (local.get 0))
+              (func $main (export "_start") (result i32)
+                (local $sp i32)
+                (local.set $sp (i32.const 100))
+                ;; Outer Block forces nested-switch routing (creates a
+                ;; nested fork-bearing seq).
+                (block
+                  ;; Carryover: push $sp BEFORE the helper's args; the
+                  ;; helper is the fork-path direct call.
+                  local.get $sp
+                  i32.const 16
+                  i32.const 8
+                  call $helper
+                  i32.store offset=12)
+                (i32.const 0)))
+        "#;
+        let bytes = wat::parse_str(wat).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let main = find_func_id(&module, "main");
+        let fork_path = build_fork_path(&module, &["fork", "helper", "main"]);
+        let result = compute_nested_carryover_types(&module, main, &fork_path).unwrap();
+        // Two fork-path calls: $fork inside $helper (top-level there),
+        // and $helper inside the Block in $main. We only care about
+        // $main's seq results here.
+        // discover_calls_and_regions assigns call_idx in DFS order
+        // across the function; in $main the only fork-path direct call
+        // is to $helper, inside the Block. Find that call_idx by
+        // discovering and matching seq_id == the inner Block.
+        let (sites, _) = discover_calls_and_regions(&module, main, &fork_path);
+        let entry_seq = match &module.funcs.get(main).kind {
+            FunctionKind::Local(l) => l.entry_block(),
+            _ => unreachable!(),
+        };
+        // The helper call lives inside a nested Block, NOT at the entry
+        // seq. There must be at least one site whose seq_id != entry.
+        let helper_site = sites
+            .iter()
+            .find(|s| s.seq_id != entry_seq)
+            .expect("expected a fork-path call inside the nested Block");
+        assert_eq!(
+            result.get(&helper_site.call_idx),
+            Some(&vec![ValType::I32]),
+            "direct fork-path call inside Block must report [i32] carryover"
+        );
+    }
+
+    #[test]
+    fn compute_nested_carryover_types_direct_call_in_block_no_carryover() {
+        // Same nesting shape but no carryover: just the call's args on
+        // the stack. Must report empty vec for the call.
+        let wat = r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (func $helper (param i32) (result i32)
+                (drop (call $fork))
+                (local.get 0))
+              (func $main (export "_start") (result i32)
+                (block
+                  (drop (call $helper (i32.const 42))))
+                (i32.const 0)))
+        "#;
+        let bytes = wat::parse_str(wat).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let main = find_func_id(&module, "main");
+        let fork_path = build_fork_path(&module, &["fork", "helper", "main"]);
+        let result = compute_nested_carryover_types(&module, main, &fork_path).unwrap();
+        let (sites, _) = discover_calls_and_regions(&module, main, &fork_path);
+        let entry_seq = match &module.funcs.get(main).kind {
+            FunctionKind::Local(l) => l.entry_block(),
+            _ => unreachable!(),
+        };
+        let nested_site = sites
+            .iter()
+            .find(|s| s.seq_id != entry_seq)
+            .expect("expected helper call inside the Block");
+        assert_eq!(
+            result.get(&nested_site.call_idx),
+            Some(&Vec::<ValType>::new()),
+            "no carryover → empty vec at the nested call"
+        );
+    }
+
+    #[test]
+    fn compute_nested_carryover_types_two_seqs_independent_carryovers() {
+        // Function has two fork-bearing seqs (the entry block AND a
+        // nested Block), each with its own carryover. Verifies the
+        // analyser reports BOTH correctly, keyed by their respective
+        // call_idxs.
+        let wat = r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (memory (export "memory") 1)
+              (func $helper (param i32 i32) (result i32)
+                (drop (call $fork))
+                (local.get 0))
+              (func $main (export "_start") (result i32)
+                (local $sp i32)
+                (local.set $sp (i32.const 100))
+                ;; Top-level fork-path call with i32 carryover.
+                local.get $sp
+                i32.const 16
+                i32.const 8
+                call $helper
+                i32.store offset=4
+                ;; Nested fork-path call (in a Block) with i32 carryover.
+                (block
+                  local.get $sp
+                  i32.const 24
+                  i32.const 9
+                  call $helper
+                  i32.store offset=8)
+                (i32.const 0)))
+        "#;
+        let bytes = wat::parse_str(wat).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let main = find_func_id(&module, "main");
+        let fork_path = build_fork_path(&module, &["fork", "helper", "main"]);
+        let result = compute_nested_carryover_types(&module, main, &fork_path).unwrap();
+
+        let (sites, _) = discover_calls_and_regions(&module, main, &fork_path);
+        let entry_seq = match &module.funcs.get(main).kind {
+            FunctionKind::Local(l) => l.entry_block(),
+            _ => unreachable!(),
+        };
+        // One site lives in the entry seq, one in the nested Block.
+        let entry_site = sites
+            .iter()
+            .find(|s| s.seq_id == entry_seq)
+            .expect("expected a top-level helper call");
+        let nested_site = sites
+            .iter()
+            .find(|s| s.seq_id != entry_seq)
+            .expect("expected a nested helper call");
+        assert_eq!(
+            result.get(&entry_site.call_idx),
+            Some(&vec![ValType::I32])
+        );
+        assert_eq!(
+            result.get(&nested_site.call_idx),
+            Some(&vec![ValType::I32])
+        );
     }
 
     #[test]
