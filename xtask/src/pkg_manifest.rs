@@ -547,6 +547,24 @@ struct BinaryRaw {
     sha256: Option<String>,
 }
 
+impl BinarySource {
+    /// Resolve this binary source to a concrete index URL with
+    /// `{abi}` substituted for the caller's ABI version. Returns
+    /// `Ok(Some(url))` for the indexed form (the typical case;
+    /// resolver fetches `url`, looks up this package, then downloads
+    /// the archive named by the entry) and `Ok(None)` for direct
+    /// sources (no index — caller fetches `url` directly using the
+    /// inline `sha256` for verification).
+    pub fn resolve_index_url(&self, abi: u32) -> Option<String> {
+        match self {
+            BinarySource::Indexed { index_url } => {
+                Some(index_url.replace("{abi}", &abi.to_string()))
+            }
+            BinarySource::Direct { .. } => None,
+        }
+    }
+}
+
 impl BuildToml {
     /// Parse a `build.toml` from a TOML string. The returned value is
     /// validated: `[binary]` declares exactly one of `index_url` or
@@ -2745,6 +2763,44 @@ index_url = "https://example.com/index.toml"
 "#;
         let err = BuildToml::parse(toml).unwrap_err();
         assert!(err.contains("typo_field") || err.contains("unknown"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_index_url_substitutes_abi_in_indexed_form() {
+        let bs = BinarySource::Indexed {
+            index_url: "https://example.test/abi-v{abi}/index.toml".into(),
+        };
+        assert_eq!(
+            bs.resolve_index_url(8).as_deref(),
+            Some("https://example.test/abi-v8/index.toml")
+        );
+        // Different ABI: same template produces a different URL.
+        assert_eq!(
+            bs.resolve_index_url(9).as_deref(),
+            Some("https://example.test/abi-v9/index.toml")
+        );
+    }
+
+    #[test]
+    fn resolve_index_url_returns_none_for_direct_source() {
+        let bs = BinarySource::Direct {
+            url: "https://example.test/foo.tar.zst".into(),
+            sha256: "abc".into(),
+        };
+        assert!(bs.resolve_index_url(8).is_none());
+    }
+
+    #[test]
+    fn resolve_index_url_passes_through_template_without_abi_token() {
+        // Not every index_url has to template ABI — `Indexed` URLs
+        // without a `{abi}` placeholder pass through unchanged.
+        let bs = BinarySource::Indexed {
+            index_url: "https://example.test/static/index.toml".into(),
+        };
+        assert_eq!(
+            bs.resolve_index_url(8).as_deref(),
+            Some("https://example.test/static/index.toml")
+        );
     }
 
     #[test]
