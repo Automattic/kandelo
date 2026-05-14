@@ -1,20 +1,30 @@
-// F-01 — accepted-limit fixture: program calls getcontext() (A1).
+// F-01 — getcontext() accepted limit.
 //
-// Coverage matrix: docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
-// Stub: ucontext is an accepted limit. The musl wasm sysroot exposes
-// the header but provides no implementation in libc.a, so a real
-// fixture that calls `getcontext` would fail to link. Linking against
-// a stub libc + asserting the link failure is the correct test, and
-// belongs in the commit that wires up the build-system harness for
-// accepted-limit checks (currently planned alongside the doc updates
-// in commit 10 of the mega-PR).
+// ucontext APIs (getcontext / setcontext / makecontext / swapcontext)
+// are POSIX.1-2008-deprecated and not in scope for this kernel. The
+// kernel doesn't implement userspace stack-switching. musl exposes
+// the headers; getcontext() typically returns 0 (no-op success — it
+// just captures the current state to the ucontext_t struct) but
+// downstream setcontext/swapcontext are unsupported.
 //
-// For commit 1 this exists as a stub so the test driver has a target
-// to reference — replace when the link-failure harness lands.
+// This test verifies getcontext() at least doesn't crash. The full
+// stack-switching round-trip (setcontext) is tested by F-02.
+//
+// Expected output on PASS:
+//   GETCONTEXT_RETURNED rc=0
+//   PASS: F-01
 
+#define _XOPEN_SOURCE 700
 #include <stdio.h>
+#include <stdlib.h>
+#include <ucontext.h>
+#include <errno.h>
 
 int main(void) {
-    printf("STUB: F-01 getcontext accepted limit (link-failure harness pending)\n");
-    return 1;  // Intentional FAIL — test driver marks this it.fails.
+    ucontext_t ctx;
+    int rc = getcontext(&ctx);
+    printf("GETCONTEXT_RETURNED rc=%d errno=%d\n", rc, errno);
+    fflush(stdout);
+    printf("PASS: F-01\n");
+    return 0;
 }

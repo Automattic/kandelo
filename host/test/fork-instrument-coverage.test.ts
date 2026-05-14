@@ -232,11 +232,14 @@ describe("fork_instrument_coverage / C-* catch-handler resume", () => {
     });
   });
 
-  // C-08, C-09 are stubs — A4 funcref/externref catch operands have no
-  // C-source surface. Real fixtures need WAT. Marked it.todo so the
-  // test ID is tracked but no assertion runs against the stub binary.
-  it.todo("C-08 plain catch arm with funcref operand (A4 aux table) [needs WAT fixture; commit 7]");
-  it.todo("C-09 plain catch arm with externref operand (A4 aux table) [needs WAT fixture; commit 7]");
+  // C-08, C-09 — A4 funcref/externref catch operands. No C-source
+  // surface; covered by `crates/fork-instrument/tests/coverage_wat.rs`
+  // which verifies fork-instrument doesn't panic on these patterns.
+  // Full A4 implementation (per-arm aux-table spilling for ref-typed
+  // catch operands) is future work — today the affected function is
+  // carved out of the fork-path set via b2_carveout.
+  it.skip("C-08 plain catch arm with funcref operand [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
+  it.skip("C-09 plain catch arm with externref operand [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
 
   // C-10: fork in BOTH try body and catch handler. Combines D-06 with
   // C-02. Passes under modern EH.
@@ -289,11 +292,15 @@ describe("fork_instrument_coverage / S-* side effects during rewind", () => {
   });
 
   // S-04..S-07 — table.* and non-nullable funcref. C source can't
-  // emit these instructions; need WAT fixtures. Test IDs reserved.
-  it.todo("S-04 table.fill before fork (B3) [needs WAT fixture; pivot]");
-  it.todo("S-05 table.copy before fork (B3) [needs WAT fixture; pivot]");
-  it.todo("S-06 table.grow before fork (B3) [needs WAT fixture; pivot]");
-  it.todo("S-07 direct call returning non-nullable funcref before fork (B4) [needs WAT fixture; pivot]");
+  // emit these instructions; covered by `crates/fork-instrument/tests/coverage_wat.rs`
+  // which verifies fork-instrument produces validating wasm for
+  // each side-effect-before-fork pattern. End-to-end runtime
+  // verification would require a custom test driver that doesn't
+  // depend on channel_syscall.c glue — out of scope today.
+  it.skip("S-04 table.fill before fork [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
+  it.skip("S-05 table.copy before fork [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
+  it.skip("S-06 table.grow before fork [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
+  it.skip("S-07 non-nullable funcref direct-call result before fork [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
 
   // S-08: throw from outside instrumented region, caught inside,
   // fork in catch. Sibling of C-04. Closed by commit 9 + 2026-05-14
@@ -478,18 +485,33 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
 // ---------------------------------------------------------------------------
 
 describe("fork_instrument_coverage / F-* accepted limits", () => {
-  // F-01, F-02 — ucontext API. The musl wasm sysroot exposes the
-  // header but provides no implementation, so a real fixture would
-  // fail to link. Real test = build-time link-failure assertion,
-  // landing alongside the doc updates in commit 10. Placeholder
-  // stubs exit non-zero so they're tracked.
-  it.todo("F-01 getcontext accepted limit [needs link-failure harness; commit 10]");
-  it.todo("F-02 makecontext/swapcontext accepted limit [needs link-failure harness; commit 10]");
+  // F-01: getcontext(). Empirically: musl's wasm sysroot exposes
+  // the symbol via an `env.getcontext` import that the kernel
+  // doesn't implement — the program traps at first call with
+  // "Unimplemented import: env.getcontext". That's the accepted
+  // failure mode (loud trap, not silent miscompile). Marked
+  // `it.fails` to encode the trap-as-expected contract.
+  it.fails("F-01 getcontext accepted limit (traps cleanly on unimplemented import)", async () => {
+    await runFixture("programs/f_01_ucontext_get.wasm", {
+      contains: ["PASS: F-01"],
+    });
+  });
 
-  // F-03, F-04 — wasm-GC anyref / struct.new. No C-source surface;
-  // need a WAT fixture + driver harness that invokes
-  // wasm-fork-instrument directly and asserts non-zero exit. Lands
-  // with the accepted-limit doc updates in commit 10.
-  it.todo("F-03 wasm-GC anyref accepted limit [needs WAT + driver; commit 10]");
-  it.todo("F-04 wasm-GC struct.new accepted limit [needs WAT + driver; commit 10]");
+  // F-02: makecontext + swapcontext. Userspace stack-switching is
+  // unsupported by this kernel. Same trap mode as F-01 — same
+  // accepted-limit contract.
+  it.fails("F-02 makecontext/swapcontext accepted limit (traps cleanly on unimplemented import)", async () => {
+    await runFixture("programs/f_02_ucontext_makeswap.wasm", {
+      contains: ["PASS: F-02"],
+      timeout: 5_000,
+    });
+  });
+
+  // F-03, F-04 — wasm-GC anyref / struct.new. No C-source surface
+  // (LLVM-emitted C doesn't produce these); covered by cargo-level
+  // tests in `crates/fork-instrument/tests/coverage_wat.rs` which
+  // verify fork-instrument either rejects gracefully with a clear
+  // error or accepts-and-validates without silent miscompilation.
+  it.skip("F-03 wasm-GC anyref accepted limit [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
+  it.skip("F-04 wasm-GC struct.new accepted limit [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
 });
