@@ -141,8 +141,9 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 -mbulk-memory                      # Enable bulk memory operations
 -mexception-handling               # Enable Wasm exception handling
 -mllvm -wasm-enable-sjlj           # Enable setjmp/longjmp
--mllvm -wasm-use-legacy-eh=true    # Use legacy exception handling (Asyncify-compatible)
--fno-exceptions                    # No C++ exceptions
+# Modern wasm-EH lowering (try_table/catch_ref) is LLVM's default
+# since version ≥17; we no longer override with `-wasm-use-legacy-eh=true`
+# (removed in commit 9 of the fork-instrument mega-PR, 2026-05-14).
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
 --sysroot=<path>                   # musl sysroot
 ```

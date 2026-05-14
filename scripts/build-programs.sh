@@ -53,7 +53,6 @@ CFLAGS=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
 )
 
 LINK_FLAGS=(
@@ -203,7 +202,6 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -matomics -mbulk-memory
         -fno-trapping-math
         -mllvm -wasm-enable-sjlj
-        -mllvm -wasm-use-legacy-eh=true
     )
 
     LINK_FLAGS64=(

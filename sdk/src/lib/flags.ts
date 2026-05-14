@@ -8,7 +8,12 @@ export function compileFlags(arch: WasmArch): string[] {
     '-mbulk-memory',
     '-mexception-handling',
     '-mllvm', '-wasm-enable-sjlj',
-    '-mllvm', '-wasm-use-legacy-eh=true',
+    // Modern wasm-EH lowering (LLVM's default; commit 9 of the
+    // fork-instrument mega-PR removed the `-wasm-use-legacy-eh=true`
+    // override). C++ exceptions are now lowered via `try_table` +
+    // `catch_ref` (the wasm-EH standard), not legacy `try`/`catch`.
+    // This closes `UnsupportedLegacyTry` from shipping wasm and
+    // unblocks the SpiderMonkey port's C++ EH path.
     '-fno-trapping-math',
   ];
 }

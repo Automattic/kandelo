@@ -136,7 +136,6 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
     -D__sortix__
 )
 
