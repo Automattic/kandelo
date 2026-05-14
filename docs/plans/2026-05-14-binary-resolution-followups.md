@@ -8,58 +8,90 @@ binary-resolution-via-index-ledger PR. None are blockers for the
 PR itself — they're pre-existing or tangential — but each deserves
 its own fix once this PR merges.
 
-## 1. opcache.so per-request startup traps in `zend_activate_modules`
+## 1. opcache.so traps in forked FPM workers — fork doesn't replay parent dlopens
 
 **Symptom.** After fixing the SAB/TextDecoder rejection in
-`__wasm_dlopen`, PHP-FPM successfully loads `opcache.so` via dlopen.
-The crash moves to per-request startup:
+`__wasm_dlopen`, PHP-FPM successfully loads `opcache.so` in the
+master process. The crash moves to per-request startup in the
+forked workers:
 
 ```
-[process-worker] Centralized worker failed: index out of bounds
+[process-worker] Centralized worker failed: table index is out of bounds
+RuntimeError: table index is out of bounds
   php-fpm.zend_activate_modules @ wasm-function[22982]:0x730a9e
   php-fpm.php_request_startup    @ wasm-function[21669]:0x6ad61c
   php-fpm.main                   @ wasm-function[25414]:0x84fdc0
-  php-fpm.libc_start_main_stage2 ...
+  php-fpm.libc_start_main_stage2 …
 ```
 
-`zend_activate_modules` calls each loaded module's
-`request_startup_func`. opcache's per-request init reads from a
-wasm address that's out of bounds — a `wasm-trap: index out of
-bounds` from linear-memory access beyond the current high water
-mark.
+**Root cause.** Fork does not propagate dlopen state.
 
-**Suspect.** The dylink loader's data-segment placement for
-`opcache.so`. Suspect candidates:
+1. PHP-FPM master starts, dlopens `opcache.so` as a `zend_extension`.
+   `host/src/dylink.ts` grows the master's `__indirect_function_table`
+   from its module-initial size (10721) to ~10780+ and places
+   opcache's 59 functions (plus its exports) into the new slots.
+2. opcache's `__wasm_apply_data_relocs` patches its data section so
+   that `accel_module_entry.request_startup_func` (offset 36 in
+   the struct, data offset 7452 in opcache.so) holds the wasm
+   value `__table_base + 34` — the index of `accel_activate` in
+   the master's table (e.g. 10721 + 34 = 10755).
+3. Master forks workers (`pm = static, pm.max_children = 2`).
+   `handleFork` in
+   `examples/browser/lib/kernel-worker-entry.ts` (and the Node
+   equivalent `host/src/node-kernel-worker-entry.ts`) memcpy's
+   the master's linear memory into the child, but the child gets
+   a *freshly instantiated* program module. Its
+   `__indirect_function_table` is back at the module-initial
+   length (10721); it carries no record of the parent's dlopens.
+4. When a worker handles its first request, `php_request_startup`
+   calls `zend_activate_modules`, which iterates
+   `module_request_startup_handlers` (also memcpy'd from the
+   master) and `call_indirect`s `accel_module_entry.request_startup_func`.
+   The stored index 10755 is `>= child_table.length`, so the
+   wasm engine traps with `table index is out of bounds`.
 
-- `allocateMemory` in `host/src/worker-main.ts::buildDlopenImports`
-  calls `sys_mmap` to reserve a region for the side module's
-  data + GOT. If the returned address overshoots the wasm
-  memory's current page count, accesses trap. The host doesn't
-  grow the wasm memory to cover the new allocation.
-- `DynamicLinker.dlopenSync` (host/src/dylink.ts) might compute
-  the side module's memory base relative to a stale `memory.size`.
-- opcache itself might write into shared-memory globals that the
-  wasm port doesn't initialise — opcache's `accel_globals` /
-  `ZCG()` macro chain.
+**Fix sketch.** Fork children must replay each parent-loaded side
+module *before* asyncify-rewind, so the child's table layout
+matches the parent's:
 
-**Workaround in place** (commit `188bd0203`): the nginx-php demo's
-INI comments out `zend_extension=opcache.so` and forces
-`opcache.enable=0`, so PHP-FPM never dlopens opcache and never
-reaches the crashing code path. The demo boots cleanly without
+- Persist `linker.loadedLibraries` order + bytes in
+  `processes[pid]` (or in a fork-init payload).
+- Pass the list to `handleFork` and to the Node-side equivalent.
+- In `centralizedWorkerMain`'s fork-child path, after instance
+  creation but before calling `_start` / asyncify rewind, replay
+  `dlopenSync(name, bytes)` for each library in order. The
+  child's `sys_mmap` allocator state was memcpy'd from the
+  master, so it returns the same base addresses; tableBase
+  matches because both started at the same initial length.
+- Add a vitest fixture that forks after a dlopen and exercises a
+  call_indirect into the side-module — dual-host (Node + browser)
+  per `feedback_dual-host-parity`.
+
+Estimated scope: ~150 LOC across `host/src/dylink.ts`,
+`host/src/worker-main.ts`, both kernel-worker-entry trees, and
+the corresponding tests.
+
+**Workaround in place** (commit `188bd0203` + this PR's
+re-application to `build-wp-vfs-image.ts` /
+`build-lamp-vfs-image.ts`): three demos comment out
+`zend_extension=opcache.so` and force `opcache.enable=0`, so
+PHP-FPM never dlopens opcache. The demos boot cleanly without
 opcache.
 
-**Why this surfaced now.** The published `binaries-abi-v8/php-rev2`
-archive on the release predates commit `38512c586 build(php):
-produce + ship opcache.so as third package output`. Consumers
-fetching the indexed rev2 archive run PHP-FPM without opcache.so
-at all, so neither the `__wasm_dlopen` TextDecoder bug nor this
-per-request trap fire. The binary-resolution-via-index-ledger
-Phase 12.3 source-built PHP from current source (cache_key
-mismatch with the indexed rev2 archive), and the source build
-includes the opcache work — exposing both latent bugs.
+**Why this surfaced now.** The published
+`binaries-abi-v8/php-rev2` archive on the release predates
+commit `38512c586 build(php): produce + ship opcache.so as third
+package output`. Consumers fetching the indexed rev2 archive run
+PHP-FPM without `opcache.so` at all, so the fork+dlopen mismatch
+is never triggered. The
+binary-resolution-via-index-ledger Phase 12.3 source-built PHP
+from current source (cache_key mismatch with the indexed rev2
+archive), and the source build includes the opcache work —
+exposing this latent fork-vs-dlopen interaction.
 
-**Re-enable after fix.** Revert commit `188bd0203` once the trap
-is resolved AND a fresh rev=N PHP archive is republished via
+**Re-enable after fix.** Revert the opcache-disable hunks in all
+three vfs-image scripts after fork-replay-dlopen ships AND a
+fresh rev=N PHP archive is republished via
 `scripts/index-update.sh` so the indexed flow also exercises the
 fixed dlopen path.
 
