@@ -509,6 +509,18 @@ pub struct BuildToml {
     pub script_path: String,
     pub repo_url: String,
     pub commit: String,
+    /// Publish-time revision counter for this package on this project.
+    /// Bumped when the recipe changes in a way that should invalidate
+    /// already-published archives but the upstream `version` doesn't
+    /// move (e.g. a build-script fix, a dep-version pin update).
+    /// `compute_sha` hashes this so the resolver's cache_key matches
+    /// the published archive's embedded `compatibility.cache_key_sha`
+    /// only when both were produced at the same revision.
+    ///
+    /// `None` in the parsed struct means the build.toml omitted the
+    /// field; downstream callers default to `1`. (Equivalent to the
+    /// pre-existing default revision in `package.toml`.)
+    pub revision: Option<u32>,
     pub binary: BinarySource,
 }
 
@@ -536,6 +548,8 @@ struct BuildTomlRaw {
     script_path: String,
     repo_url: String,
     commit: String,
+    #[serde(default)]
+    revision: Option<u32>,
     binary: BinaryRaw,
 }
 
@@ -597,6 +611,7 @@ impl BuildToml {
             script_path: raw.script_path,
             repo_url: raw.repo_url,
             commit: raw.commit,
+            revision: raw.revision,
             binary,
         })
     }
@@ -820,6 +835,25 @@ impl DepsManifest {
             .map_err(|e| format!("read {}: {e}", base_path.display()))?;
         let mut manifest = Self::parse(&base_text, dir.to_path_buf())
             .map_err(|e| format!("{}: {e}", base_path.display()))?;
+
+        // Overlay build.toml's revision onto the parsed manifest if a
+        // sibling build.toml is present and declares one. Revision is
+        // a publish-time counter the resolver feeds into compute_sha
+        // alongside name/version/source/etc., so cache_key alignment
+        // between the locally-computed key and a published archive's
+        // embedded key requires the resolver to read the same
+        // revision the publisher recorded. Post
+        // binary-resolution-via-index-ledger, revision moved out of
+        // package.toml (where validate_source rejects it) into
+        // build.toml (project-specific publish state).
+        let build_path = dir.join("build.toml");
+        if build_path.exists() {
+            let build = BuildToml::load(dir)
+                .map_err(|e| format!("{}: {e}", build_path.display()))?;
+            if let Some(rev) = build.revision {
+                manifest.revision = rev;
+            }
+        }
 
         let overlay_path = dir.join("package.pr.toml");
         if overlay_path.exists() {

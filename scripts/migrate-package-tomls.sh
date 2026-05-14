@@ -49,22 +49,30 @@ for pkg_toml in sorted(repo_root.glob("examples/libs/*/package.toml")):
     original = pkg_toml.read_text()
     text = original
 
-    # ---- 1. Strip top-level `revision = N` (only if at top level,
-    #         not inside a table). We process line-by-line tracking
+    # ---- 1. Capture + strip top-level `revision = N` (only if at top
+    #         level, not inside a table). Process line-by-line tracking
     #         whether we're inside a `[...]` table; revision lives
     #         alongside `name`/`version` so it's at top level for
-    #         every package we'd migrate.
+    #         every package we'd migrate. The captured value becomes
+    #         the build.toml's `revision` field below, so a
+    #         published-at-rev2 package's locally-computed cache_key
+    #         continues to match its archive's embedded
+    #         cache_key_sha after the migration.
     lines = text.splitlines(keepends=True)
     out = []
     in_section = False
+    captured_revision = None
     for line in lines:
         stripped = line.lstrip()
         if stripped.startswith("[") and stripped.rstrip().endswith("]"):
             in_section = True
             out.append(line)
             continue
-        if not in_section and re.match(r"^\s*revision\s*=", line):
-            continue  # strip
+        if not in_section:
+            m = re.match(r"^\s*revision\s*=\s*(\d+)", line)
+            if m:
+                captured_revision = int(m.group(1))
+                continue  # strip
         out.append(line)
     text = "".join(out)
 
@@ -138,10 +146,16 @@ for pkg_toml in sorted(repo_root.glob("examples/libs/*/package.toml")):
             script_path = f"examples/libs/{pkg_name}/build-{pkg_name}.sh"
 
         build_toml_path = pkg_dir / "build.toml"
+        # Default revision to 1 if the source manifest didn't carry one
+        # (post-migration manifests being re-migrated). Captured value
+        # preserves the original revision for packages that had been
+        # published at rev >= 2.
+        revision = captured_revision if captured_revision is not None else 1
         build_toml_content = (
             f"script_path = \"{script_path}\"\n"
             f"repo_url    = \"{default_repo_url}\"\n"
             f"commit      = \"{head_commit}\"\n"
+            f"revision    = {revision}\n"
             f"\n"
             f"[binary]\n"
             f"index_url = \"{default_index_url}\"\n"
