@@ -3193,12 +3193,53 @@ fn find_try_table_parent_seq<'a>(
 // time. Once 2.6 ships, guard-dispatch is unreachable; commits 3-4
 // verify and delete it.
 
-/// Trampoline dispatch — placeholder. Body lands in sub-commit 2.3.
+/// Emit a per-function funcref dispatch table populated with the
+/// extracted post-call functions for one fork-path function.
+///
+/// The table is sized exactly to fit `post_funcs.len()` entries,
+/// named `<owner_name>_post_table`, and immediately populated via an
+/// active `(elem)` segment at offset 0.
+///
+/// Returns the new `TableId`. Empty `post_funcs` is allowed (the
+/// table is still created, with size 0 and no elem segment) — that
+/// case shouldn't occur in practice (a fork-path function with zero
+/// fork-path call sites wouldn't be on the trampoline path) but
+/// keeping the helper total simplifies the call-site contract.
+///
+/// Used by `instrument_one_function_trampoline_dispatch` (sub-commits
+/// 2.4-2.6) to set up the dispatch table that the entry-point REWIND
+/// check `call_indirect`s into.
+#[allow(dead_code)] // wired up in sub-commits 2.4-2.6
+fn emit_per_function_post_table(
+    module: &mut Module,
+    owner_name: &str,
+    post_funcs: &[FunctionId],
+) -> TableId {
+    let n = post_funcs.len() as u64;
+    let table_id = module
+        .tables
+        .add_local(false, n, Some(n), RefType::FUNCREF);
+    module.tables.get_mut(table_id).name = Some(format!("{owner_name}_post_table"));
+
+    if !post_funcs.is_empty() {
+        module.elements.add(
+            walrus::ElementKind::Active {
+                table: table_id,
+                offset: walrus::ConstExpr::Value(Value::I32(0)),
+            },
+            walrus::ElementItems::Functions(post_funcs.to_vec()),
+        );
+    }
+
+    table_id
+}
+
+/// Trampoline dispatch — placeholder. Body lands in sub-commits
+/// 2.4-2.6 (one class wired per sub-commit).
 ///
 /// Same signature as `instrument_one_function_guard_dispatch` so it
 /// becomes a drop-in replacement at the call sites in
-/// `instrument_one_function` once 2.3 makes it correct and 2.4-2.6
-/// wire it up.
+/// `instrument_one_function` once each class is wired.
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // wired up class-by-class in sub-commits 2.4-2.6
 fn instrument_one_function_trampoline_dispatch(
@@ -3213,7 +3254,7 @@ fn instrument_one_function_trampoline_dispatch(
     _b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
 ) {
     unimplemented!(
-        "trampoline emission lands in sub-commit 2.3 of the mega-PR; \
+        "trampoline emission lands in sub-commits 2.4-2.6 of the mega-PR; \
          this function is currently unreachable — see the section \
          comment above for the rollout plan"
     );
@@ -5794,6 +5835,150 @@ fn emit_post_landing(
             push_instr(s, Instr::Select(walrus::ir::Select { ty: None }));
             // Original IfElse with rewritten cond on the stack.
             s.push((instr, loc));
+        }
+    }
+}
+
+// =====================================================================
+// Unit tests — first in this file. Lives here (rather than in tests/)
+// because the trampoline helpers are intentionally private; private
+// items are unreachable from integration tests.
+// =====================================================================
+
+#[cfg(test)]
+mod trampoline_tests {
+    use super::*;
+
+    /// Build a tiny module with N stub functions returning unit, and
+    /// return their FunctionIds in order. Used to populate per-function
+    /// post-table fixtures without needing to construct realistic
+    /// post-call extraction bodies (those land in 2.4-2.6).
+    fn build_module_with_stubs(n: usize) -> (Module, Vec<FunctionId>) {
+        let mut module = Module::default();
+        let stub_ty = module.types.add(&[], &[]);
+        let mut ids = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut builder = walrus::FunctionBuilder::new(&mut module.types, &[], &[]);
+            builder.name(format!("post_{i}"));
+            let func = builder.finish(vec![], &mut module.funcs);
+            // Confirm signature didn't drift (we built [] -> [] above).
+            let _ = stub_ty;
+            ids.push(func);
+        }
+        (module, ids)
+    }
+
+    fn find_table_by_name<'a>(module: &'a Module, name: &str) -> Option<&'a walrus::Table> {
+        module
+            .tables
+            .iter()
+            .find(|t| t.name.as_deref() == Some(name))
+    }
+
+    /// Returns the first active elem segment populating `table_id`,
+    /// or None.
+    fn find_active_elem_for(
+        module: &Module,
+        table_id: TableId,
+    ) -> Option<&walrus::Element> {
+        module.elements.iter().find(|el| {
+            matches!(
+                &el.kind,
+                walrus::ElementKind::Active { table, .. } if *table == table_id
+            )
+        })
+    }
+
+    #[test]
+    fn emit_per_function_post_table_creates_named_table_sized_to_fit() {
+        let (mut module, post_funcs) = build_module_with_stubs(3);
+        let table_id =
+            emit_per_function_post_table(&mut module, "caller", &post_funcs);
+
+        let table = find_table_by_name(&module, "caller_post_table")
+            .expect("table named caller_post_table must exist");
+        assert_eq!(table.id(), table_id);
+        assert_eq!(table.initial, 3);
+        assert_eq!(table.maximum, Some(3));
+        assert_eq!(table.element_ty, RefType::FUNCREF);
+    }
+
+    #[test]
+    fn emit_per_function_post_table_emits_active_elem_with_funcrefs_in_order() {
+        let (mut module, post_funcs) = build_module_with_stubs(3);
+        let table_id =
+            emit_per_function_post_table(&mut module, "caller", &post_funcs);
+
+        let elem = find_active_elem_for(&module, table_id)
+            .expect("active elem segment must populate caller_post_table");
+
+        // Active elem at offset 0.
+        match &elem.kind {
+            walrus::ElementKind::Active { table, offset } => {
+                assert_eq!(*table, table_id);
+                match offset {
+                    walrus::ConstExpr::Value(Value::I32(0)) => {}
+                    other => panic!("expected i32.const 0 offset, got {other:?}"),
+                }
+            }
+            other => panic!("expected Active elem kind, got {other:?}"),
+        }
+
+        // Funcrefs are populated in input order.
+        match &elem.items {
+            walrus::ElementItems::Functions(ids) => {
+                assert_eq!(ids, &post_funcs);
+            }
+            other => panic!("expected Functions items, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_per_function_post_table_empty_skips_elem_segment() {
+        let (mut module, _) = build_module_with_stubs(0);
+        let table_id =
+            emit_per_function_post_table(&mut module, "caller", &[]);
+
+        let table = find_table_by_name(&module, "caller_post_table")
+            .expect("table is created even for empty post_funcs");
+        assert_eq!(table.initial, 0);
+        assert_eq!(table.maximum, Some(0));
+
+        // No elem segment for this table.
+        assert!(
+            find_active_elem_for(&module, table_id).is_none(),
+            "no elem segment expected when post_funcs is empty"
+        );
+    }
+
+    #[test]
+    fn emit_per_function_post_table_independent_owners_get_independent_tables() {
+        let (mut module, post_funcs) = build_module_with_stubs(2);
+        let post_a = vec![post_funcs[0]];
+        let post_b = vec![post_funcs[1]];
+
+        let table_a = emit_per_function_post_table(&mut module, "fn_a", &post_a);
+        let table_b = emit_per_function_post_table(&mut module, "fn_b", &post_b);
+
+        assert_ne!(table_a, table_b);
+        let ta = find_table_by_name(&module, "fn_a_post_table").unwrap();
+        let tb = find_table_by_name(&module, "fn_b_post_table").unwrap();
+        assert_eq!(ta.id(), table_a);
+        assert_eq!(tb.id(), table_b);
+
+        // Each table has its own elem populating it with its own
+        // funcs — no cross-contamination.
+        let elem_a = find_active_elem_for(&module, table_a).unwrap();
+        let elem_b = find_active_elem_for(&module, table_b).unwrap();
+        match (&elem_a.items, &elem_b.items) {
+            (
+                walrus::ElementItems::Functions(ids_a),
+                walrus::ElementItems::Functions(ids_b),
+            ) => {
+                assert_eq!(ids_a, &post_a);
+                assert_eq!(ids_b, &post_b);
+            }
+            _ => panic!("expected Functions items in both elems"),
         }
     }
 }
