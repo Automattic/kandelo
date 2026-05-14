@@ -220,42 +220,46 @@ fn instrument_one_function(
     catch_plan: &[CatchRegionPlan],
     b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
 ) {
-    // Choose scheme based on call-site topology. Both schemes
-    // implement the same fork-resume contract and share the frame
-    // layout; they differ only in how REWIND reaches the resumed call:
+    // Choose scheme based on call-site topology. Post-commit-4
+    // (2026-05-14) there are TWO live schemes (guard-dispatch was
+    // deleted; UnsupportedLegacyTry panics defensively until commit
+    // 9's libcxx rebuild propagates):
     //
-    //   switch-dispatch: body is restructured so a top-level `br_table`
-    //   jumps directly to the resumed call site, skipping all code in
-    //   between. Works only when every fork-path call lives at the
-    //   function's top level -- wasm forbids `br_table` from branching
-    //   into a nested block from outside.
+    //   instrument_one_function_switch — top-level fork-path calls
+    //   only. Body is restructured so a top-level `br_table` jumps
+    //   directly to the resumed call site, skipping all code in
+    //   between. Per-call operand-stack carryovers (LLVM `*(sp+K) =
+    //   call(...)` shapes) are absorbed via per-call spill locals
+    //   (sub-commit 2.4c) — formerly forced guard-dispatch.
     //
-    //   guard-dispatch: each fork-path call site is gated in place by
-    //   an if-else whose condition is `(NORMAL) || (REWIND && call_idx
-    //   == N)`. The body re-executes linearly on REWIND; Phase 4g
-    //   gates state-mutating ops so they don't re-fire. Handles
-    //   arbitrary nesting.
+    //   instrument_one_function_nested_switch — fork-path calls
+    //   nested inside Block/IfElse/Loop/TryTable bodies. Cascading
+    //   POST_K blocks plus per-region br_tables route REWIND through
+    //   each enclosing instruction's own dispatch. Sub-commits 2.5/2.6
+    //   added carryover spilling at nested direct-call landings,
+    //   nested-Loop-with-carryover (side benefit), and multi-value-
+    //   params SubRegion body-input-param prespill.
     //
-    // Catch-handler bodies live inside a nested try_table, so
-    // fork-from-catch is routed to guard-dispatch by the nested-call
-    // check. No separate detector needed.
+    // Catch-handler bodies live inside a nested try_table; nested
+    // switch-dispatch handles them via the rewind-throw stub +
+    // capture block mechanism (see Phase 6 + B1 stages 1+2 docs).
     //
-    // Switch-dispatch additionally requires that each top-level
-    // fork-path call site leave the operand stack with *only* that
-    // call's arguments — any value pushed before the args and consumed
-    // after the call (a "carryover") cannot be expressed in switch-
-    // dispatch's `$POST_K` block shape, which is 0 → 0. LLVM emits
-    // carryovers routinely for expressions like `*(sp + K) = call(...)`
-    // where `sp` is pushed, then the call's args, then i32.store. When
-    // we detect a carryover, fall back to guard-dispatch, whose per-
-    // call `if-else` shim preserves the enclosing stack.
+    // Both schemes:
+    // - share the same fork-resume contract (state machine, frame
+    //   layout, aux-table ref-typed spills, throw_ref catch resume).
+    // - skip body chunks before the chosen POST_K on REWIND, so
+    //   non-fork-path calls and side-effect ops in those chunks run
+    //   exactly once on NORMAL — no per-op gating needed (the
+    //   pre-2.5/2.6 Phase 4g machinery was deleted with guard-
+    //   dispatch in commit 4).
     if has_nested_fork_calls(module, func_id, fork_path) {
-        // Path A (nested per-block switch-dispatch): if all fork-path
-        // calls live in supported nesting (IfElse/Block bodies, any
-        // depth, no Loops/TryTables/multi-value-params/carryovers), use
-        // the new transform that skips body-replay on REWIND. This
-        // closes the popen-class divergence bug documented in
-        // memory/fork-instrument-O2-bug-investigation.md.
+        // Nested per-block switch-dispatch: if classify_nested_pattern
+        // accepts the function's nesting shape, use the cascading
+        // POST_K + per-region br_table transform. Sub-commits 2.5/2.6
+        // expanded "supported" to cover Loops/TryTables/multi-value-
+        // params/carryovers; only UnsupportedLegacyTry remains as a
+        // panic-defensive fallback (eliminated from shipping wasm by
+        // commit 9's modern-EH SDK flip).
         if classify_nested_pattern(module, func_id, fork_path).is_supported() {
             instrument_one_function_nested_switch(
                 module,
@@ -660,7 +664,8 @@ fn instrument_one_function_switch(
 /// Returns true iff the function has at least one fork-path call
 /// (direct or indirect) nested inside a `block`/`loop`/`if`/`try_table`.
 /// Such a function cannot use the switch-dispatch top-level br_table
-/// scheme; guard-dispatch handles it instead.
+/// scheme; nested switch-dispatch (cascading POST_K + per-region
+/// br_table) handles it instead.
 fn has_nested_fork_calls(
     module: &Module,
     func_id: FunctionId,
@@ -718,15 +723,22 @@ fn has_nested_fork_calls(
 /// `*(sp + K) = call(args...)`: `sp` is pushed first, then the call's
 /// args, then the call runs, then i32.store consumes [sp, ret_val].
 ///
-/// Switch-dispatch cannot express carryovers: its `$POST_K` block is
-/// typed Simple(None) (0 params, 0 results), so a non-empty stack at
-/// the block's close fails validation. Functions with carryovers are
-/// routed to guard-dispatch, whose per-call if-else shim preserves the
-/// enclosing operand stack intact.
+/// Pre-sub-commit-2.4c: switch-dispatch's `$POST_K` block was typed
+/// Simple(None) (0 params, 0 results), so a non-empty stack at the
+/// block's close would fail validation; functions with carryovers
+/// fell through to guard-dispatch. Sub-commit 2.4c added per-call
+/// carryover spilling so switch-dispatch absorbs these shapes
+/// directly; this function still gates the routing decision (only
+/// run `compute_carryover_types` when there IS a top-level carryover,
+/// saving the per-instruction typed-stack walk on functions that
+/// don't need it).
 ///
 /// The walk is conservative: if we encounter an instruction whose
 /// stack effect we can't statically determine (wasm-GC ops, legacy
-/// exception `try`, …), we report `true` to force guard-dispatch.
+/// exception `try`, …), we report `true` so the caller invokes
+/// `compute_carryover_types`. That analyser may itself return `None`
+/// (forcing the post-commit-3 panic) if an unknown-type slot reaches
+/// a carryover; otherwise switch-dispatch handles it.
 /// Likewise for stack underflows — which shouldn't happen in valid
 /// wasm, but we defensively route to guard-dispatch if the input is
 /// malformed in a way we can't analyze.
@@ -1035,9 +1047,15 @@ fn binop_pushes(op: &BinaryOp) -> ValType {
 /// - `Some(per_call_carryovers)` where `per_call_carryovers[K]` is the
 ///   list of carryover ValTypes (deepest stack slot first) at call K.
 ///   Empty vec if call K has no carryover.
-/// - `None` if any producer instruction in the entry body pushes a
-///   value of a type we can't statically determine. Caller falls back
-///   to guard-dispatch in that case (preserving today's behavior).
+/// - `None` if any producer instruction pushes a value of a type we
+///   can't statically determine AND that value ends up in a carryover.
+///   Post-commit-3, caller panics in this case — sub-commit 9-followup's
+///   `Vec<Option<ValType>>` refinement made the analyser succeed for
+///   any shape whose unknown slots are consumed before a fork-path
+///   call's carryover, so `None` should be vanishingly rare in
+///   shipping wasm. If it does fire, the panic message names the
+///   function so the specific producer can be added to the typed-
+///   producer list.
 ///
 /// Statically-typed producers handled here:
 ///   `Const`, `LocalGet`, `LocalTee`, `GlobalGet`, `Load` (all kinds),
@@ -1067,9 +1085,10 @@ fn compute_carryover_types(
     // without aborting. Failure is only triggered when a `None` slot
     // ends up in a fork-path call's carryover. This mirrors
     // `walk_seq_for_carryovers`'s 2.5c policy and closes the
-    // top-level guard-dispatch caller in `instrument_one_function`
-    // for the case where a top-level fork-path call HAS no carryover
-    // but the function body still contains unknown-type producers
+    // second `instrument_one_function_guard_dispatch` caller in
+    // `instrument_one_function` (since deleted by commit 4) for the
+    // case where a top-level fork-path call HAS no carryover but
+    // the function body still contains unknown-type producers
     // consumed before the call.
     let mut stack: Vec<Option<ValType>> = Vec::new();
     let mut carryovers: Vec<Vec<ValType>> = Vec::new();
