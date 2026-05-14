@@ -5125,22 +5125,38 @@ fn seq_has_unsupported_carryover(
         };
         if is_subregion {
             let is_ifelse = matches!(instr, Instr::IfElse(_));
-            let expected_input: usize = if is_ifelse { 1 } else { 0 };
+            // Sub-commit 2.6b: a SubRegion's `expected_input` includes
+            // both the cond (for IfElse) AND any declared type-params
+            // (for multi-value-params Block/Loop/TryTable). Values
+            // beyond that are real "extra carryover" above the params.
+            // The 2.6a analyser spills both bands uniformly into
+            // `CarryoverPlan::spill_locals`, so multi-value-params
+            // SubRegions are no longer rejected — their params are
+            // just one source of spill values.
+            let subregion_params = subregion_input_param_count(module, f, instr);
+            let expected_input: usize =
+                if is_ifelse { 1 } else { subregion_params };
             let carryover_depth = depth.saturating_sub(expected_input);
             if carryover_depth > 0 {
                 // Reject IfElse carryovers (cond rewrite + carryover
-                // interaction is not yet implemented).
+                // interaction is not yet implemented; the IfElse cond-
+                // rewrite via `select` would need extending to juggle
+                // the additional values too).
                 if is_ifelse {
                     return true;
                 }
-                // Reject more than 1 carryover (multi-value spilling
-                // not yet supported).
+                // Reject more than 1 EXTRA carryover above the
+                // SubRegion's declared type-params (multi-value
+                // spilling at the EXTRA-carryover level not yet
+                // supported — but params themselves are now allowed).
                 if carryover_depth > 1 {
                     return true;
                 }
-                // Reject if the enclosing instr's result type isn't
-                // empty or a single i32 (we only know how to juggle
-                // 0 or 1 i32 results via the tmp_result_local).
+                // Reject if the SubRegion's result type isn't empty
+                // or a single i32. The 2.6a push-before emission
+                // works for any result shape, but the carryover
+                // tracker downstream still assumes a 0-or-1-i32
+                // result for the extra-carryover case.
                 let result_ok = match seq_result_type(f, instr) {
                     Some(SubRegionResult::None) => true,
                     Some(SubRegionResult::SingleI32) => true,
@@ -5149,8 +5165,9 @@ fn seq_has_unsupported_carryover(
                 if !result_ok {
                     return true;
                 }
-                // Otherwise: this is a supported single-i32 carryover.
-                // Don't reject.
+                // Otherwise: this is a supported single-i32
+                // extra-carryover (possibly combined with multi-value
+                // params, both spilled together by 2.6a's analyser).
             }
         }
 
@@ -5166,6 +5183,29 @@ fn seq_has_unsupported_carryover(
         }
     }
     false
+}
+
+/// Sub-commit 2.6b: count the declared type-params of a SubRegion
+/// (Block/Loop/TryTable). Returns 0 for simple (non-multi-value)
+/// signatures, and 0 for non-SubRegion instructions.
+fn subregion_input_param_count(
+    module: &Module,
+    f: &LocalFunction,
+    instr: &Instr,
+) -> usize {
+    let body_seq = match instr {
+        Instr::Block(b) => Some(b.seq),
+        Instr::Loop(l) => Some(l.seq),
+        Instr::TryTable(t) => Some(t.seq),
+        _ => None,
+    };
+    let Some(seq) = body_seq else {
+        return 0;
+    };
+    match f.block(seq).ty {
+        InstrSeqType::MultiValue(ty_id) => module.types.get(ty_id).params().len(),
+        _ => 0,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
