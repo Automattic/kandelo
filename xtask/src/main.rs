@@ -45,6 +45,7 @@ mod bundle_program;
 mod pkg_manifest;
 mod dump_abi;
 mod host_tool_probe;
+mod index_toml;
 mod remote_fetch;
 mod source_extract;
 mod update_pkg_manifest;
