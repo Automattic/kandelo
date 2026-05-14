@@ -165,49 +165,55 @@ describe("fork_instrument_coverage / C-* catch-handler resume", () => {
   });
 
   // C-02: B1 plain catch, single arm — fork inside catch handler.
-  // Pre-pivot: B1 stages 1+2 shipped on this branch but the
-  // synthetic fixture proves they don't actually close the case
-  // end-to-end. Should pass after the architectural pivot.
-  it.fails("C-02 fork inside single-arm plain catch (B1) [pivot: commits 2-4]", async () => {
+  // The B1-stages-1+2 machinery (Phase 6 rewind-throw stub + capture
+  // block + exnref stash) handles this correctly under modern wasm-EH
+  // lowering. Was `it.fails` pre-2026-05-14 because the SDK emitted
+  // legacy `try`/`catch`; the B1 machinery is structured for modern
+  // `try_table`/`catch_ref`/`throw_ref` only. Commit 9's SDK flip
+  // (with the empirical 2026-05-14 follow-up adding
+  // `-wasm-use-legacy-eh=false` explicitly) made this case actually
+  // exercise the existing modern-EH path.
+  it("C-02 fork inside single-arm plain catch (B1)", async () => {
     await runFixture("programs/c_02_fork_in_catch.wasm", {
       contains: ["THROWING", "CAUGHT: 7", "PRE_FORK", "CHILD: ok", "PASS: C-02"],
     });
   });
 
-  // C-03: A3 multi-target plain-catch try_tables — carved out today,
-  // implemented in commits 5-6 of the mega-PR.
-  it.fails("C-03 fork in multi-arm plain catch (A3) [commit 6]", async () => {
+  // C-03: multi-arm plain-catch try_tables. The B1 stage 2 machinery's
+  // per-arm capture-block emission handles multi-arm under modern EH.
+  it("C-03 fork in multi-arm plain catch", async () => {
     await runFixture("programs/c_03_fork_in_multi_arm_catch.wasm", {
       contains: ["THROWING", "CAUGHT_STR: x", "PRE_FORK", "CHILD: ok", "PASS: C-03"],
     });
   });
 
-  // C-04: B2 throw outside instrumented region. Today guard-dispatch
-  // leaves the throw ungated; under switch-dispatch + trampoline this
-  // must just work.
-  it.fails("C-04 fork in catch where throw originates outside instrumented region (B2) [pivot]", async () => {
+  // C-04: throw originates outside the instrumented region. Switch-
+  // dispatch's body-skip-on-REWIND construction means the throw
+  // doesn't re-fire on REWIND — no gating needed.
+  it("C-04 fork in catch where throw originates outside instrumented region (B2)", async () => {
     await runFixture("programs/c_04_fork_in_catch_external_throw.wasm", {
       contains: ["CALLING_HELPER", "IN_HELPER", "CAUGHT: 99", "PRE_FORK", "CHILD: ok", "PASS: C-04"],
     });
   });
 
-  // C-05..C-07: modern wasm-EH variants. Pre-flip the SDK still uses
-  // legacy-EH so these are effectively duplicates of C-02 / C-03 /
-  // multi-typed-catch under legacy lowering. Real divergence appears
-  // once C5's libcxx + flag flip lands in commit 8.
-  it.fails("C-05 modern EH single-clause typed catch + fork [commit 8]", async () => {
+  // C-05..C-07: modern wasm-EH variants. Post-commit-9 + 2026-05-14
+  // follow-up, ALL C++ programs lower via modern EH, so these are
+  // effectively duplicates of C-02 / C-03 / multi-typed-catch under
+  // the unified lowering — but kept distinct in case future toolchain
+  // versions reintroduce divergence.
+  it("C-05 modern EH single-clause typed catch + fork", async () => {
     await runFixture("programs/c_05_fork_modern_eh_single.wasm", {
       contains: ["THROWING", "CAUGHT: 1", "PRE_FORK", "CHILD: ok", "PASS: C-05"],
     });
   });
 
-  it.fails("C-06 modern EH multi-target *_ref try_table + fork (A2) [commit 5]", async () => {
+  it("C-06 modern EH multi-target *_ref try_table + fork", async () => {
     await runFixture("programs/c_06_fork_modern_eh_multi_ref.wasm", {
       contains: ["THROWING", "CAUGHT_DOUBLE: 3.14", "PRE_FORK", "CHILD: ok", "PASS: C-06"],
     });
   });
 
-  it.fails("C-07 modern EH multi-arm plain catches + fork (A3) [commit 6]", async () => {
+  it("C-07 modern EH multi-arm plain catches + fork", async () => {
     await runFixture("programs/c_07_fork_modern_eh_multi_plain.wasm", {
       contains: ["THROWING", "CAUGHT_LONG: 1234567", "PRE_FORK", "CHILD: ok", "PASS: C-07"],
     });
@@ -220,9 +226,8 @@ describe("fork_instrument_coverage / C-* catch-handler resume", () => {
   it.todo("C-09 plain catch arm with externref operand (A4 aux table) [needs WAT fixture; commit 7]");
 
   // C-10: fork in BOTH try body and catch handler. Combines D-06 with
-  // C-02. Will fail until both the trampoline (commits 2-4) and the
-  // catch-handler dispatch (commits 5-6) land.
-  it.fails("C-10 fork in both try body and catch handler [pivot + A3]", async () => {
+  // C-02. Passes under modern EH.
+  it("C-10 fork in both try body and catch handler", async () => {
     await runFixture("programs/c_10_fork_in_try_and_catch.wasm", {
       contains: [
         "IN_TRY", "PRE_FORK_TRY", "CHILD_TRY: ok",
@@ -233,9 +238,9 @@ describe("fork_instrument_coverage / C-* catch-handler resume", () => {
   });
 
   // C-11: post-catch fork (catch frame fully popped). Repro of the
-  // SpiderMonkey spike test (b). Same root cause as C-02 — the
-  // architectural pivot must fix it.
-  it.fails("C-11 fork after fully-popped catch frame (spike test b) [pivot]", async () => {
+  // SpiderMonkey spike test (b). Closed by commit 9 + follow-up
+  // alongside C-02 — same root cause (modern-EH-only B1 machinery).
+  it("C-11 fork after fully-popped catch frame (spike test b)", async () => {
     await runFixture("programs/c_11_post_catch_fork.wasm", {
       contains: ["CAUGHT: 42", "PRE_FORK", "CHILD: ok", "PASS: C-11"],
     });
@@ -278,8 +283,9 @@ describe("fork_instrument_coverage / S-* side effects during rewind", () => {
   it.todo("S-07 direct call returning non-nullable funcref before fork (B4) [needs WAT fixture; pivot]");
 
   // S-08: throw from outside instrumented region, caught inside,
-  // fork in catch. Sibling of C-04. Same expected timeline.
-  it.fails("S-08 throw from outside instrumented region, fork in catch (B2) [pivot]", async () => {
+  // fork in catch. Sibling of C-04. Closed by commit 9 + 2026-05-14
+  // follow-up (explicit modern EH).
+  it("S-08 throw from outside instrumented region, fork in catch (B2)", async () => {
     await runFixture("programs/s_08_external_throw_fork_in_catch.wasm", {
       contains: ["ENTER_OUTER", "ENTER_INNER", "THROWING", "CAUGHT: 73", "PRE_FORK", "CHILD: ok", "PASS: S-08"],
     });
