@@ -907,6 +907,205 @@ fn top_level_stack_effect(
     }
 }
 
+/// Return the ValType of a `Load` based on its LoadKind. Used by
+/// the carryover-type tracker (`compute_carryover_types`).
+fn load_pushes(kind: &LoadKind) -> ValType {
+    match kind {
+        LoadKind::I32 { .. } | LoadKind::I32_8 { .. } | LoadKind::I32_16 { .. } => {
+            ValType::I32
+        }
+        LoadKind::I64 { .. }
+        | LoadKind::I64_8 { .. }
+        | LoadKind::I64_16 { .. }
+        | LoadKind::I64_32 { .. } => ValType::I64,
+        LoadKind::F32 => ValType::F32,
+        LoadKind::F64 => ValType::F64,
+        LoadKind::V128 => ValType::V128,
+    }
+}
+
+/// Return the ValType of a Binop based on its BinaryOp.
+fn binop_pushes(op: &BinaryOp) -> ValType {
+    let s = format!("{op:?}");
+    if s.starts_with("I32") || s.starts_with("I8x16") {
+        // I8x16Eq / etc. comparison ops push i32, vector ops push v128;
+        // disambiguate by checking for explicit V128 hint.
+        if s.contains("V128") {
+            ValType::V128
+        } else if s.starts_with("I32") {
+            ValType::I32
+        } else {
+            // Vector comparison: pushes i32 boolean for scalar ops,
+            // v128 for vector ops. Default to v128 for I8x16 ops.
+            ValType::V128
+        }
+    } else if s.starts_with("I64") {
+        ValType::I64
+    } else if s.starts_with("F32") {
+        ValType::F32
+    } else if s.starts_with("F64") {
+        ValType::F64
+    } else if s.starts_with("V128")
+        || s.starts_with("I8x16")
+        || s.starts_with("I16x8")
+        || s.starts_with("I32x4")
+        || s.starts_with("I64x2")
+        || s.starts_with("F32x4")
+        || s.starts_with("F64x2")
+    {
+        ValType::V128
+    } else {
+        // Unknown op encoding — caller falls back.
+        ValType::I32
+    }
+}
+
+/// Compute the operand-stack carryover types for each top-level
+/// fork-path call site in the function.
+///
+/// A "carryover" is a value pushed onto the operand stack BEFORE the
+/// call's args, that remains on the stack across the call and is
+/// consumed AFTER the call returns. For a call site whose signature
+/// has `m` args, if the operand-stack depth at the call is `m + n`,
+/// the bottom `n` slots are carryovers.
+///
+/// Returns:
+/// - `Some(per_call_carryovers)` where `per_call_carryovers[K]` is the
+///   list of carryover ValTypes (deepest stack slot first) at call K.
+///   Empty vec if call K has no carryover.
+/// - `None` if any producer instruction in the entry body pushes a
+///   value of a type we can't statically determine. Caller falls back
+///   to guard-dispatch in that case (preserving today's behavior).
+///
+/// Statically-typed producers handled here:
+///   `Const`, `LocalGet`, `LocalTee`, `GlobalGet`, `Load` (all kinds),
+///   `Binop` (encoded by op-name prefix), direct `Call` (signature
+///   results), `MemorySize`/`TableSize` (i32). Anything else triggers
+///   `None`.
+///
+/// Used by `instrument_one_function`'s dispatch decision: if this
+/// returns Some, switch-dispatch can absorb the carryover by spilling
+/// to per-call carryover locals (Option B from the
+/// 2026-05-13 plan, decided 2026-05-14).
+fn compute_carryover_types(
+    module: &Module,
+    func_id: FunctionId,
+    fork_path: &HashSet<FunctionId>,
+) -> Option<Vec<Vec<ValType>>> {
+    let local = match &module.funcs.get(func_id).kind {
+        FunctionKind::Local(l) => l,
+        _ => return Some(Vec::new()),
+    };
+    let entry = local.entry_block();
+
+    // Typed operand stack — bottom-to-top.
+    let mut stack: Vec<ValType> = Vec::new();
+    let mut carryovers: Vec<Vec<ValType>> = Vec::new();
+
+    for (instr, _) in &local.block(entry).instrs {
+        // Calls first — they're the partition points.
+        match instr {
+            Instr::Call(c) if fork_path.contains(&c.func) => {
+                let sig = module.types.get(module.funcs.get(c.func).ty());
+                let n_args = sig.params().len();
+                if stack.len() < n_args {
+                    return None; // ill-formed
+                }
+                let n_cr = stack.len() - n_args;
+                let cr: Vec<ValType> = stack[..n_cr].to_vec();
+                carryovers.push(cr);
+                stack.truncate(n_cr);
+                for &ty in sig.results() {
+                    stack.push(ty);
+                }
+                continue;
+            }
+            Instr::CallIndirect(ci) => {
+                let sig = module.types.get(ci.ty);
+                let n_args = sig.params().len() + 1; // +1 for table index
+                if stack.len() < n_args {
+                    return None;
+                }
+                let n_cr = stack.len() - n_args;
+                let cr: Vec<ValType> = stack[..n_cr].to_vec();
+                carryovers.push(cr);
+                stack.truncate(n_cr);
+                for &ty in sig.results() {
+                    stack.push(ty);
+                }
+                continue;
+            }
+            _ => {}
+        }
+
+        // Use existing stack-effect logic for pop count.
+        match top_level_stack_effect(module, local, instr) {
+            StackEffect::Delta { pops, pushes } => {
+                if stack.len() < pops {
+                    return None;
+                }
+                stack.truncate(stack.len() - pops);
+                if pushes == 0 {
+                    continue;
+                }
+                // Determine the type(s) pushed by this instruction.
+                // Multi-push cases (currently only multi-result Call /
+                // CallIndirect / CallRef) are handled specially; all
+                // others push a single typed value.
+                match instr {
+                    Instr::Call(c) => {
+                        let sig = module.types.get(module.funcs.get(c.func).ty());
+                        for &ty in sig.results() {
+                            stack.push(ty);
+                        }
+                        continue;
+                    }
+                    Instr::CallIndirect(_) | Instr::CallRef(_) => {
+                        // Non-fork-path indirect/ref calls — already
+                        // handled above for fork-path; this branch is
+                        // for non-fork-path indirect call landing in
+                        // the chunk. Bail out conservatively because
+                        // typing them requires resolving sig.results()
+                        // and we already special-case fork-path
+                        // CallIndirect at the top of the loop.
+                        return None;
+                    }
+                    _ => {}
+                }
+                // Single-push instructions.
+                debug_assert_eq!(pushes, 1, "multi-push non-Call should not appear");
+                let ty = match instr {
+                    Instr::Const(c) => match c.value {
+                        Value::I32(_) => ValType::I32,
+                        Value::I64(_) => ValType::I64,
+                        Value::F32(_) => ValType::F32,
+                        Value::F64(_) => ValType::F64,
+                        Value::V128(_) => ValType::V128,
+                    },
+                    Instr::LocalGet(LocalGet { local: l })
+                    | Instr::LocalTee(LocalTee { local: l }) => {
+                        module.locals.get(*l).ty()
+                    }
+                    Instr::GlobalGet(GlobalGet { global: g }) => {
+                        module.globals.get(*g).ty
+                    }
+                    Instr::Load(load) => load_pushes(&load.kind),
+                    Instr::Binop(b) => binop_pushes(&b.op),
+                    Instr::MemorySize(_) | Instr::TableSize(_) => ValType::I32,
+                    // Producers we don't statically type — bail and
+                    // let the caller fall back to guard-dispatch.
+                    _ => return None,
+                };
+                stack.push(ty);
+            }
+            StackEffect::Terminator => break,
+            StackEffect::Unknown => return None,
+        }
+    }
+
+    Some(carryovers)
+}
+
 /// Split the original entry body at top-level fork-path calls.
 ///
 /// Returns `(chunks, call_sites)`:
@@ -6230,6 +6429,119 @@ mod trampoline_tests {
             Instr::LocalGet(LocalGet { local }) => assert_eq!(*local, tmp),
             other => panic!("expected LocalGet $tmp at index 4, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn compute_carryover_types_no_calls_returns_empty() {
+        // No fork-path calls in the body → empty result.
+        let wat = r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (func $main (export "_start") (result i32)
+                (i32.const 0)))
+        "#;
+        let bytes = wat::parse_str(wat).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let main = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("main"))
+            .unwrap()
+            .id();
+        let mut fork_path = HashSet::new();
+        let fork_id = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("fork"))
+            .unwrap()
+            .id();
+        fork_path.insert(fork_id);
+        fork_path.insert(main);
+        let result = compute_carryover_types(&module, main, &fork_path);
+        assert_eq!(result, Some(vec![]));
+    }
+
+    #[test]
+    fn compute_carryover_types_simple_no_carryover_returns_empty_per_call() {
+        // One fork-path call, no carryover (no values on stack
+        // before the call's args). Should return Some(vec![vec![]]).
+        let wat = r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (func $main (export "_start") (result i32)
+                (call $fork)))
+        "#;
+        let bytes = wat::parse_str(wat).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let main = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("main"))
+            .unwrap()
+            .id();
+        let fork_id = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("fork"))
+            .unwrap()
+            .id();
+        let mut fork_path = HashSet::new();
+        fork_path.insert(fork_id);
+        fork_path.insert(main);
+        let result = compute_carryover_types(&module, main, &fork_path);
+        assert_eq!(result, Some(vec![vec![]]));
+    }
+
+    #[test]
+    fn compute_carryover_types_localget_carryover_at_call_returns_i32() {
+        // Carryover pattern: local.get $sp pushed before the call's
+        // args. Equivalent to top_level_carryover.wat's shape.
+        let wat = r#"
+            (module
+              (import "kernel" "kernel_fork" (func $fork (result i32)))
+              (memory (export "memory") 1)
+              (func $helper (param i32 i32) (result i32)
+                (drop (call $fork))
+                (local.get 0))
+              (func $main (export "_start") (result i32)
+                (local $sp i32)
+                (local.set $sp (i32.const 100))
+                ;; Carryover: push $sp, then call args, then call helper.
+                local.get $sp
+                i32.const 16
+                i32.const 8
+                call $helper
+                i32.store offset=12
+                (i32.const 0)))
+        "#;
+        let bytes = wat::parse_str(wat).unwrap();
+        let module = Module::from_buffer(&bytes).unwrap();
+        let main = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("main"))
+            .unwrap()
+            .id();
+        let helper = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("helper"))
+            .unwrap()
+            .id();
+        let fork_id = module
+            .funcs
+            .iter()
+            .find(|f| f.name.as_deref() == Some("fork"))
+            .unwrap()
+            .id();
+        let mut fork_path = HashSet::new();
+        fork_path.insert(fork_id);
+        fork_path.insert(helper);
+        fork_path.insert(main);
+        let result = compute_carryover_types(&module, main, &fork_path);
+        // helper has 2 i32 args; $sp on the stack below them is the
+        // carryover. Expected: one call site with carryover [i32].
+        assert_eq!(result, Some(vec![vec![ValType::I32]]));
     }
 
     #[test]
