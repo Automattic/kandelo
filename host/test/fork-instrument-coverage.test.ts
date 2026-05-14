@@ -351,6 +351,34 @@ describe("fork_instrument_coverage / K-* callback fork roots", () => {
       contains: ["PRE_QSORT", "PRE_FORK", "CHILD: ok", "POST_QSORT sorted=1", "PASS: K-04"],
     });
   });
+
+  // K-05: fork() with a pending signal. Tests that fork()'s
+  // unwind/rewind doesn't get confused by signal-pending state
+  // queued via sigprocmask + kill prior to fork.
+  it("K-05 fork with pending signal (sigprocmask blocked SIGUSR1)", async () => {
+    await runFixture("programs/k_05_fork_during_signal.wasm", {
+      contains: ["PRE_FORK", "CHILD: ok", "PARENT: child=", "PASS: K-05"],
+    });
+  });
+
+  // K-06: fork() from a C++ destructor. Unusual but legal RAII
+  // pattern. The dtor is called as part of stack unwinding when
+  // the object goes out of scope; fork() inside it must work.
+  it("K-06 fork from C++ destructor (RAII)", async () => {
+    await runFixture("programs/k_06_fork_from_dtor.wasm", {
+      contains: ["IN_SCOPE", "IN_DTOR", "PRE_FORK", "CHILD: ok", "PARENT: child=", "PASS: K-06"],
+    });
+  });
+
+  // K-07: fork() from an atexit-registered handler. The handler
+  // is called via libc's exit() machinery during process
+  // termination. fork() inside it spawns a child; the handler
+  // also waitpid's it before main() returns.
+  it("K-07 fork from atexit handler", async () => {
+    await runFixture("programs/k_07_fork_from_atexit.wasm", {
+      contains: ["PRE_EXIT", "IN_ATEXIT", "PRE_FORK", "CHILD: ok", "PARENT: child=", "POST_FORK_PARENT", "PASS: K-07"],
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -389,6 +417,57 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
   it("P-05 posix_spawn — non-forking path, must remain unchanged by refactor", async () => {
     await runFixture("programs/p_05_posix_spawn.wasm", {
       contains: ["SPAWNED child=", "WAIT: status=0", "PASS: P-05"],
+      execPrograms: echoExecMap,
+    });
+  });
+
+  // P-06: fork from a non-main thread (pthread_create'd worker).
+  // **Discovered 2026-05-14 to time out** — fork-from-non-main-
+  // thread is currently unsupported. The kernel likely tracks
+  // fork-instrumentation state per-MAIN-thread, so when a non-main
+  // thread invokes kernel_fork, the UNWIND state isn't connected
+  // to the calling thread's wasm context.
+  //
+  // This is the analogue of K-03 (pthread_cleanup + fork) and
+  // shares the broader "per-thread fork machinery" investigation.
+  // Tracked as a follow-up; the architectural fix likely lives in
+  // the kernel's CentralizedKernelWorker fork-handling code, not
+  // in fork-instrument's wasm transformation.
+  it.fails("P-06 fork from non-main thread [needs per-thread fork machinery]", async () => {
+    await runFixture("programs/p_06_fork_from_thread.wasm", {
+      contains: ["THREAD_STARTED", "PRE_FORK_THREAD", "CHILD_THREAD: ok", "PARENT_THREAD: child=", "PASS: P-06"],
+      timeout: 5_000,
+    });
+  });
+
+  // P-07: recursive fork — parent forks child, child forks
+  // grandchild. Verifies fork-instrument's UNWIND/REWIND machinery
+  // works correctly when a child process becomes a parent and
+  // forks again.
+  it("P-07 recursive fork (parent → child → grandchild)", async () => {
+    await runFixture("programs/p_07_recursive_fork.wasm", {
+      contains: ["PARENT: pre-fork-1", "CHILD: pre-fork-2", "GRANDCHILD: ok", "CHILD: child=", "PARENT: child=", "PASS: P-07"],
+    });
+  });
+
+  // P-08: vfork(). musl's vfork typically aliases fork (no copy-on-
+  // write distinction inside our kernel). If the libc returns
+  // ENOSYS or the symbol isn't linked, the test prints SKIP_VFORK
+  // and still passes — verifies the surface is at least gracefully
+  // handled.
+  it("P-08 vfork (or graceful unsupported skip)", async () => {
+    await runFixture("programs/p_08_vfork.wasm", {
+      contains: ["PRE_VFORK", "PASS: P-08"],
+    });
+  });
+
+  // P-09: posix_spawn forking path. musl's posix_spawn uses
+  // fork+exec internally — this exercises fork-instrument's
+  // UNWIND/REWIND machinery during spawn (in contrast to P-05
+  // which exercises the non-forking fallback path).
+  it("P-09 posix_spawn forking path (fork+exec via spawn)", async () => {
+    await runFixture("programs/p_09_posix_spawn_fork.wasm", {
+      contains: ["PRE_SPAWN", "PARENT: child=", "PASS: P-09"],
       execPrograms: echoExecMap,
     });
   });
