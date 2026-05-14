@@ -65,6 +65,10 @@ CI publishes packages as **per-file uploads** under one ABI-versioned release ta
 
 ### §3.1 `package.toml` (renamed from `deps.toml`)
 
+> **Note (2026-05-13): The `[binary]` block + `revision` + `[build].repo_url` + `[build].commit` design described below is superseded.** The "resolver fetches with `package.toml` alone, no round-trip to a catalog" trade-off caused four bugs in two weeks (#454, #455, #456, #439 fallout — one of which left main unbuildable for ~36 hours). The replacement design splits `package.toml` (recipe) from `build.toml` (project view) and moves binary URLs into a CI-managed `index.toml` ledger. See `docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md` for the revised schema; the rest of this design (§3.2 `index.toml` content listing, §3.3 archive layout, §3.4 archive filename convention, §4 resolver verification chain) carries over unchanged.
+
+
+
 ```toml
 name      = "mariadb"
 version   = "10.5.28"
