@@ -51,6 +51,7 @@ CFLAGS=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
+    -mllvm -wasm-use-legacy-eh=false
 )
 
 LINK_FLAGS=(

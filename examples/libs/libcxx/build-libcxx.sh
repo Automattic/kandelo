@@ -116,13 +116,16 @@ echo "==> Building libc++ and libc++abi for ${ARCH}..."
 
 # Base wasm compile flags — no C++ header paths here; CMake manages its own
 # generated headers for the runtimes build.
-# Modern wasm-EH lowering (commit 9 of the fork-instrument mega-PR
-# removed `-wasm-use-legacy-eh=true`). libcxxabi's
+# Modern wasm-EH lowering (commit 9 of the fork-instrument mega-PR).
+# Empirical: LLVM 21's `-wasm-use-legacy-eh` default is `true`, so we
+# must pass `=false` explicitly to get modern `try_table`/`catch_ref`
+# lowering — just dropping the earlier `=true` override leaves the
+# toolchain on legacy `try`/`catch`. libcxxabi's
 # `__cxa_throw`/`_Unwind_RaiseException` machinery now compiles
-# against the modern `try_table`/`catch_ref` ABI; consumers linking
-# against this libcxx archive must also compile with modern EH (the
+# against the modern ABI; consumers linking against this libcxx
+# archive must also compile with `-wasm-use-legacy-eh=false` (the
 # SDK's `compileFlags` was updated in lock-step).
-WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG"
+WASM_C_FLAGS="--target=${WASM_TARGET} -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -fexceptions -fno-trapping-math --sysroot=${SYSROOT} -O2 -DNDEBUG"
 
 # Always start with a fresh build tree so a cache-miss rebuild does
 # not mix old + new cmake artifacts.

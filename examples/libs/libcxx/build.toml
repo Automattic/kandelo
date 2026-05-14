@@ -1,9 +1,9 @@
 script_path = "examples/libs/libcxx/build-libcxx.sh"
 repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-# Revision 3: libcxx + libcxxabi + libunwind rebuilt with modern wasm-EH
-# lowering (`try_table`/`catch_ref`), not legacy `try`/`catch`.
-revision    = 3
+# Revision 4: libcxx + libcxxabi + libunwind rebuilt with
+# `-mllvm -wasm-use-legacy-eh=false` explicitly set.
+revision    = 4
 
 [binary]
 index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"

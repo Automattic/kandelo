@@ -95,6 +95,7 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
+    -mllvm -wasm-use-legacy-eh=false
     -D_GNU_SOURCE
 )
 CFLAGS=("${CFLAGS_BASE[@]}" -I"$LIBC_TEST/src/common")
