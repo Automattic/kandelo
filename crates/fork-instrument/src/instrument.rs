@@ -3163,6 +3163,62 @@ fn find_try_table_parent_seq<'a>(
 // The entry block still ends up as [preamble-ifelse, Block($unwind_save),
 // postamble] so the frame layout is stable across schemes.
 
+// =====================================================================
+// Trampoline dispatch — sub-commit 2.2 of the mega-PR
+// (docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md)
+// =====================================================================
+//
+// Replaces guard-dispatch as the fallback for the three classes
+// switch-dispatch can't handle today:
+//   (a) Nested fork-path call inside a Loop/IfElse/TryTable body that
+//       `classify_nested_pattern` rejects (UnsupportedLegacyTry,
+//       UnsupportedMultiValueParams, UnsupportedCarryover).
+//   (b) Top-level fork-path call with operand-stack carryover.
+//   (c) Nested call_indirect to a fork-path callee, in combination
+//       with another unsupported pattern. (Simple nested call_indirect
+//       in a loop is empirically already handled by nested switch-
+//       dispatch — see crates/fork-instrument/tests/trampoline.rs's
+//       `today_nested_call_indirect_uses_nested_switch_dispatch`.)
+//
+// Per-function dispatch table (open Q #3, resolved 2026-05-13):
+// each instrumented fork-path function emits its own
+// `(table $<fn>_post_table funcref)` populated with the extracted
+// post-call functions for that function. Entry-point REWIND check
+// does `call_indirect $<fn>_post_table (local.get $call_idx)`.
+//
+// State after sub-commit 2.2 (this commit): the function below is
+// defined but UNREACHABLE — no caller exists. The body emission
+// lands in 2.3; sub-commits 2.4 (carryover), 2.5 (call_indirect +
+// pattern), 2.6 (nested unsupported) wire callers one class at a
+// time. Once 2.6 ships, guard-dispatch is unreachable; commits 3-4
+// verify and delete it.
+
+/// Trampoline dispatch — placeholder. Body lands in sub-commit 2.3.
+///
+/// Same signature as `instrument_one_function_guard_dispatch` so it
+/// becomes a drop-in replacement at the call sites in
+/// `instrument_one_function` once 2.3 makes it correct and 2.4-2.6
+/// wire it up.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // wired up class-by-class in sub-commits 2.4-2.6
+fn instrument_one_function_trampoline_dispatch(
+    _module: &mut Module,
+    _func_id: FunctionId,
+    _runtime: &Runtime,
+    _fork_path: &HashSet<FunctionId>,
+    _func_ordinal: u32,
+    _aux_tables: &AuxTables,
+    _ref_plan: &[RefLocalSlot],
+    _catch_plan: &[CatchRegionPlan],
+    _b1_slots: &[(InstrSeqId, Vec<PlainCatchArmSlot>)],
+) {
+    unimplemented!(
+        "trampoline emission lands in sub-commit 2.3 of the mega-PR; \
+         this function is currently unreachable — see the section \
+         comment above for the rollout plan"
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn instrument_one_function_guard_dispatch(
     module: &mut Module,
