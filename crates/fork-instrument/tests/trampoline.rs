@@ -298,51 +298,51 @@ fn nested_multivalue_params_uses_nested_switch_dispatch() {
 }
 
 // ---------------------------------------------------------------------
-// (a) Nested in unsupported pattern: legacy try/catch
+// Legacy try/catch fork-path call — panics post-commit-9
 // ---------------------------------------------------------------------
 //
-// Legacy `try`/`catch` may not parse on the host's wat crate version
-// (it's gated behind the legacy-EH feature). Skip cleanly if so.
+// Commit 9 (modern wasm-EH SDK flip) removed `-wasm-use-legacy-eh=true`
+// from the SDK and rebuilt libcxx under modern EH lowering. Shipping
+// wasm should no longer contain `Instr::Try` in fork-path functions.
+// Sub-commits 2.5c/2.6c absorbed the other `NestedSupportStatus`
+// rejections; commit 3 replaced `instrument_one_function_guard_dispatch`'s
+// callers with panics. If a hand-written or third-party fixture still
+// has legacy try in a fork-path, the instrument tool panics with a
+// clear message naming the function — that's what this test asserts.
+//
+// Note: the wat crate may not parse legacy try/catch on the host's
+// version (it's gated behind the legacy-EH feature). Skip cleanly
+// in that case.
 
 #[test]
-fn today_legacy_try_fork_routes_to_guard_dispatch() {
+fn legacy_try_fork_panics_post_commit_9() {
     let wat = include_str!("fixtures/trampoline/legacy_try_fork.wat");
-    let input = match try_parse(wat) {
-        Some(bytes) => bytes,
-        None => {
-            eprintln!("skip: wat crate did not parse legacy try/catch fixture");
-            return;
-        }
+    let Some(input) = try_parse(wat) else {
+        eprintln!("skip: wat crate did not parse legacy try/catch fixture");
+        return;
     };
-    let output = instrument(&input, &Options::default()).expect("instrument");
-    validate(&output);
-    let module = Module::from_buffer(&output).expect("walrus parse");
-
+    // catch_unwind so the test can assert the panic message rather
+    // than just letting the panic propagate.
+    let result = std::panic::catch_unwind(|| {
+        instrument(&input, &Options::default())
+    });
+    let payload = match result {
+        Ok(_) => panic!(
+            "expected instrument() to panic on legacy try/catch fork-path \
+             (post-commit-9 invariant), but it returned Ok"
+        ),
+        Err(p) => p,
+    };
+    // Panic payload is typically a String (from `panic!("...")`).
+    let msg = payload
+        .downcast::<String>()
+        .map(|s| *s)
+        .or_else(|p| p.downcast::<&'static str>().map(|s| (*s).to_string()))
+        .unwrap_or_else(|_| "<unknown panic>".into());
     assert!(
-        !has_br_table_in(&module, "_start"),
-        "today: legacy try/catch with fork must route to guard-dispatch"
+        msg.contains("UnsupportedLegacyTry"),
+        "expected panic message to mention `UnsupportedLegacyTry`; got: {msg}"
     );
-}
-
-#[test]
-#[ignore = "enabled in sub-commit 2.6 — wire nested-Loop/IfElse/TryTable to trampoline"]
-fn trampoline_legacy_try_fork_emits_post_table() {
-    let wat = include_str!("fixtures/trampoline/legacy_try_fork.wat");
-    let input = match try_parse(wat) {
-        Some(bytes) => bytes,
-        None => {
-            // Legacy try/catch may have been removed by the C5 SDK
-            // flip (commit 9 of the mega-PR) before this test fires.
-            // Skip rather than fail in that case.
-            eprintln!("skip: legacy try/catch no longer parses (likely post-C5)");
-            return;
-        }
-    };
-    let output = instrument(&input, &Options::default()).expect("instrument");
-    validate(&output);
-    let module = Module::from_buffer(&output).expect("walrus parse");
-
-    assert!(has_table_with_prefix(&module, "_start_post_table"));
 }
 
 // ---------------------------------------------------------------------

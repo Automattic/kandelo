@@ -270,43 +270,53 @@ fn instrument_one_function(
             );
             return;
         }
-        // Unsupported nesting (e.g. fork-path call inside a Loop or
-        // TryTable body). Fall back to guard-dispatch — these patterns
-        // are rare in practice and may or may not hit the divergence
-        // bug; preserving today's behavior is the safer default. PANIC
-        // for fork-from-catch which is explicitly out of scope (B1
-        // follow-up).
+        // Commit 3 (2026-05-14): the only remaining
+        // `NestedSupportStatus` rejection is `UnsupportedLegacyTry`.
+        // Commit 9 (modern wasm-EH SDK flip) eliminates legacy
+        // `try`/`catch` from shipping wasm; sub-commits 2.5c/2.6c
+        // closed `UnsupportedCarryover` and `UnsupportedMultiValueParams`
+        // respectively. If we reach this branch on a shipping binary,
+        // either commit 9's rebuild missed a port or a hand-written
+        // wasm module legitimately uses legacy try/catch — both are
+        // investigation-worthy. Panic loudly with a message that
+        // names the function and the unsupported pattern so CI logs
+        // surface the specific binary.
+        let func = func_name(module, func_id);
         if has_fork_call_in_catch_handler(module, func_id, fork_path) {
             panic!(
-                "fork-instrument: function `{}` has a fork-path call inside a \
-                 try_table catch-handler body (B1 follow-up — see \
-                 memory/fork-instrument-b1-followup.md). This pattern is \
-                 explicitly out of scope for the nested per-block \
-                 switch-dispatch transform.",
-                func_name(module, func_id),
+                "fork-instrument: function `{func}` has a fork-path call inside a \
+                 try_table catch-handler body. This pattern is currently \
+                 unsupported end-to-end (B1 stages 1+2 shipped machinery but the \
+                 C1 fixture still hangs). See \
+                 memory/fork-instrument-b1-followup.md and the C1 fixture in \
+                 programs/cpp_eh_fork_from_catch_test.cpp."
             );
         }
-        instrument_one_function_guard_dispatch(
-            module,
-            func_id,
-            runtime,
-            fork_path,
-            func_ordinal,
-            aux_tables,
-            ref_plan,
-            catch_plan,
-            b1_slots,
+        panic!(
+            "fork-instrument: function `{func}` triggered `UnsupportedLegacyTry` \
+             — a fork-path call inside a legacy `try`/`catch` body or catch handler. \
+             Post-commit-9 (modern wasm-EH SDK flip) this case should not appear \
+             in shipping wasm. Either the libcxx rebuild missed this port (check \
+             that the package depends on libcxx revision ≥ 3) or the source \
+             contains hand-written legacy-EH wasm. Investigate, then either flip \
+             the source to modern EH or extend nested switch-dispatch to handle \
+             the case (currently no trampoline implementation; see \
+             memory/fork-instrument-fierce-wire-paused-pending-423.md \"2.6d \
+             UnsupportedLegacyTry\")."
         );
-        return;
     }
 
     if has_top_level_stack_carryovers(module, func_id, fork_path) {
-        // Sub-commit 2.4c (2026-05-14): switch-dispatch now absorbs
+        // Sub-commit 2.4c (2026-05-14): switch-dispatch absorbs
         // top-level carryovers via in-place spill/reload at the call
-        // site (Option B from the 2026-05-13 plan, decided 2026-05-14).
-        // Route to switch-dispatch when `compute_carryover_types` can
-        // statically type every producer; fall back to guard-dispatch
-        // for the rare untrackable cases (preserves today's behavior).
+        // site. The compute_carryover_types Option<ValType> refactor
+        // (sub-commit 9-followup) made the analyser succeed for any
+        // shape whose carryover values are statically typed — and
+        // unknown-type values consumed before any fork-path call are
+        // also tolerated. If the analyser still returns None here, a
+        // shipping binary has an unknown-type value AS a carryover at
+        // a fork-path call (genuinely rare LLVM output). Panic loudly
+        // for the same reason as the LegacyTry case above.
         if compute_carryover_types(module, func_id, fork_path).is_some() {
             instrument_one_function_switch(
                 module,
@@ -321,18 +331,17 @@ fn instrument_one_function(
             );
             return;
         }
-        instrument_one_function_guard_dispatch(
-            module,
-            func_id,
-            runtime,
-            fork_path,
-            func_ordinal,
-            aux_tables,
-            ref_plan,
-            catch_plan,
-            b1_slots,
+        let func = func_name(module, func_id);
+        panic!(
+            "fork-instrument: function `{func}` has a top-level fork-path call \
+             whose operand-stack carryover contains a value of a type the \
+             analyser can't statically determine (Unop / Cmpxchg / TernOp / \
+             RefIsNull / non-fork-path CallIndirect or CallRef / multi-value or \
+             ref-typed structured-control result). The 2.6c push-before \
+             emission can spill this carryover only if its type is known. \
+             Extend `compute_carryover_types` to handle the specific producer, \
+             or change the source to avoid the pattern."
         );
-        return;
     }
 
     instrument_one_function_switch(
