@@ -173,9 +173,9 @@ tool per-function based on call-site topology:
 
 | Scheme                       | When picked                                                                                                                                                                                                                                                                                                                       | How REWIND reaches the resumed call                                                                                                                                                                                            |
 |------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level AND no top-level fork-path call has an operand-stack carryover.                                                                                                                                                                                                            | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path.                                                      |
-| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies, but the nesting pattern is supportable: legacy `Try` is absent, no fork-bearing block has multi-value params, and any operand-stack carryover at a sub-region landing fits the carryover-spilling MVP (single i32 at a non-IfElse sub-region). | Cascading `POST_K` blocks plus a per-region `br_table` route REWIND through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch).                              |
-| guard-dispatch               | Any pattern not covered above: legacy `Try`, multi-value-params blocks, operand-stack carryovers at DirectCall or SubRegionIfElse landings, or wider carryover shapes at sub-region landings. The body re-executes top-to-bottom on REWIND with per-call if-else guards.                                                          | Each fork-path call site is wrapped in `(state == NORMAL) || (state == REWINDING && call_idx == N)`. Phase 4g gates side-effect ops in the body so they don't re-fire on REWIND.                                                |
+| switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c).                                                                    | A top-level `br_table`, gated by `state == REWINDING`, jumps directly to the matching `$POST_K` label. The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call. |
+| switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c). Only legacy `Try` and IfElse-with-carryover remain rejected. | Cascading `POST_K` blocks plus a per-region `br_table` route REWIND through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
+| guard-dispatch               | Only `UnsupportedLegacyTry` patterns remain on this path (a fork-path call inside a legacy `Instr::Try` body or catch handler). Commit 9 (modern wasm-EH SDK flip) removes legacy `try`/`catch` from shipping wasm, so guard-dispatch becomes unreachable in practice; commits 3-4 of the mega-PR delete it. The path stays as a defensive fallback until the SDK-rebuild propagates through every shipping port. | Each fork-path call site is wrapped in `(state == NORMAL) || (state == REWINDING && call_idx == N)`. Phase 4g gates side-effect ops in the body so they don't re-fire on REWIND.                                                |
 
 All three shapes share:
 
@@ -530,7 +530,7 @@ re-evaluating the original cond expression during REWIND — important when
 that expression has side effects or reads state that may diverge between
 parent NORMAL and child/parent REWIND.
 
-### 3. Carryover-spilling at SubRegion landings
+### 3. Carryover-spilling at SubRegion + DirectCall landings
 
 LLVM at -O2 inlines `posix_spawn` into `main` (and similar patterns
 elsewhere) and emits a single i32 pushed *before* a fork-bearing block
@@ -549,35 +549,61 @@ i32.store             ;; consumes both: *errno_location = posix_spawn_rc.
 
 `POST_K` is `Simple(None)` (0 → 0), so the chunk before the SubRegion can't
 leave anything on the stack. The fix is to spill the carryover into a
-fresh **frame-resident** i32 local at the chunk tail, then reload it after
-the enclosing instruction runs:
+fresh **frame-resident** local at the chunk tail, then reload it BEFORE
+the enclosing instruction runs (sub-commit 2.6a — push-before order
+replaces the earlier push-after + tmp-result-juggle):
 
-- `CarryoverPlan` allocates a `spill_local` (always) and an optional
-  `tmp_result_local` (used when the enclosing instruction returns 1 i32 —
-  needed to juggle the result above the restored carryover). Both locals
-  are appended to the function's frame so they get serialized on UNWIND
-  and restored on REWIND, matching every other scalar user local.
-- `emit_chunk_tail_for_landing` emits `local.set $spill_local` at the end
-  of the chunk inside `POST_K`. Net stack effect of the chunk: 0 → 0,
-  satisfying `POST_K`'s type.
-- The post-landing sequence emits the enclosing instruction verbatim,
-  optionally captures its i32 result into `tmp_result_local`, restores the
-  carryover via `local.get $spill_local`, then re-pushes the result. The
-  consumer downstream sees `[carryover, result]` — the same shape it would
-  see on NORMAL.
+- `CarryoverPlan` holds `spill_locals: Vec<(LocalId, ValType)>`, ordered
+  deepest-stack-first. All locals are appended to the function's frame so
+  they get serialized on UNWIND and restored on REWIND, matching every
+  other scalar user local.
+- `emit_chunk_tail_for_landing` pops each value off the operand stack via
+  `local.set`, top-of-stack-first, into the spill locals. Net stack effect
+  of the chunk inside `POST_K`: 0 → 0, satisfying `POST_K`'s type.
+- The post-landing sequence pushes spill_locals[0..] back onto the stack
+  in order BEFORE emitting the enclosing instruction. The SubRegion's
+  type-params (at the top of the post-push stack) are consumed by the
+  instruction; any extra carryover beneath stays intact and ends up below
+  the SubRegion's result on exit — matching the original semantics WITHOUT
+  needing a tmp_result_local juggle.
 
-The carryover plan is allocated by `analyze_carryover_depths`, which walks
-the seq's stack effects and reports the depth at each SubRegion (non-IfElse)
-landing. `seq_has_unsupported_carryover` runs first as a gate and rejects
-patterns the MVP can't spill (DirectCall carryovers, SubRegionIfElse
-carryovers, multi-value carryovers, non-i32 result types) — those still
-fall back to guard-dispatch. The comment block above
-`seq_has_unsupported_carryover` records that **guard-dispatch was the
-originally-expected solution** for the LLVM-O2 carryover pattern, but
-multiple debugging sessions never pinned down the precise divergence;
-revisiting guard-dispatch in the future would cover any other
-LLVM-codegen-sensitive shape that doesn't fit the carryover-spilling MVP
-scope.
+The same machinery applies to **DirectCall landings inside nested seqs**
+(sub-commit 2.5b/c). At each fork-path call site inside a non-entry seq,
+per-call carryover spill locals (allocated from
+`compute_nested_carryover_types`, keyed by call_idx) round-trip the
+carryover values across UNWIND/REWIND.
+
+The SubRegion spill list is computed by `analyze_subregion_spill_types`
+(sub-commit 2.6a; replaces the older `analyze_carryover_depths`), which
+tracks the typed operand stack as `Vec<Option<ValType>>` and reports the
+full list of values to spill per landing — covering both the SubRegion's
+declared type-params AND any extra carryover above them on the parent
+stack. `seq_has_unsupported_carryover` runs first as a gate; post-2.6c
+it rejects only IfElse-with-carryover and SubRegions with unsupported
+result types (multi-value RESULTs are still gated, though body PARAMS
+are now supported).
+
+**Multi-value-params bodies (sub-commit 2.6c).** When a SubRegion is a
+multi-value `Block`/`Loop`/`TryTable` whose body uses its declared input
+params, the cascading POST_K blocks can't expose those params to inner
+chunks (POST_K is `Simple(None)`, so the wasm validator forbids reading
+from outside its scope). The fix: at body entry, pre-spill the params to
+fresh function-local locals; in POST_0's body (just before chunks[0]
+runs), reload them via prepended `local.get`s. On NORMAL flow the body
+params are saved and reloaded; on REWIND the dispatch br_tables past
+chunks[0], so the LocalGets are skipped — exactly the cases where the
+params would otherwise be needed.
+
+**Function-level analyser gate.** When `walk_seq_for_carryovers` or
+`compute_nested_carryover_types` encounters a producer whose pushed type
+the analyser can't statically track (Unop, Cmpxchg, ref-typed
+CallIndirect/CallRef, multi-value structured control), the unknown slot
+is tracked as `None` and tolerated as long as it's consumed before any
+fork-path call. Only if a `None` slot ends up IN a carryover does the
+analyser fail, kicking the function back to guard-dispatch via
+`classify_nested_pattern`'s function-level fallback (instrument.rs).
+The same `Option<ValType>` policy applies to the top-level
+`compute_carryover_types` for switch-dispatch (top-level) routing.
 
 ## Auxiliary tables
 
@@ -727,23 +753,45 @@ closure is still a strict subset of full-module instrumentation.
   [posix-status.md](posix-status.md) for rationale.
 - **Multi-target `*_ref` try_tables.** A try_table with multiple `catch_ref`
   or `catch_all_ref` clauses dispatching to different handlers is currently
-  skipped at the 6d rewrite stage. No shipping program has forced the issue;
-  support can be added when needed.
+  skipped at the 6d rewrite stage. Tracked as A2 in the mega-PR plan
+  (commits 5-6); not blocking shipping ports today.
 - **Multi-target plain-catch try_tables.** A try_table with multiple plain
   (non-`_ref`) catch arms whose handlers branch to different labels is also
   unsupported. B1 stage 2 detects this shape and excludes the function from
   fork-path instrumentation rather than emitting a half-correct dispatcher;
-  see [Catch-handler resume — plain catch](#catch-handler-resume).
+  see [Catch-handler resume — plain catch](#catch-handler-resume). Tracked
+  as A3 in the mega-PR plan (commits 5-6).
 - **Functions whose plain-catch arms carry ref-typed operands.** Catch arms
   whose operand tuple includes an `(ref ...)` value (typically a function or
   GC ref) are carved out of the fork-path set at instrument time. Spilling
-  ref-typed catch operands would require a per-arm aux table; no shipping
-  fork-path program forces it. The carve-out runs in
-  `instrument::plan_b1_scratch` and is reported in `B1ScratchPlan::b2_carveout`.
+  ref-typed catch operands would require a per-arm aux table; tracked as A4
+  in the mega-PR plan (commit 7).
+- **IfElse with operand-stack carryover.** A fork-bearing `if/else`
+  enclosing a stack value that survives across the branch is rejected by
+  `seq_has_unsupported_carryover` — the cond rewrite via `select` (see
+  §IfElse cond rewrite) doesn't currently compose with carryover spilling.
+  Rare in LLVM output; not tracked as a current blocker.
 - **Wasm-GC refs.** Abstract `any` / `eq` / `struct` / `array` / `i31` refs
   and concrete GC refs are rejected at the `classify_ref` step — the tool
   panics rather than produce a silently-broken module. Add classes in
   `crates/fork-instrument/src/instrument.rs` when a real program needs them.
+
+#### Closed since the mega-PR's 2.5/2.6 sub-commits
+
+These were "Not guaranteed" pre-2.5/2.6 but are now absorbed by switch-
+dispatch (top-level or nested):
+
+- ~~**Operand-stack carryovers at DirectCall landings**~~ — sub-commit 2.5c
+  added per-call carryover spilling at direct fork-path call landings.
+- ~~**Multi-value-params Block/Loop/TryTable bodies containing fork-path
+  calls**~~ — sub-commit 2.6c added body-input-param prespill so the
+  cascading POST_K blocks can re-expose params to inner chunks.
+- ~~**Wider carryover shapes at sub-region landings (multi-typed, multi-
+  value)**~~ — sub-commit 2.6a's `CarryoverPlan::spill_locals` Vec
+  generalised the single-i32 MVP to any number of typed slots.
+- ~~**Top-level carryovers with unknown-type producers consumed before the
+  fork call**~~ — sub-commit 9-followup generalised the top-level
+  analyser to `Vec<Option<ValType>>`, mirroring 2.5c's nested policy.
 
 ### Not-yet-gated side effects
 
