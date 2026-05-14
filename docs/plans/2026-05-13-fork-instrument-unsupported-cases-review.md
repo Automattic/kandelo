@@ -132,6 +132,12 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Today:** Saved task #16 was "in_progress with workaround." Workaround (the partial revert of PR #434's worker-main.ts) was dropped during today's rebase. The architectural Path-A switch-dispatch fix that landed in Phase 7 may already cover it; needs a fresh repro to confirm.
 - **Plan:** Re-run the SpiderMonkey spike's test (b) against post-rebase fierce-wire. If hang reproduces, investigate concretely. If not, mark resolved.
 - **Decision (2026-05-13):** **Reproduce test (b) now in this PR.** 1–2 hour investigation: run the SpiderMonkey-spike test (b) on current fierce-wire (post-rebase, workaround dropped). If it still hangs, root-cause and either fix or document concretely; if it doesn't, mark closed by PR #423's incidental fix (proper dlopen / GOT handling). Either outcome informs the eliminate-guard-dispatch PR's port re-validation.
+- **Repro result (2026-05-13):** **Bug reproduces.** Wrote `programs/cpp_post_catch_fork_test.cpp` — a faithful test (b) reproducer: throw 42, catch, then `fork()` outside any try region. Output observed:
+  ```
+  CAUGHT: 42
+  PRE_FORK
+  ```
+  Program exits with code 0 in ~256ms, no further output. The parent never returns from `fork()` to print `PARENT:` or `CHILD:` lines. Not literally a hang (the spike memory's "HANG" description) but the same broken post-catch-fork path: the parent silently truncates and exits "successfully." Test landed in `host/test/cpp-throw-test.test.ts` as `it.fails(...)` so the regression is captured without blocking CI; if the architectural pivot incidentally fixes it, vitest will flag the unexpected pass and we flip it to a normal assertion. **Root-cause investigation deferred to the eliminate-guard-dispatch PR** — the most likely cause is guard-dispatch's REWIND body-replay diverging from NORMAL control flow (same family as the popen-class divergence documented in `memory/fork-instrument-O2-bug-investigation.md`). The architectural pivot removes that mechanism entirely. **Side find:** `glue/abi_constants.h` was stuck at `WASM_POSIX_ABI_VERSION 8u` while the kernel advertised 9; regenerated via `scripts/check-abi-version.sh update`. This is a separate fix landing alongside the C2 work.
 
 ### C3. fork-from-signal-handler
 
