@@ -39,16 +39,6 @@ fn waitpid_class_non_fork_path_call_skipped_on_rewind() {
 }
 
 #[test]
-#[ignore = "debug helper"]
-fn _dump_carryover_wat() {
-    let wat = include_str!("fixtures/switch_dispatch/top_level_carryover.wat");
-    let input = wat::parse_str(wat).expect("wat parse");
-    let output = instrument(&input, &Options::default()).expect("instrument");
-    let printed = wasmprinter::print_bytes(&output).expect("print");
-    eprintln!("{printed}");
-}
-
-#[test]
 fn top_level_carryover_uses_switch_dispatch_with_carryover_spills() {
     // Regression for a real-world shape in dash's `cmdputs`: LLVM
     // emits a top-level fork-path call whose address operand was
