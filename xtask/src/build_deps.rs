@@ -1890,7 +1890,6 @@ mod tests {
 kind = "library"
 name = "{name}"
 version = "{version}"
-revision = 1
 depends_on = [{depends}]
 
 [source]
@@ -1984,82 +1983,14 @@ libs = ["lib/lib{name}.a"]
         assert_eq!(s1, s2, "sha must be deterministic");
     }
 
-    #[test]
-    fn compute_sha_changes_when_revision_bumps() {
-        let root = tempdir("sha-rev-bump");
-        write(&root, "libX", "1.0.0", &[]);
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let m1 = reg.load("libX").unwrap();
-        let sha1 = compute_sha(
-            &m1,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-
-        // Bump revision in-place by editing the file.
-        let toml_path = root.join("libX/package.toml");
-        let text = std::fs::read_to_string(&toml_path).unwrap();
-        let bumped = text.replace("revision = 1", "revision = 2");
-        std::fs::write(&toml_path, bumped).unwrap();
-
-        let m2 = reg.load("libX").unwrap();
-        let sha2 = compute_sha(
-            &m2,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        assert_ne!(sha1, sha2, "revision bump must invalidate cache key");
-    }
-
-    #[test]
-    fn compute_sha_transitively_invalidates_consumers() {
-        let root = tempdir("sha-transitive");
-        write(&root, "libDep", "1.0.0", &[]);
-        write(&root, "libCons", "1.0.0", &["libDep@1.0.0"]);
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let cons = reg.load("libCons").unwrap();
-        let sha_before = compute_sha(
-            &cons,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-
-        // Bump the dep's revision: consumer's sha must change.
-        let dep_path = root.join("libDep/package.toml");
-        let text = std::fs::read_to_string(&dep_path).unwrap();
-        std::fs::write(&dep_path, text.replace("revision = 1", "revision = 9"))
-            .unwrap();
-
-        let sha_after = compute_sha(
-            &cons,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        assert_ne!(
-            sha_before, sha_after,
-            "bumping a dep's revision must invalidate its consumers"
-        );
-    }
+    // Tests asserting "bumping `revision = N` in package.toml changes
+    // the cache key" were removed when revision moved out of source
+    // package.toml (binary-resolution-via-index-ledger design §3.1):
+    // source manifests no longer carry a revision counter and
+    // validate_source rejects the field. compute_sha still hashes
+    // m.revision (defaulted to 1 from validate_common) so the cache
+    // key for a source build remains deterministic; the bumping
+    // behavior is just no longer expressible via a source edit.
 
     #[test]
     fn compute_sha_rejects_version_mismatch() {
@@ -2186,6 +2117,7 @@ libs = ["lib/lib{name}.a"]
     // CLI binary itself is exercised by the end-to-end smoke step.
 
     #[test]
+    #[ignore = "binary-resolution-via-index-ledger: un-ignore after Phase 9 migrates examples/libs/*/package.toml off the legacy schema (revision/[binary])"]
     fn compute_cache_key_sha_subcommand_prints_64_hex_for_real_package() {
         // Smoke against a real first-party package — `bash` has a
         // non-trivial dep graph (depends on ncurses), exercising
@@ -2221,11 +2153,13 @@ libs = ["lib/lib{name}.a"]
         )
         .unwrap();
 
-        // Bump revision in-place; helper should re-hash and produce a
-        // different sha.
+        // Bump version in-place (revision lives in index.toml post
+        // binary-resolution-via-index-ledger; the source-tree mutable
+        // field that affects the cache key is now version). Helper
+        // should re-hash and produce a different sha.
         let toml_path = pkg.join("package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
-        std::fs::write(&toml_path, text.replace("revision = 1", "revision = 7")).unwrap();
+        std::fs::write(&toml_path, text.replace("version = \"1.0.0\"", "version = \"1.0.1\"")).unwrap();
 
         let sha_after = compute_cache_key_sha_for_package(
             &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
@@ -2233,7 +2167,7 @@ libs = ["lib/lib{name}.a"]
         .unwrap();
         assert_ne!(
             sha_before, sha_after,
-            "revision bump must change cache_key_sha"
+            "version bump must change cache_key_sha"
         );
     }
 
@@ -2336,7 +2270,6 @@ libs = ["lib/lib{name}.a"]
 kind = "program"
 name = "{name}"
 version = "{version}"
-revision = 1
 depends_on = []
 
 [source]
@@ -2599,7 +2532,6 @@ spdx = "TestLicense"
 kind = "library"
 name = "{name}"
 version = "{version}"
-revision = 1
 depends_on = [{depends}]
 
 [source]
@@ -3263,7 +3195,6 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 
 [source]
 url = "https://example.test/pcre2.tar.bz2"
@@ -3636,7 +3567,14 @@ cache_key_sha = "{cache_key_sha}"
         )
     }
 
+    // Tests under `#[ignore]` below exercise the resolver's legacy
+    // `[binary]`-block fetch path. The source package.toml no longer
+    // carries `[binary]` (validate_source rejects it post
+    // binary-resolution-via-index-ledger), so these fixtures don't
+    // parse. Phase 6 of the implementation plan rewrites them to use
+    // a `build.toml` + `index.toml` shape; un-ignore + migrate then.
     #[test]
+    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
     fn remote_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
         let root = tempdir("rf-happy-reg");
         let cache = tempdir("rf-happy-cache");
@@ -3718,6 +3656,7 @@ cache_key_sha = "{cache_key_sha}"
     }
 
     #[test]
+    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
     fn remote_fetch_falls_through_on_archive_sha_mismatch() {
         let root = tempdir("rf-shafail-reg");
         let cache = tempdir("rf-shafail-cache");
@@ -3765,6 +3704,7 @@ cache_key_sha = "{cache_key_sha}"
     }
 
     #[test]
+    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
     fn remote_fetch_falls_through_on_target_arch_mismatch() {
         let root = tempdir("rf-archfail-reg");
         let cache = tempdir("rf-archfail-cache");
@@ -3805,6 +3745,7 @@ cache_key_sha = "{cache_key_sha}"
     }
 
     #[test]
+    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
     fn remote_fetch_falls_through_on_abi_mismatch() {
         let root = tempdir("rf-abifail-reg");
         let cache = tempdir("rf-abifail-cache");
@@ -3845,6 +3786,7 @@ cache_key_sha = "{cache_key_sha}"
     }
 
     #[test]
+    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
     fn remote_fetch_falls_through_on_cache_key_mismatch() {
         let root = tempdir("rf-ckfail-reg");
         let cache = tempdir("rf-ckfail-cache");
@@ -3917,7 +3859,6 @@ cache_key_sha = "{cache_key_sha}"
                 r#"kind = "program"
 name = "{name}"
 version = "{version}"
-revision = 1
 depends_on = [{depends_on}]
 [source]
 url = "https://example.test/{name}.tar.gz"
@@ -3950,7 +3891,6 @@ spdx = "MIT"
             r#"kind = "program"
 name = "vim"
 version = "9.1.0900"
-revision = 1
 [source]
 url = "https://x.test/vim.tar.gz"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -4099,7 +4039,6 @@ wasm = "vim.wasm"
 kind = "library"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 
 [source]
 url = "https://example.test/pcre2.tar.bz2"
@@ -4179,7 +4118,6 @@ libs = []
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 
 [source]
 url = "file://{}"
@@ -4248,7 +4186,6 @@ spdx = "BSD-3-Clause"
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 kernel_abi = 7
 
 [source]
@@ -4303,7 +4240,6 @@ script_path = "custom.sh"
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 kernel_abi = 7
 
 [source]
@@ -4376,7 +4312,6 @@ script_path = "noop.sh"
 kind = "source"
 name = "foo-source"
 version = "1.0"
-revision = 1
 kernel_abi = 7
 
 [source]
@@ -4451,7 +4386,6 @@ libs = ["lib/libconsumer.a"]
 kind = "library"
 name = "fake"
 version = "0.1"
-revision = 1
 
 [source]
 url = "https://example.test/fake.tar.gz"
@@ -4504,7 +4438,6 @@ version_constraint = ">=99.99"
 kind = "library"
 name = "fake"
 version = "0.1"
-revision = 1
 
 [source]
 url = "https://example.test/fake.tar.gz"
@@ -4554,7 +4487,6 @@ install_hints = { darwin = "brew install nope", linux = "apt install nope" }
 kind = "library"
 name = "fake"
 version = "0.1"
-revision = 1
 
 [source]
 url = "https://example.test/fake.tar.gz"
@@ -4614,7 +4546,6 @@ install_hints = { darwin = "brew install needs-darwin-hint" }
 kind = "library"
 name = "{consumer}"
 version = "1.0"
-revision = 1
 
 [source]
 url = "https://example.test/{consumer}-1.0.tar.gz"
@@ -4763,6 +4694,7 @@ libs = ["lib/libF1.a"]
     }
 
     #[test]
+    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
     fn force_rebuild_bypasses_remote_fetch() {
         // Stage a real archive on disk and point [binary].archive_url at
         // it. Without force, the resolver installs from the archive and
