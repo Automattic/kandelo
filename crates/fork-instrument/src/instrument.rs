@@ -4841,6 +4841,12 @@ fn inject_frame_io_guard_dispatch(
 enum NestedSupportStatus {
     Supported,
     UnsupportedLegacyTry,
+    /// Sub-commit 2.6c: no longer produced — multi-value-params
+    /// SubRegions now route to nested switch-dispatch via the body-
+    /// param prespill + reload mechanism in `transform_region_seq`.
+    /// Kept as a documented enum variant for future defensive use
+    /// (e.g., if a shape regression appears).
+    #[allow(dead_code)]
     UnsupportedMultiValueParams,
     UnsupportedCarryover,
 }
