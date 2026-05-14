@@ -125,27 +125,27 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 
 - **Today:** B1 stages 1+2 shipped on this PR. No real-world C++ EH+fork program has exercised the machinery; cpp_throw_test only validates EH itself, not EH+fork.
 - **Plan:** Stage 3 needs the SpiderMonkey port or a synthetic C++ EH+fork fixture under `host/test/cpp-throw-test.test.ts`. Deferred per `docs/plans/2026-04-28-fork-instrument-b1-fork-from-plain-catch.md`.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Add a synthetic fixture in this PR.** Land `cpp_eh_fork_from_catch.cpp` (or similar) under `host/test/cpp-throw-test.test.ts` or `crates/fork-instrument/tests/` that exercises a C++ try/catch with `fork()` inside the catch handler body, verifying both parent and child paths. Small, fast, gives B1 machinery a regression test ahead of any larger consumer (SpiderMonkey). ~1–2 days.
 
 ### C2. Test (b) post-catch fork-hang root cause
 
 - **Today:** Saved task #16 was "in_progress with workaround." Workaround (the partial revert of PR #434's worker-main.ts) was dropped during today's rebase. The architectural Path-A switch-dispatch fix that landed in Phase 7 may already cover it; needs a fresh repro to confirm.
 - **Plan:** Re-run the SpiderMonkey spike's test (b) against post-rebase fierce-wire. If hang reproduces, investigate concretely. If not, mark resolved.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Reproduce test (b) now in this PR.** 1–2 hour investigation: run the SpiderMonkey-spike test (b) on current fierce-wire (post-rebase, workaround dropped). If it still hangs, root-cause and either fix or document concretely; if it doesn't, mark closed by PR #423's incidental fix (proper dlopen / GOT handling). Either outcome informs the eliminate-guard-dispatch PR's port re-validation.
 
 ### C3. fork-from-signal-handler
 
 - **Today:** No fixture, no handling. Saved task #17.
 - **Plan:** Extend call-graph discovery into registered sigaction handlers; treat them as fork-path roots. Add a fixture under `crates/fork-instrument/tests/` and an integration test that forks from a SIGALRM handler.
 - **Effort:** ~1 week.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Add in this PR — conservative + fixture.** Extend `instrument::discover_fork_path` to treat every address-taken function as a fork-path root (the conservative rule). Add a SIGUSR1 fork fixture exercising both parent and child paths. ~1 week. Lands in fierce-wire / PR #307. **Future work flagged:** if the conservative rule causes objectionable binary-size growth, implement the precise version (parse `sigaction()` callers to identify actual signal handlers via inter-procedural analysis or a libc hook). Recorded in `docs/future-improvements.md` under "Fork-instrument precise signal-handler discovery".
 
 ### C4. fork-from-cancellation-cleanup
 
 - **Today:** No fixture, no handling. Saved task #18.
 - **Plan:** Identify `pthread_cleanup_push` registrants; treat as fork-path roots. Add a fixture + test.
 - **Effort:** ~1 week.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Covered by C3 + add fixture in this PR.** C4 is structurally identical to C3 from the instrumenter's perspective — cleanup handlers are address-taken functions reached via host-managed callback registration. C3's conservative rule (treat every address-taken function as a fork-path root) covers cleanup handlers incidentally. Add a `pthread_cleanup_push` + fork fixture as a regression test in the same C3 PR work to prove the coverage holds. ~1 day for the fixture. **Future work flagged:** the precise variant described under C3's future-improvement entry must also extend to `pthread_cleanup_push` registrants when implemented.
 
 ### C5. Modern wasm-EH SDK flip
 
@@ -153,7 +153,7 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Why blocking:** Until flipped, items A2 + A4 are dormant — no shipping binary emits modern-EH patterns that would force them.
 - **Plan:** Flip flag SDK-wide, rebuild libcxx with modern lowering, publish a new `binaries-abi-v*` archive, rebuild every C++ program that uses EH (cpp_throw_test, vim, mariadb, php, quickjs), audit fork-instrument behavior under modern-EH binaries.
 - **Effort:** Multi-day. Likely its own PR rather than a Phase 7 cleanup item.
-- **Decision:** _pending discussion_
+- **Decision (2026-05-13):** **Bundle into a single mega-PR with the architectural pivot.** Combined scope: eliminate-guard-dispatch + runtime-dispatcher trampoline + modern wasm-EH SDK flip + libcxx rebuild & republish + A2 + A3 + A4 (funcref/externref) + comprehensive instrumentation/rewind test program. **No supported case left out** — the test program must exercise every supported instrumentation pattern and rewind path. ~6–10 weeks. Drafted as `docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md`. Mega-PR is high-risk but coherent: every component touches the dispatch core or the EH path; staging them as separate PRs would mean repeated rebase pain.
 
 ---
 
