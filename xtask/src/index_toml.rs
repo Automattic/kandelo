@@ -105,6 +105,99 @@ impl IndexToml {
             .binary
             .get(&arch)
     }
+
+    /// Hand-format the ledger to TOML. We avoid `toml::to_string`
+    /// because it alphabetizes table keys (writing `archive_sha256`
+    /// before `archive_url`, `built_at` before `cache_key_sha`,
+    /// etc.). The schema in design §3.4 specifies a deliberate field
+    /// order — keeping it stable makes diffs of a published
+    /// `index.toml` readable as an audit log of CI activity.
+    pub fn write(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("abi_version = {}\n", self.abi_version));
+        out.push_str(&format!(
+            "generated_at = \"{}\"\n",
+            escape(&self.generated_at)
+        ));
+        out.push_str(&format!("generator = \"{}\"\n", escape(&self.generator)));
+
+        // Packages emitted alphabetically by (name, version) so the
+        // file is stable under arbitrary insertion order.
+        let mut pkgs: Vec<&PackageEntry> = self.packages.iter().collect();
+        pkgs.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
+
+        for p in pkgs {
+            out.push_str("\n[[packages]]\n");
+            out.push_str(&format!("name = \"{}\"\n", escape(&p.name)));
+            out.push_str(&format!("version = \"{}\"\n", escape(&p.version)));
+            out.push_str(&format!("revision = {}\n", p.revision));
+
+            // Per-arch entries in canonical arch order: wasm32 first,
+            // then wasm64 (matches the BTreeMap's natural ordering
+            // since the enum derives Ord with Wasm32 < Wasm64).
+            for (arch, entry) in &p.binary {
+                out.push_str(&format!(
+                    "\n[packages.binary.{}]\n",
+                    arch.as_str()
+                ));
+                out.push_str(&format!(
+                    "status = \"{}\"\n",
+                    match entry.status {
+                        EntryStatus::Pending => "pending",
+                        EntryStatus::Building => "building",
+                        EntryStatus::Success => "success",
+                        EntryStatus::Failed => "failed",
+                    }
+                ));
+                // Order matches design §3.4 (success path then failure
+                // metadata then fallback block). Each field skipped
+                // when None.
+                write_opt(&mut out, "archive_url", &entry.archive_url);
+                write_opt(&mut out, "archive_sha256", &entry.archive_sha256);
+                write_opt(&mut out, "cache_key_sha", &entry.cache_key_sha);
+                write_opt(&mut out, "built_at", &entry.built_at);
+                write_opt(&mut out, "built_by", &entry.built_by);
+                write_opt(&mut out, "error", &entry.error);
+                write_opt(&mut out, "last_attempt", &entry.last_attempt);
+                write_opt(&mut out, "last_attempt_by", &entry.last_attempt_by);
+                write_opt(
+                    &mut out,
+                    "fallback_archive_url",
+                    &entry.fallback_archive_url,
+                );
+                write_opt(
+                    &mut out,
+                    "fallback_archive_sha256",
+                    &entry.fallback_archive_sha256,
+                );
+                write_opt(
+                    &mut out,
+                    "fallback_cache_key_sha",
+                    &entry.fallback_cache_key_sha,
+                );
+                write_opt(
+                    &mut out,
+                    "fallback_built_at",
+                    &entry.fallback_built_at,
+                );
+            }
+        }
+        out
+    }
+}
+
+fn write_opt(out: &mut String, key: &str, value: &Option<String>) {
+    if let Some(v) = value {
+        out.push_str(&format!("{key} = \"{}\"\n", escape(v)));
+    }
+}
+
+/// Minimal TOML basic-string escaping: `\` and `"` need backslash
+/// escapes; everything else we pass through. Schema values in
+/// practice are ASCII-only filenames, sha hex, ISO-8601 timestamps,
+/// and URLs — none of which carry control characters.
+fn escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(test)]
@@ -182,5 +275,97 @@ fallback_built_at       = "2026-05-12T00:00:00Z"
             Some("foo-1.0-rev1-abi8-wasm64-old.tar.zst")
         );
         assert_eq!(entry.fallback_archive_sha256.as_deref(), Some("olddeadbeef"));
+    }
+
+    #[test]
+    fn index_toml_round_trips_semantic_equality() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let original = r#"
+abi_version = 8
+generated_at = "2026-05-13T00:00:00Z"
+generator    = "test"
+
+[[packages]]
+name     = "foo"
+version  = "1.0"
+revision = 1
+
+[packages.binary.wasm32]
+status         = "success"
+archive_url    = "foo.tar.zst"
+archive_sha256 = "abc"
+cache_key_sha  = "def"
+built_at       = "2026-05-13T00:00:00Z"
+built_by       = "https://example.com/run/1"
+"#;
+        let idx = IndexToml::parse(original).unwrap();
+        let written = idx.write();
+        let reparsed = IndexToml::parse(&written).unwrap();
+        assert_eq!(reparsed, idx, "round-trip must preserve all fields");
+
+        // Field order in the written output: `archive_url` precedes
+        // `archive_sha256` precedes `cache_key_sha`. Schema order; not
+        // alphabetical (which is what toml::to_string would do).
+        let url_pos = written.find("archive_url").unwrap();
+        let sha_pos = written.find("archive_sha256").unwrap();
+        let ck_pos = written.find("cache_key_sha").unwrap();
+        assert!(url_pos < sha_pos, "archive_url must come before archive_sha256");
+        assert!(sha_pos < ck_pos, "archive_sha256 must come before cache_key_sha");
+    }
+
+    #[test]
+    fn index_toml_write_sorts_packages_alphabetically() {
+        use super::*;
+        let mut idx = IndexToml::parse(r#"
+abi_version = 8
+generated_at = "t"
+generator    = "test"
+
+[[packages]]
+name     = "zlib"
+version  = "1.0"
+revision = 1
+
+[[packages]]
+name     = "alpha"
+version  = "0.1"
+revision = 1
+"#).unwrap();
+        let _ = &mut idx; // silence unused-mut warning if any
+        let s = idx.write();
+        let alpha_pos = s.find("name = \"alpha\"").unwrap();
+        let zlib_pos = s.find("name = \"zlib\"").unwrap();
+        assert!(alpha_pos < zlib_pos, "packages must be alphabetized on write");
+    }
+
+    #[test]
+    fn index_toml_write_omits_none_fields() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let mut idx = IndexToml {
+            abi_version: 8,
+            generated_at: "now".into(),
+            generator: "test".into(),
+            packages: vec![PackageEntry {
+                name: "foo".into(),
+                version: "1.0".into(),
+                revision: 1,
+                binary: Default::default(),
+            }],
+        };
+        idx.packages[0].binary.insert(
+            TargetArch::Wasm32,
+            BinaryEntry {
+                status: EntryStatus::Pending,
+                ..Default::default()
+            },
+        );
+        let s = idx.write();
+        assert!(!s.contains("archive_url"), "absent fields must not be emitted");
+        assert!(!s.contains("error"), "absent fields must not be emitted");
+        assert!(s.contains("status = \"pending\""));
     }
 }
