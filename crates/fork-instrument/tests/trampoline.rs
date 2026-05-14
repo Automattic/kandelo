@@ -1,97 +1,60 @@
-//! Spec for the runtime-dispatcher trampoline.
+//! Regression gates for shapes the original mega-PR plan
+//! (`docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md`)
+//! reserved for the **runtime-dispatcher trampoline**.
 //!
-//! Sub-commit 2.1 of the mega-PR
-//! (`docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md`).
+//! # Empirical history
 //!
-//! # The trampoline scheme
+//! The original plan held that switch-dispatch's cascading `POST_K`
+//! blocks (typed `Simple(None)`) couldn't reach the post-call resume
+//! point for three classes of fork-path call site, and that those
+//! classes had to use a separate scheme — extract the post-call code
+//! into its own wasm function and `call_indirect` into a per-function
+//! funcref table. The scaffolding for that scheme
+//! (`extract_chunk_to_function`, `rewrite_chunk_locals_to_frame`,
+//! `emit_per_function_post_table`, `instrument_one_function_trampoline_dispatch`)
+//! landed across sub-commits 2.1-2.4b but remained unwired.
 //!
-//! Today switch-dispatch handles fork-path call sites by emitting a
-//! `br_table` inside the function entry block that branches to labeled
-//! `(block $POST_K ...)` blocks within the same function. This works
-//! when the post-call resume point is reachable via wasm structured
-//! control flow (`br N` only branches *out of* blocks, never *into*
-//! deeper nesting from outside).
+//! Sub-commits 2.4c, 2.5a-c, and 2.6a-c (2026-05-14) took a different
+//! approach: extend nested switch-dispatch in place via
+//! `Vec<Option<ValType>>` stack tracking + per-call carryover spilling
+//! + body-input-param prespill. Each "reserved for the trampoline"
+//! class was absorbed into switch-dispatch:
 //!
-//! Three classes of fork-path call site can NOT be reached this way and
-//! today route to guard-dispatch instead:
-//!
-//! - **(a) Nested in unsupported pattern.** Fork-path call lives inside
-//!   a `loop`/`if`/`try_table` body that `classify_nested_pattern`
-//!   rejects (`UnsupportedLegacyTry`, `UnsupportedMultiValueParams`,
-//!   `UnsupportedCarryover`). The post-`POST_K` block is buried too
-//!   deep for the entry-point `br_table` to reach it.
-//! - **(b) Top-level operand-stack carryover.** The call's result is
-//!   left on the operand stack across REWIND boundaries; switch-
-//!   dispatch's POST_K blocks are typed `[] → []` and would fail
-//!   validation if the carryover sticks.
-//! - **(c) Nested `call_indirect` reaching a fork-path callee.**
+//! - **Top-level operand-stack carryover** — sub-commit 2.4c. Per-call
+//!   spill locals + Option B (spill args + carryovers at the call
+//!   site).
+//! - **Nested direct-call carryover** — sub-commit 2.5c. Same
+//!   mechanism, keyed by `call_idx` and threaded through
+//!   `instrument_one_function_nested_switch`.
+//! - **Multi-value-params SubRegion bodies** — sub-commit 2.6c. Body's
+//!   declared type-params are pre-spilled at body entry and reloaded
+//!   inside `POST_0`'s body via prepended `LocalGet`s, bridging the
+//!   `Simple(None)` POST_K typing.
+//! - **Nested call_indirect** — sub-commit 2.1 empirical finding: the
+//!   simple case was already handled by nested switch-dispatch;
 //!   `has_nested_fork_calls` treats every nested `call_indirect` as
-//!   fork-bearing; today it falls through to guard-dispatch.
+//!   fork-bearing and the type-matched indirect-reverse closure in
+//!   `call_graph::reaching_closure` covers it.
+//! - **Legacy `try`/`catch`** — commit 9 (modern wasm-EH SDK flip)
+//!   removed legacy lowering from the SDK; commits 3-4 deleted
+//!   guard-dispatch and replaced its callers with panics. Shipping
+//!   wasm post-libcxx-revision-3-rebuild no longer contains
+//!   `Instr::Try` in fork-path functions.
 //!
-//! Under the trampoline scheme each case extracts the post-call resume
-//! code into its own wasm function and reaches it via `call_indirect`
-//! into a per-function funcref table.
+//! Net result: the trampoline scaffolding is preserved in
+//! `crates/fork-instrument/src/instrument.rs` but currently has no
+//! callers. The tests below verify that each "reserved for the
+//! trampoline" fixture now routes to switch-dispatch (not the
+//! trampoline) and that the legacy-Try case panics loudly per
+//! commit 3's invariant.
 //!
-//! # Per-function table layout (open Q #3, resolved 2026-05-13)
-//!
-//! Each instrumented fork-path function emits its own funcref table
-//! and `(elem)` segment populated with the extracted post-call
-//! functions for that function:
-//!
-//! ```wat
-//! ;; alongside `caller`, which has 3 fork-path call sites:
-//! (table $caller_post_table 3 funcref)
-//! (elem (table $caller_post_table) (i32.const 0) func
-//!   $caller_post_0 $caller_post_1 $caller_post_2)
-//!
-//! (func $caller (param ...)
-//!   (if (i32.eq (call $wpk_fork_state) (i32.const $REWINDING))
-//!     (then
-//!       (call_indirect $caller_post_table (type $resume_sig)
-//!         (local.get $call_idx))))
-//!   ...normal body...)
-//!
-//! (func $caller_post_0 (param $frame ...) ...)
-//! (func $caller_post_1 (param $frame ...) ...)
-//! (func $caller_post_2 (param $frame ...) ...)
-//! ```
-//!
-//! Site IDs stay function-local and dense (already true today —
-//! switch-dispatch's `partition_body` walks left-to-right and assigns
-//! `call_idx ∈ 0..n-1`). `call_idx` indexes the table directly.
-//!
-//! # Sub-commit phasing
-//!
-//! - **2.1 (this commit):** Land WAT fixtures + this spec module.
-//!   Active tests assert the fixtures parse + validate AND that today's
-//!   pre-trampoline behavior is "routes to guard-dispatch" (no
-//!   `br_table` in the instrumented output). Ignored tests reserve the
-//!   slots for the post-2.3 assertions ("instrumented output contains
-//!   the per-function table + elem + entry-point `call_indirect`").
-//! - **2.2:** `mod trampoline` skeleton (file refactor; behavior
-//!   invisible).
-//! - **2.3:** Per-function table emission. Ignored tests below flip to
-//!   active and assert the new shape.
-//! - **2.4-2.6:** Wire each class through (carryover, call_indirect,
-//!   nested-Loop/IfElse/TryTable). The "today: guard-dispatch"
-//!   assertions in `today_*` tests below get inverted as each class
-//!   migrates.
-//!
-//! Each fixture has a paired test:
-//!
-//! | Fixture                              | Routes to (post-2.6c)   | Notes                          |
-//! |--------------------------------------|-------------------------|--------------------------------|
-//! | `top_level_carryover.wat`            | switch-dispatch (2.4c)  | switch-dispatch absorbs        |
-//! | `nested_carryover_in_loop.wat`       | nested switch (2.5c)    | absorbed via carryover spills  |
-//! | `nested_multivalue_params.wat`       | nested switch (2.6c)    | body-param prespill + reload   |
-//! | `legacy_try_fork.wat`                | guard-dispatch today    | obsoleted by commit 9 modern-EH|
-//! | `nested_call_indirect.wat`           | nested switch today (*) | n/a — already handled          |
-//!
-//! (*) The simple nested call_indirect case is empirically already
-//! handled by nested switch-dispatch (sub-commit 2.1 finding). The
-//! real class (c) trampoline gap is `call_indirect + another
-//! unsupported pattern` (e.g. carryover); a fixture for that lands
-//! in 2.5 once we audit LLVM emission shapes.
+//! | Fixture                              | Routes to (post-commit-4) | Notes                          |
+//! |--------------------------------------|---------------------------|--------------------------------|
+//! | `top_level_carryover.wat`            | switch-dispatch (2.4c)    | per-call carryover spilling    |
+//! | `nested_carryover_in_loop.wat`       | nested switch (2.5c)      | direct-call carryover spills   |
+//! | `nested_multivalue_params.wat`       | nested switch (2.6c)      | body-param prespill + reload   |
+//! | `legacy_try_fork.wat`                | panics (commit 3)         | commit 9 removes from shipping |
+//! | `nested_call_indirect.wat`           | nested switch (2.1)       | already handled empirically    |
 
 use fork_instrument::{Options, instrument};
 use walrus::{
