@@ -3621,8 +3621,31 @@ fn apply_plain_catch_handlers(
         // Populate innermost cap (cap_seq_ids[N-1]):
         //   try_table(...)
         //   br $b1_outer
-        //   ;; cap-end body for arm N-1
         // ----------------------------------------------------------
+        //
+        // D-06 fix (2026-05-14): emit_capture_save_and_branch's
+        // "capture tail" (spill payload, save to scratch, set flags,
+        // re-push payload, br $hJ) must run AT THE POINT WHERE
+        // CONTROL ARRIVES AFTER THE CATCH — which, per wasm-EH's
+        // br-to-label semantics, is OUTSIDE the cap_seq the catch
+        // targeted. So arm J's capture tail belongs in
+        // `cap_seq_ids[J-1]` (or `outer_seq_id` for J=0), right
+        // after the `Block(cap_seq_ids[J])` that contains the catch
+        // target. The pre-fix code emitted the capture tail INSIDE
+        // `cap_seq_ids[J]` AFTER the `br $outer` terminator —
+        // making it dead code on both paths (fall-through: br
+        // terminated; catch: jumped to cap_seq[J] END, past where
+        // the tail was placed). On modern wasm-EH lowering this
+        // surfaced as a stack-imbalance validation error because
+        // the catch payload propagated out of cap_seq[J] with no
+        // capture-tail to consume it.
+        //
+        // Under legacy `try`/`catch`, the dispatch mechanism was
+        // different (engine handled tag matching inline at the
+        // catch opcode), so the bug was latent — the capture-tail
+        // never ran in either case, but legacy `try`/`catch` was
+        // forced to guard-dispatch which used a completely
+        // different mechanism.
         let n = arm_slots.len();
         {
             let local = local_mut(module, func_id);
@@ -3635,27 +3658,14 @@ fn apply_plain_catch_handlers(
                 }),
             );
             push_instr(s, Instr::Br(Br { block: outer_seq_id }));
-            // After the unconditional br, the rest of this block is
-            // reached only when the engine catches arm (N-1). At that
-            // point tag(N-1).params are on the stack.
         }
-        emit_capture_save_and_branch(
-            module,
-            func_id,
-            runtime,
-            memory,
-            cap_seq_ids[n - 1],
-            &arm_slots[n - 1],
-            &arm_spill_locals[n - 1],
-            in_catch_local,
-            catch_region_id_local,
-            catch_region_id,
-        );
 
         // ----------------------------------------------------------
         // Populate non-innermost caps (cap_seq_ids[J] for J < N-1):
         //   Block(cap_seq_ids[J+1])
-        //   ;; cap-end body for arm J
+        //   ;; cap-end body for arm J+1 — runs when arm J+1's catch
+        //   ;;  fired, propagated its payload out of cap_seq[J+1],
+        //   ;;  and landed here in cap_seq[J].
         // ----------------------------------------------------------
         for j in (0..n - 1).rev() {
             {
@@ -3666,14 +3676,17 @@ fn apply_plain_catch_handlers(
                     Instr::Block(Block { seq: cap_seq_ids[j + 1] }),
                 );
             }
+            // Capture tail for arm J+1 (the arm whose catch
+            // targets cap_seq[J+1]). Lives in cap_seq[J] AFTER the
+            // Block(cap_seq[J+1]).
             emit_capture_save_and_branch(
                 module,
                 func_id,
                 runtime,
                 memory,
                 cap_seq_ids[j],
-                &arm_slots[j],
-                &arm_spill_locals[j],
+                &arm_slots[j + 1],
+                &arm_spill_locals[j + 1],
                 in_catch_local,
                 catch_region_id_local,
                 catch_region_id,
@@ -3681,19 +3694,39 @@ fn apply_plain_catch_handlers(
         }
 
         // ----------------------------------------------------------
-        // Populate $b1_outer: just contains the outermost cap block.
-        // After the cap block ends (only reachable via normal-exit
-        // path through the inner try_table → br $b1_outer), control
-        // falls out of $b1_outer with try_table_type values on the
-        // stack (matching outer's result type). On the catch path,
-        // each cap's body unconditionally `br $hJ`, leaving $b1_outer
-        // entirely.
+        // Populate $b1_outer: contains the outermost cap block
+        // followed by the capture tail for arm 0 (the arm whose
+        // catch targets cap_seq[0]).
+        //
+        // On normal exit (try_table fell through → br $outer →
+        // outer terminated), outer's end is never reached; the
+        // capture tail is dead. On catch path for arm 0: payload
+        // → cap_seq[0] end → control back in outer at position
+        // after Block(cap_seq[0]) → capture tail runs → br to
+        // arm 0's original handler label. On catch path for inner
+        // arms (J > 0): payload → cap_seq[J] end → cap_seq[J-1]
+        // post-Block(cap_seq[J]) → capture tail for arm J runs in
+        // cap_seq[J-1] → br to arm J's handler label.
         // ----------------------------------------------------------
         {
             let local = local_mut(module, func_id);
             let s = &mut local.block_mut(outer_seq_id).instrs;
             push_instr(s, Instr::Block(Block { seq: cap_seq_ids[0] }));
         }
+        // Capture tail for arm 0 (whose catch targets cap_seq[0]).
+        // Emitted in outer_seq AFTER Block(cap_seq[0]).
+        emit_capture_save_and_branch(
+            module,
+            func_id,
+            runtime,
+            memory,
+            outer_seq_id,
+            &arm_slots[0],
+            &arm_spill_locals[0],
+            in_catch_local,
+            catch_region_id_local,
+            catch_region_id,
+        );
 
         // ----------------------------------------------------------
         // Replace the original TryTable in the parent seq with
