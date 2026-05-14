@@ -10,10 +10,13 @@
 //! Schema: `docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md` §3.4.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::pkg_manifest::TargetArch;
+use crate::util::hex;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct IndexToml {
@@ -298,6 +301,76 @@ impl IndexToml {
         }
         out
     }
+}
+
+/// Compute the on-disk cache path for the index hosted at
+/// `index_url`. We use the first 16 hex chars of sha256(url) so two
+/// indexes with different URLs (e.g. first-party vs a fork's mirror)
+/// land in distinct cache files. 16 hex chars = 64 bits — collision
+/// probability is negligible for the URLs an individual developer
+/// would ever cache simultaneously.
+pub fn index_cache_path(index_url: &str, cache_dir: &Path) -> PathBuf {
+    let mut h = Sha256::new();
+    h.update(index_url.as_bytes());
+    let digest: [u8; 32] = h.finalize().into();
+    let key = hex(&digest);
+    cache_dir.join(format!("index-{}.toml", &key[..16]))
+}
+
+/// Fetch `index.toml` from `index_url`, parse it, and persist the
+/// raw bytes to an on-disk cache.
+///
+/// Behavior:
+///   * Online (the default) — try the network fetch first. On
+///     success, write the bytes to `index_cache_path(...)` so a
+///     later offline run can use them. If the fetch fails (network
+///     error, 4xx/5xx, parse error), fall back to the cached copy.
+///   * `WASM_POSIX_OFFLINE=1` — skip the network attempt and load
+///     directly from the cache.
+///
+/// Returns an error only when neither the network nor the cache
+/// yields a parseable `IndexToml` (a cold fresh clone with no
+/// internet, basically).
+pub fn fetch_index(index_url: &str, cache_dir: &Path) -> Result<IndexToml, String> {
+    let cache_path = index_cache_path(index_url, cache_dir);
+    let offline = std::env::var_os("WASM_POSIX_OFFLINE")
+        .is_some_and(|v| !v.is_empty() && v != "0");
+
+    if !offline {
+        match crate::remote_fetch::fetch_url(index_url) {
+            Ok(bytes) => {
+                // Best-effort cache write; failure to write the cache
+                // is not fatal — the index is already in memory and
+                // the next online run will overwrite anyway.
+                if let Some(parent) = cache_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&cache_path, &bytes);
+
+                let s = std::str::from_utf8(&bytes)
+                    .map_err(|e| format!("index.toml at {index_url} is not UTF-8: {e}"))?;
+                return IndexToml::parse(s)
+                    .map_err(|e| format!("index.toml at {index_url}: {e}"));
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: online fetch of {index_url} failed ({e}); \
+                     trying cached copy at {}",
+                    cache_path.display()
+                );
+            }
+        }
+    }
+
+    // Fall back to cache.
+    let content = std::fs::read_to_string(&cache_path).map_err(|e| {
+        format!(
+            "no cached copy of {index_url} at {}: {e}",
+            cache_path.display()
+        )
+    })?;
+    IndexToml::parse(&content)
+        .map_err(|e| format!("cached index {}: {e}", cache_path.display()))
 }
 
 fn write_opt(out: &mut String, key: &str, value: &Option<String>) {
@@ -586,6 +659,109 @@ revision = 1
             "a fresh success makes the fallback obsolete"
         );
         assert!(entry.error.is_none());
+    }
+
+    #[test]
+    fn fetch_index_reads_file_url_and_writes_cache() {
+        use super::*;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-fetch-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache_dir = tmp.join("cache");
+        let idx_path = tmp.join("source-index.toml");
+
+        let content = r#"abi_version = 8
+generated_at = "test-fresh"
+generator = "test"
+"#;
+        std::fs::write(&idx_path, content).unwrap();
+        let url = format!("file://{}", idx_path.display());
+
+        let idx = fetch_index(&url, &cache_dir).unwrap();
+        assert_eq!(idx.abi_version, 8);
+        assert_eq!(idx.generated_at, "test-fresh");
+
+        // Cache file should have appeared after the successful fetch.
+        let cache_path = index_cache_path(&url, &cache_dir);
+        assert!(
+            cache_path.is_file(),
+            "expected cache file at {}",
+            cache_path.display()
+        );
+    }
+
+    #[test]
+    fn fetch_index_falls_back_to_cache_when_offline() {
+        use super::*;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-fetch-offline-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache_dir = tmp.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Seed the cache manually as if a prior online fetch ran.
+        let url = "https://example.test/abi-v8/index.toml";
+        let cache_path = index_cache_path(url, &cache_dir);
+        std::fs::write(
+            &cache_path,
+            r#"abi_version = 8
+generated_at = "cached-ts"
+generator = "cached"
+"#,
+        )
+        .unwrap();
+
+        // Force offline so the fetcher refuses HTTP and falls back.
+        // SAFETY: env-var mutation is `unsafe` on the 2024 edition;
+        // the test serializes itself via the env-var name (no other
+        // test toggles WASM_POSIX_OFFLINE concurrently) and restores
+        // on the way out.
+        unsafe { std::env::set_var("WASM_POSIX_OFFLINE", "1") };
+        let idx_res = fetch_index(url, &cache_dir);
+        unsafe { std::env::remove_var("WASM_POSIX_OFFLINE") };
+
+        let idx = idx_res.unwrap();
+        assert_eq!(idx.generator, "cached", "offline fallback must use cache");
+    }
+
+    #[test]
+    fn fetch_index_errors_when_no_cache_and_offline() {
+        use super::*;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-fetch-cold-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache_dir = tmp.join("cache");
+
+        unsafe { std::env::set_var("WASM_POSIX_OFFLINE", "1") };
+        let res = fetch_index("https://example.test/never-cached/index.toml", &cache_dir);
+        unsafe { std::env::remove_var("WASM_POSIX_OFFLINE") };
+
+        let err = res.unwrap_err();
+        assert!(err.contains("no cached copy"), "got: {err}");
+    }
+
+    #[test]
+    fn index_cache_path_distinguishes_urls() {
+        use super::*;
+        let cache = PathBuf::from("/tmp/cache");
+        let a = index_cache_path("https://a.example/index.toml", &cache);
+        let b = index_cache_path("https://b.example/index.toml", &cache);
+        assert_ne!(a, b, "different URLs must land in different cache files");
     }
 
     #[test]
