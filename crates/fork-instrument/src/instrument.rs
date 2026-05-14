@@ -3234,6 +3234,46 @@ fn emit_per_function_post_table(
     table_id
 }
 
+/// Extract a sequence of instructions into a new wasm function with
+/// signature `() -> ()`.
+///
+/// This is the minimal post-call extraction primitive. Given a chunk
+/// of instructions that were originally part of some host function's
+/// body, synthesise a new module-level function whose body is exactly
+/// those instructions (preserving `InstrLocId` for source mapping).
+///
+/// **Limitation in 2.4a (this commit):** the input instructions MUST
+/// be self-contained — they may NOT reference `LocalId`s from the
+/// original function. Sub-commit 2.4b adds the local-rewriting pass
+/// (rewrites `LocalGet/Set/Tee` to read/write a frame-resident
+/// scratch slot via the function's frame_ptr param), which is the
+/// piece that lets real chunks be extracted. Until then the caller
+/// is responsible for guaranteeing the input is local-free.
+///
+/// Also: the new function's signature is hardcoded to `() -> ()`
+/// here. Real post-call extraction needs a `(frame_ptr) -> ()`
+/// signature so the trampoline can pass the frame pointer in.
+/// 2.4b/c will adjust this.
+///
+/// Used by `instrument_one_function_trampoline_dispatch` (sub-commits
+/// 2.4-2.6) to materialize each post-call chunk as an entry in the
+/// per-function dispatch table built by `emit_per_function_post_table`.
+#[allow(dead_code)] // wired up in sub-commit 2.4c
+fn extract_chunk_to_function(
+    module: &mut Module,
+    name: &str,
+    instrs: Vec<(Instr, InstrLocId)>,
+) -> FunctionId {
+    let mut builder = walrus::FunctionBuilder::new(&mut module.types, &[], &[]);
+    builder.name(name.to_string());
+    let body_id = builder.func_body_id();
+    {
+        let mut body = builder.instr_seq(body_id);
+        body.instrs_mut().extend(instrs);
+    }
+    builder.finish(vec![], &mut module.funcs)
+}
+
 /// Trampoline dispatch — placeholder. Body lands in sub-commits
 /// 2.4-2.6 (one class wired per sub-commit).
 ///
@@ -5949,6 +5989,76 @@ mod trampoline_tests {
             find_active_elem_for(&module, table_id).is_none(),
             "no elem segment expected when post_funcs is empty"
         );
+    }
+
+    #[test]
+    fn extract_chunk_to_function_creates_named_function_with_input_instrs() {
+        let mut module = Module::default();
+        let body = vec![
+            (Instr::Const(Const { value: Value::I32(7) }), InstrLocId::default()),
+            (Instr::Drop(Drop {}), InstrLocId::default()),
+        ];
+        let func_id = extract_chunk_to_function(&mut module, "post_chunk_0", body);
+
+        let func = module.funcs.get(func_id);
+        assert_eq!(func.name.as_deref(), Some("post_chunk_0"));
+
+        let local = match &func.kind {
+            FunctionKind::Local(l) => l,
+            _ => panic!("expected local function"),
+        };
+        let entry = local.entry_block();
+        let block = local.block(entry);
+        assert_eq!(block.instrs.len(), 2, "body must contain the 2 input instrs");
+        assert!(matches!(block.instrs[0].0, Instr::Const(_)));
+        assert!(matches!(block.instrs[1].0, Instr::Drop(_)));
+    }
+
+    #[test]
+    fn extract_chunk_to_function_signature_is_unit_to_unit() {
+        let mut module = Module::default();
+        let func_id = extract_chunk_to_function(&mut module, "empty_chunk", vec![]);
+
+        let func = module.funcs.get(func_id);
+        let ty = module.types.get(func.ty());
+        assert_eq!(ty.params(), &[], "no params expected in 2.4a");
+        assert_eq!(ty.results(), &[], "no results expected in 2.4a");
+    }
+
+    #[test]
+    fn extract_chunk_to_function_preserves_instr_loc_ids() {
+        // Deliberately use a non-default InstrLocId so we can detect
+        // it round-trips through extraction.
+        let mut module = Module::default();
+        let loc = InstrLocId::new(0xCAFEBABE);
+        let body = vec![(Instr::Const(Const { value: Value::I32(0) }), loc)];
+        let func_id = extract_chunk_to_function(&mut module, "loc_test", body);
+
+        let local = match &module.funcs.get(func_id).kind {
+            FunctionKind::Local(l) => l,
+            _ => panic!(),
+        };
+        let entry = local.entry_block();
+        assert_eq!(local.block(entry).instrs[0].1, loc, "InstrLocId must round-trip");
+    }
+
+    #[test]
+    fn extract_chunk_to_function_validates_when_chunk_is_self_contained() {
+        // A self-contained chunk (no local refs, balanced operand stack)
+        // should produce wasm that round-trips through wasmparser.
+        let mut module = Module::default();
+        let body = vec![
+            (Instr::Const(Const { value: Value::I32(42) }), InstrLocId::default()),
+            (Instr::Drop(Drop {}), InstrLocId::default()),
+        ];
+        let _ = extract_chunk_to_function(&mut module, "validates", body);
+
+        let bytes = module.emit_wasm();
+        let mut validator =
+            wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default());
+        validator
+            .validate_all(&bytes)
+            .expect("extracted-only module must validate");
     }
 
     #[test]
