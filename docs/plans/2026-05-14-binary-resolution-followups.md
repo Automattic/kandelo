@@ -75,8 +75,32 @@ the corresponding tests.
 re-application to `build-wp-vfs-image.ts` /
 `build-lamp-vfs-image.ts`): three demos comment out
 `zend_extension=opcache.so` and force `opcache.enable=0`, so
-PHP-FPM never dlopens opcache. The demos boot cleanly without
-opcache.
+PHP-FPM never dlopens opcache. nginx-php boots cleanly after
+that workaround.
+
+**WP / LAMP — opcache disable is necessary but NOT sufficient.**
+Empirically the WordPress (LEMP-but-SQLite) and WordPress (LEMP)
+demos still 502 even with `opcache.so` fully removed from the
+VFS image. The wasm trap is identical (`call_indirect` at
+`zend_activate_modules` PC `0x730a9e`, same stack), and both
+demo workers come up with `table.length=10721 isForkChild=true`
+— matching nginx-php's working workers. So the OOB index is
+**not** opcache-related there; it's some other module in
+`module_request_startup_handlers` whose `request_startup_func`
+field holds an OOB value. nginx-php hits the same code path
+with the same wasm binary and the same FPM master setup and
+does not trap, so the WP/LAMP failure is environment-specific
+— most likely related to `wp-config-init` executing dash+sed
+before php-fpm, leaving heap/allocator state that influences
+the FPM master's data placement, or to a fork-replay subtlety
+that only manifests with the WP-specific pre-FPM service
+chain. Investigation deferred: the WP/LAMP demos worked
+historically (PR #423 landed opcache support; WP regression
+likely either started there or earlier and was masked by the
+rev2 archive predating opcache). For this PR, disabling
+opcache is the minimal change matching nginx-php's shape; the
+remaining 502 is a separate live regression to root-cause and
+fix in its own PR.
 
 **Why this surfaced now.** The published
 `binaries-abi-v8/php-rev2` archive on the release predates
