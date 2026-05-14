@@ -39,88 +39,112 @@ fn waitpid_class_non_fork_path_call_skipped_on_rewind() {
 }
 
 #[test]
-fn top_level_carryover_routes_to_guard_dispatch() {
-    // Regression for a real-world shape in dash's `cmdputs`: LLVM
-    // emits a top-level fork-path call whose address operand was
-    // pushed *before* the call's args and is consumed *after* the
-    // call returns. Switch-dispatch can't handle the operand-stack
-    // carryover (its POST_K blocks are 0 → 0), so the function
-    // must route to guard-dispatch instead.
+#[ignore = "debug helper"]
+fn _dump_carryover_wat() {
     let wat = include_str!("fixtures/switch_dispatch/top_level_carryover.wat");
     let input = wat::parse_str(wat).expect("wat parse");
     let output = instrument(&input, &Options::default()).expect("instrument");
-    // The critical invariant: output must validate. Switch-dispatch
-    // would produce invalid wasm ("type mismatch at end of block").
+    let printed = wasmprinter::print_bytes(&output).expect("print");
+    eprintln!("{printed}");
+}
+
+#[test]
+fn top_level_carryover_uses_switch_dispatch_with_carryover_spills() {
+    // Regression for a real-world shape in dash's `cmdputs`: LLVM
+    // emits a top-level fork-path call whose address operand was
+    // pushed *before* the call's args and is consumed *after* the
+    // call returns.
+    //
+    // Pre-2.4c (2026-05-13 plan, decided 2026-05-14): switch-
+    // dispatch's $POST_K blocks are 0 → 0 and can't express the
+    // carryover, so the function routed to guard-dispatch.
+    //
+    // Post-2.4c: switch-dispatch absorbs the carryover by spilling
+    // the carryover values to per-call carryover spill locals after
+    // arg-spilling at the call site (Option B of the spilling
+    // analysis). Result: switch-dispatch's br_table is now present;
+    // the operand stack is clean at the $POST_K boundary because
+    // the carryover is in a local rather than on the stack.
+    let wat = include_str!("fixtures/switch_dispatch/top_level_carryover.wat");
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    // The critical invariant: output must validate. Both schemes
+    // must produce valid wasm.
     validate(&output);
     let module = Module::from_buffer(&output).expect("walrus parse");
 
-    // A second, more specific invariant: `main` must not carry a
-    // top-level `br_table` dispatch — its presence would indicate
-    // switch-dispatch was attempted despite the carryover.
+    // After 2.4c, switch-dispatch is the routing target for top-level
+    // carryover (compute_carryover_types statically types the
+    // local.get $sp producer). br_table SHOULD be present.
     assert!(
-        !has_top_level_br_table_dispatch(&module, "main"),
-        "`main` must use guard-dispatch (not switch-dispatch) when a \
-         top-level fork-path call has an operand-stack carryover"
+        has_top_level_br_table_dispatch(&module, "main"),
+        "post-2.4c: `main` must use switch-dispatch (carryover spilling) \
+         when top-level fork-path call has a statically-trackable \
+         operand-stack carryover"
     );
 }
 
 #[test]
-fn guard_dispatch_gates_non_fork_path_direct_call() {
+fn switch_dispatch_skips_non_fork_path_direct_call_on_rewind() {
     // Regression for the 8 sortix fork-semantic FAILs (waitpid,
-    // dup3-clofork-fork, ...). When guard-dispatch is selected
-    // (because the fork-path call is nested), non-fork-path direct
-    // calls — like `setpgid` — must be wrapped in a state==NORMAL
-    // gate so their kernel side effects don't re-fire during REWIND.
-    // The call's result must round-trip through a result-save user
-    // local that lives in the frame, otherwise consumers consuming
-    // the result inline (without `local.set $user_local`) would
-    // diverge control flow on REWIND. See
-    // memory/fork-instrument-phase7-debug-evidence.md.
+    // dup3-clofork-fork, ...). Non-fork-path direct calls — like
+    // `setpgid` — must NOT re-fire during REWIND, because their
+    // kernel side effects are not idempotent.
+    //
+    // Pre-2.4c (2026-05-13 plan, decided 2026-05-14): top-level
+    // carryovers routed to guard-dispatch, which gated setpgid
+    // explicitly with a `(state == NORMAL)` if-then wrapper. Test
+    // asserted the explicit gate.
+    //
+    // Post-2.4c: top-level carryovers route to switch-dispatch with
+    // carryover spilling. setpgid lives in `chunks[0]` (pre-call
+    // code), which becomes the body of `$POST_0`. On REWIND the
+    // br_table jumps directly to `$POST_K` (the call being resumed),
+    // skipping `chunks[0]` entirely — so setpgid doesn't re-fire.
+    // Same correctness invariant via a different mechanism.
     let wat = include_str!("fixtures/switch_dispatch/guard_dispatch_non_fork_call.wat");
     let input = wat::parse_str(wat).expect("wat parse");
     let output = instrument(&input, &Options::default()).expect("instrument");
     validate(&output);
     let module = Module::from_buffer(&output).expect("walrus parse");
 
-    // Confirm the function uses guard-dispatch (no top-level br_table).
+    // Switch-dispatch IS the routing target now (carryover spilled).
     assert!(
-        !has_top_level_br_table_dispatch(&module, "main"),
-        "guard-dispatch path should not emit a top-level br_table"
+        has_top_level_br_table_dispatch(&module, "main"),
+        "post-2.4c: switch-dispatch with carryover spilling should emit \
+         a top-level br_table"
     );
 
-    // The call to `kernel.setpgid` must still appear (we gate it; we
-    // don't remove it). It must appear inside an if-then sequence
-    // whose preceding instruction is the state==NORMAL test.
+    // setpgid must still appear (we don't remove it; we just ensure
+    // REWIND skips it via br_table). The call lives in `chunks[0]`,
+    // which is executed only during NORMAL flow (the dispatch's
+    // br_table targets $POST_K for REWIND, which lands AFTER chunks[0]
+    // has already run during the original NORMAL execution).
     let setpgid = find_import_func(&module, "kernel.setpgid");
     let main_id = find_func(&module, "main");
     let f = local_func(&module, main_id);
 
-    let mut found_gated_setpgid = false;
+    let mut found_setpgid_call = false;
     walk_all(f, f.entry_block(), 0, &mut |_seq, _depth, instr| {
-        if let Instr::IfElse(IfElse {
-            consequent,
-            alternative: _,
-        }) = instr
-        {
-            // Look at the consequent: if its first instruction is
-            // `Call(setpgid)` and its (only or first) `LocalSet` is
-            // immediately after, this is our gate.
-            let then_seq = f.block(*consequent);
-            let mut iter = then_seq.instrs.iter();
-            if let Some((Instr::Call(c), _)) = iter.next() {
-                if c.func == setpgid {
-                    if let Some((Instr::LocalSet(_), _)) = iter.next() {
-                        found_gated_setpgid = true;
-                    }
-                }
+        if let Instr::Call(c) = instr {
+            if c.func == setpgid {
+                found_setpgid_call = true;
             }
         }
     });
-
     assert!(
-        found_gated_setpgid,
-        "expected to find `setpgid` wrapped in a state==NORMAL gate \
-         with a result-save `local.set` immediately after the call"
+        found_setpgid_call,
+        "switch-dispatch must preserve the original setpgid call \
+         (now in chunks[0], skipped via br_table on REWIND)"
+    );
+
+    // The setpgid call must NOT live inside the dispatch body — it
+    // belongs to chunks[0], which is the deepest part of the dispatch
+    // structure (POST_0's body). This invariant is what
+    // `call_appears_inside_dispatch_body` checks.
+    assert!(
+        !call_appears_inside_dispatch_body(&module, "main", "kernel.setpgid"),
+        "setpgid must remain in chunks[0]; the dispatch body skips it on REWIND"
     );
 }
 

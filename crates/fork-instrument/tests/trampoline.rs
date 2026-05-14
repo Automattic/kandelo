@@ -79,13 +79,13 @@
 //!
 //! Each fixture has a paired test:
 //!
-//! | Fixture                              | `today_*` test          | `trampoline_*` test (ignored) |
-//! |--------------------------------------|-------------------------|-------------------------------|
-//! | `top_level_carryover.wat`            | guard-dispatch today    | trampoline post-2.4           |
-//! | `nested_carryover_in_loop.wat`       | guard-dispatch today    | trampoline post-2.6           |
-//! | `nested_multivalue_params.wat`       | guard-dispatch today    | trampoline post-2.6           |
-//! | `legacy_try_fork.wat`                | guard-dispatch today    | trampoline post-2.6           |
-//! | `nested_call_indirect.wat`           | nested switch today (*) | n/a — already handled         |
+//! | Fixture                              | Routes to (post-2.4c)   | Notes                          |
+//! |--------------------------------------|-------------------------|--------------------------------|
+//! | `top_level_carryover.wat`            | switch-dispatch (2.4c)  | switch-dispatch absorbs        |
+//! | `nested_carryover_in_loop.wat`       | guard-dispatch today    | trampoline post-2.6            |
+//! | `nested_multivalue_params.wat`       | guard-dispatch today    | trampoline post-2.6            |
+//! | `legacy_try_fork.wat`                | guard-dispatch today    | trampoline post-2.6            |
+//! | `nested_call_indirect.wat`           | nested switch today (*) | n/a — already handled          |
 //!
 //! (*) The simple nested call_indirect case is empirically already
 //! handled by nested switch-dispatch (sub-commit 2.1 finding). The
@@ -182,38 +182,31 @@ fn has_table_with_prefix(module: &Module, prefix: &str) -> bool {
 // ---------------------------------------------------------------------
 // (b) Top-level operand-stack carryover
 // ---------------------------------------------------------------------
+//
+// Sub-commit 2.4c (revised 2026-05-14): top-level carryover is
+// absorbed by switch-dispatch via in-place spill at the call site,
+// not by the trampoline. The trampoline scaffolding stays reserved
+// for the genuinely-impossible nested-control-flow cases (2.6).
 
 #[test]
-fn today_top_level_carryover_routes_to_guard_dispatch() {
+fn top_level_carryover_uses_switch_dispatch_with_carryover_spills() {
     let wat = include_str!("fixtures/trampoline/top_level_carryover.wat");
     let input = wat::parse_str(wat).expect("wat parse");
     let output = instrument(&input, &Options::default()).expect("instrument");
     validate(&output);
     let module = Module::from_buffer(&output).expect("walrus parse");
 
-    assert!(
-        !has_br_table_in(&module, "_start"),
-        "today: top-level carryover must route to guard-dispatch (no br_table)"
-    );
-}
-
-#[test]
-#[ignore = "enabled in sub-commit 2.4 — wire top-level carryover to trampoline"]
-fn trampoline_top_level_carryover_emits_post_table() {
-    let wat = include_str!("fixtures/trampoline/top_level_carryover.wat");
-    let input = wat::parse_str(wat).expect("wat parse");
-    let output = instrument(&input, &Options::default()).expect("instrument");
-    validate(&output);
-    let module = Module::from_buffer(&output).expect("walrus parse");
-
-    assert!(
-        has_table_with_prefix(&module, "_start_post_table"),
-        "trampoline: must emit `_start_post_table` for the carryover function"
-    );
+    // Post-2.4c: switch-dispatch absorbs the carryover; br_table
+    // present.
     assert!(
         has_br_table_in(&module, "_start"),
-        "trampoline: switch-dispatch's br_table replaces the per-call gating; \
-         the entry-point dispatch still runs but lands at the trampoline"
+        "post-2.4c: top-level carryover routes to switch-dispatch (br_table emitted)"
+    );
+    // Post-2.4c: no per-function post-table emitted (the trampoline
+    // is reserved for nested cases in sub-commit 2.6).
+    assert!(
+        !has_table_with_prefix(&module, "_start_post_table"),
+        "post-2.4c: switch-dispatch absorbs the carryover; no trampoline table needed"
     );
 }
 

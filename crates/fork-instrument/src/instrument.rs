@@ -301,6 +301,26 @@ fn instrument_one_function(
     }
 
     if has_top_level_stack_carryovers(module, func_id, fork_path) {
+        // Sub-commit 2.4c (2026-05-14): switch-dispatch now absorbs
+        // top-level carryovers via in-place spill/reload at the call
+        // site (Option B from the 2026-05-13 plan, decided 2026-05-14).
+        // Route to switch-dispatch when `compute_carryover_types` can
+        // statically type every producer; fall back to guard-dispatch
+        // for the rare untrackable cases (preserves today's behavior).
+        if compute_carryover_types(module, func_id, fork_path).is_some() {
+            instrument_one_function_switch(
+                module,
+                func_id,
+                runtime,
+                fork_path,
+                func_ordinal,
+                aux_tables,
+                ref_plan,
+                catch_plan,
+                b1_slots,
+            );
+            return;
+        }
         instrument_one_function_guard_dispatch(
             module,
             func_id,
@@ -353,6 +373,12 @@ fn instrument_one_function_switch(
         .filter(|(_, ty)| is_scalar(*ty))
         .collect();
 
+    // Sub-commit 2.4c: compute carryover types BEFORE taking the
+    // original body, since `compute_carryover_types` reads the body
+    // through `module.funcs.get(func_id)`. Computing it after `take`
+    // would see an empty body and report no carryovers.
+    let carryover_types_pre_take = compute_carryover_types(module, func_id, fork_path);
+
     // Take the original entry body; we rebuild it wholesale.
     let entry_id = local_mut(module, func_id).entry_block();
     let original_body: Vec<(Instr, InstrLocId)> = std::mem::take(
@@ -390,12 +416,38 @@ fn instrument_one_function_switch(
         arg_spills.push(spills);
     }
 
+    // Sub-commit 2.4c: per-call operand-stack carryovers (computed
+    // pre-take, see above). Allocate spill locals for each.
+    // Length mismatch or None falls back to per-call empty carryovers
+    // — matches pre-2.4c switch-dispatch behavior for the no-carryover
+    // case. The dispatch decision in `instrument_one_function` only
+    // routes to switch-dispatch with carryovers when the analysis was
+    // conclusive AND `has_top_level_stack_carryovers` was true.
+    let carryover_types: Vec<Vec<ValType>> = match carryover_types_pre_take {
+        Some(v) if v.len() == n_calls => v,
+        _ => vec![Vec::new(); n_calls],
+    };
+    let mut carryover_spills: Vec<Vec<LocalId>> = Vec::with_capacity(n_calls);
+    for site_carryovers in &carryover_types {
+        let spills: Vec<LocalId> = site_carryovers
+            .iter()
+            .map(|&ty| module.locals.add(ty))
+            .collect();
+        carryover_spills.push(spills);
+    }
+
     // Combined scalar locals for the frame (user locals first, then
-    // per-call arg spills in call order).
+    // per-call arg spills in call order, then per-call carryover spills
+    // in call order — added 2.4c).
     let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
     for (site_idx, cs) in call_sites.iter().enumerate() {
         let arg_types = call_arg_types(module, cs);
         for (&lid, &ty) in arg_spills[site_idx].iter().zip(arg_types.iter()) {
+            frame_scalars.push((lid, ty));
+        }
+    }
+    for (site_idx, cr_types) in carryover_types.iter().enumerate() {
+        for (&lid, &ty) in carryover_spills[site_idx].iter().zip(cr_types.iter()) {
             frame_scalars.push((lid, ty));
         }
     }
@@ -515,6 +567,7 @@ fn instrument_one_function_switch(
         &chunks,
         &call_sites,
         &arg_spills,
+        &carryover_spills,
         &catch_handlers,
         runtime.state_global,
         call_idx_local,
@@ -1098,7 +1151,32 @@ fn compute_carryover_types(
                 };
                 stack.push(ty);
             }
-            StackEffect::Terminator => break,
+            StackEffect::Terminator => {
+                // Post-terminator code in the same seq is unreachable
+                // but `partition_body` still walks it, so we need to
+                // emit a carryover entry for any dead-code fork-path
+                // Call / CallIndirect to keep our counts consistent.
+                // Dead-code calls have no defined operand-stack state,
+                // so report empty carryovers for each.
+                let remaining = local
+                    .block(entry)
+                    .instrs
+                    .iter()
+                    .skip_while(|(i, _)| !std::ptr::eq(i, instr))
+                    .skip(1); // skip the Terminator itself
+                for (i, _) in remaining {
+                    match i {
+                        Instr::Call(c) if fork_path.contains(&c.func) => {
+                            carryovers.push(Vec::new());
+                        }
+                        Instr::CallIndirect(_) => {
+                            carryovers.push(Vec::new());
+                        }
+                        _ => {}
+                    }
+                }
+                break;
+            }
             StackEffect::Unknown => return None,
         }
     }
@@ -1234,6 +1312,7 @@ fn populate_dispatch_structure(
     chunks: &[Vec<(Instr, InstrLocId)>],
     call_sites: &[CallSiteInfo],
     arg_spills: &[Vec<LocalId>],
+    carryover_spills: &[Vec<LocalId>],
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
@@ -1263,7 +1342,7 @@ fn populate_dispatch_structure(
         for (instr, loc) in &chunks[0] {
             s.push((instr.clone(), *loc));
         }
-        emit_spill_args(s, &arg_spills[0]);
+        emit_spill_args(s, &arg_spills[0], &carryover_spills[0]);
     }
 
     // $POST_K body for K in 1..n_calls:
@@ -1283,6 +1362,7 @@ fn populate_dispatch_structure(
             &call_sites[k - 1],
             k - 1,
             &arg_spills[k - 1],
+            &carryover_spills[k - 1],
             catch_handlers,
             state_global,
             call_idx_local,
@@ -1295,7 +1375,7 @@ fn populate_dispatch_structure(
             for (instr, loc) in &chunks[k] {
                 s.push((instr.clone(), *loc));
             }
-            emit_spill_args(s, &arg_spills[k]);
+            emit_spill_args(s, &arg_spills[k], &carryover_spills[k]);
         }
     }
 
@@ -1311,6 +1391,7 @@ fn populate_dispatch_structure(
         &call_sites[n_calls - 1],
         n_calls - 1,
         &arg_spills[n_calls - 1],
+        &carryover_spills[n_calls - 1],
         catch_handlers,
         state_global,
         call_idx_local,
@@ -1330,8 +1411,21 @@ fn populate_dispatch_structure(
 /// Spill the arg values off the operand stack into the per-call
 /// spill locals. Args are spilled in reverse (top-of-stack first),
 /// so the deepest arg ends up in `spills[0]`.
-fn emit_spill_args(out: &mut Vec<(Instr, InstrLocId)>, spills: &[LocalId]) {
+///
+/// When `carryovers` is non-empty (sub-commit 2.4c), the operand
+/// stack at the call site is `[..., carryover_0, ..., carryover_{n-1},
+/// arg_0, ..., arg_{m-1}]` (bottom-to-top). After popping all args,
+/// we keep popping into `carryovers` (also reverse-order), so
+/// `carryovers[0]` ends up holding the deepest carryover slot.
+fn emit_spill_args(
+    out: &mut Vec<(Instr, InstrLocId)>,
+    spills: &[LocalId],
+    carryovers: &[LocalId],
+) {
     for &local in spills.iter().rev() {
+        push_instr(out, Instr::LocalSet(LocalSet { local }));
+    }
+    for &local in carryovers.iter().rev() {
         push_instr(out, Instr::LocalSet(LocalSet { local }));
     }
 }
@@ -1675,6 +1769,7 @@ fn emit_post_call_via_local(
     call: &CallSiteInfo,
     call_idx: usize,
     spills: &[LocalId],
+    carryovers: &[LocalId],
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
@@ -1682,9 +1777,14 @@ fn emit_post_call_via_local(
     exnref_slot_local: LocalId,
     unwind_save: InstrSeqId,
 ) {
-    // Reload args.
+    // Reload carryovers (deepest first), then args (deepest first).
+    // The call pops only its args, leaving the carryovers + result on
+    // the stack — matching the original code's expected shape.
     {
         let s = &mut local.block_mut(seq_id).instrs;
+        for &l in carryovers.iter() {
+            push_instr(s, Instr::LocalGet(LocalGet { local: l }));
+        }
         for &l in spills.iter() {
             push_instr(s, Instr::LocalGet(LocalGet { local: l }));
         }
@@ -5450,7 +5550,10 @@ fn emit_chunk_tail_for_landing(
 ) {
     match &landing.kind {
         LandingKind::DirectCall { call_idx } => {
-            emit_spill_args(out, &arg_spills[call_idx]);
+            // 2.4c carryover spilling lives in the top-level
+            // switch-dispatch path; nested switch-dispatch hasn't
+            // been extended yet, so pass an empty carryovers slice.
+            emit_spill_args(out, &arg_spills[call_idx], &[]);
         }
         LandingKind::SubRegionIfElse { .. } => {
             push_instr(out, Instr::LocalSet(LocalSet { local: cond_swap_local }));
