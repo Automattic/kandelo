@@ -59,7 +59,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, archive-stage, build-index, set-build-commit, set-package-binary"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, archive-stage, build-index, set-build-commit, set-package-binary, index-update"
             );
             return ExitCode::from(2);
         }
