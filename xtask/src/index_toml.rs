@@ -90,6 +90,18 @@ impl IndexToml {
         toml::from_str(s).map_err(|e| format!("index.toml parse: {e}"))
     }
 
+    /// Construct an empty ledger (no packages). Used by
+    /// `xtask index-bootstrap` and by the per-package matrix-build
+    /// when an `index.toml` doesn't yet exist on the release.
+    pub fn empty(abi_version: u32, generated_at: String, generator: String) -> Self {
+        IndexToml {
+            abi_version,
+            generated_at,
+            generator,
+            packages: Vec::new(),
+        }
+    }
+
     /// Look up an entry by `(name, version, arch)`. Returns `None`
     /// when the package isn't in the ledger or the arch hasn't been
     /// recorded.
@@ -104,6 +116,108 @@ impl IndexToml {
             .find(|p| p.name == name && p.version == version)?
             .binary
             .get(&arch)
+    }
+
+    /// Record a successful build. Overwrites the current archive
+    /// fields and clears any prior fallback — once a fresh success
+    /// lands, the fallback (which existed only to cover for a
+    /// preceding failure) is no longer needed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_entry_success(
+        &mut self,
+        name: &str,
+        version: &str,
+        revision: u32,
+        arch: TargetArch,
+        archive_url: String,
+        archive_sha256: String,
+        cache_key_sha: String,
+        built_at: String,
+        built_by: String,
+    ) {
+        let entry = self.entry_mut(name, version, revision, arch);
+        entry.status = EntryStatus::Success;
+        entry.archive_url = Some(archive_url);
+        entry.archive_sha256 = Some(archive_sha256);
+        entry.cache_key_sha = Some(cache_key_sha);
+        entry.built_at = Some(built_at);
+        entry.built_by = Some(built_by);
+        entry.error = None;
+        entry.last_attempt = None;
+        entry.last_attempt_by = None;
+        entry.fallback_archive_url = None;
+        entry.fallback_archive_sha256 = None;
+        entry.fallback_cache_key_sha = None;
+        entry.fallback_built_at = None;
+    }
+
+    /// Record a failed build. If the previous status was Success AND
+    /// no fallback already exists, the current archive fields are
+    /// moved into the `fallback_*` slots (last-green preservation).
+    /// If a fallback already exists, we keep it — fallbacks are the
+    /// LAST KNOWN GOOD archive; overwriting with the result of a
+    /// later failed-then-rebuilt-and-failed-again sequence would
+    /// erase the only working copy. After moving (or skipping),
+    /// `archive_*` is cleared and the failure metadata recorded.
+    pub fn update_entry_failed(
+        &mut self,
+        name: &str,
+        version: &str,
+        revision: u32,
+        arch: TargetArch,
+        error: String,
+        last_attempt: String,
+        last_attempt_by: String,
+    ) {
+        let entry = self.entry_mut(name, version, revision, arch);
+        if entry.status == EntryStatus::Success && entry.fallback_archive_url.is_none() {
+            entry.fallback_archive_url = entry.archive_url.take();
+            entry.fallback_archive_sha256 = entry.archive_sha256.take();
+            entry.fallback_cache_key_sha = entry.cache_key_sha.take();
+            entry.fallback_built_at = entry.built_at.take();
+        } else {
+            entry.archive_url = None;
+            entry.archive_sha256 = None;
+            entry.cache_key_sha = None;
+            entry.built_at = None;
+        }
+        entry.built_by = None;
+        entry.status = EntryStatus::Failed;
+        entry.error = Some(error);
+        entry.last_attempt = Some(last_attempt);
+        entry.last_attempt_by = Some(last_attempt_by);
+    }
+
+    /// Internal helper: get-or-insert the per-arch entry, creating
+    /// the `[[packages]]` block if this is the first arch we've
+    /// recorded for that (name, version).
+    fn entry_mut(
+        &mut self,
+        name: &str,
+        version: &str,
+        revision: u32,
+        arch: TargetArch,
+    ) -> &mut BinaryEntry {
+        let pkg_idx = match self
+            .packages
+            .iter()
+            .position(|p| p.name == name && p.version == version)
+        {
+            Some(i) => i,
+            None => {
+                self.packages.push(PackageEntry {
+                    name: name.into(),
+                    version: version.into(),
+                    revision,
+                    binary: BTreeMap::new(),
+                });
+                self.packages.len() - 1
+            }
+        };
+        self.packages[pkg_idx]
+            .binary
+            .entry(arch)
+            .or_default()
     }
 
     /// Hand-format the ledger to TOML. We avoid `toml::to_string`
@@ -338,6 +452,140 @@ revision = 1
         let alpha_pos = s.find("name = \"alpha\"").unwrap();
         let zlib_pos = s.find("name = \"zlib\"").unwrap();
         assert!(alpha_pos < zlib_pos, "packages must be alphabetized on write");
+    }
+
+    #[test]
+    fn update_entry_success_overwrites_current_and_clears_fallback() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let mut idx = IndexToml::empty(8, "now".into(), "test".into());
+        idx.update_entry_success(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo-new.tar.zst".into(),
+            "newsha".into(),
+            "newkey".into(),
+            "now".into(),
+            "run-url".into(),
+        );
+        let entry = idx.lookup("foo", "1.0", TargetArch::Wasm32).unwrap();
+        assert_eq!(entry.status, EntryStatus::Success);
+        assert_eq!(entry.archive_url.as_deref(), Some("foo-new.tar.zst"));
+        assert!(entry.fallback_archive_url.is_none());
+    }
+
+    #[test]
+    fn update_entry_failed_moves_current_to_fallback() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let mut idx = IndexToml::empty(8, "now".into(), "test".into());
+        // First publish a success.
+        idx.update_entry_success(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo-good.tar.zst".into(),
+            "goodsha".into(),
+            "goodkey".into(),
+            "t1".into(),
+            "run1".into(),
+        );
+        // Then fail a rebuild.
+        idx.update_entry_failed(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "linker error".into(),
+            "t2".into(),
+            "run2".into(),
+        );
+        let entry = idx.lookup("foo", "1.0", TargetArch::Wasm32).unwrap();
+        assert_eq!(entry.status, EntryStatus::Failed);
+        assert_eq!(entry.error.as_deref(), Some("linker error"));
+        assert!(entry.archive_url.is_none(), "archive_url cleared on failure");
+        assert_eq!(
+            entry.fallback_archive_url.as_deref(),
+            Some("foo-good.tar.zst"),
+            "previous good archive moved to fallback"
+        );
+        assert_eq!(entry.fallback_archive_sha256.as_deref(), Some("goodsha"));
+    }
+
+    #[test]
+    fn update_entry_failed_with_no_prior_success_has_no_fallback() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let mut idx = IndexToml::empty(8, "now".into(), "test".into());
+        // First-ever attempt fails — no prior success to fall back to.
+        idx.update_entry_failed(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "first error".into(),
+            "t1".into(),
+            "run1".into(),
+        );
+        let entry = idx.lookup("foo", "1.0", TargetArch::Wasm32).unwrap();
+        assert_eq!(entry.status, EntryStatus::Failed);
+        assert!(entry.fallback_archive_url.is_none());
+    }
+
+    #[test]
+    fn update_entry_failed_preserves_existing_fallback() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let mut idx = IndexToml::empty(8, "now".into(), "test".into());
+        // success → failed (fallback set from the first success)
+        idx.update_entry_success(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo-v1.tar.zst".into(), "sha-v1".into(), "key-v1".into(),
+            "t1".into(), "run1".into(),
+        );
+        idx.update_entry_failed(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "err1".into(), "t2".into(), "run2".into(),
+        );
+        // Another rebuild fails — the original last-green must
+        // survive (we never overwrite a fallback because that's the
+        // last working copy consumers can still fetch).
+        idx.update_entry_failed(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "err2".into(), "t3".into(), "run3".into(),
+        );
+        let entry = idx.lookup("foo", "1.0", TargetArch::Wasm32).unwrap();
+        assert_eq!(entry.status, EntryStatus::Failed);
+        assert_eq!(entry.error.as_deref(), Some("err2"));
+        assert_eq!(
+            entry.fallback_archive_url.as_deref(),
+            Some("foo-v1.tar.zst"),
+            "the original good archive must remain the fallback"
+        );
+    }
+
+    #[test]
+    fn update_entry_success_after_failed_clears_fallback() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let mut idx = IndexToml::empty(8, "now".into(), "test".into());
+        idx.update_entry_success(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo-v1.tar.zst".into(), "sha-v1".into(), "key-v1".into(),
+            "t1".into(), "run1".into(),
+        );
+        idx.update_entry_failed(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "err".into(), "t2".into(), "run2".into(),
+        );
+        idx.update_entry_success(
+            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo-v2.tar.zst".into(), "sha-v2".into(), "key-v2".into(),
+            "t3".into(), "run3".into(),
+        );
+        let entry = idx.lookup("foo", "1.0", TargetArch::Wasm32).unwrap();
+        assert_eq!(entry.archive_url.as_deref(), Some("foo-v2.tar.zst"));
+        assert!(
+            entry.fallback_archive_url.is_none(),
+            "a fresh success makes the fallback obsolete"
+        );
+        assert!(entry.error.is_none());
     }
 
     #[test]
