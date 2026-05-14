@@ -3567,6 +3567,205 @@ cache_key_sha = "{cache_key_sha}"
         )
     }
 
+    /// Write a source `package.toml` + sibling `build.toml` for
+    /// index-lookup-based resolution tests. The `build.toml`'s
+    /// `[binary]` block points at `index_url` (typically a `file://`
+    /// URL to a staged `index.toml`). The build script drops a
+    /// `via-build` sentinel so fall-through tests can detect that the
+    /// source build ran instead of the index fetch.
+    fn write_lib_with_build_toml(
+        root: &Path,
+        name: &str,
+        index_url: &str,
+    ) {
+        let lib_dir = root.join(name);
+        std::fs::create_dir_all(&lib_dir).unwrap();
+
+        let deps_toml = format!(
+            r#"
+kind = "library"
+name = "{name}"
+version = "1.0.0"
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-1.0.0.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/out.a"]
+"#,
+            ""
+        );
+        std::fs::write(lib_dir.join("package.toml"), deps_toml).unwrap();
+
+        let build_toml = format!(
+            r#"
+script_path = "examples/libs/{name}/build-{name}.sh"
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+[binary]
+index_url = "{index_url}"
+"#
+        );
+        std::fs::write(lib_dir.join("build.toml"), build_toml).unwrap();
+
+        let script = "#!/bin/bash\nset -euo pipefail\n\
+mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\n\
+echo BUILD > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\n\
+touch \"$WASM_POSIX_DEP_OUT_DIR/via-build\"\n";
+        let script_path = lib_dir.join(format!("build-{name}.sh"));
+        std::fs::write(&script_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&script_path).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&script_path, p).unwrap();
+        }
+    }
+
+    /// Stage an `index.toml` at `path` declaring `name@1.0.0` with a
+    /// single Success entry for `arch` pointing at `archive_url` with
+    /// the given `archive_sha256` and `cache_key_sha`. Mirrors what
+    /// `xtask index-update` will produce in CI; tests use this to
+    /// short-circuit a real publish pipeline.
+    fn stage_index_toml(
+        path: &Path,
+        name: &str,
+        arch: TargetArch,
+        archive_url: &str,
+        archive_sha256: &str,
+        cache_key_sha: &str,
+    ) {
+        let arch_str = arch.as_str();
+        let content = format!(
+            r#"abi_version = {abi}
+generated_at = "2026-05-13T00:00:00Z"
+generator = "test"
+
+[[packages]]
+name = "{name}"
+version = "1.0.0"
+revision = 1
+
+[packages.binary.{arch_str}]
+status = "success"
+archive_url = "{archive_url}"
+archive_sha256 = "{archive_sha256}"
+cache_key_sha = "{cache_key_sha}"
+built_at = "2026-05-13T00:00:00Z"
+built_by = "test"
+"#,
+            abi = TEST_ABI,
+        );
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// Phase 6 Task 6.1 — the smoke test for index-lookup-based
+    /// resolution. Currently fails (the resolver doesn't read
+    /// build.toml yet); subsequent tasks add `load_build_toml`,
+    /// `fetch_index`, and the `cmd_resolve` wiring.
+    #[test]
+    fn resolver_fetches_via_index_lookup() {
+        let root = tempdir("idx-happy-reg");
+        let cache = tempdir("idx-happy-cache");
+        let archive_dir = tempdir("idx-happy-archive");
+        let index_dir = tempdir("idx-happy-index");
+
+        // 1. Compute the cache_key_sha the resolver will produce for
+        //    our (fixed-shape) source manifest. cache_key_sha hashes
+        //    name/version/revision/source/arch/abi/dep-shas; adding a
+        //    build.toml does NOT change it (the sibling file is
+        //    invisible to compute_sha).
+        let throwaway_root = tempdir("idx-happy-pre");
+        write_lib(
+            &throwaway_root,
+            "libIdx",
+            "1.0.0",
+            &[],
+            "true",
+            "[outputs]\nlibs = [\"lib/out.a\"]\n",
+        );
+        let pre_reg = Registry { roots: vec![throwaway_root.clone()] };
+        let pre_m = pre_reg.load("libIdx").unwrap();
+        let pre_sha = compute_sha(
+            &pre_m,
+            &pre_reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let cache_key_hex = hex(&pre_sha);
+        let _ = std::fs::remove_dir_all(&throwaway_root);
+
+        // 2. Build a real archive whose internal manifest matches the
+        //    cache key + arch + abi we'll request.
+        let manifest_text = archived_manifest_text(
+            "libIdx",
+            "wasm32",
+            &[TEST_ABI],
+            &cache_key_hex,
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"\x00INDEX")],
+        );
+        let archive_sha_hex = sha256_hex(&archive_bytes);
+        let archive_filename = "libIdx-1.0.0-rev1-abi8-wasm32-deadbeef.tar.zst";
+        let archive_path = archive_dir.join(archive_filename);
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
+
+        // 3. Stage an index.toml in a separate dir pointing at the
+        //    archive's file:// URL.
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdx",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha_hex,
+            &cache_key_hex,
+        );
+        let index_url = format!("file://{}", index_path.display());
+
+        // 4. Write the source package.toml + build.toml. build.toml
+        //    points at the staged index.
+        write_lib_with_build_toml(&root, "libIdx", &index_url);
+
+        // 5. Run the resolver.
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libIdx").unwrap();
+        let path = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        // 6. Archive installed at canonical cache path with the
+        //    archive's contents — and the build script DID NOT run.
+        assert!(path.starts_with(cache.join("libs")));
+        let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
+        assert_eq!(lib_bytes, b"\x00INDEX");
+        assert!(
+            !path.join("via-build").exists(),
+            "index-based fetch should bypass the source build (got via-build sentinel)"
+        );
+    }
+
     // Tests under `#[ignore]` below exercise the resolver's legacy
     // `[binary]`-block fetch path. The source package.toml no longer
     // carries `[binary]` (validate_source rejects it post
