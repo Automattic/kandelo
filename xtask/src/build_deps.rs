@@ -3607,67 +3607,10 @@ libs = ["lib/libConsumer.a"]
         hex(&out)
     }
 
-    /// Build a package.toml / build script pair for remote-fetch tests.
-    /// Declared output is `lib/out.a` (kept simple — the prefix-less
-    /// name avoids the double-`lib` confusion, and is the same string
-    /// the test archive uses). The build script also drops a sentinel
-    /// `via-build` file, used by fall-through tests to detect that the
-    /// source build ran rather than the remote fetch.
-    fn write_lib_with_binary(
-        root: &Path,
-        name: &str,
-        archive_path: &Path,
-        archive_sha: &str,
-    ) {
-        let lib_dir = root.join(name);
-        std::fs::create_dir_all(&lib_dir).unwrap();
-
-        let archive_url = format!("file://{}", archive_path.display());
-        let deps_toml = format!(
-            r#"
-kind = "library"
-name = "{name}"
-version = "1.0.0"
-revision = 1
-depends_on = []
-
-[source]
-url = "https://example.test/{name}-1.0.0.tar.gz"
-sha256 = "{:0>64}"
-
-[license]
-spdx = "TestLicense"
-
-[outputs]
-libs = ["lib/out.a"]
-
-[binary]
-archive_url = "{archive_url}"
-archive_sha256 = "{archive_sha}"
-"#,
-            ""
-        );
-        std::fs::write(lib_dir.join("package.toml"), deps_toml).unwrap();
-
-        let script = "#!/bin/bash\nset -euo pipefail\n\
-mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\n\
-echo BUILD > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\n\
-touch \"$WASM_POSIX_DEP_OUT_DIR/via-build\"\n";
-        let script_path = lib_dir.join(format!("build-{name}.sh"));
-        std::fs::write(&script_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut p = std::fs::metadata(&script_path).unwrap().permissions();
-            p.set_mode(0o755);
-            std::fs::set_permissions(&script_path, p).unwrap();
-        }
-    }
-
     /// Build the archived `manifest.toml` text for a library named
     /// `name`. `arch` and `abi_versions` and `cache_key_sha` populate
     /// the `[compatibility]` block. Output declaration is `lib/out.a`
-    /// to match `write_lib_with_binary`.
+    /// to match `write_lib_with_build_toml`.
     fn archived_manifest_text(
         name: &str,
         arch: &str,
@@ -3808,22 +3751,29 @@ built_by = "test"
         std::fs::write(path, content).unwrap();
     }
 
-    /// Phase 6 Task 6.1 — the smoke test for index-lookup-based
-    /// resolution. Currently fails (the resolver doesn't read
-    /// build.toml yet); subsequent tasks add `load_build_toml`,
-    /// `fetch_index`, and the `cmd_resolve` wiring.
+    // Resolver tests for the index-lookup binary fetch path. Each
+    // test stages a real archive + index.toml on disk (file:// URLs
+    // throughout — no network required), writes a source
+    // package.toml + sibling build.toml that points at the staged
+    // index, and exercises the resolver's path under one specific
+    // verification condition.
+    //
+    // Fall-through tests assert that the source build's `via-build`
+    // sentinel appears in the cache (proving the resolver gave up on
+    // the index path and ran the build script); the happy-path test
+    // asserts the archive's bytes landed AND `via-build` is absent.
+
     #[test]
-    fn resolver_fetches_via_index_lookup() {
+    fn index_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
         let root = tempdir("idx-happy-reg");
         let cache = tempdir("idx-happy-cache");
         let archive_dir = tempdir("idx-happy-archive");
         let index_dir = tempdir("idx-happy-index");
 
-        // 1. Compute the cache_key_sha the resolver will produce for
-        //    our (fixed-shape) source manifest. cache_key_sha hashes
-        //    name/version/revision/source/arch/abi/dep-shas; adding a
-        //    build.toml does NOT change it (the sibling file is
-        //    invisible to compute_sha).
+        // Compute the cache_key_sha the resolver will produce for the
+        // (fixed-shape) source manifest. cache_key_sha hashes
+        // name/version/revision/source/arch/abi/dep-shas; the sibling
+        // build.toml is invisible to compute_sha.
         let throwaway_root = tempdir("idx-happy-pre");
         write_lib(
             &throwaway_root,
@@ -3847,8 +3797,8 @@ built_by = "test"
         let cache_key_hex = hex(&pre_sha);
         let _ = std::fs::remove_dir_all(&throwaway_root);
 
-        // 2. Build a real archive whose internal manifest matches the
-        //    cache key + arch + abi we'll request.
+        // Build a real archive whose internal manifest matches arch
+        // + abi + cache_key.
         let manifest_text = archived_manifest_text(
             "libIdx",
             "wasm32",
@@ -3857,16 +3807,13 @@ built_by = "test"
         );
         let archive_bytes = crate::remote_fetch::build_test_archive(
             &manifest_text,
-            &[("lib/out.a", b"\x00INDEX")],
+            &[("lib/out.a", b"\x00\x01\x02FAKE")],
         );
         let archive_sha_hex = sha256_hex(&archive_bytes);
-        let archive_filename = "libIdx-1.0.0-rev1-abi8-wasm32-deadbeef.tar.zst";
-        let archive_path = archive_dir.join(archive_filename);
+        let archive_path = archive_dir.join("libIdx-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
         let archive_url = format!("file://{}", archive_path.display());
 
-        // 3. Stage an index.toml in a separate dir pointing at the
-        //    archive's file:// URL.
         let index_path = index_dir.join("index.toml");
         stage_index_toml(
             &index_path,
@@ -3877,12 +3824,8 @@ built_by = "test"
             &cache_key_hex,
         );
         let index_url = format!("file://{}", index_path.display());
-
-        // 4. Write the source package.toml + build.toml. build.toml
-        //    points at the staged index.
         write_lib_with_build_toml(&root, "libIdx", &index_url);
 
-        // 5. Run the resolver.
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libIdx").unwrap();
         let path = ensure_built(
@@ -3894,115 +3837,31 @@ built_by = "test"
         )
         .unwrap();
 
-        // 6. Archive installed at canonical cache path with the
-        //    archive's contents — and the build script DID NOT run.
-        assert!(path.starts_with(cache.join("libs")));
-        let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
-        assert_eq!(lib_bytes, b"\x00INDEX");
-        assert!(
-            !path.join("via-build").exists(),
-            "index-based fetch should bypass the source build (got via-build sentinel)"
-        );
-    }
-
-    // Tests under `#[ignore]` below exercise the resolver's legacy
-    // `[binary]`-block fetch path. The source package.toml no longer
-    // carries `[binary]` (validate_source rejects it post
-    // binary-resolution-via-index-ledger), so these fixtures don't
-    // parse. Phase 6 of the implementation plan rewrites them to use
-    // a `build.toml` + `index.toml` shape; un-ignore + migrate then.
-    #[test]
-    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
-    fn remote_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
-        let root = tempdir("rf-happy-reg");
-        let cache = tempdir("rf-happy-cache");
-        let archive_dir = tempdir("rf-happy-archive");
-
-        // Compute the cache_key_sha the resolver would produce for our
-        // (fixed-shape) package.toml. We don't have the package.toml on disk
-        // yet; build a throwaway and parse it through the registry.
-        // Note: adding a [binary] block does NOT change cache_key_sha
-        // (only name/version/revision/source/arch/abi/dep-shas are
-        // hashed) — so the value computed here matches the value
-        // computed for the real lib below.
-        let throwaway_root = tempdir("rf-happy-pre");
-        write_lib(
-            &throwaway_root,
-            "libRf",
-            "1.0.0",
-            &[],
-            "true",
-            "[outputs]\nlibs = [\"lib/out.a\"]\n",
-        );
-        let pre_reg = Registry { roots: vec![throwaway_root.clone()] };
-        let pre_m = pre_reg.load("libRf").unwrap();
-        let pre_sha = compute_sha(
-            &pre_m,
-            &pre_reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        let cache_key_hex = hex(&pre_sha);
-        let _ = std::fs::remove_dir_all(&throwaway_root);
-
-        // Build the archive with matching arch / abi / cache_key.
-        let manifest_text = archived_manifest_text(
-            "libRf",
-            "wasm32",
-            &[TEST_ABI],
-            &cache_key_hex,
-        );
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"\x00\x01\x02FAKE")],
-        );
-        let archive_sha_hex = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libRf-1.0.0.tar.zst");
-        std::fs::write(&archive_path, &archive_bytes).unwrap();
-
-        // Real consumer manifest with [binary] pointing at file://.
-        write_lib_with_binary(&root, "libRf", &archive_path, &archive_sha_hex);
-
-        let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRf").unwrap();
-
-        let path = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
-
         // Artifact installed at the canonical cache path with the
-        // archive's contents.
+        // archive's bytes.
         assert!(path.starts_with(cache.join("libs")));
         let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
         assert_eq!(lib_bytes, b"\x00\x01\x02FAKE");
-        // Build script did NOT run (no `via-build` sentinel).
+        // Build script did NOT run.
         assert!(
             !path.join("via-build").exists(),
-            "remote fetch should bypass the source build"
+            "index fetch should bypass the source build"
         );
-        // Manifest + artifacts dir were stripped during reshape.
+        // Manifest + artifacts dir stripped during reshape.
         assert!(!path.join("manifest.toml").exists());
         assert!(!path.join("artifacts").exists());
     }
 
     #[test]
-    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
-    fn remote_fetch_falls_through_on_archive_sha_mismatch() {
-        let root = tempdir("rf-shafail-reg");
-        let cache = tempdir("rf-shafail-cache");
-        let archive_dir = tempdir("rf-shafail-archive");
+    fn index_fetch_falls_through_on_archive_sha_mismatch() {
+        let root = tempdir("idx-shafail-reg");
+        let cache = tempdir("idx-shafail-cache");
+        let archive_dir = tempdir("idx-shafail-archive");
+        let index_dir = tempdir("idx-shafail-index");
 
-        // Build a real archive but advertise the WRONG sha in package.toml.
+        // Build a real archive but advertise the WRONG sha in the index.
         let manifest_text = archived_manifest_text(
-            "libRfSha",
+            "libIdxSha",
             "wasm32",
             &[TEST_ABI],
             // cache_key_sha is irrelevant: we never get past the sha
@@ -4014,14 +3873,25 @@ built_by = "test"
             &manifest_text,
             &[("lib/out.a", b"REMOTE")],
         );
-        let archive_path = archive_dir.join("libRfSha-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdxSha-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let bogus_sha = "0".repeat(64);
+        let archive_url = format!("file://{}", archive_path.display());
 
-        write_lib_with_binary(&root, "libRfSha", &archive_path, &bogus_sha);
+        let bogus_sha = "0".repeat(64);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdxSha",
+            TargetArch::Wasm32,
+            &archive_url,
+            &bogus_sha,
+            &"a".repeat(64),
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxSha", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRfSha").unwrap();
+        let m = reg.load("libIdxSha").unwrap();
         let path = ensure_built(
             &m,
             &reg,
@@ -4031,8 +3901,7 @@ built_by = "test"
         )
         .unwrap();
 
-        // Source build ran (sentinel exists; lib content matches the
-        // build script's output, not the archive's).
+        // Source build ran.
         assert!(
             path.join("via-build").exists(),
             "sha mismatch must fall through to source build"
@@ -4042,15 +3911,19 @@ built_by = "test"
     }
 
     #[test]
-    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
-    fn remote_fetch_falls_through_on_target_arch_mismatch() {
-        let root = tempdir("rf-archfail-reg");
-        let cache = tempdir("rf-archfail-cache");
-        let archive_dir = tempdir("rf-archfail-archive");
+    fn index_fetch_falls_through_on_target_arch_mismatch() {
+        let root = tempdir("idx-archfail-reg");
+        let cache = tempdir("idx-archfail-cache");
+        let archive_dir = tempdir("idx-archfail-archive");
+        let index_dir = tempdir("idx-archfail-index");
 
-        // Archive declares wasm64 — resolver passes wasm32 (TEST_ARCH).
+        // Archive's internal compatibility block declares wasm64 —
+        // resolver requests wasm32 (TEST_ARCH). The index entry
+        // points the wasm32 slot at this archive (an
+        // archive-staging bug a real CI would never produce, but
+        // the resolver must defend against it).
         let manifest_text = archived_manifest_text(
-            "libRfArch",
+            "libIdxArch",
             "wasm64",
             &[TEST_ABI],
             &"a".repeat(64),
@@ -4060,13 +3933,24 @@ built_by = "test"
             &[("lib/out.a", b"REMOTE")],
         );
         let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libRfArch-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdxArch-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        write_lib_with_binary(&root, "libRfArch", &archive_path, &archive_sha);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdxArch",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha,
+            &"a".repeat(64),
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxArch", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRfArch").unwrap();
+        let m = reg.load("libIdxArch").unwrap();
         let path = ensure_built(
             &m,
             &reg,
@@ -4083,15 +3967,15 @@ built_by = "test"
     }
 
     #[test]
-    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
-    fn remote_fetch_falls_through_on_abi_mismatch() {
-        let root = tempdir("rf-abifail-reg");
-        let cache = tempdir("rf-abifail-cache");
-        let archive_dir = tempdir("rf-abifail-archive");
+    fn index_fetch_falls_through_on_abi_mismatch() {
+        let root = tempdir("idx-abifail-reg");
+        let cache = tempdir("idx-abifail-cache");
+        let archive_dir = tempdir("idx-abifail-archive");
+        let index_dir = tempdir("idx-abifail-index");
 
-        // Archive supports only ABI 999 — resolver passes TEST_ABI (=4).
+        // Archive supports only ABI 999 — resolver passes TEST_ABI.
         let manifest_text = archived_manifest_text(
-            "libRfAbi",
+            "libIdxAbi",
             "wasm32",
             &[999],
             &"a".repeat(64),
@@ -4101,18 +3985,29 @@ built_by = "test"
             &[("lib/out.a", b"REMOTE")],
         );
         let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libRfAbi-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdxAbi-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        write_lib_with_binary(&root, "libRfAbi", &archive_path, &archive_sha);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdxAbi",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha,
+            &"a".repeat(64),
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxAbi", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRfAbi").unwrap();
+        let m = reg.load("libIdxAbi").unwrap();
         let path = ensure_built(
             &m,
             &reg,
             TEST_ARCH,
-            TEST_ABI, // 4, not in [999]
+            TEST_ABI, // not in [999]
             &resolve_opts(&cache, None),
         )
         .unwrap();
@@ -4124,17 +4019,17 @@ built_by = "test"
     }
 
     #[test]
-    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
-    fn remote_fetch_falls_through_on_cache_key_mismatch() {
-        let root = tempdir("rf-ckfail-reg");
-        let cache = tempdir("rf-ckfail-cache");
-        let archive_dir = tempdir("rf-ckfail-archive");
+    fn index_fetch_falls_through_on_cache_key_mismatch() {
+        let root = tempdir("idx-ckfail-reg");
+        let cache = tempdir("idx-ckfail-cache");
+        let archive_dir = tempdir("idx-ckfail-archive");
+        let index_dir = tempdir("idx-ckfail-index");
 
-        // Archive declares a wrong cache_key_sha (well-formed but
-        // never produced by compute_sha for this manifest).
+        // Archive's internal compat.cache_key_sha is well-formed but
+        // doesn't match what compute_sha would produce for this lib.
         let wrong_ck = "f".repeat(64);
         let manifest_text = archived_manifest_text(
-            "libRfCk",
+            "libIdxCk",
             "wasm32",
             &[TEST_ABI],
             &wrong_ck,
@@ -4144,13 +4039,24 @@ built_by = "test"
             &[("lib/out.a", b"REMOTE")],
         );
         let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libRfCk-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdxCk-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        write_lib_with_binary(&root, "libRfCk", &archive_path, &archive_sha);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdxCk",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha,
+            &wrong_ck,
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxCk", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRfCk").unwrap();
+        let m = reg.load("libIdxCk").unwrap();
         let path = ensure_built(
             &m,
             &reg,
@@ -5032,19 +4938,18 @@ libs = ["lib/libF1.a"]
     }
 
     #[test]
-    #[ignore = "binary-resolution-via-index-ledger: rewrite for build.toml+index.toml in Phase 6"]
-    fn force_rebuild_bypasses_remote_fetch() {
-        // Stage a real archive on disk and point [binary].archive_url at
-        // it. Without force, the resolver installs from the archive and
-        // the source build's `via-build` sentinel does NOT appear. With
-        // force, the resolver skips remote fetch and source-builds — the
-        // sentinel DOES appear.
-        let root = tempdir("force-rf-reg");
-        let cache = tempdir("force-rf-cache");
-        let archive_dir = tempdir("force-rf-archive");
+    fn force_rebuild_bypasses_index_fetch() {
+        // Stage a real archive + index entry that WOULD resolve cleanly
+        // (matching sha/arch/abi/cache_key) and confirm `force_rebuild`
+        // skips the index path entirely — the source build's
+        // `via-build` sentinel appears and the canonical cache holds
+        // the script-built artifact, not the archive's.
+        let root = tempdir("force-idx-reg");
+        let cache = tempdir("force-idx-cache");
+        let archive_dir = tempdir("force-idx-archive");
+        let index_dir = tempdir("force-idx-index");
 
-        // Compute cache_key_sha for the lib (matches write_lib_with_binary's shape).
-        let throwaway_root = tempdir("force-rf-pre");
+        let throwaway_root = tempdir("force-idx-pre");
         write_lib(
             &throwaway_root,
             "libF2",
@@ -5067,7 +4972,7 @@ libs = ["lib/libF1.a"]
         let cache_key_hex = hex(&pre_sha);
         let _ = std::fs::remove_dir_all(&throwaway_root);
 
-        // Build a remote archive whose contents differ from the source build,
+        // Build an archive whose contents differ from the source build
         // so we can tell which path produced the artifact.
         let manifest_text =
             archived_manifest_text("libF2", "wasm32", &[TEST_ABI], &cache_key_hex);
@@ -5078,9 +4983,20 @@ libs = ["lib/libF1.a"]
         let archive_sha_hex = sha256_hex(&archive_bytes);
         let archive_path = archive_dir.join("libF2-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        // The real consumer lib advertises that archive.
-        write_lib_with_binary(&root, "libF2", &archive_path, &archive_sha_hex);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libF2",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha_hex,
+            &cache_key_hex,
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libF2", &index_url);
+
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libF2").unwrap();
 
