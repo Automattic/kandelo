@@ -1,19 +1,16 @@
-// Validation fixture for B1 stages 1+2 (fork-from-plain-catch).
+// C-02 — fork inside a C++ catch handler body (single-arm plain catch).
 //
-// Pattern: a C++ try block throws an `int`; the matching catch handler
-// calls fork() *from inside the handler body*. Both parent and child
-// must continue from the fork site and reach their respective branches.
+// Coverage matrix: docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
+// Pattern: try { throw int } catch (int) { fork(); }. Both parent and
+// child must continue from the fork site and reach their respective
+// branches.
 //
-// This is the SpiderMonkey-spike test (d) pattern, documented in
-// memory:spidermonkey-spike-eh-toolchain-gap.md. Before B1, this hung
-// because fork-instrument carved out functions with fork calls inside
-// try_table catch-handler bodies. B1 stage 1 added per-arm scratch
-// space; stage 2 added rewind dispatch + capture-block emission.
-//
-// Decision C1 in
-// docs/plans/2026-05-13-fork-instrument-unsupported-cases-review.md is
-// to land a synthetic fixture as the regression gate ahead of any
-// larger consumer (the SpiderMonkey port).
+// History: this is the SpiderMonkey-spike test (d) pattern from
+// memory:spidermonkey-spike-eh-toolchain-gap.md, originally landed as
+// programs/cpp_eh_fork_from_catch_test.cpp. Renamed for the coverage
+// matrix. B1 stages 1+2 shipped on `fierce-wire` ahead of this fixture
+// but did not actually close the case end-to-end — the architectural
+// pivot (eliminate guard-dispatch) is the planned fix.
 //
 // Expected output on PASS:
 //   THROWING
@@ -21,7 +18,7 @@
 //   PRE_FORK
 //   CHILD: ok
 //   PARENT: child=<pid>
-//   PASS: fork-from-catch
+//   PASS: C-02
 
 #include <cstdio>
 #include <cstdlib>
@@ -57,7 +54,7 @@ int main() {
             return 1;
         }
         if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-            printf("PASS: fork-from-catch\n");
+            printf("PASS: C-02\n");
             return 0;
         }
         printf("FAIL: child exit status=%d\n", status);

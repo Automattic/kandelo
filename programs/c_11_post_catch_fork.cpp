@@ -1,22 +1,24 @@
-// Test (b) from the SpiderMonkey EH+fork spike (memory:
-// spidermonkey-spike-eh-toolchain-gap.md). Documented hang pattern:
-// throw → catch → catch frame fully popped → fork() outside any try
-// region → fork hangs.
+// C-11 — fork() after a fully-popped C++ catch frame.
 //
-// Functionally this should be identical to a fork-with-no-EH because
-// the catch frame is gone by the time fork() is called. The hang
-// suggests fork-instrument or libunwind leaves state behind that
-// confuses the fork path. This regression test verifies the hang
-// does NOT occur on current `fierce-wire` (post-rebase, after the
-// architectural Path-A switch-dispatch work in Phase 7 and the B1
-// stages 1+2 work). If the test hangs, root-cause work follows.
+// Coverage matrix: docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
+// Pattern: try { throw } catch (int) { ... } /* catch frame popped */
+// fork(). Functionally identical to fork-with-no-EH because the catch
+// frame is gone by the time fork() is called, but the spike (and the
+// repro on this branch) shows the parent never returns from fork().
+// The architectural pivot (eliminate guard-dispatch) is the planned
+// fix.
+//
+// History: SpiderMonkey EH+fork spike test (b) from
+// memory:spidermonkey-spike-eh-toolchain-gap.md. Originally landed as
+// programs/cpp_post_catch_fork_test.cpp. Renamed for the coverage
+// matrix.
 //
 // Expected output on PASS:
 //   CAUGHT: 42
 //   PRE_FORK
 //   PARENT: child=<pid>
 //   CHILD: ok
-//   PASS: post-catch fork
+//   PASS: C-11
 
 #include <cstdio>
 #include <cstdlib>
@@ -56,7 +58,7 @@ int main() {
         return 1;
     }
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-        printf("PASS: post-catch fork\n");
+        printf("PASS: C-11\n");
         return 0;
     }
     printf("FAIL: child exit status=%d\n", status);
