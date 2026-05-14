@@ -79,10 +79,10 @@
 //!
 //! Each fixture has a paired test:
 //!
-//! | Fixture                              | Routes to (post-2.4c)   | Notes                          |
+//! | Fixture                              | Routes to (post-2.5c)   | Notes                          |
 //! |--------------------------------------|-------------------------|--------------------------------|
 //! | `top_level_carryover.wat`            | switch-dispatch (2.4c)  | switch-dispatch absorbs        |
-//! | `nested_carryover_in_loop.wat`       | guard-dispatch today    | trampoline post-2.6            |
+//! | `nested_carryover_in_loop.wat`       | nested switch (2.5c)    | absorbed via carryover spills  |
 //! | `nested_multivalue_params.wat`       | guard-dispatch today    | trampoline post-2.6            |
 //! | `legacy_try_fork.wat`                | guard-dispatch today    | trampoline post-2.6            |
 //! | `nested_call_indirect.wat`           | nested switch today (*) | n/a — already handled          |
@@ -211,35 +211,40 @@ fn top_level_carryover_uses_switch_dispatch_with_carryover_spills() {
 }
 
 // ---------------------------------------------------------------------
-// (a) Nested in unsupported pattern: carryover inside a loop body
+// Nested carryover inside a loop body
 // ---------------------------------------------------------------------
+//
+// Sub-commit 2.5c (2026-05-14): direct-call carryovers inside nested
+// seqs are absorbed by nested switch-dispatch via the per-call
+// carryover-spilling extension (wired in 2.5b). Trampoline NOT needed
+// — switch-dispatch's per-region dispatch (function-level br_table +
+// nested per-block dispatch inside the loop body) covers this case.
 
 #[test]
-fn today_nested_carryover_in_loop_routes_to_guard_dispatch() {
+fn nested_carryover_in_loop_uses_nested_switch_dispatch() {
     let wat = include_str!("fixtures/trampoline/nested_carryover_in_loop.wat");
     let input = wat::parse_str(wat).expect("wat parse");
     let output = instrument(&input, &Options::default()).expect("instrument");
     validate(&output);
     let module = Module::from_buffer(&output).expect("walrus parse");
 
+    // Post-2.5c: nested switch-dispatch handles direct-call carryover
+    // inside the loop body. Function-level br_table dispatches to the
+    // SubRegion landing covering the loop; inside the loop body, a
+    // per-region br_table dispatches to the right POST_K. The per-call
+    // carryover spill locals round-trip the `local.get $sp` carryover
+    // across REWIND.
     assert!(
-        !has_br_table_in(&module, "_start"),
-        "today: nested carryover-in-loop must route to guard-dispatch"
+        has_br_table_in(&module, "_start"),
+        "post-2.5c: nested carryover-in-loop routes to nested switch-dispatch \
+         (br_table emitted), not guard-dispatch"
     );
-}
-
-#[test]
-#[ignore = "enabled in sub-commit 2.6 — wire nested-Loop/IfElse/TryTable to trampoline"]
-fn trampoline_nested_carryover_in_loop_emits_post_table() {
-    let wat = include_str!("fixtures/trampoline/nested_carryover_in_loop.wat");
-    let input = wat::parse_str(wat).expect("wat parse");
-    let output = instrument(&input, &Options::default()).expect("instrument");
-    validate(&output);
-    let module = Module::from_buffer(&output).expect("walrus parse");
-
+    // Per-function trampoline post-table is NOT emitted — the
+    // trampoline is reserved for genuinely-impossible nested-control-
+    // flow cases (multi-value-params + legacy-try, addressed in 2.6).
     assert!(
-        has_table_with_prefix(&module, "_start_post_table"),
-        "trampoline: must emit `_start_post_table` for the nested carryover"
+        !has_table_with_prefix(&module, "_start_post_table"),
+        "post-2.5c: nested switch-dispatch absorbs the carryover; no trampoline table needed"
     );
 }
 

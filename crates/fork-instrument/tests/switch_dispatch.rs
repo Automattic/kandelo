@@ -166,6 +166,29 @@ fn nested_fork_call_uses_per_block_switch_dispatch() {
 }
 
 #[test]
+fn direct_call_carryover_in_block_uses_switch_dispatch() {
+    // Sub-commit 2.5c regression: a direct fork-path Call inside a
+    // nested Block body whose preceding instructions push an i32
+    // carryover onto the Block's local stack must now route to
+    // nested switch-dispatch — the per-call `carryover_spills` wiring
+    // (2.5b) spills the carryover at the call site and reloads it on
+    // REWIND. Mirrors `carryover_at_subregion_uses_switch_dispatch`
+    // but exercises the DirectCall landing path rather than the
+    // SubRegion landing path.
+    let wat = include_str!("fixtures/switch_dispatch/direct_call_carryover_in_block.wat");
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("walrus parse");
+
+    assert!(
+        has_top_level_br_table_dispatch(&module, "main"),
+        "direct-call carryover inside a Block body must route to nested \
+         switch-dispatch (br_table emitted), not guard-dispatch's body-replay"
+    );
+}
+
+#[test]
 fn carryover_at_subregion_uses_switch_dispatch() {
     // Per-block switch-dispatch's carryover-spilling extension: a
     // sub-region landing whose preceding chunk pushes a 1-i32 carryover

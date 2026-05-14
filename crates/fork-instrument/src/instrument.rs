@@ -1207,7 +1207,6 @@ fn compute_carryover_types(
 /// multi-value or ref-typed `Block`/`Loop`/`IfElse`/`TryTable`
 /// result). The caller (sub-commit 2.5c) keeps the existing rejection
 /// in `seq_has_unsupported_carryover` for the `None` case.
-#[allow(dead_code)] // Wired in sub-commit 2.5b.
 fn compute_nested_carryover_types(
     module: &Module,
     func_id: FunctionId,
@@ -1257,14 +1256,30 @@ fn compute_nested_carryover_types(
 /// fork-path callee or `CallIndirect`). Block/Loop/IfElse/TryTable
 /// instructions are treated as opaque — see
 /// `compute_nested_carryover_types`.
+///
+/// Stack values are tracked as `Option<ValType>`: producers we can
+/// type statically push `Some(ty)`; producers we can't (e.g. `Unop`,
+/// `Cmpxchg`, multi-value structured control flow) push `None`.
+/// `None` slots are tolerated as long as they're consumed before
+/// the next fork-path call; only `None` slots that end up IN A
+/// carryover force `walk_seq_for_carryovers` to fail conservatively
+/// (returning `None`). This makes the analyser succeed for any
+/// fork-bearing seq with no carryover at all, regardless of the
+/// producer instructions it contains.
 fn walk_seq_for_carryovers(
     module: &Module,
     f: &LocalFunction,
     seq: InstrSeqId,
     fork_path: &HashSet<FunctionId>,
 ) -> Option<Vec<Vec<ValType>>> {
-    let mut stack: Vec<ValType> = Vec::new();
+    let mut stack: Vec<Option<ValType>> = Vec::new();
     let mut carryovers: Vec<Vec<ValType>> = Vec::new();
+
+    // Helper: materialise the typed-carryover slice. Returns None if
+    // any `None` slot would be captured.
+    fn snapshot_carryover(slots: &[Option<ValType>]) -> Option<Vec<ValType>> {
+        slots.iter().copied().collect::<Option<Vec<ValType>>>()
+    }
 
     for (instr, _) in &f.block(seq).instrs {
         // Fork-path call landings — the partition points.
@@ -1276,10 +1291,10 @@ fn walk_seq_for_carryovers(
                     return None;
                 }
                 let n_cr = stack.len() - n_args;
-                carryovers.push(stack[..n_cr].to_vec());
+                carryovers.push(snapshot_carryover(&stack[..n_cr])?);
                 stack.truncate(n_cr);
                 for &ty in sig.results() {
-                    stack.push(ty);
+                    stack.push(Some(ty));
                 }
                 continue;
             }
@@ -1290,10 +1305,10 @@ fn walk_seq_for_carryovers(
                     return None;
                 }
                 let n_cr = stack.len() - n_args;
-                carryovers.push(stack[..n_cr].to_vec());
+                carryovers.push(snapshot_carryover(&stack[..n_cr])?);
                 stack.truncate(n_cr);
                 for &ty in sig.results() {
-                    stack.push(ty);
+                    stack.push(Some(ty));
                 }
                 continue;
             }
@@ -1311,58 +1326,86 @@ fn walk_seq_for_carryovers(
                 }
                 // Determine pushed type(s). Multi-push instructions are
                 // only Call / CallIndirect / CallRef and structured
-                // control flow with a multi-value result; the latter is
-                // already rejected upstream so we only handle the
-                // single-result cases here.
+                // control flow with a multi-value result. We type the
+                // single-result cases precisely; everything else
+                // contributes `None` slots so the seq can still proceed
+                // as long as the unknown slot is consumed before any
+                // carryover snapshot.
                 match instr {
                     Instr::Call(c) => {
                         let sig = module.types.get(module.funcs.get(c.func).ty());
                         for &ty in sig.results() {
-                            stack.push(ty);
+                            stack.push(Some(ty));
                         }
                         continue;
                     }
-                    Instr::CallIndirect(_) | Instr::CallRef(_) => {
-                        // Fork-path CallIndirect was already handled
-                        // above. A non-fork-path CallIndirect / CallRef
-                        // landing inside the chunk is unanalyzable in
-                        // the same conservative spirit as
-                        // `compute_carryover_types`.
-                        return None;
+                    Instr::CallIndirect(ci) => {
+                        // Non-fork-path CallIndirect (fork-path is
+                        // handled above). Unknown ref-typed result?
+                        // Push None slots — caller may or may not
+                        // observe them as a carryover.
+                        let sig = module.types.get(ci.ty);
+                        for _ in sig.results() {
+                            stack.push(None);
+                        }
+                        continue;
+                    }
+                    Instr::CallRef(cr) => {
+                        let sig = module.types.get(cr.ty);
+                        for _ in sig.results() {
+                            stack.push(None);
+                        }
+                        continue;
                     }
                     Instr::Block(b) => {
                         match f.block(b.seq).ty {
                             InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(ty);
+                                stack.push(Some(ty));
                             }
-                            _ => return None,
+                            _ => {
+                                for _ in 0..pushes {
+                                    stack.push(None);
+                                }
+                            }
                         }
                         continue;
                     }
                     Instr::Loop(l) => {
                         match f.block(l.seq).ty {
                             InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(ty);
+                                stack.push(Some(ty));
                             }
-                            _ => return None,
+                            _ => {
+                                for _ in 0..pushes {
+                                    stack.push(None);
+                                }
+                            }
                         }
                         continue;
                     }
                     Instr::IfElse(ie) => {
                         match f.block(ie.consequent).ty {
                             InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(ty);
+                                stack.push(Some(ty));
                             }
-                            _ => return None,
+                            _ => {
+                                for _ in 0..pushes {
+                                    stack.push(None);
+                                }
+                            }
                         }
                         continue;
                     }
                     Instr::TryTable(t) => {
                         match f.block(t.seq).ty {
                             InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(ty);
+                                stack.push(Some(ty));
                             }
-                            _ => return None,
+                            _ => {
+                                for _ in 0..pushes {
+                                    stack.push(None);
+                                }
+                            }
                         }
                         continue;
                     }
@@ -1375,19 +1418,27 @@ fn walk_seq_for_carryovers(
                 );
                 let ty = match instr {
                     Instr::Const(c) => match c.value {
-                        Value::I32(_) => ValType::I32,
-                        Value::I64(_) => ValType::I64,
-                        Value::F32(_) => ValType::F32,
-                        Value::F64(_) => ValType::F64,
-                        Value::V128(_) => ValType::V128,
+                        Value::I32(_) => Some(ValType::I32),
+                        Value::I64(_) => Some(ValType::I64),
+                        Value::F32(_) => Some(ValType::F32),
+                        Value::F64(_) => Some(ValType::F64),
+                        Value::V128(_) => Some(ValType::V128),
                     },
                     Instr::LocalGet(LocalGet { local: l })
-                    | Instr::LocalTee(LocalTee { local: l }) => module.locals.get(*l).ty(),
-                    Instr::GlobalGet(GlobalGet { global: g }) => module.globals.get(*g).ty,
-                    Instr::Load(load) => load_pushes(&load.kind),
-                    Instr::Binop(b) => binop_pushes(&b.op),
-                    Instr::MemorySize(_) | Instr::TableSize(_) => ValType::I32,
-                    _ => return None,
+                    | Instr::LocalTee(LocalTee { local: l }) => {
+                        Some(module.locals.get(*l).ty())
+                    }
+                    Instr::GlobalGet(GlobalGet { global: g }) => {
+                        Some(module.globals.get(*g).ty)
+                    }
+                    Instr::Load(load) => Some(load_pushes(&load.kind)),
+                    Instr::Binop(b) => Some(binop_pushes(&b.op)),
+                    Instr::MemorySize(_) | Instr::TableSize(_) => Some(ValType::I32),
+                    // Anything else (Unop, Cmpxchg, TernOp, RefIsNull,
+                    // …) — its pushed value is fine on the stack but
+                    // the analyser can't type it. Push `None`; we'll
+                    // fail only if the slot is observed in a carryover.
+                    _ => None,
                 };
                 stack.push(ty);
             }
@@ -4808,7 +4859,27 @@ fn classify_nested_pattern(
         FunctionKind::Local(l) => l,
         _ => return NestedSupportStatus::Supported,
     };
-    classify_seq(module, local, local.entry_block(), fork_path)
+    let status = classify_seq(module, local, local.entry_block(), fork_path);
+    if !status.is_supported() {
+        return status;
+    }
+
+    // Sub-commit 2.5c (2026-05-14): direct fork-path call landings
+    // with operand-stack carryovers are absorbed by nested switch-
+    // dispatch via the per-call carryover-spilling extension wired in
+    // 2.5b. The carryover types must be statically determinable —
+    // fall back to guard-dispatch when the analyser can't type them,
+    // mirroring the policy used by top-level switch-dispatch's 2.4c
+    // gate in `instrument_one_function`. The seq-level check in
+    // `seq_has_unsupported_carryover` no longer rejects these;
+    // function-level here is the appropriate granularity (the
+    // analyser needs the whole function's call_idx assignment to
+    // produce its result).
+    if compute_nested_carryover_types(module, func_id, fork_path).is_none() {
+        return NestedSupportStatus::UnsupportedCarryover;
+    }
+
+    NestedSupportStatus::Supported
 }
 
 fn classify_seq(
@@ -5034,20 +5105,14 @@ fn seq_has_unsupported_carryover(
 ) -> bool {
     let mut depth: usize = 0;
     for (instr, _) in &f.block(seq).instrs {
-        // Direct fork-path call landings — supportable carryovers
-        // not yet implemented; reject any.
-        let direct_expected: Option<usize> = match instr {
-            Instr::Call(c) if fork_path.contains(&c.func) => {
-                Some(module.types.get(module.funcs.get(c.func).ty()).params().len())
-            }
-            Instr::CallIndirect(ci) => Some(module.types.get(ci.ty).params().len() + 1),
-            _ => None,
-        };
-        if let Some(expected) = direct_expected {
-            if depth > expected {
-                return true;
-            }
-        }
+        // Sub-commit 2.5c (2026-05-14): direct fork-path call landings
+        // with operand-stack carryovers are now absorbed by nested
+        // switch-dispatch via the carryover-spilling extension (see
+        // `compute_nested_carryover_types` + the per-call
+        // `carryover_spills` wiring in `instrument_one_function_nested_switch`).
+        // The function-level fallback for shapes the analyser can't
+        // statically type lives at `classify_nested_pattern`. No
+        // per-seq direct-call rejection here.
 
         // Sub-region landings.
         let is_subregion = match instr {
