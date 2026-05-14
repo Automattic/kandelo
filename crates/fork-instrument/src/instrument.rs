@@ -3234,6 +3234,84 @@ fn emit_per_function_post_table(
     table_id
 }
 
+/// Rewrite original-function `Local{Get,Set,Tee}` instructions in a
+/// chunk to read/write a frame-resident scratch slot via the new
+/// function's `frame_ptr` parameter and a per-local temp.
+///
+/// Given a `reify` map `[(orig_local, val_type, frame_offset)]`, the
+/// function returns:
+///   - the rewritten instruction sequence
+///   - a `Vec<LocalId>` of the temp locals it allocated (one per
+///     entry in `reify`) — to be added to the new function's
+///     local list by the caller (FunctionBuilder doesn't auto-add
+///     locals referenced by instructions, only ones in `args`).
+///
+/// Rewrites:
+///   - `LocalGet $L`  → `LocalGet $frame_ptr; load_scalar T offset=K`
+///   - `LocalSet $L`  → `LocalSet $tmp; LocalGet $frame_ptr;
+///                       LocalGet $tmp; store_scalar T offset=K`
+///   - `LocalTee $L`  → same as `LocalSet` then `LocalGet $tmp`
+///
+/// Locals NOT in `reify` are left unchanged (the caller is
+/// responsible for either declaring them in the new function or
+/// guaranteeing they don't appear).
+///
+/// Used by sub-commit 2.4c when wiring the trampoline for the
+/// top-level carryover case: the original function's locals that
+/// must survive the fork boundary get reified as frame slots; the
+/// post-call function loads them from the frame on REWIND entry.
+#[allow(dead_code)] // wired up in sub-commit 2.4c
+fn rewrite_chunk_locals_to_frame(
+    module: &mut Module,
+    chunk: Vec<(Instr, InstrLocId)>,
+    frame_ptr: LocalId,
+    memory: MemoryId,
+    reify: &[(LocalId, ValType, u32)],
+) -> (Vec<(Instr, InstrLocId)>, Vec<LocalId>) {
+    use std::collections::HashMap;
+
+    // Allocate one temp local per entry in `reify`. The temp lives
+    // in the new function and holds the value transiently between
+    // pop-from-stack and store-to-frame (or load-from-frame and
+    // re-push, for Tee).
+    let mut temps: HashMap<LocalId, (LocalId, ValType, u32)> = HashMap::new();
+    let mut new_locals: Vec<LocalId> = Vec::with_capacity(reify.len());
+    for &(orig, ty, off) in reify {
+        let tmp = module.locals.add(ty);
+        temps.insert(orig, (tmp, ty, off));
+        new_locals.push(tmp);
+    }
+
+    let mut out = Vec::with_capacity(chunk.len());
+    for (instr, loc) in chunk {
+        match instr {
+            Instr::LocalGet(LocalGet { local }) if temps.contains_key(&local) => {
+                let &(_tmp, ty, off) = temps.get(&local).unwrap();
+                out.push((Instr::LocalGet(LocalGet { local: frame_ptr }), loc));
+                out.push((load_scalar(memory, ty, off as u64), loc));
+            }
+            Instr::LocalSet(LocalSet { local }) if temps.contains_key(&local) => {
+                let &(tmp, ty, off) = temps.get(&local).unwrap();
+                out.push((Instr::LocalSet(LocalSet { local: tmp }), loc));
+                out.push((Instr::LocalGet(LocalGet { local: frame_ptr }), loc));
+                out.push((Instr::LocalGet(LocalGet { local: tmp }), loc));
+                out.push((store_scalar(memory, ty, off as u64), loc));
+            }
+            Instr::LocalTee(LocalTee { local }) if temps.contains_key(&local) => {
+                let &(tmp, ty, off) = temps.get(&local).unwrap();
+                out.push((Instr::LocalSet(LocalSet { local: tmp }), loc));
+                out.push((Instr::LocalGet(LocalGet { local: frame_ptr }), loc));
+                out.push((Instr::LocalGet(LocalGet { local: tmp }), loc));
+                out.push((store_scalar(memory, ty, off as u64), loc));
+                out.push((Instr::LocalGet(LocalGet { local: tmp }), loc));
+            }
+            other => out.push((other, loc)),
+        }
+    }
+
+    (out, new_locals)
+}
+
 /// Extract a sequence of instructions into a new wasm function with
 /// signature `() -> ()`.
 ///
@@ -6040,6 +6118,142 @@ mod trampoline_tests {
         };
         let entry = local.entry_block();
         assert_eq!(local.block(entry).instrs[0].1, loc, "InstrLocId must round-trip");
+    }
+
+    /// Module setup with a single 1-page memory and a known frame_ptr
+    /// local to feed the rewriter.
+    fn build_module_with_memory_and_frame_ptr() -> (Module, MemoryId, LocalId) {
+        let mut module = Module::default();
+        let memory = module.memories.add_local(false, false, 1, Some(1), None);
+        let frame_ptr = module.locals.add(ValType::I32);
+        (module, memory, frame_ptr)
+    }
+
+    #[test]
+    fn rewrite_chunk_locals_to_frame_localget_becomes_load() {
+        let (mut module, memory, frame_ptr) = build_module_with_memory_and_frame_ptr();
+        let orig_local = module.locals.add(ValType::I32);
+        let chunk = vec![(
+            Instr::LocalGet(LocalGet { local: orig_local }),
+            InstrLocId::default(),
+        )];
+        let (rewritten, new_locals) = rewrite_chunk_locals_to_frame(
+            &mut module,
+            chunk,
+            frame_ptr,
+            memory,
+            &[(orig_local, ValType::I32, 12)],
+        );
+
+        assert_eq!(new_locals.len(), 1, "one temp allocated");
+        assert_eq!(rewritten.len(), 2);
+        match &rewritten[0].0 {
+            Instr::LocalGet(LocalGet { local }) => assert_eq!(*local, frame_ptr),
+            other => panic!("expected LocalGet $frame_ptr, got {other:?}"),
+        }
+        match &rewritten[1].0 {
+            Instr::Load(load) => {
+                assert!(matches!(load.kind, LoadKind::I32 { atomic: false }));
+                assert_eq!(load.arg.offset, 12);
+            }
+            other => panic!("expected i32.load offset=12, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rewrite_chunk_locals_to_frame_localset_becomes_tmp_then_store() {
+        let (mut module, memory, frame_ptr) = build_module_with_memory_and_frame_ptr();
+        let orig_local = module.locals.add(ValType::I32);
+        let chunk = vec![(
+            Instr::LocalSet(LocalSet { local: orig_local }),
+            InstrLocId::default(),
+        )];
+        let (rewritten, new_locals) = rewrite_chunk_locals_to_frame(
+            &mut module,
+            chunk,
+            frame_ptr,
+            memory,
+            &[(orig_local, ValType::I32, 4)],
+        );
+
+        let tmp = new_locals[0];
+        assert_eq!(rewritten.len(), 4);
+        match &rewritten[0].0 {
+            Instr::LocalSet(LocalSet { local }) => assert_eq!(*local, tmp),
+            other => panic!("expected LocalSet $tmp, got {other:?}"),
+        }
+        match &rewritten[1].0 {
+            Instr::LocalGet(LocalGet { local }) => assert_eq!(*local, frame_ptr),
+            other => panic!("expected LocalGet $frame_ptr, got {other:?}"),
+        }
+        match &rewritten[2].0 {
+            Instr::LocalGet(LocalGet { local }) => assert_eq!(*local, tmp),
+            other => panic!("expected LocalGet $tmp, got {other:?}"),
+        }
+        match &rewritten[3].0 {
+            Instr::Store(store) => {
+                assert!(matches!(store.kind, StoreKind::I32 { atomic: false }));
+                assert_eq!(store.arg.offset, 4);
+            }
+            other => panic!("expected i32.store offset=4, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rewrite_chunk_locals_to_frame_localtee_stores_then_reloads_tmp() {
+        let (mut module, memory, frame_ptr) = build_module_with_memory_and_frame_ptr();
+        let orig_local = module.locals.add(ValType::I64);
+        let chunk = vec![(
+            Instr::LocalTee(LocalTee { local: orig_local }),
+            InstrLocId::default(),
+        )];
+        let (rewritten, new_locals) = rewrite_chunk_locals_to_frame(
+            &mut module,
+            chunk,
+            frame_ptr,
+            memory,
+            &[(orig_local, ValType::I64, 8)],
+        );
+
+        let tmp = new_locals[0];
+        // LocalSet $tmp, LocalGet $frame_ptr, LocalGet $tmp,
+        // i64.store offset=8, LocalGet $tmp
+        assert_eq!(rewritten.len(), 5);
+        match &rewritten[3].0 {
+            Instr::Store(store) => {
+                assert!(matches!(store.kind, StoreKind::I64 { atomic: false }));
+                assert_eq!(store.arg.offset, 8);
+            }
+            other => panic!("expected i64.store offset=8 at index 3, got {other:?}"),
+        }
+        match &rewritten[4].0 {
+            Instr::LocalGet(LocalGet { local }) => assert_eq!(*local, tmp),
+            other => panic!("expected LocalGet $tmp at index 4, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rewrite_chunk_locals_to_frame_unreified_locals_pass_through() {
+        let (mut module, memory, frame_ptr) = build_module_with_memory_and_frame_ptr();
+        let unreified = module.locals.add(ValType::I32);
+        let chunk = vec![(
+            Instr::LocalGet(LocalGet { local: unreified }),
+            InstrLocId::default(),
+        )];
+        let (rewritten, new_locals) = rewrite_chunk_locals_to_frame(
+            &mut module,
+            chunk,
+            frame_ptr,
+            memory,
+            &[], // empty reify list — nothing to rewrite
+        );
+
+        assert!(new_locals.is_empty(), "no temps allocated");
+        assert_eq!(rewritten.len(), 1);
+        match &rewritten[0].0 {
+            Instr::LocalGet(LocalGet { local }) => assert_eq!(*local, unreified),
+            other => panic!("expected unchanged LocalGet, got {other:?}"),
+        }
     }
 
     #[test]
