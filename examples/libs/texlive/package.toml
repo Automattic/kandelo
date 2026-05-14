@@ -36,7 +36,8 @@ wasm = "pdftex.wasm"
 name = "texlive-bundle"
 wasm = "texlive-bundle.json"
 
-[binary] block intentionally absent: no published archive exists
-# for ABI v7 yet. Once a force-rebuild lands one, fill in archive_url
-# + archive_sha256 here. Until then, the resolver chain falls through
-# to a source build.
+# No [binary] in this recipe — binary resolution lives in build.toml.
+# The sibling build.toml's [binary] index_url points the resolver at
+# the per-release index.toml ledger, which carries the archive URL +
+# sha + cache_key for the (name, version, arch) tuple. Source build
+# falls through automatically when no index entry matches.
