@@ -70,7 +70,7 @@ pub enum ManifestKind {
 /// Closed enum — unknown values are rejected at parse time. Only
 /// present in archived `manifest.toml` (under `[compatibility]`),
 /// never in source `package.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TargetArch {
     Wasm32,
