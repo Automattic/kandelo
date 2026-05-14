@@ -180,3 +180,23 @@ For each item, a decision falls into one of:
 - **Accept as known limit:** Document the constraint in `docs/fork-instrumentation.md` and `docs/posix-status.md`; close the question.
 
 Update each item's **Decision:** block in this doc as we work through them. The doc is the source of truth for what was decided and why.
+
+## Final scope decision (2026-05-13)
+
+After C1 and C2 reproductions showed B1 stages 1+2 don't actually close fork-from-catch end-to-end, the user directed that **the architectural pivot (eliminate guard-dispatch), modern wasm-EH SDK flip, and items C3/C4 all land in PR #307** alongside the work already there — so the PR's "fork from anywhere" title actually delivers. The mega-PR plan at `docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md` is updated to reflect this. C1+C2 fixtures stay in place as `.fails` regression gates until the pivot makes them pass; at that point, flip back to normal assertions.
+
+Summary of where each item lands after the final scope decision:
+
+| Item | Lands in |
+|---|---|
+| A1 ucontext | Accepted as known limit — no work |
+| A2, A3, A4 (funcref/externref) | PR #307 (mega scope) |
+| A5 wasm-GC refs | Accepted as known limit — no work |
+| B1, B2, B3, B4 | PR #307 (subsumed by eliminate-guard-dispatch) |
+| C1 (fork-from-catch fixture) | PR #307 (committed as `.fails`; flip when pivot fixes it) |
+| C2 (post-catch fork fixture) | PR #307 (committed as `.fails`; flip when pivot fixes it) |
+| C3 (fork-from-signal-handler) | PR #307 (mega scope) |
+| C4 (fork-from-cancellation-cleanup) | PR #307 (mega scope; covered by C3) |
+| C5 (modern wasm-EH SDK flip + libcxx + A2/A3/A4) | PR #307 (mega scope) |
+| Eliminate guard-dispatch (architectural pivot) | PR #307 (mega scope) |
+| Comprehensive `fork_instrument_coverage` test program | PR #307 (mega scope) |

@@ -1,7 +1,8 @@
 # Mega-PR: eliminate guard-dispatch + modern wasm-EH + comprehensive test program
 
 **Date:** 2026-05-13
-**Status:** Plan committed; implementation pending. Derived from `docs/plans/2026-05-13-fork-instrument-unsupported-cases-review.md` decisions for items A2, A3, A4, B1, B2, B3, B4, and C5.
+**Status:** Plan committed; implementation pending in **PR #307** (`fierce-wire` branch). Derived from `docs/plans/2026-05-13-fork-instrument-unsupported-cases-review.md` decisions for items A2, A3, A4, B1, B2, B3, B4, C3, C4, and C5.
+**PR scope decision (2026-05-13):** After C1 and C2 reproductions showed B1 stages 1+2 don't actually close fork-from-catch end-to-end, the user directed that the architectural pivot and modern-EH flip land in PR #307 itself rather than as follow-up PRs — so that "fork from anywhere" (the PR's title) actually delivers. This expands #307's scope from the original "Phase 1–7 + B1 machinery" to "Phase 1–7 + B1 + eliminate guard-dispatch + modern wasm-EH + comprehensive test program." Estimated remaining work: ~6–10 weeks.
 **Origin:** "No carve-outs" policy. The user's goal is `wasm-fork-instrument` that supports every fork-callable pattern unless physically impossible. After per-item review, the cleanest path is one large coordinated PR that pivots the dispatch architecture and flips the toolchain to modern wasm-EH simultaneously, with a comprehensive test program proving every supported case works.
 
 ## Scope
@@ -16,9 +17,15 @@ This PR bundles seven decisions into one coordinated change:
 6. **A3 — Multi-target plain-catch try_tables:** extend B1 stage 2's single-target capture-block to per-target capture-blocks so multi-arm plain catches dispatch correctly on REWIND.
 7. **A4 — Plain-catch arms with ref-typed operands (funcref/externref):** add a per-program auxiliary table with index-based save/restore so ref-typed catch operands survive the fork boundary.
 
+Plus folded in per the 2026-05-13 user direction:
+
+8. **C3 — fork-from-signal-handler:** extend `instrument::discover_fork_path` to treat every address-taken function as a fork-path root (the conservative rule). Add SIGUSR1 + fork fixture exercising both parent and child paths.
+9. **C4 — fork-from-cancellation-cleanup:** structurally identical to C3 (cleanup handlers are address-taken callbacks reached via host-managed registration). C3's rule covers it incidentally; add a `pthread_cleanup_push` + fork fixture to prove the coverage holds.
+10. **Flip existing `it.fails` tests to normal assertions.** `cpp_post_catch_fork_test` (C2) and `cpp_eh_fork_from_catch_test` (C1) currently land as `.fails` because the underlying fork machinery is broken in catch-handler-like contexts. When the architectural pivot makes them pass, flip back to normal `it(...)`.
+
 Plus a load-bearing additional deliverable:
 
-8. **Comprehensive instrumentation/rewind test program (`fork_instrument_coverage`)** that exercises every supported instrumentation pattern and rewind path. Co-located with `crates/fork-instrument/tests/` and built from C/C++ source via the SDK so it represents real toolchain output.
+11. **Comprehensive instrumentation/rewind test program (`fork_instrument_coverage`)** that exercises every supported instrumentation pattern and rewind path. Co-located with `crates/fork-instrument/tests/` and built from C/C++ source via the SDK so it represents real toolchain output.
 
 ## Why one PR
 
