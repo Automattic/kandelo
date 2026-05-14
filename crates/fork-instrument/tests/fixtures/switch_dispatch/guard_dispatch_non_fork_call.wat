@@ -1,20 +1,28 @@
-;; Regression fixture for the guard-dispatch path's gating of
-;; non-fork-path direct calls (c01554940).
+;; Regression fixture for non-fork-path direct call handling at a
+;; fork-path call site with an operand-stack carryover (c01554940 +
+;; sub-commit 2.4c).
 ;;
 ;; The fork-path call site has an operand-stack carryover: a value
 ;; pushed BEFORE the call's args remains across it and is consumed
-;; AFTER the call returns. The nested per-block switch-dispatch
-;; transform's POST_K blocks are 0 → 0 — they can't express
-;; carryovers — so this function falls back to guard-dispatch, which
-;; exercises the c01554940 fix this test verifies.
+;; AFTER the call returns. Before sub-commit 2.4c this forced
+;; guard-dispatch (POST_K blocks were 0 → 0 and couldn't express
+;; carryovers); guard-dispatch then explicitly gated the non-fork-path
+;; `setpgid` call inside a state==NORMAL if-else (c01554940). After
+;; 2.4c, switch-dispatch absorbs the carryover via per-call spill
+;; locals, and the non-fork-path call sits in `chunks[0]` which is
+;; skipped on REWIND by br_table — no explicit gate needed.
 ;;
-;; Expectation after the transform:
-;;   - `main` uses guard-dispatch (no top-level br_table).
-;;   - The call to `kernel.setpgid` is wrapped in a state==NORMAL
-;;     if-else with a result-save local.set inside the then-branch.
+;; Expectation after the transform (post-2.4c):
+;;   - `main` uses switch-dispatch (br_table emitted at top level).
+;;   - The call to `kernel.setpgid` is preserved verbatim in
+;;     `chunks[0]`; the br_table dispatches directly to `$POST_K` on
+;;     REWIND, skipping `chunks[0]` entirely so setpgid doesn't re-fire.
 ;;
 ;; This fixture is input to the tool; assertions live in
-;; tests/switch_dispatch.rs.
+;; tests/switch_dispatch.rs::switch_dispatch_skips_non_fork_path_direct_call_on_rewind.
+;; The fixture filename (`guard_dispatch_non_fork_call.wat`) is kept
+;; for git-blame continuity; the historical context above explains the
+;; name's origin.
 
 (module
   (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
