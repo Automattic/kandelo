@@ -145,15 +145,19 @@ TOTAL=0
 RESOLVED=0
 SKIPPED=0
 
-# Read the [binary] / [binary.<arch>] presence + arches list out of a
-# package.toml. AWK keeps the dependency footprint tight (no jq/tomlq
-# needed for what is essentially line-grepping). Output:
+# Read the `arches` list out of a package.toml. AWK keeps the
+# dependency footprint tight (no jq/tomlq needed for what is
+# essentially line-grepping). Output:
 #   ARCHES=<space-separated list>
-#   HAS_BINARY=<0|1>
+#
+# Post binary-resolution-via-index-ledger: presence of a binary
+# source is encoded in `build.toml` (a sibling file), not the
+# `[binary]` block in package.toml — see the main loop below for
+# that detection.
 read_package_toml() {
     local toml="$1"
     awk '
-        BEGIN { in_arches = 0; arches = ""; has_binary = 0 }
+        BEGIN { in_arches = 0; arches = "" }
         /^\[/ {
             # New TOML section header: leave any in-progress
             # multi-line "arches = [" capture.
@@ -184,8 +188,6 @@ read_package_toml() {
             gsub(/[" ,]+/, " ", line)
             arches = arches " " line
         }
-        # Any [binary] or [binary.wasmXX] header counts.
-        /^\[binary(\..+)?\][[:space:]]*$/ { has_binary = 1 }
         END {
             sub(/^[[:space:]]+/, "", arches)
             sub(/[[:space:]]+$/, "", arches)
@@ -196,7 +198,6 @@ read_package_toml() {
             # `wasm32 wasm64`). Without quoting, bash parses the
             # second arch as a command name.
             print "ARCHES=\"" arches "\""
-            print "HAS_BINARY=" has_binary
         }
     ' "$toml"
 }
@@ -213,10 +214,11 @@ for pkg_dir in "$LIBS_DIR"/*/; do
 
     eval "$(read_package_toml "$toml")"
 
-    if [ "${HAS_BINARY:-0}" = "0" ]; then
-        # No [binary] block: kernel / userspace / examples / source
-        # packages / libraries that ship only at link time. Local
-        # builds (or no published archive yet). Skip silently.
+    # Post binary-resolution-via-index-ledger: a package has a
+    # publishable binary IFF a sibling build.toml exists.
+    # kernel / userspace / examples / source / link-time-only
+    # libraries don't have one and skip.
+    if [ ! -f "$pkg_dir/build.toml" ]; then
         SKIPPED=$((SKIPPED + 1))
         continue
     fi
