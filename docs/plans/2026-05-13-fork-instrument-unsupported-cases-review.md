@@ -126,6 +126,13 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Today:** B1 stages 1+2 shipped on this PR. No real-world C++ EH+fork program has exercised the machinery; cpp_throw_test only validates EH itself, not EH+fork.
 - **Plan:** Stage 3 needs the SpiderMonkey port or a synthetic C++ EH+fork fixture under `host/test/cpp-throw-test.test.ts`. Deferred per `docs/plans/2026-04-28-fork-instrument-b1-fork-from-plain-catch.md`.
 - **Decision (2026-05-13):** **Add a synthetic fixture in this PR.** Land `cpp_eh_fork_from_catch.cpp` (or similar) under `host/test/cpp-throw-test.test.ts` or `crates/fork-instrument/tests/` that exercises a C++ try/catch with `fork()` inside the catch handler body, verifying both parent and child paths. Small, fast, gives B1 machinery a regression test ahead of any larger consumer (SpiderMonkey). ~1–2 days.
+- **Repro result (2026-05-13):** **B1 stages 1+2 do NOT actually close fork-from-catch end-to-end.** Wrote `programs/cpp_eh_fork_from_catch_test.cpp` — the canonical pattern: throw 7, catch (handler active), call `fork()` from inside the catch handler. Output observed:
+  ```
+  THROWING
+  CAUGHT: 7
+  PRE_FORK
+  ```
+  Same failure mode as C2 (post-catch fork): parent exits with code 0 in ~600ms without printing the post-fork lines. The B1 machinery (per-arm scratch space, multi-arm rewind dispatch, capture-block emission) shipped on this branch but was never end-to-end validated — sortix tests don't exercise C++ EH+fork and the saved memory's "byte-identical for shipping ports" claim was about non-EH binaries. The synthetic fixture is the first real test, and it surfaces that the feature doesn't work. Test landed as `it.fails(...)` in `host/test/cpp-throw-test.test.ts`. The architectural pivot (eliminate guard-dispatch) is the planned fix; B1's per-arm dispatch machinery is data-correct (the structures hold the right state) but appears to fail during REWIND control-flow reconstruction — the same family as the C2 post-catch fork hang. **Significant implication:** the SpiderMonkey-port "Gate 1.B" (`memory/spidermonkey-spike-eh-toolchain-gap.md`) is not actually cleared; the gate is only cleared by the eliminate-guard-dispatch PR. Update the SpiderMonkey-port memory file to reflect this.
 
 ### C2. Test (b) post-catch fork-hang root cause
 
