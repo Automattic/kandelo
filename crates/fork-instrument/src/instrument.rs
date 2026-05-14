@@ -5435,12 +5435,49 @@ fn instrument_one_function_nested_switch(
         arg_spills.insert(site.call_idx, spills);
     }
 
+    // Sub-commit 2.5b: per-call operand-stack carryovers at direct
+    // fork-path call landings inside any fork-bearing seq. Mirrors
+    // 2.4c's carryover_spills wiring at top-level switch-dispatch:
+    // at each call site, after popping the args, also pop the
+    // carryover values into per-call carryover spill locals. They
+    // round-trip through the fork frame so REWIND can reload them
+    // beneath the call's result.
+    //
+    // `compute_nested_carryover_types` may return `None` for shapes
+    // it can't statically type. Until sub-commit 2.5c flips the
+    // rejection in `seq_has_unsupported_carryover`, the only seqs
+    // that actually reach this point have already passed that check,
+    // so `None` here is unexpected — but we treat it identically to
+    // "no carryovers at any call" for safety (matches 2.4c behavior).
+    let nested_carryover_types: HashMap<u32, Vec<ValType>> =
+        compute_nested_carryover_types(module, func_id, fork_path).unwrap_or_default();
+    let mut carryover_spills: HashMap<u32, Vec<LocalId>> = HashMap::new();
+    for site in &sites {
+        let cr_types: &[ValType] = nested_carryover_types
+            .get(&site.call_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let spills: Vec<LocalId> =
+            cr_types.iter().map(|&ty| module.locals.add(ty)).collect();
+        carryover_spills.insert(site.call_idx, spills);
+    }
+
     // Combined scalar locals for the function frame: existing user
-    // scalars + per-call arg-spill locals (in call_idx order).
+    // scalars + per-call arg-spill locals (in call_idx order) + per-
+    // call carryover-spill locals (in call_idx order; sub-commit 2.5b).
     let mut frame_scalars: Vec<(LocalId, ValType)> = user_scalar_locals.clone();
     for site in &sites {
         let arg_types = nested_call_arg_types(module, site);
         for (&lid, &ty) in arg_spills[&site.call_idx].iter().zip(arg_types.iter()) {
+            frame_scalars.push((lid, ty));
+        }
+    }
+    for site in &sites {
+        let cr_types: &[ValType] = nested_carryover_types
+            .get(&site.call_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for (&lid, &ty) in carryover_spills[&site.call_idx].iter().zip(cr_types.iter()) {
             frame_scalars.push((lid, ty));
         }
     }
@@ -5652,6 +5689,7 @@ fn instrument_one_function_nested_switch(
             &sites,
             fork_path,
             &arg_spills,
+            &carryover_spills,
             &carryover_plans,
             &catch_handlers,
             runtime.state_global,
@@ -5678,6 +5716,7 @@ fn instrument_one_function_nested_switch(
         &sites,
         fork_path,
         &arg_spills,
+        &carryover_spills,
         &carryover_plans,
         &catch_handlers,
         runtime.state_global,
@@ -5769,14 +5808,21 @@ fn emit_chunk_tail_for_landing(
     out: &mut Vec<(Instr, InstrLocId)>,
     landing: &LandingInfo,
     arg_spills: &HashMap<u32, Vec<LocalId>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     cond_swap_local: LocalId,
 ) {
     match &landing.kind {
         LandingKind::DirectCall { call_idx } => {
-            // 2.4c carryover spilling lives in the top-level
-            // switch-dispatch path; nested switch-dispatch hasn't
-            // been extended yet, so pass an empty carryovers slice.
-            emit_spill_args(out, &arg_spills[call_idx], &[]);
+            // Sub-commit 2.5b: nested switch-dispatch absorbs
+            // direct-call carryovers via in-place spill at the call
+            // site. After popping the call's args, also pop the
+            // carryover values (Option B from the 2026-05-13 plan,
+            // matching top-level switch-dispatch's 2.4c behavior).
+            // `carryover_spills` is keyed by call_idx; an absent entry
+            // is treated as no-carryover.
+            let empty: Vec<LocalId> = Vec::new();
+            let cr = carryover_spills.get(call_idx).unwrap_or(&empty);
+            emit_spill_args(out, &arg_spills[call_idx], cr);
         }
         LandingKind::SubRegionIfElse { .. } => {
             push_instr(out, Instr::LocalSet(LocalSet { local: cond_swap_local }));
@@ -5836,6 +5882,7 @@ fn transform_region_seq(
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
     arg_spills: &HashMap<u32, Vec<LocalId>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
@@ -5899,6 +5946,7 @@ fn transform_region_seq(
         &landings,
         sites,
         arg_spills,
+        carryover_spills,
         catch_handlers,
         state_global,
         call_idx_local,
@@ -5920,6 +5968,7 @@ fn transform_entry_region(
     sites: &[NestedCallSite],
     fork_path: &HashSet<FunctionId>,
     arg_spills: &HashMap<u32, Vec<LocalId>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     carryover_plans: &HashMap<(InstrSeqId, usize), CarryoverPlan>,
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
@@ -5976,6 +6025,7 @@ fn transform_entry_region(
         &landings,
         sites,
         arg_spills,
+        carryover_spills,
         catch_handlers,
         state_global,
         call_idx_local,
@@ -6241,6 +6291,7 @@ fn populate_region_dispatch_structure(
     landings: &[LandingInfo],
     sites: &[NestedCallSite],
     arg_spills: &HashMap<u32, Vec<LocalId>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
@@ -6274,7 +6325,13 @@ fn populate_region_dispatch_structure(
         for (instr, loc) in &chunks[0] {
             s.push((instr.clone(), *loc));
         }
-        emit_chunk_tail_for_landing(s, &landings[0], arg_spills, cond_swap_local);
+        emit_chunk_tail_for_landing(
+            s,
+            &landings[0],
+            arg_spills,
+            carryover_spills,
+            cond_swap_local,
+        );
     }
 
     // POST_K (K in 1..n_landings):
@@ -6290,6 +6347,7 @@ fn populate_region_dispatch_structure(
             &landings[k - 1],
             sites,
             arg_spills,
+            carryover_spills,
             catch_handlers,
             state_global,
             call_idx_local,
@@ -6303,7 +6361,13 @@ fn populate_region_dispatch_structure(
             for (instr, loc) in &chunks[k] {
                 s.push((instr.clone(), *loc));
             }
-            emit_chunk_tail_for_landing(s, &landings[k], arg_spills, cond_swap_local);
+            emit_chunk_tail_for_landing(
+                s,
+                &landings[k],
+                arg_spills,
+                carryover_spills,
+                cond_swap_local,
+            );
         }
     }
 
@@ -6319,6 +6383,7 @@ fn populate_region_dispatch_structure(
         &landings[n_landings - 1],
         sites,
         arg_spills,
+        carryover_spills,
         catch_handlers,
         state_global,
         call_idx_local,
@@ -6345,6 +6410,7 @@ fn emit_post_landing(
     landing: &LandingInfo,
     sites: &[NestedCallSite],
     arg_spills: &HashMap<u32, Vec<LocalId>>,
+    carryover_spills: &HashMap<u32, Vec<LocalId>>,
     catch_handlers: &[CatchHandlerInfo],
     state_global: GlobalId,
     call_idx_local: LocalId,
@@ -6357,9 +6423,18 @@ fn emit_post_landing(
         LandingKind::DirectCall { call_idx } => {
             let site = sites.iter().find(|s| s.call_idx == *call_idx).expect("site");
             let spills = &arg_spills[call_idx];
-            // reload args
+            // Sub-commit 2.5b: reload carryovers FIRST (deepest →
+            // top), then args. The call pops only its args, leaving
+            // the carryovers + result on the stack — matching the
+            // original code's expected shape, same as top-level
+            // switch-dispatch's `emit_post_call_via_local`.
+            let empty: Vec<LocalId> = Vec::new();
+            let carryovers = carryover_spills.get(call_idx).unwrap_or(&empty);
             {
                 let s = &mut local.block_mut(seq_id).instrs;
+                for &l in carryovers.iter() {
+                    push_instr(s, Instr::LocalGet(LocalGet { local: l }));
+                }
                 for &l in spills.iter() {
                     push_instr(s, Instr::LocalGet(LocalGet { local: l }));
                 }
