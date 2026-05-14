@@ -354,10 +354,13 @@ function buildDlopenImports(
         memoryBase = view.getUint32(cursor + 20, true);
       }
 
-      const name = decoder.decode(new Uint8Array(memory.buffer, namePtr, nameLen));
-      // Copy bytes out of shared memory before passing to WebAssembly —
-      // some engines reject SharedArrayBuffer-backed buffers, and we
-      // already pay this cost on the parent's initial dlopen path.
+      // Copy name + bytes out of shared memory before passing to
+      // WebAssembly / TextDecoder — some engines reject SAB-backed
+      // views, and we already pay the bytes copy cost on the parent's
+      // initial dlopen path.
+      const name = decoder.decode(
+        new Uint8Array(new Uint8Array(memory.buffer, namePtr, nameLen)),
+      );
       const bytesCopy = new Uint8Array(new Uint8Array(memory.buffer, bytesPtr, bytesLen));
 
       // DynamicLinker.dlopenSync returns 0 on error, >0 on success.
@@ -376,8 +379,13 @@ function buildDlopenImports(
       const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
       // Copy bytes since memory.buffer may detach during Wasm instantiation
       const bytesCopy = new Uint8Array(bytes);
-      const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
-      const name = decoder.decode(nameBytes);
+      // TextDecoder.decode() rejects views backed by SharedArrayBuffer
+      // in Firefox (and recent Chrome), so copy the name bytes through
+      // a non-shared Uint8Array before decoding. Same shape as
+      // bytesCopy above.
+      const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const nameBytesCopy = new Uint8Array(nameBytesView);
+      const name = decoder.decode(nameBytesCopy);
       const handle = getLinker().dlopenSync(name, bytesCopy);
       if (handle > 0) {
         // The linker just instantiated this — the map MUST contain it.
@@ -394,8 +402,11 @@ function buildDlopenImports(
     },
 
     __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
-      const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
-      const name = decoder.decode(nameBytes);
+      // See __wasm_dlopen above: copy off the shared buffer before
+      // TextDecoder.decode() touches it.
+      const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const nameBytesCopy = new Uint8Array(nameBytesView);
+      const name = decoder.decode(nameBytesCopy);
       const result = getLinker().dlsym(handle, name);
       return result === null ? 0 : (result as number);
     },
