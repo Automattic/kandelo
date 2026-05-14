@@ -46,7 +46,10 @@ use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
-use crate::pkg_manifest::{DepRef, DepsManifest, HostTool, ManifestKind, TargetArch};
+use crate::index_toml::{self, EntryStatus};
+use crate::pkg_manifest::{
+    BinarySource, BuildToml, DepRef, DepsManifest, HostTool, ManifestKind, TargetArch,
+};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::remote_fetch;
 use crate::repo_root;
@@ -890,37 +893,28 @@ fn ensure_built_uncached(
             Ok((canonical, transitive))
         }
         (ManifestKind::Library | ManifestKind::Program, _) => {
-            // Resolution priority 3: remote fetch from
-            // `[binary].archive_url`. The 4-step verification (archive
-            // sha, target_arch, abi_versions, cache_key_sha) lives in
-            // `remote_fetch::fetch_and_install`. Any failure logs and
-            // falls through to the source build below; a remote-fetch
-            // error should never cause the resolver to refuse to
-            // produce an artifact.
+            // Resolution priority 3: index-based remote fetch. The
+            // resolver loads the sibling `build.toml`, resolves its
+            // `[binary]` block to an index URL (or a direct archive
+            // URL), then looks up this package's entry. Status
+            // `success` fetches the current archive; status
+            // `failed`/`pending`/`building` falls back to the
+            // last-green `fallback_*` archive when one is preserved.
+            // Any failure along the way logs and falls through to
+            // the source build — a remote-fetch error should never
+            // cause the resolver to refuse to produce an artifact.
             //
-            // `force_rebuild` short-circuits remote fetch — re-installing
-            // the same archive_url would defeat the whole point of the
-            // force flag (the workflow opted in because it suspects the
-            // existing archive is stale). Falls through to source build.
-            if !force_rebuild && let Some(binary) = target.binary.get(&arch) {
+            // `force_rebuild` short-circuits remote fetch entirely.
+            if !force_rebuild {
                 let cache_key_sha_hex = hex(&sha);
-                match remote_fetch::fetch_and_install(
-                    binary,
-                    &canonical,
+                if let Some(()) = try_index_install(
                     target,
                     arch,
                     abi_version,
+                    &canonical,
                     &cache_key_sha_hex,
                 ) {
-                    Ok(()) => return Ok((canonical, transitive)),
-                    Err(e) => {
-                        eprintln!(
-                            "warning: remote fetch for {} from {} failed ({}); falling back to source build",
-                            target.spec(),
-                            binary.archive_url,
-                            e,
-                        );
-                    }
+                    return Ok((canonical, transitive));
                 }
             }
 
@@ -940,6 +934,151 @@ fn ensure_built_uncached(
             Ok((canonical, transitive))
         }
     }
+}
+
+/// Attempt to install a prebuilt archive from this package's
+/// `build.toml`-declared binary source. Returns `Some(())` on success
+/// (caller returns the canonical path); returns `None` for any
+/// "fall through to source build" condition (no build.toml, no
+/// archive in the index, network failure, sha mismatch, etc.).
+///
+/// Logging is on stderr (matching the prior remote-fetch
+/// implementation's UX): users see warnings about why the index
+/// path was skipped, but the build still completes via source.
+fn try_index_install(
+    target: &DepsManifest,
+    arch: TargetArch,
+    abi_version: u32,
+    canonical: &Path,
+    cache_key_sha_hex: &str,
+) -> Option<()> {
+    // 1. Load build.toml. Source manifests without one (e.g. an
+    //    upstream package that hasn't been ported to the new schema
+    //    yet) fall through silently — Phase 9's migration should
+    //    leave every first-party package with a build.toml; the
+    //    silent fall-through is for clean integration with
+    //    third-party manifests that might not.
+    let build = BuildToml::load(&target.dir).ok()?;
+
+    // 2. Resolve the binary source to a concrete URL pair. Direct
+    //    form: use the URL + sha verbatim. Indexed form: fetch
+    //    index.toml + look up this package.
+    let (archive_url, archive_sha256) = match &build.binary {
+        BinarySource::Direct { url, sha256 } => (url.clone(), sha256.clone()),
+        BinarySource::Indexed { .. } => {
+            let index_url = build.binary.resolve_index_url(abi_version)?;
+            let cache_dir = default_cache_root().join("indexes");
+            let index = match index_toml::fetch_index(&index_url, &cache_dir) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    eprintln!(
+                        "warning: index fetch for {} from {} failed ({}); \
+                         falling back to source build",
+                        target.spec(),
+                        index_url,
+                        e,
+                    );
+                    return None;
+                }
+            };
+            let entry = match index.lookup(&target.name, &target.version, arch) {
+                Some(e) => e,
+                None => {
+                    eprintln!(
+                        "warning: no index entry for {} in {}; \
+                         falling back to source build",
+                        target.spec(),
+                        index_url,
+                    );
+                    return None;
+                }
+            };
+            // Pick the authoritative archive fields for the entry's
+            // current status. Success → current archive_*; other
+            // statuses → fallback_* if preserved; otherwise nothing
+            // usable and we fall through.
+            let (rel_url, sha) = match entry.status {
+                EntryStatus::Success
+                    if entry.archive_url.is_some() && entry.archive_sha256.is_some() =>
+                {
+                    (
+                        entry.archive_url.as_ref().unwrap().clone(),
+                        entry.archive_sha256.as_ref().unwrap().clone(),
+                    )
+                }
+                EntryStatus::Failed | EntryStatus::Pending | EntryStatus::Building
+                    if entry.fallback_archive_url.is_some()
+                        && entry.fallback_archive_sha256.is_some() =>
+                {
+                    eprintln!(
+                        "note: {} index entry is status={:?}; \
+                         using last-green fallback archive",
+                        target.spec(),
+                        entry.status,
+                    );
+                    (
+                        entry.fallback_archive_url.as_ref().unwrap().clone(),
+                        entry.fallback_archive_sha256.as_ref().unwrap().clone(),
+                    )
+                }
+                _ => {
+                    eprintln!(
+                        "warning: {} index entry status={:?} has no usable archive; \
+                         falling back to source build",
+                        target.spec(),
+                        entry.status,
+                    );
+                    return None;
+                }
+            };
+            (resolve_relative_url(&index_url, &rel_url), sha)
+        }
+    };
+
+    // 3. Fetch + verify + install. Any failure (sha mismatch, arch
+    //    mismatch, abi mismatch, cache_key mismatch, transport
+    //    error) falls through.
+    match remote_fetch::fetch_and_install_direct(
+        &archive_url,
+        &archive_sha256,
+        canonical,
+        target,
+        arch,
+        abi_version,
+        cache_key_sha_hex,
+    ) {
+        Ok(()) => Some(()),
+        Err(e) => {
+            eprintln!(
+                "warning: index-based fetch for {} from {} failed ({}); \
+                 falling back to source build",
+                target.spec(),
+                archive_url,
+                e,
+            );
+            None
+        }
+    }
+}
+
+/// Resolve `rel` against `base` for archive-URL lookup. If `rel`
+/// already carries a scheme (`file://` / `http://` / `https://`) it
+/// passes through unchanged; otherwise it's appended to `base`'s
+/// parent directory (i.e. `https://host/dir/index.toml` + `foo.tar.zst`
+/// → `https://host/dir/foo.tar.zst`).
+fn resolve_relative_url(base: &str, rel: &str) -> String {
+    if rel.starts_with("file://")
+        || rel.starts_with("http://")
+        || rel.starts_with("https://")
+    {
+        return rel.to_string();
+    }
+    // Strip the last path segment of `base` and join with `rel`.
+    let last_slash = base.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let mut out = String::with_capacity(last_slash + rel.len());
+    out.push_str(&base[..last_slash]);
+    out.push_str(rel);
+    out
 }
 
 /// Build the `WASM_POSIX_DEP_PKG_CONFIG_PATH` value for a build script.
