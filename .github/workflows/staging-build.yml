@@ -34,8 +34,10 @@ jobs:
   # Phase C Task 6 retired the monolithic legacy `build:` job that
   # previously ran the full registry walk + bulk publish + tests in
   # one runner. Today every staging build flows through the per-
-  # package matrix below: preflight → toolchain-cache → matrix-build →
-  # test-gate → publish → generate-index → f2-status. See
+  # package matrix below: preflight → toolchain-cache → matrix-build
+  # → test-gate → f2-status. Each matrix-build job publishes its own
+  # archive + index.toml entry atomically via
+  # `scripts/index-update.sh`. See
   # docs/plans/2026-05-05-decoupled-package-builds-design.md for the
   # design and docs/binary-releases.md for the consumer-side flow.
   # ---------------------------------------------------------------------

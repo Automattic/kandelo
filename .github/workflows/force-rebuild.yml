@@ -102,7 +102,6 @@ jobs:
       contents: read
     outputs:
       build_ref: ${{ steps.resolve.outputs.build_ref }}
-      run_timestamp: ${{ steps.resolve.outputs.run_timestamp }}
     steps:
       - name: Resolve inputs + validate
         id: resolve
@@ -119,11 +118,6 @@ jobs:
             BUILD_REF="${{ github.ref_name }}"
           fi
           echo "build_ref=$BUILD_REF" >> "$GITHUB_OUTPUT"
-
-          # UTC second-resolution timestamp; used by amend-package-toml
-          # for a unique bot branch name. Same value across all jobs.
-          RUN_TS="$(date -u +%Y%m%d-%H%M%S)"
-          echo "run_timestamp=$RUN_TS" >> "$GITHUB_OUTPUT"
 
           # Validate `packages`: non-empty.
           if [ -z "$INPUT_PACKAGES" ]; then
@@ -152,10 +146,11 @@ jobs:
   # Per-package matrix flow.
   #
   # Mirrors prepare-merge.yml's preflight + toolchain-cache +
-  # matrix-build + test-gate + publish + generate-index, with one
-  # adjustment: preflight reads `INPUT_FORCE_PACKAGES` and force-includes
-  # listed packages in the matrix even if their cache_key_sha is already
-  # published. This is the D3 bypass.
+  # matrix-build + test-gate, with one adjustment: preflight reads
+  # `INPUT_FORCE_PACKAGES` and force-includes listed packages in the
+  # matrix even if their cache_key_sha is already published. This is
+  # the D3 bypass. Each matrix-build job publishes its own archive +
+  # index entry atomically via `scripts/index-update.sh`.
   #
   # A future cleanup PR can extract this shape into a reusable
   # `workflow_call` workflow shared between staging-build, prepare-merge,
@@ -182,8 +177,9 @@ jobs:
         # Hardened submodule fetch via the reusable action (PR #435).
         # preflight only needs musl (it builds xtask and computes the
         # matrix; libc-test/os-test materialize in matrix-build /
-        # test-gate via their own checkouts). The durable-release-lock
-        # is acquired in `merge-gate-finalize` (matches prepare-merge).
+        # test-gate via their own checkouts). Per-target-tag locking
+        # happens inside `scripts/index-update.sh` (state-lock around
+        # the index.toml mutation).
         uses: ./.github/actions/fetch-submodules
         with:
           submodules: musl
