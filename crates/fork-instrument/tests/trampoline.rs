@@ -79,12 +79,12 @@
 //!
 //! Each fixture has a paired test:
 //!
-//! | Fixture                              | Routes to (post-2.5c)   | Notes                          |
+//! | Fixture                              | Routes to (post-2.6c)   | Notes                          |
 //! |--------------------------------------|-------------------------|--------------------------------|
 //! | `top_level_carryover.wat`            | switch-dispatch (2.4c)  | switch-dispatch absorbs        |
 //! | `nested_carryover_in_loop.wat`       | nested switch (2.5c)    | absorbed via carryover spills  |
-//! | `nested_multivalue_params.wat`       | guard-dispatch today    | trampoline post-2.6            |
-//! | `legacy_try_fork.wat`                | guard-dispatch today    | trampoline post-2.6            |
+//! | `nested_multivalue_params.wat`       | nested switch (2.6c)    | body-param prespill + reload   |
+//! | `legacy_try_fork.wat`                | guard-dispatch today    | obsoleted by commit 9 modern-EH|
 //! | `nested_call_indirect.wat`           | nested switch today (*) | n/a — already handled          |
 //!
 //! (*) The simple nested call_indirect case is empirically already
@@ -249,11 +249,22 @@ fn nested_carryover_in_loop_uses_nested_switch_dispatch() {
 }
 
 // ---------------------------------------------------------------------
-// (a) Nested in unsupported pattern: multi-value-params block
+// Nested in multi-value-params block
 // ---------------------------------------------------------------------
+//
+// Sub-commit 2.6c (2026-05-14): multi-value-params Block/Loop/TryTable
+// bodies containing fork-path calls are absorbed by nested switch-
+// dispatch via the typed `CarryoverPlan::spill_locals` machinery
+// (2.6a/2.6b) plus the body-param prespilling extension in
+// `transform_region_seq`. The outer parent's spill mechanism saves
+// the Block's input params on the parent stack; the body's
+// transform pre-spills them again at body entry and reloads them
+// onto POST_0's local stack via prepended LocalGets — bridging the
+// gap between the body's input requirements and the cascading
+// POST_K blocks' `Simple(None)` typing.
 
 #[test]
-fn today_nested_multivalue_params_routes_to_guard_dispatch() {
+fn nested_multivalue_params_uses_nested_switch_dispatch() {
     let wat = include_str!("fixtures/trampoline/nested_multivalue_params.wat");
     let input = match try_parse(wat) {
         Some(bytes) => bytes,
@@ -266,25 +277,24 @@ fn today_nested_multivalue_params_routes_to_guard_dispatch() {
     validate(&output);
     let module = Module::from_buffer(&output).expect("walrus parse");
 
+    // Post-2.6c: nested switch-dispatch handles multi-value-params
+    // Block bodies. Function-level br_table at `_start` dispatches
+    // to the SubRegion landing covering the outer Block; inside the
+    // body, a per-region br_table dispatches to the right POST_K.
     assert!(
-        !has_br_table_in(&module, "_start"),
-        "today: nested multi-value-params block must route to guard-dispatch"
+        has_br_table_in(&module, "_start"),
+        "post-2.6c: nested multi-value-params block must route to nested \
+         switch-dispatch (br_table emitted), not guard-dispatch"
     );
-}
-
-#[test]
-#[ignore = "enabled in sub-commit 2.6 — wire nested-Loop/IfElse/TryTable to trampoline"]
-fn trampoline_nested_multivalue_params_emits_post_table() {
-    let wat = include_str!("fixtures/trampoline/nested_multivalue_params.wat");
-    let input = match try_parse(wat) {
-        Some(bytes) => bytes,
-        None => panic!("wat crate must parse multivalue_params fixture by 2.6"),
-    };
-    let output = instrument(&input, &Options::default()).expect("instrument");
-    validate(&output);
-    let module = Module::from_buffer(&output).expect("walrus parse");
-
-    assert!(has_table_with_prefix(&module, "_start_post_table"));
+    // Trampoline post-table is NOT emitted — switch-dispatch absorbs
+    // this case. The trampoline scaffolding stays reserved for
+    // genuinely-impossible cases (currently UnsupportedLegacyTry,
+    // which commit 9's modern-EH SDK flip largely obsoletes).
+    assert!(
+        !has_table_with_prefix(&module, "_start_post_table"),
+        "post-2.6c: nested switch-dispatch absorbs multi-value-params; \
+         no trampoline table needed"
+    );
 }
 
 // ---------------------------------------------------------------------

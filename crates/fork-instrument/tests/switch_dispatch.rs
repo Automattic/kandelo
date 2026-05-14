@@ -166,6 +166,42 @@ fn nested_fork_call_uses_per_block_switch_dispatch() {
 }
 
 #[test]
+fn multivalue_params_block_uses_nested_switch_dispatch() {
+    // Sub-commit 2.6c regression: a fork-path call inside a Block
+    // whose type signature is `(func (param i32 i32) (result i32))`
+    // — a multi-value-params Block — must route to nested switch-
+    // dispatch. The body's input params are pre-spilled at body
+    // entry and reloaded onto POST_0's local stack so chunks[0]
+    // (which consumes them) executes correctly.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+          (type $two_to_one (func (param i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func $main (export "_start") (result i32)
+            (local $pid i32)
+            i32.const 7
+            i32.const 11
+            (block $B (type $two_to_one)
+              i32.add
+              call $kernel_fork
+              drop)
+            (local.set $pid)
+            (local.get $pid)))
+    "#;
+    let input = wat::parse_str(wat).expect("wat parse");
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("walrus parse");
+
+    assert!(
+        has_top_level_br_table_dispatch(&module, "main"),
+        "multi-value-params block must use nested switch-dispatch \
+         (br_table emitted), not guard-dispatch"
+    );
+}
+
+#[test]
 fn direct_call_carryover_in_block_uses_switch_dispatch() {
     // Sub-commit 2.5c regression: a direct fork-path Call inside a
     // nested Block body whose preceding instructions push an i32

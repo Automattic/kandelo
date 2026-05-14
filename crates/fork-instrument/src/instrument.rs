@@ -1272,7 +1272,20 @@ fn walk_seq_for_carryovers(
     seq: InstrSeqId,
     fork_path: &HashSet<FunctionId>,
 ) -> Option<Vec<Vec<ValType>>> {
-    let mut stack: Vec<Option<ValType>> = Vec::new();
+    // Sub-commit 2.6c: nested seqs with declared type-params enter
+    // with those values already on the local stack (the body's inputs).
+    // Initialise the typed stack accordingly so the walker doesn't
+    // underflow on the first op that consumes them.
+    let mut stack: Vec<Option<ValType>> = match f.block(seq).ty {
+        InstrSeqType::MultiValue(ty_id) => module
+            .types
+            .get(ty_id)
+            .params()
+            .iter()
+            .map(|&t| Some(t))
+            .collect(),
+        _ => Vec::new(),
+    };
     let mut carryovers: Vec<Vec<ValType>> = Vec::new();
 
     // Helper: materialise the typed-carryover slice. Returns None if
@@ -4926,12 +4939,14 @@ fn classify_seq(
             _ => {}
         }
         for child in nested_seqs(instr) {
-            if let InstrSeqType::MultiValue(ty_id) = f.block(child).ty {
-                let t = module.types.get(ty_id);
-                if !t.params().is_empty() && subtree_contains_fork_call(f, child, fork_path) {
-                    return NestedSupportStatus::UnsupportedMultiValueParams;
-                }
-            }
+            // Sub-commit 2.6c (2026-05-14): multi-value-params
+            // SubRegions are now absorbed by nested switch-dispatch
+            // via the typed `CarryoverPlan::spill_locals` machinery
+            // (2.6a/2.6b). The Block's declared type-params are
+            // spilled at the chunk tail (like any other carryover)
+            // and pushed back BEFORE the SubRegion runs at
+            // emit_post_landing. The function-level
+            // `UnsupportedMultiValueParams` rejection here is gone.
             let status = classify_seq(module, f, child, fork_path);
             if !status.is_supported() {
                 return status;
@@ -5103,7 +5118,15 @@ fn seq_has_unsupported_carryover(
     seq: InstrSeqId,
     fork_path: &HashSet<FunctionId>,
 ) -> bool {
-    let mut depth: usize = 0;
+    // Sub-commit 2.6c: a Block/Loop/TryTable body with declared
+    // type-params enters with those values already on the seq's
+    // local operand stack. Initialise `depth` accordingly so the
+    // walker doesn't underflow on the very first arithmetic op that
+    // consumes them.
+    let mut depth: usize = match f.block(seq).ty {
+        InstrSeqType::MultiValue(ty_id) => module.types.get(ty_id).params().len(),
+        _ => 0,
+    };
     for (instr, _) in &f.block(seq).instrs {
         // Sub-commit 2.5c (2026-05-14): direct fork-path call landings
         // with operand-stack carryovers are now absorbed by nested
@@ -5266,7 +5289,21 @@ fn analyze_subregion_spill_types(
     regions: &HashMap<InstrSeqId, RegionInfo>,
 ) -> Option<Vec<Vec<ValType>>> {
     let mut out: Vec<Vec<ValType>> = Vec::new();
-    let mut stack: Vec<Option<ValType>> = Vec::new();
+    // Sub-commit 2.6c: nested seqs with type-params enter with those
+    // values on the body's local stack — initialise the typed stack
+    // accordingly. Without this, multi-value-params Block/Loop/
+    // TryTable bodies would have the walker underflow at their first
+    // body-instr that consumes a param.
+    let mut stack: Vec<Option<ValType>> = match f.block(seq).ty {
+        InstrSeqType::MultiValue(ty_id) => module
+            .types
+            .get(ty_id)
+            .params()
+            .iter()
+            .map(|&t| Some(t))
+            .collect(),
+        _ => Vec::new(),
+    };
     let mut direct_cursor = 0usize;
 
     fn snapshot(slots: &[Option<ValType>]) -> Option<Vec<ValType>> {
@@ -5853,6 +5890,47 @@ fn instrument_one_function_nested_switch(
         }
     }
 
+    // Sub-commit 2.6c: per-seq body-input-params. A fork-bearing
+    // seq that itself has declared type-params (i.e., it's the body
+    // of a multi-value-params Block/Loop/TryTable) enters with those
+    // params on its local stack. The cascading POST_K blocks emitted
+    // by `populate_region_dispatch_structure` are typed Simple(None)
+    // — they don't expose the body's input stack to inner chunks. To
+    // bridge: at body entry, pre-spill the params to fresh locals;
+    // at the start of POST_0 body (just before chunks[0] runs),
+    // reload them onto the local stack. On REWIND the dispatch
+    // br_tables past chunks[0..K], so the LocalGets only execute on
+    // NORMAL flow when chunks[0] needs the params anyway.
+    //
+    // Locals don't need to be in frame_scalars: their values are
+    // re-set on every seq entry (NORMAL or REWIND, since the params
+    // are always on the body stack via either the original push or
+    // the SubRegion-landing reload).
+    let mut body_param_locals: HashMap<InstrSeqId, Vec<(LocalId, ValType)>> = HashMap::new();
+    {
+        let local_ro = match &module.funcs.get(func_id).kind {
+            FunctionKind::Local(l) => l,
+            _ => unreachable!(),
+        };
+        let mut to_allocate: Vec<(InstrSeqId, Vec<ValType>)> = Vec::new();
+        for &seq_id in regions.keys() {
+            if let InstrSeqType::MultiValue(ty_id) = local_ro.block(seq_id).ty {
+                let params = module.types.get(ty_id).params();
+                if !params.is_empty() {
+                    to_allocate.push((seq_id, params.to_vec()));
+                }
+            }
+        }
+        for (seq_id, types) in to_allocate {
+            let mut locals: Vec<(LocalId, ValType)> = Vec::with_capacity(types.len());
+            for &ty in &types {
+                let lid = module.locals.add(ty);
+                locals.push((lid, ty));
+            }
+            body_param_locals.insert(seq_id, locals);
+        }
+    }
+
     let locals_with_offsets = assign_local_offsets(&frame_scalars, LOCALS_START_OFFSET);
     let frame_size = HEADER_SIZE + user_locals_size(&frame_scalars);
 
@@ -5950,6 +6028,8 @@ fn instrument_one_function_nested_switch(
         let region_info = regions.get(&seq_id).unwrap().clone();
         let empty_idxs: Vec<u32> = Vec::new();
         let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
+        let empty_params: Vec<(LocalId, ValType)> = Vec::new();
+        let body_params = body_param_locals.get(&seq_id).unwrap_or(&empty_params);
         transform_region_seq(
             local,
             seq_id,
@@ -5968,6 +6048,7 @@ fn instrument_one_function_nested_switch(
             catch_region_id_local,
             exnref_slot_local,
             unwind_save,
+            body_params,
         );
     }
 
@@ -6164,13 +6245,31 @@ fn transform_region_seq(
     catch_region_id_local: LocalId,
     exnref_slot_local: LocalId,
     unwind_save: InstrSeqId,
+    // Sub-commit 2.6c: this seq's declared type-params (only set for
+    // multi-value Block/Loop/TryTable bodies). Pre-spilled at body
+    // entry so the cascading POST_K Simple(None) blocks can re-expose
+    // them to chunks[0] via LocalGet prepend.
+    body_param_locals: &[(LocalId, ValType)],
 ) {
     // Take the original instrs of this region.
     let original: Vec<(Instr, InstrLocId)> =
         std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (chunks, mut landings) =
+    let (mut chunks, mut landings) =
         partition_region_instrs(local, &original, direct_idxs_at_this_seq, regions, fork_path);
+
+    // Sub-commit 2.6c: if this seq has body params, prepend LocalGets
+    // to chunks[0] so the params are restored onto POST_0's local
+    // stack before any consuming instruction (e.g., i32.add) runs.
+    // Ordered deepest-first to match the original parent-stack layout.
+    if !body_param_locals.is_empty() && !chunks.is_empty() {
+        let mut prefix: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
+        for (lid, _ty) in body_param_locals.iter() {
+            prefix.push((Instr::LocalGet(LocalGet { local: *lid }), InstrLocId::default()));
+        }
+        prefix.extend(std::mem::take(&mut chunks[0]));
+        chunks[0] = prefix;
+    }
     // Attach carryover plans (if any) to landings.
     for (li, landing) in landings.iter_mut().enumerate() {
         if let Some(plan) = carryover_plans.get(&(seq_id, li)) {
@@ -6229,6 +6328,20 @@ fn transform_region_seq(
         unwind_save,
         false, // don't append `return` at end
     );
+
+    // Sub-commit 2.6c: prepend LocalSets for the body's declared
+    // type-params, in reverse order (top-of-stack first). Runs on
+    // every body entry — NORMAL and REWIND — saving the params to
+    // local slots that POST_0's prepended LocalGets reload from.
+    if !body_param_locals.is_empty() {
+        let mut preamble: Vec<(Instr, InstrLocId)> = Vec::with_capacity(body_param_locals.len());
+        for (lid, _ty) in body_param_locals.iter().rev() {
+            preamble.push((Instr::LocalSet(LocalSet { local: *lid }), InstrLocId::default()));
+        }
+        let s = &mut local.block_mut(seq_id).instrs;
+        preamble.extend(std::mem::take(s));
+        *s = preamble;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
