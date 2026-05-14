@@ -1,7 +1,6 @@
 kind = "program"
 name = "lamp"
 version = "0.1.0"
-revision = 2
 kernel_abi = 7
 # Implicit deps: build-lamp-vfs-image.ts reads:
 #   - dash.wasm, nginx.wasm, php-fpm.wasm, coreutils.wasm, sed.wasm
@@ -42,12 +41,7 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
 [build]
 script_path = "examples/libs/lamp/build-lamp.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
-commit = "38512c586399bf2440aafe789aedf30b689a9d04"
 
 [[outputs]]
 name = "lamp"
 wasm = "lamp.vfs.zst"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/lamp-0.1.0-rev2-abi8-wasm32-a4d6d432.tar.zst"
-archive_sha256 = "e2f6c51657050d9571953276e24c7493e892ebc105f6e901a1ebe5c6ff279489"

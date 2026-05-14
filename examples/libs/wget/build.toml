@@ -1,0 +1,6 @@
+script_path = "examples/libs/wget/build-wget.sh"
+repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+commit      = "8c53383229fab78f97b098c3207a655159c03041"
+
+[binary]
+index_url = "https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"

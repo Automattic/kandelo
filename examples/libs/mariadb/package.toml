@@ -1,7 +1,6 @@
 kind = "program"
 name = "mariadb"
 version = "10.5.28"
-revision = 1
 kernel_abi = 7
 depends_on = ["pcre2-source@10.44", "libcxx@21"]
 # Opt into wasm64 — see memory/wasm64-build-policy.md.
@@ -17,7 +16,6 @@ url = "https://github.com/MariaDB/server/blob/10.5/COPYING"
 
 [build]
 script_path = "examples/libs/mariadb/build-mariadb.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "mariadbd"
@@ -26,9 +24,3 @@ wasm = "mariadbd.wasm"
 [[outputs]]
 name = "mysqltest"
 wasm = "mysqltest.wasm"
-[binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm32-45f4092f.tar.zst"
-archive_sha256 = "92de70447042a65706f77674244d1f6766cd730dc946ae256915c11e67d9e088"
-[binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm64-a1180336.tar.zst"
-archive_sha256 = "8ab959abfde98656f20f46afe2a1f4a422b1a12a4fc274dca8d0c3c2c0af8ad6"

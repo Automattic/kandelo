@@ -1,7 +1,6 @@
 kind = "program"
 name = "git"
 version = "2.47.1"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,7 +14,6 @@ url = "https://github.com/git/git/blob/v2.47.1/COPYING"
 
 [build]
 script_path = "examples/libs/git/build-git.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "git"
@@ -24,6 +22,3 @@ wasm = "git.wasm"
 [[outputs]]
 name = "git-remote-http"
 wasm = "git-remote-http.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/git-2.47.1-rev1-abi7-wasm32-3862937b.tar.zst"
-archive_sha256 = "a74a58b30d5c8bcc235d74cc21b22e36ad9b3f406dd4ab5e23e665a210b3ea71"

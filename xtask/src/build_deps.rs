@@ -2256,7 +2256,6 @@ libs = ["lib/lib{name}.a"]
     // CLI binary itself is exercised by the end-to-end smoke step.
 
     #[test]
-    #[ignore = "binary-resolution-via-index-ledger: un-ignore after Phase 9 migrates examples/libs/*/package.toml off the legacy schema (revision/[binary])"]
     fn compute_cache_key_sha_subcommand_prints_64_hex_for_real_package() {
         // Smoke against a real first-party package — `bash` has a
         // non-trivial dep graph (depends on ncurses), exercising
