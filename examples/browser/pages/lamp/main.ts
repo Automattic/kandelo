@@ -14,11 +14,14 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
+import { TerminalPanel } from "../../lib/init";
+import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import "../../lib/terminal-panel.css";
+import "@xterm/xterm/css/xterm.css";
 
 // Replacement for /etc/mariadb/bootstrap.sh shipped in lamp.vfs. The
 // release-baked script unconditionally `sleep 60`s — the dominant
@@ -198,6 +201,37 @@ function setupBridgeRestoreListener() {
   });
 }
 
+function setupTerminalPane(kernel: BrowserKernel): void {
+  const host = document.getElementById("terminal-panel");
+  if (!host) return;
+  const panel = new TerminalPanel(host);
+  panel.setStatus("Click to open a shell");
+
+  let started = false;
+  panel.onExpand(async () => {
+    if (started) return;
+    started = true;
+    const pty = new PtyTerminal(panel.getTerminalContainer(), kernel);
+    panel.setStatus("bash running");
+    try {
+      const code = await pty.spawnFromVfs("/bin/bash", ["bash", "-l", "-i"], {
+        env: [
+          "HOME=/root",
+          "TERM=xterm-256color",
+          "LANG=en_US.UTF-8",
+          "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+          "PS1=bash$ ",
+        ],
+      });
+      pty.terminal.writeln(`\r\n[Shell exited with code ${code}]`);
+      panel.setStatus(`exited ${code}`);
+    } catch (err) {
+      pty.terminal.writeln(`\r\nError starting bash: ${err}`);
+      panel.setStatus("error");
+    }
+  });
+}
+
 async function start() {
   startBtn.disabled = true;
   log.textContent = "";
@@ -237,6 +271,10 @@ async function start() {
     });
     writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", PATCHED_BOOTSTRAP_SH);
     writeVfsFile(fs, "/etc/nginx/nginx.conf", PATCHED_NGINX_CONF);
+    // vim.zip + nethack.zip lazy archives store bare filenames as URLs;
+    // prepend the deployed base URL so fetch() resolves them on hosted
+    // builds (and at the dev server's base).
+    fs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
     const vfsImage = await fs.saveImage();
 
     appendLog("Initializing service worker bridge...\n", "info");
@@ -335,6 +373,8 @@ async function start() {
     setupBridgeRestoreListener();
     bridgeSent = true;
     tryLoadFrame();
+
+    setupTerminalPane(kernel);
 
     const code = await exit;
     appendLog(`\ndinit exited with code ${code}\n`, "info");

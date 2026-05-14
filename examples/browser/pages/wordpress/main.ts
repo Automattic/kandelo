@@ -20,9 +20,13 @@
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
+import { TerminalPanel } from "../../lib/init";
+import { PtyTerminal } from "../../lib/pty-terminal";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import kernelWasmUrl from "@kernel-wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import "../../lib/terminal-panel.css";
+import "@xterm/xterm/css/xterm.css";
 
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
@@ -81,6 +85,37 @@ function setupBridgeRestoreListener() {
   });
 }
 
+function setupTerminalPane(kernel: BrowserKernel): void {
+  const host = document.getElementById("terminal-panel");
+  if (!host) return;
+  const panel = new TerminalPanel(host);
+  panel.setStatus("Click to open a shell");
+
+  let started = false;
+  panel.onExpand(async () => {
+    if (started) return;
+    started = true;
+    const pty = new PtyTerminal(panel.getTerminalContainer(), kernel);
+    panel.setStatus("bash running");
+    try {
+      const code = await pty.spawnFromVfs("/bin/bash", ["bash", "-l", "-i"], {
+        env: [
+          "HOME=/root",
+          "TERM=xterm-256color",
+          "LANG=en_US.UTF-8",
+          "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+          "PS1=bash$ ",
+        ],
+      });
+      pty.terminal.writeln(`\r\n[Shell exited with code ${code}]`);
+      panel.setStatus(`exited ${code}`);
+    } catch (err) {
+      pty.terminal.writeln(`\r\nError starting bash: ${err}`);
+      panel.setStatus("error");
+    }
+  });
+}
+
 async function start() {
   startBtn.disabled = true;
   log.textContent = "";
@@ -100,12 +135,21 @@ async function start() {
         return r.arrayBuffer();
       }),
     ]);
-    const vfsImage = new Uint8Array(vfsImageBuf);
+    const rawVfsImage = new Uint8Array(vfsImageBuf);
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-      `VFS: ${(vfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+      `VFS: ${(rawVfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
       "info",
     );
+
+    // The VFS image bakes vim.zip + nethack.zip lazy archives with bare
+    // filenames as URLs. Prepend the deployed base URL so fetch()
+    // resolves correctly regardless of routing.
+    const memfs = MemoryFileSystem.fromImage(rawVfsImage, {
+      maxByteLength: 512 * 1024 * 1024,
+    });
+    memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+    const vfsImage = await memfs.saveImage();
 
     appendLog("Initializing service worker bridge...\n", "info");
     const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
@@ -160,6 +204,8 @@ async function start() {
     setupBridgeRestoreListener();
     bridgeSent = true;
     tryLoadFrame();
+
+    setupTerminalPane(kernel);
 
     const code = await exit;
     appendLog(`\ndinit exited with code ${code}\n`, "info");

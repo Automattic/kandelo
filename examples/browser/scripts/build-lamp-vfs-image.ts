@@ -18,18 +18,16 @@ import { readFileSync, lstatSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 import {
   writeVfsFile,
   writeVfsBinary,
-  ensureDir,
   ensureDirRecursive,
-  symlink,
   walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
+import { populateShellEnvironment } from "./shell-vfs-build";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
@@ -52,47 +50,18 @@ const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/
 const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
   ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
   : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
-const DASH_PATH = resolveBinary("programs/dash.wasm");
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
-const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
-const SED_PATH = resolveBinary("programs/sed.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 
-function populateSystem(fs: MemoryFileSystem): void {
-  for (const dir of [
-    "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
-    "/usr/local", "/usr/local/bin", "/usr/share", "/usr/share/misc",
-    "/usr/share/file", "/root", "/usr/sbin",
-    "/data", "/data/mysql", "/data/tmp", "/data/test",
-  ]) {
-    ensureDir(fs, dir);
+// LAMP-specific data dirs that mariadbd writes to at runtime. Shell
+// environment dirs (/bin, /usr/bin, /etc, /root, /tmp, /home, …) are
+// covered by populateShellEnvironment.
+function populateMariadbDataDirs(fs: MemoryFileSystem): void {
+  for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
+    ensureDirRecursive(fs, dir);
   }
-  fs.chmod("/tmp", 0o777);
-
-  // /etc/services for getservbyname/getservbyport
-  const services = [
-    "ftp\t\t21/tcp", "ssh\t\t22/tcp", "telnet\t\t23/tcp",
-    "smtp\t\t25/tcp\t\tmail", "http\t\t80/tcp\t\twww",
-    "https\t\t443/tcp", "mysql\t\t3306/tcp",
-  ].join("\n") + "\n";
-  writeVfsFile(fs, "/etc/services", services);
-}
-
-function populateDash(fs: MemoryFileSystem): void {
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
-  symlink(fs, "/bin/dash", "/bin/sh");
-  symlink(fs, "/bin/dash", "/usr/bin/dash");
-  symlink(fs, "/bin/dash", "/usr/bin/sh");
-}
-
-function populateShellSymlinks(fs: MemoryFileSystem): void {
-  for (const name of [...COREUTILS_NAMES, "["]) {
-    symlink(fs, "/bin/coreutils", `/bin/${name}`);
-    symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
-  }
-  symlink(fs, "/usr/bin/sed", "/bin/sed");
 }
 
 function populateMariadb(fs: MemoryFileSystem): void {
@@ -426,16 +395,17 @@ async function main() {
   const sab = new SharedArrayBuffer(256 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 512 * 1024 * 1024);
 
-  console.log("Populating system + binaries...");
-  populateSystem(fs);
-  populateDash(fs);
+  // Shell environment (dash + bash + coreutils + grep + sed + extended
+  // tools + magic db + vim/nethack lazy archives) — shared with the
+  // Shell demo via examples/browser/scripts/shell-vfs-build.ts. eager:
+  // every binary is baked because LAMP runs in kernelOwnedFs mode.
+  console.log("Populating shell environment...");
+  populateShellEnvironment(fs, { eagerBinaries: true });
+  populateMariadbDataDirs(fs);
 
-  console.log("Writing server binaries...");
+  console.log("Writing nginx + php-fpm binaries...");
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
   writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
-  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
-  writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(readFileSync(SED_PATH)));
-  populateShellSymlinks(fs);
 
   console.log("Writing MariaDB binary + bootstrap SQL...");
   populateMariadb(fs);
