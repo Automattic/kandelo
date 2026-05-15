@@ -9,6 +9,7 @@
 
 import { MemoryFileSystem, type LazyFileEntry } from "../../../host/src/vfs/memory-fs";
 import { FramebufferRegistry } from "../../../host/src/framebuffer/registry";
+import type { ProcessSnapshot, SyscallTraceEvent } from "../../../host/src/kernel-worker";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -41,6 +42,15 @@ export interface BrowserKernelOptions {
   onStderr?: (data: Uint8Array) => void;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
+  /** Called when a process is spawned, execs a new program, or exits.
+   *  Used by Inspector-style UIs to refresh their process table without
+   *  polling. Source feeds:
+   *    - main-thread BrowserKernel.spawn / .boot → "spawn"
+   *    - worker-side fork / posix_spawn → "spawn" (via proc_event message)
+   *    - worker-side execve → "exec"
+   *    - worker-side exit → "exit" (via existing exit message)
+   */
+  onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; exitStatus?: number }) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
   threadModule?: WebAssembly.Module;
   /** Pre-built MemoryFileSystem (e.g. from a VFS image). When provided, skips
@@ -351,6 +361,7 @@ export class BrowserKernel {
       this.sendToKernel({ type: "register_pty_output", pid });
     }
 
+    this.options.onProcessEvent?.({ kind: "spawn", pid });
     return { pid, exit };
   }
 
@@ -414,6 +425,8 @@ export class BrowserKernel {
     if (options?.pty) {
       this.sendToKernel({ type: "register_pty_output", pid });
     }
+
+    this.options.onProcessEvent?.({ kind: "spawn", pid });
 
     if (options?.onStarted) {
       await options.onStarted(pid);
@@ -483,6 +496,97 @@ export class BrowserKernel {
       pid,
     });
     return typeof result === "bigint" ? result : BigInt(result as number);
+  }
+
+  /**
+   * Snapshot the kernel's process table — one row per live process. Used
+   * by Kandelo's Inspector → Procs tab. Mirrors `NodeKernelHost.enumProcs`.
+   */
+  async enumProcs(): Promise<ProcessSnapshot[]> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "enum_procs",
+      requestId,
+    });
+    return (result as ProcessSnapshot[]) ?? [];
+  }
+
+  /**
+   * Read `/proc/[pid]/maps` for a foreign process. Returns the raw Linux-
+   * style text, `""` if the process has no mappings, or `null` if the pid
+   * has exited. Mirrors `NodeKernelHost.readProcMaps`.
+   */
+  async readProcMaps(pid: number): Promise<string | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_proc_maps",
+      requestId,
+      pid,
+    });
+    return (result as string | null) ?? null;
+  }
+
+  /**
+   * Subscribe to the kernel-worker's syscall trace. Returns an
+   * unsubscribe function. Trace is enabled when the first subscriber
+   * attaches and disabled after the last one detaches — zero cost on
+   * the kernel hot path when nobody's watching.
+   *
+   * Delivery: the main thread polls the worker every 250ms and fans
+   * out batched events to subscribers in the order the kernel saw them.
+   * Higher resolution would require a push-style worker message; the
+   * poll buys low overhead at the cost of up to one polling-interval
+   * of latency.
+   */
+  subscribeSyscalls(cb: (event: SyscallTraceEvent) => void): () => void {
+    this.syscallListeners.add(cb);
+    if (this.syscallListeners.size === 1) {
+      this.sendToKernel({ type: "set_syscall_trace", enabled: true });
+      this.startSyscallPoll();
+    }
+    return () => {
+      this.syscallListeners.delete(cb);
+      if (this.syscallListeners.size === 0) {
+        this.sendToKernel({ type: "set_syscall_trace", enabled: false });
+        this.stopSyscallPoll();
+      }
+    };
+  }
+
+  private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
+  private syscallPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  private startSyscallPoll(): void {
+    if (this.syscallPollTimer !== null) return;
+    this.syscallPollTimer = setInterval(() => {
+      void this.drainAndFan();
+    }, 250);
+  }
+
+  private stopSyscallPoll(): void {
+    if (this.syscallPollTimer === null) return;
+    clearInterval(this.syscallPollTimer);
+    this.syscallPollTimer = null;
+  }
+
+  private async drainAndFan(): Promise<void> {
+    if (this.syscallListeners.size === 0) return;
+    const requestId = this.nextRequestId++;
+    let events: SyscallTraceEvent[] = [];
+    try {
+      const result = await this.request(requestId, {
+        type: "drain_syscall_trace",
+        requestId,
+      });
+      events = (result as SyscallTraceEvent[]) ?? [];
+    } catch {
+      return;
+    }
+    for (const event of events) {
+      for (const cb of this.syscallListeners) {
+        try { cb(event); } catch { /* listener errors don't break the loop */ }
+      }
+    }
   }
 
   /**
@@ -762,6 +866,15 @@ export class BrowserKernel {
         const resolver = this.exitResolvers.get(msg.pid);
         this.exitResolvers.delete(msg.pid);
         if (resolver) resolver(msg.status);
+        this.options.onProcessEvent?.({ kind: "exit", pid: msg.pid, exitStatus: msg.status });
+        break;
+      }
+      case "proc_event": {
+        // fork / exec / posix_spawn happened inside the kernel — these
+        // don't come through BrowserKernel.spawn(), so the worker posts
+        // them directly. Exit is delivered separately via the existing
+        // "exit" message above.
+        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid });
         break;
       }
       case "stdout":

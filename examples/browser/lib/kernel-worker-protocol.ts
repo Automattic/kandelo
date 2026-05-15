@@ -237,6 +237,36 @@ export interface GetForkCountRequestMessage {
   pid: number;
 }
 
+/** Snapshot the kernel's process table. The kernel-worker forwards to
+ * `CentralizedKernelWorker.enumProcs()`; the response carries `ProcessSnapshot[]`.
+ * Used by Kandelo's Inspector → Procs tab. */
+export interface EnumProcsRequestMessage {
+  type: "enum_procs";
+  requestId: number;
+}
+
+/** Read `/proc/[pid]/maps` for a foreign process via the host. The kernel-
+ * worker forwards to `CentralizedKernelWorker.readProcMaps(pid)`; response
+ * carries a string (Linux smaps-ish text) or `null` if the pid is gone. */
+export interface ReadProcMapsRequestMessage {
+  type: "read_proc_maps";
+  requestId: number;
+  pid: number;
+}
+
+/** Enable / disable the syscall trace ring buffer. Off by default — flip
+ * on when a subscriber attaches, off when the last one detaches. */
+export interface SetSyscallTraceMessage {
+  type: "set_syscall_trace";
+  enabled: boolean;
+}
+
+/** Drain pending syscall trace events. Response carries SyscallTraceEvent[]. */
+export interface DrainSyscallTraceMessage {
+  type: "drain_syscall_trace";
+  requestId: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -261,7 +291,11 @@ export type MainToKernelMessage =
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | MouseInjectMessage
-  | AudioDrainMessage;
+  | AudioDrainMessage
+  | EnumProcsRequestMessage
+  | ReadProcMapsRequestMessage
+  | SetSyscallTraceMessage
+  | DrainSyscallTraceMessage;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -358,6 +392,20 @@ export interface FbWriteMessage {
   bytes: Uint8Array;
 }
 
+/**
+ * Posted whenever the kernel forks, execs, or spawns. The main thread
+ * uses this to refresh Inspector-style views without polling. `kind ===
+ * "exit"` is delivered via the existing ExitMessage instead; we don't
+ * duplicate it here.
+ */
+export interface ProcEventMessage {
+  type: "proc_event";
+  kind: "spawn" | "exec";
+  pid: number;
+  /** Parent pid for fork-style spawns. Omitted for execs. */
+  ppid?: number;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | ResponseMessage
@@ -369,4 +417,5 @@ export type KernelToMainMessage =
   | FbBindMessage
   | FbUnbindMessage
   | FbRebindMemoryMessage
-  | FbWriteMessage;
+  | FbWriteMessage
+  | ProcEventMessage;

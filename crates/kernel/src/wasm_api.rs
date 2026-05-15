@@ -1337,6 +1337,150 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
     }
 }
 
+/// Snapshot the process table for the host (Kandelo Inspector → Procs tab,
+/// and any host that wants a `ps`-equivalent view without spawning a user
+/// process). Walks every active pid and writes a compact, length-prefixed
+/// binary record per process into the host-supplied scratch buffer.
+///
+/// Zombie (Exited) processes are omitted by default — the kandelo Inspector
+/// wants a "currently running" view, and the kernel keeps zombies around for
+/// waitpid() reap semantics that aren't visible at this layer. The internal
+/// procfs ABI still surfaces them via /proc/[pid] for processes that care.
+///
+/// Wire format (all integers little-endian):
+///
+///   u32  count
+///   for each process:
+///     u32  pid
+///     u32  ppid
+///     u32  uid
+///     u32  gid
+///     u64  vsize_bytes    -- sum of mmap-region sizes
+///     u32  state          -- 'R' (running) or 'Z' (zombie) as ASCII
+///     u32  comm_len
+///     u32  cmdline_len
+///     [comm_len bytes]    -- process_name(proc) — basename of argv[0]
+///     [cmdline_len bytes] -- null-separated argv (same shape as /proc/<pid>/cmdline)
+///
+/// Returns total bytes written on success, -ENOSPC if the buffer is too
+/// small (the host can retry with a larger scratch alloc), or -EAGAIN if
+/// the kernel isn't in centralized mode (single-process kernels have no
+/// table to walk).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
+    if !crate::is_centralized_mode() {
+        return -(Errno::EAGAIN as i32);
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let pids = table.all_pids();
+
+    // First pass: compute total bytes we need to write so we can fail fast
+    // on a too-small buffer rather than partial-writing. Skip zombies on
+    // the count too so the size estimate matches what we actually emit.
+    const HDR_BYTES: usize = 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4; // 40 bytes per record
+    let mut need: usize = 4; // count u32
+    for pid in &pids {
+        let proc = match table.get(*pid) { Some(p) => p, None => continue };
+        if proc.state != crate::process::ProcessState::Running { continue; }
+        let cmdline = crate::procfs::generate_cmdline(proc);
+        let comm = process_name_bytes(proc);
+        need += HDR_BYTES + comm.len() + cmdline.len();
+    }
+    if need > out_len as usize {
+        return -(Errno::ENOSPC as i32);
+    }
+
+    let buf = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    let mut off: usize = 0;
+
+    // count placeholder — patched after we finish walking.
+    write_u32(buf, &mut off, 0);
+    let mut written: u32 = 0;
+
+    for pid in &pids {
+        let proc = match table.get(*pid) { Some(p) => p, None => continue };
+        // Drop zombies: the kernel keeps Exited entries for waitpid()
+        // reap semantics, but a "currently running" view shouldn't show
+        // them.
+        if proc.state != crate::process::ProcessState::Running { continue; }
+        let cmdline = crate::procfs::generate_cmdline(proc);
+        let comm = process_name_bytes(proc);
+        let state: u32 = b'R' as u32;
+        let vsize: u64 = proc.memory.mappings().iter().map(|r| r.len as u64).sum();
+
+        write_u32(buf, &mut off, proc.pid);
+        write_u32(buf, &mut off, proc.ppid);
+        write_u32(buf, &mut off, proc.uid);
+        write_u32(buf, &mut off, proc.gid);
+        write_u64(buf, &mut off, vsize);
+        write_u32(buf, &mut off, state);
+        write_u32(buf, &mut off, comm.len() as u32);
+        write_u32(buf, &mut off, cmdline.len() as u32);
+        let cn = comm.len();
+        buf[off..off + cn].copy_from_slice(&comm);
+        off += cn;
+        let cm = cmdline.len();
+        buf[off..off + cm].copy_from_slice(&cmdline);
+        off += cm;
+        written += 1;
+    }
+    // Patch the count.
+    let count_bytes = written.to_le_bytes();
+    buf[0..4].copy_from_slice(&count_bytes);
+    off as i32
+}
+
+/// Write the contents of `/proc/<pid>/maps` (Linux-style smaps-ish text)
+/// into the host buffer. Returns bytes written, or `-ENOSPC` if the buffer
+/// is too small, `-ESRCH` if the pid doesn't exist, `-EAGAIN` if the kernel
+/// isn't in centralized mode.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_read_proc_maps(pid: u32, out_ptr: *mut u8, out_len: u32) -> i32 {
+    if !crate::is_centralized_mode() {
+        return -(Errno::EAGAIN as i32);
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let maps = crate::procfs::generate_maps(proc);
+    if maps.len() > out_len as usize {
+        return -(Errno::ENOSPC as i32);
+    }
+    let buf = unsafe { core::slice::from_raw_parts_mut(out_ptr, maps.len()) };
+    buf.copy_from_slice(&maps);
+    maps.len() as i32
+}
+
+// Local helpers for kernel_enum_procs. Kept here (not in procfs.rs) because
+// they're tied to the host-callable wire format, not the user-visible procfs
+// text generators.
+
+fn write_u32(buf: &mut [u8], off: &mut usize, v: u32) {
+    buf[*off..*off + 4].copy_from_slice(&v.to_le_bytes());
+    *off += 4;
+}
+fn write_u64(buf: &mut [u8], off: &mut usize, v: u64) {
+    buf[*off..*off + 8].copy_from_slice(&v.to_le_bytes());
+    *off += 8;
+}
+
+/// Process name (basename of argv[0], or "[kernel]" for an empty argv).
+/// Mirrors `process_name(proc)` from procfs.rs but returns bytes directly so
+/// we don't bounce through `&str` formatting.
+fn process_name_bytes(proc: &crate::process::Process) -> Vec<u8> {
+    if let Some(arg0) = proc.argv.first() {
+        // Strip directory prefix to match `comm` semantics.
+        match arg0.iter().rposition(|&b| b == b'/') {
+            Some(i) => arg0[i + 1..].to_vec(),
+            None => arg0.clone(),
+        }
+    } else {
+        b"[kernel]".to_vec()
+    }
+}
+
 /// Dequeue one pending Handler signal for a process (centralized mode).
 /// Writes signal delivery info to `out_ptr` (24 bytes):
 ///   [0..4] signum (u32), [4..8] handler_index (u32), [8..12] sa_flags (u32),

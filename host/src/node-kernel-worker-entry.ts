@@ -283,10 +283,23 @@ async function handleInit(msg: InitMessage) {
     },
     io,
     {
-      onFork: handleFork,
-      onExec: handleExec,
+      onFork: (parentPid, childPid, parentMemory) => {
+        // Notify the main thread of every kernel-side process event so
+        // Inspector-style UIs (Kandelo) can refresh their process table
+        // event-driven. Mirrors the browser-side worker entry.
+        post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
+        return handleFork(parentPid, childPid, parentMemory);
+      },
+      onExec: async (pid, path, argv, envp) => {
+        const result = await handleExec(pid, path, argv, envp);
+        if (result === 0) post({ type: "proc_event", kind: "exec", pid });
+        return result;
+      },
       onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: handlePosixSpawn,
+      onSpawn: (childPid, programBytes, argv, envp) => {
+        post({ type: "proc_event", kind: "spawn", pid: childPid });
+        return handlePosixSpawn(childPid, programBytes, argv, envp);
+      },
       onClone: handleClone,
       onExit: handleExit,
     },
@@ -516,6 +529,10 @@ async function handleExec(
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
     skipKernelCreate: true,
     ptrWidth: newPtrWidth,
+    // Refresh kernel-side Process.argv so /proc/<pid>/cmdline reflects
+    // the post-exec image, not the parent's argv. Mirrors the browser
+    // handleExec fix.
+    argv,
   });
 
   const heapBase = extractHeapBase(resolved);
@@ -872,6 +889,53 @@ port.on("message", (msg: MainToKernelMessage) => {
       try {
         const count = kernelWorker.getForkCount(msg.pid);
         post({ type: "response", requestId: msg.requestId, result: count });
+      } catch (err) {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+      break;
+    }
+    case "enum_procs": {
+      // Snapshot the kernel's process table for the Inspector → Procs tab.
+      // Mirrors the Browser-side handler in
+      // examples/browser/lib/kernel-worker-entry.ts.
+      try {
+        post({ type: "response", requestId: msg.requestId, result: kernelWorker.enumProcs() });
+      } catch (err) {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+      break;
+    }
+    case "read_proc_maps": {
+      try {
+        post({ type: "response", requestId: msg.requestId, result: kernelWorker.readProcMaps(msg.pid) });
+      } catch (err) {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+      break;
+    }
+    case "set_syscall_trace": {
+      if (msg.enabled) kernelWorker.enableSyscallTrace();
+      else kernelWorker.disableSyscallTrace();
+      break;
+    }
+    case "drain_syscall_trace": {
+      try {
+        post({ type: "response", requestId: msg.requestId, result: kernelWorker.drainSyscallTrace() });
       } catch (err) {
         post({
           type: "response",
