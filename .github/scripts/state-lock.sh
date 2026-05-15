@@ -99,10 +99,10 @@ load_lock_state() {
   local state_file
 
   state_file="$(state_file_path)"
-  if { [ -z "${STATE_LOCK_REF:-}" ] || [ -z "${STATE_LOCK_SHA:-}" ]; } \
-       && [ -f "$state_file" ]
-  then
+  if [ -f "$state_file" ]; then
     # File is written by write_lock_state in this script.
+    # Prefer it over inherited GITHUB_ENV values because a later step
+    # in the same job may acquire a new lock after an earlier acquire.
     # shellcheck source=/dev/null
     . "$state_file"
   fi

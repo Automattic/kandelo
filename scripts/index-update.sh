@@ -169,17 +169,28 @@ cargo run --release -p xtask --target "$HOST_TRIPLE" --quiet -- \
 # 4. Upload archive (success path only) + updated index back to the
 #    release. --clobber for idempotency: a retried matrix-build job
 #    must produce the same final state.
-if [[ "$TARGET_TAG" =~ ^pr-([0-9]+)-staging$ ]]; then
-  PR_NUMBER="${BASH_REMATCH[1]}"
-  if ! gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-    gh release create "$TARGET_TAG" \
-      --repo "$GITHUB_REPOSITORY" \
-      --prerelease \
-      --target "${GITHUB_SHA:?GITHUB_SHA required}" \
-      --title "$TARGET_TAG" \
-      --notes "PR #${PR_NUMBER} staging build" \
-      || true
-  fi
+if ! gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+  release_args=(
+    "$TARGET_TAG"
+    --repo "$GITHUB_REPOSITORY"
+    --target "${GITHUB_SHA:?GITHUB_SHA required}"
+    --title "$TARGET_TAG"
+  )
+  case "$TARGET_TAG" in
+    pr-*-staging)
+      PR_NUMBER="${TARGET_TAG#pr-}"
+      PR_NUMBER="${PR_NUMBER%-staging}"
+      release_args+=(--prerelease --notes "PR #${PR_NUMBER} staging build")
+      ;;
+    binaries-abi-v*)
+      ABI="${TARGET_TAG#binaries-abi-v}"
+      release_args+=(--notes "Binaries for ABI v${ABI}")
+      ;;
+    *)
+      release_args+=(--notes "Package binary index for ${TARGET_TAG}")
+      ;;
+  esac
+  gh release create "${release_args[@]}" || true
 fi
 
 if [ "$STATUS" = "success" ]; then
