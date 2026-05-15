@@ -99,19 +99,7 @@ function installCrashSafetyNet(
       `[process-worker] pid=${pid} crashed (worker exit code=${code}, no SYS_exit_group from wasm)\n`,
     );
     post({ type: "stderr", pid, data: errBytes });
-    try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
-    processes.delete(pid);
-    threadModuleCache.delete(pid);
-    ptyByPid.delete(pid);
-    const threads = threadWorkers.get(pid);
-    if (threads) {
-      for (const t of threads) {
-        intentionallyTerminated.add(t.worker as object);
-        t.worker.terminate().catch(() => {});
-      }
-      threadWorkers.delete(pid);
-    }
-    post({ type: "exit", pid, status: 128 + 11 /* SIGSEGV */ });
+    finalizeProcessWorker(pid, worker, 128 + 11 /* SIGSEGV */);
   });
 }
 
@@ -140,6 +128,52 @@ let execResolveId = 0;
 const pendingExecResolves = new Map<number, (bytes: ArrayBuffer | null) => void>();
 
 // --- Helpers ---
+
+/**
+ * Tear down kernel and host state for an exiting process worker.
+ *
+ * Called from BOTH the `{type:"exit"}` and `{type:"error"}` message
+ * handlers below: previously only `exit` ran the cleanup, so a
+ * worker that died via `{type:"error"}` (uncaught wasm trap,
+ * instantiation failure) left `kernelWorker` with the process still
+ * registered. Any concurrent `waitpid` in the parent then hung
+ * forever because the kernel never saw the child go zombie. The
+ * stderr forwarding alone, without `deactivateProcess`, is not
+ * enough.
+ *
+ * Idempotent: guarded by `cur && cur.worker === worker` so a later
+ * `worker.on("exit")` from `installCrashSafetyNet` is a no-op.
+ */
+function finalizeProcessWorker(
+  pid: number,
+  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+  exitStatus: number,
+): void {
+  const cur = processes.get(pid);
+  if (cur && cur.worker === worker) {
+    // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
+    // case the worker died without sending SYS_EXIT_GROUP (uncaught
+    // wasm trap, instantiation failure → `{type:"error"}` path).
+    // Without this, a concurrent waitpid in the parent blocks until
+    // destroy because the kernel never marked the child as a zombie.
+    // Idempotent via `hostReaped`: when the kernel already processed
+    // a clean SYS_EXIT_GROUP for this pid, this is a no-op.
+    try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
+    try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+    processes.delete(pid);
+    threadModuleCache.delete(pid);
+    ptyByPid.delete(pid);
+    const threads = threadWorkers.get(pid);
+    if (threads) {
+      for (const t of threads) {
+        intentionallyTerminated.add(t.worker as object);
+        t.worker.terminate().catch(() => {});
+      }
+      threadWorkers.delete(pid);
+    }
+  }
+  post({ type: "exit", pid, status: exitStatus });
+}
 
 function post(msg: KernelToMainMessage) {
   port.postMessage(msg);
@@ -352,29 +386,13 @@ function handleSpawn(msg: SpawnMessage) {
       if (m.type === "error" && m.pid === pid) {
         const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
         post({ type: "stderr", pid, data: errBytes });
-        post({ type: "exit", pid, status: -1 });
+        finalizeProcessWorker(pid, worker, -1);
       } else if (m.type === "exit" && m.pid === pid) {
         // worker-main posts {type:"exit"} when _start returns or hits an
         // "unreachable" trap (the latter is treated as normal _Exit). If
         // the kernel didn't process a SYS_exit_group first, the kernel
         // still has the process registered and host.spawn() would hang.
-        // Tear down kernel state and forward the exit to the host.
-        const cur = processes.get(pid);
-        if (cur && cur.worker === worker) {
-          try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
-          processes.delete(pid);
-          threadModuleCache.delete(pid);
-          ptyByPid.delete(pid);
-          const threads = threadWorkers.get(pid);
-          if (threads) {
-            for (const t of threads) {
-              intentionallyTerminated.add(t.worker as object);
-              t.worker.terminate().catch(() => {});
-            }
-            threadWorkers.delete(pid);
-          }
-        }
-        post({ type: "exit", pid, status: m.status ?? 0 });
+        finalizeProcessWorker(pid, worker, m.status ?? 0);
       }
     });
 
@@ -447,24 +465,9 @@ async function handleFork(
     if (m.type === "error" && m.pid === childPid) {
       const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
       post({ type: "stderr", pid: childPid, data: errBytes });
-      post({ type: "exit", pid: childPid, status: -1 });
+      finalizeProcessWorker(childPid, childWorker, -1);
     } else if (m.type === "exit" && m.pid === childPid) {
-      const cur = processes.get(childPid);
-      if (cur && cur.worker === childWorker) {
-        try { kernelWorker.deactivateProcess(childPid); } catch { /* best-effort */ }
-        processes.delete(childPid);
-        threadModuleCache.delete(childPid);
-        ptyByPid.delete(childPid);
-        const threads = threadWorkers.get(childPid);
-        if (threads) {
-          for (const t of threads) {
-            intentionallyTerminated.add(t.worker as object);
-            t.worker.terminate().catch(() => {});
-          }
-          threadWorkers.delete(childPid);
-        }
-      }
-      post({ type: "exit", pid: childPid, status: m.status ?? 0 });
+      finalizeProcessWorker(childPid, childWorker, m.status ?? 0);
     }
   });
 
@@ -546,24 +549,9 @@ async function handleExec(
     if (m.type === "error" && m.pid === pid) {
       const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
       post({ type: "stderr", pid, data: errBytes });
-      post({ type: "exit", pid, status: -1 });
+      finalizeProcessWorker(pid, newWorker, -1);
     } else if (m.type === "exit" && m.pid === pid) {
-      const cur = processes.get(pid);
-      if (cur && cur.worker === newWorker) {
-        try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
-        processes.delete(pid);
-        threadModuleCache.delete(pid);
-        ptyByPid.delete(pid);
-        const threads = threadWorkers.get(pid);
-        if (threads) {
-          for (const t of threads) {
-            intentionallyTerminated.add(t.worker as object);
-            t.worker.terminate().catch(() => {});
-          }
-          threadWorkers.delete(pid);
-        }
-      }
-      post({ type: "exit", pid, status: m.status ?? 0 });
+      finalizeProcessWorker(pid, newWorker, m.status ?? 0);
     }
   });
 

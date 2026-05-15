@@ -5982,6 +5982,51 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Notify the kernel that a host worker for `pid` died asynchronously
+   * (uncaught wasm trap, instantiation failure, externally terminated
+   * Worker) WITHOUT going through the normal SYS_EXIT_GROUP path.
+   *
+   * Without this, an OOB/instantiation crash leaves the kernel
+   * believing the process is still alive: any concurrent waitpid in
+   * the parent then blocks until host destroy. P-06 / K-03 exposed
+   * this — the child's wasm trapped during _start, the worker
+   * reported it via `{type:"error"}`, the host posted `stderr` +
+   * deactivated the process locally, but the kernel never marked the
+   * pid as a zombie or woke the parent.
+   *
+   * Synthesizes a WIFSIGNALED-style wait status (signum in the low
+   * 7 bits) using `signum` (default `SIGSEGV` = 11), records the
+   * exit, queues `SIGCHLD` on the parent, and wakes any parked
+   * `waitpid` / `waitid`.
+   *
+   * Idempotent via `hostReaped`: if the kernel already saw a clean
+   * SYS_EXIT for this pid, this is a no-op (the kernel's exit
+   * status wins). Host-side cleanup (channel removal, timer
+   * cancellation) is still the caller's responsibility — call
+   * `deactivateProcess` after this if the pid is going away.
+   */
+  notifyHostProcessCrashed(pid: number, signum: number = 11 /* SIGSEGV */): void {
+    if (this.hostReaped.has(pid)) return;
+    this.hostReaped.add(pid);
+    const waitStatus = signum & 0x7f;
+    const parentPid = this.childToParent.get(pid);
+    if (parentPid !== undefined) {
+      const hasNoCldWait = this.kernelInstance!.exports
+        .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
+      const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
+
+      if (!autoReap) {
+        this.exitedChildren.set(pid, waitStatus);
+        this.sendSignalToProcess(parentPid, SIGCHLD);
+        this.wakeWaitingParent(parentPid, pid, waitStatus);
+      } else {
+        this.childToParent.delete(pid);
+      }
+    }
+    this.sharedMappings.delete(pid);
+  }
+
+  /**
    * After SYS_KILL completes, scan for processes the kernel just marked
    * Exited that the host hasn't reaped. Without this, a `kill` of a
    * sleeping child (or any process not blocked in poll/select/pipe — those

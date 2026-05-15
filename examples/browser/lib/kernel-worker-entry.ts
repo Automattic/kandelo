@@ -943,6 +943,16 @@ async function handleClone(
 function handleExit(pid: number, exitStatus: number): void {
   const info = processes.get(pid);
 
+  // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
+  // case the worker died without sending SYS_EXIT_GROUP (uncaught
+  // wasm trap → onerror, worker-main `{type:"error"}` → finalize(-1),
+  // externally terminated Worker → "exit" event). Without this, a
+  // concurrent waitpid in the parent blocks until destroy because
+  // the kernel never marked the child as a zombie. Idempotent via
+  // `hostReaped`: when the kernel already processed a clean
+  // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
+  // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
+  try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
   // Check if this is a "top-level" process or a fork child
   // For now, always deactivate — the main thread tracks exit promises
   kernelWorker.deactivateProcess(pid);
