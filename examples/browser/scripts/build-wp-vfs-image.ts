@@ -11,22 +11,20 @@
  *
  * Produces: examples/browser/public/wordpress.vfs
  */
-import { readFileSync, lstatSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
-import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
 import {
   writeVfsFile,
   writeVfsBinary,
-  ensureDir,
   ensureDirRecursive,
-  symlink,
   walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract, ensureExtract } from "./source-extract-helper";
+import { populateShellEnvironment } from "./shell-vfs-build";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
@@ -49,98 +47,10 @@ const SQLITE_DIR = ensureExtract({
   cacheKey: `sqlite-database-integration-${SQLITE_PLUGIN_VERSION}`,
   legacyPath: join(WP_EXAMPLE_DIR, "sqlite-database-integration"),
 });
-const DASH_PATH = resolveBinary("programs/dash.wasm");
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
-const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
-const SED_PATH = resolveBinary("programs/sed.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
-
-// --- System setup (mirrors BrowserKernel constructor + populateShellBinaries) ---
-
-function populateSystem(fs: MemoryFileSystem): void {
-  // Standard directories
-  for (const dir of [
-    "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
-    "/usr/local", "/usr/local/bin", "/usr/share", "/usr/share/misc",
-    "/usr/share/file", "/root", "/usr/sbin",
-  ]) {
-    ensureDir(fs, dir);
-  }
-  // /tmp needs 0o777
-  fs.chmod("/tmp", 0o777);
-
-  // /etc/services for getservbyname/getservbyport
-  const services = [
-    "tcpmux\t\t1/tcp",
-    "echo\t\t7/tcp",
-    "echo\t\t7/udp",
-    "discard\t\t9/tcp\t\tsink null",
-    "discard\t\t9/udp\t\tsink null",
-    "ftp-data\t20/tcp",
-    "ftp\t\t21/tcp",
-    "ssh\t\t22/tcp",
-    "telnet\t\t23/tcp",
-    "smtp\t\t25/tcp\t\tmail",
-    "domain\t\t53/tcp",
-    "domain\t\t53/udp",
-    "http\t\t80/tcp\t\twww",
-    "pop3\t\t110/tcp\t\tpop-3",
-    "nntp\t\t119/tcp\t\treadnews untp",
-    "ntp\t\t123/udp",
-    "imap\t\t143/tcp\t\timap2",
-    "snmp\t\t161/udp",
-    "https\t\t443/tcp",
-    "imaps\t\t993/tcp",
-    "pop3s\t\t995/tcp",
-  ].join("\n") + "\n";
-  writeVfsFile(fs, "/etc/services", services);
-
-  // Git config
-  const gitconfig = [
-    "[maintenance]",
-    "\tauto = false",
-    "[gc]",
-    "\tauto = 0",
-    "[core]",
-    "\tpager = cat",
-    "[user]",
-    "\tname = User",
-    "\temail = user@wasm.local",
-    "[init]",
-    "\tdefaultBranch = main",
-    "",
-  ].join("\n");
-  writeVfsFile(fs, "/etc/gitconfig", gitconfig);
-}
-
-function populateDash(fs: MemoryFileSystem): void {
-  const dashBytes = readFileSync(DASH_PATH);
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes));
-  symlink(fs, "/bin/dash", "/bin/sh");
-  symlink(fs, "/bin/dash", "/usr/bin/dash");
-  symlink(fs, "/bin/dash", "/usr/bin/sh");
-}
-
-function populateShellSymlinks(fs: MemoryFileSystem): void {
-  // Coreutils symlinks — target stubs don't need to exist, symlink target
-  // is just a stored path string. The actual binary is registered lazily at runtime.
-  for (const name of [...COREUTILS_NAMES, "["]) {
-    symlink(fs, "/bin/coreutils", `/bin/${name}`);
-    symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
-  }
-
-  // grep symlinks
-  symlink(fs, "/usr/bin/grep", "/bin/grep");
-  symlink(fs, "/usr/bin/grep", "/usr/bin/egrep");
-  symlink(fs, "/usr/bin/grep", "/bin/egrep");
-  symlink(fs, "/usr/bin/grep", "/usr/bin/fgrep");
-  symlink(fs, "/usr/bin/grep", "/bin/fgrep");
-
-  // sed symlinks
-  symlink(fs, "/usr/bin/sed", "/bin/sed");
-}
 
 // --- Service configs (reuse logic from init modules) ---
 
@@ -445,36 +355,26 @@ require_once ABSPATH . 'wp-settings.php';
 // --- Main ---
 
 async function main() {
-  try {
-    lstatSync(DASH_PATH);
-  } catch {
-    console.error("dash.wasm not found. Run: bash build.sh");
-    process.exit(1);
-  }
-
   // 128 MiB initial, 256 MiB max growth. WordPress core + SQLite plugin
   // is ~80 MiB. Worker entry then makes the SAB growable to 1 GiB at
   // runtime (mariadbd's InnoDB log lessons).
   const sab = new SharedArrayBuffer(128 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
 
-  console.log("Populating system directories and configs...");
-  populateSystem(fs);
-  populateDash(fs);
-  populateShellSymlinks(fs);
+  // Shell environment (dash + bash + coreutils + grep + sed + extended
+  // tools + magic db + vim/nethack lazy archives) — shared with the
+  // Shell demo via examples/browser/scripts/shell-vfs-build.ts. eager:
+  // every binary is baked because WP runs in kernelOwnedFs mode.
+  console.log("Populating shell environment...");
+  populateShellEnvironment(fs, { eagerBinaries: true });
+
+  console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
 
-  // Bake server binaries directly — dinit's --container boot path can't
-  // lazy-load these, and nginx + php-fpm + coreutils total ~14 MiB
-  // (compressed less inside the .vfs).
-  console.log("Writing server binaries...");
+  console.log("Writing nginx + php-fpm binaries...");
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
   writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
-  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
-  // sed isn't part of coreutils — wp-config-init.sh needs it for the
-  // @@APP_PATH@@ / @@PROTO@@ template substitution at boot.
-  writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(readFileSync(SED_PATH)));
 
   // Template + bootstrap script. wp-config-init service runs the script
   // at boot, sed-substituting @@APP_PATH@@ and @@PROTO@@ from env vars

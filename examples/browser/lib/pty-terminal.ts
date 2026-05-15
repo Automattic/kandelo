@@ -137,6 +137,45 @@ export class PtyTerminal {
     return exit;
   }
 
+  /**
+   * Spawn a VFS-resident program with PTY-backed stdio and connect
+   * xterm.js I/O. Same wiring as {@link PtyTerminal.spawn} but the
+   * kernel reads the binary out of its own VFS instead of receiving
+   * `programBytes` from the main thread. Required for `kernelOwnedFs`
+   * demos where main-thread bytes don't exist.
+   */
+  async spawnFromVfs(
+    programPath: string,
+    argv: string[],
+    options?: { env?: string[]; cwd?: string },
+  ): Promise<number> {
+    const { pid, exit } = await this.kernel.spawnFromVfs(programPath, argv, {
+      ...options,
+      pty: true,
+    });
+    this.pid = pid;
+
+    this.kernel.onPtyOutput(pid, (data: Uint8Array) => {
+      this.terminal.write(data);
+    });
+
+    const dataDisposable = this.terminal.onData((data: string) => {
+      if (this.pid < 0) return;
+      this.kernel.ptyWrite(this.pid, encoder.encode(data));
+    });
+    this.disposables.push(dataDisposable);
+
+    const resizeDisposable = this.terminal.onResize(({ cols, rows }) => {
+      if (this.pid < 0) return;
+      this.kernel.ptyResize(this.pid, rows, cols);
+    });
+    this.disposables.push(resizeDisposable);
+
+    this.kernel.ptyResize(pid, this.terminal.rows, this.terminal.cols);
+
+    return exit;
+  }
+
   /** Write data to the PTY (for injecting input programmatically). */
   write(data: string | Uint8Array): void {
     if (this.pid < 0) return;

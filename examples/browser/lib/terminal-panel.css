@@ -1,12 +1,26 @@
 /* ── Collapsible terminal panel ────────────── */
 
+/* Pass-through wrapper so .terminal-panel can be a direct flex child of
+ * .main (and therefore claim flex: 1 when expanded). The placeholder
+ * #terminal-panel div in each demo's HTML sits between .main and
+ * .terminal-panel; display: contents removes it from the box tree. */
+#terminal-panel {
+  display: contents;
+}
+
 .terminal-panel {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   min-height: 32px;
   border-top: 1px solid #333;
   background: #1e1e1e;
   overflow: hidden;
+}
+
+.terminal-panel.expanded {
+  flex: 1;
+  min-height: 0;
 }
 
 .terminal-panel-bar {

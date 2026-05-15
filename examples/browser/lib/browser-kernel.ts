@@ -423,6 +423,49 @@ export class BrowserKernel {
   }
 
   /**
+   * Spawn a process whose binary already lives in the kernel-owned VFS.
+   * Returns the worker-allocated pid + an exit promise.
+   *
+   * Unlike {@link BrowserKernel.spawn}, this does not transfer any
+   * `programBytes` across the worker boundary — the kernel reads the
+   * binary out of its own memfs at `programPath`. Use this in
+   * `kernelOwnedFs: true` mode (or whenever the binary is already in
+   * the VFS) to avoid re-shipping multi-megabyte binaries the kernel
+   * already has.
+   *
+   * Mirrors the private `spawnFirstProcess` path internally — both
+   * route to the kernel worker's pid allocator.
+   */
+  async spawnFromVfs(
+    programPath: string,
+    argv: string[],
+    options?: { env?: string[]; cwd?: string; pty?: boolean; stdin?: Uint8Array },
+  ): Promise<{ pid: number; exit: Promise<number> }> {
+    const requestId = this.nextRequestId++;
+    const pid = await this.request(requestId, {
+      type: "spawn",
+      requestId,
+      programPath,
+      argv,
+      env: this.mergeEnv(options?.env ?? this.options.env),
+      cwd: options?.cwd,
+      pty: options?.pty,
+      stdin: options?.stdin,
+      maxPages: this.maxPages,
+    }) as number;
+
+    const exit = new Promise<number>((resolve) => {
+      this.exitResolvers.set(pid, resolve);
+    });
+
+    if (options?.pty) {
+      this.sendToKernel({ type: "register_pty_output", pid });
+    }
+
+    return { pid, exit };
+  }
+
+  /**
    * Read the kernel's per-process fork counter. Used by the spawn
    * regression tests to assert a `SYS_SPAWN` call didn't fall back to
    * fork — `getForkCount(parentPid)` should return the same value
