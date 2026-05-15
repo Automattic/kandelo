@@ -62,6 +62,13 @@
 #                  missing.
 #   -h / --help    Print this header.
 #
+# Env:
+#   WASM_POSIX_FETCH_SKIP_PKGS
+#                  Space-separated package names to skip entirely.
+#                  CI uses this for packages temporarily disabled from
+#                  staging/prepare matrices so test-gate does not
+#                  source-build them while materializing binaries.
+#
 # Exit codes:
 #   0  every package resolved successfully (archive fetched OR
 #      source-built fallback succeeded).
@@ -77,6 +84,7 @@ cd "$REPO_ROOT"
 OFFLINE=0
 PR_NUMBER=""
 ALLOW_STALE=0
+SKIP_PKGS=" ${WASM_POSIX_FETCH_SKIP_PKGS:-} "
 while [ $# -gt 0 ]; do
     case "$1" in
         --offline)     OFFLINE=1; shift ;;
@@ -213,6 +221,12 @@ for pkg_dir in "$LIBS_DIR"/*/; do
     fi
 
     eval "$(read_package_toml "$toml")"
+
+    if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
+        echo "fetch-binaries: skip $pkg (WASM_POSIX_FETCH_SKIP_PKGS)"
+        SKIPPED=$((SKIPPED + 1))
+        continue
+    fi
 
     # Post binary-resolution-via-index-ledger: a package has a
     # publishable binary IFF a sibling build.toml exists.
