@@ -141,6 +141,15 @@ echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
 # compromise the build" — recovering requires a fresh cache anyway.
 rm -f "$SCRIPT_DIR/config.cache"
 if [ ! -f Makefile ]; then
+    # LDFLAGS notes (kept OUTSIDE the line-continuation block below
+    # because `# comment` lines inside a `\`-continued bash block
+    # terminate the continuation — env vars set on lines before the
+    # comment apply only to the comment itself, which is a no-op
+    # statement. The result: PKG_CONFIG_PATH was silently dropped on
+    # the wasm32posix-configure invocation, libxml-2.0 lookup failed,
+    # and the whole PHP build aborted at "Package requirements
+    # (libxml-2.0 >= 2.9.0) were not met").
+    #
     # -ldl: pulls glue/dlopen.c into the link, providing the `dlopen`
     # symbol PHP uses to load Zend extensions like opcache.so. Without
     # this, PHP runs but reports "Dynamic loading not supported" when
@@ -152,8 +161,7 @@ if [ ! -f Makefile ]; then
     # `__heap_base`/`__tls_base`/etc. are exported and opcache.so fails
     # to instantiate ("Import #N env.<sym>: function import requires a
     # callable"). The size cost (~5 MB) is worth the runtime correctness.
-    PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
-    CPPFLAGS="$DEP_CPPFLAGS" \
+    #
     # -u<sym>: force the linker to pull these libc symbols out of
     # libc.a even though PHP itself doesn't call them. opcache.so
     # imports them (some are sandbox/security helpers it never actually
@@ -172,6 +180,8 @@ if [ ! -f Makefile ]; then
     # out of bounds" because it tries to dereference the now-bogus heap
     # pointer. 4 MB gives PASS_6 enough headroom for any function that
     # passes its own `blocks*vars > 4M` size guard.
+    PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
+    CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS --no-wasm-opt -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
 -Wl,-z,stack-size=4194304" \

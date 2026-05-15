@@ -259,12 +259,12 @@ fork PRs continue to fall back to the resolver's source-build path
 locally.
 
 For hand-rebuilds outside the PR flow (e.g., recovery from a CI
-outage), `xtask archive-stage --package <dir> --arch <arch>` produces
-a single archive locally; uploading it to the release tag and
-amending the package's `[binary.<arch>]` block via `xtask
-set-package-binary` reproduces what the matrix flow does in CI.
-The `force-rebuild.yml` workflow automates that path for one or
-more packages.
+outage), `xtask archive-stage --package <dir> --arch <arch>`
+produces a single archive locally; uploading it via
+`scripts/index-update.sh` (which handles the state-lock, archive
+upload, and atomic `index.toml` mutation in one call) reproduces
+what the matrix flow does in CI. The `force-rebuild.yml` workflow
+automates that path for one or more packages.
 
 ### Hard-coded version strings in build scripts (lint)
 

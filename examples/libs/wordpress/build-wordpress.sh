@@ -13,6 +13,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # downloads when the trees are already present.
 bash "$REPO_ROOT/examples/wordpress/setup.sh"
 
+# Build the lazy-archive zips consumed by populateShellEnvironment().
+# wordpress.vfs.zst bakes the eager shell environment, but vim/nethack
+# are represented as zip archives derived from their resolver outputs,
+# not as direct registry package outputs.
+bash "$REPO_ROOT/examples/browser/scripts/build-vim-zip.sh"
+bash "$REPO_ROOT/examples/browser/scripts/build-nethack-zip.sh"
+
 bash "$REPO_ROOT/examples/browser/scripts/build-wp-vfs-image.sh"
 
 VFS="$REPO_ROOT/examples/browser/public/wordpress.vfs.zst"

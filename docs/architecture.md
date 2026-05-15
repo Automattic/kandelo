@@ -648,6 +648,38 @@ The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 
 For programs that use `fork()`, Binaryen's `wasm-opt --asyncify` post-processing is required to enable call stack save/restore.
 
+### Package system
+
+Every artifact under `examples/libs/<name>/` is a **package**. Each ships two TOML files:
+
+- **`package.toml`** — the **recipe**: name, version, upstream source pin, license, dependencies, `[build].script_path`. Identity-and-constraints. Project-agnostic; same content across any project that depends on this package.
+- **`build.toml`** — the **project view**: `script_path` (this project's actual build), `repo_url` + `commit` (where the recipe lives in this project), publish-time `revision`, and `[binary]` declaring where binaries are published. Differs per project.
+
+Binary resolution does not look at either of those files for archive URLs. Instead, a per-release `index.toml` ledger hosted at `build.toml`'s `index_url` is the single source of truth — see `docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md` for the full design and `docs/package-management.md` for the reference manual.
+
+**Resolver flow** (`xtask build-deps resolve`, called from build scripts):
+
+1. Read `examples/libs/<name>/package.toml` for the recipe.
+2. Read `examples/libs/<name>/build.toml` for the binary source and publish-time `revision`.
+3. `build.toml`'s `[binary]` declares one of:
+   - `index_url = "https://.../binaries-abi-v{abi}/index.toml"` — indexed lookup. `{abi}` is substituted with the current `ABI_VERSION` from `crates/shared/src/lib.rs`.
+   - `url = "..." sha256 = "..."` — direct archive URL, no index.
+4. Indexed flow fetches `index.toml` (cached at `~/.cache/wasm-posix-kernel/indexes/`) and looks up `(name, version, arch)`:
+   - `status = "success"` → fetch `archive_url`, verify `archive_sha256`, install.
+   - `status = "failed"` / `"pending"` / `"building"` with `fallback_archive_url` set → fetch the last-green archive instead.
+   - Anything else → fall through to source build.
+5. Every installed archive's internal `manifest.toml`'s `[compatibility]` block is verified against the request (target_arch, abi_versions, cache_key_sha). Any mismatch falls through to source build.
+
+**Per-package updates land atomically.** CI's per-matrix-build job runs `scripts/index-update.sh` after producing each archive: it acquires a workflow-level state-lock (`.github/scripts/state-lock.sh`), downloads the current `index.toml`, mutates this package's entry via `xtask index-update`, and uploads the archive + new `index.toml` together. Different release tags (e.g. `binaries-abi-v8` vs `pr-<N>-staging`) use different state-lock subjects, so independent rebuilds don't block each other.
+
+**Last-green fallback.** When a per-package rebuild for `(name, version, arch)` fails, its prior successful `archive_url` is preserved in the entry's `fallback_archive_url` field — consumers keep fetching the last working archive while CI iterates on the rebuild. A subsequent success clears the fallback.
+
+**CI flow.** Per-package matrix builds are driven by `.github/workflows/staging-build.yml` (per-PR staging tags), `prepare-merge.yml` (on `ready-to-ship` label, ships to the durable `binaries-abi-v<N>` release), and `force-rebuild.yml` (manual escape hatch). All three drive the same per-package matrix; each matrix entry independently invokes `scripts/index-update.sh` to publish its archive + index entry atomically.
+
+The legacy `[binary]` block in `package.toml` was removed during the binary-resolution-via-index-ledger migration (see commit log around 2026-05-13). Archived `manifest.toml` bytes inside historical `.tar.zst` files still carry the legacy shape; `xtask`'s `parse_archived` keeps accepting it. `validate_source` rejects it on the source path so stale source files surface immediately.
+
+For schema, resolver behavior, and the build-script contract see [docs/package-management.md](package-management.md). For the release operations (tag convention, `index.toml` shape, fetch-binaries.sh semantics) see [docs/binary-releases.md](binary-releases.md).
+
 ## Test Suites
 
 | Suite | Command | What it tests |

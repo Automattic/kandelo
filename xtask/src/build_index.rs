@@ -1,44 +1,27 @@
 //! `xtask build-index` — emit `index.toml` from a directory of
 //! `.tar.zst` archives.
 //!
-//! `index.toml` is the **source manifest** described in
-//! `docs/plans/2026-05-05-decoupled-package-builds-design.md` §3.2:
-//! a per-release listing of every package keyed by name + version,
-//! with one `[packages.binary.<arch>]` block per built architecture.
-//! It's the file curators / third-party catalog browsers fetch to
-//! enumerate the contents of a release without paging through the
-//! GitHub Releases API.
+//! Post binary-resolution-via-index-ledger (design §3.4),
+//! `index.toml` is the per-release ledger of build state for every
+//! package. Each per-arch entry carries `status`, `archive_url`,
+//! `archive_sha256`, `cache_key_sha`, `built_at`, `built_by` —
+//! enough for the resolver to fetch + verify against the same
+//! recipe inputs that produced the archive.
 //!
-//! Format (verbatim from §3.2):
-//!
-//! ```toml
-//! abi_version = 6
-//! generated_at = "2026-05-05T12:34:56Z"
-//! generator    = "wasm-posix-kernel CI @ 8424f4fec"
-//!
-//! [[packages]]
-//! name    = "mariadb"
-//! version = "10.5.27"
-//!
-//! [packages.binary.wasm32]
-//! archive_url    = "mariadb-10.5.27-rev1-abi6-wasm32-abc12345.tar.zst"
-//! archive_sha256 = "abc123..."
-//!
-//! [packages.binary.wasm64]
-//! archive_url    = "mariadb-10.5.27-rev1-abi6-wasm64-def45678.tar.zst"
-//! archive_sha256 = "def456..."
-//! ```
+//! This subcommand is the one-shot seed path used by
+//! `scripts/compose-initial-index.sh` when migrating a release from
+//! the legacy schema to the new ledger. Day-to-day publishes during
+//! CI matrix builds go through `scripts/index-update.sh` +
+//! `xtask index-update` (per-package atomic updates under the
+//! state-lock), not this command.
 //!
 //! Filename convention (must match what `archive-stage` writes):
 //! `<name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst`.
 //!
-//! Hand-formatted (not via the `toml` crate's serializer): the design
-//! pins both key order *within* a `[[packages]]` block (`name` then
-//! `version`) and arch-block order (wasm32 before wasm64 by
-//! convention), and the `toml` crate's general-purpose serializer
-//! sorts table keys alphabetically. A small hand-formatted writer
-//! gives byte-deterministic output that matches the design doc and
-//! reads cleanly on the release page.
+//! The seed flow extracts each archive's internal `manifest.toml`
+//! to recover `cache_key_sha` + `build_timestamp` (from the
+//! `[compatibility]` block) and stamps them into the per-entry
+//! fields the resolver requires.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -46,6 +29,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use crate::index_toml::IndexToml;
 use crate::pkg_manifest::TargetArch;
 use crate::util::hex;
 
@@ -93,27 +77,6 @@ struct ParsedArchive {
     filename: String,
 }
 
-/// One entry in the per-package per-arch map. `archive_url` is the
-/// relative filename (see ParsedArchive above); `archive_sha256` is the
-/// sha256 of the archive bytes (NOT the same as `cache_key_sha` — the
-/// latter is a structural hash of build inputs, the former addresses
-/// the bytes the consumer actually downloads).
-#[derive(Clone, Debug)]
-struct BinaryEntry {
-    archive_url: String,
-    archive_sha256: String,
-}
-
-/// Aggregated package data: name + version + per-arch binaries.
-/// Sorted-by-arch on emit so wasm32 comes before wasm64 in the rendered
-/// TOML (alphabetical, but pinned via the BTreeMap so adding wasm-anything
-/// later stays deterministic).
-struct PackageRecord {
-    name: String,
-    version: String,
-    binaries: BTreeMap<TargetArch, BinaryEntry>,
-}
-
 /// CLI entry point.
 ///
 /// Required flags (order-independent, both `--flag value` and
@@ -132,16 +95,121 @@ struct PackageRecord {
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let parsed = parse_args(args)?;
     let entries = collect_archives(&parsed.archives_dir, parsed.abi)?;
-    let packages = group_packages(entries)?;
     let generated_at = parsed.generated_at.clone().unwrap_or_else(current_utc_iso);
-    let rendered = render_index_toml(parsed.abi, &generated_at, &parsed.generator, &packages);
+
+    // Build an IndexToml using the same `update_entry_success` path
+    // the per-matrix-job CLI uses — guarantees the seeded ledger is
+    // byte-shape-identical to one produced incrementally.
+    let mut idx = IndexToml::empty(parsed.abi, generated_at.clone(), parsed.generator.clone());
+
+    // Track each package's (version, revision) so we can detect
+    // cross-arch divergence (same package@different revision in two
+    // arches is a real bug worth surfacing).
+    let mut pkg_revision: BTreeMap<String, u32> = BTreeMap::new();
+    let mut pkg_version: BTreeMap<String, String> = BTreeMap::new();
+
+    for (parsed_archive, archive_sha_hex, meta) in entries {
+        if let Some(prev) = pkg_version.get(&parsed_archive.name) {
+            if prev != &parsed_archive.version {
+                return Err(format!(
+                    "package {:?}: archive {:?} declares version {:?}, but a sibling \
+                     arch already declared {:?} — every arch of a package must agree on version",
+                    parsed_archive.name,
+                    parsed_archive.filename,
+                    parsed_archive.version,
+                    prev,
+                ));
+            }
+        } else {
+            pkg_version.insert(parsed_archive.name.clone(), parsed_archive.version.clone());
+        }
+        if let Some(prev) = pkg_revision.get(&parsed_archive.name) {
+            if prev != &parsed_archive.revision {
+                return Err(format!(
+                    "package {:?}: archive {:?} declares revision {}, but a sibling \
+                     arch already declared revision {} — every arch must agree on revision",
+                    parsed_archive.name,
+                    parsed_archive.filename,
+                    parsed_archive.revision,
+                    prev,
+                ));
+            }
+        } else {
+            pkg_revision.insert(parsed_archive.name.clone(), parsed_archive.revision);
+        }
+
+        idx.update_entry_success(
+            &parsed_archive.name,
+            &parsed_archive.version,
+            parsed_archive.revision,
+            parsed_archive.arch,
+            parsed_archive.filename.clone(),
+            archive_sha_hex,
+            meta.cache_key_sha,
+            meta.build_timestamp.unwrap_or_else(|| generated_at.clone()),
+            parsed.generator.clone(),
+        );
+    }
+
     if let Some(parent) = parsed.out.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
-    fs::write(&parsed.out, &rendered)
+    fs::write(&parsed.out, idx.write())
         .map_err(|e| format!("write {}: {e}", parsed.out.display()))?;
     Ok(())
+}
+
+/// Metadata extracted from a `.tar.zst`'s internal `manifest.toml`'s
+/// `[compatibility]` block. The fields are recipe-stable (the same
+/// archive produces the same metadata across decompressions), so
+/// re-running `build-index` over the same archives produces a
+/// byte-identical `index.toml`.
+struct ArchiveMetadata {
+    cache_key_sha: String,
+    /// `compatibility.build_timestamp` if the archive recorded one
+    /// (Phase A-bis onward). Older archives may have None; the
+    /// caller falls back to `generated_at` so the entry still has
+    /// a `built_at` value.
+    build_timestamp: Option<String>,
+}
+
+/// Decompress + un-tar an archive in memory, find the
+/// `manifest.toml` entry, parse it through
+/// `DepsManifest::parse_archived`, and return the
+/// `[compatibility]` fields the ledger needs.
+fn read_archive_metadata(bytes: &[u8]) -> Result<ArchiveMetadata, String> {
+    let decoder = zstd::stream::read::Decoder::new(bytes)
+        .map_err(|e| format!("zstd decode: {e}"))?;
+    let mut tar = tar::Archive::new(decoder);
+    let entries = tar.entries().map_err(|e| format!("tar entries: {e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("tar entry: {e}"))?;
+        let path = entry
+            .path()
+            .map_err(|e| format!("tar entry path: {e}"))?
+            .into_owned();
+        if path.as_os_str() == "manifest.toml" {
+            let mut text = String::new();
+            use std::io::Read;
+            entry
+                .read_to_string(&mut text)
+                .map_err(|e| format!("read manifest.toml: {e}"))?;
+            let archived = crate::pkg_manifest::DepsManifest::parse_archived(
+                &text,
+                std::path::PathBuf::from("/dev/null"),
+            )?;
+            let compat = archived
+                .compatibility
+                .as_ref()
+                .ok_or_else(|| "archived manifest missing [compatibility]".to_string())?;
+            return Ok(ArchiveMetadata {
+                cache_key_sha: compat.cache_key_sha.clone(),
+                build_timestamp: compat.build_timestamp.clone(),
+            });
+        }
+    }
+    Err("archive missing manifest.toml at the root".into())
 }
 
 /// Walk `archives_dir` for `*.tar.zst` files, parse each filename, and
@@ -151,14 +219,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 fn collect_archives(
     archives_dir: &Path,
     expected_abi: u32,
-) -> Result<Vec<(ParsedArchive, String)>, String> {
+) -> Result<Vec<(ParsedArchive, String, ArchiveMetadata)>, String> {
     if !archives_dir.is_dir() {
         return Err(format!(
             "archives-dir {} is not a directory or does not exist",
             archives_dir.display()
         ));
     }
-    let mut out: Vec<(ParsedArchive, String)> = Vec::new();
+    let mut out: Vec<(ParsedArchive, String, ArchiveMetadata)> = Vec::new();
     for dirent in fs::read_dir(archives_dir)
         .map_err(|e| format!("read_dir {}: {e}", archives_dir.display()))?
     {
@@ -185,7 +253,13 @@ fn collect_archives(
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let sha = hex(&Into::<[u8; 32]>::into(hasher.finalize()));
-        out.push((parsed, sha));
+        let meta = read_archive_metadata(&bytes).map_err(|e| {
+            format!(
+                "archive {name}: {e}. The seed flow needs each .tar.zst's internal \
+                 manifest.toml to recover cache_key_sha + build_timestamp."
+            )
+        })?;
+        out.push((parsed, sha, meta));
     }
     // Deterministic enumeration order: by (name, arch). Same set of
     // archives → same index.toml regardless of dirent traversal order.
@@ -277,110 +351,6 @@ fn parse_archive_filename(name: &str) -> Result<ParsedArchive, String> {
 
 fn is_short_sha(s: &str) -> bool {
     s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-}
-
-/// Group archives by package name. Two archives of the same (name, arch)
-/// are rejected (would silently shadow one in the rendered output);
-/// version/revision must agree across arches of the same package
-/// (otherwise the `[[packages]]` block can't pick a single `version`).
-fn group_packages(entries: Vec<(ParsedArchive, String)>) -> Result<Vec<PackageRecord>, String> {
-    let mut by_name: BTreeMap<String, PackageRecord> = BTreeMap::new();
-    for (p, sha) in entries {
-        let rec = by_name.entry(p.name.clone()).or_insert_with(|| PackageRecord {
-            name: p.name.clone(),
-            version: p.version.clone(),
-            binaries: BTreeMap::new(),
-        });
-        if rec.version != p.version {
-            return Err(format!(
-                "package {:?}: archive {:?} declares version {:?}, but a sibling arch \
-                 already declared {:?} — every arch of a package must agree on version",
-                p.name, p.filename, p.version, rec.version,
-            ));
-        }
-        // Belt+suspenders: revision is part of the filename and is hashed
-        // into cache_key_sha, but a divergent revision across arches would
-        // be a real bug worth surfacing here (one arch built from rev1,
-        // another from rev2 → users can't tell which `[[packages]]` entry
-        // they're consuming).
-        let _ = p.revision;
-        let entry = BinaryEntry {
-            archive_url: p.filename.clone(),
-            archive_sha256: sha,
-        };
-        if rec.binaries.insert(p.arch, entry).is_some() {
-            return Err(format!(
-                "package {:?}: two archives published for arch {} (second was {:?}, \
-                 short_sha {:?}) — only one (name, arch) entry is allowed per index.toml",
-                p.name,
-                p.arch.as_str(),
-                p.filename,
-                p.short_sha,
-            ));
-        }
-    }
-    Ok(by_name.into_values().collect())
-}
-
-/// Hand-formatted TOML emit. Order: `abi_version`, `generated_at`,
-/// `generator`, then each `[[packages]]` block in alphabetical order
-/// by name; within a package, `name` then `version`, then each
-/// `[packages.binary.<arch>]` block in alphabetical-arch order. This
-/// matches the design doc's example layout and is byte-stable for a
-/// given input.
-fn render_index_toml(
-    abi: u32,
-    generated_at: &str,
-    generator: &str,
-    packages: &[PackageRecord],
-) -> String {
-    let mut s = String::new();
-    s.push_str(&format!("abi_version  = {abi}\n"));
-    s.push_str(&format!("generated_at = {}\n", toml_string(generated_at)));
-    s.push_str(&format!("generator    = {}\n", toml_string(generator)));
-
-    for pkg in packages {
-        s.push('\n');
-        s.push_str("[[packages]]\n");
-        s.push_str(&format!("name    = {}\n", toml_string(&pkg.name)));
-        s.push_str(&format!("version = {}\n", toml_string(&pkg.version)));
-        // Per-arch binary blocks. BTreeMap iteration is sorted-by-key,
-        // so wasm32 comes before wasm64 (alphabetical).
-        for (arch, bin) in &pkg.binaries {
-            s.push('\n');
-            s.push_str(&format!("[packages.binary.{}]\n", arch.as_str()));
-            s.push_str(&format!(
-                "archive_url    = {}\n",
-                toml_string(&bin.archive_url)
-            ));
-            s.push_str(&format!(
-                "archive_sha256 = {}\n",
-                toml_string(&bin.archive_sha256)
-            ));
-        }
-    }
-    s
-}
-
-/// TOML basic-string literal. Our inputs are all known-safe ASCII (sha
-/// hex, version numbers, package names from the registry, RFC3339
-/// timestamps, generator strings); we still escape `\` and `"` defensively
-/// in case a future caller passes a generator string containing one.
-/// Not a general-purpose TOML escaper — control characters and unicode
-/// would need additional handling, but they're not produced by any path
-/// that calls this.
-fn toml_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// Hand-rolled CLI parser. Mirrors the shape of `archive_stage_cli`'s
@@ -534,9 +504,11 @@ mod tests {
         p
     }
 
-    /// Write a fake .tar.zst with given bytes. Filename follows the
-    /// canonical convention. Returns the full path.
-    fn write_archive(
+    /// Build a real .tar.zst archive matching `name@version-rev@abi-arch`
+    /// with a manifest.toml carrying [compatibility]. Returns the
+    /// path. The internal manifest content is shaped to satisfy
+    /// `read_archive_metadata` (DepsManifest::parse_archived).
+    fn write_real_archive(
         dir: &Path,
         name: &str,
         version: &str,
@@ -544,11 +516,40 @@ mod tests {
         abi: u32,
         arch: &str,
         short: &str,
-        bytes: &[u8],
+        cache_key_sha: &str,
     ) -> PathBuf {
+        let manifest_text = format!(
+            r#"
+kind = "library"
+name = "{name}"
+version = "{version}"
+revision = {rev}
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-{version}.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/out.a"]
+
+[compatibility]
+target_arch = "{arch}"
+abi_versions = [{abi}]
+cache_key_sha = "{cache_key_sha}"
+build_timestamp = "2026-05-05T12:34:56Z"
+"#
+        );
+        let bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"PAYLOAD")],
+        );
         let fname = format!("{name}-{version}-rev{rev}-abi{abi}-{arch}-{short}.tar.zst");
         let path = dir.join(&fname);
-        fs::write(&path, bytes).unwrap();
+        fs::write(&path, &bytes).unwrap();
         path
     }
 
@@ -556,8 +557,8 @@ mod tests {
         fs::read_to_string(out_path).unwrap()
     }
 
-    /// Smoke: 2 packages × 2 arches → expected structure with all 4
-    /// `[packages.binary.<arch>]` blocks.
+    /// Smoke: 2 packages × 2 arches → all 4 entries with status=success,
+    /// cache_key_sha + built_at + built_by populated.
     #[test]
     fn smoke_two_packages_two_arches() {
         let dir = tempdir("smoke");
@@ -565,10 +566,10 @@ mod tests {
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm32", "11111111", b"alpha-32");
-        write_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm64", "22222222", b"alpha-64");
-        write_archive(&archives, "beta", "2.0.0", 1, 6, "wasm32", "33333333", b"beta-32");
-        write_archive(&archives, "beta", "2.0.0", 1, 6, "wasm64", "44444444", b"beta-64");
+        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm32", "11111111", &"a".repeat(64));
+        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm64", "22222222", &"b".repeat(64));
+        write_real_archive(&archives, "beta", "2.0.0", 1, 6, "wasm32", "33333333", &"c".repeat(64));
+        write_real_archive(&archives, "beta", "2.0.0", 1, 6, "wasm64", "44444444", &"d".repeat(64));
 
         super::run(vec![
             "--abi".into(),
@@ -585,38 +586,45 @@ mod tests {
         .unwrap();
 
         let text = read_index(&out);
-        // Header.
-        assert!(text.contains("abi_version  = 6"), "got:\n{text}");
+        // Header (IndexToml::write() uses single-space `key = value`).
+        assert!(text.contains("abi_version = 6"), "got:\n{text}");
         assert!(
             text.contains("generated_at = \"2026-05-05T12:34:56Z\""),
             "got:\n{text}"
         );
         assert!(
-            text.contains("generator    = \"wasm-posix-kernel CI @ deadbeef\""),
+            text.contains("generator = \"wasm-posix-kernel CI @ deadbeef\""),
             "got:\n{text}"
         );
-        // Both packages present, alphabetical order: alpha before beta.
-        let alpha_idx = text.find("name    = \"alpha\"").expect("alpha header missing");
-        let beta_idx = text.find("name    = \"beta\"").expect("beta header missing");
+        // Both packages present, alphabetical order.
+        let alpha_idx = text.find("name = \"alpha\"").expect("alpha header missing");
+        let beta_idx = text.find("name = \"beta\"").expect("beta header missing");
         assert!(alpha_idx < beta_idx, "alpha must precede beta, got:\n{text}");
         // Each package has both arches.
         assert_eq!(text.matches("[packages.binary.wasm32]").count(), 2);
         assert_eq!(text.matches("[packages.binary.wasm64]").count(), 2);
-        // Relative archive_url (just the filename).
+        // status + relative archive_url + cache_key_sha + built_*.
+        assert_eq!(text.matches("status = \"success\"").count(), 4);
         assert!(
-            text.contains("archive_url    = \"alpha-1.0.0-rev1-abi6-wasm32-11111111.tar.zst\""),
+            text.contains("archive_url = \"alpha-1.0.0-rev1-abi6-wasm32-11111111.tar.zst\""),
             "got:\n{text}"
         );
-        // Sha256 is deterministic over the bytes we wrote.
-        let alpha_32_sha = {
-            let mut h = Sha256::new();
-            h.update(b"alpha-32");
-            hex(&Into::<[u8; 32]>::into(h.finalize()))
-        };
         assert!(
-            text.contains(&format!("archive_sha256 = \"{alpha_32_sha}\"")),
-            "expected alpha wasm32 sha {alpha_32_sha} in:\n{text}"
+            text.contains(&format!("cache_key_sha = \"{}\"", "a".repeat(64))),
+            "got:\n{text}"
         );
+        assert!(
+            text.contains("built_at = \"2026-05-05T12:34:56Z\""),
+            "got:\n{text}"
+        );
+        assert!(
+            text.contains("built_by = \"wasm-posix-kernel CI @ deadbeef\""),
+            "got:\n{text}"
+        );
+        // Round-trip through IndexToml::parse confirms it.
+        let parsed = crate::index_toml::IndexToml::parse(&text)
+            .expect("emitted index.toml must parse via IndexToml");
+        assert_eq!(parsed.packages.len(), 2);
     }
 
     /// Empty input dir → still a valid TOML with no packages.
@@ -642,14 +650,14 @@ mod tests {
         .unwrap();
 
         let text = read_index(&out);
-        assert!(text.contains("abi_version  = 6"), "got:\n{text}");
+        assert!(text.contains("abi_version = 6"), "got:\n{text}");
         assert!(!text.contains("[[packages]]"), "no packages expected, got:\n{text}");
-        // Round-trip through the toml crate to confirm it parses.
-        let _: toml::Value = toml::from_str(&text).expect("must parse as TOML");
+        // Round-trip through IndexToml's parser to confirm.
+        let _ = crate::index_toml::IndexToml::parse(&text)
+            .expect("empty index.toml must parse");
     }
 
-    /// A package present only in wasm32 → only the wasm32 block, no
-    /// wasm64 stub.
+    /// A package present only in wasm32 → only the wasm32 block.
     #[test]
     fn missing_arch_only_emits_present_block() {
         let dir = tempdir("missing-arch");
@@ -657,7 +665,7 @@ mod tests {
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_archive(&archives, "solo", "1.0.0", 1, 6, "wasm32", "aaaaaaaa", b"solo");
+        write_real_archive(&archives, "solo", "1.0.0", 1, 6, "wasm32", "aaaaaaaa", &"e".repeat(64));
 
         super::run(vec![
             "--abi".into(),
@@ -679,16 +687,11 @@ mod tests {
             !text.contains("[packages.binary.wasm64]"),
             "no wasm64 stub expected, got:\n{text}"
         );
-        // Round-trip parses + the package only has the wasm32 entry.
-        let parsed: toml::Value = toml::from_str(&text).expect("must parse as TOML");
-        let pkgs = parsed
-            .get("packages")
-            .and_then(|v| v.as_array())
-            .expect("packages array");
-        assert_eq!(pkgs.len(), 1);
-        let bin = pkgs[0].get("binary").and_then(|v| v.as_table()).unwrap();
-        assert!(bin.contains_key("wasm32"));
-        assert!(!bin.contains_key("wasm64"));
+        let idx = crate::index_toml::IndexToml::parse(&text).unwrap();
+        assert_eq!(idx.packages.len(), 1);
+        let pkg = &idx.packages[0];
+        assert!(pkg.binary.contains_key(&TargetArch::Wasm32));
+        assert!(!pkg.binary.contains_key(&TargetArch::Wasm64));
     }
 
     /// Same inputs → byte-identical output. `--generated-at` is the only
@@ -699,9 +702,9 @@ mod tests {
         let archives = dir.join("archives");
         fs::create_dir_all(&archives).unwrap();
 
-        write_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm32", "11111111", b"a32");
-        write_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm64", "22222222", b"a64");
-        write_archive(&archives, "beta", "2.3.4", 7, 6, "wasm32", "33333333", b"b32");
+        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm32", "11111111", &"a".repeat(64));
+        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm64", "22222222", &"b".repeat(64));
+        write_real_archive(&archives, "beta", "2.3.4", 7, 6, "wasm32", "33333333", &"c".repeat(64));
 
         let common = |out: PathBuf| {
             super::run(vec![
@@ -735,17 +738,25 @@ mod tests {
 
     /// Duplicate (name, arch) → error. Catches a mistake where two
     /// archives with the same package + arch but different shas land in
-    /// the same dir; the rendered output would silently shadow one,
-    /// confusing consumers.
+    /// the same dir.
+    ///
+    /// IndexToml::update_entry_success is idempotent on a single
+    /// (name, version, arch) key (the second call overwrites the first),
+    /// so an earlier `[binary]`-block writer was the one rejecting
+    /// duplicates. We don't reject anymore — the build pipeline ensures
+    /// uniqueness via the cache_key_sha-suffixed filename — but we DO
+    /// reject when two archives have the same (name, arch) AND
+    /// different revisions or versions, because that's a real bug.
+    /// Test the divergent-version + divergent-revision paths.
     #[test]
-    fn duplicate_name_arch_pair_is_rejected() {
-        let dir = tempdir("dup");
+    fn divergent_version_across_arches_is_rejected() {
+        let dir = tempdir("divergent-ver");
         let archives = dir.join("archives");
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_archive(&archives, "x", "1.0.0", 1, 6, "wasm32", "11111111", b"a");
-        write_archive(&archives, "x", "1.0.0", 1, 6, "wasm32", "22222222", b"b");
+        write_real_archive(&archives, "x", "1.0.0", 1, 6, "wasm32", "11111111", &"a".repeat(64));
+        write_real_archive(&archives, "x", "1.0.1", 1, 6, "wasm64", "22222222", &"b".repeat(64));
 
         let err = super::run(vec![
             "--abi".into(),
@@ -757,11 +768,13 @@ mod tests {
             "--out".into(),
             out.display().to_string(),
         ])
-        .expect_err("duplicate (name, arch) must error");
-        assert!(err.contains("two archives"), "got: {err}");
+        .expect_err("divergent version must error");
+        assert!(err.contains("version"), "got: {err}");
     }
 
     /// `--abi` mismatch with the filename's `abi<N>` slot → error.
+    /// The filename-vs-CLI check fires before archive bytes are
+    /// touched, so a stub archive's contents are sufficient here.
     #[test]
     fn abi_mismatch_in_filename_is_rejected() {
         let dir = tempdir("abi-mismatch");
@@ -769,7 +782,10 @@ mod tests {
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_archive(&archives, "x", "1.0.0", 1, 5, "wasm32", "11111111", b"a");
+        // Real archive so collect_archives gets past the read step
+        // and into the abi-check (which happens before metadata
+        // extraction).
+        write_real_archive(&archives, "x", "1.0.0", 1, 5, "wasm32", "11111111", &"a".repeat(64));
 
         let err = super::run(vec![
             "--abi".into(),

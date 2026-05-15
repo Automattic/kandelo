@@ -1,7 +1,6 @@
 kind = "program"
 name = "unzip"
 version = "6.0"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://infozip.sourceforge.net/license.html"
 
 [build]
 script_path = "examples/libs/unzip/build-unzip.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "unzip"
 wasm = "unzip.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/unzip-6.0-rev1-abi7-wasm32-08198586.tar.zst"
-archive_sha256 = "ead6be46c0ce3d2b71473b5d1c09c69ab417cbef8cbb87bad1b2c332ca93828c"

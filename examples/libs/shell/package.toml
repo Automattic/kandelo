@@ -1,7 +1,6 @@
 kind = "program"
 name = "shell"
 version = "0.1.0"
-revision = 2
 kernel_abi = 7
 # Implicit deps consumed by build-shell-vfs-image.ts and the
 # build-{vim,nethack}-zip.sh helpers it drives:
@@ -42,11 +41,7 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
 [build]
 script_path = "examples/libs/shell/build-shell.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "shell"
 wasm = "shell.vfs.zst"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/shell-0.1.0-rev2-abi7-wasm32-a1439be9.tar.zst"
-archive_sha256 = "dec3609eb7b3d1812a63daffa81b68aa6ea682afea5808822565d413f138a74f"

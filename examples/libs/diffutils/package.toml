@@ -1,7 +1,6 @@
 kind = "program"
 name = "diffutils"
 version = "3.10"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,7 +14,6 @@ url = "https://git.savannah.gnu.org/cgit/diffutils.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/diffutils/build-diffutils.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "diff"
@@ -32,6 +30,3 @@ wasm = "diff3.wasm"
 [[outputs]]
 name = "sdiff"
 wasm = "sdiff.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/diffutils-3.10-rev1-abi7-wasm32-07f0ee08.tar.zst"
-archive_sha256 = "343cff6ee28a07b0d9d75dffc5e729b7de4c3229f2d65c31db4b7ca915e5738f"

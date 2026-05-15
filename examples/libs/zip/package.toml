@@ -1,7 +1,6 @@
 kind = "program"
 name = "zip"
 version = "3.0"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://infozip.sourceforge.net/license.html"
 
 [build]
 script_path = "examples/libs/zip/build-zip.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "zip"
 wasm = "zip.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/zip-3.0-rev1-abi7-wasm32-ee30000d.tar.zst"
-archive_sha256 = "0bfa30afc3b6a2e7088c1989fe055c0e33ea1c358cca9f7a7f3a10ac615b0bb3"

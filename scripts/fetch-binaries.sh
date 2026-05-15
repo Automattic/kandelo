@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Fetch published Wasm binaries by walking every per-package
-# `examples/libs/<name>/package.toml`.
+# Fetch published Wasm binaries by walking every package under
+# `examples/libs/<name>/` that has both package.toml and build.toml.
 #
-# The resolver consumes per-package `[binary]` / `[binary.<arch>]`
-# URLs directly — no central pinfile or manifest. For each package
-# that declares a `[binary]` block we run
+# The resolver consumes the central binary index configured by
+# `WASM_POSIX_BINARY_INDEX_URL`. For each package that has a
+# publishable build source (`build.toml`) we run
 #
 #     cargo run -p xtask -- build-deps resolve <name> \
 #         --arch <arch> --binaries-dir <repo>/binaries
@@ -15,18 +15,15 @@
 # places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
 # into the cache. Browser demos hardcode these paths.
 #
-# Packages without a `[binary]` block (kernel, userspace, examples,
-# sqlite-cli, node, kind=source, libraries that ship only as
-# link-time inputs) are skipped here. Local builds populate
-# kernel/userspace/etc directly; libraries are consumed at link time
-# via the cache and have no binaries/ symlink.
+# Packages without `build.toml` (kernel, userspace, examples,
+# kind=source, libraries that ship only as link-time inputs) are
+# skipped here. Local builds populate kernel/userspace/etc directly;
+# libraries are consumed at link time via the cache and have no
+# binaries/ symlink.
 #
 # Per-arch handling: read the optional `arches = ["wasm32", ...]`
 # field from each package.toml. Default is `["wasm32"]`. For each
-# declared arch we invoke `resolve --arch <arch>` once. Packages that
-# declare only `[binary.wasm32]` (no per-arch table) work too — the
-# resolver falls back to source-build for unsupported arches and the
-# loop continues.
+# declared arch we invoke `resolve --arch <arch>` once.
 #
 # Resolver fallback semantics: if an archive is unreachable, hash-
 # mismatched, or has a stale `cache_key_sha`, `resolve` logs a
@@ -62,6 +59,13 @@
 #                  missing.
 #   -h / --help    Print this header.
 #
+# Env:
+#   WASM_POSIX_FETCH_SKIP_PKGS
+#                  Space-separated package names to skip entirely.
+#                  CI uses this for packages temporarily disabled from
+#                  staging/prepare matrices so test-gate does not
+#                  source-build them while materializing binaries.
+#
 # Exit codes:
 #   0  every package resolved successfully (archive fetched OR
 #      source-built fallback succeeded).
@@ -77,6 +81,7 @@ cd "$REPO_ROOT"
 OFFLINE=0
 PR_NUMBER=""
 ALLOW_STALE=0
+SKIP_PKGS=" ${WASM_POSIX_FETCH_SKIP_PKGS:-} "
 while [ $# -gt 0 ]; do
     case "$1" in
         --offline)     OFFLINE=1; shift ;;
@@ -145,15 +150,19 @@ TOTAL=0
 RESOLVED=0
 SKIPPED=0
 
-# Read the [binary] / [binary.<arch>] presence + arches list out of a
-# package.toml. AWK keeps the dependency footprint tight (no jq/tomlq
-# needed for what is essentially line-grepping). Output:
+# Read the `arches` list out of a package.toml. AWK keeps the
+# dependency footprint tight (no jq/tomlq needed for what is
+# essentially line-grepping). Output:
 #   ARCHES=<space-separated list>
-#   HAS_BINARY=<0|1>
+#
+# Post binary-resolution-via-index-ledger: presence of a binary
+# source is encoded in `build.toml` (a sibling file), not the
+# `[binary]` block in package.toml — see the main loop below for
+# that detection.
 read_package_toml() {
     local toml="$1"
     awk '
-        BEGIN { in_arches = 0; arches = ""; has_binary = 0 }
+        BEGIN { in_arches = 0; arches = "" }
         /^\[/ {
             # New TOML section header: leave any in-progress
             # multi-line "arches = [" capture.
@@ -184,8 +193,6 @@ read_package_toml() {
             gsub(/[" ,]+/, " ", line)
             arches = arches " " line
         }
-        # Any [binary] or [binary.wasmXX] header counts.
-        /^\[binary(\..+)?\][[:space:]]*$/ { has_binary = 1 }
         END {
             sub(/^[[:space:]]+/, "", arches)
             sub(/[[:space:]]+$/, "", arches)
@@ -196,7 +203,6 @@ read_package_toml() {
             # `wasm32 wasm64`). Without quoting, bash parses the
             # second arch as a command name.
             print "ARCHES=\"" arches "\""
-            print "HAS_BINARY=" has_binary
         }
     ' "$toml"
 }
@@ -213,10 +219,17 @@ for pkg_dir in "$LIBS_DIR"/*/; do
 
     eval "$(read_package_toml "$toml")"
 
-    if [ "${HAS_BINARY:-0}" = "0" ]; then
-        # No [binary] block: kernel / userspace / examples / source
-        # packages / libraries that ship only at link time. Local
-        # builds (or no published archive yet). Skip silently.
+    if [[ "$SKIP_PKGS" == *" $pkg "* ]]; then
+        echo "fetch-binaries: skip $pkg (WASM_POSIX_FETCH_SKIP_PKGS)"
+        SKIPPED=$((SKIPPED + 1))
+        continue
+    fi
+
+    # Post binary-resolution-via-index-ledger: a package has a
+    # publishable binary IFF a sibling build.toml exists.
+    # kernel / userspace / examples / source / link-time-only
+    # libraries don't have one and skip.
+    if [ ! -f "$pkg_dir/build.toml" ]; then
         SKIPPED=$((SKIPPED + 1))
         continue
     fi

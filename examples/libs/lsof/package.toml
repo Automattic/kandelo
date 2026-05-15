@@ -1,7 +1,6 @@
 kind = "program"
 name = "lsof"
 version = "0.1.0"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -20,11 +19,7 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
 [build]
 script_path = "examples/libs/lsof/build-lsof.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "lsof"
 wasm = "lsof.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/lsof-0.1.0-rev1-abi7-wasm32-444c316c.tar.zst"
-archive_sha256 = "ae5a69ce8fc61d2e30b88e55ab6350c1a43f1bfea0e625eef8dc028c97b97b57"

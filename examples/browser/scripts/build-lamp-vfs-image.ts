@@ -183,23 +183,29 @@ request_slowlog_trace_depth = 0
   // process SHM in our wasm port — the static worker pool is small and
   // warmups are fast). validate_timestamps=0 is safe because VFS files
   // don't change at runtime.
-  // Stage opcache.so into the VFS and load it via `zend_extension=`.
-  // Without that line PHP doesn't load opcache and the [opcache]
-  // INI section below is a no-op.
+  //
+  // TEMPORARILY DISABLED. Loading opcache.so via dlopen in the FPM
+  // master succeeds, but the first request in a forked worker traps
+  // with "table index is out of bounds" inside zend_activate_modules.
+  // Root cause: fork doesn't replay parent dlopens — the child's
+  // wasm instance has a fresh indirect_function_table at module-
+  // initial size, while opcache's data section (copied via fork's
+  // memcpy) references table indices the parent grew the table to
+  // during dlopen. Tracked in
+  // docs/plans/2026-05-14-binary-resolution-followups.md (#1).
+  // Re-enable after fork replays dlopen state in children.
   ensureDirRecursive(fs, "/usr/lib/php/extensions");
   writeVfsBinary(
     fs,
     "/usr/lib/php/extensions/opcache.so",
     new Uint8Array(readFileSync(OPCACHE_SO_PATH)),
   );
-  const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
+  const phpIni = `; opcache disabled — see build-lamp-vfs-image.ts comment
+;zend_extension=/usr/lib/php/extensions/opcache.so
 
 [opcache]
-opcache.enable=1
-opcache.enable_cli=1
-opcache.memory_consumption=64
-opcache.max_accelerated_files=2000
-opcache.validate_timestamps=0
+opcache.enable=0
+opcache.enable_cli=0
 `;
   writeVfsFile(fs, "/etc/php.ini", phpIni);
 
