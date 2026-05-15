@@ -705,7 +705,6 @@ jobs:
       contents: read
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
-      WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
     steps:
       - uses: actions/checkout@v4
         with:
@@ -759,6 +758,8 @@ jobs:
           '
 
       - name: Materialize binaries (per-package package.pr.toml overlay)
+        env:
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
         # Walk the downloaded matrix artifacts (lib + prog) and write
         # examples/libs/<pkg>/package.pr.toml file:// pointers via the
         # shared scripts/materialize-pr-overlays.sh. Then run
