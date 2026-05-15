@@ -39,6 +39,24 @@ export interface CentralizedWorkerInitMessage {
   isForkChild?: boolean;
   /** Address of asyncify data buffer in memory (used for fork child rewind) */
   asyncifyBufAddr?: number;
+  /**
+   * Entry-point overrides for fork-from-non-main-thread children.
+   *
+   * When the parent process calls fork() from a thread spawned via
+   * pthread_create, the asyncify unwind frames trace the *thread
+   * function's* call chain (rooted at `forkChildThreadFnPtr`), not
+   * `_start`'s. The child Worker must therefore call the thread
+   * function directly — `_start` is not in that call chain, so
+   * rewinding through it would never reach the fork() call site.
+   *
+   * Set together with `isForkChild`. `forkChildThreadFnPtr` is the
+   * indirect-function-table index that pthread_create stored;
+   * `forkChildThreadArgPtr` is the userdata arg. The kernel-worker's
+   * per-thread fork context propagates them from the parent thread
+   * worker's clone init data through `handleFork`.
+   */
+  forkChildThreadFnPtr?: number;
+  forkChildThreadArgPtr?: number;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;
   /**

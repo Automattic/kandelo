@@ -61,6 +61,7 @@ if (typeof globalThis.setImmediate === "undefined") {
 }
 
 import { CentralizedKernelWorker } from "../../../host/src/kernel-worker";
+import type { ForkFromThreadContext } from "../../../host/src/kernel-worker";
 import { BrowserWorkerAdapter } from "../../../host/src/worker-adapter-browser";
 import { VirtualPlatformIO } from "../../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
@@ -331,8 +332,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     },
     io,
     {
-      onFork: (parentPid, childPid, parentMemory) =>
-        handleFork(parentPid, childPid, parentMemory),
+      onFork: (parentPid, childPid, parentMemory, threadFork) =>
+        handleFork(parentPid, childPid, parentMemory, threadFork),
       onExec: async (pid, path, argv, envp) =>
         handleExec(pid, path, argv, envp),
       onResolveSpawn: async (path) => handlePosixSpawnResolve(path),
@@ -598,6 +599,7 @@ async function handleFork(
   parentPid: number,
   childPid: number,
   parentMemory: WebAssembly.Memory,
+  threadFork?: ForkFromThreadContext,
 ): Promise<number[]> {
   const parentInfo = processes.get(parentPid);
   if (!parentInfo) throw new Error(`Unknown parent pid ${parentPid}`);
@@ -641,7 +643,13 @@ async function handleFork(
     ptrWidth,
   });
 
-  const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+  // For fork-from-non-main-thread: the parent populated its asyncify
+  // buffer at the *thread's* channel offset. Use that for rewind and
+  // route the child to the thread function instead of _start. Mirrors
+  // handleFork in host/src/node-kernel-worker-entry.ts.
+  const asyncifyBufAddr = threadFork
+    ? threadFork.forkBufAddr
+    : childChannelOffset - ASYNCIFY_BUF_SIZE;
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
@@ -652,6 +660,8 @@ async function handleFork(
     channelOffset: childChannelOffset,
     isForkChild: true,
     asyncifyBufAddr,
+    forkChildThreadFnPtr: threadFork?.fnPtr,
+    forkChildThreadArgPtr: threadFork?.argPtr,
     ptrWidth,
   };
 
@@ -877,7 +887,10 @@ async function handleClone(
 
   const alloc = threadAllocator.allocate(memory);
 
-  kernelWorker.addChannel(pid, alloc.channelOffset, tid);
+  // Register fnPtr/argPtr so handleFork can route a fork() from this
+  // thread back through its entry point. Mirrors handleClone in
+  // host/src/node-kernel-worker-entry.ts.
+  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr);
 
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",

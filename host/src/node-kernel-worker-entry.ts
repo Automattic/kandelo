@@ -18,6 +18,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CentralizedKernelWorker } from "./kernel-worker";
+import type { ForkFromThreadContext } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import {
   VirtualPlatformIO,
@@ -392,6 +393,7 @@ async function handleFork(
   parentPid: number,
   childPid: number,
   parentMemory: WebAssembly.Memory,
+  threadFork?: ForkFromThreadContext,
 ): Promise<number[]> {
   const parentInfo = processes.get(parentPid);
   const parentProgram = parentInfo?.programBytes;
@@ -413,7 +415,14 @@ async function handleFork(
   });
 
   const ASYNCIFY_BUF_SIZE = 16384;
-  const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+  // For fork-from-non-main-thread: the parent populated its asyncify
+  // buffer at the *thread's* channel offset, which sits at a different
+  // place in the (copied) child memory than the child's main channel.
+  // Use that buffer for the rewind and route the child to the thread
+  // function instead of _start.
+  const asyncifyBufAddr = threadFork
+    ? threadFork.forkBufAddr
+    : childChannelOffset - ASYNCIFY_BUF_SIZE;
 
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -424,6 +433,8 @@ async function handleFork(
     channelOffset: childChannelOffset,
     isForkChild: true,
     asyncifyBufAddr,
+    forkChildThreadFnPtr: threadFork?.fnPtr,
+    forkChildThreadArgPtr: threadFork?.argPtr,
     ptrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
@@ -686,7 +697,10 @@ async function handleClone(
   }
 
   const alloc = threadAllocator.allocate(memory);
-  kernelWorker.addChannel(pid, alloc.channelOffset, tid);
+  // Register fnPtr/argPtr so that handleFork can route a fork() from
+  // this thread back through its entry point (see ForkFromThreadContext
+  // in kernel-worker.ts).
+  kernelWorker.addChannel(pid, alloc.channelOffset, tid, fnPtr, argPtr);
 
   const threadInitData: CentralizedThreadInitMessage = {
     type: "centralized_thread_init",

@@ -31,6 +31,16 @@ const CH_IDLE = 0;
 const CH_PENDING = 1;
 const CH_COMPLETE = 2;
 
+/**
+ * Size of the asyncify save buffer. Each channel reserves
+ * `[channelOffset - ASYNCIFY_BUF_SIZE, channelOffset)` for the unwind
+ * frames + saved __tls_base / __stack_pointer that the host writes
+ * during fork(). Must match the constant in `worker-main.ts` and the
+ * onFork handlers in node-kernel-worker-entry.ts /
+ * examples/browser/lib/kernel-worker-entry.ts.
+ */
+const ASYNCIFY_BUF_SIZE = 16384;
+
 /** Errno values */
 const EAGAIN = 11;
 const ETIMEDOUT = 110;
@@ -680,6 +690,27 @@ interface ProcessRegistration {
   ptrWidth: 4 | 8;
 }
 
+/**
+ * Context describing a fork() initiated from a non-main thread. Set on
+ * `onFork`'s optional `threadFork` arg by `handleFork` when it detects
+ * the syscall arrived on a channel registered via clone() (tid > 0).
+ *
+ * - `fnPtr` / `argPtr`: the pthread_create entry point + userdata that
+ *   the kernel-worker stored when the thread was registered through
+ *   `addChannel`. The child Worker uses these to enter the thread
+ *   function directly (skipping `_start`).
+ * - `forkBufAddr`: the asyncify buffer address corresponding to the
+ *   *thread's* channel — i.e. `thread_channelOffset - ASYNCIFY_BUF_SIZE`.
+ *   In the child's memory copy this offset holds the saved frames +
+ *   __tls_base + __stack_pointer the parent thread wrote during its
+ *   asyncify unwind.
+ */
+export interface ForkFromThreadContext {
+  fnPtr: number;
+  argPtr: number;
+  forkBufAddr: number;
+}
+
 /** Callbacks for fork/exec/exit handling in centralized mode. */
 export interface CentralizedKernelCallbacks {
   /**
@@ -687,8 +718,28 @@ export interface CentralizedKernelCallbacks {
    * in its ProcessTable. The callback should spawn a child Worker with
    * a copy of the parent's Memory and register it with the kernel.
    * Returns the channel offsets allocated for the child.
+   *
+   * `threadFork` is set when the parent issued the fork() syscall from a
+   * thread spawned via pthread_create (i.e. on a channel registered
+   * through `addChannel(pid, offset, tid, fnPtr, argPtr)` with tid > 0).
+   * The host must:
+   *   - use the thread's `forkBufAddr` (not the main channel's) for the
+   *     child's rewind so the saved frames + saved __tls_base /
+   *     __stack_pointer match what the parent thread populated, and
+   *   - have the child Worker enter the thread function (`fnPtr`/`argPtr`)
+   *     directly instead of `_start` — _start is not in the thread's
+   *     fork-path call chain and rewinding through it would never reach
+   *     the saved fork() call site.
+   *
+   * If `threadFork` is omitted the callback handles the fork as a
+   * fork-from-main-thread (the existing path).
    */
-  onFork?: (parentPid: number, childPid: number, parentMemory: WebAssembly.Memory) => Promise<number[]>;
+  onFork?: (
+    parentPid: number,
+    childPid: number,
+    parentMemory: WebAssembly.Memory,
+    threadFork?: ForkFromThreadContext,
+  ) => Promise<number[]>;
 
   /**
    * Called when a process calls execve. The callback should resolve the
@@ -774,6 +825,16 @@ export class CentralizedKernelWorker {
   }
   /** Maps "pid:channelOffset" to TID for tracking thread channels */
   private channelTids = new Map<string, number>();
+  /**
+   * Per-thread-channel fork context: the pthread_create entry point and
+   * userdata that were stored when the channel was registered through
+   * `addChannel`. `handleFork` reads this when it detects a fork()
+   * arriving on a thread channel so it can route the child's rewind
+   * back through the thread function instead of `_start`. Keyed by
+   * `pid:channelOffset` like `channelTids`; entries are cleared by
+   * `removeChannel` and the thread-exit path.
+   */
+  private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number }>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
@@ -1511,9 +1572,17 @@ export class CentralizedKernelWorker {
   /**
    * Add a new channel (e.g. for a thread) to an existing process registration.
    * Uses the process's existing memory. If tid is provided, tracks the mapping
-   * so handleExit can identify thread exits.
+   * so handleExit can identify thread exits. `threadFnPtr` / `threadArgPtr`
+   * are stored when the thread was created via clone() so `handleFork` can
+   * route a fork() from this thread back through its entry point.
    */
-  addChannel(pid: number, channelOffset: number, tid?: number): void {
+  addChannel(
+    pid: number,
+    channelOffset: number,
+    tid?: number,
+    threadFnPtr?: number,
+    threadArgPtr?: number,
+  ): void {
     const registration = this.processes.get(pid);
     if (!registration) throw new Error(`Process ${pid} not registered`);
 
@@ -1530,6 +1599,12 @@ export class CentralizedKernelWorker {
 
     if (tid !== undefined) {
       this.channelTids.set(`${pid}:${channelOffset}`, tid);
+    }
+    if (threadFnPtr !== undefined && threadArgPtr !== undefined) {
+      this.threadForkContexts.set(`${pid}:${channelOffset}`, {
+        fnPtr: threadFnPtr,
+        argPtr: threadArgPtr,
+      });
     }
 
     // Lower the kernel's mmap ceiling to prevent overlap with thread TLS/channel pages.
@@ -1562,6 +1637,7 @@ export class CentralizedKernelWorker {
       (ch) => !(ch.pid === pid && ch.channelOffset === channelOffset),
     );
     this.channelTids.delete(`${pid}:${channelOffset}`);
+    this.threadForkContexts.delete(`${pid}:${channelOffset}`);
   }
 
   /**
@@ -5339,8 +5415,23 @@ export class CentralizedKernelWorker {
     }
     children.add(childPid);
 
+    // If the syscall arrived on a thread channel (registered via clone()
+    // with tid > 0), the asyncify save buffer is at THIS channel's offset
+    // — not the main channel's — and the unwind frames are rooted in the
+    // pthread entry function, not _start. Pass that context to onFork so
+    // the child Worker can rewind correctly.
+    const threadKey = `${parentPid}:${channel.channelOffset}`;
+    const threadCtx = this.threadForkContexts.get(threadKey);
+    const threadFork: ForkFromThreadContext | undefined = threadCtx
+      ? {
+          fnPtr: threadCtx.fnPtr,
+          argPtr: threadCtx.argPtr,
+          forkBufAddr: channel.channelOffset - ASYNCIFY_BUF_SIZE,
+        }
+      : undefined;
+
     // Call the async fork handler to spawn child Worker
-    this.callbacks.onFork(parentPid, childPid, channel.memory).then((childChannelOffsets) => {
+    this.callbacks.onFork(parentPid, childPid, channel.memory, threadFork).then((childChannelOffsets) => {
       if (!this.processes.has(parentPid)) return;
 
       // Inherit TCP listener targets: if parent listens on a port, register
