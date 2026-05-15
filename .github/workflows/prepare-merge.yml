@@ -134,14 +134,14 @@ jobs:
           git init --quiet /tmp/merge-check
           cd /tmp/merge-check
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=50 origin "main:refs/remotes/origin/main"
-          git fetch --quiet --depth=50 origin "$PR_HEAD_SHA"
+          git fetch --quiet origin "main:refs/remotes/origin/main"
+          git fetch --quiet origin "$PR_HEAD_SHA"
 
           # `git merge-tree` (3-arg form) writes the merged tree to its
           # stdout and emits conflict markers (`<<<<<<<`) on textual
           # conflicts. Non-zero exit indicates an unrecoverable merge
           # (e.g. unrelated histories) — treat the same as a conflict.
-          MERGE_BASE=$(git merge-base "refs/remotes/origin/main" "$PR_HEAD_SHA")
+          MERGE_BASE=$(git merge-base "refs/remotes/origin/main" "$PR_HEAD_SHA" || true)
           if [ -z "$MERGE_BASE" ]; then
             echo "::warning::Could not find merge-base; assuming conflict."
             CONFLICT=1
