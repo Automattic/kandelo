@@ -163,7 +163,7 @@ SO_LINK_FLAGS=(
 
 FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
-asyncify_wasm() {
+instrument_wasm() {
     local wasm="$1"
     if [ -x "$FORK_INSTRUMENT" ]; then
         "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
@@ -303,7 +303,7 @@ build_runtime_test() {
     "$CC" "${cflags[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/sortix-build-err-$$.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 
     # If source has #ifdef SHARED, also build as a shared library (.so)
     if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then

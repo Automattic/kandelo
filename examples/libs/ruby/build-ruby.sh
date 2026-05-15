@@ -498,22 +498,14 @@ SITE_EOF
 
     echo "==> Created config.site: $CONFIG_SITE"
 
-    # Ruby's wasi detection automatically selects asyncify coroutine,
-    # adds wasm/ support files, and sets up wasm-opt POSTLINK.
+    # Ruby's wasi detection adds wasm/ support files and may set up a
+    # wasm-opt POSTLINK step in the generated Makefile. We use
+    # --host=wasm32-unknown-wasi to trigger the wasm build, then patch
+    # POSTLINK off below and explicitly run wasm-fork-instrument on the
+    # final ruby.wasm.
     # We use --host=wasm32-unknown-wasi to trigger this.
     # WASI_SDK_PATH must be set (Ruby errors if missing) but we override
     # CC/AR/RANLIB/NM so it's only used for the existence check.
-    #
-    # TODO(phase-7-rollout): Ruby's WASI build invokes `wasm-opt --asyncify`
-    # implicitly via its generated Makefile's POSTLINK step (not visible in
-    # this script). Phase 7 replaces `wasm-opt --asyncify` globally with
-    # `tools/bin/wasm-fork-instrument`, but the POSTLINK invocation is
-    # embedded in Ruby's configure/Makefile output. Verify that the shipped
-    # ruby.wasm actually needs fork instrumentation (Kernel#fork,
-    # IO.popen, Process.spawn without _Fork fast-path, subprocesses
-    # for test harnesses); if yes, either patch the generated Makefile
-    # or invoke wasm-fork-instrument on the final ruby.wasm explicitly
-    # after `make`. Defer until after initial rollout; track separately.
     CONFIG_SITE="$CONFIG_SITE" \
     WASI_SDK_PATH="$SYSROOT" \
     CC=wasm32posix-cc \
@@ -548,6 +540,11 @@ SITE_EOF
         2>&1 | tail -50
 
     echo "==> Configure complete."
+
+    if [ -f Makefile ]; then
+        echo "==> Disabling Ruby generated POSTLINK (wasm-fork-instrument runs explicitly after make)..."
+        perl -0pi -e 's/^POSTLINK\s*=.*$/POSTLINK = :/mg' Makefile
+    fi
 
     # Patch config.h: disable HAVE_* that slipped through link-based detection
     echo "==> Patching config.h..."
@@ -709,6 +706,16 @@ if [ -f ruby ]; then
 elif [ -f miniruby ]; then
     echo "==> Only miniruby built successfully (no full extension support)"
     cp miniruby "$BIN_DIR/ruby.wasm"
+fi
+
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+if [ -x "$FORK_INSTRUMENT" ]; then
+    echo "==> Applying wasm-fork-instrument to ruby.wasm..."
+    "$FORK_INSTRUMENT" "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.instr"
+    mv "$BIN_DIR/ruby.wasm.instr" "$BIN_DIR/ruby.wasm"
+else
+    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
+    exit 1
 fi
 
 # Install stdlib

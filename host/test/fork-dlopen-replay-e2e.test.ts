@@ -30,7 +30,7 @@ const CLANG = `${LLVM_BIN}/clang`;
 const WASM_LD = process.env.LLVM_BIN
   ? `${LLVM_BIN}/wasm-ld`
   : "/opt/homebrew/bin/wasm-ld";
-const WASM_OPT = process.env.WASM_OPT || "wasm-opt";
+const FORK_INSTRUMENT = join(REPO_ROOT, "tools", "bin", "wasm-fork-instrument");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||
@@ -58,7 +58,7 @@ function buildSharedLib(source: string, name: string): string {
   return soPath;
 }
 
-/** Build a main program with dlopen + fork support (asyncify-instrumented). */
+/** Build a main program with dlopen + fork support. */
 function buildMainProgram(source: string, name: string): string {
   const srcPath = join(BUILD_DIR, `${name}.c`);
   const wasmPath = join(BUILD_DIR, `${name}.wasm`);
@@ -102,10 +102,10 @@ function buildMainProgram(source: string, name: string): string {
   const allArgs = [...cflags, srcPath, ...linkFlags, "-o", wasmPath];
   execSync(`${CLANG} ${allArgs.join(" ")}`, { stdio: "pipe" });
 
-  // Asyncify for fork support — without this, kernel_fork returns ENOSYS
-  // and the bug-under-test (a real fork+resume) never reproduces.
+  // wasm-fork-instrument is required for fork support; without it,
+  // kernel_fork returns ENOSYS and the bug-under-test never reproduces.
   execSync(
-    `${WASM_OPT} --asyncify --pass-arg=asyncify-imports@kernel.kernel_fork ${wasmPath} -o ${wasmPath}`,
+    `${FORK_INSTRUMENT} ${wasmPath} -o ${wasmPath}`,
     { stdio: "pipe" },
   );
 

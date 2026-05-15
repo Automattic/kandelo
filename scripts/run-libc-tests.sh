@@ -128,7 +128,7 @@ LINK_FLAGS=(
 # transitively call kernel.kernel_fork.
 FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
-asyncify_wasm() {
+instrument_wasm() {
     local wasm="$1"
     if [ -x "$FORK_INSTRUMENT" ]; then
         "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
@@ -193,7 +193,7 @@ build_functional() {
     "$CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 build_regression() {
@@ -205,7 +205,7 @@ build_regression() {
     "$CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 build_math() {
@@ -220,7 +220,7 @@ build_math() {
         "$LIBC_TEST/src/common/mtest.c" \
         "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 build_math-relaxed() {
@@ -238,7 +238,7 @@ build_math-relaxed() {
         "$LIBC_TEST/src/common/mtest.c" \
         "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 # ── Run a single test ───────────────────────────────────────

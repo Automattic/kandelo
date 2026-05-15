@@ -129,7 +129,7 @@ Compiled into every user program. Three main files:
 
 | File | Purpose |
 |------|---------|
-| `channel_syscall.c` | Channel-based syscall dispatcher. Writes syscall number + args to SharedArrayBuffer, notifies kernel via `Atomics.store` + `Atomics.notify`, waits for response via `Atomics.wait`. Also handles fork (Asyncify save/restore), clone (thread setup), exec, and signal delivery. |
+| `channel_syscall.c` | Channel-based syscall dispatcher. Writes syscall number + args to SharedArrayBuffer, notifies kernel via `Atomics.store` + `Atomics.notify`, waits for response via `Atomics.wait`. Also handles fork (`wasm-fork-instrument` save/restore), clone (thread setup), exec, and signal delivery. |
 | `compiler_rt.c` | Compiler runtime: soft-float (`__floatditf`, `__fixunstfdi`, etc.) and 64-bit builtins needed by musl on wasm32. |
 | `dlopen.c` | Dynamic loading glue for `dlopen`/`dlsym` via host. |
 
@@ -216,7 +216,7 @@ Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stac
 8. Each instrumented function's preamble sees state=REWINDING, reloads its frame, and re-enters the call site where the parent was interrupted. Eventually reaches the `kernel_fork` call site in the leaf function, which returns 0.
 9. `wpk_fork_rewind_end` resets state; fork returns 0 in child, child PID in parent.
 
-Unlike Binaryen Asyncify, this instrumentation handles LLVM's new-EH `try_table` output correctly (including fork from inside a catch handler's rewound call chain; fork from *within the catch clause itself* is currently an unsupported pattern — see [fork-instrumentation.md](fork-instrumentation.md) §Guarantees).
+Unlike Binaryen Asyncify, this instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
 
 ### exec()
 

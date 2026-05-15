@@ -316,5 +316,6 @@ See the [Porting Guide](porting-guide.md) for creating browser demos.
 - **Don't add `-pthread`**: Thread creation is host-managed via `clone()`. The SDK silently ignores `-pthread`.
 - **Use `-O2` or `-Os`**: Unoptimized Wasm is significantly slower and larger.
 - **Check build script examples**: `examples/libs/` contains complete build scripts for 12 real-world libraries including autoconf, CMake, and plain Makefile projects.
-- **For fork support**: Always apply Asyncify post-processing. Without it, `fork()` will fail.
+- **For fork support**: Run `tools/bin/wasm-fork-instrument` as the final
+  post-link step. Without it, `fork()` will fail.
 - **Memory limit**: Default max memory is 1GB (16384 pages). For multi-process demos, consider reducing `maxMemoryPages` to avoid exhausting browser memory.

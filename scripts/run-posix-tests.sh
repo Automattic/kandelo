@@ -90,7 +90,7 @@ LINK_FLAGS=(
 # Fork-instrumentation for fork()
 FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
-asyncify_wasm() {
+instrument_wasm() {
     local wasm="$1"
     if [ -x "$FORK_INSTRUMENT" ]; then
         "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
@@ -147,7 +147,7 @@ build_test() {
     "$CC" "${CFLAGS[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/posix-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 run_test() {
