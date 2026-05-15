@@ -133,6 +133,14 @@ jobs:
             library_matrix="[]"
             program_matrix="[]"
 
+            # Temporarily disabled packages — too slow to rebuild in
+            # CI while we have no separate prebuilt-package repo to
+            # offload them to. Each is still consumable via its
+            # existing `[binary]` pin in package.toml; staging-build
+            # just refuses to redo the work. Remove an entry here (and
+            # mirror in prepare-merge.yml) to re-enable rebuilds.
+            disabled_pkgs=" cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive "
+
             for pkg_dir in examples/libs/*/; do
               pkg=$(basename "$pkg_dir")
               # Filter: package must have a [build] block. Today this
@@ -140,6 +148,12 @@ jobs:
               # naturally excludes kernel/userspace/examples/node and
               # *-source packages.
               if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
+                continue
+              fi
+
+              # Disabled-package skip (see `disabled_pkgs` above).
+              if [[ "$disabled_pkgs" == *" $pkg "* ]]; then
+                echo "preflight: skipping $pkg (temporarily disabled)" >&2
                 continue
               fi
 

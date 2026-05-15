@@ -227,7 +227,10 @@ test("@slow php: runs hello world", async ({ page }) => {
 
 // ─── Python ────────────────────────────────────────────────────────
 
-test("@slow python: runs script with stdlib", async ({ page }) => {
+// Python demo temporarily disabled (build is slow; pages/python/ and
+// the vite.config.ts entry were removed). Re-enable once the builds
+// move to a separate prebuilt-package repo.
+test.skip("@slow python: runs script with stdlib", async ({ page }) => {
   test.setTimeout(120_000);
   await gotoOrSkip(page, "/pages/python/");
 
@@ -342,7 +345,10 @@ test("@slow mariadb: bootstraps and accepts queries", async ({ page }) => {
 
 // ─── Redis ─────────────────────────────────────────────────────
 
-test("@slow redis: starts and accepts commands", async ({ page }) => {
+// Redis demo temporarily disabled (build is slow; pages/redis/ and
+// the vite.config.ts entry were removed). Re-enable once the builds
+// move to a separate prebuilt-package repo.
+test.skip("@slow redis: starts and accepts commands", async ({ page }) => {
   test.setTimeout(120_000);
   await gotoOrSkip(page, "/pages/redis/");
 
