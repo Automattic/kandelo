@@ -32,14 +32,13 @@ const CH_PENDING = 1;
 const CH_COMPLETE = 2;
 
 /**
- * Size of the asyncify save buffer. Each channel reserves
- * `[channelOffset - ASYNCIFY_BUF_SIZE, channelOffset)` for the unwind
- * frames + saved __tls_base / __stack_pointer that the host writes
- * during fork(). Must match the constant in `worker-main.ts` and the
- * onFork handlers in node-kernel-worker-entry.ts /
- * examples/browser/lib/kernel-worker-entry.ts.
+ * Size of the wpk_fork save buffer. Each channel reserves
+ * `[channelOffset - FORK_BUF_SIZE, channelOffset)` for the unwind frames and
+ * saved globals that the instrumented module writes during fork(). Must match
+ * the constant in `worker-main.ts` and the onFork handlers in
+ * node-kernel-worker-entry.ts / examples/browser/lib/kernel-worker-entry.ts.
  */
-const ASYNCIFY_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = 16384;
 
 /** Errno values */
 const EAGAIN = 11;
@@ -765,11 +764,10 @@ interface ProcessRegistration {
  *   the kernel-worker stored when the thread was registered through
  *   `addChannel`. The child Worker uses these to enter the thread
  *   function directly (skipping `_start`).
- * - `forkBufAddr`: the asyncify buffer address corresponding to the
- *   *thread's* channel — i.e. `thread_channelOffset - ASYNCIFY_BUF_SIZE`.
- *   In the child's memory copy this offset holds the saved frames +
- *   __tls_base + __stack_pointer the parent thread wrote during its
- *   asyncify unwind.
+ * - `forkBufAddr`: the wpk_fork buffer address corresponding to the
+ *   *thread's* channel — i.e. `thread_channelOffset - FORK_BUF_SIZE`.
+ *   In the child's memory copy this offset holds the saved frames and globals
+ *   the parent thread wrote during its wpk_fork unwind.
  */
 export interface ForkFromThreadContext {
   fnPtr: number;
@@ -5623,17 +5621,17 @@ export class CentralizedKernelWorker {
     children.add(childPid);
 
     // If the syscall arrived on a thread channel (registered via clone()
-    // with tid > 0), the asyncify save buffer is at THIS channel's offset
-    // — not the main channel's — and the unwind frames are rooted in the
-    // pthread entry function, not _start. Pass that context to onFork so
-    // the child Worker can rewind correctly.
+    // with tid > 0), the wpk_fork save buffer is at THIS channel's offset
+    // and the unwind frames are rooted in the pthread entry function, not
+    // _start. Pass that context to onFork so the child Worker can rewind
+    // correctly.
     const threadKey = `${parentPid}:${channel.channelOffset}`;
     const threadCtx = this.threadForkContexts.get(threadKey);
     const threadFork: ForkFromThreadContext | undefined = threadCtx
       ? {
           fnPtr: threadCtx.fnPtr,
           argPtr: threadCtx.argPtr,
-          forkBufAddr: channel.channelOffset - ASYNCIFY_BUF_SIZE,
+          forkBufAddr: channel.channelOffset - FORK_BUF_SIZE,
         }
       : undefined;
 
@@ -6121,6 +6119,7 @@ export class CentralizedKernelWorker {
       const tid = this.channelTids.get(tidKey) ?? 0;
       if (tid > 0) {
         this.channelTids.delete(tidKey);
+        this.threadForkContexts.delete(tidKey);
       }
 
       // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it.

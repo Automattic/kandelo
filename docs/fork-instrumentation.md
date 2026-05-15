@@ -13,7 +13,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `5` (bumped from 4 in
+ABI version: `9` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -45,12 +45,9 @@ address of the active save buffer otherwise.
   the stack is reached.
 - `REWINDING` — the stack is being rebuilt from saved frames. Each
   instrumented function loads its frame and jumps straight to the matching
-  call site (switch-dispatch) or replays the body with per-call guards
-  (guard-dispatch). Non-call side effects (Phase 4g) are suppressed until
-  the resumed call returns and rewind_end flips state back to `NORMAL`.
-  Non-fork-path direct calls to side-effecting callees (`setpgid`, `dup3`,
-  `open`, `kill`, ...) are also suppressed — see [Non-fork-path call
-  gating](#non-fork-path-call-gating).
+  call site via switch-dispatch. Body chunks before the chosen post-call
+  landing are skipped, so non-fork-path calls and side-effecting operations
+  in those chunks do not re-run.
 
 The host drives the state machine externally. User code never writes to
 `_wpk_fork_state` directly.
@@ -96,6 +93,33 @@ Important Phase 7 behavior: `wpk_fork_unwind_begin` self-initializes
 user state. The host does **not** need to pre-seed the buffer header — it only
 needs to allocate a buffer at least as large as the instrumented module's
 `frames_start_offset` plus its worst-case frame-data footprint.
+
+## Host Threading Contract
+
+The save buffer belongs to the channel that issued `SYS_FORK`. For a main-thread
+fork this is the process worker's channel, and the child enters `_start` before
+`wpk_fork_rewind_begin` replays to the saved call site.
+
+For `fork()` from a pthread worker, the host must preserve the pthread entry
+context as well as the buffer:
+
+- `CentralizedKernelWorker.addChannel(pid, offset, tid, fnPtr, argPtr)` records
+  the pthread entry table index and userdata for each thread channel.
+- `centralizedThreadWorkerMain` overrides `kernel_fork` for instrumented modules
+  and drives `wpk_fork_unwind_begin` / `wpk_fork_state` /
+  `wpk_fork_rewind_begin` around the pthread function, using
+  `channelOffset - FORK_BUF_SIZE` as that thread's save buffer.
+- `handleFork` passes a `ForkFromThreadContext` through the host `onFork`
+  callback. Node and browser hosts copy `forkBufAddr`, `fnPtr`, and `argPtr`
+  into the child init message.
+- A fork child created from a pthread enters the saved pthread function from the
+  indirect-function table instead of `_start`, then starts REWIND from the
+  thread's copied buffer. `_start` is not in that call chain and cannot reach
+  the saved fork site.
+
+This path is covered by `host/test/fork-instrument-coverage.test.ts` P-06
+(`pthread_create` worker calls `fork`) and K-03 (`pthread_cleanup_push` handler
+calls `fork`).
 
 ## Save buffer format
 
@@ -722,16 +746,6 @@ closure is still a strict subset of full-module instrumentation.
 - **`makecontext` / `swapcontext` / `getcontext` / `setcontext`.** Userspace
   stack-switching primitives are unsupported and not on any roadmap. See
   [posix-status.md](posix-status.md) for rationale.
-- **Multi-target `*_ref` try_tables.** A try_table with multiple `catch_ref`
-  or `catch_all_ref` clauses dispatching to different handlers is currently
-  skipped at the 6d rewrite stage. Tracked as A2 in the mega-PR plan
-  (commits 5-6); not blocking shipping ports today.
-- **Multi-target plain-catch try_tables.** A try_table with multiple plain
-  (non-`_ref`) catch arms whose handlers branch to different labels is also
-  unsupported. B1 stage 2 detects this shape and excludes the function from
-  fork-path instrumentation rather than emitting a half-correct dispatcher;
-  see [Catch-handler resume — plain catch](#catch-handler-resume). Tracked
-  as A3 in the mega-PR plan (commits 5-6).
 - **Functions whose plain-catch arms carry ref-typed operands.** Catch arms
   whose operand tuple includes an `(ref ...)` value (typically a function or
   GC ref) are carved out of the fork-path set at instrument time. Spilling

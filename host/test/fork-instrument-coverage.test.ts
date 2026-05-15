@@ -338,15 +338,11 @@ describe("fork_instrument_coverage / K-* callback fork roots", () => {
     });
   });
 
-  // K-03: fork-inside-pthread-cleanup hangs in the parent post-fork.
-  // Empirical behavior on this branch: occasionally completes in ~5s
-  // (one observed run during scaffolding) but generally times out at
-  // ≥20s. Treating as broken; **commit 8** of the mega-PR is the
-  // dedicated slot for the C4 root-cause investigation + fix (likely
-  // a pthread-cancel-unwind / fork interaction, not a discovery gap —
-  // K-01/K-02/K-04 all pass today via libc's call-graph reach). Tight
-  // timeout keeps the test fast.
-  it.fails("K-03 fork from pthread_cleanup_push handler (C4) [commit 8]", async () => {
+  // K-03: pthread cleanup handlers run on a pthread worker channel, so
+  // fork() here exercises the same fork-from-non-main-thread host path as
+  // P-06. The child must rewind from the thread's fork buffer and enter the
+  // saved pthread entry function, not `_start`.
+  it("K-03 fork from pthread_cleanup_push handler (C4)", async () => {
     await runFixture("programs/k_03_fork_in_pthread_cleanup.wasm", {
       contains: ["THREAD_STARTED", "IN_CLEANUP arg=42", "PRE_FORK", "CHILD: ok", "PASS: K-03"],
       timeout: 7_000,
@@ -429,18 +425,9 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
   });
 
   // P-06: fork from a non-main thread (pthread_create'd worker).
-  // **Discovered 2026-05-14 to time out** — fork-from-non-main-
-  // thread is currently unsupported. The kernel likely tracks
-  // fork-instrumentation state per-MAIN-thread, so when a non-main
-  // thread invokes kernel_fork, the UNWIND state isn't connected
-  // to the calling thread's wasm context.
-  //
-  // This is the analogue of K-03 (pthread_cleanup + fork) and
-  // shares the broader "per-thread fork machinery" investigation.
-  // Tracked as a follow-up; the architectural fix likely lives in
-  // the kernel's CentralizedKernelWorker fork-handling code, not
-  // in fork-instrument's wasm transformation.
-  it.fails("P-06 fork from non-main thread [needs per-thread fork machinery]", async () => {
+  // The host must drive `wpk_fork_*` around the pthread entry function and
+  // pass the thread's fork buffer + fnPtr/argPtr through to the child worker.
+  it("P-06 fork from non-main thread", async () => {
     await runFixture("programs/p_06_fork_from_thread.wasm", {
       contains: ["THREAD_STARTED", "PRE_FORK_THREAD", "CHILD_THREAD: ok", "PARENT_THREAD: child=", "PASS: P-06"],
       timeout: 5_000,

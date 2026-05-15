@@ -195,7 +195,7 @@ function buildDlopenImports(
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
-  const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
+  const asyncifyBufAddr = channelOffset - FORK_BUF_SIZE;
   const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
   const headSlot = asyncifyBufAddr - headOffset;
   const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
@@ -1502,13 +1502,10 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
  * 4. Calls the thread function via the indirect function table
  * 5. On return: performs CLONE_CHILD_CLEARTID (write 0 + futex wake at ctidPtr)
  *
- * When the thread function calls fork() and the binary carries
- * asyncify instrumentation, this entry point also drives the
- * unwind/SYS_FORK/rewind cycle so the child Worker receives a
- * populated asyncify buffer (saved frames + saved __tls_base /
- * __stack_pointer). Without this, fork-from-non-main-thread
- * children rewind from a zeroed buffer and crash on the first
- * stack frame.
+ * If the thread function calls fork(), this entry point drives the
+ * `wpk_fork_*` unwind/SYS_FORK/rewind loop just like the main process worker,
+ * but rooted at the pthread function and this thread's channel-local fork
+ * buffer.
  */
 export async function centralizedThreadWorkerMain(
   port: MessagePort,
@@ -1531,35 +1528,27 @@ export async function centralizedThreadWorkerMain(
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
 
-    // Detect asyncify instrumentation. If present, override
-    // kernel_fork below so a fork() from this thread drives the
-    // asyncify state machine just like the main process worker.
     const moduleExports = WebAssembly.Module.exports(module);
-    const hasAsyncify = moduleExports.some(e => e.name === "asyncify_get_state");
-    const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
+    const hasForkInstrumentation = moduleExports.some(e => e.name === "wpk_fork_state");
+    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
     let forkResult = 0;
 
     const kernelImports = buildKernelImports(memory, channelOffset);
-    if (hasAsyncify) {
+    if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (): number => {
         if (!threadInstance) return -38; // ENOSYS
 
-        const getState = threadInstance.exports.asyncify_get_state as () => number;
+        const getState = threadInstance.exports.wpk_fork_state as () => number;
         const state = getState();
         if (state === 2) {
-          // Rewinding: stop rewind and return the stored fork result.
-          (threadInstance.exports.asyncify_stop_rewind as () => void)();
+          (threadInstance.exports.wpk_fork_rewind_end as () => void)();
           return forkResult;
         }
-        // Normal call: start unwind to save the thread's call stack.
-        const view = new DataView(memory.buffer);
-        view.setInt32(asyncifyBufAddr, asyncifyBufAddr + 8, true);
-        view.setInt32(asyncifyBufAddr + 4, asyncifyBufAddr + ASYNCIFY_BUF_SIZE, true);
-        (threadInstance.exports.asyncify_start_unwind as (addr: number) => void)(asyncifyBufAddr);
-        return 0; // ignored during unwind
+
+        (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
+        return 0;
       };
     }
-
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
       () => threadInstance, ptrWidth);
     const instance = new WebAssembly.Instance(module, importObject);
@@ -1631,51 +1620,38 @@ export async function centralizedThreadWorkerMain(
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
 
-    const threadArgBigOrNum = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
-    let result: number = 0;
-
-    if (hasAsyncify) {
-      // Drive fork() as an unwind→SYS_FORK→rewind cycle so that:
-      //   (1) the asyncify buffer holds saved frames + saved
-      //       __tls_base / __stack_pointer the child needs at
-      //       rewind, and
-      //   (2) the parent thread resumes from the fork() call site
-      //       with the child pid as fork()'s return value (just
-      //       like the main process worker's loop).
-      const getState = instance.exports.asyncify_get_state as () => number;
-      const stopUnwind = instance.exports.asyncify_stop_unwind as () => void;
-      const startRewind = instance.exports.asyncify_start_rewind as (addr: number) => void;
+    const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
+    let result = 0;
+    if (hasForkInstrumentation) {
+      const getState = instance.exports.wpk_fork_state as () => number;
+      const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
+      const rewindBegin = instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
       let needsRewind = false;
 
-      forkLoop:
       for (;;) {
         if (needsRewind) {
-          startRewind(asyncifyBufAddr);
+          rewindBegin(forkBufAddr);
           needsRewind = false;
         }
+
         try {
-          const raw = threadFn(threadArgBigOrNum);
+          const raw = threadFn(threadArg);
           result = Number(raw);
         } catch (e) {
           if (e instanceof Error && e.message.includes("unreachable")) {
             result = 0;
-            break forkLoop;
+            break;
           }
           if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
             result = 0;
-            break forkLoop;
+            break;
           }
           throw e;
         }
 
-        const asyncState = getState();
-        if (asyncState === 1) {
-          // Unwind completed — frames + __tls_base + __stack_pointer
-          // are now in the buffer. The kernel-worker will read this
-          // memory range (a copy of) into the child Worker via
-          // handleFork's parent-memory copy.
-          stopUnwind();
-          saveParentTls(instance, memory, asyncifyBufAddr, ptrWidth);
+        const forkState = getState();
+        if (forkState === 1) {
+          unwindEnd();
           const childPid = sendForkSyscall(memory, channelOffset);
           if (childPid < 0) {
             throw new Error(`Fork failed: errno=${-childPid}`);
@@ -1684,18 +1660,18 @@ export async function centralizedThreadWorkerMain(
           needsRewind = true;
           continue;
         }
-
-        // Normal return from threadFn — done.
         break;
       }
     } else {
       try {
-        const raw = threadFn(threadArgBigOrNum);
+        const raw = threadFn(threadArg);
         result = Number(raw);
       } catch (e) {
         if (e instanceof Error && e.message.includes("unreachable")) {
+          // Thread exited via kernel_exit → unreachable trap
           result = 0;
         } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
+          // call_indirect type mismatch — treat as thread crash but don't abort
           result = 0;
         } else {
           throw e;
