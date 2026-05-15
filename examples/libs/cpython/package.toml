@@ -1,7 +1,6 @@
 kind = "program"
 name = "cpython"
 version = "3.13.3"
-revision = 1
 kernel_abi = 7
 depends_on = ["zlib@1.3.1"]
 
@@ -15,11 +14,7 @@ url = "https://docs.python.org/3/license.html"
 
 [build]
 script_path = "examples/libs/cpython/build-cpython.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "cpython"
 wasm = "python.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/cpython-3.13.3-rev1-abi7-wasm32-7983be16.tar.zst"
-archive_sha256 = "bec922182bfb66135c282395469335170efa3f2197e5a858ad887f2673e702dd"

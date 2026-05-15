@@ -151,16 +151,42 @@ impl std::error::Error for FetchError {}
 pub fn fetch_and_install(
     binary: &Binary,
     canonical: &Path,
+    target: &DepsManifest,
+    arch: TargetArch,
+    abi_version: u32,
+    local_cache_key_sha_hex: &str,
+) -> Result<(), FetchError> {
+    fetch_and_install_direct(
+        &binary.archive_url,
+        &binary.archive_sha256,
+        canonical,
+        target,
+        arch,
+        abi_version,
+        local_cache_key_sha_hex,
+    )
+}
+
+/// Like [`fetch_and_install`], but takes the archive URL + sha
+/// directly instead of reading them from a [`Binary`] struct. Used
+/// by the index-lookup resolution path (post
+/// binary-resolution-via-index-ledger), where the URL + sha come
+/// from an `index.toml` entry rather than `package.toml`.
+#[allow(clippy::too_many_arguments)]
+pub fn fetch_and_install_direct(
+    archive_url: &str,
+    archive_sha256: &str,
+    canonical: &Path,
     _target: &DepsManifest,
     arch: TargetArch,
     abi_version: u32,
     local_cache_key_sha_hex: &str,
 ) -> Result<(), FetchError> {
     // 1. Fetch.
-    let bytes = fetch_url(&binary.archive_url)?;
+    let bytes = fetch_url(archive_url)?;
 
     // 2. Sha256.
-    verify_sha(&bytes, &binary.archive_sha256)?;
+    verify_sha(&bytes, archive_sha256)?;
 
     // 3. Decompress + extract into `<canonical>.tmp-<pid>/`.
     let parent = canonical

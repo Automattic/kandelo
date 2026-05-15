@@ -9,7 +9,6 @@ kind = "library"
 
 name = "sqlite"
 version = "3.49.1"
-revision = 1
 kernel_abi = 7
 depends_on = []
 # Opt into wasm64 because PHP depends on it. See
@@ -26,15 +25,8 @@ url = "https://www.sqlite.org/copyright.html"
 
 [build]
 script_path = "examples/libs/sqlite/build-sqlite.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [outputs]
 libs = ["lib/libsqlite3.a"]
 headers = ["include/sqlite3.h", "include/sqlite3ext.h"]
 pkgconfig = ["lib/pkgconfig/sqlite3.pc"]
-[binary.wasm32]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/sqlite-3.49.1-rev1-abi7-wasm32-7b78eb07.tar.zst"
-archive_sha256 = "b008ed467475f922aed1f9dff873c20f786ec9ce3673529ed8d403c6c49e29a0"
-[binary.wasm64]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/sqlite-3.49.1-rev1-abi7-wasm64-3b1e491d.tar.zst"
-archive_sha256 = "42b09eb01d0d5ad17f97c1653a1e8181e115cb09e269ad000bb1b6e787591aa0"

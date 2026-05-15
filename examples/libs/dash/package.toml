@@ -1,7 +1,6 @@
 kind = "program"
 name = "dash"
 version = "0.5.12"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://git.kernel.org/pub/scm/utils/dash/dash.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/dash/build-dash.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "dash"
 wasm = "dash.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/dash-0.5.12-rev1-abi7-wasm32-c7c922a4.tar.zst"
-archive_sha256 = "010e3b9a252f701dca71ce8cbdedbea36dc8a556a981146ad33e644678e7e1c9"

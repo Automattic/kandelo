@@ -1,7 +1,6 @@
 kind = "program"
 name = "mariadb-test"
 version = "0.1.0"
-revision = 1
 kernel_abi = 7
 # Implicit deps: build-mariadb-test-vfs-image.ts
 #   - reads mariadbd + mysql-test + system-table SQL from
@@ -37,12 +36,7 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
 [build]
 script_path = "examples/libs/mariadb-test/build-mariadb-test.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "mariadb-test"
 wasm = "mariadb-test.vfs.zst"
-
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-test-0.1.0-rev1-abi7-wasm32-164a4761.tar.zst"
-archive_sha256 = "55979670c39f5b62000215615bb0da75d480963753177dda68c6d85d1e4dd23d"

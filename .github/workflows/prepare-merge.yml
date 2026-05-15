@@ -134,14 +134,14 @@ jobs:
           git init --quiet /tmp/merge-check
           cd /tmp/merge-check
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=50 origin "main:refs/remotes/origin/main"
-          git fetch --quiet --depth=50 origin "$PR_HEAD_SHA"
+          git fetch --quiet origin "main:refs/remotes/origin/main"
+          git fetch --quiet origin "$PR_HEAD_SHA"
 
           # `git merge-tree` (3-arg form) writes the merged tree to its
           # stdout and emits conflict markers (`<<<<<<<`) on textual
           # conflicts. Non-zero exit indicates an unrecoverable merge
           # (e.g. unrelated histories) — treat the same as a conflict.
-          MERGE_BASE=$(git merge-base "refs/remotes/origin/main" "$PR_HEAD_SHA")
+          MERGE_BASE=$(git merge-base "refs/remotes/origin/main" "$PR_HEAD_SHA" || true)
           if [ -z "$MERGE_BASE" ]; then
             echo "::warning::Could not find merge-base; assuming conflict."
             CONFLICT=1
@@ -333,6 +333,15 @@ jobs:
                 *) echo "preflight: skipping $pkg (kind=$kind)" >&2; continue ;;
               esac
 
+              # Version comes from package.toml (recipe). Revision
+              # comes from build.toml (project view); defaults to 1
+              # when build.toml omits it.
+              version=$(sed -nE "s/^version *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
+              revision=1
+              if [ -f "$pkg_dir/build.toml" ]; then
+                revision=$(sed -nE "s/^revision *= *([0-9]+).*/\\1/p" "$pkg_dir/build.toml" | head -1)
+                revision=${revision:-1}
+              fi
               arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
               arches=${arches:-wasm32}
               for arch in $arches; do
@@ -350,7 +359,8 @@ jobs:
                   continue
                 fi
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                  "{package: \$pkg, arch: \$arch, sha: \$sha}")
+                                --arg ver "$version" --argjson rev "$revision" \
+                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
                 if [ "$kind" = "library" ]; then
                   library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 else
@@ -444,6 +454,10 @@ jobs:
     needs: [preflight, toolchain-cache]
     if: needs.preflight.outputs.library_matrix != '[]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # state-lock git push + gh release create/upload
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -499,6 +513,7 @@ jobs:
           '
 
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
+        id: build
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -510,6 +525,10 @@ jobs:
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}"
           '
+          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
+          archive_name=$(basename "$archive_path")
+          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload archive as workflow artifact
         uses: actions/upload-artifact@v4
@@ -519,11 +538,58 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # Atomic per-matrix-entry publish: archive upload + index.toml
+      # mutation under the state-lock acquired for the target tag.
+      # Different release tags use different lock subjects (durable
+      # binaries-abi-v<N> vs pr-<N>-staging), so concurrent rebuilds
+      # to independent tags don't block each other.
+      #
+      # On failure: a separate step records status=failed in the
+      # index so consumers see the rebuild attempt; if a prior
+      # successful build exists, IndexToml::update_entry_failed
+      # preserves it in the fallback_* slot (last-green semantics).
+      - name: Publish archive + index entry
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status success \
+            --archive-path "${{ steps.build.outputs.archive-path }}" \
+            --archive-name "${{ steps.build.outputs.archive-name }}" \
+            --cache-key-sha "${{ matrix.sha }}"
+
+      - name: Record failed build in index
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status failed \
+            --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            || true
+
   # Program wave — kind=program packages, gated on the library wave.
   matrix-build:
     needs: [preflight, toolchain-cache, lib-matrix-build]
     if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # state-lock git push + gh release create/upload
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -571,12 +637,14 @@ jobs:
           '
 
       - name: Download library archives from lib-matrix-build
+        if: needs.preflight.outputs.library_matrix != '[]'
         uses: actions/download-artifact@v4
         with:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/lib-archives
 
       - name: Materialize library overlays
+        if: needs.preflight.outputs.library_matrix != '[]'
         run: |
           bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
 
@@ -590,6 +658,7 @@ jobs:
           '
 
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
+        id: build
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -601,6 +670,10 @@ jobs:
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}"
           '
+          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
+          archive_name=$(basename "$archive_path")
+          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload archive as workflow artifact
         uses: actions/upload-artifact@v4
@@ -610,12 +683,50 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # Atomic per-matrix-entry publish — see lib-matrix-build for
+      # the rationale.
+      - name: Publish archive + index entry
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status success \
+            --archive-path "${{ steps.build.outputs.archive-path }}" \
+            --archive-name "${{ steps.build.outputs.archive-name }}" \
+            --cache-key-sha "${{ matrix.sha }}"
+
+      - name: Record failed build in index
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status failed \
+            --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            || true
+
   test-gate:
     needs: [preflight, toolchain-cache, lib-matrix-build, matrix-build]
     if: ${{ !cancelled() && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
     steps:
       - uses: actions/checkout@v4
         with:
@@ -715,425 +826,54 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
-  publish:
-    needs: [preflight, lib-matrix-build, matrix-build, test-gate]
-    # `!cancelled()` is load-bearing: without it, GitHub Actions
-    # implicitly applies `success()` to every `needs` entry — so when
-    # one wave is empty (e.g. library_matrix == '[]' makes
-    # lib-matrix-build skip), publish silently skips even though
-    # everything else succeeded. The explicit success-or-skipped
-    # checks on each matrix job preserve the original "don't publish
-    # if a build failed" intent. Symmetric for program_matrix == '[]'.
+  # publish / generate-index / amend-package-toml — REMOVED.
+  #
+  # Per the binary-resolution-via-index-ledger design, each
+  # matrix-build entry now publishes its archive AND mutates
+  # index.toml atomically under the workflow-level state-lock
+  # (see the "Publish archive + index entry" step in
+  # lib-matrix-build / matrix-build above). The three former jobs
+  # — separate publish, generate-index, and amend-package-toml —
+  # are no longer needed:
+  #
+  #   * publish: per-entry steps upload to the release directly.
+  #   * generate-index: index.toml is mutated per-entry by
+  #     scripts/index-update.sh; no separate aggregation pass.
+  #   * amend-package-toml: the index.toml ledger IS the consumer-
+  #     visible state. There are no [binary] URLs in package.toml
+  #     to amend; the bot-PR mechanism is gone.
+
+
+  # ---------------------------------------------------------------------
+  # merge-gate-post — single merge-gate poster + auto-merge enabler.
+  #
+  # Post binary-resolution-via-index-ledger: there's no bot PR (no
+  # in-tree URLs to amend), and per-matrix-entry atomic
+  # archive+index publish happens inline. This job posts
+  # merge-gate=success on the ORIGINAL PR's HEAD SHA and enables
+  # auto-merge there.
+  #
+  # Fires when:
+  #   * test-gate succeeded (the matrix did real work AND it passed), OR
+  #   * preflight produced empty matrices (every cache_key_sha was
+  #     already on target_tag — nothing to rebuild).
+  #
+  # Either way the merge is safe: test-gate succeeded against the
+  # union of (matrix-built + durable archives), or every archive
+  # consumers will fetch is already on the release.
+  # ---------------------------------------------------------------------
+  merge-gate-post:
+    needs: [gate, preflight, test-gate]
     if: |
       !cancelled() &&
-      needs.test-gate.result == 'success' &&
-      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped') &&
-      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write   # gh release create/upload
-    concurrency:
-      # Same group as staging-build's publish so a same-tag race
-      # (extremely unlikely given staging-build uses pr-<N>-staging)
-      # would still serialize. cancel-in-progress: false so an
-      # interrupted upload doesn't leave a partial asset.
-      group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
-      cancel-in-progress: false
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-
-      - name: Download matrix artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: '*-wasm*'
-          path: ${{ runner.temp }}/staged-archives
-
-      - name: Ensure release tag exists
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "release $TAG exists; will upload assets with --clobber"
-          else
-            echo "release $TAG does not exist; creating durable release"
-            gh release create "$TAG" \
-              --repo "${{ github.repository }}" \
-              --title "Binaries for ABI v${{ needs.preflight.outputs.abi }}" \
-              --notes "Durable per-file release. See docs/plans/2026-05-05-decoupled-package-builds-design.md §5.3." \
-              --target "${{ github.event.pull_request.head.sha }}"
-          fi
-
-      - name: Upload archives
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          count=0
-          while IFS= read -r f; do
-            echo "uploading $(basename "$f") to $TAG"
-            gh release upload "$TAG" "$f" --clobber --repo "${{ github.repository }}"
-            count=$((count + 1))
-          done < <(find "$RUNNER_TEMP/staged-archives" -name '*.tar.zst' -print | sort)
-          echo "publish: uploaded $count archive(s) to $TAG"
-
-      - name: Prune stale staging-release archives
-        # Defensive cleanup of accumulated state on `pr-<N>-staging`.
-        # `--clobber` only overwrites assets with identical filenames,
-        # so cross-ABI carry-overs (filename declares old `abi<N>` after
-        # main bumps `ABI_VERSION`) and per-(name,arch) sha duplicates
-        # (cache_key changed → new filename suffix) survive each run
-        # and break the downstream `xtask build-index` step. The script
-        # is a no-op for non-`pr-*-staging` tags.
-        # See scripts/prune-staging-release.sh for the full rationale.
-        run: |
-          bash scripts/prune-staging-release.sh \
-            "${{ needs.preflight.outputs.target_tag }}" \
-            "${{ needs.preflight.outputs.abi }}" \
-            "${{ github.repository }}"
-
-  generate-index:
-    needs: [preflight, publish]
-    # `!cancelled()` is load-bearing: the implicit `success()` gate
-    # propagates a skip through the DAG, so even when `publish` ran
-    # successfully (via its own `!cancelled()` override after a
-    # skipped `lib-matrix-build`), the skip-taint still poisons this
-    # job's default gate. The explicit `result == 'success'` check
-    # preserves the original "only run if publish succeeded" intent.
-    if: |
-      !cancelled() &&
-      needs.publish.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write   # gh release upload index.toml
-    concurrency:
-      group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
-      cancel-in-progress: false
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-
-      - name: Cache xtask build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            target
-          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'xtask/**') }}
-          restore-keys: |
-            preflight-${{ runner.os }}-
-
-      - name: Build xtask
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo build --release -p xtask --target "$HOST_TARGET"
-          '
-
-      - name: Compute commit-bound generated_at
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "generated-at=$ts" >> "$GITHUB_OUTPUT"
-          echo "generated_at: $ts" >&2
-
-      - name: Download all archives from release
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          mkdir -p "$RUNNER_TEMP/index-archives"
-          gh release download "$TAG" --repo "${{ github.repository }}" --pattern '*.tar.zst' --dir "$RUNNER_TEMP/index-archives"
-          echo "downloaded $(find "$RUNNER_TEMP/index-archives" -name '*.tar.zst' | wc -l) archive(s) for indexing"
-
-      - name: Generate index.toml
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          ABI="${{ needs.preflight.outputs.abi }}"
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-index \
-                --abi "'"$ABI"'" \
-                --generator "wasm-posix-kernel CI @ ${{ github.sha }}" \
-                --archives-dir "'"$RUNNER_TEMP"'/index-archives" \
-                --out "'"$RUNNER_TEMP"'/index.toml" \
-                --generated-at "${{ steps.provenance.outputs.generated-at }}"
-          '
-          echo "--- index.toml head ---"
-          head -30 "$RUNNER_TEMP/index.toml"
-
-      - name: Upload index.toml to release
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          gh release upload "$TAG" "$RUNNER_TEMP/index.toml" --clobber --repo "${{ github.repository }}"
-          echo "uploaded index.toml to $TAG"
-
-  # ---------------------------------------------------------------------
-  # amend-package-toml — opens a bot PR rewriting each rebuilt
-  # `examples/libs/<pkg>/package.toml`'s `[binary]` URLs + sha256s to
-  # point at the freshly published archives.
-  #
-  # For each (package, arch) in preflight's narrowed matrix:
-  #   * Look up the freshly-published archive's sha256 from the release.
-  #   * Run `xtask set-package-binary` to rewrite
-  #     `examples/libs/<pkg>/package.toml`'s `[binary.<arch>]` (or
-  #     bare `[binary]` for single-arch packages) with the new
-  #     archive_url + archive_sha256.
-  #   * Run `xtask set-build-commit` to stamp `[build].commit =
-  #     ${{ github.sha }}` in the same manifest.
-  #
-  # The result is N independent edits to N package.toml files. They
-  # are committed onto a single bot branch and pushed; the bot PR
-  # opens (or updates if it already exists from a re-run on the same
-  # PR HEAD).
-  # ---------------------------------------------------------------------
-
-  amend-package-toml:
-    needs: [preflight, publish, generate-index]
-    # See `generate-index` above for why `!cancelled()` is required.
-    if: |
-      !cancelled() &&
-      needs.publish.result == 'success' &&
-      needs.generate-index.result == 'success' &&
-      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write          # push bot branch
-      pull-requests: write     # open / edit bot PR
-    outputs:
-      bot_branch: ${{ steps.push.outputs.bot_branch }}
-      bot_pr_number: ${{ steps.openpr.outputs.bot_pr_number }}
-      bot_head_sha: ${{ steps.push.outputs.bot_head_sha }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-
-      - name: Cache xtask build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            target
-          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'xtask/**') }}
-          restore-keys: |
-            preflight-${{ runner.os }}-
-
-      - name: Build xtask
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo build --release -p xtask --target "$HOST_TARGET"
-          '
-
-      - name: Fetch release asset list
-        id: assets
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          gh release view "$TAG" --repo "${{ github.repository }}" \
-            --json assets --jq '.assets' > "$RUNNER_TEMP/assets.json"
-          echo "asset_count=$(jq length "$RUNNER_TEMP/assets.json")" >> "$GITHUB_OUTPUT"
-
-      - name: Amend each rebuilt package's package.toml
-        run: |
-          set -euo pipefail
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          ABI="${{ needs.preflight.outputs.abi }}"
-          # amend-package-toml walks the union of library + program
-          # matrices (matrix entries identify what to amend in the
-          # bot PR's package.toml files).
-          LIB_M='${{ needs.preflight.outputs.library_matrix }}'
-          PROG_M='${{ needs.preflight.outputs.program_matrix }}'
-          MATRIX=$(jq -nc --argjson l "$LIB_M" --argjson p "$PROG_M" '$l + $p')
-          ASSET_BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
-
-          # For each matrix entry: locate the asset whose name starts
-          # with `<pkg>-` and ends with `-abi<ABI>-<arch>-<short8>.tar.zst`,
-          # download it, compute sha256, and amend.
-          echo "$MATRIX" | jq -c '.[]' | while read -r entry; do
-            pkg=$(echo "$entry" | jq -r .package)
-            arch=$(echo "$entry" | jq -r .arch)
-            sha=$(echo "$entry" | jq -r .sha)
-            short8="${sha:0:8}"
-            ptoml="examples/libs/$pkg/package.toml"
-
-            asset_name=$(jq -r --arg pre "${pkg}-" --arg suf "-abi${ABI}-${arch}-${short8}.tar.zst" \
-              '.[] | select(.name | startswith($pre) and endswith($suf)) | .name' \
-              "$RUNNER_TEMP/assets.json" | head -1)
-            if [ -z "$asset_name" ]; then
-              # I2 fix: a missing asset means matrix-build (with
-              # fail-fast: false) failed for this entry while its
-              # siblings published. Continuing here would amend the
-              # successful packages while leaving this one stale —
-              # the bot PR would land an inconsistent set of pins.
-              # Fail loudly instead so the workflow surfaces the
-              # partial-publish state.
-              echo "amend: no asset for $pkg/$arch (sha $short8) on $TAG — matrix-build for this entry must have failed; refusing to amend a partial set" >&2
-              exit 1
-            fi
-
-            archive_url="${ASSET_BASE}/${asset_name}"
-
-            # The cache_key_sha (from preflight) is NOT the archive's
-            # tarball sha256 — they're independent. Compute the tarball
-            # sha by downloading the asset. gh release download streams
-            # to the workdir; sha256sum reads it back.
-            tmp_archive="$RUNNER_TEMP/dl/${asset_name}"
-            mkdir -p "$(dirname "$tmp_archive")"
-            gh release download "$TAG" --repo "${{ github.repository }}" \
-              --pattern "$asset_name" --dir "$(dirname "$tmp_archive")" --clobber
-            archive_sha256=$(sha256sum "$tmp_archive" | awk '{print $1}')
-
-            echo "amend $pkg/$arch:"
-            echo "  url: $archive_url"
-            echo "  sha: $archive_sha256"
-
-            bash scripts/dev-shell.sh bash -c '
-              set -euo pipefail
-              HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-              cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                set-package-binary \
-                  --package-toml "'"$ptoml"'" \
-                  --arch "'"$arch"'" \
-                  --archive-url "'"$archive_url"'" \
-                  --archive-sha256 "'"$archive_sha256"'"
-              cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-                set-build-commit \
-                  --package-toml "'"$ptoml"'" \
-                  --commit "${{ github.sha }}"
-            '
-          done
-
-      - name: Commit amendments to bot branch
-        id: push
-        run: |
-          set -euo pipefail
-          git config user.name "wasm-posix-binaries-bot"
-          git config user.email "noreply@anthropic.com"
-
-          # Bot branch is unique per PR_HEAD_SHA so a re-run on the
-          # same SHA force-pushes onto the same branch (idempotent).
-          # A fresh push to the PR (new HEAD SHA) opens a fresh bot
-          # branch + PR, leaving the prior bot PR around for the
-          # maintainer to close.
-          BOT_BRANCH="bot/prepare-merge/pr-${PR_NUMBER}-${PR_HEAD_SHA:0:8}"
-          echo "bot_branch=$BOT_BRANCH" >> "$GITHUB_OUTPUT"
-          TARGET_TAG="${{ needs.preflight.outputs.target_tag }}"
-
-          if git diff --quiet -- examples/libs/; then
-            # I1 fix: do NOT force-push when there's nothing new to
-            # amend. A re-run on the same PR HEAD with all amends
-            # already pinned would otherwise overwrite the bot
-            # branch's prior commits with the unamended PR HEAD.
-            echo "amend: no changes to apply — leaving bot branch as-is."
-            # Best-effort lookup: if a bot branch already exists at
-            # origin (from a prior run that did push amends), surface
-            # its tip SHA so merge-gate-finalize can post the status
-            # and auto-merge it. Falls back to PR HEAD when there's
-            # no remote branch yet (rare: nothing to amend on a
-            # first-time run).
-            remote_sha=$(git ls-remote origin "refs/heads/${BOT_BRANCH}" \
-              | awk '{print $1}' | head -1)
-            if [ -n "$remote_sha" ]; then
-              echo "bot_head_sha=$remote_sha" >> "$GITHUB_OUTPUT"
-            else
-              echo "bot_head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-            fi
-            exit 0
-          fi
-
-          git add examples/libs/*/package.toml
-          # I3 fix: use `git commit -F -` with a heredoc so the body
-          # doesn't pick up YAML-induced leading whitespace.
-          git commit -F - <<EOF
-          chore(packages): amend package.toml for ${TARGET_TAG} (PR #${PR_NUMBER})
-
-          Generated by .github/workflows/prepare-merge.yml on label
-          ready-to-ship for PR #${PR_NUMBER}. Updates each rebuilt
-          package's [binary.<arch>] block + [build].commit to point at
-          the freshly-published archives in the durable release.
-          EOF
-
-          # Push the branch (force to match the local working tree —
-          # idempotent on re-runs of the same PR HEAD).
-          git push --force origin "HEAD:refs/heads/${BOT_BRANCH}"
-          echo "bot_head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Open or update bot PR
-        id: openpr
-        run: |
-          set -euo pipefail
-          BOT_BRANCH="${{ steps.push.outputs.bot_branch }}"
-
-          # If a PR already exists for this branch (re-run on same
-          # HEAD), reuse it. Otherwise open a new one.
-          existing=$(gh pr list --repo "${{ github.repository }}" \
-            --head "$BOT_BRANCH" --state open --json number --jq '.[0].number // empty')
-          if [ -n "$existing" ]; then
-            echo "Reusing bot PR #$existing on branch $BOT_BRANCH"
-            BOT_PR=$existing
-          else
-            # gh pr create prints a URL on stdout (no --json support);
-            # parse the PR number from its trailing path segment. The
-            # URL shape is `https://github.com/<owner>/<repo>/pull/<N>`,
-            # so the basename is the number we want.
-            pr_url=$(gh pr create \
-              --repo "${{ github.repository }}" \
-              --base "${{ github.event.pull_request.base.ref }}" \
-              --head "$BOT_BRANCH" \
-              --title "chore(packages): amend package.toml for ${{ needs.preflight.outputs.target_tag }} (PR #${{ env.PR_NUMBER }})" \
-              --body "Bot-generated PR amending each rebuilt package's \`package.toml\` to point at the freshly-published archives on the durable [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}) release.
-
-          Supersedes the original PR #${{ env.PR_NUMBER }} (which contributed the code changes that triggered the rebuilds). The merge-gate status posts on this bot PR's HEAD SHA after all checks pass; auto-merge then squashes this PR onto \`${{ github.event.pull_request.base.ref }}\`.")
-            BOT_PR="${pr_url##*/}"
-            echo "Opened bot PR #$BOT_PR on branch $BOT_BRANCH ($pr_url)"
-          fi
-          echo "bot_pr_number=$BOT_PR" >> "$GITHUB_OUTPUT"
-
-  # ---------------------------------------------------------------------
-  # merge-gate-empty-matrix — C1 fix.
-  #
-  # When BOTH library_matrix and program_matrix are `[]` (every
-  # package's cache_key_sha is already published — the common case for
-  # kernel-only / host-only PRs), the matrix-build / test-gate /
-  # publish / generate-index / amend-package-toml jobs all skip via
-  # their library/program-matrix gates. The `merge-gate-finalize` job
-  # below requires `publish` and `amend-package-toml` to be `success`;
-  # both are `skipped` here, so without this branch the workflow would
-  # never post `merge-gate` and the original PR would sit unmerged.
-  #
-  # In this case there's no bot PR to open (nothing to amend) and no
-  # durable-release lock to acquire (nothing to publish). We post
-  # `merge-gate=success` directly on the original PR's HEAD SHA and
-  # enable auto-merge on the original PR.
-  # ---------------------------------------------------------------------
-
-  merge-gate-empty-matrix:
-    needs: [gate, preflight]
-    if: needs.preflight.outputs.library_matrix == '[]' && needs.preflight.outputs.program_matrix == '[]'
+      (
+        needs.test-gate.result == 'success' ||
+        (
+          needs.test-gate.result == 'skipped' &&
+          needs.preflight.outputs.library_matrix == '[]' &&
+          needs.preflight.outputs.program_matrix == '[]'
+        )
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
@@ -1146,13 +886,18 @@ jobs:
     steps:
       - name: Post merge-gate=success on original PR HEAD
         run: |
+          if [ "${{ needs.test-gate.result }}" = "success" ]; then
+            DESC="test-gate passed against (matrix-built + durable) archives on ${{ needs.preflight.outputs.target_tag }}; each matrix entry's archive + index entry published atomically."
+          else
+            DESC="No package archives needed publishing (every cache_key_sha already on ${{ needs.preflight.outputs.target_tag }}); merge-gate granted."
+          fi
           gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
             "/repos/${{ github.repository }}/statuses/$PR_HEAD_SHA" \
             -f state=success \
             -f context=merge-gate \
-            -f description="No package archives needed publishing (every cache_key_sha already on ${{ needs.preflight.outputs.target_tag }}); merge-gate granted on PR HEAD."
+            -f description="$DESC"
 
       - name: Enable squash auto-merge on original PR
         id: automerge
@@ -1190,9 +935,14 @@ jobs:
         # blast radius; the inner retry recovers most transients.
         continue-on-error: true
         run: |
+          if [ "${{ needs.test-gate.result }}" = "success" ]; then
+            BODY="prepare-merge: test-gate passed; each matrix entry published its archive + index update to [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}) atomically. \`merge-gate=success\` posted on PR HEAD; auto-merge enabled."
+          else
+            BODY="prepare-merge: no package archives needed publishing this run (every \`cache_key_sha\` is already on [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }})). \`merge-gate=success\` posted on PR HEAD; auto-merge enabled."
+          fi
           set +e
           for attempt in 1 2 3; do
-            if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge: no package archives needed publishing this run (every \`cache_key_sha\` is already on [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }})). \`merge-gate=success\` posted on PR HEAD; auto-merge enabled."; then
+            if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then
               exit 0
             fi
             echo "::warning::gh pr comment failed (attempt $attempt/3); retrying in 10s"
@@ -1204,138 +954,4 @@ jobs:
         if: failure()
         run: |
           gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed in the empty-matrix branch (no archives to publish, but the merge-gate / auto-merge step errored). Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
-
-  # ---------------------------------------------------------------------
-  # merge-gate-finalize — durable-release lock + merge-gate status +
-  # auto-merge of the bot PR + wait-for-merge.
-  #
-  # Splits cleanly from the matrix flow because the lock should only
-  # be held while we're actively waiting for merge — holding it across
-  # the multi-hour matrix-build keeps the queue stuck.
-  # ---------------------------------------------------------------------
-
-  merge-gate-finalize:
-    needs: [preflight, publish, generate-index, amend-package-toml]
-    # Run when the publish + amend pipeline succeeded. test-gate is
-    # transitively required by `publish.if`. amend-package-toml's
-    # success means the bot PR exists. The empty-matrix case is
-    # handled by `merge-gate-empty-matrix` instead — that job is the
-    # one that fires when these `needs` are all `skipped`.
-    #
-    # See `generate-index` for why `!cancelled()` is required.
-    if: |
-      !cancelled() &&
-      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') &&
-      needs.publish.result == 'success' &&
-      needs.generate-index.result == 'success' &&
-      needs.amend-package-toml.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write          # release the durable lock
-      pull-requests: write     # auto-merge, comments, label
-      statuses: write          # post merge-gate=success
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      BOT_PR_NUMBER: ${{ needs.amend-package-toml.outputs.bot_pr_number }}
-      BOT_HEAD_SHA: ${{ needs.amend-package-toml.outputs.bot_head_sha }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-
-      - name: Wait for durable release turn
-        run: bash .github/scripts/durable-release-lock.sh acquire
-
-      - name: Post merge-gate=success on bot PR HEAD
-        # Branch protection on `main` requires a `merge-gate` status
-        # context. We post it on the bot PR's HEAD SHA — that's what
-        # auto-merge will squash onto main.
-        run: |
-          gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/statuses/$BOT_HEAD_SHA" \
-            -f state=success \
-            -f context=merge-gate \
-            -f description="Per-file release published to ${{ needs.preflight.outputs.target_tag }}; package.toml amends staged in this bot PR. Auto-merge enabled."
-
-      - name: Enable squash auto-merge on bot PR
-        id: automerge
-        run: |
-          set +e
-          output=$(gh pr merge "$BOT_PR_NUMBER" \
-            --repo ${{ github.repository }} \
-            --auto --squash 2>&1)
-          status=$?
-          set -e
-
-          if [ "$status" -eq 0 ]; then
-            printf '%s\n' "$output"
-            echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          printf '%s\n' "$output" >&2
-          if printf '%s\n' "$output" | grep -q 'without `workflows` permission'; then
-            echo "manual_merge_required=true" >> "$GITHUB_OUTPUT"
-            gh pr comment "$BOT_PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge passed and posted \`merge-gate=success\`, but GitHub Actions cannot enable auto-merge because this PR changes workflow files. A user with workflow permission must merge this PR manually."
-            exit 0
-          fi
-
-          echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
-          exit "$status"
-
-      - name: Comment on original PR
-        # Tell the contributor what happened: their PR was superseded
-        # by the bot PR. The original PR will be closed by the squash
-        # merge of the bot PR (which contains the original commits +
-        # the amend on top), so contributors don't need to re-target.
-        #
-        # Purely informational by this point — the bot PR has auto-merge
-        # enabled. A transient `gh pr comment` failure (e.g. GitHub API
-        # 504) must NOT trigger the `if: failure()` handler below.
-        continue-on-error: true
-        run: |
-          set +e
-          for attempt in 1 2 3; do
-            if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge published per-file archives to [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}) and opened bot PR #${BOT_PR_NUMBER} amending the affected \`package.toml\` files. Auto-merge enabled on the bot PR; this PR will be closed when the bot PR squash-merges."; then
-              exit 0
-            fi
-            echo "::warning::gh pr comment failed (attempt $attempt/3); retrying in 10s"
-            sleep 10
-          done
-          echo "::warning::gh pr comment failed after 3 attempts; bot PR is already open with auto-merge but the explanatory comment was not posted"
-
-      - name: Wait for bot PR to merge
-        if: steps.automerge.outputs.manual_merge_required != 'true'
-        timeout-minutes: 45
-        run: |
-          while true; do
-            merged_at=$(gh pr view "$BOT_PR_NUMBER" --repo ${{ github.repository }} --json mergedAt -q '.mergedAt // ""')
-            if [ -n "$merged_at" ]; then
-              echo "Bot PR #${BOT_PR_NUMBER} merged at ${merged_at}."
-              exit 0
-            fi
-
-            state=$(gh pr view "$BOT_PR_NUMBER" --repo ${{ github.repository }} --json state -q .state)
-            if [ "$state" = "CLOSED" ]; then
-              echo "Bot PR #${BOT_PR_NUMBER} closed without merging."
-              exit 1
-            fi
-
-            echo "Waiting for bot PR #${BOT_PR_NUMBER} to merge..."
-            sleep 30
-          done
-
-      - name: Release durable release turn
-        if: always()
-        run: bash .github/scripts/durable-release-lock.sh release
-
-      - name: Drop label + comment on failure
-        if: failure()
-        run: |
-          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the merge-gate finalize step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
+          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the merge-gate-post step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true

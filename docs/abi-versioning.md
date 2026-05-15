@@ -135,11 +135,14 @@ binary whose custom-section version does not match the kernel's
 
 When the ABI is bumped, all binaries must be rebuilt and a new
 `binaries-abi-v{N}` release is cut. Old releases remain valid for old
-kernel revisions; per-package `[binary.<arch>].archive_url` +
-`archive_sha256` in each `examples/libs/<pkg>/package.toml` anchor
-consumers to specific archives. The matrix flow's amend-time job
-(`xtask set-package-binary`) rewrites each pin atomically when the
-ABI bump PR's archives are published.
+kernel revisions; the new release's `index.toml` ledger lists all
+v(N) archives. Each `examples/libs/<pkg>/build.toml`'s `[binary]
+index_url` templates `{abi}` against the current `ABI_VERSION`, so
+the next fetch automatically hits the v(N+1) release after the
+constant bumps — no per-package URL pinning in-tree to amend. The
+matrix flow's per-entry `scripts/index-update.sh` invocations
+populate the new tag's `index.toml` atomically as each archive
+publishes.
 
 ### Additive changes still require a bump
 

@@ -1,7 +1,6 @@
 kind = "program"
 name = "tcl"
 version = "9.0.1"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://www.tcl.tk/software/tcltk/license.html"
 
 [build]
 script_path = "examples/libs/tcl/build-tcl.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "tcl"
 wasm = "tclsh.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/tcl-9.0.1-rev1-abi7-wasm32-0791700e.tar.zst"
-archive_sha256 = "a7ca215d99523c4b2d4bc385dff9804c3c7c43ba5e67a104a2f279ade1cb6991"

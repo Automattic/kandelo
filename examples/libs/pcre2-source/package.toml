@@ -1,7 +1,6 @@
 kind = "source"
 name = "pcre2-source"
 version = "10.44"
-revision = 1
 
 [source]
 url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"

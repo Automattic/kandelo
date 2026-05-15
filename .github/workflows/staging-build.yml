@@ -34,8 +34,10 @@ jobs:
   # Phase C Task 6 retired the monolithic legacy `build:` job that
   # previously ran the full registry walk + bulk publish + tests in
   # one runner. Today every staging build flows through the per-
-  # package matrix below: preflight → toolchain-cache → matrix-build →
-  # test-gate → publish → generate-index → f2-status. See
+  # package matrix below: preflight → toolchain-cache → matrix-build
+  # → test-gate → f2-status. Each matrix-build job publishes its own
+  # archive + index.toml entry atomically via
+  # `scripts/index-update.sh`. See
   # docs/plans/2026-05-05-decoupled-package-builds-design.md for the
   # design and docs/binary-releases.md for the consumer-side flow.
   # ---------------------------------------------------------------------
@@ -179,6 +181,14 @@ jobs:
               # target_arches. Assumes the single-line form
               # `arches = ["a", "b"]`; all current package.toml files
               # use that shape.
+              # Version + revision for the per-matrix-entry
+              # scripts/index-update.sh invocation downstream.
+              version=$(sed -nE "s/^version *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
+              revision=1
+              if [ -f "$pkg_dir/build.toml" ]; then
+                revision=$(sed -nE "s/^revision *= *([0-9]+).*/\\1/p" "$pkg_dir/build.toml" | head -1)
+                revision=${revision:-1}
+              fi
               arches=$(awk -F'"'"'[][]'"'"' '"'"'/^arches *=/ {print $2}'"'"' "$pkg_dir/package.toml" | tr -d '"'"' "'"'"' | tr '"'"','"'"' '"'"' '"'"')
               arches=${arches:-wasm32}
               for arch in $arches; do
@@ -196,7 +206,8 @@ jobs:
                   continue
                 fi
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
-                  "{package: \$pkg, arch: \$arch, sha: \$sha}")
+                                --arg ver "$version" --argjson rev "$revision" \
+                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
                 if [ "$kind" = "library" ]; then
                   library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 else
@@ -352,6 +363,10 @@ jobs:
     needs: [preflight, toolchain-cache]
     if: needs.preflight.outputs.library_matrix != '[]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # state-lock git push + gh release create/upload
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -413,6 +428,7 @@ jobs:
           '
 
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
+        id: build
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -424,6 +440,10 @@ jobs:
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}"
           '
+          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
+          archive_name=$(basename "$archive_path")
+          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload archive as workflow artifact
         uses: actions/upload-artifact@v4
@@ -432,6 +452,42 @@ jobs:
           path: ${{ runner.temp }}/staged/*.tar.zst
           retention-days: 7
           if-no-files-found: error
+
+      # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
+      # Different state-lock subjects from durable-release, so PR
+      # staging publishes don't block prepare-merge runs.
+      - name: Publish archive + index entry
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status success \
+            --archive-path "${{ steps.build.outputs.archive-path }}" \
+            --archive-name "${{ steps.build.outputs.archive-name }}" \
+            --cache-key-sha "${{ matrix.sha }}"
+
+      - name: Record failed build in index
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status failed \
+            --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            || true
 
   # Program wave — kind=program packages, gated on the library wave.
   # Each runner downloads the library archives produced above and
@@ -445,6 +501,10 @@ jobs:
     # resolve time, which is the correct behavior.
     if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # state-lock git push + gh release create/upload
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -503,6 +563,7 @@ jobs:
           '
 
       - name: Download library archives from lib-matrix-build
+        if: needs.preflight.outputs.library_matrix != '[]'
         # Pull every library artifact produced by lib-matrix-build.
         # The pattern matches both wasm32 and wasm64 entries; the
         # downstream materialize step writes per-arch overlays so a
@@ -517,6 +578,7 @@ jobs:
           path: ${{ runner.temp }}/lib-archives
 
       - name: Materialize library overlays
+        if: needs.preflight.outputs.library_matrix != '[]'
         # Write examples/libs/<lib>/package.pr.toml file:// pointers
         # for every downloaded library archive. The next step's
         # resolver finds each library via overlay → file:// → cache
@@ -547,7 +609,7 @@ jobs:
         # build-timestamp + build-host are pinned to commit-bound values
         # computed in the "Compute commit-bound build provenance" step
         # above, so re-running the same SHA at any wall-clock time
-        # produces byte-identical archives — load-bearing for Task 5's
+        # produces byte-identical archives — load-bearing for
         # test-gate that re-installs from artifacts. Both values are a
         # function of the commit alone; neither depends on workflow run
         # number, repository.updated_at, or any other mutable field.
@@ -555,6 +617,7 @@ jobs:
         #   * build-host: <repo>@<sha> identifies the producing CI run
         #     in the embedded manifest.toml so consumers can correlate
         #     archive contents back to the workflow that emitted them.
+        id: build
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -566,18 +629,56 @@ jobs:
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}"
           '
+          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
+          archive_name=$(basename "$archive_path")
+          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload archive as workflow artifact
         # if-no-files-found: error so a silent build that produced no
         # archive surfaces as a CI failure rather than a quiet upload
-        # of nothing. Consumed by Task 5 (post-matrix test gate) and
-        # Task 6 (per-file uploads to the release tag).
+        # of nothing. Consumed by test-gate.
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.package }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/staged/*.tar.zst
           retention-days: 7
           if-no-files-found: error
+
+      # Atomic per-matrix-entry publish — same flow as
+      # lib-matrix-build, targeting the pr-<N>-staging tag.
+      - name: Publish archive + index entry
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status success \
+            --archive-path "${{ steps.build.outputs.archive-path }}" \
+            --archive-name "${{ steps.build.outputs.archive-name }}" \
+            --cache-key-sha "${{ matrix.sha }}"
+
+      - name: Record failed build in index
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status failed \
+            --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            || true
 
   test-gate:
     # Runs the 5 test suites against the union of (matrix-built archives
@@ -600,6 +701,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
     steps:
       - uses: actions/checkout@v4
         with:
@@ -716,259 +820,16 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
-  publish:
-    # Per-file uploads to the release tag (Phase B-1 Task 6).
-    #
-    # Gating:
-    #   * needs test-gate so partial-matrix-failure doesn't ship
-    #     untested archives. test-gate itself runs after failed
-    #     matrix entries (but not after cancellation) against the union
-    #     of (matrix-built + durable fallback), so a green test-gate
-    #     blesses the matrix archives even when the durable side filled
-    #     in some packages.
-    #   * library_matrix and program_matrix both '[]' short-circuits
-    #     the empty case (every package's sha already published;
-    #     nothing new to upload).
-    #
-    # Tag selection mirrors the preflight: `pr-<NNN>-staging` for PR
-    # runs, `binaries-abi-v<N>` for non-PR runs. Same `target_tag`
-    # flows through preflight → matrix → publish so a single workflow
-    # run can't disagree with itself.
-    #
-    # Concurrency group serializes publishes to the same tag —
-    # `gh release upload --clobber` races on overlapping asset
-    # overwrites (two runs uploading different bytes for the same
-    # asset name within the same second can interleave HTTP requests
-    # and end up with one client's body and the other's metadata).
-    # Different cache_key_sha → different filename (sha is in the
-    # filename), so cross-run conflicts only happen when re-running
-    # the same SHA, where --clobber is byte-identical and a no-op.
-    # Don't cancel in-progress: an interrupted upload leaves a
-    # partial asset on the release.
-    needs: [preflight, lib-matrix-build, matrix-build, test-gate]
-    # `!cancelled()` is load-bearing: without it, GitHub Actions
-    # implicitly applies `success()` to every `needs` entry — so when
-    # one wave is empty (e.g. library_matrix == '[]' makes
-    # lib-matrix-build skip), publish silently skips even though
-    # everything else succeeded. The explicit success-or-skipped
-    # checks on each matrix job preserve the original "don't publish
-    # if a build failed" intent. Symmetric for program_matrix == '[]'.
-    if: |
-      !cancelled() &&
-      needs.test-gate.result == 'success' &&
-      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped') &&
-      (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write   # gh release create/upload
-    concurrency:
-      group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
-      cancel-in-progress: false
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-
-      - name: Download matrix artifacts
-        # Download package artifacts only. The pattern excludes the
-        # toolchain-sysroots helper artifact uploaded by toolchain-cache.
-        uses: actions/download-artifact@v4
-        with:
-          pattern: '*-wasm*'
-          path: ${{ runner.temp }}/staged-archives
-
-      - name: Ensure release tag exists
-        # Create-vs-upload split: if the tag exists, skip create (the
-        # upload step uses --clobber and is idempotent); if it doesn't,
-        # create with the right shape:
-        #   * `pr-<N>-staging` → --prerelease, PR-linked notes
-        #   * `binaries-abi-v<N>` → durable, no --prerelease flag
-        # --target pins the release to the PR head SHA so the release
-        # page links back at the producing commit.
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "release $TAG exists; will upload assets with --clobber"
-          else
-            echo "release $TAG does not exist; creating"
-            if [[ "$TAG" == pr-*-staging ]]; then
-              gh release create "$TAG" \
-                --repo "${{ github.repository }}" \
-                --title "PR #${{ github.event.pull_request.number }} staging build" \
-                --notes "Per-PR staging build. Generated by Phase B-1 publish job from PR #${{ github.event.pull_request.number }}. See docs/plans/2026-05-05-decoupled-package-builds-design.md §5.3." \
-                --prerelease \
-                --target "${{ github.event.pull_request.head.sha }}"
-            else
-              gh release create "$TAG" \
-                --repo "${{ github.repository }}" \
-                --title "Binaries for ABI v${{ needs.preflight.outputs.abi }}" \
-                --notes "Phase B-1 per-file release. See docs/plans/2026-05-05-decoupled-package-builds-design.md §5.3." \
-                --target "${{ github.sha }}"
-            fi
-          fi
-
-      - name: Upload archives
-        # Each matrix artifact lives in its own directory under
-        # $RUNNER_TEMP/staged-archives/<pkg>-<arch>/<archive>.tar.zst.
-        # Flatten with `find` and upload each .tar.zst individually
-        # — the addressable unit is the per-file archive, not a
-        # combined tarball (design §5.3).
-        #
-        # --clobber is intentional: re-runs with byte-identical bytes
-        # are no-ops (same cache_key_sha → same filename → same bytes
-        # under the deterministic build pipeline). Re-runs with
-        # different bytes for the same filename only happen if the
-        # upstream build broke determinism; --clobber correctly
-        # replaces the old asset in that case.
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          count=0
-          while IFS= read -r f; do
-            echo "uploading $(basename "$f") to $TAG"
-            gh release upload "$TAG" "$f" --clobber --repo "${{ github.repository }}"
-            count=$((count + 1))
-          done < <(find "$RUNNER_TEMP/staged-archives" -name '*.tar.zst' -print | sort)
-          echo "publish: uploaded $count archive(s) to $TAG"
-
-      - name: Prune stale staging-release archives
-        # Defensive cleanup of accumulated state on `pr-<N>-staging`.
-        # `--clobber` only overwrites assets with identical filenames,
-        # so cross-ABI carry-overs (filename declares old `abi<N>` after
-        # main bumps `ABI_VERSION`) and per-(name,arch) sha duplicates
-        # (cache_key changed → new filename suffix) survive each run
-        # and break the downstream `xtask build-index` step. The script
-        # is a no-op for non-`pr-*-staging` tags.
-        # See scripts/prune-staging-release.sh for the full rationale.
-        run: |
-          bash scripts/prune-staging-release.sh \
-            "${{ needs.preflight.outputs.target_tag }}" \
-            "${{ needs.preflight.outputs.abi }}" \
-            "${{ github.repository }}"
-
-  generate-index:
-    # Phase B-1 Task 7 — index.toml generation + upload.
-    #
-    # Runs after `publish` so every per-file archive has landed on the
-    # release tag before we enumerate it. Lives in its own job (rather
-    # than appended to `publish` as a final step) to keep the publish
-    # job focused on archive uploads — index.toml generation reads back
-    # from the tag, so it's a logically distinct concern.
-    #
-    # Concurrency group: same as `publish` so a re-run racing against
-    # a still-uploading earlier run waits its turn. Without this, two
-    # back-to-back pushes could both download the release assets at
-    # different points in the publish sequence and emit
-    # mutually-inconsistent index.tomls.
-    #
-    # Future consumers of the source-manifest format (resolver,
-    # third-party catalog browsers per the design's software-source
-    # concept in §4) read this file for discovery without enumerating
-    # release assets via the GitHub API.
-    needs: [preflight, publish]
-    # `!cancelled()` is load-bearing: the implicit `success()` gate
-    # propagates a skip through the DAG, so even when `publish` ran
-    # successfully (via its own `!cancelled()` override after a
-    # skipped `lib-matrix-build`), the skip-taint still poisons this
-    # job's default gate. The explicit `result == 'success'` check
-    # preserves the original "only run if publish succeeded" intent.
-    if: |
-      !cancelled() &&
-      needs.publish.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write   # gh release upload index.toml
-    concurrency:
-      group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
-      cancel-in-progress: false
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-
-      - name: Cache xtask build
-        # Aliases the preflight job's xtask cache key so the build
-        # below is a fast cache hit when nothing in xtask/ changed.
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            target
-          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'xtask/**') }}
-          restore-keys: |
-            preflight-${{ runner.os }}-
-
-      - name: Build xtask
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo build --release -p xtask --target "$HOST_TARGET"
-          '
-
-      - name: Compute commit-bound generated_at
-        # Use the commit author timestamp (%aI) — same provenance source
-        # the matrix-build step uses for `[compatibility].build_timestamp`.
-        # Pinning to a commit-bound value keeps `index.toml` byte-stable
-        # across wall-clock re-runs of this workflow on the same SHA;
-        # otherwise re-running generate-index would produce a different
-        # index.toml byte-for-byte (mostly harmless, but wasteful).
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "generated-at=$ts" >> "$GITHUB_OUTPUT"
-          echo "generated_at: $ts" >&2
-
-      - name: Download all archives from release
-        # Restricted to `*.tar.zst` so a previous run's index.toml (if
-        # any) doesn't get pulled into the input set. The current run's
-        # index.toml hasn't been uploaded yet — defensive filter for
-        # the re-run / partial-publish case.
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          mkdir -p "$RUNNER_TEMP/index-archives"
-          gh release download "$TAG" --repo "${{ github.repository }}" --pattern '*.tar.zst' --dir "$RUNNER_TEMP/index-archives"
-          echo "downloaded $(find "$RUNNER_TEMP/index-archives" -name '*.tar.zst' | wc -l) archive(s) for indexing"
-
-      - name: Generate index.toml
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          ABI="${{ needs.preflight.outputs.abi }}"
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-index \
-                --abi "'"$ABI"'" \
-                --generator "wasm-posix-kernel CI @ ${{ github.sha }}" \
-                --archives-dir "'"$RUNNER_TEMP"'/index-archives" \
-                --out "'"$RUNNER_TEMP"'/index.toml" \
-                --generated-at "${{ steps.provenance.outputs.generated-at }}"
-          '
-          echo "--- index.toml head ---"
-          head -30 "$RUNNER_TEMP/index.toml"
-
-      - name: Upload index.toml to release
-        # --clobber: re-runs with a deterministic generated_at +
-        # identical archive set produce byte-identical index.toml,
-        # so re-uploading is a no-op. A re-run with a changed archive
-        # set legitimately replaces the old index.toml with the new
-        # one, which is the correct behavior — consumers always read
-        # the latest index.toml on the tag.
-        run: |
-          TAG="${{ needs.preflight.outputs.target_tag }}"
-          gh release upload "$TAG" "$RUNNER_TEMP/index.toml" --clobber --repo "${{ github.repository }}"
-          echo "uploaded index.toml to $TAG"
+  # publish / generate-index — REMOVED.
+  #
+  # Per binary-resolution-via-index-ledger, each matrix-build entry
+  # now publishes its archive + mutates pr-<N>-staging/index.toml
+  # atomically via scripts/index-update.sh. No separate publish
+  # job; no generate-index aggregation pass.
+  #
+  # Stale-archive pruning (prune-staging-release.sh) is also gone:
+  # the index.toml is authoritative, so orphan archives on the
+  # staging tag are harmless until cleaned by staging-cleanup.yml.
 
   f2-status:
     # Phase B-2 Task 1 — F2 sticky PR-comment bot.
@@ -993,7 +854,7 @@ jobs:
     # eliminates the common-case quick-push race). cancel-in-progress is
     # false here because aborting an in-flight comment edit is worse than
     # waiting one more comment-edit's worth of time.
-    needs: [preflight, lib-matrix-build, matrix-build, publish, generate-index]
+    needs: [preflight, lib-matrix-build, matrix-build]
     if: always() && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     concurrency:

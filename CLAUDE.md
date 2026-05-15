@@ -205,6 +205,97 @@ correct fix is to add the package to `flake.nix`, not to expand
 `--keep`. `--keep` is for workflow context (auth, dispatch inputs),
 not for tools.
 
+## Package system
+
+Every artifact under `examples/libs/<name>/` is a **package** with two
+TOML files:
+- **`package.toml`** — the **recipe** (project-agnostic): name,
+  version, source pin, license, deps, `[build].script_path`.
+- **`build.toml`** — this project's **build + publish state**:
+  `script_path`, `repo_url`, `commit`, `revision`, and `[binary]`
+  pointing at where binaries are published (typically
+  `index_url = "https://.../binaries-abi-v{abi}/index.toml"`).
+
+Archive URLs are NOT in either of those files. They live in a
+per-release `index.toml` ledger, keyed by `(name, version, arch)`.
+The resolver (`cargo xtask build-deps ...`) fetches the index,
+looks up the entry, downloads the archive, and verifies. No central
+lockfile (no `binaries.lock`, no `manifest.json`). See
+[docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md](docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md)
+for the full design.
+
+**Hard rules:**
+
+- **Never hand-edit `index.toml`.** It's mutated atomically by
+  per-matrix-build jobs running `scripts/index-update.sh` under a
+  workflow-level state-lock. A manual edit will be clobbered by the
+  next matrix run. For a one-shot recovery (composing the initial
+  ledger from existing archives, e.g. during a migration), use
+  `scripts/compose-initial-index.sh <target-tag> <abi>`.
+- **`build.toml.index_url` should template `{abi}`**, not hardcode the
+  ABI generation. The resolver substitutes `{abi}` with `ABI_VERSION`
+  from `crates/shared/src/lib.rs` at fetch time, so a single
+  build.toml survives ABI bumps.
+- **Bumping `build.toml.revision = N` invalidates every cached
+  archive for that package.** Bump only when output bytes
+  legitimately change (build flag tweaks, asyncify pass, etc.).
+  Don't bump for doc-only changes — that triggers a needless
+  rebuild across the matrix. Revision lives in `build.toml`
+  because it's a publish-time counter (project state), not a
+  recipe property — `package.toml` doesn't carry it.
+- **ABI bumps (`ABI_VERSION` in `crates/shared/src/lib.rs`) require
+  a new release tag.** v(N-1) archives don't satisfy v(N)
+  verifications. The matrix flow handles this automatically: each
+  matrix entry publishes its archive + index entry to
+  `binaries-abi-v<N>/` atomically; the v(N-1) release stays as
+  historical state.
+- **Multi-output packages land under `binaries/programs/<arch>/<pkg>/<out>`,
+  single-output under `binaries/programs/<arch>/<out>`.** Never
+  hardcode this convention in scripts; query via
+  `xtask build-deps output-path <pkg> <wasm-basename>` (or in run.sh,
+  use the `pkg_has_output` helper). See `run.sh`'s `has_<pkg>` block
+  for the contract.
+
+**Common tasks:**
+
+| Task | Command |
+|---|---|
+| Resolve a single package (fetch via index or source-build, cache) | `cargo xtask build-deps resolve <name>` |
+| Materialize all consumer-facing symlinks under `binaries/` | `scripts/fetch-binaries.sh --allow-stale` |
+| Where does a package's output land? | `cargo xtask build-deps output-path <name> <wasm-basename>` |
+| Stage a single archive (matrix-build's per-entry step) | `cargo xtask archive-stage --package examples/libs/<name> --arch <arch> --out <dir>` |
+| Force a re-publish of selected packages | dispatch `.github/workflows/force-rebuild.yml` with the comma list |
+| Atomically publish one archive + index entry (matrix-build sequence) | `scripts/index-update.sh --target-tag <tag> --package <p> --version <v> --revision <r> --arch <a> --status success --archive-path <f> --archive-name <n> --cache-key-sha <s>` |
+| Compose initial index.toml from existing archives (migration only) | `scripts/compose-initial-index.sh <target-tag> <abi>` |
+
+**When something looks wrong:**
+
+- Source build firing for a package you expect to be cached →
+  `cargo xtask build-deps resolve <name>` logs the reason. Common
+  causes: cache_key_sha mismatch (recipe drift since the archive was
+  published; bump `build.toml.revision` if intentional, or wait for
+  CI to re-publish), the `index.toml` entry's status is `failed`
+  with no fallback, or the index fetch itself failed (offline /
+  unreachable URL).
+- `fetch-binaries.sh` reports N failures → those packages will
+  source-build on the matrix runners. With `--allow-stale` (CI
+  default) the script still exits 0 since per-target builds gate
+  failures themselves.
+- `has_<pkg>` returns false even though the archive is present →
+  check whether the resolver-driven `pkg_has_output` helper agrees;
+  if it does but `has_<pkg>` doesn't, that's a stale hardcoded path.
+
+**Reference docs (don't reinvent):**
+
+- **`docs/package-management.md`** — schema, resolver, build-script
+  contract, host-tool requirements. The reference manual.
+- **`docs/binary-releases.md`** — operational doc for the release
+  flow + `index.toml` shape + consumer-side fetch behavior.
+- **`docs/abi-versioning.md`** — when `ABI_VERSION` must bump.
+- **`docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md`** —
+  why the index-ledger split (vs the prior `[binary]`-in-package.toml
+  shape), with the four-bug postmortem.
+
 ## Cross-Compilation and Configure Scripts
 
 We cross-compile C libraries for wasm32 using `wasm32posix-cc`. Autoconf `configure` scripts often run feature-detection checks (e.g., `AC_CHECK_FUNCS`) that test against the **host** system's libraries rather than the wasm sysroot. This produces incorrect results — functions like `feenableexcept` may exist on macOS/Linux but not in our musl-based wasm sysroot.
@@ -230,6 +321,8 @@ Every PR that adds or changes user-facing features, APIs, or behavior must inclu
 - **`docs/sdk-guide.md`** — Update when changing SDK tools or compilation workflow
 - **`docs/porting-guide.md`** — Update when changing how software is ported or run
 - **`docs/browser-support.md`** — Update when changing browser capabilities or limitations
+- **`docs/package-management.md`** — Update when changing the package schema, resolver behavior, or build-script contract
+- **`docs/binary-releases.md`** — Update when changing the release flow, `index.toml` shape, or `fetch-binaries.sh` consumer path
 - **`README.md`** — Update when adding major features, new ported software, or changing project structure
 
 Do not skip documentation. If a feature is worth implementing, it is worth documenting.

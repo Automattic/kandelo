@@ -10,6 +10,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # for rationale. Idempotent.
 bash "$REPO_ROOT/examples/wordpress/setup.sh"
 
+# Build the lazy-archive zips consumed by populateShellEnvironment().
+# lamp.vfs.zst bakes the eager shell environment, but vim/nethack are
+# represented as zip archives derived from their resolver outputs, not
+# as direct registry package outputs.
+bash "$REPO_ROOT/examples/browser/scripts/build-vim-zip.sh"
+bash "$REPO_ROOT/examples/browser/scripts/build-nethack-zip.sh"
+
 # build-lamp-vfs-image.ts reads mariadbd.wasm + bootstrap SQL files from
 # examples/libs/mariadb/mariadb-install/ — paths that build-mariadb.sh
 # populates locally. Under the resolver chain on a clean cache (xtask
