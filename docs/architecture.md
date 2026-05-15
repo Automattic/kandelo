@@ -546,7 +546,7 @@ The kernel exposes an OSS-style `/dev/dsp` character device so unmodified Linux 
                                                                                 on AudioContext clock
 ```
 
-The kernel does **not** mix or synthesize audio. The user program (DOOM's mixer in `i_kernel_sound.c`) does that work and writes interleaved S16_LE frames; the kernel ring is just transport. fbDOOM's mixer produces 1280 stereo frames per ~28 ms game tic — slightly more than the 1260 frames the AudioContext consumes per tic — so the ring stays full enough to hide drain jitter, and the drop-oldest-on-overflow policy keeps memory bounded.
+The kernel does **not** mix or synthesize audio. The user program (DOOM's mixer in `i_kernel_sound.c` plus the OPL2 software synth in `i_oplmusic.c` + `opl/opl3.c` for music) does that work and writes interleaved S16_LE frames; the kernel ring is just transport. fbDOOM's mixer produces 1280 stereo frames per ~28 ms game tic — slightly more than the 1260 frames the AudioContext consumes per tic — so the ring stays full enough to hide drain jitter, and the drop-oldest-on-overflow policy keeps memory bounded.
 
 Single-open semantics match the typical OSS exclusive-grab model. Owner ownership is released on `close` of the last `/dev/dsp` fd, on `execve`, and on process exit; the ring is flushed at the same time so a successor open hears silence rather than the tail of the previous program. ABI version bumped 7 → 8 to register the new `kernel_drain_audio(i64, i32) -> i32` export plus the three readouts `kernel_audio_sample_rate / channels / pending`. The OSS ioctl encodings live in `crates/shared/src/lib.rs::oss`.
 

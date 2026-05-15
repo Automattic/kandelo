@@ -115,9 +115,10 @@
         instead of clamping at the canvas edges. Keyboard goes through
         stdin as AT-set-1 scancodes (Linux MEDIUMRAW); mouse motion is
         injected as PS/2 packets that fbDOOM reads from
-        <code>/dev/input/mice</code>; sound effects flow from fbDOOM's
-        mixer through <code>/dev/dsp</code> (OSS) into a Web Audio
-        AudioContext. Music (MUS / MIDI) is not yet wired up.
+        <code>/dev/input/mice</code>; sound effects and music (MUS/MIDI
+        synthesized in-process by an OPL2 emulator) are mixed together
+        and flow through <code>/dev/dsp</code> (OSS) into a Web Audio
+        AudioContext.
       </p>
     </div>
   </div>
