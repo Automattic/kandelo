@@ -1173,6 +1173,32 @@ function handleMouseInject(msg: Extract<MainToKernelMessage, { type: "mouse_inje
   kernelWorker.injectMouseEvent(msg.dx, msg.dy, msg.buttons);
 }
 
+/**
+ * Drain up to `maxBytes` from the kernel's `/dev/dsp` ring and post the
+ * bytes back to the main thread. The main thread's AudioContext
+ * scheduler decodes them into an `AudioBuffer` using
+ * (sampleRate, channels) reported by the same call so a runtime config
+ * change (`SNDCTL_DSP_SPEED`) is picked up on the next drain.
+ */
+function handleAudioDrain(msg: Extract<MainToKernelMessage, { type: "audio_drain" }>) {
+  const cap = Math.min(msg.maxBytes, 65536);
+  const buf = new Uint8Array(cap);
+  const n = kernelWorker.drainAudio(buf);
+  const sampleRate = kernelWorker.audioSampleRate();
+  const channels = kernelWorker.audioChannels();
+  // Slice to the actual drained length and transfer the underlying
+  // ArrayBuffer so we don't pay a copy fee for the worker → main hop.
+  const out = n > 0 ? buf.slice(0, n) : new Uint8Array(0);
+  post(
+    {
+      type: "response",
+      requestId: msg.requestId,
+      result: { bytes: out, sampleRate, channels },
+    },
+    [out.buffer],
+  );
+}
+
 function handleRegisterPtyOutput(msg: Extract<MainToKernelMessage, { type: "register_pty_output" }>) {
   const ptyIdx = ptyByPid.get(msg.pid);
   if (ptyIdx === undefined) return;
@@ -1557,6 +1583,7 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     }
     case "mouse_inject": handleMouseInject(msg); break;
+    case "audio_drain": handleAudioDrain(msg); break;
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;

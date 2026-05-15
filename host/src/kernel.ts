@@ -156,6 +156,92 @@ export class WasmPosixKernel {
     inject(dx, dy, buttons);
   }
 
+  // ---------------------------------------------------------------------------
+  // /dev/dsp — host-drained PCM audio
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Lazily-allocated kernel-memory scratch region for audio drains. We
+   * allocate on first use so the kernel module doesn't reserve audio
+   * memory in processes that never play sound. ~64 KiB is comfortably
+   * larger than any single drain call would ask for.
+   */
+  private audioScratchOffset = 0;
+  private static readonly AUDIO_SCRATCH_SIZE = 65536;
+
+  private ensureAudioScratch(): boolean {
+    if (this.audioScratchOffset !== 0) return true;
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const alloc = exports?.kernel_alloc_scratch as
+      | ((size: number) => bigint | number)
+      | undefined;
+    if (!alloc) return false;
+    const off = Number(alloc(WasmPosixKernel.AUDIO_SCRATCH_SIZE));
+    if (off === 0) return false;
+    this.audioScratchOffset = off;
+    return true;
+  }
+
+  /**
+   * Drain up to `out.byteLength` bytes of PCM audio buffered in
+   * `/dev/dsp` into the host-provided buffer. Returns the number of
+   * bytes copied. Reads stop at whole-frame boundaries so the host
+   * never receives a torn L/R pair.
+   *
+   * Returns 0 if the kernel hasn't been instantiated, no scratch
+   * buffer can be allocated, or the ring is empty — the caller doesn't
+   * have to special-case any of those.
+   */
+  drainAudio(out: Uint8Array): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    // Pointer is wasm64 i64 in this build — same shape as
+    // `kernel_drain_wakeup_events`. Always pass a BigInt offset.
+    const drain = exports?.kernel_drain_audio as
+      | ((ptr: bigint, len: number) => number)
+      | undefined;
+    if (!drain || !this.memory || !this.ensureAudioScratch()) return 0;
+    // Cap the request at our scratch size. Typical drain rates
+    // (~22 ms of stereo S16 @ 44.1 kHz = ~7.7 KiB per call) are well
+    // under the cap; callers needing more invoke drainAudio in a loop.
+    const want = Math.min(out.byteLength, WasmPosixKernel.AUDIO_SCRATCH_SIZE);
+    const n = drain(BigInt(this.audioScratchOffset), want);
+    if (n > 0) {
+      const src = new Uint8Array(this.memory.buffer, this.audioScratchOffset, n);
+      out.set(src.subarray(0, n));
+    }
+    return n;
+  }
+
+  /**
+   * Currently-configured `/dev/dsp` sample rate (Hz). 0 if the kernel
+   * isn't instantiated yet.
+   */
+  audioSampleRate(): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const fn = exports?.kernel_audio_sample_rate as (() => number) | undefined;
+    return fn ? fn() : 0;
+  }
+
+  /**
+   * Currently-configured `/dev/dsp` channel count (1 = mono, 2 = stereo).
+   * 0 if the kernel isn't instantiated yet.
+   */
+  audioChannels(): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const fn = exports?.kernel_audio_channels as (() => number) | undefined;
+    return fn ? fn() : 0;
+  }
+
+  /**
+   * Bytes currently buffered in the `/dev/dsp` ring. Lets the host
+   * estimate how much audio is queued ahead of the AudioContext clock.
+   */
+  audioPending(): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const fn = exports?.kernel_audio_pending as (() => number) | undefined;
+    return fn ? fn() : 0;
+  }
+
   registerSharedPipe(handle: number, sab: SharedArrayBuffer, end: "read" | "write"): void {
     this.sharedPipes.set(handle, { pipe: SharedPipeBuffer.fromSharedBuffer(sab), end });
   }

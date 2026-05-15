@@ -17,7 +17,7 @@
 /// commit.
 ///
 /// See `docs/abi-versioning.md` for the full policy.
-pub const ABI_VERSION: u32 = 9;
+pub const ABI_VERSION: u32 = 10;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1155,4 +1155,44 @@ mod fbdev_tests {
         assert_eq!(size_of::<FbVarScreenInfo>(), 160);
         assert_eq!(size_of::<FbFixScreenInfo>(), 80);
     }
+}
+
+/// OSS (Open Sound System) ABI constants.
+///
+/// These mirror what glibc / musl expose via `<sys/soundcard.h>` to
+/// programs that talk to `/dev/dsp`. We accept the subset fbDOOM (and
+/// most real OSS clients) actually emit during init: speed, channel
+/// count, format, and a couple of accept-and-acknowledge ops.
+///
+/// The numeric values are the standard OSS encoding — the same numbers
+/// real Linux kernels return — so user-space programs that hard-code
+/// these constants (rather than `#include`-ing the header) work
+/// unchanged.
+pub mod oss {
+    // The values below come from the Linux `<sys/soundcard.h>` IOC
+    // encoding — the same ones glibc, musl, and any OSS-targeted DOS
+    // port hard-code. Matching them exactly lets user programs that
+    // skip the header still talk to us.
+
+    /// `SNDCTL_DSP_RESET` — flush + stop. No argument.
+    pub const SNDCTL_DSP_RESET: u32 = 0x00005000;
+    /// `SNDCTL_DSP_SYNC` — block until output drains. No argument.
+    pub const SNDCTL_DSP_SYNC: u32 = 0x00005001;
+    /// `SNDCTL_DSP_SPEED` — get/set sample rate. inout: i32 hz.
+    pub const SNDCTL_DSP_SPEED: u32 = 0xc0045002;
+    /// `SNDCTL_DSP_STEREO` — get/set channel count via boolean. inout: i32 (0=mono, 1=stereo).
+    pub const SNDCTL_DSP_STEREO: u32 = 0xc0045003;
+    /// `SNDCTL_DSP_GETBLKSIZE` — preferred fragment size. out: i32 bytes.
+    pub const SNDCTL_DSP_GETBLKSIZE: u32 = 0xc0045004;
+    /// `SNDCTL_DSP_SETFMT` — get/set sample format. inout: i32 AFMT_*.
+    pub const SNDCTL_DSP_SETFMT: u32 = 0xc0045005;
+    /// `SNDCTL_DSP_CHANNELS` — get/set explicit channel count. inout: i32.
+    pub const SNDCTL_DSP_CHANNELS: u32 = 0xc0045006;
+    /// `SNDCTL_DSP_GETFMTS` — bitmask of supported formats. out: i32 AFMT_* mask.
+    pub const SNDCTL_DSP_GETFMTS: u32 = 0x8004500b;
+    /// `SNDCTL_DSP_SETFRAGMENT` — fragment-size hint. inout: i32.
+    pub const SNDCTL_DSP_SETFRAGMENT: u32 = 0xc004500a;
+
+    /// `AFMT_S16_LE` — signed 16-bit little-endian. The only format we accept.
+    pub const AFMT_S16_LE: u32 = 0x10;
 }

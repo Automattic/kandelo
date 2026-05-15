@@ -162,6 +162,7 @@ fn dir_entries(
             entries.push((b"console".into(), DT_CHR, devfs_ino(b"/dev/console")));
             entries.push((b"ptmx".into(), DT_CHR, devfs_ino(b"/dev/ptmx")));
             entries.push((b"fb0".into(), DT_CHR, devfs_ino(b"/dev/fb0")));
+            entries.push((b"dsp".into(), DT_CHR, devfs_ino(b"/dev/dsp")));
 
             // Symlinks
             entries.push((b"stdin".into(), DT_LNK, devfs_ino(b"/dev/stdin")));
@@ -283,6 +284,20 @@ mod tests {
             }
         }
         assert!(found, "input subdir missing from /dev listing");
+    }
+
+    #[test]
+    fn dsp_is_listed_in_dev_dir() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let mut found = false;
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"dsp" {
+                assert_eq!(*dtype, DT_CHR);
+                found = true;
+            }
+        }
+        assert!(found, "dsp missing from /dev listing");
     }
 
     #[test]

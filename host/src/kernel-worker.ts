@@ -6951,6 +6951,37 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Drain up to `out.byteLength` bytes of PCM audio buffered in
+   * `/dev/dsp` into `out`. Returns the number of bytes copied, always
+   * a multiple of the active frame size (2 bytes mono / 4 bytes
+   * stereo).
+   *
+   * The host typically drives this from an `AudioWorkletNode` or
+   * `AudioBufferSourceNode` scheduler that pulls samples at the rate
+   * an `AudioContext` reports. The kernel ring drops oldest frames on
+   * overflow rather than blocking, so falling behind a few RAFs costs
+   * audio but never wedges DOOM.
+   */
+  drainAudio(out: Uint8Array): number {
+    return this.kernel.drainAudio(out);
+  }
+
+  /** Sample rate (Hz) the program last configured on `/dev/dsp`. */
+  audioSampleRate(): number {
+    return this.kernel.audioSampleRate();
+  }
+
+  /** Channel count the program last configured on `/dev/dsp`. */
+  audioChannels(): number {
+    return this.kernel.audioChannels();
+  }
+
+  /** Bytes buffered in the `/dev/dsp` ring waiting to be drained. */
+  audioPending(): number {
+    return this.kernel.audioPending();
+  }
+
+  /**
    * ABI version the kernel advertised at startup via its
    * `__abi_version` export. Worker processes compare against this
    * and refuse to run programs built against an incompatible ABI.

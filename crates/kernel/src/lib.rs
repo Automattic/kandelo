@@ -5,6 +5,7 @@
 extern crate alloc;
 extern crate wasm_posix_shared;
 
+pub mod audio;
 pub mod devfs;
 pub mod fd;
 pub mod fork;

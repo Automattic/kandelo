@@ -1,5 +1,5 @@
 {
-  "abi_version": 9,
+  "abi_version": 10,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",
@@ -206,6 +206,21 @@
     },
     {
       "kind": "func",
+      "name": "kernel_audio_channels",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_pending",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_audio_sample_rate",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_bind",
       "signature": "(i32,i64,i32) -> (i32)"
     },
@@ -298,6 +313,11 @@
       "kind": "func",
       "name": "kernel_dequeue_signal",
       "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_drain_audio",
+      "signature": "(i64,i32) -> (i32)"
     },
     {
       "kind": "func",

@@ -12,13 +12,10 @@
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { attachCanvas } from "../../../../host/src/framebuffer/canvas-renderer";
-// Both files come from the same fbdoom package archive (see
-// examples/libs/fbdoom/deps.toml — multi-output → per-program subdir).
 // `@binaries/` resolves to local-binaries/ first, then binaries/ — so
 // a fresh `bash build-fbdoom.sh` shadows the cached release without
 // needing to mirror the symlinks under binaries/.
-import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom/fbdoom.wasm?url";
-import wadUrl from "@binaries/programs/wasm32/fbdoom/doom1.wad?url";
+import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -26,6 +23,80 @@ const canvas = document.getElementById("fb") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 
 const WAD_VFS_PATH = "/usr/local/games/doom/doom1.wad";
+
+// DOOM shareware IWAD — id Software, freely redistributable.
+// Mirror: SlitaZ Linux package sources (hosted at iBiblio). This pin
+// serves the bare WAD; Internet Archive copies wrap it in installer
+// formats that need DOS to unpack.
+const SHAREWARE_WAD_URL =
+  "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
+const SHAREWARE_WAD_SHA256 =
+  "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
+const WAD_CACHE_NAME = "fbdoom-wad";
+
+/**
+ * Fetch the shareware IWAD, verifying its SHA-256 and caching it via
+ * the Cache API. The cache key is the canonical mirror URL so the same
+ * entry is reused across dev (which routes through vite's /cors-proxy)
+ * and prod (where the service worker rewrites cross-origin requests).
+ *
+ * Returns the WAD bytes; throws with a status-friendly message on
+ * fetch / verification failure.
+ */
+async function loadSharewareWad(
+  setStatus: (text: string) => void,
+): Promise<Uint8Array> {
+  const cache = await caches.open(WAD_CACHE_NAME);
+  const cached = await cache.match(SHAREWARE_WAD_URL);
+  if (cached) {
+    setStatus("Loading cached DOOM shareware IWAD…");
+    const buf = await cached.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
+  // Dev: route through the vite /cors-proxy middleware (the mirror
+  // does not send Access-Control-Allow-Origin).
+  // Prod: hit the bare URL — the service worker rewrites cross-origin
+  // requests transparently. See examples/browser/lib/kernel-worker-entry.ts.
+  const fetchUrl = import.meta.env.DEV
+    ? `/cors-proxy?url=${encodeURIComponent(SHAREWARE_WAD_URL)}`
+    : SHAREWARE_WAD_URL;
+
+  setStatus("Downloading DOOM shareware IWAD (~4 MB)…");
+  const response = await fetch(fetchUrl);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} fetching doom1.wad`);
+  }
+  const buf = await response.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+
+  setStatus("Verifying DOOM shareware IWAD…");
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  if (hex !== SHAREWARE_WAD_SHA256) {
+    throw new Error(
+      `doom1.wad sha256 mismatch — expected ${SHAREWARE_WAD_SHA256}, got ${hex}`,
+    );
+  }
+
+  // Stash under the canonical URL so the next page load is a hit
+  // regardless of dev/prod routing. Build a synthetic Response since
+  // the original `response` body has already been consumed by
+  // .arrayBuffer() (and proxied responses may lack CORS headers the
+  // Cache API otherwise tolerates).
+  await cache.put(
+    SHAREWARE_WAD_URL,
+    new Response(bytes, {
+      headers: {
+        "Content-Type": "application/x-doom",
+        "Content-Length": String(bytes.byteLength),
+      },
+    }),
+  );
+  return bytes;
+}
 
 /**
  * Browser `KeyboardEvent.code` → Linux *keycode* (the values in
@@ -88,32 +159,42 @@ startBtn.addEventListener("click", async () => {
   const kernelBytes = await fetch(kernelWasmUrl).then((r) => r.arrayBuffer());
   await kernel.init(kernelBytes);
 
-  // The WAD ships in fbdoom's cache archive — Vite's ?url import
-  // resolves through the `binaries/programs/wasm32/fbdoom/doom1.wad`
-  // symlink to the canonical cache path. Probe the size with a HEAD
-  // request so registerLazyFile gets a known size up front.
-  let wadSize = 0;
+  // The IWAD is fetched at runtime — not bundled. Verify the SHA-256
+  // and cache the result via the Cache API so the second page load
+  // skips the network round-trip entirely. The bytes are then handed
+  // to the lazy-file path via a blob URL so the existing materialize
+  // flow stays unchanged.
+  let wadBytes: Uint8Array;
   try {
-    const head = await fetch(wadUrl, { method: "HEAD" });
-    if (!head.ok) throw new Error(`HTTP ${head.status}`);
-    wadSize = Number(head.headers.get("content-length") ?? 0);
-    if (!wadSize) throw new Error("Content-Length missing");
+    wadBytes = await loadSharewareWad((text) => {
+      statusEl.textContent = text;
+    });
   } catch (err) {
-    statusEl.textContent =
-      "Couldn't load doom1.wad from the fbdoom package — re-run " +
-      "`bash examples/libs/fbdoom/build-fbdoom.sh` or `./run.sh build fbdoom`.";
-    console.error("WAD HEAD probe failed:", err);
+    statusEl.textContent = `Couldn't load doom1.wad: ${
+      (err as Error).message ?? err
+    }`;
+    console.error("WAD fetch failed:", err);
     startBtn.disabled = false;
     return;
   }
+  const wadBlobUrl = URL.createObjectURL(
+    new Blob([wadBytes], { type: "application/x-doom" }),
+  );
   kernel.registerLazyFiles([
-    { path: WAD_VFS_PATH, url: wadUrl, size: wadSize, mode: 0o444 },
+    {
+      path: WAD_VFS_PATH,
+      url: wadBlobUrl,
+      size: wadBytes.byteLength,
+      mode: 0o444,
+    },
   ]);
-  // The lazy-fetch path materializes on-exec, but the WAD is a *data*
-  // file fbDOOM will open() at runtime. Pull it into the VFS now so
-  // the synchronous read path inside the kernel never has to fetch.
-  statusEl.textContent = `Loading WAD (${(wadSize / (1024 * 1024)).toFixed(1)}MB)…`;
+  // Materialize from the blob URL on the main thread so the kernel
+  // worker's synchronous read path inside fbDOOM never has to fetch.
+  statusEl.textContent = `Loading WAD (${(
+    wadBytes.byteLength / (1024 * 1024)
+  ).toFixed(1)}MB)…`;
   await kernel.ensureMaterialized(WAD_VFS_PATH);
+  URL.revokeObjectURL(wadBlobUrl);
 
   statusEl.textContent = "Loading fbdoom.wasm…";
   const fbdoomBytes = await fetch(fbdoomWasmUrl).then((r) => r.arrayBuffer());
@@ -130,6 +211,82 @@ startBtn.addEventListener("click", async () => {
   attachCanvas(canvas, kernel.framebuffers, pid, {
     getProcessMemory: (p) => kernel.getProcessMemory(p),
   });
+
+  // Audio output → AudioContext. fbDOOM's i_kernel_sound module mixes
+  // 8-bit mono SFX plus OPL2-synthesized music (MUS → MIDI → OPL via
+  // i_oplmusic) into a 16-bit stereo @ 44.1 kHz buffer and writes it to
+  // /dev/dsp every game tic (~28 ms). We poll the kernel ring every
+  // ~50 ms, decode S16 → Float32, and chain the chunks onto the
+  // AudioContext clock so playback is gapless. The first user-gesture
+  // boot button click already happened (it's how we got here), so
+  // resume() succeeds without a separate prompt.
+  const audioCtx = new AudioContext();
+  if (audioCtx.state === "suspended") {
+    void audioCtx.resume();
+  }
+  let audioCursor = audioCtx.currentTime;
+  let audioSampleRate = 44100;
+  let audioChannels = 2;
+  let audioStopped = false;
+
+  // Pull audio every 50 ms. The kernel ring is 256 KiB ≈ 1.5 s of
+  // stereo S16 @ 44.1 kHz, so a missed tick or two is harmless. The
+  // ring drops oldest frames on overflow rather than blocking, which
+  // matches what real OSS hardware does — DOOM never stalls on audio.
+  const AUDIO_POLL_MS = 50;
+  const AUDIO_DRAIN_BYTES = 32 * 1024; // ~190 ms at 44.1 kHz stereo S16.
+
+  const audioTimer = window.setInterval(async () => {
+    if (audioStopped || audioCtx.state !== "running") return;
+    let drain;
+    try {
+      drain = await kernel.drainAudio(AUDIO_DRAIN_BYTES);
+    } catch {
+      return; // worker torn down, etc. — let the exit promise handle it.
+    }
+    const { bytes, sampleRate, channels } = drain;
+    if (bytes.byteLength === 0) return;
+    if (sampleRate > 0) audioSampleRate = sampleRate;
+    if (channels > 0) audioChannels = channels;
+
+    // Decode interleaved S16_LE → planar Float32 for AudioBuffer.
+    const bytesPerFrame = 2 * audioChannels;
+    const frames = Math.floor(bytes.byteLength / bytesPerFrame);
+    if (frames === 0) return;
+    const buffer = audioCtx.createBuffer(audioChannels, frames, audioSampleRate);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let ch = 0; ch < audioChannels; ch++) {
+      const dst = buffer.getChannelData(ch);
+      for (let i = 0; i < frames; i++) {
+        const sample = view.getInt16((i * audioChannels + ch) * 2, true);
+        dst[i] = sample / 32768;
+      }
+    }
+
+    // Schedule on the AudioContext clock, holding a tiny lookahead so
+    // brief drain hiccups don't underrun. We *also* cap the lookahead:
+    // if the producer ever drifts ahead of real time (e.g. game tics
+    // briefly run faster than wall-clock), the AudioContext queue
+    // would otherwise grow without bound, making SFX play hundreds of
+    // ms after their visual trigger and eventually getting dropped on
+    // ring overflow. When we're more than maxLookahead ahead, we drop
+    // the freshly drained chunk and resync — a brief silence is far
+    // less perceptible than permanent latency.
+    const now = audioCtx.currentTime;
+    const lookahead = 0.04; // 40 ms — > 1 poll interval.
+    const maxLookahead = 0.15; // 150 ms — drop & resync past this.
+    if (audioCursor < now + lookahead) {
+      audioCursor = now + lookahead;
+    } else if (audioCursor > now + maxLookahead) {
+      audioCursor = now + lookahead;
+      return; // skip this chunk to let real time catch up
+    }
+    const node = audioCtx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(audioCtx.destination);
+    node.start(audioCursor);
+    audioCursor += frames / audioSampleRate;
+  }, AUDIO_POLL_MS);
 
   // Keyboard input → AT-set-1 scancode bytes on stdin. fbDOOM's
   // `kbd_read` reads the high bit as the *press* flag (inverse of
@@ -220,5 +377,10 @@ startBtn.addEventListener("click", async () => {
     })
     .catch((err) => {
       statusEl.textContent = `fbdoom error: ${err.message ?? err}`;
+    })
+    .finally(() => {
+      audioStopped = true;
+      window.clearInterval(audioTimer);
+      void audioCtx.close().catch(() => {});
     });
 });

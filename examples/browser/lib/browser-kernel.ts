@@ -582,6 +582,30 @@ export class BrowserKernel {
     this.sendToKernel({ type: "mouse_inject", dx, dy, buttons });
   }
 
+  /**
+   * Drain up to `maxBytes` of PCM audio buffered in the kernel's
+   * `/dev/dsp` ring. Returns the bytes plus the configured sample
+   * rate / channel count so the caller can build a correctly-sized
+   * `AudioBuffer`. Empty `Uint8Array` if the ring is empty.
+   *
+   * The audio scheduler in `examples/browser/pages/doom/main.ts` calls
+   * this every ~50 ms via setInterval, decodes S16 → Float32, and
+   * schedules the result on a chained `AudioBufferSourceNode` so DOOM
+   * SFX play continuously while the game is running.
+   */
+  async drainAudio(maxBytes: number): Promise<{
+    bytes: Uint8Array;
+    sampleRate: number;
+    channels: number;
+  }> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "audio_drain",
+      requestId,
+      maxBytes,
+    }) as Promise<{ bytes: Uint8Array; sampleRate: number; channels: number }>;
+  }
+
   // ── PTY methods ──
 
   /** Write data to the PTY master for a process. */

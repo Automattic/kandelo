@@ -1068,6 +1068,11 @@ pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
             // packets so a successor open starts clean. No host-side
             // unbind — the device is host→kernel only.
             crate::syscalls::maybe_release_mice(pid);
+            // /dev/dsp cleanup: drop ownership and flush the PCM ring.
+            // The host-side AudioContext keeps playing whatever is
+            // already scheduled; we just stop feeding it new samples
+            // from this dead pid.
+            crate::syscalls::maybe_release_dsp(pid);
             0
         }
         None => -(Errno::ESRCH as i32),
@@ -8781,6 +8786,49 @@ pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_inject_mouse_event(dx: i32, dy: i32, buttons: u32) {
     crate::mouse::inject_event(dx, dy, buttons);
+}
+
+// ---------------------------------------------------------------------------
+// /dev/dsp — host-drained PCM samples
+// ---------------------------------------------------------------------------
+
+/// Drain up to `out_len` bytes of PCM audio from the kernel-side ring
+/// into the host-provided buffer. Returns the number of bytes copied.
+///
+/// The host calls this from its audio scheduler (typically once per
+/// audio block at ~11–48 ms cadence) and feeds the result to a Web
+/// Audio AudioContext. Reads stop on whole-frame boundaries (2 bytes
+/// for mono, 4 for stereo) so the host never receives a torn L/R pair.
+///
+/// `out_ptr` points into kernel-wasm memory — same pattern as
+/// `kernel_drain_wakeup_events`. The host's scratch allocation is the
+/// canonical landing zone.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_drain_audio(out_ptr: *mut u8, out_len: u32) -> u32 {
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    crate::audio::drain_into(out) as u32
+}
+
+/// Read the currently configured `/dev/dsp` sample rate (Hz). Defaults
+/// to 11025 Hz before the user program calls `SNDCTL_DSP_SPEED`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_sample_rate() -> u32 {
+    crate::audio::current_config().0
+}
+
+/// Read the currently configured `/dev/dsp` channel count. Defaults to
+/// 2 (stereo) before the user program calls `SNDCTL_DSP_STEREO` /
+/// `SNDCTL_DSP_CHANNELS`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_channels() -> u32 {
+    crate::audio::current_config().1
+}
+
+/// Bytes currently buffered in the `/dev/dsp` ring. Lets the host
+/// estimate how much audio is queued ahead of the AudioContext clock.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_audio_pending() -> u32 {
+    crate::audio::pending_bytes() as u32
 }
 
 // ---------------------------------------------------------------------------
