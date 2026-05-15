@@ -18,7 +18,7 @@
 
 import * as React from "react";
 import { Inspector } from "../panes/Inspector";
-import { Framebuffer } from "../panes/Framebuffer";
+import { Display } from "../panes/Display";
 import { Shell } from "../panes/Shell";
 import type { PaneHeadDragProps } from "../panes/PaneHead";
 
@@ -73,7 +73,7 @@ const TILE_META: Record<TileId, { label: string; icon: React.ReactNode }> = {
     ),
   },
   fb: {
-    label: "Framebuffer",
+    label: "Display",
     icon: (
       <svg width="11" height="11" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4">
         <rect x="1.5" y="2" width="10" height="7.5" rx="1" />
@@ -234,7 +234,7 @@ export const MachineView: React.FC<MachineViewProps> = ({ internalsTab, onIntern
       );
     }
     if (id === "fb") {
-      return <Framebuffer {...opts} />;
+      return <Display {...opts} />;
     }
     return <Shell {...opts} />;
   };
@@ -423,4 +423,3 @@ function swapSlots(
   next[dstIdx] = src;
   return next;
 }
-

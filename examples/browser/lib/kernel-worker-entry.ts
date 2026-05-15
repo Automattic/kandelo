@@ -340,6 +340,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       },
       onExec: async (pid, path, argv, envp) => {
         const result = await handleExec(pid, path, argv, envp);
+        // Fire after handleExec updates the kernel Process.argv. If this is
+        // sent before registerProcess(..., { argv }), Kandelo's Procs tab
+        // refreshes against stale cmdline data and only corrects on remount.
         if (result === 0) post({ type: "proc_event", kind: "exec", pid });
         return result;
       },

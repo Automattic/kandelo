@@ -12,8 +12,7 @@ import { MockKernelHost } from "../../examples/browser/pages/kandelo/kernel-host
  * Vitest coverage for the kandelo-ui kernel-host surface:
  *
  *   1. LiveKernelHost — status, dmesg, process events, descriptor
- *      cloning, and the NOT_IMPLEMENTED contract that Inspector's
- *      MissingEndpoint placeholder relies on.
+ *      cloning, lifecycle hooks, and gallery defaults.
  *
  *   2. MockKernelHost — boot replay timing, full lifecycle, snapshot
  *      mode pick from fixture state, and a structural assertion that
@@ -164,27 +163,48 @@ describe("LiveKernelHost: descriptor", () => {
   });
 });
 
-describe("LiveKernelHost: NOT_IMPLEMENTED contract", () => {
-  // Inspector's MissingEndpoint placeholder matches the substring
-  // "not implemented yet" to detect stub methods. Pin the substring so
-  // a rename can't sneak through.
-  const stubMethods: Array<keyof KernelHost> = [
-    "applyBootDescriptor", "halt", "reboot",
-    "saveCurrentToGallery", "galleryQuery",
-  ];
-  for (const name of stubMethods) {
-    it(`${String(name)} throws with the placeholder-detection string`, async () => {
-      const host = new LiveKernelHost();
-      try {
-        await (host as unknown as Record<string, (..._a: unknown[]) => unknown>)[
-          name as string
-        ](DUMMY_DESCRIPTOR);
-        throw new Error(`expected ${String(name)} to throw`);
-      } catch (err) {
-        expect((err as Error).message).toContain("not implemented yet");
-      }
+describe("LiveKernelHost: descriptor + gallery lifecycle defaults", () => {
+  it("applyBootDescriptor stores the descriptor when no live apply hook is installed", async () => {
+    const host = new LiveKernelHost();
+    await host.applyBootDescriptor(DUMMY_DESCRIPTOR);
+    expect(host.getBootDescriptor().id).toBe(DUMMY_DESCRIPTOR.id);
+  });
+
+  it("applyBootDescriptor delegates to the installed live apply hook", async () => {
+    const applyBootDescriptor = vi.fn(async (desc: BootDescriptor, host: LiveKernelHost) => {
+      host.setDescriptor(desc);
+      host.setStatus("running");
     });
-  }
+    const host = new LiveKernelHost({ applyBootDescriptor });
+    await host.applyBootDescriptor(DUMMY_DESCRIPTOR);
+    expect(applyBootDescriptor).toHaveBeenCalledOnce();
+    expect(host.getStatus()).toBe("running");
+  });
+
+  it("halt sets status to halted", async () => {
+    const host = new LiveKernelHost({ status: "running" });
+    await host.halt();
+    expect(host.getStatus()).toBe("halted");
+  });
+
+  it("galleryQuery returns installed presets and still leaves saveCurrentToGallery as a stub", async () => {
+    const host = new LiveKernelHost({
+      galleryItems: [{
+        id: "shell",
+        title: "Shell",
+        summary: "Shell preset",
+        base: "kandelo:shell@abi8",
+        packages: [],
+        bootCommand: ["/bin/sh"],
+        accent: "#dc6529",
+        glyph: "sh",
+        estimatedUrlBytes: 10,
+      }],
+    });
+    expect(await host.galleryQuery({ tab: "presets" })).toHaveLength(1);
+    expect(await host.galleryQuery({ tab: "recent" })).toEqual([]);
+    await expect(host.saveCurrentToGallery("x")).rejects.toThrow("not implemented yet");
+  });
 });
 
 describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {

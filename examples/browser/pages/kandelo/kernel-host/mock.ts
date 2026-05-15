@@ -22,7 +22,7 @@ import type {
   BootDescriptor, DmesgLine, FramebufferHandle, GalleryItem, GalleryQuery,
   KernelHost, KernelStateKV, MachineStatus, MemMapEntry, MountInfo,
   ProcessEvent, ProcessInfo, PtyHandle, Snapshot, SnapshotOptions,
-  SyscallEvent, SyscallFilter, VfsDirent,
+  SyscallEvent, SyscallFilter, VfsDirent, WebPreviewState,
 } from "../../../../../host/src/kandelo-ui/kernel-host";
 import { takeSnapshot } from "../../../../../host/src/kandelo-ui/snapshot";
 import {
@@ -57,6 +57,7 @@ export class MockKernelHost implements KernelHost {
   private dmesgRing: DmesgLine[] = [];
   private dmesgListeners = new ListenerSet<DmesgLine>();
   private processListeners = new ListenerSet<ProcessEvent>();
+  private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private bootSpeed: number;
   private bootStarted = false;
   private bootTimers: number[] = [];
@@ -224,6 +225,8 @@ export class MockKernelHost implements KernelHost {
       name: c.n,
       kind: c.kind,
       mode: c.mode,
+      owner: "root",
+      group: "root",
       size: c.kind === "d" ? "—" : c.size,
     }));
   }
@@ -233,6 +236,8 @@ export class MockKernelHost implements KernelHost {
       name: path.split("/").pop() || "/",
       kind: "d",
       mode: "drwxr-xr-x",
+      owner: "root",
+      group: "root",
       size: "—",
     };
   }
@@ -266,6 +271,21 @@ export class MockKernelHost implements KernelHost {
       onBoundPidChange: () => () => { /* no-op */ },
       close: () => { /* no-op */ },
     };
+  }
+
+  getWebPreview(): WebPreviewState | null {
+    const servicePresets = new Set(["nginx", "nginx-php", "wordpress-sqlite", "wordpress-mariadb"]);
+    if (!servicePresets.has(this.descriptor.id)) return null;
+    return {
+      label: this.descriptor.title,
+      url: "about:blank",
+      status: this._status === "running" ? "running" : "starting",
+      message: "Mock preview",
+    };
+  }
+
+  subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void {
+    return this.webPreviewListeners.add(cb);
   }
 
   // ── Snapshot ─────────────────────────────────────────────────────────────

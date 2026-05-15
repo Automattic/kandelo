@@ -47,7 +47,7 @@ export interface NodeKernelHostOptions {
   /** Called when a process is spawned, execs a new program, or exits.
    *  Used by Inspector-style UIs to refresh their process table without
    *  polling. */
-  onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; exitStatus?: number }) => void;
+  onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
   /**
    * Called when the worker can't resolve an exec path locally.
    * Return the program bytes or null if not found.
@@ -362,7 +362,7 @@ export class NodeKernelHost {
         // Kernel-internal fork / exec / posix_spawn. The host doesn't
         // see these via NodeKernelHost.spawn (forks happen inside the
         // wasm kernel without going through the request/response loop).
-        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid });
+        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
         break;
       }
       case "stdout":

@@ -35,7 +35,7 @@
  */
 export interface FileSystemLike {
   /** Throws on missing path. */
-  stat(path: string): { mode: number; size: number; mtimeMs: number };
+  stat(path: string): { mode: number; size: number; mtimeMs: number; uid: number; gid: number };
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
   /** Returns bytes read, 0 on EOF. */
@@ -122,6 +122,7 @@ export interface KernelLike {
   ptyWrite(pid: number, data: Uint8Array): void;
   ptyResize(pid: number, rows: number, cols: number): void;
   terminateProcess(pid: number, status?: number): Promise<void>;
+  destroy?(): Promise<void>;
   /**
    * Snapshot the kernel's process table. Returns an empty array if the
    * kernel doesn't expose `kernel_enum_procs` yet (older ABI).
@@ -237,6 +238,15 @@ export interface FramebufferHandle {
   close(): void;
 }
 
+export type WebPreviewStatus = "starting" | "running" | "error";
+
+export interface WebPreviewState {
+  label: string;
+  url: string;
+  status: WebPreviewStatus;
+  message?: string;
+}
+
 // ── Process lifecycle events ──────────────────────────────────────────────
 //
 // Surfaces that render process state (Inspector → Procs, Memory map, top-
@@ -271,6 +281,8 @@ export interface VfsDirent {
   name: string;
   kind: VfsKind;
   mode: string;                     // "drwxr-xr-x"
+  owner: string;                    // user name when known, otherwise uid
+  group: string;                    // group name when known, otherwise gid
   size: string;                     // human-readable
   mtime?: string;
   target?: string;                  // for symlinks
@@ -395,6 +407,10 @@ export interface KernelHost {
   // bound process's stdin.
   attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle;
 
+  // web preview — service demos can expose an HTTP bridge endpoint.
+  getWebPreview(): WebPreviewState | null;
+  subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void;
+
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
 
@@ -468,6 +484,10 @@ export interface LiveKernelHostOptions {
   status?: MachineStatus;
   /** Initial boot descriptor surfaced to the UI. */
   descriptor?: BootDescriptor;
+  /** Live-mode reboot hook supplied by the browser page. */
+  applyBootDescriptor?: (desc: BootDescriptor, host: LiveKernelHost) => Promise<void>;
+  /** Preset list for galleryQuery("presets"). */
+  galleryItems?: GalleryItem[];
 }
 
 const DEFAULT_DESCRIPTOR: BootDescriptor = {
@@ -503,8 +523,12 @@ export class LiveKernelHost implements KernelHost {
   private dmesgListeners = new ListenerSet<DmesgLine>();
   private dmesgCapacity = 4096;
   private processListeners = new ListenerSet<ProcessEvent>();
+  private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
 
   private _descriptor: BootDescriptor;
+  private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
+  private galleryItems: GalleryItem[];
+  private webPreview: WebPreviewState | null = null;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
@@ -522,6 +546,8 @@ export class LiveKernelHost implements KernelHost {
     this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR;
     this.kernel = opts.kernel;
     this.shell = opts.shell;
+    this.applyBootDescriptorImpl = opts.applyBootDescriptor;
+    this.galleryItems = opts.galleryItems ?? [];
   }
 
   // ── owner-facing wiring helpers ──────────────────────────────────────────
@@ -567,6 +593,15 @@ export class LiveKernelHost implements KernelHost {
     this._descriptor = desc;
   }
 
+  clearDmesg(): void {
+    this.dmesgRing = [];
+  }
+
+  setWebPreview(state: WebPreviewState | null): void {
+    this.webPreview = state ? { ...state } : null;
+    this.webPreviewListeners.emit(this.getWebPreview());
+  }
+
   // ── KernelHost: status ───────────────────────────────────────────────────
 
   getStatus(): MachineStatus {
@@ -583,16 +618,21 @@ export class LiveKernelHost implements KernelHost {
     return structuredClone(this._descriptor);
   }
 
-  async applyBootDescriptor(_desc: BootDescriptor): Promise<void> {
-    throw NOT_IMPLEMENTED("applyBootDescriptor");
+  async applyBootDescriptor(desc: BootDescriptor): Promise<void> {
+    if (!this.applyBootDescriptorImpl) {
+      this.setDescriptor(desc);
+      return;
+    }
+    await this.applyBootDescriptorImpl(desc, this);
   }
 
   async halt(): Promise<void> {
-    throw NOT_IMPLEMENTED("halt");
+    this.setStatus("halted");
+    await this.kernel?.destroy?.();
   }
 
   async reboot(): Promise<void> {
-    throw NOT_IMPLEMENTED("reboot");
+    await this.applyBootDescriptor(this.getBootDescriptor());
   }
 
   // ── KernelHost: dmesg ────────────────────────────────────────────────────
@@ -695,11 +735,15 @@ export class LiveKernelHost implements KernelHost {
           : path + "/" + entry.name;
         let mode: number;
         let size: number;
+        let uid: number;
+        let gid: number;
         let target: string | undefined;
         try {
           const st = fs.stat(childPath);
           mode = st.mode;
           size = st.size;
+          uid = st.uid;
+          gid = st.gid;
         } catch {
           // Disappearing entries (race with another process) shouldn't blow
           // up the whole listing.
@@ -713,6 +757,8 @@ export class LiveKernelHost implements KernelHost {
           name: entry.name,
           kind,
           mode: formatMode(mode, kind),
+          owner: numericIdToLabel(uid),
+          group: numericIdToLabel(gid),
           size: kind === "d" ? "—" : humanSize(size),
           target,
         });
@@ -732,6 +778,8 @@ export class LiveKernelHost implements KernelHost {
         name: path.split("/").pop() || "/",
         kind,
         mode: formatMode(st.mode, kind),
+        owner: numericIdToLabel(st.uid),
+        group: numericIdToLabel(st.gid),
         size: kind === "d" ? "—" : humanSize(st.size),
       };
     } catch {
@@ -1015,6 +1063,14 @@ export class LiveKernelHost implements KernelHost {
     };
   }
 
+  getWebPreview(): WebPreviewState | null {
+    return this.webPreview ? { ...this.webPreview } : null;
+  }
+
+  subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void {
+    return this.webPreviewListeners.add(cb);
+  }
+
   // ── KernelHost: sharing ──────────────────────────────────────────────────
 
   async snapshot(opts: SnapshotOptions = {}): Promise<Snapshot> {
@@ -1026,8 +1082,15 @@ export class LiveKernelHost implements KernelHost {
 
   // ── KernelHost: gallery ──────────────────────────────────────────────────
 
-  async galleryQuery(_q: GalleryQuery): Promise<GalleryItem[]> {
-    throw NOT_IMPLEMENTED("galleryQuery");
+  async galleryQuery(q: GalleryQuery): Promise<GalleryItem[]> {
+    if (q.tab !== "presets") return [];
+    const items = this.galleryItems.slice();
+    const needle = q.q?.toLowerCase().trim();
+    if (!needle) return items;
+    return items.filter((i) =>
+      i.title.toLowerCase().includes(needle) ||
+      i.summary.toLowerCase().includes(needle),
+    );
   }
 
   async saveCurrentToGallery(_title: string): Promise<GalleryItem> {
@@ -1229,6 +1292,10 @@ function parseStatusBytes(raw: string | undefined): string {
 function numericUidToLabel(uid: string): string {
   if (uid === "0") return "root";
   return uid;
+}
+
+function numericIdToLabel(id: number): string {
+  return id === 0 ? "root" : String(id);
 }
 
 function decodeBytes(b: Uint8Array): string {

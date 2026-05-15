@@ -5,5 +5,5 @@ export * from "../../../../../host/src/kandelo-ui/kernel-host";
 export { MockKernelHost } from "./mock";
 export type { MockKernelHostOptions } from "./mock";
 export {
-  KernelHostProvider, useKernelHost, useStatus, useDmesg, useSnapshot,
+  KernelHostProvider, useKernelHost, useStatus, useDmesg, useSnapshot, useWebPreview,
 } from "./react";

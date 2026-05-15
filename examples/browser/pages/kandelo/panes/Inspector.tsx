@@ -397,6 +397,8 @@ const VfsTab: React.FC = () => {
                 <th>NAME</th>
                 <th>KIND</th>
                 <th>MODE</th>
+                <th>OWNER</th>
+                <th>GROUP</th>
                 <th className="num">SIZE</th>
               </tr>
             </thead>
@@ -424,6 +426,8 @@ const VfsTab: React.FC = () => {
                     </td>
                     <td className="dim">{vfsKindLabel(entry.kind)}</td>
                     <td className="dim">{entry.mode}</td>
+                    <td className="dim">{entry.owner}</td>
+                    <td className="dim">{entry.group}</td>
                     <td className="num">{entry.kind === "d" ? "—" : entry.size}</td>
                   </tr>
                 );
@@ -490,7 +494,7 @@ const FilePreview: React.FC<{
             {path}
           </div>
           <div style={{ color: "var(--k-text-faint)", marginTop: 2 }}>
-            {entry.mode} · {entry.size}
+            {entry.mode} · {entry.owner}:{entry.group} · {entry.size}
           </div>
         </div>
         <button type="button" onClick={onClose} style={vfsButtonStyle}>close</button>

@@ -292,6 +292,8 @@ async function handleInit(msg: InitMessage) {
       },
       onExec: async (pid, path, argv, envp) => {
         const result = await handleExec(pid, path, argv, envp);
+        // Notify after handleExec refreshes kernel-side Process.argv so
+        // process-table consumers don't refetch stale command names.
         if (result === 0) post({ type: "proc_event", kind: "exec", pid });
         return result;
       },

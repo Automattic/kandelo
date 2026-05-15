@@ -21,6 +21,7 @@ if (!container) {
 const qs = new URLSearchParams(location.search);
 const useLive = qs.get("live") === "1";
 const useIdle = qs.get("idle") === "1";
+const demo = qs.get("demo");
 const fbDemo = qs.get("fb"); // "test" | "doom" | null
 
 const mount = (host: KernelHost) => {
@@ -40,6 +41,7 @@ if (useLive) {
     try {
       const { createLiveHost } = await import("./kernel-host/live-setup");
       const host = await createLiveHost({
+        demo,
         fb: fbDemo === "test" || fbDemo === "doom" ? fbDemo : "none",
       });
       mount(host);

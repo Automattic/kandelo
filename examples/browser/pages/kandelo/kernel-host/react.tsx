@@ -8,7 +8,7 @@
 
 import * as React from "react";
 import type {
-  KernelHost, MachineStatus, DmesgLine, Snapshot,
+  KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState,
 } from "../../../../../host/src/kandelo-ui/kernel-host";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
@@ -60,4 +60,15 @@ export function useSnapshot(): Snapshot | null {
     return () => { cancelled = true; };
   }, [host, status]);
   return snap;
+}
+
+export function useWebPreview(): WebPreviewState | null {
+  const host = useKernelHost();
+  const status = useStatus();
+  const [state, setState] = React.useState<WebPreviewState | null>(() => host.getWebPreview());
+  React.useEffect(() => {
+    setState(host.getWebPreview());
+    return host.subscribeWebPreview(setState);
+  }, [host, status]);
+  return state;
 }

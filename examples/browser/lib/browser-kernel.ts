@@ -50,7 +50,7 @@ export interface BrowserKernelOptions {
    *    - worker-side execve → "exec"
    *    - worker-side exit → "exit" (via existing exit message)
    */
-  onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; exitStatus?: number }) => void;
+  onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
   /** Pre-compiled thread module for clone(). Avoids recompiling large wasm for each thread. */
   threadModule?: WebAssembly.Module;
   /** Pre-built MemoryFileSystem (e.g. from a VFS image). When provided, skips
@@ -874,7 +874,7 @@ export class BrowserKernel {
         // don't come through BrowserKernel.spawn(), so the worker posts
         // them directly. Exit is delivered separately via the existing
         // "exit" message above.
-        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid });
+        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
         break;
       }
       case "stdout":
