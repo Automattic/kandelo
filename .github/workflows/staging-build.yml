@@ -77,6 +77,8 @@ jobs:
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
