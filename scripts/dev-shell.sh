@@ -78,6 +78,7 @@ exec nix develop \
     --keep WASM_POSIX_DEP_OUT_DIR \
     --keep WASM_POSIX_DEP_NAME \
     --keep WASM_POSIX_DEP_VERSION \
+    --keep WASM_POSIX_BINARY_INDEX_URL \
     --keep WASM_POSIX_SYSROOT \
     --keep WASM_POSIX_LLVM_DIR \
     --accept-flake-config \
