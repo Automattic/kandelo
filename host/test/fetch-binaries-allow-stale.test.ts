@@ -2,19 +2,19 @@
  * Unit-ish test for `scripts/fetch-binaries.sh` (Phase C cutover).
  *
  * Exercises the per-package walk: for each
- * `examples/libs/<name>/package.toml` with a `[binary]` block (or
- * any `[binary.<arch>]` sub-table), the script runs
+ * `examples/libs/<name>/package.toml` with a sibling `build.toml`,
+ * the script runs
  *
  *     cargo run -p xtask -- build-deps --arch <arch> \
  *         --binaries-dir <repo>/binaries resolve <name>
  *
- * once per declared arch. Packages without a `[binary]` block are
+ * once per declared arch. Packages without a sibling `build.toml` are
  * skipped (kernel/userspace/source/etc).
  *
  * Strategy: stage a fake "repo root" in a tempdir with a hand-
  * written `examples/libs/` tree of one-line package.toml files
  * (covering: a single-arch binary package, a multi-arch binary
- * package, a binary-less package, and a stray dir without
+ * package, a package without build.toml, and a stray dir without
  * package.toml). Put a fake `cargo` script first on PATH that logs
  * every invocation. Assert the command lines look right.
  *
@@ -73,9 +73,8 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
    * Fixtures cover the four cases the script branches on:
    *   - single-arch binary package (`alpha` — defaults to wasm32)
    *   - multi-arch binary package (`bravo` — `arches = ["wasm32", "wasm64"]`)
-   *   - per-arch [binary.<arch>] sub-tables (`charlie` — same arches but
-   *     uses the sub-table form; the awk parser must accept both)
-   *   - binary-less package (`delta` — no [binary] block, must skip)
+   *   - another multi-arch package (`charlie` — catches repeated arch parsing)
+   *   - package without build.toml (`delta` — must skip)
    *   - stray dir without package.toml (`stray/` — must skip silently)
    *
    * The fake cargo logs every invocation but does no work — it's
@@ -90,7 +89,7 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
     const libs = path.join(fakeRepoRoot, "examples", "libs");
     mkdirSync(libs, { recursive: true });
 
-    // alpha: single-arch (default wasm32), simple [binary] block.
+    // alpha: single-arch (default wasm32), publishable via build.toml.
     mkdirSync(path.join(libs, "alpha"), { recursive: true });
     writeFileSync(
       path.join(libs, "alpha", "package.toml"),
@@ -110,14 +109,12 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
         `[[outputs]]`,
         `name = "alpha"`,
         `wasm = "alpha.wasm"`,
-        `[binary]`,
-        `archive_url = "https://example.test/alpha.tar.zst"`,
-        `archive_sha256 = "${"a".repeat(64)}"`,
         ``,
       ].join("\n"),
     );
+    writeFileSync(path.join(libs, "alpha", "build.toml"), `revision = 1\n`);
 
-    // bravo: multi-arch with single-line `arches = [...]` and `[binary]`.
+    // bravo: multi-arch with single-line `arches = [...]`.
     mkdirSync(path.join(libs, "bravo"), { recursive: true });
     writeFileSync(
       path.join(libs, "bravo", "package.toml"),
@@ -138,15 +135,12 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
         `[[outputs]]`,
         `name = "bravo"`,
         `wasm = "bravo.wasm"`,
-        `[binary]`,
-        `archive_url = "https://example.test/bravo.tar.zst"`,
-        `archive_sha256 = "${"b".repeat(64)}"`,
         ``,
       ].join("\n"),
     );
+    writeFileSync(path.join(libs, "bravo", "build.toml"), `revision = 1\n`);
 
-    // charlie: multi-arch with per-arch [binary.<arch>] sub-tables.
-    // Exercises the awk regex `^\[binary(\..+)?\]`.
+    // charlie: another multi-arch package.
     mkdirSync(path.join(libs, "charlie"), { recursive: true });
     writeFileSync(
       path.join(libs, "charlie", "package.toml"),
@@ -167,17 +161,12 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
         `[[outputs]]`,
         `name = "charlie"`,
         `wasm = "charlie.wasm"`,
-        `[binary.wasm32]`,
-        `archive_url = "https://example.test/charlie-wasm32.tar.zst"`,
-        `archive_sha256 = "${"c".repeat(64)}"`,
-        `[binary.wasm64]`,
-        `archive_url = "https://example.test/charlie-wasm64.tar.zst"`,
-        `archive_sha256 = "${"d".repeat(64)}"`,
         ``,
       ].join("\n"),
     );
+    writeFileSync(path.join(libs, "charlie", "build.toml"), `revision = 1\n`);
 
-    // delta: kind=program, no [binary] block (mirrors kernel/userspace/
+    // delta: kind=program, no build.toml (mirrors kernel/userspace/
     // examples). Must be skipped silently.
     mkdirSync(path.join(libs, "delta"), { recursive: true });
     writeFileSync(
@@ -263,7 +252,7 @@ exit 0
     return log.split("\n").filter((l) => pattern.test(l));
   }
 
-  it("walks every package with a [binary] block, once per declared arch", () => {
+  it("walks every package with build.toml, once per declared arch", () => {
     const { status, stdout, stderr } = runScript([]);
     expect(status, `stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
 
@@ -273,19 +262,19 @@ exit 0
     expect(alphaLines[0]).toMatch(/--arch\s+wasm32/);
     expect(alphaLines[0]).toMatch(/--binaries-dir\s+\S+/);
 
-    // bravo: multi-arch, top-level [binary] → 2 build-deps invocations.
+    // bravo: multi-arch → 2 build-deps invocations.
     const bravoLines = logLines(/build-deps.*resolve\s+bravo\b/);
     expect(bravoLines.length).toBe(2);
     expect(bravoLines.some((l) => /--arch\s+wasm32/.test(l))).toBe(true);
     expect(bravoLines.some((l) => /--arch\s+wasm64/.test(l))).toBe(true);
 
-    // charlie: multi-arch, [binary.<arch>] sub-tables → 2 invocations.
+    // charlie: multi-arch → 2 build-deps invocations.
     const charlieLines = logLines(/build-deps.*resolve\s+charlie\b/);
     expect(charlieLines.length).toBe(2);
     expect(charlieLines.some((l) => /--arch\s+wasm32/.test(l))).toBe(true);
     expect(charlieLines.some((l) => /--arch\s+wasm64/.test(l))).toBe(true);
 
-    // delta: no [binary] block → no build-deps invocation.
+    // delta: no build.toml → no build-deps invocation.
     const deltaLines = logLines(/build-deps.*resolve\s+delta\b/);
     expect(deltaLines.length).toBe(0);
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Fetch published Wasm binaries by walking every per-package
-# `examples/libs/<name>/package.toml`.
+# Fetch published Wasm binaries by walking every package under
+# `examples/libs/<name>/` that has both package.toml and build.toml.
 #
-# The resolver consumes per-package `[binary]` / `[binary.<arch>]`
-# URLs directly — no central pinfile or manifest. For each package
-# that declares a `[binary]` block we run
+# The resolver consumes the central binary index configured by
+# `WASM_POSIX_BINARY_INDEX_URL`. For each package that has a
+# publishable build source (`build.toml`) we run
 #
 #     cargo run -p xtask -- build-deps resolve <name> \
 #         --arch <arch> --binaries-dir <repo>/binaries
@@ -15,18 +15,15 @@
 # places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
 # into the cache. Browser demos hardcode these paths.
 #
-# Packages without a `[binary]` block (kernel, userspace, examples,
-# sqlite-cli, node, kind=source, libraries that ship only as
-# link-time inputs) are skipped here. Local builds populate
-# kernel/userspace/etc directly; libraries are consumed at link time
-# via the cache and have no binaries/ symlink.
+# Packages without `build.toml` (kernel, userspace, examples,
+# kind=source, libraries that ship only as link-time inputs) are
+# skipped here. Local builds populate kernel/userspace/etc directly;
+# libraries are consumed at link time via the cache and have no
+# binaries/ symlink.
 #
 # Per-arch handling: read the optional `arches = ["wasm32", ...]`
 # field from each package.toml. Default is `["wasm32"]`. For each
-# declared arch we invoke `resolve --arch <arch>` once. Packages that
-# declare only `[binary.wasm32]` (no per-arch table) work too — the
-# resolver falls back to source-build for unsupported arches and the
-# loop continues.
+# declared arch we invoke `resolve --arch <arch>` once.
 #
 # Resolver fallback semantics: if an archive is unreachable, hash-
 # mismatched, or has a stale `cache_key_sha`, `resolve` logs a
