@@ -260,6 +260,12 @@ function resolveProgram(path: string): ArrayBuffer | null {
     if (mapped) {
         return loadBytes(mapped);
     }
+    // execlp() searches the inherited host/dev-shell PATH. In CI that can
+    // resolve tools like gencat to /nix/store/.../bin/gencat; never load that
+    // host ELF as a guest program.
+    if (path.endsWith("/gencat")) {
+        return loadBytes(resolve(repoRoot, "examples/gencat.wasm"));
+    }
     const kernelCwd = process.env.KERNEL_CWD || process.cwd();
     const candidates = [
         path,
