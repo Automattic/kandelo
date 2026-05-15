@@ -5,7 +5,6 @@ version = "0.1.0"
 # shareware `doom1.wad` (id Software, freely redistributable) at page
 # load from a Linux-distro mirror and caches it via the Cache API —
 # the archive carries only `fbdoom.wasm`.
-revision = 3
 kernel_abi = 7
 depends_on = []
 
