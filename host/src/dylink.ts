@@ -172,6 +172,14 @@ export interface LoadedSharedLibrary {
   name: string;
 }
 
+/** Options used when re-instantiating a side module in a fork child. */
+export interface DylinkReplayOptions {
+  /** Use this memory base instead of calling allocateMemory. Must match the
+   *  base the parent's allocator returned, so data-reloc'd pointers in
+   *  the memcpy'd data section remain valid. */
+  memoryBase: number;
+}
+
 /**
  * Options for loading a shared library.
  */
@@ -208,12 +216,17 @@ function instantiateSharedLibrary(
   wasmBytes: Uint8Array,
   metadata: DylinkMetadata,
   options: LoadSharedLibraryOptions,
+  replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
   // Allocate memory region
   const memAlign = 1 << metadata.memoryAlign;
   let memoryBase = 0;
   if (metadata.memorySize > 0) {
-    if (options.allocateMemory) {
+    if (replay) {
+      // Reuse parent's memoryBase: data-reloc'd pointers baked into the
+      // memcpy'd data section already encode (parentMemoryBase + offset).
+      memoryBase = replay.memoryBase;
+    } else if (options.allocateMemory) {
       memoryBase = options.allocateMemory(metadata.memorySize, memAlign);
       const end = memoryBase + metadata.memorySize;
       if (end > options.memory.buffer.byteLength) {
@@ -238,8 +251,11 @@ function instantiateSharedLibrary(
       }
     }
 
-    // Zero-initialize the allocated region
-    new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+    if (!replay) {
+      // Skip zero-init in replay: child memory already holds parent's
+      // post-startup data via fork memcpy.
+      new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+    }
   }
 
   // Allocate table slots
@@ -400,10 +416,14 @@ function instantiateSharedLibrary(
     applyRelocs();
   }
 
-  // Run constructors
-  const ctors = instance.exports.__wasm_call_ctors as Function | undefined;
-  if (ctors) {
-    ctors();
+  if (!replay) {
+    // Skip ctors in replay: parent already ran them and post-startup state
+    // (e.g. opcache accel_globals, registered INI entries) is in the
+    // memcpy'd data; re-running would clobber it.
+    const ctors = instance.exports.__wasm_call_ctors as Function | undefined;
+    if (ctors) {
+      ctors();
+    }
   }
 
   const loaded: LoadedSharedLibrary = {
@@ -419,6 +439,7 @@ function instantiateSharedLibrary(
   return loaded;
 }
 
+// Replay support is sync-only; fork replays via `loadSharedLibrarySync`.
 /**
  * Load a shared library (.so / side module) into a process's address space.
  * Async version — uses async WebAssembly compilation for large modules and
@@ -461,6 +482,7 @@ export function loadSharedLibrarySync(
   name: string,
   wasmBytes: Uint8Array,
   options: LoadSharedLibraryOptions,
+  replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
   const existing = options.loadedLibraries.get(name);
   if (existing) return existing;
@@ -470,7 +492,8 @@ export function loadSharedLibrarySync(
     throw new Error(`${name}: not a shared library (no dylink.0 section)`);
   }
 
-  // Load dependencies first (sync)
+  // Load dependencies first (sync). Replay is not forwarded: dep replay is
+  // out-of-scope; the recursive call instantiates deps freshly.
   for (const dep of metadata.neededDynlibs) {
     if (options.loadedLibraries.has(dep)) continue;
     if (!options.resolveLibrarySync) {
@@ -483,7 +506,7 @@ export function loadSharedLibrarySync(
     loadSharedLibrarySync(dep, depBytes, options);
   }
 
-  return instantiateSharedLibrary(name, wasmBytes, metadata, options);
+  return instantiateSharedLibrary(name, wasmBytes, metadata, options, replay);
 }
 
 /**
@@ -501,9 +524,9 @@ export class DynamicLinker {
   }
 
   /** Open a shared library. Returns a handle (>0) or 0 on error. */
-  dlopenSync(name: string, wasmBytes: Uint8Array): number {
+  dlopenSync(name: string, wasmBytes: Uint8Array, replay?: DylinkReplayOptions): number {
     try {
-      const lib = loadSharedLibrarySync(name, wasmBytes, this.options);
+      const lib = loadSharedLibrarySync(name, wasmBytes, this.options, replay);
       // Check if already mapped to a handle
       for (const [h, l] of this.handleMap) {
         if (l === lib) return h;
