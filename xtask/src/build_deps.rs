@@ -1903,8 +1903,7 @@ fn compute_cache_key_sha_for_package(
     arch: TargetArch,
     abi_version: u32,
 ) -> Result<String, String> {
-    let toml = package_dir.join("package.toml");
-    let manifest = DepsManifest::load(&toml)?;
+    let manifest = DepsManifest::load_with_overlay(package_dir)?;
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
     let sha = compute_sha(&manifest, registry, arch, abi_version, &mut memo, &mut chain)?;
@@ -2249,11 +2248,12 @@ libs = ["lib/lib{name}.a"]
     //
     // The subcommand is a thin shell over `compute_sha`: parse
     // `--package <dir> --arch <wasm32|wasm64>`, load the manifest from
-    // `<dir>/package.toml`, hash it against the supplied registry and
-    // current ABI version, print 64 hex chars to stdout. These tests
-    // pin the helper layer (`compute_cache_key_sha_for_package`) so the
-    // CI pre-flight workflow's contract is locked down even though the
-    // CLI binary itself is exercised by the end-to-end smoke step.
+    // `<dir>/package.toml` plus sibling project metadata, hash it
+    // against the supplied registry and current ABI version, print
+    // 64 hex chars to stdout. These tests pin the helper layer
+    // (`compute_cache_key_sha_for_package`) so the CI pre-flight
+    // workflow's contract is locked down even though the CLI binary
+    // itself is exercised by the end-to-end smoke step.
 
     #[test]
     fn compute_cache_key_sha_subcommand_prints_64_hex_for_real_package() {
@@ -2306,6 +2306,44 @@ libs = ["lib/lib{name}.a"]
         assert_ne!(
             sha_before, sha_after,
             "version bump must change cache_key_sha"
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_sha_uses_build_toml_revision() {
+        let root = tempdir("ckcs-build-revision");
+        write(&root, "libRev", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+
+        let pkg = root.join("libRev");
+        let sha_before = compute_cache_key_sha_for_package(
+            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        )
+        .unwrap();
+
+        std::fs::write(
+            pkg.join("build.toml"),
+            r#"
+script_path = "examples/libs/libRev/build-libRev.sh"
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = 2
+
+[binary]
+index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+
+        let sha_after = compute_cache_key_sha_for_package(
+            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        )
+        .unwrap();
+        assert_ne!(
+            sha_before, sha_after,
+            "build.toml revision bump must change cache_key_sha"
         );
     }
 
