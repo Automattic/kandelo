@@ -1,0 +1,84 @@
+/* Kandelo design tokens — Ember theme.
+ *
+ * Lifted from design_handoff_kandelo_ui/reference/src/themes.js.
+ * Every Kandelo component reads these via var(--k-...). Keep this file
+ * the single source of truth; do not inline hex values in components.
+ */
+
+:root {
+  --k-font-ui: "Inter", -apple-system, system-ui, sans-serif;
+  --k-font-mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
+
+  /* backgrounds */
+  --k-bg: #f5ebd7;
+  --k-surface: #fbf5e6;
+  --k-surface-alt: #efe2c4;
+  --k-surface-sunk: #ebdcb8;
+
+  /* text */
+  --k-text: #2a1f10;
+  --k-text-muted: #6b5a3a;
+  --k-text-faint: #9a8758;
+
+  /* strokes */
+  --k-border: #d9c79a;
+  --k-border-strong: #a48a52;
+
+  /* brand */
+  --k-accent: #dc6529;
+  --k-accent-fire: #f08a2c;
+  --k-accent-ember: #c43d18;
+
+  /* semantics */
+  --k-ok: #5a7d2a;
+  --k-warn: #c98a0e;
+  --k-err: #b5301c;
+  --k-info: #386a8a;
+
+  /* shell — stays a dark vessel (brass + soot oil lamp) */
+  --k-shell-bg: #1a1208;
+  --k-shell-text: #f4dca0;
+  --k-shell-prompt: #f08a2c;
+  --k-shell-dim: #8a7a4a;
+
+  /* framebuffer — also dark, like glass over the kernel */
+  --k-fb-bg: #1a1208;
+  --k-fb-text: #f4dca0;
+
+  /* pane header */
+  --k-pane-head: #efe2c4;
+  --k-pane-head-text: #2a1f10;
+
+  /* radii / shadows */
+  --k-radius: 10px;
+  --k-radius-sm: 6px;
+  --k-shadow:
+    0 1px 0 #fff8e6 inset,
+    0 1px 3px rgba(60, 40, 15, 0.10),
+    0 12px 32px rgba(60, 40, 15, 0.10);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--k-bg);
+  color: var(--k-text);
+  font-family: var(--k-font-ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#kandelo-root {
+  width: 100vw;
+  height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font-family: inherit;
+}
