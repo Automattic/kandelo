@@ -331,27 +331,27 @@ function buildDlopenImports(
     let cursor = readPtr(view, headSlot);
     if (cursor === 0) return;
 
-    // Force linker creation so dlopenSync is callable. Without this the
-    // lazy linker would still be null when we try to replay.
+    // Force linker creation: it's lazily built on the first C-side
+    // __wasm_dlopen call, which the fork child hasn't made yet. We need
+    // it now to drive replay before _start resumes.
     const lk = getLinker();
 
     while (cursor !== 0) {
-      const v = new DataView(memory.buffer);
       let next: number, namePtr: number, nameLen: number, bytesPtr: number, bytesLen: number, memoryBase: number;
       if (ptrWidth === 8) {
-        next = Number(v.getBigUint64(cursor + 0, true));
-        namePtr = Number(v.getBigUint64(cursor + 8, true));
-        nameLen = Number(v.getBigUint64(cursor + 16, true));
-        bytesPtr = Number(v.getBigUint64(cursor + 24, true));
-        bytesLen = Number(v.getBigUint64(cursor + 32, true));
-        memoryBase = Number(v.getBigUint64(cursor + 40, true));
+        next = Number(view.getBigUint64(cursor + 0, true));
+        namePtr = Number(view.getBigUint64(cursor + 8, true));
+        nameLen = Number(view.getBigUint64(cursor + 16, true));
+        bytesPtr = Number(view.getBigUint64(cursor + 24, true));
+        bytesLen = Number(view.getBigUint64(cursor + 32, true));
+        memoryBase = Number(view.getBigUint64(cursor + 40, true));
       } else {
-        next = v.getUint32(cursor + 0, true);
-        namePtr = v.getUint32(cursor + 4, true);
-        nameLen = v.getUint32(cursor + 8, true);
-        bytesPtr = v.getUint32(cursor + 12, true);
-        bytesLen = v.getUint32(cursor + 16, true);
-        memoryBase = v.getUint32(cursor + 20, true);
+        next = view.getUint32(cursor + 0, true);
+        namePtr = view.getUint32(cursor + 4, true);
+        nameLen = view.getUint32(cursor + 8, true);
+        bytesPtr = view.getUint32(cursor + 12, true);
+        bytesLen = view.getUint32(cursor + 16, true);
+        memoryBase = view.getUint32(cursor + 20, true);
       }
 
       const name = decoder.decode(new Uint8Array(memory.buffer, namePtr, nameLen));
@@ -360,10 +360,10 @@ function buildDlopenImports(
       // already pay this cost on the parent's initial dlopen path.
       const bytesCopy = new Uint8Array(new Uint8Array(memory.buffer, bytesPtr, bytesLen));
 
+      // DynamicLinker.dlopenSync returns 0 on error, >0 on success.
       const handle = lk.dlopenSync(name, bytesCopy, { memoryBase });
-      if (handle <= 0) {
-        const err = lk.dlerror() || "unknown";
-        throw new Error(`replay dlopen(${name}) failed: ${err}`);
+      if (handle === 0) {
+        throw new Error(`dlopen(${name}): ${lk.dlerror() || "unknown"}`);
       }
 
       cursor = next;
@@ -380,10 +380,15 @@ function buildDlopenImports(
       const name = decoder.decode(nameBytes);
       const handle = getLinker().dlopenSync(name, bytesCopy);
       if (handle > 0) {
+        // The linker just instantiated this — the map MUST contain it.
+        // A miss means the shared-map ref got rewired and replay would
+        // silently see an empty archive after fork; fail loudly here
+        // instead of corrupting the fork child later.
         const loaded = loadedLibraries.get(name);
-        if (loaded) {
-          persistArchiveEntry(name, bytesCopy, loaded.memoryBase);
+        if (!loaded) {
+          throw new Error(`__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`);
         }
+        persistArchiveEntry(name, bytesCopy, loaded.memoryBase);
       }
       return handle;
     },
