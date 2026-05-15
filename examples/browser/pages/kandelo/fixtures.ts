@@ -100,20 +100,20 @@ export const SHELL_SESSION: ShellSessionEntry[] = [
 // ── Process table ──────────────────────────────────────────────────────────
 
 export const PROCS: ProcessInfo[] = [
-  { pid: 1, ppid: 0, user: "root", cmdline: "/sbin/init", state: "S", virt: "102m", res: "12.4m", cpuPct: 0.0, memPct: 2.4, cpuTime: "0:00.42" },
-  { pid: 2, ppid: 0, user: "root", cmdline: "[kthreadd]", state: "S", virt: "0", res: "0", cpuPct: 0.0, memPct: 0.0, cpuTime: "0:00.00" },
-  { pid: 8, ppid: 2, user: "root", cmdline: "[kworker/0:0H-events_highpri]", state: "I", virt: "0", res: "0", cpuPct: 0.0, memPct: 0.0, cpuTime: "0:00.01" },
-  { pid: 41, ppid: 2, user: "root", cmdline: "[ksoftirqd/0]", state: "S", virt: "0", res: "0", cpuPct: 0.1, memPct: 0.0, cpuTime: "0:00.08" },
-  { pid: 99, ppid: 2, user: "root", cmdline: "[rcu_sched]", state: "S", virt: "0", res: "0", cpuPct: 0.0, memPct: 0.0, cpuTime: "0:00.03" },
-  { pid: 142, ppid: 1, user: "root", cmdline: "/usr/lib/systemd/systemd-journald", state: "S", virt: "38m", res: "5.6m", cpuPct: 0.0, memPct: 1.1, cpuTime: "0:00.12" },
-  { pid: 188, ppid: 1, user: "root", cmdline: "/usr/lib/systemd/systemd-udevd", state: "S", virt: "32m", res: "4.2m", cpuPct: 0.0, memPct: 0.8, cpuTime: "0:00.04" },
-  { pid: 221, ppid: 1, user: "kvfs", cmdline: "kandelo-vfs --image b3:9f2a", state: "S", virt: "88m", res: "14.7m", cpuPct: 0.4, memPct: 2.9, cpuTime: "0:01.20" },
-  { pid: 234, ppid: 1, user: "root", cmdline: "cron", state: "S", virt: "26m", res: "3.1m", cpuPct: 0.0, memPct: 0.6, cpuTime: "0:00.02" },
-  { pid: 308, ppid: 1, user: "root", cmdline: "agetty --noclear tty1", state: "S", virt: "14m", res: "2.4m", cpuPct: 0.0, memPct: 0.5, cpuTime: "0:00.01" },
-  { pid: 412, ppid: 308, user: "user", cmdline: "-bash", state: "S", virt: "24m", res: "4.0m", cpuPct: 0.0, memPct: 0.8, cpuTime: "0:00.05" },
-  { pid: 614, ppid: 1, user: "user", cmdline: "kfb-compositor --mode rgb565", state: "S", virt: "154m", res: "32.1m", cpuPct: 1.2, memPct: 6.3, cpuTime: "0:02.81" },
-  { pid: 728, ppid: 614, user: "user", cmdline: "kclock --tz UTC", state: "S", virt: "46m", res: "8.6m", cpuPct: 0.1, memPct: 1.7, cpuTime: "0:00.30" },
-  { pid: 902, ppid: 412, user: "user", cmdline: "top -b -n 1", state: "R", virt: "88m", res: "17.2m", cpuPct: 4.8, memPct: 3.4, cpuTime: "0:00.18" },
+  { pid: 1, ppid: 0, user: "root", cmdline: "/sbin/init", state: "R", memory: "256.0M" },
+  { pid: 2, ppid: 0, user: "root", cmdline: "[kthreadd]", state: "R", memory: "64.0M" },
+  { pid: 8, ppid: 2, user: "root", cmdline: "[kworker/0:0H-events_highpri]", state: "R", memory: "64.0M" },
+  { pid: 41, ppid: 2, user: "root", cmdline: "[ksoftirqd/0]", state: "R", memory: "64.0M" },
+  { pid: 99, ppid: 2, user: "root", cmdline: "[rcu_sched]", state: "R", memory: "64.0M" },
+  { pid: 142, ppid: 1, user: "root", cmdline: "/usr/lib/systemd/systemd-journald", state: "R", memory: "128.0M" },
+  { pid: 188, ppid: 1, user: "root", cmdline: "/usr/lib/systemd/systemd-udevd", state: "R", memory: "128.0M" },
+  { pid: 221, ppid: 1, user: "kvfs", cmdline: "kandelo-vfs --image b3:9f2a", state: "R", memory: "256.0M" },
+  { pid: 234, ppid: 1, user: "root", cmdline: "cron", state: "R", memory: "128.0M" },
+  { pid: 308, ppid: 1, user: "root", cmdline: "agetty --noclear tty1", state: "R", memory: "128.0M" },
+  { pid: 412, ppid: 308, user: "user", cmdline: "-bash", state: "R", memory: "256.0M" },
+  { pid: 614, ppid: 1, user: "user", cmdline: "kfb-compositor --mode rgb565", state: "R", memory: "512.0M" },
+  { pid: 728, ppid: 614, user: "user", cmdline: "kclock --tz UTC", state: "R", memory: "128.0M" },
+  { pid: 902, ppid: 412, user: "user", cmdline: "top -b -n 1", state: "R", memory: "128.0M" },
 ];
 
 // ── VFS tree ───────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ import markUrl from "../assets/kandelo-mark.png";
 import type { MachineStatus } from "../../../../../host/src/kandelo-ui/kernel-host";
 
 export type ViewId = "machine" | "gallery" | "config" | "internals" | "browse" | "share" | "export";
-export type InternalsTab = "syslog" | "procs" | "vfs" | "mounts" | "kstate" | "memmap" | "syscalls";
+export type InternalsTab = "syslog" | "procs" | "vfs" | "config" | "syscalls";
 
 interface NavItem {
   id: ViewId;
@@ -27,11 +27,9 @@ const NAV_PRIMARY: NavItem[] = [
 const NAV_INTERNALS: { id: InternalsTab; label: string }[] = [
   { id: "syslog", label: "Syslog" },
   { id: "procs", label: "Processes" },
-  { id: "vfs", label: "VFS Tree" },
-  { id: "mounts", label: "Mounts" },
-  { id: "kstate", label: "Kernel State" },
-  { id: "memmap", label: "Memory Map" },
+  { id: "vfs", label: "VFS" },
   { id: "syscalls", label: "Syscall Trace" },
+  { id: "config", label: "Config" },
 ];
 
 const NAV_BROWSE: NavItem[] = [

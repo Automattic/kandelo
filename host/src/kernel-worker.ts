@@ -225,6 +225,8 @@ export interface ProcessSnapshot {
   gid: number;
   /** Sum of mmap-region sizes for this process, in bytes. */
   vsizeBytes: number;
+  /** Current WebAssembly.Memory buffer size for this process, in bytes. */
+  memoryBytes?: number;
   /** 'R' (running) | 'Z' (zombie); future: 'S','D','T','I'. */
   state: "R" | "Z" | "S" | "D" | "T" | "I";
   /** Basename of argv[0], or "[kernel]" for an empty argv. */
@@ -1527,7 +1529,14 @@ export class CentralizedKernelWorker {
     const shared = new Uint8Array(this.kernelMemory!.buffer, this.scratchOffset, n);
     const owned = new Uint8Array(n);
     owned.set(shared);
-    return parseProcSnapshots(owned);
+    const snapshots = parseProcSnapshots(owned);
+    for (const snapshot of snapshots) {
+      const registration = this.processes.get(snapshot.pid);
+      if (registration) {
+        snapshot.memoryBytes = registration.memory.buffer.byteLength;
+      }
+    }
+    return snapshots;
   }
 
   /**

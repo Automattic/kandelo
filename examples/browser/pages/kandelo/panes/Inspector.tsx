@@ -1,9 +1,9 @@
-// Inspector pane — all 7 tabs.
+// Inspector pane — live internals tabs.
 //
 // Each tab reads through the KernelHost interface. MockKernelHost satisfies
 // every method with fixture data so the UI is exercisable end-to-end.
 // LiveKernelHost throws "not implemented" for methods whose kernel-side
-// endpoints haven't landed yet (procs/mounts/kstate/memmap/syscalls); we
+// endpoints haven't landed yet (procs/config/syscalls); we
 // catch those and render a "host endpoint missing" placeholder so designers
 // can still review the visual layout against the mock data while the kernel
 // gaps fill in.
@@ -20,10 +20,8 @@ const TABS = [
   { id: "syslog", label: "Syslog" },
   { id: "procs", label: "Procs" },
   { id: "vfs", label: "VFS" },
-  { id: "mounts", label: "Mounts" },
-  { id: "kstate", label: "Kernel" },
-  { id: "memmap", label: "Memory" },
   { id: "syscalls", label: "Syscalls" },
+  { id: "config", label: "Config" },
 ];
 
 const ICON = (
@@ -44,16 +42,15 @@ export const Inspector: React.FC<{
   isMax?: boolean;
 }> = ({ tab, onTab, dragProps, onCollapse, onMaximize, isMax }) => {
   const lines = useDmesg();
-  const title = tab === "syslog"
-    ? `SYSLOG · dmesg · ${lines.length} lines`
-    : `INSPECTOR · ${LABEL_BY_TAB.get(tab) ?? tab}`;
+  const activeTab = normalizeInspectorTab(tab);
+  const title = LABEL_BY_TAB.get(activeTab) ?? activeTab;
   return (
     <div className="kpane">
       <PaneHead
         icon={ICON}
         title={title}
         tabs={TABS}
-        activeTab={tab}
+        activeTab={activeTab}
         onTab={onTab}
         dragProps={dragProps}
         onCollapse={onCollapse}
@@ -61,17 +58,21 @@ export const Inspector: React.FC<{
         isMax={isMax}
       />
       <div className="kpane-body">
-        {tab === "syslog" && <SyslogTable lines={lines} />}
-        {tab === "procs" && <ProcsTab />}
-        {tab === "vfs" && <VfsTab />}
-        {tab === "mounts" && <MountsTab />}
-        {tab === "kstate" && <KStateTab />}
-        {tab === "memmap" && <MemMapTab />}
-        {tab === "syscalls" && <SyscallsTab />}
+        {activeTab === "syslog" && <SyslogTable lines={lines} />}
+        {activeTab === "procs" && <ProcsTab />}
+        {activeTab === "vfs" && <VfsTab />}
+        {activeTab === "config" && <ConfigTab />}
+        {activeTab === "syscalls" && <SyscallsTab />}
       </div>
     </div>
   );
 };
+
+function normalizeInspectorTab(tab: string): string {
+  if (LABEL_BY_TAB.has(tab)) return tab;
+  if (tab === "mounts" || tab === "kstate" || tab === "memmap") return "config";
+  return "syslog";
+}
 
 // ── Syslog ────────────────────────────────────────────────────────────────
 
@@ -192,7 +193,14 @@ const ProcsTab: React.FC = () => {
   // knows when these happen (kernel-worker posts exit messages, spawn
   // resolves on the main thread); we just re-run the snapshot loader.
   const bump = useProcessEventBump();
+  const [expandedPid, setExpandedPid] = React.useState<number | null>(null);
   const state = useAsyncOnce<ProcessInfo[]>(() => host.enumProcs(), [host, bump]);
+
+  React.useEffect(() => {
+    if (state.kind !== "ready" || expandedPid === null) return;
+    if (!state.value.some((p) => p.pid === expandedPid)) setExpandedPid(null);
+  }, [state, expandedPid]);
+
   if (state.kind === "loading") return <Loading />;
   if (state.kind === "missing") return <MissingEndpoint label="Procs" detail={state.message} />;
   if (state.kind === "error") return <ErrorBox message={state.message} />;
@@ -201,231 +209,480 @@ const ProcsTab: React.FC = () => {
       <thead>
         <tr>
           <th className="num">PID</th>
+          <th className="num">PPID</th>
           <th>USER</th>
-          <th className="num">VIRT</th>
-          <th className="num">RES</th>
-          <th>S</th>
-          <th className="num">%CPU</th>
-          <th className="num">%MEM</th>
-          <th>TIME+</th>
+          <th className="num">MEMORY</th>
           <th>COMMAND</th>
         </tr>
       </thead>
       <tbody>
-        {state.value.map((p) => (
-          <tr key={p.pid}>
-            <td className="num">{p.pid}</td>
-            <td>{p.user}</td>
-            <td className="num">{p.virt}</td>
-            <td className="num">{p.res}</td>
-            <td style={{ color: p.state === "R" ? "var(--k-ok)" : "var(--k-text-muted)" }}>{p.state}</td>
-            <td className="num" style={{ color: p.cpuPct > 1 ? "var(--k-accent)" : "inherit" }}>{p.cpuPct.toFixed(1)}</td>
-            <td className="num">{p.memPct.toFixed(1)}</td>
-            <td className="dim">{p.cpuTime}</td>
-            <td style={{ color: p.cmdline.startsWith("[") ? "var(--k-text-faint)" : "var(--k-text)" }}>{p.cmdline}</td>
-          </tr>
-        ))}
+        {state.value.map((p) => {
+          const expanded = expandedPid === p.pid;
+          return (
+            <React.Fragment key={p.pid}>
+              <tr
+                onClick={() => setExpandedPid((cur) => (cur === p.pid ? null : p.pid))}
+                style={{
+                  cursor: "pointer",
+                  background: expanded ? "color-mix(in oklch, var(--k-accent) 7%, transparent)" : undefined,
+                }}
+              >
+                <td className="num">
+                  <span style={{
+                    display: "inline-grid",
+                    gridTemplateColumns: "12px 1fr",
+                    alignItems: "center",
+                    gap: 5,
+                    minWidth: 54,
+                  }}>
+                    <span style={{ color: "var(--k-text-faint)", textAlign: "center" }}>
+                      {expanded ? "▾" : "▸"}
+                    </span>
+                    <span>{p.pid}</span>
+                  </span>
+                </td>
+                <td className="num dim">{p.ppid}</td>
+                <td>{p.user}</td>
+                <td className="num">{p.memory}</td>
+                <td style={{ color: p.cmdline.startsWith("[") ? "var(--k-text-faint)" : "var(--k-text)" }}>{p.cmdline}</td>
+              </tr>
+              {expanded && (
+                <tr>
+                  <td colSpan={5} style={{ padding: 0, background: "var(--k-surface-sunk)" }}>
+                    <ProcessMemoryDetails pid={p.pid} bump={bump} />
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
+          );
+        })}
       </tbody>
     </table>
   );
 };
 
-// ── VFS tree ──────────────────────────────────────────────────────────────
-
-const VfsTab: React.FC = () => (
-  <div style={{ padding: "6px 0" }}>
-    <VfsNode path="/" depth={0} />
-  </div>
-);
-
-const VfsNode: React.FC<{ path: string; depth: number }> = ({ path, depth }) => {
+const ProcessMemoryDetails: React.FC<{ pid: number; bump: number }> = ({ pid, bump }) => {
   const host = useKernelHost();
-  const [open, setOpen] = React.useState(depth === 0);
-  const state = useAsyncOnce<VfsDirent[]>(
-    () => (open ? host.readDir(path) : Promise.resolve([])),
-    [host, path, open],
-  );
-
+  const state = useAsyncOnce<MemMapEntry[]>(() => host.readMemMap(pid), [host, pid, bump]);
   return (
-    <>
-      {state.kind === "missing" && depth === 0 && (
-        <MissingEndpoint label="VFS" detail={state.message} />
-      )}
-      {state.kind === "error" && depth === 0 && (
-        <ErrorBox message={state.message} />
-      )}
-      {state.kind === "ready" && state.value.map((entry) => {
-        const childPath = path === "/" ? "/" + entry.name : path + "/" + entry.name;
-        const isDir = entry.kind === "d";
-        return (
-          <VfsRow
-            key={childPath}
-            entry={entry}
-            depth={depth + 1}
-            onOpen={isDir ? () => {/* the child VfsNode handles its own open state */} : undefined}
-            childPath={childPath}
-          />
-        );
-      })}
-    </>
-  );
-};
-
-const VfsRow: React.FC<{
-  entry: VfsDirent;
-  depth: number;
-  onOpen?: () => void;
-  childPath: string;
-}> = ({ entry, depth, childPath }) => {
-  const [expanded, setExpanded] = React.useState(false);
-  const isDir = entry.kind === "d";
-  return (
-    <>
-      <div
-        className="kvfs-row"
-        style={{ paddingLeft: 12 + depth * 14 }}
-        onClick={() => isDir && setExpanded((v) => !v)}
-      >
-        <span className="kvfs-caret">{isDir ? (expanded ? "▾" : "▸") : " "}</span>
-        <span className="kvfs-mode">{entry.mode}</span>
-        <span className="kvfs-size">{isDir ? "—" : entry.size}</span>
-        <span className={`kvfs-name ${isDir ? "kvfs-dir" : "kvfs-file"}`}>
-          {isDir ? entry.name + "/" : entry.name}
-        </span>
+    <div style={{ borderTop: "1px solid var(--k-border)", borderBottom: "1px solid var(--k-border)" }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "7px 10px",
+        color: "var(--k-text-muted)",
+        fontFamily: "var(--k-font-mono)",
+        fontSize: 11,
+        borderBottom: "1px solid var(--k-border)",
+      }}>
+        <span>memory map · pid {pid}</span>
+        <span>{state.kind === "ready" ? `${state.value.length} regions` : ""}</span>
       </div>
-      {isDir && expanded && <VfsNode path={childPath} depth={depth} />}
-    </>
+      {state.kind === "loading" && <Loading />}
+      {state.kind === "missing" && <MissingEndpoint label="Memory map" detail={state.message} />}
+      {state.kind === "error" && <ErrorBox message={state.message} />}
+      {state.kind === "ready" && <MemMapTable entries={state.value} />}
+    </div>
   );
 };
 
-// ── Mounts ────────────────────────────────────────────────────────────────
+// ── VFS browser ───────────────────────────────────────────────────────────
 
-const MountsTab: React.FC = () => {
+const VfsTab: React.FC = () => {
   const host = useKernelHost();
-  const state = useAsyncOnce<MountInfo[]>(() => host.getMounts(), [host]);
-  if (state.kind === "loading") return <Loading />;
-  if (state.kind === "missing") return <MissingEndpoint label="Mounts" detail={state.message} />;
-  if (state.kind === "error") return <ErrorBox message={state.message} />;
-  return (
-    <table className="ktable">
-      <thead>
-        <tr><th>SOURCE</th><th>TARGET</th><th>FS</th><th>OPTIONS</th></tr>
-      </thead>
-      <tbody>
-        {state.value.map((m, i) => (
-          <tr key={i}>
-            <td style={{ color: "var(--k-accent)" }}>{m.source}</td>
-            <td>{m.target}</td>
-            <td className="dim">{m.fs}</td>
-            <td className="dim">{m.opts}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+  const [path, setPath] = React.useState("/");
+  const [selected, setSelected] = React.useState<{ path: string; entry: VfsDirent } | null>(null);
+  const [refresh, setRefresh] = React.useState(0);
+  const state = useAsyncOnce<VfsDirent[]>(
+    () => host.readDir(path),
+    [host, path, refresh],
   );
-};
-
-// ── Kernel state ──────────────────────────────────────────────────────────
-
-const KStateTab: React.FC = () => {
-  const host = useKernelHost();
-  const state = useAsyncOnce<KernelStateKV[]>(() => host.getKernelState(), [host]);
-  if (state.kind === "loading") return <Loading />;
-  if (state.kind === "missing") return <MissingEndpoint label="Kernel state" detail={state.message} />;
-  if (state.kind === "error") return <ErrorBox message={state.message} />;
-  return (
-    <table className="ktable">
-      <thead><tr><th>KEY</th><th>VALUE</th></tr></thead>
-      <tbody>
-        {state.value.map((kv) => (
-          <tr key={kv.k}>
-            <td style={{ color: kv.k.startsWith("kandelo.") ? "var(--k-accent)" : "var(--k-text)" }}>{kv.k}</td>
-            <td className="dim">{kv.v}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-};
-
-// ── Memory map ────────────────────────────────────────────────────────────
-
-const MemMapTab: React.FC = () => {
-  const host = useKernelHost();
-  // Pick the most interesting pid to inspect: skip pid 1 (init typically
-  // has no mappings) and prefer the highest pid (likely the user's shell
-  // / latest spawn). User can extend this to a pid picker later.
-  const [pid, setPid] = React.useState<number | null>(null);
-  const [pids, setPids] = React.useState<number[]>([]);
-  // Re-list pids when a process spawns/exits. The selected pid stays
-  // sticky unless it disappears from the list.
-  const bump = useProcessEventBump();
+  const entries = React.useMemo(() => {
+    if (state.kind !== "ready") return [];
+    return state.value.slice().sort((a, b) => {
+      if (a.kind === "d" && b.kind !== "d") return -1;
+      if (a.kind !== "d" && b.kind === "d") return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [state]);
 
   React.useEffect(() => {
-    let cancelled = false;
-    void host.enumProcs().then(
-      (procs) => {
-        if (cancelled) return;
-        const ids = procs.map((p) => p.pid);
-        setPids(ids);
-        setPid((prev) => {
-          if (prev !== null && ids.includes(prev)) return prev;
-          return ids.filter((id) => id !== 1).at(-1) ?? ids[0] ?? null;
-        });
-      },
-      () => { if (!cancelled) { setPids([]); setPid(null); } },
-    );
-    return () => { cancelled = true; };
-  }, [host, bump]);
+    setSelected(null);
+  }, [path]);
 
-  const state = useAsyncOnce<MemMapEntry[]>(
-    () => pid === null ? Promise.resolve([]) : host.readMemMap(pid),
-    // Also refresh maps when the watched pid execs (memory map changes
-    // dramatically on exec).
-    [host, pid, bump],
-  );
-  if (pid === null && state.kind === "ready" && state.value.length === 0) {
-    return <Loading />;
-  }
   if (state.kind === "loading") return <Loading />;
-  if (state.kind === "missing") return <MissingEndpoint label="Memory map" detail={state.message} />;
+  if (state.kind === "missing") return <MissingEndpoint label="VFS" detail={state.message} />;
   if (state.kind === "error") return <ErrorBox message={state.message} />;
+
   return (
-    <>
-      {pids.length > 0 && (
+    <div style={{ height: "100%", display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0 }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "7px 10px",
+        borderBottom: "1px solid var(--k-border)",
+        background: "var(--k-surface-alt)",
+        fontFamily: "var(--k-font-mono)",
+        fontSize: 11,
+      }}>
+        <button
+          type="button"
+          onClick={() => setPath(parentPath(path))}
+          disabled={path === "/"}
+          style={vfsButtonStyle}
+          title="Parent directory"
+        >
+          ..
+        </button>
         <div style={{
-          display: "flex", alignItems: "center", gap: 8,
-          padding: "6px 12px",
-          borderBottom: "1px solid var(--k-border)",
-          background: "var(--k-surface-alt)",
-          fontFamily: "var(--k-font-mono)",
-          fontSize: 11,
+          display: "flex",
+          alignItems: "center",
+          minWidth: 0,
+          flex: 1,
+          color: "var(--k-text)",
+          overflow: "hidden",
         }}>
-          <span style={{ color: "var(--k-text-muted)" }}>pid:</span>
-          <select
-            value={pid ?? ""}
-            onChange={(e) => setPid(Number(e.target.value))}
-            style={{
-              padding: "2px 6px",
-              border: "1px solid var(--k-border)",
-              background: "var(--k-surface-sunk)",
-              borderRadius: "var(--k-radius-sm)",
-              font: "inherit",
-              fontSize: 11,
-              color: "var(--k-text)",
-            }}
-          >
-            {pids.map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <span style={{ color: "var(--k-text-faint)", marginLeft: "auto" }}>
-            {state.kind === "ready" ? `${state.value.length} regions` : ""}
-          </span>
+          {pathSegments(path).map((seg, i, all) => {
+            const nextPath = "/" + all.slice(1, i + 1).join("/");
+            const actual = i === 0 ? "/" : normalizePath(nextPath);
+            const label = i === 0 ? "/" : `${seg}/`;
+            return (
+              <React.Fragment key={`${seg}-${i}`}>
+                {i > 0 && (
+                  <span style={{
+                    color: "var(--k-text-faint)",
+                    fontSize: 10,
+                    lineHeight: 1,
+                    margin: "0 6px",
+                    flexShrink: 0,
+                  }}>
+                    ·
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPath(actual)}
+                  style={{
+                    ...vfsCrumbStyle,
+                    color: i === all.length - 1 ? "var(--k-text)" : "var(--k-accent)",
+                  }}
+                >
+                  {label}
+                </button>
+              </React.Fragment>
+            );
+          })}
         </div>
-      )}
-      <MemMapTable entries={state.kind === "ready" ? state.value : []} />
-    </>
+        <button
+          type="button"
+          onClick={() => setRefresh((n) => n + 1)}
+          style={vfsButtonStyle}
+          title="Refresh"
+        >
+          refresh
+        </button>
+      </div>
+
+      <div style={{
+        minHeight: 0,
+        display: "grid",
+        gridTemplateColumns: selected ? "minmax(260px, 1fr) minmax(260px, 0.95fr)" : "1fr",
+      }}>
+        <div style={{ overflow: "auto", minWidth: 0 }}>
+          <table className="ktable">
+            <thead>
+              <tr>
+                <th>NAME</th>
+                <th>KIND</th>
+                <th>MODE</th>
+                <th className="num">SIZE</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry) => {
+                const childPath = joinPath(path, entry.name);
+                const isSelected = selected?.path === childPath;
+                return (
+                  <tr
+                    key={childPath}
+                    onClick={() => {
+                      if (entry.kind === "d") setPath(childPath);
+                      else setSelected({ path: childPath, entry });
+                    }}
+                    style={{
+                      cursor: "pointer",
+                      background: isSelected ? "color-mix(in oklch, var(--k-accent) 9%, transparent)" : undefined,
+                    }}
+                  >
+                    <td style={{ color: entry.kind === "d" ? "var(--k-accent)" : "var(--k-text)" }}>
+                      {entry.kind === "d" ? `${entry.name}/` : entry.name}
+                      {entry.target && (
+                        <span className="dim" style={{ marginLeft: 8 }}>→ {entry.target}</span>
+                      )}
+                    </td>
+                    <td className="dim">{vfsKindLabel(entry.kind)}</td>
+                    <td className="dim">{entry.mode}</td>
+                    <td className="num">{entry.kind === "d" ? "—" : entry.size}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {entries.length === 0 && (
+            <div style={{
+              padding: 24,
+              color: "var(--k-text-faint)",
+              fontFamily: "var(--k-font-mono)",
+              fontSize: 11.5,
+            }}>
+              Empty directory.
+            </div>
+          )}
+        </div>
+
+        {selected && (
+          <FilePreview
+            key={selected.path}
+            path={selected.path}
+            entry={selected.entry}
+            onClose={() => setSelected(null)}
+          />
+        )}
+      </div>
+    </div>
   );
 };
+
+const FilePreview: React.FC<{
+  path: string;
+  entry: VfsDirent;
+  onClose: () => void;
+}> = ({ path, entry, onClose }) => {
+  const host = useKernelHost();
+  const state = useAsyncOnce<Uint8Array>(() => host.readFile(path), [host, path]);
+  return (
+    <div style={{
+      borderLeft: "1px solid var(--k-border)",
+      minWidth: 0,
+      minHeight: 0,
+      display: "grid",
+      gridTemplateRows: "auto 1fr",
+      background: "var(--k-surface-sunk)",
+    }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "7px 10px",
+        borderBottom: "1px solid var(--k-border)",
+        fontFamily: "var(--k-font-mono)",
+        fontSize: 11,
+      }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{
+            color: "var(--k-text)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}>
+            {path}
+          </div>
+          <div style={{ color: "var(--k-text-faint)", marginTop: 2 }}>
+            {entry.mode} · {entry.size}
+          </div>
+        </div>
+        <button type="button" onClick={onClose} style={vfsButtonStyle}>close</button>
+      </div>
+      <div style={{ overflow: "auto", minHeight: 0 }}>
+        {state.kind === "loading" && <Loading />}
+        {state.kind === "missing" && <MissingEndpoint label="File" detail={state.message} />}
+        {state.kind === "error" && <ErrorBox message={state.message} />}
+        {state.kind === "ready" && <FileBytes bytes={state.value} />}
+      </div>
+    </div>
+  );
+};
+
+const FileBytes: React.FC<{ bytes: Uint8Array }> = ({ bytes }) => {
+  const decoded = React.useMemo(() => decodePreview(bytes), [bytes]);
+  return (
+    <pre style={{
+      margin: 0,
+      padding: 12,
+      color: decoded.binary ? "var(--k-text-muted)" : "var(--k-text)",
+      fontFamily: "var(--k-font-mono)",
+      fontSize: 11.5,
+      lineHeight: 1.5,
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+    }}>
+      {decoded.text}
+    </pre>
+  );
+};
+
+const vfsButtonStyle: React.CSSProperties = {
+  border: "1px solid var(--k-border)",
+  borderRadius: "var(--k-radius-sm)",
+  background: "transparent",
+  color: "var(--k-text-muted)",
+  font: "inherit",
+  fontSize: 10,
+  padding: "3px 7px",
+  cursor: "pointer",
+};
+
+const vfsCrumbStyle: React.CSSProperties = {
+  border: 0,
+  background: "transparent",
+  font: "inherit",
+  padding: 0,
+  cursor: "pointer",
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+function normalizePath(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  return parts.length === 0 ? "/" : `/${parts.join("/")}`;
+}
+
+function joinPath(base: string, name: string): string {
+  return normalizePath(base === "/" ? `/${name}` : `${base}/${name}`);
+}
+
+function parentPath(path: string): string {
+  const parts = normalizePath(path).split("/").filter(Boolean);
+  parts.pop();
+  return parts.length === 0 ? "/" : `/${parts.join("/")}`;
+}
+
+function pathSegments(path: string): string[] {
+  const parts = normalizePath(path).split("/").filter(Boolean);
+  return ["/", ...parts];
+}
+
+function vfsKindLabel(kind: VfsDirent["kind"]): string {
+  switch (kind) {
+    case "d": return "dir";
+    case "f": return "file";
+    case "l": return "link";
+    case "b": return "block";
+    case "c": return "char";
+    case "p": return "pipe";
+    case "s": return "socket";
+  }
+}
+
+function decodePreview(bytes: Uint8Array): { text: string; binary: boolean } {
+  const max = 64 * 1024;
+  const sample = bytes.subarray(0, Math.min(bytes.byteLength, max));
+  let control = 0;
+  for (const b of sample) {
+    if (b === 0 || (b < 32 && b !== 9 && b !== 10 && b !== 13)) control++;
+  }
+  const binary = sample.byteLength > 0 && control / sample.byteLength > 0.02;
+  const suffix = bytes.byteLength > sample.byteLength
+    ? `\n\n[truncated: showing ${sample.byteLength} of ${bytes.byteLength} bytes]`
+    : "";
+  if (!binary) {
+    return {
+      text: new TextDecoder("utf-8", { fatal: false }).decode(sample) + suffix,
+      binary,
+    };
+  }
+  const rows: string[] = [];
+  const hex = Array.from(sample.subarray(0, Math.min(sample.byteLength, 4096)));
+  for (let i = 0; i < hex.length; i += 16) {
+    const chunk = hex.slice(i, i + 16);
+    rows.push(
+      `${i.toString(16).padStart(8, "0")}  ` +
+      chunk.map((b) => b.toString(16).padStart(2, "0")).join(" ").padEnd(47, " ") +
+      "  " +
+      chunk.map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : ".")).join(""),
+    );
+  }
+  const binarySuffix = bytes.byteLength > hex.length
+    ? `\n\n[truncated: showing ${hex.length} of ${bytes.byteLength} bytes]`
+    : suffix;
+  return { text: rows.join("\n") + binarySuffix, binary };
+}
+
+// ── Config ────────────────────────────────────────────────────────────────
+
+const ConfigTab: React.FC = () => {
+  const host = useKernelHost();
+  const mounts = useAsyncOnce<MountInfo[]>(() => host.getMounts(), [host]);
+  const kstate = useAsyncOnce<KernelStateKV[]>(() => host.getKernelState(), [host]);
+  return (
+    <div style={{ height: "100%", overflow: "auto", paddingBottom: 8 }}>
+      <ConfigSection title="Kernel">
+        {kstate.kind === "loading" && <Loading />}
+        {kstate.kind === "missing" && <MissingEndpoint label="Kernel state" detail={kstate.message} />}
+        {kstate.kind === "error" && <ErrorBox message={kstate.message} />}
+        {kstate.kind === "ready" && (
+          <table className="ktable">
+            <thead><tr><th>KEY</th><th>VALUE</th></tr></thead>
+            <tbody>
+              {kstate.value.map((kv) => (
+                <tr key={kv.k}>
+                  <td style={{ color: kv.k.startsWith("kandelo.") ? "var(--k-accent)" : "var(--k-text)" }}>{kv.k}</td>
+                  <td className="dim">{kv.v}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </ConfigSection>
+
+      <ConfigSection title="Mounts">
+        {mounts.kind === "loading" && <Loading />}
+        {mounts.kind === "missing" && <MissingEndpoint label="Mounts" detail={mounts.message} />}
+        {mounts.kind === "error" && <ErrorBox message={mounts.message} />}
+        {mounts.kind === "ready" && (
+          <table className="ktable">
+            <thead>
+              <tr><th>SOURCE</th><th>TARGET</th><th>FS</th><th>OPTIONS</th></tr>
+            </thead>
+            <tbody>
+              {mounts.value.map((m, i) => (
+                <tr key={i}>
+                  <td style={{ color: "var(--k-accent)" }}>{m.source}</td>
+                  <td>{m.target}</td>
+                  <td className="dim">{m.fs}</td>
+                  <td className="dim">{m.opts}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </ConfigSection>
+    </div>
+  );
+};
+
+const ConfigSection: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <section style={{ borderBottom: "1px solid var(--k-border)" }}>
+    <div style={{
+      padding: "8px 10px",
+      background: "var(--k-surface-alt)",
+      color: "var(--k-text-muted)",
+      fontFamily: "var(--k-font-mono)",
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: "0.04em",
+      textTransform: "uppercase",
+      borderBottom: "1px solid var(--k-border)",
+    }}>
+      {title}
+    </div>
+    {children}
+  </section>
+);
 
 const MemMapTable: React.FC<{ entries: MemMapEntry[] }> = ({ entries }) => {
   if (entries.length === 0) {
@@ -466,6 +723,7 @@ const SyscallsTab: React.FC = () => {
   const host = useKernelHost();
   const [events, setEvents] = React.useState<SyscallEvent[]>([]);
   const [missingMsg, setMissingMsg] = React.useState<string | null>(null);
+  const [recording, setRecording] = React.useState(true);
 
   React.useEffect(() => {
     let off: (() => void) | null = null;
@@ -473,30 +731,63 @@ const SyscallsTab: React.FC = () => {
       // Seed with history if available.
       const history = host.syscallHistory();
       setEvents(history);
-      off = host.subscribeSyscalls((e) => setEvents((prev) => [...prev, e].slice(-500)));
+      if (recording) {
+        off = host.subscribeSyscalls((e) => setEvents((prev) => [...prev, e].slice(-500)));
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("not implemented yet")) setMissingMsg(msg);
       else throw err;
     }
     return () => { if (off) off(); };
-  }, [host]);
+  }, [host, recording]);
 
   if (missingMsg) return <MissingEndpoint label="Syscalls" detail={missingMsg} />;
   return (
-    <table className="ktable">
-      <thead><tr><th>TIME</th><th>CALL</th><th>ARGS</th><th>RETURN</th></tr></thead>
-      <tbody>
-        {events.map((e, i) => (
-          <tr key={i}>
-            <td className="dim">{e.t}</td>
-            <td style={{ color: "var(--k-accent)" }}>{e.call}</td>
-            <td>{e.args}</td>
-            <td style={{ color: e.ret.startsWith("-") ? "var(--k-err)" : "var(--k-ok)" }}>{e.ret}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{
+        display: "flex",
+        justifyContent: "flex-end",
+        padding: "8px 10px",
+        borderBottom: "1px solid var(--k-border)",
+      }}>
+        <button
+          type="button"
+          aria-pressed={recording}
+          onClick={() => setRecording((v) => !v)}
+          style={{
+            border: "1px solid var(--k-border)",
+            borderRadius: "var(--k-radius-sm)",
+            background: recording ? "color-mix(in oklch, var(--k-accent) 16%, transparent)" : "transparent",
+            color: recording ? "var(--k-accent)" : "var(--k-text-muted)",
+            fontFamily: "var(--k-font-mono)",
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            padding: "5px 9px",
+            cursor: "pointer",
+          }}
+        >
+          {recording ? "Recording" : "Paused"}
+        </button>
+      </div>
+      <div style={{ overflow: "auto", minHeight: 0 }}>
+        <table className="ktable">
+          <thead><tr><th>TIME</th><th>CALL</th><th>ARGS</th><th>RETURN</th></tr></thead>
+          <tbody>
+            {events.map((e, i) => (
+              <tr key={i}>
+                <td className="dim">{e.t}</td>
+                <td style={{ color: "var(--k-accent)" }}>{e.call}</td>
+                <td>{e.args}</td>
+                <td style={{ color: e.ret.startsWith("-") ? "var(--k-err)" : "var(--k-ok)" }}>{e.ret}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 };
 

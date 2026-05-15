@@ -60,6 +60,7 @@ export interface KernelProcessSnapshot {
   uid: number;
   gid: number;
   vsizeBytes: number;
+  memoryBytes?: number;
   state: "R" | "Z" | "S" | "D" | "T" | "I";
   comm: string;
   cmdline: string;
@@ -261,11 +262,7 @@ export interface ProcessInfo {
   user: string;
   cmdline: string;
   state: "R" | "S" | "D" | "T" | "Z" | "I";
-  virt: string;                     // human-readable ("88m")
-  res: string;
-  cpuPct: number;
-  memPct: number;
-  cpuTime: string;
+  memory: string;                   // WebAssembly.Memory size when available
 }
 
 export type VfsKind = "d" | "f" | "l" | "b" | "c" | "p" | "s";
@@ -1176,11 +1173,7 @@ function toProcessInfo(s: KernelProcessSnapshot): ProcessInfo {
     user: s.uid === 0 ? "root" : String(s.uid),
     cmdline: s.cmdline,
     state: s.state,
-    virt: humanSize(s.vsizeBytes),
-    res: "0",                // not tracked yet; future kernel work
-    cpuPct: 0,
-    memPct: 0,
-    cpuTime: "0:00.00",
+    memory: humanSize(s.memoryBytes ?? s.vsizeBytes),
   };
 }
 
@@ -1204,8 +1197,7 @@ function parseProcEntry(fs: FileSystemLike, pid: number): ProcessInfo {
     statusMap[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
   }
   const user = statusMap.Uid?.split(/\s+/)[0] ?? "0";
-  const virt = parseStatusBytes(statusMap.VmSize);
-  const res = parseStatusBytes(statusMap.VmRSS);
+  const memory = parseStatusBytes(statusMap.VmSize);
 
   let cmdline = "";
   try {
@@ -1220,11 +1212,7 @@ function parseProcEntry(fs: FileSystemLike, pid: number): ProcessInfo {
     user: numericUidToLabel(user),
     cmdline,
     state,
-    virt,
-    res,
-    cpuPct: 0,
-    memPct: 0,
-    cpuTime: "0:00.00",
+    memory,
   };
 }
 
