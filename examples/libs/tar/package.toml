@@ -1,7 +1,6 @@
 kind = "program"
 name = "tar"
 version = "1.35"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://git.savannah.gnu.org/cgit/tar.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/tar/build-tar.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "tar"
 wasm = "tar.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/tar-1.35-rev1-abi7-wasm32-87d73b3d.tar.zst"
-archive_sha256 = "63967461991b706eeea05b889ab10534cd701f4e653ce5b9702fa2a1f7f8150b"

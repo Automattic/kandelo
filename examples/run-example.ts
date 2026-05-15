@@ -92,6 +92,7 @@ const builtinPrograms: Record<string, string | null> = {
     "/bin/sed": sedWasm,
     "/usr/bin/sed": sedWasm,
     "gencat": resolve(repoRoot, "examples/gencat.wasm"),
+    "/bin/gencat": resolve(repoRoot, "examples/gencat.wasm"),
     "/usr/bin/gencat": resolve(repoRoot, "examples/gencat.wasm"),
     "git": gitWasm,
     "/usr/bin/git": gitWasm,
@@ -258,6 +259,12 @@ function resolveProgram(path: string): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
     if (mapped) {
         return loadBytes(mapped);
+    }
+    // execlp() searches the inherited host/dev-shell PATH. In CI that can
+    // resolve tools like gencat to /nix/store/.../bin/gencat; never load that
+    // host ELF as a guest program.
+    if (path.endsWith("/gencat")) {
+        return loadBytes(resolve(repoRoot, "examples/gencat.wasm"));
     }
     const kernelCwd = process.env.KERNEL_CWD || process.cwd();
     const candidates = [

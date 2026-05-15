@@ -110,17 +110,22 @@ request_slowlog_trace_depth = 0
 // process SHM in our wasm port — the static worker pool is small and
 // warmups are fast). validate_timestamps=0 is safe because VFS files
 // don't change at runtime.
-// opcache.so is loaded via `zend_extension=` from the VFS path we
-// stage below. Without that line PHP doesn't load opcache and the
-// [opcache] INI section is a no-op.
-const PHP_INI = `zend_extension=/usr/lib/php/extensions/opcache.so
+//
+// TEMPORARILY DISABLED for the binary-resolution-via-index-ledger
+// Phase 12.3 verification: when PHP is source-built from the current
+// recipe (cache_key mismatch with the indexed rev2 archive), opcache.so
+// loads via dlopen successfully but traps with "index out of bounds"
+// during zend_activate_modules' per-request startup. Tracked
+// separately as a pre-existing PHP-on-wasm bug surfaced by the
+// resolver's correct-by-design source-build fallback. Re-enable
+// after a working rev=N PHP archive is republished AND the trap is
+// debugged.
+const PHP_INI = `; opcache disabled — see build-nginx-php-vfs-image.ts comment
+;zend_extension=/usr/lib/php/extensions/opcache.so
 
 [opcache]
-opcache.enable=1
-opcache.enable_cli=1
-opcache.memory_consumption=64
-opcache.max_accelerated_files=2000
-opcache.validate_timestamps=0
+opcache.enable=0
+opcache.enable_cli=0
 `;
 
 const FPM_ROUTER_PHP = `<?php

@@ -1,7 +1,6 @@
 kind = "program"
 name = "make"
 version = "4.4.1"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://git.savannah.gnu.org/cgit/make.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/make/build-make.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "make"
 wasm = "make.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/make-4.4.1-rev1-abi7-wasm32-9186615f.tar.zst"
-archive_sha256 = "98f8cfbcc9ec960b2c7bb4c78176af995ba28e1319544894636046c7ca602ffb"

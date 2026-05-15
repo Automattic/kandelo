@@ -1,7 +1,6 @@
 kind = "program"
 name = "curl"
 version = "8.11.1"
-revision = 1
 kernel_abi = 7
 # curl is a side-output of libcurl's build (libcurl's autoconf produces
 # both lib/libcurl.a and src/curl). Keep this manifest aligned with
@@ -26,11 +25,7 @@ url = "https://github.com/curl/curl/blob/master/COPYING"
 
 [build]
 script_path = "examples/libs/curl/build-curl.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "curl"
 wasm = "curl.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/curl-8.11.1-rev1-abi7-wasm32-9465cc61.tar.zst"
-archive_sha256 = "827b12796241b661e5a8357c5ccb2b7bbc7fc0052bedca5b87610e72942d6fae"

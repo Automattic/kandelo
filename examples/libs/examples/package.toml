@@ -1,7 +1,6 @@
 kind = "program"
 name = "examples"
 version = "0.1.0"
-revision = 1
 
 [source]
 url = "https://github.com/brandonpayton/wasm-posix-kernel"

@@ -1,7 +1,6 @@
 kind = "program"
 name = "xz"
 version = "5.6.2"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://github.com/tukaani-project/xz/blob/main/COPYING"
 
 [build]
 script_path = "examples/libs/xz/build-xz.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "xz"
 wasm = "xz.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/xz-5.6.2-rev1-abi7-wasm32-b7bf15e5.tar.zst"
-archive_sha256 = "92e8777553f5ac5cf607b6ba99124b0dae5e61932c2a72a205994317ecf8afba"

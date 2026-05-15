@@ -1,7 +1,6 @@
 kind = "program"
 name = "bash"
 version = "5.2.37"
-revision = 1
 kernel_abi = 7
 depends_on = ["ncurses@6.5"]
 
@@ -15,11 +14,7 @@ url = "https://git.savannah.gnu.org/cgit/bash.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/bash/build-bash.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "bash"
 wasm = "bash.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/bash-5.2.37-rev1-abi7-wasm32-d4880ab3.tar.zst"
-archive_sha256 = "8f5989333a1eae83f9014f51fa11b031a6bb415b177af933e507ba61d6d7a6af"

@@ -46,7 +46,10 @@ use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
-use crate::pkg_manifest::{DepRef, DepsManifest, HostTool, ManifestKind, TargetArch};
+use crate::index_toml::{self, EntryStatus};
+use crate::pkg_manifest::{
+    BinarySource, BuildToml, DepRef, DepsManifest, HostTool, ManifestKind, TargetArch,
+};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::remote_fetch;
 use crate::repo_root;
@@ -820,8 +823,10 @@ fn ensure_built_uncached(
     //                        env-var contract; validation is
     //                        non-emptiness of OUT_DIR rather than a
     //                        declared outputs list.
-    //   (Library | Program,_) — try `[binary]` remote fetch first,
-    //                        then fall back to the build script.
+    //   (Library | Program,_) — try `package.pr.toml` / source
+    //                        `[binary]` direct archives first, then
+    //                        the `build.toml` index path, then fall
+    //                        back to the build script.
     match (target.kind, target.build.script_path.is_some()) {
         (ManifestKind::Source, false) => {
             let parent = canonical
@@ -890,37 +895,58 @@ fn ensure_built_uncached(
             Ok((canonical, transitive))
         }
         (ManifestKind::Library | ManifestKind::Program, _) => {
-            // Resolution priority 3: remote fetch from
-            // `[binary].archive_url`. The 4-step verification (archive
-            // sha, target_arch, abi_versions, cache_key_sha) lives in
-            // `remote_fetch::fetch_and_install`. Any failure logs and
-            // falls through to the source build below; a remote-fetch
-            // error should never cause the resolver to refuse to
-            // produce an artifact.
+            // Resolution priority 3a: direct archive fetch from the
+            // source manifest's `[binary]` map. In normal source
+            // package.toml files this map is empty post index-ledger
+            // migration, but CI writes sibling `package.pr.toml`
+            // overlays with direct file:// archives for same-run
+            // matrix outputs. Those must win over the durable
+            // `build.toml` index below.
             //
-            // `force_rebuild` short-circuits remote fetch — re-installing
-            // the same archive_url would defeat the whole point of the
-            // force flag (the workflow opted in because it suspects the
-            // existing archive is stale). Falls through to source build.
-            if !force_rebuild && let Some(binary) = target.binary.get(&arch) {
+            // Resolution priority 3b: index-based remote fetch. The
+            // resolver loads the sibling `build.toml`, resolves its
+            // `[binary]` block to an index URL (or a direct archive
+            // URL), then looks up this package's entry. Status
+            // `success` fetches the current archive; status
+            // `failed`/`pending`/`building` falls back to the
+            // last-green `fallback_*` archive when one is preserved.
+            //
+            // Any failure along the way logs and falls through to the
+            // source build — a remote-fetch error should never cause
+            // the resolver to refuse to produce an artifact.
+            //
+            // `force_rebuild` short-circuits remote fetch entirely.
+            if !force_rebuild {
                 let cache_key_sha_hex = hex(&sha);
-                match remote_fetch::fetch_and_install(
-                    binary,
-                    &canonical,
+                if let Some(binary) = target.binary.get(&arch) {
+                    match remote_fetch::fetch_and_install(
+                        binary,
+                        &canonical,
+                        target,
+                        arch,
+                        abi_version,
+                        &cache_key_sha_hex,
+                    ) {
+                        Ok(()) => return Ok((canonical, transitive)),
+                        Err(e) => {
+                            eprintln!(
+                                "warning: direct binary fetch for {} from {} failed ({}); \
+                                 falling back to indexed binary/source build",
+                                target.spec(),
+                                binary.archive_url,
+                                e,
+                            );
+                        }
+                    }
+                }
+                if let Some(()) = try_index_install(
                     target,
                     arch,
                     abi_version,
+                    &canonical,
                     &cache_key_sha_hex,
                 ) {
-                    Ok(()) => return Ok((canonical, transitive)),
-                    Err(e) => {
-                        eprintln!(
-                            "warning: remote fetch for {} from {} failed ({}); falling back to source build",
-                            target.spec(),
-                            binary.archive_url,
-                            e,
-                        );
-                    }
+                    return Ok((canonical, transitive));
                 }
             }
 
@@ -940,6 +966,157 @@ fn ensure_built_uncached(
             Ok((canonical, transitive))
         }
     }
+}
+
+/// Attempt to install a prebuilt archive from this package's
+/// `build.toml`-declared binary source. Returns `Some(())` on success
+/// (caller returns the canonical path); returns `None` for any
+/// "fall through to source build" condition (no build.toml, no
+/// archive in the index, network failure, sha mismatch, etc.).
+///
+/// Logging is on stderr (matching the prior remote-fetch
+/// implementation's UX): users see warnings about why the index
+/// path was skipped, but the build still completes via source.
+fn try_index_install(
+    target: &DepsManifest,
+    arch: TargetArch,
+    abi_version: u32,
+    canonical: &Path,
+    cache_key_sha_hex: &str,
+) -> Option<()> {
+    // 1. Load build.toml. Source manifests without one (e.g. an
+    //    upstream package that hasn't been ported to the new schema
+    //    yet) fall through silently — Phase 9's migration should
+    //    leave every first-party package with a build.toml; the
+    //    silent fall-through is for clean integration with
+    //    third-party manifests that might not.
+    let build = BuildToml::load(&target.dir).ok()?;
+
+    // 2. Resolve the binary source to a concrete URL pair. Direct
+    //    form: use the URL + sha verbatim. Indexed form: fetch
+    //    index.toml + look up this package. CI can override indexed
+    //    URLs with WASM_POSIX_BINARY_INDEX_URL so staging/prepare
+    //    jobs consume the release they are publishing instead of the
+    //    committed durable-release default.
+    let (archive_url, archive_sha256) = match &build.binary {
+        BinarySource::Direct { url, sha256 } => (url.clone(), sha256.clone()),
+        BinarySource::Indexed { .. } => {
+            let index_url = std::env::var("WASM_POSIX_BINARY_INDEX_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| build.binary.resolve_index_url(abi_version))?;
+            let cache_dir = default_cache_root().join("indexes");
+            let index = match index_toml::fetch_index(&index_url, &cache_dir) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    eprintln!(
+                        "warning: index fetch for {} from {} failed ({}); \
+                         falling back to source build",
+                        target.spec(),
+                        index_url,
+                        e,
+                    );
+                    return None;
+                }
+            };
+            let entry = match index.lookup(&target.name, &target.version, arch) {
+                Some(e) => e,
+                None => {
+                    eprintln!(
+                        "warning: no index entry for {} in {}; \
+                         falling back to source build",
+                        target.spec(),
+                        index_url,
+                    );
+                    return None;
+                }
+            };
+            // Pick the authoritative archive fields for the entry's
+            // current status. Success → current archive_*; other
+            // statuses → fallback_* if preserved; otherwise nothing
+            // usable and we fall through.
+            let (rel_url, sha) = match entry.status {
+                EntryStatus::Success
+                    if entry.archive_url.is_some() && entry.archive_sha256.is_some() =>
+                {
+                    (
+                        entry.archive_url.as_ref().unwrap().clone(),
+                        entry.archive_sha256.as_ref().unwrap().clone(),
+                    )
+                }
+                EntryStatus::Failed | EntryStatus::Pending | EntryStatus::Building
+                    if entry.fallback_archive_url.is_some()
+                        && entry.fallback_archive_sha256.is_some() =>
+                {
+                    eprintln!(
+                        "note: {} index entry is status={:?}; \
+                         using last-green fallback archive",
+                        target.spec(),
+                        entry.status,
+                    );
+                    (
+                        entry.fallback_archive_url.as_ref().unwrap().clone(),
+                        entry.fallback_archive_sha256.as_ref().unwrap().clone(),
+                    )
+                }
+                _ => {
+                    eprintln!(
+                        "warning: {} index entry status={:?} has no usable archive; \
+                         falling back to source build",
+                        target.spec(),
+                        entry.status,
+                    );
+                    return None;
+                }
+            };
+            (resolve_relative_url(&index_url, &rel_url), sha)
+        }
+    };
+
+    // 3. Fetch + verify + install. Any failure (sha mismatch, arch
+    //    mismatch, abi mismatch, cache_key mismatch, transport
+    //    error) falls through.
+    match remote_fetch::fetch_and_install_direct(
+        &archive_url,
+        &archive_sha256,
+        canonical,
+        target,
+        arch,
+        abi_version,
+        cache_key_sha_hex,
+    ) {
+        Ok(()) => Some(()),
+        Err(e) => {
+            eprintln!(
+                "warning: index-based fetch for {} from {} failed ({}); \
+                 falling back to source build",
+                target.spec(),
+                archive_url,
+                e,
+            );
+            None
+        }
+    }
+}
+
+/// Resolve `rel` against `base` for archive-URL lookup. If `rel`
+/// already carries a scheme (`file://` / `http://` / `https://`) it
+/// passes through unchanged; otherwise it's appended to `base`'s
+/// parent directory (i.e. `https://host/dir/index.toml` + `foo.tar.zst`
+/// → `https://host/dir/foo.tar.zst`).
+fn resolve_relative_url(base: &str, rel: &str) -> String {
+    if rel.starts_with("file://")
+        || rel.starts_with("http://")
+        || rel.starts_with("https://")
+    {
+        return rel.to_string();
+    }
+    // Strip the last path segment of `base` and join with `rel`.
+    let last_slash = base.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let mut out = String::with_capacity(last_slash + rel.len());
+    out.push_str(&base[..last_slash]);
+    out.push_str(rel);
+    out
 }
 
 /// Build the `WASM_POSIX_DEP_PKG_CONFIG_PATH` value for a build script.
@@ -1764,8 +1941,7 @@ fn compute_cache_key_sha_for_package(
     arch: TargetArch,
     abi_version: u32,
 ) -> Result<String, String> {
-    let toml = package_dir.join("package.toml");
-    let manifest = DepsManifest::load(&toml)?;
+    let manifest = DepsManifest::load_with_overlay(package_dir)?;
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
     let sha = compute_sha(&manifest, registry, arch, abi_version, &mut memo, &mut chain)?;
@@ -1890,7 +2066,6 @@ mod tests {
 kind = "library"
 name = "{name}"
 version = "{version}"
-revision = 1
 depends_on = [{depends}]
 
 [source]
@@ -1984,82 +2159,14 @@ libs = ["lib/lib{name}.a"]
         assert_eq!(s1, s2, "sha must be deterministic");
     }
 
-    #[test]
-    fn compute_sha_changes_when_revision_bumps() {
-        let root = tempdir("sha-rev-bump");
-        write(&root, "libX", "1.0.0", &[]);
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let m1 = reg.load("libX").unwrap();
-        let sha1 = compute_sha(
-            &m1,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-
-        // Bump revision in-place by editing the file.
-        let toml_path = root.join("libX/package.toml");
-        let text = std::fs::read_to_string(&toml_path).unwrap();
-        let bumped = text.replace("revision = 1", "revision = 2");
-        std::fs::write(&toml_path, bumped).unwrap();
-
-        let m2 = reg.load("libX").unwrap();
-        let sha2 = compute_sha(
-            &m2,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        assert_ne!(sha1, sha2, "revision bump must invalidate cache key");
-    }
-
-    #[test]
-    fn compute_sha_transitively_invalidates_consumers() {
-        let root = tempdir("sha-transitive");
-        write(&root, "libDep", "1.0.0", &[]);
-        write(&root, "libCons", "1.0.0", &["libDep@1.0.0"]);
-        let reg = Registry {
-            roots: vec![root.clone()],
-        };
-        let cons = reg.load("libCons").unwrap();
-        let sha_before = compute_sha(
-            &cons,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-
-        // Bump the dep's revision: consumer's sha must change.
-        let dep_path = root.join("libDep/package.toml");
-        let text = std::fs::read_to_string(&dep_path).unwrap();
-        std::fs::write(&dep_path, text.replace("revision = 1", "revision = 9"))
-            .unwrap();
-
-        let sha_after = compute_sha(
-            &cons,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &mut BTreeMap::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        assert_ne!(
-            sha_before, sha_after,
-            "bumping a dep's revision must invalidate its consumers"
-        );
-    }
+    // Tests asserting "bumping `revision = N` in package.toml changes
+    // the cache key" were removed when revision moved out of source
+    // package.toml (binary-resolution-via-index-ledger design §3.1):
+    // source manifests no longer carry a revision counter and
+    // validate_source rejects the field. compute_sha still hashes
+    // m.revision (defaulted to 1 from validate_common) so the cache
+    // key for a source build remains deterministic; the bumping
+    // behavior is just no longer expressible via a source edit.
 
     #[test]
     fn compute_sha_rejects_version_mismatch() {
@@ -2179,11 +2286,12 @@ libs = ["lib/lib{name}.a"]
     //
     // The subcommand is a thin shell over `compute_sha`: parse
     // `--package <dir> --arch <wasm32|wasm64>`, load the manifest from
-    // `<dir>/package.toml`, hash it against the supplied registry and
-    // current ABI version, print 64 hex chars to stdout. These tests
-    // pin the helper layer (`compute_cache_key_sha_for_package`) so the
-    // CI pre-flight workflow's contract is locked down even though the
-    // CLI binary itself is exercised by the end-to-end smoke step.
+    // `<dir>/package.toml` plus sibling project metadata, hash it
+    // against the supplied registry and current ABI version, print
+    // 64 hex chars to stdout. These tests pin the helper layer
+    // (`compute_cache_key_sha_for_package`) so the CI pre-flight
+    // workflow's contract is locked down even though the CLI binary
+    // itself is exercised by the end-to-end smoke step.
 
     #[test]
     fn compute_cache_key_sha_subcommand_prints_64_hex_for_real_package() {
@@ -2221,11 +2329,13 @@ libs = ["lib/lib{name}.a"]
         )
         .unwrap();
 
-        // Bump revision in-place; helper should re-hash and produce a
-        // different sha.
+        // Bump version in-place (revision lives in index.toml post
+        // binary-resolution-via-index-ledger; the source-tree mutable
+        // field that affects the cache key is now version). Helper
+        // should re-hash and produce a different sha.
         let toml_path = pkg.join("package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
-        std::fs::write(&toml_path, text.replace("revision = 1", "revision = 7")).unwrap();
+        std::fs::write(&toml_path, text.replace("version = \"1.0.0\"", "version = \"1.0.1\"")).unwrap();
 
         let sha_after = compute_cache_key_sha_for_package(
             &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
@@ -2233,7 +2343,45 @@ libs = ["lib/lib{name}.a"]
         .unwrap();
         assert_ne!(
             sha_before, sha_after,
-            "revision bump must change cache_key_sha"
+            "version bump must change cache_key_sha"
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_sha_uses_build_toml_revision() {
+        let root = tempdir("ckcs-build-revision");
+        write(&root, "libRev", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+
+        let pkg = root.join("libRev");
+        let sha_before = compute_cache_key_sha_for_package(
+            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        )
+        .unwrap();
+
+        std::fs::write(
+            pkg.join("build.toml"),
+            r#"
+script_path = "examples/libs/libRev/build-libRev.sh"
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = 2
+
+[binary]
+index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+
+        let sha_after = compute_cache_key_sha_for_package(
+            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        )
+        .unwrap();
+        assert_ne!(
+            sha_before, sha_after,
+            "build.toml revision bump must change cache_key_sha"
         );
     }
 
@@ -2336,7 +2484,6 @@ libs = ["lib/lib{name}.a"]
 kind = "program"
 name = "{name}"
 version = "{version}"
-revision = 1
 depends_on = []
 
 [source]
@@ -2599,7 +2746,6 @@ spdx = "TestLicense"
 kind = "library"
 name = "{name}"
 version = "{version}"
-revision = 1
 depends_on = [{depends}]
 
 [source]
@@ -3263,7 +3409,6 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 
 [source]
 url = "https://example.test/pcre2.tar.bz2"
@@ -3537,67 +3682,10 @@ libs = ["lib/libConsumer.a"]
         hex(&out)
     }
 
-    /// Build a package.toml / build script pair for remote-fetch tests.
-    /// Declared output is `lib/out.a` (kept simple — the prefix-less
-    /// name avoids the double-`lib` confusion, and is the same string
-    /// the test archive uses). The build script also drops a sentinel
-    /// `via-build` file, used by fall-through tests to detect that the
-    /// source build ran rather than the remote fetch.
-    fn write_lib_with_binary(
-        root: &Path,
-        name: &str,
-        archive_path: &Path,
-        archive_sha: &str,
-    ) {
-        let lib_dir = root.join(name);
-        std::fs::create_dir_all(&lib_dir).unwrap();
-
-        let archive_url = format!("file://{}", archive_path.display());
-        let deps_toml = format!(
-            r#"
-kind = "library"
-name = "{name}"
-version = "1.0.0"
-revision = 1
-depends_on = []
-
-[source]
-url = "https://example.test/{name}-1.0.0.tar.gz"
-sha256 = "{:0>64}"
-
-[license]
-spdx = "TestLicense"
-
-[outputs]
-libs = ["lib/out.a"]
-
-[binary]
-archive_url = "{archive_url}"
-archive_sha256 = "{archive_sha}"
-"#,
-            ""
-        );
-        std::fs::write(lib_dir.join("package.toml"), deps_toml).unwrap();
-
-        let script = "#!/bin/bash\nset -euo pipefail\n\
-mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\n\
-echo BUILD > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\n\
-touch \"$WASM_POSIX_DEP_OUT_DIR/via-build\"\n";
-        let script_path = lib_dir.join(format!("build-{name}.sh"));
-        std::fs::write(&script_path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut p = std::fs::metadata(&script_path).unwrap().permissions();
-            p.set_mode(0o755);
-            std::fs::set_permissions(&script_path, p).unwrap();
-        }
-    }
-
     /// Build the archived `manifest.toml` text for a library named
     /// `name`. `arch` and `abi_versions` and `cache_key_sha` populate
     /// the `[compatibility]` block. Output declaration is `lib/out.a`
-    /// to match `write_lib_with_binary`.
+    /// to match `write_lib_with_build_toml`.
     fn archived_manifest_text(
         name: &str,
         arch: &str,
@@ -3636,30 +3724,225 @@ cache_key_sha = "{cache_key_sha}"
         )
     }
 
-    #[test]
-    fn remote_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
-        let root = tempdir("rf-happy-reg");
-        let cache = tempdir("rf-happy-cache");
-        let archive_dir = tempdir("rf-happy-archive");
+    /// Write a source `package.toml` + sibling `build.toml` for
+    /// index-lookup-based resolution tests. The `build.toml`'s
+    /// `[binary]` block points at `index_url` (typically a `file://`
+    /// URL to a staged `index.toml`). The build script drops a
+    /// `via-build` sentinel so fall-through tests can detect that the
+    /// source build ran instead of the index fetch.
+    fn write_lib_with_build_toml(
+        root: &Path,
+        name: &str,
+        index_url: &str,
+    ) {
+        let lib_dir = root.join(name);
+        std::fs::create_dir_all(&lib_dir).unwrap();
 
-        // Compute the cache_key_sha the resolver would produce for our
-        // (fixed-shape) package.toml. We don't have the package.toml on disk
-        // yet; build a throwaway and parse it through the registry.
-        // Note: adding a [binary] block does NOT change cache_key_sha
-        // (only name/version/revision/source/arch/abi/dep-shas are
-        // hashed) — so the value computed here matches the value
-        // computed for the real lib below.
-        let throwaway_root = tempdir("rf-happy-pre");
+        let deps_toml = format!(
+            r#"
+kind = "library"
+name = "{name}"
+version = "1.0.0"
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-1.0.0.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/out.a"]
+"#,
+            ""
+        );
+        std::fs::write(lib_dir.join("package.toml"), deps_toml).unwrap();
+
+        let build_toml = format!(
+            r#"
+script_path = "examples/libs/{name}/build-{name}.sh"
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+[binary]
+index_url = "{index_url}"
+"#
+        );
+        std::fs::write(lib_dir.join("build.toml"), build_toml).unwrap();
+
+        let script = "#!/bin/bash\nset -euo pipefail\n\
+mkdir -p \"$WASM_POSIX_DEP_OUT_DIR/lib\"\n\
+echo BUILD > \"$WASM_POSIX_DEP_OUT_DIR/lib/out.a\"\n\
+touch \"$WASM_POSIX_DEP_OUT_DIR/via-build\"\n";
+        let script_path = lib_dir.join(format!("build-{name}.sh"));
+        std::fs::write(&script_path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&script_path).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&script_path, p).unwrap();
+        }
+    }
+
+    /// Stage an `index.toml` at `path` declaring `name@1.0.0` with a
+    /// single Success entry for `arch` pointing at `archive_url` with
+    /// the given `archive_sha256` and `cache_key_sha`. Mirrors what
+    /// `xtask index-update` will produce in CI; tests use this to
+    /// short-circuit a real publish pipeline.
+    fn stage_index_toml(
+        path: &Path,
+        name: &str,
+        arch: TargetArch,
+        archive_url: &str,
+        archive_sha256: &str,
+        cache_key_sha: &str,
+    ) {
+        let arch_str = arch.as_str();
+        let content = format!(
+            r#"abi_version = {abi}
+generated_at = "2026-05-13T00:00:00Z"
+generator = "test"
+
+[[packages]]
+name = "{name}"
+version = "1.0.0"
+revision = 1
+
+[packages.binary.{arch_str}]
+status = "success"
+archive_url = "{archive_url}"
+archive_sha256 = "{archive_sha256}"
+cache_key_sha = "{cache_key_sha}"
+built_at = "2026-05-13T00:00:00Z"
+built_by = "test"
+"#,
+            abi = TEST_ABI,
+        );
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    // Resolver tests for the index-lookup binary fetch path. Each
+    // test stages a real archive + index.toml on disk (file:// URLs
+    // throughout — no network required), writes a source
+    // package.toml + sibling build.toml that points at the staged
+    // index, and exercises the resolver's path under one specific
+    // verification condition.
+    //
+    // Fall-through tests assert that the source build's `via-build`
+    // sentinel appears in the cache (proving the resolver gave up on
+    // the index path and ran the build script); the happy-path test
+    // asserts the archive's bytes landed AND `via-build` is absent.
+
+    #[test]
+    fn direct_pr_overlay_fetch_installs_archive_before_build_toml_index() {
+        let root = tempdir("direct-overlay-reg");
+        let cache = tempdir("direct-overlay-cache");
+        let archive_dir = tempdir("direct-overlay-archive");
+
+        write_lib(
+            &root,
+            "libOverlay",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+echo BUILD > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+touch "$WASM_POSIX_DEP_OUT_DIR/via-build"
+"#,
+            r#"[outputs]
+libs = ["lib/out.a"]
+"#,
+        );
+
+        let reg_without_overlay = Registry {
+            roots: vec![root.clone()],
+        };
+        let m_without_overlay = reg_without_overlay.load("libOverlay").unwrap();
+        let cache_key_hex = hex(&compute_sha(
+            &m_without_overlay,
+            &reg_without_overlay,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap());
+
+        let manifest_text = archived_manifest_text(
+            "libOverlay",
+            "wasm32",
+            &[TEST_ABI],
+            &cache_key_hex,
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"FROM-OVERLAY")],
+        );
+        let archive_sha_hex = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libOverlay-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
+
+        std::fs::write(
+            root.join("libOverlay/package.pr.toml"),
+            format!(
+                r#"
+[binary.wasm32]
+archive_url = "{archive_url}"
+archive_sha256 = "{archive_sha_hex}"
+"#
+            ),
+        )
+        .unwrap();
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libOverlay").unwrap();
+        let path = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(path.join("lib/out.a")).unwrap(),
+            b"FROM-OVERLAY"
+        );
+        assert!(
+            !path.join("via-build").exists(),
+            "direct package.pr.toml overlay should bypass the source build"
+        );
+    }
+
+    #[test]
+    fn index_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
+        let root = tempdir("idx-happy-reg");
+        let cache = tempdir("idx-happy-cache");
+        let archive_dir = tempdir("idx-happy-archive");
+        let index_dir = tempdir("idx-happy-index");
+
+        // Compute the cache_key_sha the resolver will produce for the
+        // (fixed-shape) source manifest. cache_key_sha hashes
+        // name/version/revision/source/arch/abi/dep-shas; the sibling
+        // build.toml is invisible to compute_sha.
+        let throwaway_root = tempdir("idx-happy-pre");
         write_lib(
             &throwaway_root,
-            "libRf",
+            "libIdx",
             "1.0.0",
             &[],
             "true",
             "[outputs]\nlibs = [\"lib/out.a\"]\n",
         );
         let pre_reg = Registry { roots: vec![throwaway_root.clone()] };
-        let pre_m = pre_reg.load("libRf").unwrap();
+        let pre_m = pre_reg.load("libIdx").unwrap();
         let pre_sha = compute_sha(
             &pre_m,
             &pre_reg,
@@ -3672,9 +3955,10 @@ cache_key_sha = "{cache_key_sha}"
         let cache_key_hex = hex(&pre_sha);
         let _ = std::fs::remove_dir_all(&throwaway_root);
 
-        // Build the archive with matching arch / abi / cache_key.
+        // Build a real archive whose internal manifest matches arch
+        // + abi + cache_key.
         let manifest_text = archived_manifest_text(
-            "libRf",
+            "libIdx",
             "wasm32",
             &[TEST_ABI],
             &cache_key_hex,
@@ -3684,15 +3968,24 @@ cache_key_sha = "{cache_key_sha}"
             &[("lib/out.a", b"\x00\x01\x02FAKE")],
         );
         let archive_sha_hex = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libRf-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdx-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        // Real consumer manifest with [binary] pointing at file://.
-        write_lib_with_binary(&root, "libRf", &archive_path, &archive_sha_hex);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdx",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha_hex,
+            &cache_key_hex,
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdx", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRf").unwrap();
-
+        let m = reg.load("libIdx").unwrap();
         let path = ensure_built(
             &m,
             &reg,
@@ -3703,29 +3996,30 @@ cache_key_sha = "{cache_key_sha}"
         .unwrap();
 
         // Artifact installed at the canonical cache path with the
-        // archive's contents.
+        // archive's bytes.
         assert!(path.starts_with(cache.join("libs")));
         let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
         assert_eq!(lib_bytes, b"\x00\x01\x02FAKE");
-        // Build script did NOT run (no `via-build` sentinel).
+        // Build script did NOT run.
         assert!(
             !path.join("via-build").exists(),
-            "remote fetch should bypass the source build"
+            "index fetch should bypass the source build"
         );
-        // Manifest + artifacts dir were stripped during reshape.
+        // Manifest + artifacts dir stripped during reshape.
         assert!(!path.join("manifest.toml").exists());
         assert!(!path.join("artifacts").exists());
     }
 
     #[test]
-    fn remote_fetch_falls_through_on_archive_sha_mismatch() {
-        let root = tempdir("rf-shafail-reg");
-        let cache = tempdir("rf-shafail-cache");
-        let archive_dir = tempdir("rf-shafail-archive");
+    fn index_fetch_falls_through_on_archive_sha_mismatch() {
+        let root = tempdir("idx-shafail-reg");
+        let cache = tempdir("idx-shafail-cache");
+        let archive_dir = tempdir("idx-shafail-archive");
+        let index_dir = tempdir("idx-shafail-index");
 
-        // Build a real archive but advertise the WRONG sha in package.toml.
+        // Build a real archive but advertise the WRONG sha in the index.
         let manifest_text = archived_manifest_text(
-            "libRfSha",
+            "libIdxSha",
             "wasm32",
             &[TEST_ABI],
             // cache_key_sha is irrelevant: we never get past the sha
@@ -3737,14 +4031,25 @@ cache_key_sha = "{cache_key_sha}"
             &manifest_text,
             &[("lib/out.a", b"REMOTE")],
         );
-        let archive_path = archive_dir.join("libRfSha-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdxSha-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
-        let bogus_sha = "0".repeat(64);
+        let archive_url = format!("file://{}", archive_path.display());
 
-        write_lib_with_binary(&root, "libRfSha", &archive_path, &bogus_sha);
+        let bogus_sha = "0".repeat(64);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdxSha",
+            TargetArch::Wasm32,
+            &archive_url,
+            &bogus_sha,
+            &"a".repeat(64),
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxSha", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRfSha").unwrap();
+        let m = reg.load("libIdxSha").unwrap();
         let path = ensure_built(
             &m,
             &reg,
@@ -3754,8 +4059,7 @@ cache_key_sha = "{cache_key_sha}"
         )
         .unwrap();
 
-        // Source build ran (sentinel exists; lib content matches the
-        // build script's output, not the archive's).
+        // Source build ran.
         assert!(
             path.join("via-build").exists(),
             "sha mismatch must fall through to source build"
@@ -3765,14 +4069,19 @@ cache_key_sha = "{cache_key_sha}"
     }
 
     #[test]
-    fn remote_fetch_falls_through_on_target_arch_mismatch() {
-        let root = tempdir("rf-archfail-reg");
-        let cache = tempdir("rf-archfail-cache");
-        let archive_dir = tempdir("rf-archfail-archive");
+    fn index_fetch_falls_through_on_target_arch_mismatch() {
+        let root = tempdir("idx-archfail-reg");
+        let cache = tempdir("idx-archfail-cache");
+        let archive_dir = tempdir("idx-archfail-archive");
+        let index_dir = tempdir("idx-archfail-index");
 
-        // Archive declares wasm64 — resolver passes wasm32 (TEST_ARCH).
+        // Archive's internal compatibility block declares wasm64 —
+        // resolver requests wasm32 (TEST_ARCH). The index entry
+        // points the wasm32 slot at this archive (an
+        // archive-staging bug a real CI would never produce, but
+        // the resolver must defend against it).
         let manifest_text = archived_manifest_text(
-            "libRfArch",
+            "libIdxArch",
             "wasm64",
             &[TEST_ABI],
             &"a".repeat(64),
@@ -3782,13 +4091,24 @@ cache_key_sha = "{cache_key_sha}"
             &[("lib/out.a", b"REMOTE")],
         );
         let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libRfArch-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdxArch-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        write_lib_with_binary(&root, "libRfArch", &archive_path, &archive_sha);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdxArch",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha,
+            &"a".repeat(64),
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxArch", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRfArch").unwrap();
+        let m = reg.load("libIdxArch").unwrap();
         let path = ensure_built(
             &m,
             &reg,
@@ -3805,14 +4125,15 @@ cache_key_sha = "{cache_key_sha}"
     }
 
     #[test]
-    fn remote_fetch_falls_through_on_abi_mismatch() {
-        let root = tempdir("rf-abifail-reg");
-        let cache = tempdir("rf-abifail-cache");
-        let archive_dir = tempdir("rf-abifail-archive");
+    fn index_fetch_falls_through_on_abi_mismatch() {
+        let root = tempdir("idx-abifail-reg");
+        let cache = tempdir("idx-abifail-cache");
+        let archive_dir = tempdir("idx-abifail-archive");
+        let index_dir = tempdir("idx-abifail-index");
 
-        // Archive supports only ABI 999 — resolver passes TEST_ABI (=4).
+        // Archive supports only ABI 999 — resolver passes TEST_ABI.
         let manifest_text = archived_manifest_text(
-            "libRfAbi",
+            "libIdxAbi",
             "wasm32",
             &[999],
             &"a".repeat(64),
@@ -3822,18 +4143,29 @@ cache_key_sha = "{cache_key_sha}"
             &[("lib/out.a", b"REMOTE")],
         );
         let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libRfAbi-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdxAbi-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        write_lib_with_binary(&root, "libRfAbi", &archive_path, &archive_sha);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdxAbi",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha,
+            &"a".repeat(64),
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxAbi", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRfAbi").unwrap();
+        let m = reg.load("libIdxAbi").unwrap();
         let path = ensure_built(
             &m,
             &reg,
             TEST_ARCH,
-            TEST_ABI, // 4, not in [999]
+            TEST_ABI, // not in [999]
             &resolve_opts(&cache, None),
         )
         .unwrap();
@@ -3845,16 +4177,17 @@ cache_key_sha = "{cache_key_sha}"
     }
 
     #[test]
-    fn remote_fetch_falls_through_on_cache_key_mismatch() {
-        let root = tempdir("rf-ckfail-reg");
-        let cache = tempdir("rf-ckfail-cache");
-        let archive_dir = tempdir("rf-ckfail-archive");
+    fn index_fetch_falls_through_on_cache_key_mismatch() {
+        let root = tempdir("idx-ckfail-reg");
+        let cache = tempdir("idx-ckfail-cache");
+        let archive_dir = tempdir("idx-ckfail-archive");
+        let index_dir = tempdir("idx-ckfail-index");
 
-        // Archive declares a wrong cache_key_sha (well-formed but
-        // never produced by compute_sha for this manifest).
+        // Archive's internal compat.cache_key_sha is well-formed but
+        // doesn't match what compute_sha would produce for this lib.
         let wrong_ck = "f".repeat(64);
         let manifest_text = archived_manifest_text(
-            "libRfCk",
+            "libIdxCk",
             "wasm32",
             &[TEST_ABI],
             &wrong_ck,
@@ -3864,13 +4197,24 @@ cache_key_sha = "{cache_key_sha}"
             &[("lib/out.a", b"REMOTE")],
         );
         let archive_sha = sha256_hex(&archive_bytes);
-        let archive_path = archive_dir.join("libRfCk-1.0.0.tar.zst");
+        let archive_path = archive_dir.join("libIdxCk-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        write_lib_with_binary(&root, "libRfCk", &archive_path, &archive_sha);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libIdxCk",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha,
+            &wrong_ck,
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxCk", &index_url);
 
         let reg = Registry { roots: vec![root] };
-        let m = reg.load("libRfCk").unwrap();
+        let m = reg.load("libIdxCk").unwrap();
         let path = ensure_built(
             &m,
             &reg,
@@ -3917,7 +4261,6 @@ cache_key_sha = "{cache_key_sha}"
                 r#"kind = "program"
 name = "{name}"
 version = "{version}"
-revision = 1
 depends_on = [{depends_on}]
 [source]
 url = "https://example.test/{name}.tar.gz"
@@ -3950,7 +4293,6 @@ spdx = "MIT"
             r#"kind = "program"
 name = "vim"
 version = "9.1.0900"
-revision = 1
 [source]
 url = "https://x.test/vim.tar.gz"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -4099,7 +4441,6 @@ wasm = "vim.wasm"
 kind = "library"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 
 [source]
 url = "https://example.test/pcre2.tar.bz2"
@@ -4179,7 +4520,6 @@ libs = []
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 
 [source]
 url = "file://{}"
@@ -4248,7 +4588,6 @@ spdx = "BSD-3-Clause"
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 kernel_abi = 7
 
 [source]
@@ -4303,7 +4642,6 @@ script_path = "custom.sh"
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 kernel_abi = 7
 
 [source]
@@ -4376,7 +4714,6 @@ script_path = "noop.sh"
 kind = "source"
 name = "foo-source"
 version = "1.0"
-revision = 1
 kernel_abi = 7
 
 [source]
@@ -4451,7 +4788,6 @@ libs = ["lib/libconsumer.a"]
 kind = "library"
 name = "fake"
 version = "0.1"
-revision = 1
 
 [source]
 url = "https://example.test/fake.tar.gz"
@@ -4504,7 +4840,6 @@ version_constraint = ">=99.99"
 kind = "library"
 name = "fake"
 version = "0.1"
-revision = 1
 
 [source]
 url = "https://example.test/fake.tar.gz"
@@ -4554,7 +4889,6 @@ install_hints = { darwin = "brew install nope", linux = "apt install nope" }
 kind = "library"
 name = "fake"
 version = "0.1"
-revision = 1
 
 [source]
 url = "https://example.test/fake.tar.gz"
@@ -4614,7 +4948,6 @@ install_hints = { darwin = "brew install needs-darwin-hint" }
 kind = "library"
 name = "{consumer}"
 version = "1.0"
-revision = 1
 
 [source]
 url = "https://example.test/{consumer}-1.0.tar.gz"
@@ -4763,18 +5096,18 @@ libs = ["lib/libF1.a"]
     }
 
     #[test]
-    fn force_rebuild_bypasses_remote_fetch() {
-        // Stage a real archive on disk and point [binary].archive_url at
-        // it. Without force, the resolver installs from the archive and
-        // the source build's `via-build` sentinel does NOT appear. With
-        // force, the resolver skips remote fetch and source-builds — the
-        // sentinel DOES appear.
-        let root = tempdir("force-rf-reg");
-        let cache = tempdir("force-rf-cache");
-        let archive_dir = tempdir("force-rf-archive");
+    fn force_rebuild_bypasses_index_fetch() {
+        // Stage a real archive + index entry that WOULD resolve cleanly
+        // (matching sha/arch/abi/cache_key) and confirm `force_rebuild`
+        // skips the index path entirely — the source build's
+        // `via-build` sentinel appears and the canonical cache holds
+        // the script-built artifact, not the archive's.
+        let root = tempdir("force-idx-reg");
+        let cache = tempdir("force-idx-cache");
+        let archive_dir = tempdir("force-idx-archive");
+        let index_dir = tempdir("force-idx-index");
 
-        // Compute cache_key_sha for the lib (matches write_lib_with_binary's shape).
-        let throwaway_root = tempdir("force-rf-pre");
+        let throwaway_root = tempdir("force-idx-pre");
         write_lib(
             &throwaway_root,
             "libF2",
@@ -4797,7 +5130,7 @@ libs = ["lib/libF1.a"]
         let cache_key_hex = hex(&pre_sha);
         let _ = std::fs::remove_dir_all(&throwaway_root);
 
-        // Build a remote archive whose contents differ from the source build,
+        // Build an archive whose contents differ from the source build
         // so we can tell which path produced the artifact.
         let manifest_text =
             archived_manifest_text("libF2", "wasm32", &[TEST_ABI], &cache_key_hex);
@@ -4808,9 +5141,20 @@ libs = ["lib/libF1.a"]
         let archive_sha_hex = sha256_hex(&archive_bytes);
         let archive_path = archive_dir.join("libF2-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
 
-        // The real consumer lib advertises that archive.
-        write_lib_with_binary(&root, "libF2", &archive_path, &archive_sha_hex);
+        let index_path = index_dir.join("index.toml");
+        stage_index_toml(
+            &index_path,
+            "libF2",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha_hex,
+            &cache_key_hex,
+        );
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libF2", &index_url);
+
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libF2").unwrap();
 

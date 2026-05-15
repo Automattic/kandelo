@@ -1,7 +1,6 @@
 kind = "program"
 name = "nginx"
 version = "1.24.0"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -18,11 +17,7 @@ url = "https://nginx.org/LICENSE"
 # resolver at it via [build].script_path.
 [build]
 script_path = "examples/libs/nginx/build-nginx.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "nginx"
 wasm = "nginx.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/nginx-1.24.0-rev1-abi7-wasm32-e94bb3fe.tar.zst"
-archive_sha256 = "2e3bf3398c463dd2c9cddf7c1fd0786a8070c34e95065d8e4c9f9ae124ac9a96"

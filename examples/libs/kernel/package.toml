@@ -1,7 +1,6 @@
 kind = "program"
 name = "kernel"
 version = "0.1.0"
-revision = 1
 depends_on = []
 
 [source]

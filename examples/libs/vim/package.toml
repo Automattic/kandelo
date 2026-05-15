@@ -1,7 +1,6 @@
 kind = "program"
 name = "vim"
 version = "9.1.0900"
-revision = 2
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
 
 [build]
 script_path = "examples/libs/vim/build-vim.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "vim"
 wasm = "vim.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/vim-9.1.0900-rev2-abi7-wasm32-ec2d9204.tar.zst"
-archive_sha256 = "54722bca8750f2d5331844c2b02f17b665d8f65e189e0b073fb3314c6c085e45"

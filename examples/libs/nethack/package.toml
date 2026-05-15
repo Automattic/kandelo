@@ -1,7 +1,6 @@
 kind = "program"
 name = "nethack"
 version = "3.6.7"
-revision = 2
 kernel_abi = 7
 depends_on = ["ncurses@6.5"]
 
@@ -15,11 +14,7 @@ url = "https://nethack.org/common/license.html"
 
 [build]
 script_path = "examples/libs/nethack/build-nethack.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "nethack"
 wasm = "nethack.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/nethack-3.6.7-rev2-abi7-wasm32-76737a7d.tar.zst"
-archive_sha256 = "0ce85d6d7b0231f8b1e6919c70a216e4b620fb9c82378599fe9b726954e71c8d"

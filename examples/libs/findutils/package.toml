@@ -1,7 +1,6 @@
 kind = "program"
 name = "findutils"
 version = "4.10.0"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,7 +14,6 @@ url = "https://git.savannah.gnu.org/cgit/findutils.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/findutils/build-findutils.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "find"
@@ -24,6 +22,3 @@ wasm = "find.wasm"
 [[outputs]]
 name = "xargs"
 wasm = "xargs.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/findutils-4.10.0-rev1-abi7-wasm32-3a8e5a4f.tar.zst"
-archive_sha256 = "7ba49a8dd086f5d82cea65ec94cdbf267aaeacca04cfd4c2c5dfcde9b27aec38"
