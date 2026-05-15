@@ -169,6 +169,19 @@ cargo run --release -p xtask --target "$HOST_TRIPLE" --quiet -- \
 # 4. Upload archive (success path only) + updated index back to the
 #    release. --clobber for idempotency: a retried matrix-build job
 #    must produce the same final state.
+if [[ "$TARGET_TAG" =~ ^pr-([0-9]+)-staging$ ]]; then
+  PR_NUMBER="${BASH_REMATCH[1]}"
+  if ! gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+    gh release create "$TARGET_TAG" \
+      --repo "$GITHUB_REPOSITORY" \
+      --prerelease \
+      --target "${GITHUB_SHA:?GITHUB_SHA required}" \
+      --title "$TARGET_TAG" \
+      --notes "PR #${PR_NUMBER} staging build" \
+      || true
+  fi
+fi
+
 if [ "$STATUS" = "success" ]; then
   gh release upload "$TARGET_TAG" \
     --repo "$GITHUB_REPOSITORY" \

@@ -14,6 +14,7 @@ set -euo pipefail
 
 LOCK_POLL_SECONDS="${STATE_LOCK_POLL_SECONDS:-${DURABLE_RELEASE_LOCK_POLL_SECONDS:-30}}"
 LOCK_STALE_SECONDS="${STATE_LOCK_STALE_SECONDS:-${DURABLE_RELEASE_LOCK_STALE_SECONDS:-21600}}"
+STATE_LOCK_OWNER_TOKEN="${STATE_LOCK_OWNER_TOKEN:-}"
 
 usage() {
   echo "usage: $0 acquire <subject>|release" >&2
@@ -36,11 +37,108 @@ remote_lock_sha() {
   git ls-remote origin "$LOCK_REF" | awk '{print $1}'
 }
 
+state_file_path() {
+  echo "${STATE_LOCK_STATE_FILE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/state-lock.env}"
+}
+
+new_owner_token() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen
+    return 0
+  fi
+
+  if [ -r /dev/urandom ]; then
+    od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+    echo
+    return 0
+  fi
+
+  printf '%s:%s:%s:%s\n' \
+    "${GITHUB_RUN_ID:-}" \
+    "${GITHUB_JOB:-}" \
+    "$$" \
+    "$(date -u +%s)" \
+    | git hash-object --stdin
+}
+
+ensure_owner_token() {
+  if [ -z "$STATE_LOCK_OWNER_TOKEN" ]; then
+    STATE_LOCK_OWNER_TOKEN="$(new_owner_token)"
+  fi
+}
+
+write_lock_state() {
+  local lock_ref="$1"
+  local lock_sha="$2"
+  local state_file
+
+  state_file="$(state_file_path)"
+  {
+    printf 'STATE_LOCK_REF=%q\n' "$lock_ref"
+    printf 'STATE_LOCK_SHA=%q\n' "$lock_sha"
+    printf 'STATE_LOCK_SUBJECT=%q\n' "$SUBJECT"
+    printf 'STATE_LOCK_OWNER_TOKEN=%q\n' "$STATE_LOCK_OWNER_TOKEN"
+    printf 'DURABLE_RELEASE_LOCK_REF=%q\n' "$lock_ref"
+    printf 'DURABLE_RELEASE_LOCK_SHA=%q\n' "$lock_sha"
+  } >"$state_file"
+
+  if [ -n "${GITHUB_ENV:-}" ]; then
+    {
+      echo "STATE_LOCK_REF=$lock_ref"
+      echo "STATE_LOCK_SHA=$lock_sha"
+      echo "STATE_LOCK_SUBJECT=$SUBJECT"
+      echo "STATE_LOCK_OWNER_TOKEN=$STATE_LOCK_OWNER_TOKEN"
+      # Backward-compat for any callers still reading the old env names.
+      echo "DURABLE_RELEASE_LOCK_REF=$lock_ref"
+      echo "DURABLE_RELEASE_LOCK_SHA=$lock_sha"
+    } >>"$GITHUB_ENV"
+  fi
+}
+
+load_lock_state() {
+  local state_file
+
+  state_file="$(state_file_path)"
+  if { [ -z "${STATE_LOCK_REF:-}" ] || [ -z "${STATE_LOCK_SHA:-}" ]; } \
+       && [ -f "$state_file" ]
+  then
+    # File is written by write_lock_state in this script.
+    # shellcheck source=/dev/null
+    . "$state_file"
+  fi
+}
+
 delete_lock_if_unchanged() {
   local expected_sha="$1"
   git push \
     --force-with-lease="$LOCK_REF:$expected_sha" \
     origin ":$LOCK_REF" >/dev/null 2>&1
+}
+
+probe_push_access() {
+  local probe_sha expected_sha lease output current_sha
+
+  probe_sha="$(create_lock_commit)"
+  expected_sha="$(remote_lock_sha || true)"
+  if [ -n "$expected_sha" ]; then
+    lease="--force-with-lease=$LOCK_REF:$expected_sha"
+  else
+    lease="--force-with-lease=$LOCK_REF:"
+  fi
+
+  if output="$(git push --dry-run "$lease" origin "$probe_sha:$LOCK_REF" 2>&1)"; then
+    return 0
+  fi
+
+  current_sha="$(remote_lock_sha || true)"
+  if [ "$current_sha" != "$expected_sha" ]; then
+    echo "State lock changed while probing push access for subject=$SUBJECT; treating as contention."
+    return 0
+  fi
+
+  echo "::error::state-lock cannot push ${LOCK_REF}; check this job's permissions (contents: write is required)." >&2
+  printf '%s\n' "$output" >&2
+  exit 1
 }
 
 lock_message_for() {
@@ -69,6 +167,8 @@ subject=${SUBJECT}
 workflow=${GITHUB_WORKFLOW:-}
 run_id=${GITHUB_RUN_ID}
 run_attempt=${GITHUB_RUN_ATTEMPT:-}
+job=${GITHUB_JOB:-}
+owner_token=${STATE_LOCK_OWNER_TOKEN}
 run_url=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 created_epoch=${now}
 EOF
@@ -91,20 +191,16 @@ acquire() {
 
   local repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
   local run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+  ensure_owner_token
+
+  probe_push_access
 
   while true; do
     local lock_sha
     lock_sha="$(create_lock_commit)"
 
     if git push origin "$lock_sha:$LOCK_REF" >/dev/null 2>&1; then
-      {
-        echo "STATE_LOCK_REF=$LOCK_REF"
-        echo "STATE_LOCK_SHA=$lock_sha"
-        echo "STATE_LOCK_SUBJECT=$SUBJECT"
-        # Backward-compat for any callers still reading the old env names.
-        echo "DURABLE_RELEASE_LOCK_REF=$LOCK_REF"
-        echo "DURABLE_RELEASE_LOCK_SHA=$lock_sha"
-      } >>"$GITHUB_ENV"
+      write_lock_state "$LOCK_REF" "$lock_sha"
       echo "Acquired state lock $LOCK_REF (subject=$SUBJECT) at $lock_sha."
       return 0
     fi
@@ -116,15 +212,19 @@ acquire() {
       continue
     fi
 
-    local message owner_run_id owner_epoch status stale_reason now age
+    local message owner_run_id owner_token owner_epoch status stale_reason now age
     message="$(lock_message_for "$held_sha" 2>/dev/null || true)"
     owner_run_id="$(printf '%s\n' "$message" | owner_field run_id)"
+    owner_token="$(printf '%s\n' "$message" | owner_field owner_token)"
     owner_epoch="$(printf '%s\n' "$message" | owner_field created_epoch)"
     stale_reason=""
 
     if [ -n "$owner_run_id" ]; then
-      if [ "$owner_run_id" = "$run_id" ]; then
-        stale_reason="left by this workflow run"
+      if [ "$owner_run_id" = "$run_id" ] \
+           && [ -n "$owner_token" ] \
+           && [ "$owner_token" = "$STATE_LOCK_OWNER_TOKEN" ]
+      then
+        stale_reason="left by this lock owner"
       else
         status="$(gh api "/repos/${repo}/actions/runs/${owner_run_id}" -q .status 2>/dev/null || true)"
         if [ "$status" = "completed" ]; then
@@ -158,6 +258,8 @@ acquire() {
 }
 
 release() {
+  load_lock_state
+
   local lock_ref="${STATE_LOCK_REF:-${DURABLE_RELEASE_LOCK_REF:-}}"
   local owned_sha="${STATE_LOCK_SHA:-${DURABLE_RELEASE_LOCK_SHA:-}}"
 
@@ -176,6 +278,7 @@ release() {
 
   if delete_lock_if_unchanged "$owned_sha"; then
     echo "Released state lock ${LOCK_REF}."
+    rm -f "$(state_file_path)"
   else
     echo "::warning::Could not release state lock ${LOCK_REF}; a later run will clear it if stale."
   fi

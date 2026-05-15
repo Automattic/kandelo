@@ -454,6 +454,8 @@ jobs:
     needs: [preflight, toolchain-cache]
     if: needs.preflight.outputs.library_matrix != '[]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # state-lock git push + gh release create/upload
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -582,6 +584,8 @@ jobs:
     needs: [preflight, toolchain-cache, lib-matrix-build]
     if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write    # state-lock git push + gh release create/upload
     strategy:
       fail-fast: false
       max-parallel: 10
