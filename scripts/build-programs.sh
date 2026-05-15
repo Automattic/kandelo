@@ -162,10 +162,6 @@ fi
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
-    # Skip sh.c — host/wasm/sh.wasm is the pre-built full-featured dash binary.
-    # The minimal sh.c was a placeholder; building it overwrites dash with a
-    # shell that lacks eval and other builtins needed by wordexp/popen.
-    [ "$(basename "$src")" = "sh.c" ] && continue
     # Skip hello64.c — built separately with wasm64 toolchain below
     [ "$(basename "$src")" = "hello64.c" ] && continue
     build_program "$src" "$OUT_DIR_32"

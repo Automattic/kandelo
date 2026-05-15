@@ -13,7 +13,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `9` (see
+ABI version: `11` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -597,10 +597,11 @@ the analyser can't statically track (Unop, Cmpxchg, ref-typed
 CallIndirect/CallRef, multi-value structured control), the unknown slot
 is tracked as `None` and tolerated as long as it's consumed before any
 fork-path call. Only if a `None` slot ends up IN a carryover does the
-analyser fail, kicking the function back to guard-dispatch via
-`classify_nested_pattern`'s function-level fallback (instrument.rs).
+analyser fail the switch-dispatch classification for that shape.
 The same `Option<ValType>` policy applies to the top-level
-`compute_carryover_types` for switch-dispatch (top-level) routing.
+`compute_carryover_types` for switch-dispatch (top-level) routing. If a
+function still reaches an unsupported carryover shape, the tool rejects that
+shape loudly; there is no guard-dispatch fallback after the mega-PR cleanup.
 
 ## Auxiliary tables
 
@@ -697,22 +698,24 @@ Instrumentation only rewrites functions that can transitively reach the
 designated async import (default: `kernel.kernel_fork`). The discovery
 algorithm in `crates/fork-instrument/src/call_graph.rs`:
 
-1. Seed set `S` = { functions that directly call `kernel.kernel_fork` }.
-2. **Direct-call closure.** For every function `f` in the module: if `f`
-   calls any function in `S`, add `f` to `S`. Iterate to a fixpoint.
-3. **Indirect-call closure.** For every `call_indirect` in a function
-   already in `S`, look up its type signature `T`. Add every function
-   reachable through a function table whose signature matches `T` to `S`.
-4. Repeat steps 2–3 until nothing changes.
+1. Seed set `S` = { the imported `kernel.kernel_fork` function }.
+2. **Direct reverse closure.** For every newly discovered callee `g`, add
+   every local function that directly calls `g`.
+3. **Indirect reverse closure.** If `g` appears in a function table, add
+   every local function that performs `call_indirect` with a structurally
+   matching function type.
+4. Repeat steps 2–3 until the worklist is empty.
 
 The output is a function-set `S` that gets instrumented. All other functions
 pass through unmodified.
 
-The indirect-call step is conservative — a `call_indirect` gets closed over
-every signature-matching function in a reachable table. For programs that
-use the indirect table extensively (LLVM's setjmp lowering does, for
-instance) this can instrument more than strictly needed, but never less. The
-closure is still a strict subset of full-module instrumentation.
+The indirect-call step is conservative — a table-addressable fork-path target
+pulls in every same-signature indirect caller. This is enough for registered
+callback paths such as signal handlers, pthread cleanup handlers, `atexit`
+handlers, and qsort-style comparators in the current libc output. The broader
+"instrument every address-taken function" rule from the original C3 plan was
+not needed for this PR and was not added; K-01, K-02, K-04, and K-07 cover the
+current behavior.
 
 ## Guarantees and non-guarantees
 
@@ -749,8 +752,15 @@ closure is still a strict subset of full-module instrumentation.
 - **Functions whose plain-catch arms carry ref-typed operands.** Catch arms
   whose operand tuple includes an `(ref ...)` value (typically a function or
   GC ref) are carved out of the fork-path set at instrument time. Spilling
-  ref-typed catch operands would require a per-arm aux table; tracked as A4
-  in the mega-PR plan (commit 7).
+  ref-typed catch operands would require per-arm aux-table slots. The current
+  PR deliberately keeps the safe `B1ScratchPlan::b2_carveout` behavior and
+  covers it with WAT-level tests. This is an unanticipated Wasm-level case,
+  not expected output from ordinary C++ EH lowering: C++ exception payloads
+  live in linear memory / libc++abi state rather than as `funcref` or
+  `externref` plain-catch tag operands. If a future language frontend or
+  hand-written Wasm module needs it, implement per-arm funcref/externref
+  aux-table stashing and promote C-08/C-09 from carve-out validation to full
+  replay tests.
 - **IfElse with operand-stack carryover.** A fork-bearing `if/else`
   enclosing a stack value that survives across the branch is rejected by
   `seq_has_unsupported_carryover` — the cond rewrite via `select` (see
@@ -824,18 +834,17 @@ a tighter reachable set.
 ### Reasoning about which scheme a function uses
 
 When a real-world program misbehaves during fork, the first triage step is
-to figure out whether the offending function is using switch- or
-guard-dispatch:
+to identify which switch-dispatch shape the offending function uses:
 
 ```bash
 wasm-tools print "$BIN" | awk '/^\s+\(func [^;]*main/{found=1} found{print}' | head -200
 ```
 
 A leading `block ... block ... if (state == REWINDING) ... br_table ...`
-shape at the function's entry means **switch-dispatch** (top-level or
-nested). A `block $unwind_save` followed by per-call
-`(state == NORMAL || (REWINDING && call_idx == K))` if-elses means
-**guard-dispatch**.
+shape at the function's entry means switch-dispatch is active. A historical
+`block $unwind_save` followed by per-call `(state == NORMAL || (REWINDING &&
+call_idx == K))` if-elses means an old guard-dispatch binary is being
+inspected, not current PR output.
 
 To distinguish top-level switch-dispatch from nested switch-dispatch,
 look inside the enclosing instructions: nested switch-dispatch emits the
@@ -852,12 +861,11 @@ ends with `local.set $spill_local`, and after the enclosing instruction
 the post-landing sequence emits `local.get $spill_local` (and, when the
 enclosing instr returns an i32, a brief juggle through `tmp_result_local`).
 
-The cargo test
-`tests/switch_dispatch.rs::guard_dispatch_gates_non_fork_path_direct_call`
-asserts the gated-call shape on a minimal fixture; copy that pattern when
-adding new regression cases. Nested switch-dispatch coverage lives in
+Nested switch-dispatch coverage lives in
 `tests/switch_dispatch.rs::nested_fork_call_uses_per_block_switch_dispatch`
-and the carryover-spilling fixtures alongside it.
+and the carryover-spilling fixtures alongside it. Add new regressions there
+or in `host/test/fork-instrument-coverage.test.ts` depending on whether the
+bug is a tool-level transform issue or an end-to-end host/runtime issue.
 
 ### Running tests
 
@@ -903,19 +911,13 @@ class:
    type both as a local and as a function parameter, and confirms the
    module validates after round-tripping through the tool.
 
-### Extending side-effect gating
+### Extending side-effect coverage
 
-Phase 4g's list of gated instructions lives in `side_effect_shape` in
-`crates/fork-instrument/src/instrument.rs`. To gate a new opcode:
-
-1. Add a match arm in `side_effect_shape` that returns the instruction's
-   stack-effect shape (parameter types and result types).
-2. The existing `emit_gated_side_effect` helper handles the rest — it wraps
-   the instruction in an if-else on the state global, runs the instruction
-   in the then branch, and drops the inputs / supplies default outputs in
-   the else branch.
-3. Add a fixture test under `tests/instrument.rs` that confirms the
-   instruction appears inside a NORMAL gate in the instrumented output.
+There is no live side-effect gating path after guard-dispatch removal. If a
+new wasm opcode can appear before a fork-path call, add coverage that proves
+the containing switch-dispatch shape skips that opcode on REWIND. Existing
+examples are the S-01..S-08 host fixtures plus the WAT-level table-operation
+tests in `crates/fork-instrument/tests/coverage_wat.rs`.
 
 ### Fork-from-plain-catch (B1 stages 1+2)
 
@@ -955,19 +957,18 @@ B1 stages 1+2 add that path:
 4. **Carve-out (Stage 2 Task 2.1, in `plan_b1_scratch`).** Functions whose
    plain-catch arms carry ref-typed operands (`(ref T)` other than `exnref`)
    are removed from the fork-path set rather than instrumented, since the
-   scratch region only stores scalar tuples. This is the safe path: ref
-   payloads are uncommon in fork-using libc, but C++ EH may produce them
-   and we'd prefer a clean carve-out to a half-correct lowering. Stage 2
-   Task 2.4 also detects multi-target plain-catch try_tables and applies
-   the same carve-out.
+   scratch region only stores scalar tuples. This is the safe path for an
+   unanticipated Wasm-level case: ordinary C++ EH is not expected to emit
+   funcref/externref plain-catch payloads, and no current shipping port
+   needs them. Stage 2 Task 2.4 also detects multi-target plain-catch
+   try_tables and applies the same carve-out.
 
 The carve-out is reported via `B1ScratchPlan::b2_carveout`; the scratch
-region is sized only for the surviving fork-path arms. For shipping ports
-the carve-out is empty (no plain-catch arms reach a fork in the libc
-they link against), so the instrumented binaries are byte-identical to the
-pre-B1 output. Stage 3 (a SpiderMonkey runtime harness for fork-from-C++-EH)
-is deferred until the SpiderMonkey port forces it; see
-`docs/plans/2026-04-28-fork-instrument-b1-fork-from-plain-catch.md`.
+region is sized only for the surviving fork-path arms. C-08/C-09 in
+`crates/fork-instrument/tests/coverage_wat.rs` verify that funcref and
+externref catch operands take this safe carve-out path rather than panicking
+or producing invalid wasm. For shipping ports the carve-out is empty in the
+current matrix, so it is not a merge blocker for PR #307.
 
 ## See also
 

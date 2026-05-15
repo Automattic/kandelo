@@ -1,13 +1,12 @@
 // K-04 — fork from inside a qsort comparator (address-taken function).
 //
 // Coverage matrix: docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
-// Pathological case proving the conservative rule: the comparator is
-// passed to qsort as a function pointer (address-taken) so under C3's
-// rule it must be treated as a fork-path root. The comparator
-// conditionally fork()s on the first comparison, then sorts normally.
+// Pathological callback-discovery case: the comparator is passed to
+// qsort as a function pointer and conditionally fork()s on the first
+// comparison, then sorts normally.
 //
 // Forking inside a comparator is a horrible idea in real code; this
-// is purely a regression gate for the conservative rule.
+// is purely a regression gate for callback fork-path discovery.
 //
 // Expected output on PASS:
 //   PRE_QSORT

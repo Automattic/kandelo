@@ -15,8 +15,8 @@ handle new-EH (`try_table`) output, `call_indirect` on fork paths, and
 `fork()` from inside C++ catch handlers — all cases where Asyncify
 falls short in our setup.
 
-See [`docs/plans/2026-04-20-fork-instrumentation-design.md`](../../docs/plans/2026-04-20-fork-instrumentation-design.md)
-for the full design, ABI, save-buffer layout, and rollout plan.
+See [`docs/fork-instrumentation.md`](../../docs/fork-instrumentation.md)
+for the current design, ABI, save-buffer layout, and operating limits.
 
 ## CLI
 
@@ -26,9 +26,11 @@ wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
 
 ## Status
 
-**Phases 1–6 MVP landed** on branch `fierce-wire` (PR #307). The tool instruments direct + indirect fork-path callers, spills scalar and ref-typed locals, survives `try_table` catch-handler rewind, and preserves module validity. Phase 6 fuzzing (design §5.4) runs 10 000 iterations with zero validator failures.
-
-Phase 7 (production rollout: replacing `wasm-opt --asyncify` in build scripts, removing the `binaryen` submodule) is still pending — see `docs/plans/2026-04-20-fork-instrumentation-design.md`.
+PR #307 (`fierce-wire`) replaces the old Binaryen Asyncify fork path in the
+build scripts. The tool instruments direct + indirect fork-path callers,
+spills scalar and supported ref-typed locals, survives modern `try_table`
+catch-handler rewind, and preserves module validity. Remaining unsupported
+patterns are documented in `docs/fork-instrumentation.md`.
 
 ## Build
 

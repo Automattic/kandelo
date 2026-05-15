@@ -3,10 +3,10 @@
 // Coverage matrix: docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
 // The handler is registered via sigaction(); it's an address-taken
 // callback function reached only via the host signal-delivery path.
-// Today the call-graph analyser doesn't see signal handlers as
-// fork-path roots — C3 in the unsupported-cases review. After C3's
-// conservative rule (treat every address-taken function as a
-// fork-path root) lands, this must work end-to-end.
+// C3 in the unsupported-cases review considered a broad "instrument every
+// address-taken function" rule. The final PR keeps the narrower existing
+// direct + call_indirect closure; this fixture is the end-to-end regression
+// gate proving signal-handler delivery remains covered.
 //
 // Expected output on PASS:
 //   REGISTERED

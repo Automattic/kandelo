@@ -2,8 +2,7 @@
 //
 // Coverage matrix: docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
 // Variant of K-01 using the older signal(2) API + SIGALRM. Exercises
-// the same C3 conservative rule: handler is address-taken, reached
-// via host signal delivery.
+// callback discovery for a handler reached via host signal delivery.
 //
 // Expected output on PASS:
 //   REGISTERED

@@ -43,6 +43,7 @@ The current authoritative state of unsupported patterns also lives in `docs/fork
 - **Impossible?** For funcref/externref: no, supportable with a dedicated aux table. For abstract GC refs: see A5.
 - **Effort:** ~1 week for funcref/externref. Design + implementation + fuzz coverage.
 - **Decision (2026-05-13):** **Bundle into the C5 PR. Scope clarified after A5 review: funcref / externref only.** Original decision was "all ref types including GC"; subsequent A5 review established that no current or near-term program (including the SpiderMonkey port, which uses linear-memory GC) exercises wasm-GC reference types in catch operands. GC refs remain under A5's accepted limit (the `classify_ref` panic persists for any GC ref position). C5 scope: modern wasm-EH SDK flip + libcxx rebuild + A2 (multi-target `*_ref`) + A3 (multi-target plain catch) + A4 funcref/externref catch operands. If a wasm-GC-using program later appears, A4's aux-table mechanism is the natural extension point.
+- **Update (2026-05-15):** **Deferred as a documented safe carve-out.** After the modern-EH flip and C-series fixtures landed, no shipping port or end-to-end fixture required funcref/externref plain-catch operands. Ordinary C++ EH is not expected to emit this shape: exception payloads live in linear memory / libc++abi state, not as Wasm `funcref` or `externref` plain-catch tag operands. Treat A4 as an unanticipated Wasm-level case for hand-written Wasm, non-C++ language frontends, or future custom toolchains. PR #307 keeps `B1ScratchPlan::b2_carveout` for these arms and covers C-08/C-09 at the WAT level to prove the tool carves out safely instead of panicking or producing invalid wasm. If a real program needs it, implement per-arm funcref/externref aux-table stashing then promote C-08/C-09 to full replay coverage.
 
 ### A5. Wasm-GC refs (`any` / `eq` / `struct` / `array` / `i31`, concrete GC types)
 
@@ -113,7 +114,7 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 **Sequencing:**
 - This becomes its own PR, **before** C5 (the modern wasm-EH SDK flip). Sequence:
   1. **PR-eliminate-guard-dispatch:** extend switch-dispatch + runtime trampoline + delete guard-dispatch. B1–B4 close as a class.
-  2. **C5 PR:** modern wasm-EH SDK flip + libcxx rebuild + A2 + A3 + A4 (funcref/externref). Lands after eliminate-guard-dispatch so the new EH patterns can use the unified scheme without inheriting guard-dispatch hazards.
+  2. **C5 PR:** modern wasm-EH SDK flip + libcxx rebuild + A2 + A3. A4 was originally listed here, but the 2026-05-15 update reclassified it as an unanticipated non-C++ Wasm-level case with a safe carve-out. Lands after eliminate-guard-dispatch so the new EH patterns can use the unified scheme without inheriting guard-dispatch hazards.
 
 **Code-size reduction option added per user request:** the runtime-dispatcher trampoline is incorporated into the plan. It impacts NORMAL mode at near-zero cost (a single function-entry branch on state) and adds only a small REWIND-mode penalty (one `call_indirect`).
 
@@ -151,23 +152,25 @@ Guard-dispatch re-executes the body top-to-bottom on REWIND to reach the matchin
 - **Today:** No fixture, no handling. Saved task #17.
 - **Plan:** Extend call-graph discovery into registered sigaction handlers; treat them as fork-path roots. Add a fixture under `crates/fork-instrument/tests/` and an integration test that forks from a SIGALRM handler.
 - **Effort:** ~1 week.
-- **Decision (2026-05-13):** **Add in this PR — conservative + fixture.** Extend `instrument::discover_fork_path` to treat every address-taken function as a fork-path root (the conservative rule). Add a SIGUSR1 fork fixture exercising both parent and child paths. ~1 week. Lands in fierce-wire / PR #307. **Future work flagged:** if the conservative rule causes objectionable binary-size growth, implement the precise version (parse `sigaction()` callers to identify actual signal handlers via inter-procedural analysis or a libc hook). Recorded in `docs/future-improvements.md` under "Fork-instrument precise signal-handler discovery".
+- **Decision (2026-05-13):** **Add in this PR — conservative + fixture.** Original plan was to extend `instrument::discover_fork_path` to treat every address-taken function as a fork-path root, then add a SIGUSR1 fork fixture exercising both parent and child paths. Later update below supersedes the broad rule.
+- **Update (2026-05-15):** **Conservative rule dropped as redundant.** K-01, K-02, K-04, and K-07 pass through the existing direct + table/`call_indirect` closure, so the broad "every address-taken function" expansion would only add binary-size risk without closing an observed gap. The fixtures remain as regression gates for callback discovery.
 
 ### C4. fork-from-cancellation-cleanup
 
 - **Today:** No fixture, no handling. Saved task #18.
 - **Plan:** Identify `pthread_cleanup_push` registrants; treat as fork-path roots. Add a fixture + test.
 - **Effort:** ~1 week.
-- **Decision (2026-05-13):** **Covered by C3 + add fixture in this PR.** C4 is structurally identical to C3 from the instrumenter's perspective — cleanup handlers are address-taken functions reached via host-managed callback registration. C3's conservative rule (treat every address-taken function as a fork-path root) covers cleanup handlers incidentally. Add a `pthread_cleanup_push` + fork fixture as a regression test in the same C3 PR work to prove the coverage holds. ~1 day for the fixture. **Future work flagged:** the precise variant described under C3's future-improvement entry must also extend to `pthread_cleanup_push` registrants when implemented.
+- **Decision (2026-05-13):** **Covered by C3 + add fixture in this PR.** C4 is structurally identical to C3 from the instrumenter's perspective — cleanup handlers are address-taken functions reached via host-managed callback registration. Original plan expected C3's broad address-taken rule to cover cleanup handlers incidentally; the later update below supersedes that discovery assumption. Add a `pthread_cleanup_push` + fork fixture as a regression test in the same C3 PR work to prove the coverage holds.
 - **Empirical update (2026-05-13, commit 1 of mega-PR):** K-03 fixture (`programs/k_03_fork_in_pthread_cleanup.c`) hangs ≥20s — parent reaches `PRE_FORK` inside cleanup, never returns from `fork()`. Test marked `it.fails(... timeout: 7_000)` for now. K-01, K-02, K-04 (signal-handler + qsort comparator) all PASS today, so C3's "discovery" rule is incidentally working via libc's call-graph reach; the C4 hang is a different problem — likely a pthread-cancel-unwind / fork interaction, not a discovery gap. Mega-PR plan updated to add **commit 8** as the dedicated slot for C3 conservative-rule formalisation + K-03 root-cause investigation + fix.
+- **Update (2026-05-15):** K-03 is fixed by the wpk_fork equivalent of PR #468's fork-from-pthread support (`ForkFromThreadContext` plus thread-entry rewind). The fixture is now a normal host coverage assertion.
 
 ### C5. Modern wasm-EH SDK flip
 
 - **Today:** `sdk/src/lib/flags.ts:11` sets `-mllvm -wasm-use-legacy-eh=true`. Same flag is hardcoded in 8 test/build scripts and 2 raw-clang build scripts (`examples/libs/libcxx/build-libcxx.sh:119`, `examples/libs/lsof/build-lsof.sh:54`). Saved task #14.
-- **Why blocking:** Until flipped, items A2 + A4 are dormant — no shipping binary emits modern-EH patterns that would force them.
+- **Why blocking:** Until flipped, A2/A3 are dormant — no shipping binary emits modern-EH patterns that would force them. A4 was later reclassified as an unanticipated non-C++ Wasm-level case and is safe-carved out.
 - **Plan:** Flip flag SDK-wide, rebuild libcxx with modern lowering, publish a new `binaries-abi-v*` archive, rebuild every C++ program that uses EH (cpp_throw_test, vim, mariadb, php, quickjs), audit fork-instrument behavior under modern-EH binaries.
 - **Effort:** Multi-day. Likely its own PR rather than a Phase 7 cleanup item.
-- **Decision (2026-05-13):** **Bundle into a single mega-PR with the architectural pivot.** Combined scope: eliminate-guard-dispatch + runtime-dispatcher trampoline + modern wasm-EH SDK flip + libcxx rebuild & republish + A2 + A3 + A4 (funcref/externref) + comprehensive instrumentation/rewind test program. **No supported case left out** — the test program must exercise every supported instrumentation pattern and rewind path. ~6–10 weeks. Drafted as `docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md`. Mega-PR is high-risk but coherent: every component touches the dispatch core or the EH path; staging them as separate PRs would mean repeated rebase pain.
+- **Decision (2026-05-13):** **Bundle into a single mega-PR with the architectural pivot.** Combined scope: eliminate-guard-dispatch + runtime-dispatcher trampoline + modern wasm-EH SDK flip + libcxx rebuild & republish + A2 + A3 + comprehensive instrumentation/rewind test program. **No supported case left out** — the test program must exercise every supported instrumentation pattern and rewind path. ~6–10 weeks. Drafted as `docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md`. Mega-PR is high-risk but coherent: every component touches the dispatch core or the EH path; staging them as separate PRs would mean repeated rebase pain. A4 remained documented separately and was later safe-carved out because ordinary C++ EH does not produce that Wasm shape.
 
 ---
 
@@ -191,13 +194,14 @@ Summary of where each item lands after the final scope decision:
 | Item | Lands in |
 |---|---|
 | A1 ucontext | Accepted as known limit — no work |
-| A2, A3, A4 (funcref/externref) | PR #307 (mega scope) |
+| A2, A3 | PR #307 (mega scope) |
+| A4 (funcref/externref plain-catch operands) | Documented safe carve-out in PR #307 for an unanticipated non-C++ Wasm-level case; end-to-end support deferred until a real program needs it |
 | A5 wasm-GC refs | Accepted as known limit — no work |
 | B1, B2, B3, B4 | PR #307 (subsumed by eliminate-guard-dispatch) |
 | C1 (fork-from-catch fixture) | PR #307 (committed as `.fails`; flip when pivot fixes it) |
 | C2 (post-catch fork fixture) | PR #307 (committed as `.fails`; flip when pivot fixes it) |
-| C3 (fork-from-signal-handler) | PR #307 (mega scope) |
-| C4 (fork-from-cancellation-cleanup) | PR #307 (mega scope; covered by C3) |
-| C5 (modern wasm-EH SDK flip + libcxx + A2/A3/A4) | PR #307 (mega scope) |
+| C3 (fork-from-signal-handler) | PR #307 fixtures; broad address-taken rule dropped as redundant |
+| C4 (fork-from-cancellation-cleanup) | PR #307 fixed via fork-from-pthread host support |
+| C5 (modern wasm-EH SDK flip + libcxx + A2/A3) | PR #307 (mega scope) |
 | Eliminate guard-dispatch (architectural pivot) | PR #307 (mega scope) |
 | Comprehensive `fork_instrument_coverage` test program | PR #307 (mega scope) |

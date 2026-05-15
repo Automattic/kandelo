@@ -3,7 +3,8 @@
 // Coverage matrix: docs/plans/2026-05-13-fork-instrument-megaPR-eliminate-guard-dispatch-and-modern-EH-plan.md
 // Cleanup handlers are address-taken callbacks reached via host-managed
 // cancellation/cleanup unwinding. C4 in the unsupported-cases review;
-// covered incidentally by C3's conservative rule.
+// fixed by routing fork children from pthread workers through the saved
+// pthread entry context.
 //
 // We fire the cleanup by allowing the thread to be cancelled at a
 // cancellation point inside the thread body. The cleanup handler then

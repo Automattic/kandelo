@@ -33,7 +33,11 @@
  */
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import {
+  findRepoRoot,
+  resolveBinary,
+  tryResolveBinary,
+} from "../src/binary-resolver";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,11 +80,23 @@ async function runFixture(relPath: string, expected: Expected) {
 /** Echo binary built from examples/echo.c, registered for popen/posix_spawn. */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { findRepoRoot } from "../src/binary-resolver";
 const echoCandidate = join(findRepoRoot(), "examples", "echo.wasm");
 const echoBinary = existsSync(echoCandidate) ? echoCandidate : null;
 const echoExecMap = echoBinary
   ? new Map<string, string>([
+      ["echo", echoBinary],
+      ["/bin/echo", echoBinary],
+      ["/usr/bin/echo", echoBinary],
+    ])
+  : undefined;
+
+/** Minimal sh fixture built from programs/sh.c for popen("/bin/sh -c ..."). */
+const shCandidate = resolveBinary("programs/sh.wasm");
+const popenExecMap = echoBinary
+  ? new Map<string, string>([
+      ["sh", shCandidate],
+      ["/bin/sh", shCandidate],
+      ["/usr/bin/sh", shCandidate],
       ["echo", echoBinary],
       ["/bin/echo", echoBinary],
       ["/usr/bin/echo", echoBinary],
@@ -317,15 +333,11 @@ describe("fork_instrument_coverage / S-* side effects during rewind", () => {
 // ---------------------------------------------------------------------------
 
 describe("fork_instrument_coverage / K-* callback fork roots", () => {
-  // K-01..K-04 surprisingly all pass today (verified empirically while
-  // landing this scaffolding) — the address-taken handler functions
-  // are reached via the kernel's signal-delivery / pthread-cleanup
-  // path, and the fork-instrument tool's call-graph analysis already
-  // picks up the indirect callers transitively. Marking these as
-  // regression gates so the "C3 conservative rule" work in commits
-  // 2-N doesn't accidentally regress them. If it turns out the
-  // current pass is incidental rather than intentional, flipping back
-  // to it.fails() while the explicit C3 work lands is fine.
+  // K-01/K-02/K-04/K-07 prove callback-style fork roots work through
+  // the existing direct + call_indirect closure. The originally planned
+  // C3 "instrument every address-taken function" rule was dropped as
+  // redundant after these fixtures stayed green. K-03 covers the
+  // pthread-worker fork path fixed by the wpk_fork port of PR #468.
   it("K-01 fork from sigaction(SIGUSR1) handler (C3) [signal-handler discovery]", async () => {
     await runFixture("programs/k_01_fork_in_sigusr1_handler.wasm", {
       contains: ["REGISTERED", "RAISING", "IN_HANDLER", "PRE_FORK", "CHILD: ok", "PASS: K-01"],
@@ -349,7 +361,7 @@ describe("fork_instrument_coverage / K-* callback fork roots", () => {
     });
   }, 10_000);
 
-  it("K-04 fork from qsort comparator (C3 conservative-rule pathological case)", async () => {
+  it("K-04 fork from qsort comparator (C3 indirect-callback pathological case)", async () => {
     await runFixture("programs/k_04_fork_in_qsort_comparator.wasm", {
       contains: ["PRE_QSORT", "PRE_FORK", "CHILD: ok", "POST_QSORT sorted=1", "PASS: K-04"],
     });
@@ -407,13 +419,10 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
     });
   });
 
-  // P-04 popen — known-broken under guard-dispatch
-  // (memory:fork-instrument-O2-bug-investigation.md). The architectural
-  // pivot is the planned fix.
-  it.fails("P-04 popen+pclose (fork+exec+pipe end-to-end) [pivot]", async () => {
+  it("P-04 popen+pclose (fork+exec+pipe end-to-end)", async () => {
     await runFixture("programs/p_04_popen_pclose.wasm", {
       contains: ["POPEN_OPENED", "READ: hello-popen", "PCLOSE: status=0", "PASS: P-04"],
-      execPrograms: echoExecMap,
+      execPrograms: popenExecMap,
     });
   });
 

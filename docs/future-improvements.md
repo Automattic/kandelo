@@ -262,20 +262,26 @@ End state: a regression that shows up only on the browser host (signal delivery 
 
 **Related:** `CLAUDE.md` § *Two hosts: Browser AND Node.js — DUAL-HOST PARITY IS LOAD-BEARING*; PR #388 (brk-base) and PR #410 (a_crash trap) as the failure-mode precedents this would close.
 
-### Fork-instrument precise signal-handler discovery
-This PR (C3 of `docs/plans/2026-05-13-fork-instrument-unsupported-cases-review.md`) adds the **conservative rule** for fork-from-signal-handler support: `instrument::discover_fork_path` treats every address-taken function as a fork-path root. This is correct but over-instruments — any function whose address is taken (callbacks, vtables, function pointers passed to libc/qsort/pthread_create/etc.) gets instrumented even if it can't actually be reached from a signal handler.
-
-If the conservative rule causes objectionable binary-size growth on shipping ports, implement a **precise rule** instead. Two approaches:
+### Fork-instrument callback discovery broadening
+PR #307's C3/C4 fixtures pass through the existing direct + table/`call_indirect`
+closure, so the originally proposed "instrument every address-taken function"
+rule was not added. If a future port registers a fork-calling callback that is
+not discovered by that closure, implement a targeted callback-root rule rather
+than broad full address-taken expansion. Two approaches:
 
 - **Inter-procedural analysis:** identify `sigaction()` / `signal()` / `pthread_cleanup_push()` callers and propagate the function-pointer argument to determine which functions are actually registered as callbacks. Requires constant-propagation through the wasm bytecode. Complex but tool-internal.
 - **Libc-hook approach:** intercept `sigaction()` / `signal()` / `pthread_cleanup_push()` at the libc layer (a wpk-specific override in musl-overlay) and surface the registered callbacks to the kernel at runtime. The fork-instrument tool then doesn't need to discover them statically — it instruments only the call graph from `kernel_fork`, and the kernel rejects fork attempts from un-instrumented callbacks at delivery time. Simpler to implement but breaks the "fork from anywhere works statically" property.
 
-The precise rule must cover the same callback-registration entry points the conservative rule incidentally covers today:
+Any targeted rule must cover the callback-registration entry points proven by
+the current regression matrix:
 
 - `sigaction()` / `signal()` — signal handlers (C3).
 - `pthread_cleanup_push()` — pthread cancellation cleanup handlers (C4).
-- Any future address-taken host callback (`atexit`, `pthread_atfork`, `pthread_key_create` destructors, `qsort` comparators if they ever fork — pathological but possible). The conservative rule is correct for all of them; the precise rule must enumerate them explicitly.
+- Any future address-taken host callback (`atexit`, `pthread_atfork`, `pthread_key_create` destructors, `qsort` comparators if they ever fork — pathological but possible).
 
-Trigger criterion: any shipping port shows >10% binary-size increase attributable to the conservative rule (measured by diffing `wpk-fork-instrument`'s output with and without the rule's address-taken expansion).
+Trigger criterion: a shipping port reaches `fork()` from a registered callback
+that is absent from `wasm-fork-instrument --discover-only` output and fails at
+runtime because the callback's call chain was not instrumented.
 
-**Files:** `crates/fork-instrument/src/call_graph.rs` — `discover_fork_path` (current conservative rule); future precise version would extend this or add a complementary `instrument::analyze_callback_registrations` pass.
+**Files:** `crates/fork-instrument/src/call_graph.rs` plus a possible
+`instrument::analyze_callback_registrations` pass.
