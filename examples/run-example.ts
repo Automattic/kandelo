@@ -92,6 +92,7 @@ const builtinPrograms: Record<string, string | null> = {
     "/bin/sed": sedWasm,
     "/usr/bin/sed": sedWasm,
     "gencat": resolve(repoRoot, "examples/gencat.wasm"),
+    "/bin/gencat": resolve(repoRoot, "examples/gencat.wasm"),
     "/usr/bin/gencat": resolve(repoRoot, "examples/gencat.wasm"),
     "git": gitWasm,
     "/usr/bin/git": gitWasm,
