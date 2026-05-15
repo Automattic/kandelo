@@ -269,18 +269,17 @@ release() {
   fi
 
   LOCK_REF="$lock_ref"
-  local held_sha
-  held_sha="$(remote_lock_sha || true)"
-  if [ "$held_sha" != "$owned_sha" ]; then
-    echo "State lock is no longer owned by this job; leaving ${LOCK_REF} unchanged."
-    return 0
-  fi
-
   if delete_lock_if_unchanged "$owned_sha"; then
     echo "Released state lock ${LOCK_REF}."
     rm -f "$(state_file_path)"
   else
-    echo "::warning::Could not release state lock ${LOCK_REF}; a later run will clear it if stale."
+    local held_sha
+    held_sha="$(remote_lock_sha || true)"
+    if [ "$held_sha" != "$owned_sha" ]; then
+      echo "State lock is no longer owned by this job; leaving ${LOCK_REF} unchanged."
+    else
+      echo "::warning::Could not release state lock ${LOCK_REF}; a later run will clear it if stale."
+    fi
   fi
 }
 
