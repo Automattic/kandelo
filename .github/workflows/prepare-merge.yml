@@ -456,6 +456,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -586,6 +588,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -633,12 +637,14 @@ jobs:
           '
 
       - name: Download library archives from lib-matrix-build
+        if: needs.preflight.outputs.library_matrix != '[]'
         uses: actions/download-artifact@v4
         with:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/lib-archives
 
       - name: Materialize library overlays
+        if: needs.preflight.outputs.library_matrix != '[]'
         run: |
           bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
 
@@ -718,6 +724,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     steps:
       - uses: actions/checkout@v4
         with:

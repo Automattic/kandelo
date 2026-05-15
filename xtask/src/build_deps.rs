@@ -823,8 +823,10 @@ fn ensure_built_uncached(
     //                        env-var contract; validation is
     //                        non-emptiness of OUT_DIR rather than a
     //                        declared outputs list.
-    //   (Library | Program,_) — try `[binary]` remote fetch first,
-    //                        then fall back to the build script.
+    //   (Library | Program,_) — try `package.pr.toml` / source
+    //                        `[binary]` direct archives first, then
+    //                        the `build.toml` index path, then fall
+    //                        back to the build script.
     match (target.kind, target.build.script_path.is_some()) {
         (ManifestKind::Source, false) => {
             let parent = canonical
@@ -893,20 +895,50 @@ fn ensure_built_uncached(
             Ok((canonical, transitive))
         }
         (ManifestKind::Library | ManifestKind::Program, _) => {
-            // Resolution priority 3: index-based remote fetch. The
+            // Resolution priority 3a: direct archive fetch from the
+            // source manifest's `[binary]` map. In normal source
+            // package.toml files this map is empty post index-ledger
+            // migration, but CI writes sibling `package.pr.toml`
+            // overlays with direct file:// archives for same-run
+            // matrix outputs. Those must win over the durable
+            // `build.toml` index below.
+            //
+            // Resolution priority 3b: index-based remote fetch. The
             // resolver loads the sibling `build.toml`, resolves its
             // `[binary]` block to an index URL (or a direct archive
             // URL), then looks up this package's entry. Status
             // `success` fetches the current archive; status
             // `failed`/`pending`/`building` falls back to the
             // last-green `fallback_*` archive when one is preserved.
-            // Any failure along the way logs and falls through to
-            // the source build — a remote-fetch error should never
-            // cause the resolver to refuse to produce an artifact.
+            //
+            // Any failure along the way logs and falls through to the
+            // source build — a remote-fetch error should never cause
+            // the resolver to refuse to produce an artifact.
             //
             // `force_rebuild` short-circuits remote fetch entirely.
             if !force_rebuild {
                 let cache_key_sha_hex = hex(&sha);
+                if let Some(binary) = target.binary.get(&arch) {
+                    match remote_fetch::fetch_and_install(
+                        binary,
+                        &canonical,
+                        target,
+                        arch,
+                        abi_version,
+                        &cache_key_sha_hex,
+                    ) {
+                        Ok(()) => return Ok((canonical, transitive)),
+                        Err(e) => {
+                            eprintln!(
+                                "warning: direct binary fetch for {} from {} failed ({}); \
+                                 falling back to indexed binary/source build",
+                                target.spec(),
+                                binary.archive_url,
+                                e,
+                            );
+                        }
+                    }
+                }
                 if let Some(()) = try_index_install(
                     target,
                     arch,
@@ -962,11 +994,17 @@ fn try_index_install(
 
     // 2. Resolve the binary source to a concrete URL pair. Direct
     //    form: use the URL + sha verbatim. Indexed form: fetch
-    //    index.toml + look up this package.
+    //    index.toml + look up this package. CI can override indexed
+    //    URLs with WASM_POSIX_BINARY_INDEX_URL so staging/prepare
+    //    jobs consume the release they are publishing instead of the
+    //    committed durable-release default.
     let (archive_url, archive_sha256) = match &build.binary {
         BinarySource::Direct { url, sha256 } => (url.clone(), sha256.clone()),
         BinarySource::Indexed { .. } => {
-            let index_url = build.binary.resolve_index_url(abi_version)?;
+            let index_url = std::env::var("WASM_POSIX_BINARY_INDEX_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| build.binary.resolve_index_url(abi_version))?;
             let cache_dir = default_cache_root().join("indexes");
             let index = match index_toml::fetch_index(&index_url, &cache_dir) {
                 Ok(idx) => idx,
@@ -3799,6 +3837,89 @@ built_by = "test"
     // sentinel appears in the cache (proving the resolver gave up on
     // the index path and ran the build script); the happy-path test
     // asserts the archive's bytes landed AND `via-build` is absent.
+
+    #[test]
+    fn direct_pr_overlay_fetch_installs_archive_before_build_toml_index() {
+        let root = tempdir("direct-overlay-reg");
+        let cache = tempdir("direct-overlay-cache");
+        let archive_dir = tempdir("direct-overlay-archive");
+
+        write_lib(
+            &root,
+            "libOverlay",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+echo BUILD > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
+touch "$WASM_POSIX_DEP_OUT_DIR/via-build"
+"#,
+            r#"[outputs]
+libs = ["lib/out.a"]
+"#,
+        );
+
+        let reg_without_overlay = Registry {
+            roots: vec![root.clone()],
+        };
+        let m_without_overlay = reg_without_overlay.load("libOverlay").unwrap();
+        let cache_key_hex = hex(&compute_sha(
+            &m_without_overlay,
+            &reg_without_overlay,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap());
+
+        let manifest_text = archived_manifest_text(
+            "libOverlay",
+            "wasm32",
+            &[TEST_ABI],
+            &cache_key_hex,
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("lib/out.a", b"FROM-OVERLAY")],
+        );
+        let archive_sha_hex = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libOverlay-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
+
+        std::fs::write(
+            root.join("libOverlay/package.pr.toml"),
+            format!(
+                r#"
+[binary.wasm32]
+archive_url = "{archive_url}"
+archive_sha256 = "{archive_sha_hex}"
+"#
+            ),
+        )
+        .unwrap();
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libOverlay").unwrap();
+        let path = ensure_built(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(path.join("lib/out.a")).unwrap(),
+            b"FROM-OVERLAY"
+        );
+        assert!(
+            !path.join("via-build").exists(),
+            "direct package.pr.toml overlay should bypass the source build"
+        );
+    }
 
     #[test]
     fn index_fetch_installs_archive_when_sha_arch_abi_cachekey_all_match() {
