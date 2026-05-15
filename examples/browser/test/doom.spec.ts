@@ -8,8 +8,9 @@
  * the demo had a broken-on-second-build patch step that produced exactly
  * this failure mode and went unnoticed.
  *
- * Marked @slow because it boots the full fbdoom wasm + paints the
- * 28 MB Freedoom IWAD into VFS — both required.
+ * Marked @slow because it boots the full fbdoom wasm and fetches the
+ * ~4 MB DOOM shareware IWAD from a Linux-distro mirror on first run
+ * (cached via the Cache API thereafter).
  */
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -18,15 +19,14 @@ import { test, expect } from "@playwright/test";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
-const WAD_PATH = join(REPO_ROOT, "examples/browser/public/assets/doom/doom1.wad");
 const FBDOOM_PATH = join(REPO_ROOT, "examples/libs/fbdoom/fbdoom.wasm");
 
-const skipIfMissing = !existsSync(WAD_PATH) || !existsSync(FBDOOM_PATH);
+const skipIfMissing = !existsSync(FBDOOM_PATH);
 
 test.describe("@slow doom", () => {
   test.skip(
     skipIfMissing,
-    "fbdoom.wasm or doom1.wad missing — run examples/libs/fbdoom/build-fbdoom.sh",
+    "fbdoom.wasm missing — run examples/libs/fbdoom/build-fbdoom.sh",
   );
 
   test("boots without trapping and responds to Esc", async ({ page }) => {

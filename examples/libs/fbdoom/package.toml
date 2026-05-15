@@ -1,10 +1,11 @@
 kind = "program"
 name = "fbdoom"
 version = "0.1.0"
-# rev2: bundle Freedoom1 IWAD (+ COPYING / CREDITS) into the archive so
-# the browser demo gets the WAD via the resolver chain — no separate
-# fetch in `examples/browser/public/assets/doom/` required.
-revision = 2
+# rev3: drop the bundled IWAD. The browser demo fetches the DOOM
+# shareware `doom1.wad` (id Software, freely redistributable) at page
+# load from a Linux-distro mirror and caches it via the Cache API —
+# the archive carries only `fbdoom.wasm`.
+revision = 3
 kernel_abi = 7
 depends_on = []
 
@@ -26,16 +27,6 @@ repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 [[outputs]]
 name = "fbdoom"
 wasm = "fbdoom.wasm"
-
-# The Freedoom1 IWAD is staged into the archive by build-fbdoom.sh.
-# Declared here so the resolver's `place_binaries_symlinks` mirrors it
-# under `binaries/programs/<arch>/fbdoom/doom1.wad` for the browser
-# demo's Vite ?url import. The `wasm = …` field name is historical —
-# the resolver treats it as "filename to symlink" regardless of
-# extension.
-[[outputs]]
-name = "doom1"
-wasm = "doom1.wad"
 
 [binary]
 archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/fbdoom-0.1.0-rev2-abi7-wasm32-2ebd1752.tar.zst"
