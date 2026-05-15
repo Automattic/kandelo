@@ -319,20 +319,20 @@ export default defineConfig({
         php: path.resolve(__dirname, "pages/php/index.html"),
         "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
         mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
-        redis: path.resolve(__dirname, "pages/redis/index.html"),
         wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
         lamp: path.resolve(__dirname, "pages/lamp/index.html"),
         shell: path.resolve(__dirname, "pages/shell/index.html"),
-        python: path.resolve(__dirname, "pages/python/index.html"),
-        perl: path.resolve(__dirname, "pages/perl/index.html"),
-        ruby: path.resolve(__dirname, "pages/ruby/index.html"),
         "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
         "git-test": path.resolve(__dirname, "pages/git-test/index.html"),
         "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
-        erlang: path.resolve(__dirname, "pages/erlang/index.html"),
         benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
-        texlive: path.resolve(__dirname, "pages/texlive/index.html"),
         doom: path.resolve(__dirname, "pages/doom/index.html"),
+        // The perl, python, ruby, erlang, texlive, and redis demos
+        // were removed (along with their pages/ subdirectories) while
+        // their slow builds are disabled. Re-add an entry — and
+        // restore the corresponding pages/<name>/ directory from git
+        // history — once the builds move to a separate prebuilt-
+        // package repo.
       },
     },
   },
