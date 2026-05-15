@@ -234,8 +234,10 @@ jobs:
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
+      promote_matrix: ${{ steps.compute.outputs.promote_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
+      staging_tag: ${{ steps.compute.outputs.staging_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -297,15 +299,22 @@ jobs:
             # conflict because their target tags differ.
             TARGET_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
+            STAGING_TAG="pr-${{ github.event.pull_request.number }}-staging"
+            echo "staging_tag=$STAGING_TAG" >> "$GITHUB_OUTPUT"
 
             existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
             echo "existing-assets:"
             echo "$existing_assets" | jq -r ".[0:20][]"
             echo "..."
+            staging_assets=$(gh release view "$STAGING_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
+            echo "staging-assets:"
+            echo "$staging_assets" | jq -r ".[0:20][]"
+            echo "..."
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             library_matrix="[]"
             program_matrix="[]"
+            promote_matrix="[]"
 
             # Temporarily disabled packages — too slow to rebuild in
             # CI while we have no separate prebuilt-package repo to
@@ -361,6 +370,14 @@ jobs:
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
                                 --arg ver "$version" --argjson rev "$revision" \
                   "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
+                staging_archive=$(echo "$staging_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
+                    "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
+                if [ -n "$staging_archive" ]; then
+                  promote_entry=$(echo "$entry" | jq -c --arg archive "$staging_archive" ". + {archive_name: \$archive}")
+                  promote_matrix=$(echo "$promote_matrix" | jq -c --argjson e "$promote_entry" ". + [\$e]")
+                  echo "preflight: promote $pkg/$arch (sha $short from $STAGING_TAG)"
+                  continue
+                fi
                 if [ "$kind" = "library" ]; then
                   library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 else
@@ -371,7 +388,9 @@ jobs:
 
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
-            echo "preflight: library=$(echo "$library_matrix" | jq length) program=$(echo "$program_matrix" | jq length)"
+            echo "promote_matrix=$promote_matrix" >> "$GITHUB_OUTPUT"
+            echo "preflight: promote=$(echo "$promote_matrix" | jq length) library-build=$(echo "$library_matrix" | jq length) program-build=$(echo "$program_matrix" | jq length)"
+            echo "promote_matrix:"; echo "$promote_matrix" | jq .
             echo "library_matrix:"; echo "$library_matrix" | jq .
             echo "program_matrix:"; echo "$program_matrix" | jq .
           '
@@ -448,11 +467,74 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Fast path for prepare-merge: if staging already built the exact
+  # cache-keyed archive, copy that asset into the durable release and
+  # update binaries-abi-v<N>/index.toml under the same state-lock used
+  # by regular matrix publishes. Fall back to lib/program matrix builds
+  # only for entries absent from both durable and PR staging releases.
+  promote-staging:
+    needs: [preflight]
+    if: needs.preflight.outputs.promote_matrix != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # gh release download/upload + state-lock git push
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.promote_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build xtask
+        run: |
+          HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+          cargo build --release -p xtask --target "$HOST_TARGET"
+
+      - name: Download staged archive
+        id: archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/promote"
+          gh release download "${{ needs.preflight.outputs.staging_tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "${{ matrix.archive_name }}" \
+            --dir "$RUNNER_TEMP/promote" \
+            --clobber
+          archive_path="$RUNNER_TEMP/promote/${{ matrix.archive_name }}"
+          if [ ! -f "$archive_path" ]; then
+            echo "::error::staged archive not downloaded: $archive_path"
+            exit 1
+          fi
+          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "archive-name=${{ matrix.archive_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote archive + index entry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status success \
+            --archive-path "${{ steps.archive.outputs.archive-path }}" \
+            --archive-name "${{ steps.archive.outputs.archive-name }}" \
+            --cache-key-sha "${{ matrix.sha }}"
+
   # Library wave — kind=library packages. See staging-build.yml for
   # the lib-then-program design rationale.
   lib-matrix-build:
     needs: [preflight, toolchain-cache]
-    if: needs.preflight.outputs.library_matrix != '[]'
+    if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
@@ -583,8 +665,14 @@ jobs:
 
   # Program wave — kind=program packages, gated on the library wave.
   matrix-build:
-    needs: [preflight, toolchain-cache, lib-matrix-build]
-    if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
+    needs: [preflight, toolchain-cache, promote-staging, lib-matrix-build]
+    if: |
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.toolchain-cache.result == 'success' &&
+      (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      needs.preflight.outputs.program_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
@@ -719,8 +807,14 @@ jobs:
             || true
 
   test-gate:
-    needs: [preflight, toolchain-cache, lib-matrix-build, matrix-build]
-    if: ${{ !cancelled() && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
+    needs: [preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
+    if: |
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.toolchain-cache.result == 'success' &&
+      (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -754,6 +848,7 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Download matrix artifacts
+        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
         uses: actions/download-artifact@v4
         with:
           pattern: '*-wasm*'
@@ -853,27 +948,15 @@ jobs:
   # merge-gate=success on the ORIGINAL PR's HEAD SHA and enables
   # auto-merge there.
   #
-  # Fires when:
-  #   * test-gate succeeded (the matrix did real work AND it passed), OR
-  #   * preflight produced empty matrices (every cache_key_sha was
-  #     already on target_tag — nothing to rebuild).
-  #
-  # Either way the merge is safe: test-gate succeeded against the
-  # union of (matrix-built + durable archives), or every archive
-  # consumers will fetch is already on the release.
+  # Fires when test-gate succeeds against the durable release state.
+  # Prepare may have built missing archives, promoted exact archives
+  # from pr-<N>-staging, or found every cache_key_sha already on the
+  # durable tag; in all cases test-gate validates what consumers will
+  # fetch from binaries-abi-v<N>.
   # ---------------------------------------------------------------------
   merge-gate-post:
     needs: [gate, preflight, test-gate]
-    if: |
-      !cancelled() &&
-      (
-        needs.test-gate.result == 'success' ||
-        (
-          needs.test-gate.result == 'skipped' &&
-          needs.preflight.outputs.library_matrix == '[]' &&
-          needs.preflight.outputs.program_matrix == '[]'
-        )
-      )
+    if: ${{ !cancelled() && needs.test-gate.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
@@ -886,11 +969,7 @@ jobs:
     steps:
       - name: Post merge-gate=success on original PR HEAD
         run: |
-          if [ "${{ needs.test-gate.result }}" = "success" ]; then
-            DESC="test-gate passed against (matrix-built + durable) archives on ${{ needs.preflight.outputs.target_tag }}; each matrix entry's archive + index entry published atomically."
-          else
-            DESC="No package archives needed publishing (every cache_key_sha already on ${{ needs.preflight.outputs.target_tag }}); merge-gate granted."
-          fi
+          DESC="test-gate passed against durable archives on ${{ needs.preflight.outputs.target_tag }}; missing entries were built or promoted from PR staging before validation."
           gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
@@ -935,11 +1014,7 @@ jobs:
         # blast radius; the inner retry recovers most transients.
         continue-on-error: true
         run: |
-          if [ "${{ needs.test-gate.result }}" = "success" ]; then
-            BODY="prepare-merge: test-gate passed; each matrix entry published its archive + index update to [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}) atomically. \`merge-gate=success\` posted on PR HEAD; auto-merge enabled."
-          else
-            BODY="prepare-merge: no package archives needed publishing this run (every \`cache_key_sha\` is already on [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }})). \`merge-gate=success\` posted on PR HEAD; auto-merge enabled."
-          fi
+          BODY="prepare-merge: test-gate passed against [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging before validation; \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
           set +e
           for attempt in 1 2 3; do
             if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then

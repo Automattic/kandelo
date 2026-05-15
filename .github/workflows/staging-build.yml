@@ -361,7 +361,7 @@ jobs:
   # once per arch, instead of once per dependent program.
   lib-matrix-build:
     needs: [preflight, toolchain-cache]
-    if: needs.preflight.outputs.library_matrix != '[]'
+    if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
@@ -499,7 +499,7 @@ jobs:
     # others succeeded) doesn't cancel programs that depend only on
     # the green libs. Programs whose libs failed will fail loudly at
     # resolve time, which is the correct behavior.
-    if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.program_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
@@ -697,7 +697,7 @@ jobs:
     # The empty-matrix case (preflight produced []) is short-circuited:
     # nothing was built, nothing to test.
     needs: [preflight, toolchain-cache, lib-matrix-build, matrix-build]
-    if: ${{ !cancelled() && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -855,7 +855,7 @@ jobs:
     # false here because aborting an in-flight comment edit is worse than
     # waiting one more comment-edit's worth of time.
     needs: [preflight, lib-matrix-build, matrix-build]
-    if: always() && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
+    if: always() && needs.preflight.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]')
     runs-on: ubuntu-latest
     concurrency:
       group: phase-b-1-publish-${{ needs.preflight.outputs.target_tag }}
