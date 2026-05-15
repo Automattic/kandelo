@@ -10,7 +10,7 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
-import { DynamicLinker } from "./dylink";
+import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -161,12 +161,25 @@ function buildKernelImports(
   };
 }
 
+export interface DlopenSupport {
+  imports: Record<string, WebAssembly.ExportValue>;
+  /** Replay the parent's dlopen list (read from the archive in linear
+   *  memory). No-op if the archive head pointer is 0. Call this in the
+   *  fork-child path AFTER setupChannelBase and BEFORE the asyncify
+   *  rewind into _start. */
+  replayDlopens: () => void;
+}
+
 /**
  * Build dlopen host imports for a process. These are called directly from
  * the user program's dlopen/dlsym/dlclose C stubs (glue/dlopen.c).
  *
  * The DynamicLinker is lazily created on first use since most programs
  * don't use dlopen.
+ *
+ * Each successful dlopen is also persisted into a per-process archive
+ * (linked list in linear memory, head pointer at a fixed slot below
+ * asyncifyBufAddr) so the fork child can replay them via `replayDlopens`.
  */
 function buildDlopenImports(
   memory: WebAssembly.Memory,
@@ -175,48 +188,59 @@ function buildDlopenImports(
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
   ptrWidth: 4 | 8,
-): Record<string, WebAssembly.ExportValue> {
+): DlopenSupport {
   let linker: DynamicLinker | null = null;
+  const loadedLibraries = new Map<string, LoadedSharedLibrary>();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
+
+  const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
+  const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
+  const headSlot = asyncifyBufAddr - headOffset;
+  const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
+
+  const readPtr = (view: DataView, addr: number): number =>
+    ptrWidth === 8 ? Number(view.getBigUint64(addr, true)) : view.getUint32(addr, true);
+  const writePtr = (view: DataView, addr: number, value: number): void => {
+    if (ptrWidth === 8) view.setBigUint64(addr, BigInt(value), true);
+    else view.setUint32(addr, value, true);
+  };
+
+  // The kernel mmap allocator. Shared with the linker, but also used
+  // directly by persistArchiveEntry to obtain blocks for the archive.
+  const allocateMemory = (size: number, align: number): number => {
+    const requested = size + Math.max(align, 1) - 1;
+    const view = new DataView(memory.buffer);
+    const base = channelOffset;
+    view.setInt32(base + 4, SYS_MMAP_NR, true);
+    view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, 0n, true);
+    view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(requested), true);
+    view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
+    view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
+    view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, -1n, true);
+    view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
+
+    const i32 = new Int32Array(memory.buffer);
+    Atomics.store(i32, base / 4, 1);
+    Atomics.notify(i32, base / 4, 1);
+    while (Atomics.wait(i32, base / 4, 1) === "ok") { /* wait for mmap */ }
+
+    const result = Number(view.getBigInt64(base + CH_RETURN, true));
+    const err = view.getUint32(base + CH_ERRNO, true);
+    Atomics.store(i32, base / 4, 0);
+
+    if (err || result < 0) {
+      throw new Error(`dlopen: mmap(${requested}) failed errno=${err || -result}`);
+    }
+    return alignUp(n(result), Math.max(align, 1));
+  };
 
   const getLinker = (): DynamicLinker => {
     if (linker) return linker;
     const table = getTable();
     const sp = getStackPointer();
     if (!table || !sp) throw new Error("dlopen: program has no table or stack pointer");
-
-    // Side-module data must be allocated through the guest address-space
-    // manager. A host-only fixed base can overlap later guest mmap ranges;
-    // anonymous mmap zeroing from the kernel/host completion path
-    // would then wipe the side module's data/GOT while the kernel sees no
-    // overlap.
-    const allocateMemory = (size: number, align: number): number => {
-      const requested = size + Math.max(align, 1) - 1;
-      const view = new DataView(memory.buffer);
-      const base = channelOffset;
-      view.setInt32(base + 4, SYS_MMAP_NR, true);
-      view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, 0n, true);
-      view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(requested), true);
-      view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
-      view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
-      view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, -1n, true);
-      view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
-
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1);
-      Atomics.notify(i32, base / 4, 1);
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* wait for mmap */ }
-
-      const result = Number(view.getBigInt64(base + CH_RETURN, true));
-      const err = view.getUint32(base + CH_ERRNO, true);
-      Atomics.store(i32, base / 4, 0);
-
-      if (err || result < 0) {
-        throw new Error(`dlopen: mmap(${requested}) failed errno=${err || -result}`);
-      }
-      return alignUp(n(result), Math.max(align, 1));
-    };
 
     // Register main program's exported functions and data globals as global
     // symbols so shared libraries can resolve references to libc, libphp, etc.
@@ -246,12 +270,107 @@ function buildDlopenImports(
       allocateMemory,
       globalSymbols,
       got: new Map(),
-      loadedLibraries: new Map(),
+      loadedLibraries,
     });
     return linker;
   };
 
-  return {
+  // Append an entry to the linked-list archive in linear memory. Each
+  // entry is one mmap block: struct, then name UTF-8 (padded to 8-byte
+  // alignment), then the side-module wasm bytes. Pointers are absolute
+  // — fork's memcpy preserves the parent's address space.
+  const persistArchiveEntry = (name: string, bytes: Uint8Array, memoryBase: number): void => {
+    const nameBytes = encoder.encode(name);
+    const nameLen = nameBytes.length;
+    const nameAligned = (nameLen + 7) & ~7;
+    const totalSize = entrySize + nameAligned + bytes.length;
+
+    const entry = allocateMemory(totalSize, 8);
+    const namePtr = entry + entrySize;
+    const bytesPtr = namePtr + nameAligned;
+
+    const view = new DataView(memory.buffer);
+    if (ptrWidth === 8) {
+      view.setBigUint64(entry + 0, 0n, true);
+      view.setBigUint64(entry + 8, BigInt(namePtr), true);
+      view.setBigUint64(entry + 16, BigInt(nameLen), true);
+      view.setBigUint64(entry + 24, BigInt(bytesPtr), true);
+      view.setBigUint64(entry + 32, BigInt(bytes.length), true);
+      view.setBigUint64(entry + 40, BigInt(memoryBase), true);
+    } else {
+      view.setUint32(entry + 0, 0, true);
+      view.setUint32(entry + 4, namePtr, true);
+      view.setUint32(entry + 8, nameLen, true);
+      view.setUint32(entry + 12, bytesPtr, true);
+      view.setUint32(entry + 16, bytes.length, true);
+      view.setUint32(entry + 20, memoryBase, true);
+    }
+
+    new Uint8Array(memory.buffer, namePtr, nameLen).set(nameBytes);
+    new Uint8Array(memory.buffer, bytesPtr, bytes.length).set(bytes);
+
+    // Append to tail (preserves insertion order).
+    const head = readPtr(view, headSlot);
+    if (head === 0) {
+      writePtr(view, headSlot, entry);
+      return;
+    }
+    let cursor = head;
+    for (;;) {
+      const next = readPtr(view, cursor);
+      if (next === 0) {
+        writePtr(view, cursor, entry);
+        return;
+      }
+      cursor = next;
+    }
+  };
+
+  const replayDlopens = (): void => {
+    const view = new DataView(memory.buffer);
+    let cursor = readPtr(view, headSlot);
+    if (cursor === 0) return;
+
+    // Force linker creation: it's lazily built on the first C-side
+    // __wasm_dlopen call, which the fork child hasn't made yet. We need
+    // it now to drive replay before _start resumes.
+    const lk = getLinker();
+
+    while (cursor !== 0) {
+      let next: number, namePtr: number, nameLen: number, bytesPtr: number, bytesLen: number, memoryBase: number;
+      if (ptrWidth === 8) {
+        next = Number(view.getBigUint64(cursor + 0, true));
+        namePtr = Number(view.getBigUint64(cursor + 8, true));
+        nameLen = Number(view.getBigUint64(cursor + 16, true));
+        bytesPtr = Number(view.getBigUint64(cursor + 24, true));
+        bytesLen = Number(view.getBigUint64(cursor + 32, true));
+        memoryBase = Number(view.getBigUint64(cursor + 40, true));
+      } else {
+        next = view.getUint32(cursor + 0, true);
+        namePtr = view.getUint32(cursor + 4, true);
+        nameLen = view.getUint32(cursor + 8, true);
+        bytesPtr = view.getUint32(cursor + 12, true);
+        bytesLen = view.getUint32(cursor + 16, true);
+        memoryBase = view.getUint32(cursor + 20, true);
+      }
+
+      const name = decoder.decode(new Uint8Array(memory.buffer, namePtr, nameLen));
+      // Copy bytes out of shared memory before passing to WebAssembly —
+      // some engines reject SharedArrayBuffer-backed buffers, and we
+      // already pay this cost on the parent's initial dlopen path.
+      const bytesCopy = new Uint8Array(new Uint8Array(memory.buffer, bytesPtr, bytesLen));
+
+      // DynamicLinker.dlopenSync returns 0 on error, >0 on success.
+      const handle = lk.dlopenSync(name, bytesCopy, { memoryBase });
+      if (handle === 0) {
+        throw new Error(`dlopen(${name}): ${lk.dlerror() || "unknown"}`);
+      }
+
+      cursor = next;
+    }
+  };
+
+  const imports: Record<string, WebAssembly.ExportValue> = {
     __wasm_dlopen: (bytesPtr: number, bytesLen: number,
                     namePtr: number, nameLen: number): number => {
       const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
@@ -259,7 +378,19 @@ function buildDlopenImports(
       const bytesCopy = new Uint8Array(bytes);
       const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
       const name = decoder.decode(nameBytes);
-      return getLinker().dlopenSync(name, bytesCopy);
+      const handle = getLinker().dlopenSync(name, bytesCopy);
+      if (handle > 0) {
+        // The linker just instantiated this — the map MUST contain it.
+        // A miss means the shared-map ref got rewired and replay would
+        // silently see an empty archive after fork; fail loudly here
+        // instead of corrupting the fork child later.
+        const loaded = loadedLibraries.get(name);
+        if (!loaded) {
+          throw new Error(`__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`);
+        }
+        persistArchiveEntry(name, bytesCopy, loaded.memoryBase);
+      }
+      return handle;
     },
 
     __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
@@ -276,13 +407,14 @@ function buildDlopenImports(
     __wasm_dlerror: (bufPtr: number, bufMax: number): number => {
       const err = getLinker().dlerror();
       if (!err) return 0;
-      const encoder = new TextEncoder();
       const encoded = encoder.encode(err);
       const len = Math.min(encoded.length, bufMax);
       new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
       return len;
     },
   };
+
+  return { imports, replayDlopens };
 }
 
 /**
@@ -523,6 +655,15 @@ function buildImportObject(
 /** Size of the asyncify data buffer used for fork stack save/restore */
 const ASYNCIFY_BUF_SIZE = 16384;
 
+// Slot below asyncifyBufAddr that stores the head pointer of the dlopen
+// archive linked list. Fork's memcpy carries the parent's archive into
+// the child intact; the child walks it to replay each dlopen before
+// asyncify rewind.
+const DLOPEN_HEAD_OFFSET_WASM32 = 12;
+const DLOPEN_HEAD_OFFSET_WASM64 = 24;
+const DLOPEN_ENTRY_SIZE_WASM32 = 24;
+const DLOPEN_ENTRY_SIZE_WASM64 = 48;
+
 /**
  * Verify that a freshly-instantiated user program was built against an
  * ABI compatible with the running kernel.
@@ -695,7 +836,7 @@ export async function centralizedWorkerMain(
       };
 
       // Build import object and instantiate
-      const dlopenImports = buildDlopenImports(
+      const dlopenSupport = buildDlopenImports(
         memory,
         channelOffset,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
@@ -703,7 +844,7 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined,
         ptrWidth,
       );
-      const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
+      const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
         () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
@@ -749,6 +890,18 @@ export async function centralizedWorkerMain(
 
       // Set __channel_base in TLS
       setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
+
+      // Replay parent's dlopens before resuming, so the child's table
+      // and side-module data state match the parent's. The non-asyncify
+      // fork branch below re-executes _start (and thus re-runs the
+      // C-side dlopen calls) so it doesn't need replay.
+      if (initData.isForkChild) {
+        try {
+          dlopenSupport.replayDlopens();
+        } catch (e) {
+          throw new Error(`fork-replay-dlopen failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
@@ -859,7 +1012,7 @@ export async function centralizedWorkerMain(
       }
 
       let processInstance: WebAssembly.Instance | null = null;
-      const dlopenImports = buildDlopenImports(
+      const dlopenSupport = buildDlopenImports(
         memory,
         channelOffset,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
@@ -867,7 +1020,7 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined,
         ptrWidth,
       );
-      const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
+      const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
         () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;

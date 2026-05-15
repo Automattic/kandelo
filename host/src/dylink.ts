@@ -173,6 +173,29 @@ export interface LoadedSharedLibrary {
 }
 
 /**
+ * Options used when re-instantiating a side module in a fork child.
+ *
+ * Preconditions:
+ *   - Replay must run in the same order as the parent's original dlopens,
+ *     against the same initial table/memory state. `__table_base` is
+ *     captured from `options.table.length` at replay time and must equal
+ *     the parent's value — anything that grows the child's table before
+ *     replay (a future GOT-prealloc pass, an interleaved dlsym, etc.)
+ *     diverges the layout and corrupts call_indirect targets.
+ *   - `options.loadedLibraries` must NOT already contain `name`. Replay
+ *     does not refresh existing entries; a duplicate would be silently
+ *     deduped and return a handle whose memoryBase may not match.
+ *   - The library must have no `dylink.0` NEEDED deps. Dep replay is not
+ *     yet plumbed; `loadSharedLibrarySync` throws if you try.
+ */
+export interface DylinkReplayOptions {
+  /** Memory base returned by the parent's allocator. Data relocations in
+   *  the memcpy'd data section encode (memoryBase + offset); using any
+   *  other base corrupts pointers. */
+  memoryBase: number;
+}
+
+/**
  * Options for loading a shared library.
  */
 export interface LoadSharedLibraryOptions {
@@ -208,12 +231,17 @@ function instantiateSharedLibrary(
   wasmBytes: Uint8Array,
   metadata: DylinkMetadata,
   options: LoadSharedLibraryOptions,
+  replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
   // Allocate memory region
   const memAlign = 1 << metadata.memoryAlign;
   let memoryBase = 0;
   if (metadata.memorySize > 0) {
-    if (options.allocateMemory) {
+    if (replay) {
+      // Reuse parent's memoryBase: data-reloc'd pointers baked into the
+      // memcpy'd data section already encode (parentMemoryBase + offset).
+      memoryBase = replay.memoryBase;
+    } else if (options.allocateMemory) {
       memoryBase = options.allocateMemory(metadata.memorySize, memAlign);
       const end = memoryBase + metadata.memorySize;
       if (end > options.memory.buffer.byteLength) {
@@ -238,8 +266,11 @@ function instantiateSharedLibrary(
       }
     }
 
-    // Zero-initialize the allocated region
-    new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+    if (!replay) {
+      // Skip zero-init in replay: child memory already holds parent's
+      // post-startup data via fork memcpy.
+      new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+    }
   }
 
   // Allocate table slots
@@ -400,10 +431,14 @@ function instantiateSharedLibrary(
     applyRelocs();
   }
 
-  // Run constructors
-  const ctors = instance.exports.__wasm_call_ctors as Function | undefined;
-  if (ctors) {
-    ctors();
+  if (!replay) {
+    // Skip ctors in replay: parent already ran them and post-startup state
+    // (e.g. opcache accel_globals, registered INI entries) is in the
+    // memcpy'd data; re-running would clobber it.
+    const ctors = instance.exports.__wasm_call_ctors as Function | undefined;
+    if (ctors) {
+      ctors();
+    }
   }
 
   const loaded: LoadedSharedLibrary = {
@@ -423,6 +458,9 @@ function instantiateSharedLibrary(
  * Load a shared library (.so / side module) into a process's address space.
  * Async version — uses async WebAssembly compilation for large modules and
  * supports async dependency resolution.
+ *
+ * Replay is not supported on the async path; fork replays go through
+ * `loadSharedLibrarySync` / `DynamicLinker.dlopenSync`.
  */
 export async function loadSharedLibrary(
   name: string,
@@ -461,6 +499,7 @@ export function loadSharedLibrarySync(
   name: string,
   wasmBytes: Uint8Array,
   options: LoadSharedLibraryOptions,
+  replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
   const existing = options.loadedLibraries.get(name);
   if (existing) return existing;
@@ -470,7 +509,19 @@ export function loadSharedLibrarySync(
     throw new Error(`${name}: not a shared library (no dylink.0 section)`);
   }
 
-  // Load dependencies first (sync)
+  // Replay-with-deps would re-allocate the dep at the child's *current*
+  // mmap cursor (not the parent's address) and corrupt the replayed
+  // library's data-relocs, which encode the parent's dep memoryBase.
+  // Fail loudly instead of silently producing wrong addresses.
+  if (replay && metadata.neededDynlibs.length > 0) {
+    throw new Error(
+      `${name}: replay does not yet support NEEDED deps; ` +
+        `each dep would need its own DylinkReplayOptions in a future API extension`,
+    );
+  }
+
+  // Load dependencies first (sync). Replay is not forwarded: dep replay is
+  // out-of-scope (guarded above); the recursive call instantiates deps freshly.
   for (const dep of metadata.neededDynlibs) {
     if (options.loadedLibraries.has(dep)) continue;
     if (!options.resolveLibrarySync) {
@@ -483,7 +534,7 @@ export function loadSharedLibrarySync(
     loadSharedLibrarySync(dep, depBytes, options);
   }
 
-  return instantiateSharedLibrary(name, wasmBytes, metadata, options);
+  return instantiateSharedLibrary(name, wasmBytes, metadata, options, replay);
 }
 
 /**
@@ -500,10 +551,13 @@ export class DynamicLinker {
     this.options = options;
   }
 
-  /** Open a shared library. Returns a handle (>0) or 0 on error. */
-  dlopenSync(name: string, wasmBytes: Uint8Array): number {
+  /** Open a shared library. Returns a handle (>0) or 0 on error.
+   *  When `replay` is provided, behaves as fork-replay: uses the parent's
+   *  saved memoryBase and skips __wasm_call_ctors. See `DylinkReplayOptions`
+   *  for preconditions. */
+  dlopenSync(name: string, wasmBytes: Uint8Array, replay?: DylinkReplayOptions): number {
     try {
-      const lib = loadSharedLibrarySync(name, wasmBytes, this.options);
+      const lib = loadSharedLibrarySync(name, wasmBytes, this.options, replay);
       // Check if already mapped to a handle
       for (const [h, l] of this.handleMap) {
         if (l === lib) return h;
