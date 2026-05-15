@@ -37,12 +37,6 @@ export const App: React.FC = () => {
       setShareTarget(true);
       return;
     }
-    if (id === "export") {
-      // Export VFS is a stub for now; reuses the Share dialog placement
-      // until its own surface lands.
-      setShareTarget(true);
-      return;
-    }
     setView(id);
   };
 
@@ -60,7 +54,7 @@ export const App: React.FC = () => {
 
   const isMachineView = view === "machine" || view === "internals";
   const isEmpty = isMachineView && status === "idle";
-  const flushMain = view === "gallery" || view === "browse" || view === "config" || isEmpty;
+  const flushMain = view === "gallery" || view === "browse" || view === "export" || view === "config" || isEmpty;
 
   const onApplyPastedDescriptor = React.useCallback((d: BootDescriptor) => {
     void host.applyBootDescriptor(d).catch((err) => {
@@ -100,7 +94,7 @@ export const App: React.FC = () => {
               onInternalsTab={(t) => setInternalsTab(t as InternalsTab)}
             />
           </>
-        ) : view === "gallery" || view === "browse" ? (
+        ) : view === "gallery" ? (
           <Gallery onLaunch={onLaunchGalleryItem} onShare={onShareGalleryItem} />
         ) : view === "config" ? (
           <Config onApplied={() => setView("machine")} />
@@ -125,6 +119,7 @@ const PlaceholderView: React.FC<{ view: ViewId }> = ({ view }) => {
     view === "gallery" ? "Gallery"
     : view === "browse" ? "Browse Systems"
     : view === "config" ? "System Config"
+    : view === "export" ? "Export VFS"
     : "View";
   return (
     <div style={{

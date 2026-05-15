@@ -32,9 +32,12 @@ const NAV_INTERNALS: { id: InternalsTab; label: string }[] = [
   { id: "config", label: "Config" },
 ];
 
-const NAV_BROWSE: NavItem[] = [
-  { id: "browse", label: "Browse Systems", icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="6" /><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12" /></svg> },
+const NAV_SHARE: NavItem[] = [
   { id: "share", label: "Share Machine", icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="4" cy="8" r="1.8" /><circle cx="12" cy="3.5" r="1.8" /><circle cx="12" cy="12.5" r="1.8" /><path d="M5.5 7.2L10.5 4.3M5.5 8.8L10.5 11.7" /></svg> },
+];
+
+const NAV_MOCKED: NavItem[] = [
+  { id: "browse", label: "Browse Systems", icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="6" /><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12" /></svg> },
   { id: "export", label: "Export VFS", icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M8 2v8M5 7l3 3 3-3M2.5 13.5h11" /></svg> },
 ];
 
@@ -103,7 +106,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {!collapsed && <div className="ksb-section">Share</div>}
-      {NAV_BROWSE.map((n) => (
+      {NAV_SHARE.map((n) => (
+        <button key={n.id} className="ksb-item" aria-current={view === n.id} onClick={() => onNav(n.id)}>
+          {n.icon}
+          {!collapsed && <span>{n.label}</span>}
+        </button>
+      ))}
+
+      {!collapsed && <div className="ksb-section ksb-section-mocked">Unimplemented / Mocked</div>}
+      {NAV_MOCKED.map((n) => (
         <button key={n.id} className="ksb-item" aria-current={view === n.id} onClick={() => onNav(n.id)}>
           {n.icon}
           {!collapsed && <span>{n.label}</span>}
