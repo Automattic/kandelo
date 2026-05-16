@@ -283,12 +283,12 @@ async function handleInit(msg: InitMessage) {
     },
     io,
     {
-      onFork: (parentPid, childPid, parentMemory) => {
+      onFork: (parentPid, childPid, parentMemory, threadFork) => {
         // Notify the main thread of every kernel-side process event so
         // Inspector-style UIs (Kandelo) can refresh their process table
         // event-driven. Mirrors the browser-side worker entry.
         post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
-        return handleFork(parentPid, childPid, parentMemory);
+        return handleFork(parentPid, childPid, parentMemory, threadFork);
       },
       onExec: async (pid, path, argv, envp) => {
         const result = await handleExec(pid, path, argv, envp);
@@ -298,10 +298,7 @@ async function handleInit(msg: InitMessage) {
         return result;
       },
       onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: (childPid, programBytes, argv, envp) => {
-        post({ type: "proc_event", kind: "spawn", pid: childPid });
-        return handlePosixSpawn(childPid, programBytes, argv, envp);
-      },
+      onSpawn: handlePosixSpawn,
       onClone: handleClone,
       onExit: handleExit,
     },
@@ -633,6 +630,8 @@ async function handlePosixSpawn(
   argv: string[],
   envp: string[],
 ): Promise<number> {
+  post({ type: "proc_event", kind: "spawn", pid: childPid });
+
   const ptrWidth = detectPtrWidth(programBytes);
   const memory = createProcessMemory(ptrWidth);
   const channelOffset = (maxPages - 2) * 65536;

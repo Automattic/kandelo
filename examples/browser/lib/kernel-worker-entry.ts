@@ -347,10 +347,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         return result;
       },
       onResolveSpawn: async (path) => handlePosixSpawnResolve(path),
-      onSpawn: async (childPid, programBytes, argv, envp) => {
-        post({ type: "proc_event", kind: "spawn", pid: childPid });
-        return handlePosixSpawn(childPid, programBytes, argv, envp);
-      },
+      onSpawn: handlePosixSpawn,
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
@@ -837,6 +834,8 @@ async function handlePosixSpawn(
   argv: string[],
   envp: string[],
 ): Promise<number> {
+  post({ type: "proc_event", kind: "spawn", pid: childPid });
+
   const ptrWidth = detectPtrWidth(programBytes);
   const newMemory = createProcessMemory(ptrWidth, maxPages);
   const newChannelOffset = (maxPages - 2) * PAGE_SIZE;
