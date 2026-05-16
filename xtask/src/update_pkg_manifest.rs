@@ -29,7 +29,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use toml_edit::{value, DocumentMut, Item};
+use toml_edit::{DocumentMut, Item, value};
 
 /// Set `[build].commit = "<commit_sha>"` in the package.toml at
 /// `toml_path`, preserving the rest of the file's formatting.
@@ -51,13 +51,11 @@ pub fn set_build_commit(toml_path: &Path, commit_sha: &str) -> Result<bool, Stri
     // future SCMs (or shorter dev-mode SHAs) might legitimately use a
     // different shape; reject only obvious garbage (whitespace, etc).
     if commit_sha.chars().any(|c| c.is_whitespace()) {
-        return Err(format!(
-            "commit_sha {commit_sha:?} contains whitespace"
-        ));
+        return Err(format!("commit_sha {commit_sha:?} contains whitespace"));
     }
 
-    let text = fs::read_to_string(toml_path)
-        .map_err(|e| format!("read {}: {e}", toml_path.display()))?;
+    let text =
+        fs::read_to_string(toml_path).map_err(|e| format!("read {}: {e}", toml_path.display()))?;
     let mut doc: DocumentMut = text
         .parse()
         .map_err(|e| format!("parse {}: {e}", toml_path.display()))?;
@@ -73,7 +71,7 @@ pub fn set_build_commit(toml_path: &Path, commit_sha: &str) -> Result<bool, Stri
                 "{}: [build] is not a table (got {:?})",
                 toml_path.display(),
                 build.type_name()
-            ))
+            ));
         }
     };
 
@@ -137,7 +135,9 @@ pub fn set_package_binary(
         return Err("archive_url must not be empty".into());
     }
     if archive_sha256.len() != 64
-        || !archive_sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        || !archive_sha256
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
     {
         return Err(format!(
             "archive_sha256 must be 64-char lowercase hex, got {archive_sha256:?}"
@@ -150,8 +150,8 @@ pub fn set_package_binary(
         return Err(format!("arch must be wasm32 or wasm64, got {arch:?}"));
     }
 
-    let text = fs::read_to_string(toml_path)
-        .map_err(|e| format!("read {}: {e}", toml_path.display()))?;
+    let text =
+        fs::read_to_string(toml_path).map_err(|e| format!("read {}: {e}", toml_path.display()))?;
     let mut doc: DocumentMut = text
         .parse()
         .map_err(|e| format!("parse {}: {e}", toml_path.display()))?;
@@ -171,10 +171,7 @@ pub fn set_package_binary(
             if doc.get("binary").is_none() {
                 doc["binary"] = Item::Table(toml_edit::Table::new());
             }
-            let binary_type = doc
-                .get("binary")
-                .map(Item::type_name)
-                .unwrap_or("missing");
+            let binary_type = doc.get("binary").map(Item::type_name).unwrap_or("missing");
             let binary = doc
                 .get_mut("binary")
                 .and_then(|i| i.as_table_mut())
@@ -195,11 +192,7 @@ pub fn set_package_binary(
                 .get_mut(arch)
                 .and_then(|i| i.as_table_mut())
                 .ok_or_else(|| {
-                    format!(
-                        "{}: [binary.{}] is not a table",
-                        toml_path.display(),
-                        arch
-                    )
+                    format!("{}: [binary.{}] is not a table", toml_path.display(), arch)
                 })?;
             entry.set_implicit(false);
             entry.insert("archive_url", value(archive_url));
@@ -225,9 +218,7 @@ pub fn set_package_binary(
             let binary = doc
                 .get_mut("binary")
                 .and_then(|i| i.as_table_mut())
-                .ok_or_else(|| {
-                    format!("{}: [binary] is not a table", toml_path.display())
-                })?;
+                .ok_or_else(|| format!("{}: [binary] is not a table", toml_path.display()))?;
             binary.set_implicit(false);
             binary.insert("archive_url", value(archive_url));
             binary.insert("archive_sha256", value(archive_sha256));
@@ -258,10 +249,7 @@ enum BinaryShape {
 ///
 /// Mixed-shape `[binary]` blocks (top-level scalars next to arch
 /// sub-tables) are rejected with the same error the resolver emits.
-fn detect_binary_shape(
-    doc: &DocumentMut,
-    toml_path: &Path,
-) -> Result<BinaryShape, String> {
+fn detect_binary_shape(doc: &DocumentMut, toml_path: &Path) -> Result<BinaryShape, String> {
     if let Some(existing) = doc.get("binary") {
         let table = existing.as_table().ok_or_else(|| {
             format!(
@@ -270,10 +258,8 @@ fn detect_binary_shape(
                 existing.type_name()
             )
         })?;
-        let has_bare = table.contains_key("archive_url")
-            || table.contains_key("archive_sha256");
-        let has_per_arch =
-            table.contains_key("wasm32") || table.contains_key("wasm64");
+        let has_bare = table.contains_key("archive_url") || table.contains_key("archive_sha256");
+        let has_per_arch = table.contains_key("wasm32") || table.contains_key("wasm64");
         if has_bare && has_per_arch {
             return Err(format!(
                 "{}: [binary] mixes the bare form (archive_url at the top) with \
@@ -317,21 +303,12 @@ pub fn run_set_package_binary(args: Vec<String>) -> Result<(), String> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--package-toml" => {
-                toml_path = Some(
-                    it.next()
-                        .ok_or("--package-toml requires path")?
-                        .into(),
-                )
+                toml_path = Some(it.next().ok_or("--package-toml requires path")?.into())
             }
-            "--arch" => {
-                arch = Some(it.next().ok_or("--arch requires <wasm32|wasm64>")?)
-            }
-            "--archive-url" => {
-                archive_url = Some(it.next().ok_or("--archive-url requires <url>")?)
-            }
+            "--arch" => arch = Some(it.next().ok_or("--arch requires <wasm32|wasm64>")?),
+            "--archive-url" => archive_url = Some(it.next().ok_or("--archive-url requires <url>")?),
             "--archive-sha256" => {
-                archive_sha256 =
-                    Some(it.next().ok_or("--archive-sha256 requires <hex>")?)
+                archive_sha256 = Some(it.next().ok_or("--archive-sha256 requires <hex>")?)
             }
             other => return Err(format!("unknown arg {other:?}")),
         }
@@ -360,8 +337,8 @@ pub fn run_set_package_binary(args: Vec<String>) -> Result<(), String> {
 /// line. The writer itself runs its own probe inline; this exists
 /// only to keep the log message accurate.
 fn shape_of_disk(toml_path: &Path) -> Result<BinaryShape, String> {
-    let text = fs::read_to_string(toml_path)
-        .map_err(|e| format!("read {}: {e}", toml_path.display()))?;
+    let text =
+        fs::read_to_string(toml_path).map_err(|e| format!("read {}: {e}", toml_path.display()))?;
     let doc: DocumentMut = text
         .parse()
         .map_err(|e| format!("parse {}: {e}", toml_path.display()))?;
@@ -384,15 +361,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--package-toml" => {
-                toml_path = Some(
-                    it.next()
-                        .ok_or("--package-toml requires path")?
-                        .into(),
-                )
+                toml_path = Some(it.next().ok_or("--package-toml requires path")?.into())
             }
-            "--commit" => {
-                commit = Some(it.next().ok_or("--commit requires <sha>")?)
-            }
+            "--commit" => commit = Some(it.next().ok_or("--commit requires <sha>")?),
             other => return Err(format!("unknown arg {other:?}")),
         }
     }
@@ -506,7 +477,9 @@ headers = []
 
         // Surrounding fields must survive (formatting + co-tenants).
         assert!(after.contains("script_path = \"examples/libs/zlib/build-zlib.sh\""));
-        assert!(after.contains("repo_url    = \"https://github.com/wasm-posix-kernel/wasm-posix-kernel.git\""));
+        assert!(after.contains(
+            "repo_url    = \"https://github.com/wasm-posix-kernel/wasm-posix-kernel.git\""
+        ));
         assert!(after.contains("[binary.wasm32]"));
     }
 
@@ -517,7 +490,10 @@ headers = []
         fs::write(&path, FIXTURE_WITHOUT_BUILD).unwrap();
 
         let wrote = set_build_commit(&path, "deadbeef").unwrap();
-        assert!(!wrote, "writeback must report wrote=false for no-[build] case");
+        assert!(
+            !wrote,
+            "writeback must report wrote=false for no-[build] case"
+        );
 
         // File must be byte-identical — we never create a [build] block.
         let after = fs::read_to_string(&path).unwrap();
@@ -581,7 +557,10 @@ headers = []
 
         // Second invocation with the same SHA: result must be byte-identical.
         let wrote = set_build_commit(&path, sha).unwrap();
-        assert!(wrote, "second call still reports wrote=true (block present)");
+        assert!(
+            wrote,
+            "second call still reports wrote=true (block present)"
+        );
         let after_second = fs::read_to_string(&path).unwrap();
         assert_eq!(after_first, after_second);
     }
@@ -667,14 +646,10 @@ archive_url = "https://example.com/old-dinit.tar.zst"
 archive_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
 "#;
 
-    const NEW_URL_32: &str =
-        "https://github.com/example/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm32-deadbeef.tar.zst";
-    const NEW_SHA_32: &str =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const NEW_URL_64: &str =
-        "https://github.com/example/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm64-cafef00d.tar.zst";
-    const NEW_SHA_64: &str =
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const NEW_URL_32: &str = "https://github.com/example/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm32-deadbeef.tar.zst";
+    const NEW_SHA_32: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const NEW_URL_64: &str = "https://github.com/example/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm64-cafef00d.tar.zst";
+    const NEW_SHA_64: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     #[test]
     fn updates_one_arch_in_multi_arch_block() {
@@ -818,8 +793,7 @@ archive_sha256 = "33333333333333333333333333333333333333333333333333333333333333
         let dir = tempdir("bad-arch");
         let path = dir.join("package.toml");
         fs::write(&path, FIXTURE_MULTI_ARCH).unwrap();
-        let err =
-            set_package_binary(&path, "x86_64", NEW_URL_32, NEW_SHA_32).unwrap_err();
+        let err = set_package_binary(&path, "x86_64", NEW_URL_32, NEW_SHA_32).unwrap_err();
         assert!(err.contains("wasm32 or wasm64"), "got: {err}");
     }
 
@@ -828,8 +802,7 @@ archive_sha256 = "33333333333333333333333333333333333333333333333333333333333333
         let dir = tempdir("empty-url");
         let path = dir.join("package.toml");
         fs::write(&path, FIXTURE_MULTI_ARCH).unwrap();
-        let err =
-            set_package_binary(&path, "wasm32", "", NEW_SHA_32).unwrap_err();
+        let err = set_package_binary(&path, "wasm32", "", NEW_SHA_32).unwrap_err();
         assert!(err.contains("must not be empty"), "got: {err}");
     }
 
@@ -1030,8 +1003,7 @@ archive_sha256 = "77777777777777777777777777777777777777777777777777777777777777
         let path = dir.join("package.toml");
         fs::write(&path, FIXTURE_SINGLE_ARCH).unwrap();
 
-        let err = set_package_binary(&path, "wasm64", NEW_URL_64, NEW_SHA_64)
-            .unwrap_err();
+        let err = set_package_binary(&path, "wasm64", NEW_URL_64, NEW_SHA_64).unwrap_err();
         assert!(
             err.contains("bare [binary]") && err.contains("wasm64"),
             "C3 error message should mention bare/wasm64; got: {err}"
@@ -1053,8 +1025,7 @@ archive_sha256 = "77777777777777777777777777777777777777777777777777777777777777
         let path = dir.join("package.toml");
         fs::write(&path, FIXTURE_ARCHES_DECLARED_BUT_BARE).unwrap();
 
-        let err = set_package_binary(&path, "wasm64", NEW_URL_64, NEW_SHA_64)
-            .unwrap_err();
+        let err = set_package_binary(&path, "wasm64", NEW_URL_64, NEW_SHA_64).unwrap_err();
         assert!(
             err.contains("bare [binary]"),
             "expected bare-shape rejection; got: {err}"
@@ -1099,11 +1070,9 @@ archive_sha256 = "99999999999999999999999999999999999999999999999999999999999999
         let path = dir.join("package.toml");
         fs::write(&path, mixed).unwrap();
 
-        let err = set_package_binary(&path, "wasm32", NEW_URL_32, NEW_SHA_32)
-            .unwrap_err();
+        let err = set_package_binary(&path, "wasm32", NEW_URL_32, NEW_SHA_32).unwrap_err();
         assert!(
-            err.contains("mixes the bare form")
-                || err.contains("mix"),
+            err.contains("mixes the bare form") || err.contains("mix"),
             "expected mixed-shape rejection; got: {err}"
         );
     }

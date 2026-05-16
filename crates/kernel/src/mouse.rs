@@ -86,8 +86,12 @@ pub fn inject_event(dx: i32, dy: i32, buttons: u32) {
     // sign of dx/dy mirroring the byte's high bit, bits6..7 = overflow
     // (we never set since clamped fits in i8).
     let mut b0: u8 = 0x08 | ((buttons & 0x07) as u8);
-    if dx_i8 < 0 { b0 |= 0x10; }
-    if dy_i8 < 0 { b0 |= 0x20; }
+    if dx_i8 < 0 {
+        b0 |= 0x10;
+    }
+    if dy_i8 < 0 {
+        b0 |= 0x20;
+    }
     let b1 = dx_i8 as u8;
     let b2 = dy_i8 as u8;
 
@@ -118,7 +122,10 @@ pub fn read_into(buf: &mut [u8]) -> usize {
     let mut n = 0;
     while n < buf.len() {
         match q.pop_front() {
-            Some(b) => { buf[n] = b; n += 1; }
+            Some(b) => {
+                buf[n] = b;
+                n += 1;
+            }
             None => break,
         }
     }

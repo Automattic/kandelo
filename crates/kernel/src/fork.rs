@@ -16,8 +16,8 @@ extern crate alloc;
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
-use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 use wasm_posix_shared::Errno;
+use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
 use crate::lock::LockTable;
@@ -26,7 +26,7 @@ use crate::ofd::{FileType, OfdTable, OpenFileDesc};
 use crate::process::{Process, ProcessState};
 use crate::signal::{SignalAction, SignalHandler, SignalState};
 use crate::socket::SocketTable;
-use crate::terminal::{TerminalState, WinSize, NCCS};
+use crate::terminal::{NCCS, TerminalState, WinSize};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
@@ -312,11 +312,13 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u64(proc.signals.blocked)?;
 
     // Count non-default actions (handler, flags, mask)
-    let non_default_count = (1..65u32).filter(|&i| {
-        proc.signals.get_handler(i) != SignalHandler::Default
-            || proc.signals.get_action(i).flags != 0
-            || proc.signals.get_action(i).mask != 0
-    }).count() as u32;
+    let non_default_count = (1..65u32)
+        .filter(|&i| {
+            proc.signals.get_handler(i) != SignalHandler::Default
+                || proc.signals.get_action(i).flags != 0
+                || proc.signals.get_action(i).mask != 0
+        })
+        .count() as u32;
     w.write_u32(non_default_count)?;
 
     for i in 1..65u32 {
@@ -450,7 +452,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
     // ── Socket table (v4) ──
     {
-        use crate::socket::{SocketDomain, SocketType, SocketState};
+        use crate::socket::{SocketDomain, SocketState, SocketType};
         // Count actual sockets
         let mut sock_count = 0u32;
         for idx in 0..proc.sockets.len() {
@@ -479,6 +481,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                     SocketState::Listening => 2,
                     SocketState::Connected => 3,
                     SocketState::Closed => 4,
+                    // The live host net.Socket can't cross fork.
+                    SocketState::Connecting => 4,
                 })?;
                 // peer_idx, recv_buf_idx, send_buf_idx as Option<u32> (0xFFFFFFFF = None)
                 w.write_u32(sock.peer_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
@@ -510,7 +514,11 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                 w.write_u32(if sock.global_pipes { 1 } else { 0 })?;
                 // Shared listener backlog idx (AF_INET listening sockets).
                 // 0xFFFFFFFF = None.
-                w.write_u32(sock.shared_backlog_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(
+                    sock.shared_backlog_idx
+                        .map(|v| v as u32)
+                        .unwrap_or(0xFFFFFFFF),
+                )?;
                 // bind_path for AF_UNIX
                 match &sock.bind_path {
                     Some(p) => {
@@ -741,7 +749,12 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             let len = r.read_u32()? as usize;
             let prot = r.read_u32()?;
             let flags = r.read_u32()?;
-            mappings.push(MappedRegion { addr, len, prot, flags });
+            mappings.push(MappedRegion {
+                addr,
+                len,
+                prot,
+                flags,
+            });
         }
         memory.set_mappings(mappings);
     }
@@ -784,7 +797,10 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             let fd2 = r.read_u32()? as i32;
             use crate::process::FdAction;
             match action_type {
-                0 => fork_fd_actions.push(FdAction::Dup2 { old_fd: fd1, new_fd: fd2 }),
+                0 => fork_fd_actions.push(FdAction::Dup2 {
+                    old_fd: fd1,
+                    new_fd: fd2,
+                }),
                 1 => fork_fd_actions.push(FdAction::Close { fd: fd1 }),
                 _ => {} // skip unknown actions
             }
@@ -794,7 +810,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
     // ── Socket table (v4) ──
     let mut sockets = SocketTable::new();
     if r.remaining() >= 8 {
-        use crate::socket::{SocketDomain, SocketInfo, SocketType, SocketState};
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
         let _total_slots = r.read_u32()? as usize;
         let sock_count = r.read_u32()? as usize;
         for _ in 0..sock_count {
@@ -820,15 +836,31 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
                 _ => return Err(Errno::EINVAL),
             };
             let peer_idx_raw = r.read_u32()?;
-            let peer_idx = if peer_idx_raw == 0xFFFFFFFF { None } else { Some(peer_idx_raw as usize) };
+            let peer_idx = if peer_idx_raw == 0xFFFFFFFF {
+                None
+            } else {
+                Some(peer_idx_raw as usize)
+            };
             let recv_raw = r.read_u32()?;
-            let recv_buf_idx = if recv_raw == 0xFFFFFFFF { None } else { Some(recv_raw as usize) };
+            let recv_buf_idx = if recv_raw == 0xFFFFFFFF {
+                None
+            } else {
+                Some(recv_raw as usize)
+            };
             let send_raw = r.read_u32()?;
-            let send_buf_idx = if send_raw == 0xFFFFFFFF { None } else { Some(send_raw as usize) };
+            let send_buf_idx = if send_raw == 0xFFFFFFFF {
+                None
+            } else {
+                Some(send_raw as usize)
+            };
             let shut_rd = r.read_u32()? != 0;
             let shut_wr = r.read_u32()? != 0;
             let hnh_raw = r.read_u32()?;
-            let host_net_handle = if hnh_raw == 0xFFFFFFFF { None } else { Some(hnh_raw as i32) };
+            let host_net_handle = if hnh_raw == 0xFFFFFFFF {
+                None
+            } else {
+                Some(hnh_raw as i32)
+            };
             // Options
             let opt_count = r.read_u32()? as usize;
             let mut options = Vec::new();
@@ -935,7 +967,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         fork_exec_argv,
         fork_fd_actions,
         next_ephemeral_port: 49152,
-        threads: Vec::new(),  // POSIX: child has single thread
+        threads: Vec::new(), // POSIX: child has single thread
         next_tid: 0,
         eventfds: Vec::new(),
         epolls: Vec::new(),
@@ -998,9 +1030,11 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
     // Only preserve SIG_IGN handlers; caught (Handler) signals reset to Default (POSIX)
     let handlers = proc.signals.handlers();
-    let ignore_count = handlers.iter().enumerate().filter(|(i, h)| {
-        *i > 0 && **h == SignalHandler::Ignore
-    }).count() as u32;
+    let ignore_count = handlers
+        .iter()
+        .enumerate()
+        .filter(|(i, h)| *i > 0 && **h == SignalHandler::Ignore)
+        .count() as u32;
     w.write_u32(ignore_count)?;
 
     for (i, h) in handlers.iter().enumerate() {
@@ -1014,12 +1048,15 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     w.write_u64(proc.signals.pending)?;
 
     // ── FD table (filter out CLOEXEC fds) ──
-    let fd_entries: Vec<(i32, &FdEntry)> = proc.fd_table.iter()
+    let fd_entries: Vec<(i32, &FdEntry)> = proc
+        .fd_table
+        .iter()
         .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC == 0)
         .collect();
 
     // Collect referenced OFD indices from the filtered FDs
-    let referenced_ofds: BTreeSet<usize> = fd_entries.iter()
+    let referenced_ofds: BTreeSet<usize> = fd_entries
+        .iter()
         .map(|(_, entry)| entry.ofd_ref.0)
         .collect();
 
@@ -1032,7 +1069,9 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     }
 
     // ── OFD table (only OFDs referenced by remaining FDs) ──
-    let ofd_entries: Vec<(usize, &OpenFileDesc)> = proc.ofd_table.iter()
+    let ofd_entries: Vec<(usize, &OpenFileDesc)> = proc
+        .ofd_table
+        .iter()
         .filter(|(index, _)| referenced_ofds.contains(index))
         .collect();
     w.write_u32(ofd_entries.len() as u32)?;
@@ -1323,7 +1362,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         fork_exec_argv: None,
         fork_fd_actions: Vec::new(),
         next_ephemeral_port: 49152,
-        threads: Vec::new(),  // exec resets to single thread
+        threads: Vec::new(), // exec resets to single thread
         next_tid: 0,
         eventfds: Vec::new(),
         epolls: Vec::new(),
@@ -1418,7 +1457,9 @@ mod tests {
     fn test_roundtrip_signal_handlers() {
         let mut proc = Process::new(1);
         proc.signals.set_handler(2, SignalHandler::Ignore).unwrap();
-        proc.signals.set_handler(15, SignalHandler::Handler(42)).unwrap();
+        proc.signals
+            .set_handler(15, SignalHandler::Handler(42))
+            .unwrap();
         proc.signals.blocked = 0x0000_0004;
 
         let mut buf = vec![0u8; 64 * 1024];
@@ -1448,14 +1489,13 @@ mod tests {
         use crate::process::FdAction;
         let mut proc = Process::new(1);
         proc.fork_exec_path = Some(b"/usr/bin/echo".to_vec());
-        proc.fork_exec_argv = Some(vec![
-            b"echo".to_vec(),
-            b"hello".to_vec(),
-            b"world".to_vec(),
-        ]);
+        proc.fork_exec_argv = Some(vec![b"echo".to_vec(), b"hello".to_vec(), b"world".to_vec()]);
         proc.fork_fd_actions = vec![
             FdAction::Close { fd: 3 },
-            FdAction::Dup2 { old_fd: 4, new_fd: 1 },
+            FdAction::Dup2 {
+                old_fd: 4,
+                new_fd: 1,
+            },
             FdAction::Close { fd: 4 },
         ];
 
@@ -1464,7 +1504,10 @@ mod tests {
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
 
         assert!(child.fork_child);
-        assert_eq!(child.fork_exec_path.as_deref(), Some(b"/usr/bin/echo".as_slice()));
+        assert_eq!(
+            child.fork_exec_path.as_deref(),
+            Some(b"/usr/bin/echo".as_slice())
+        );
         let argv = child.fork_exec_argv.unwrap();
         assert_eq!(argv.len(), 3);
         assert_eq!(argv[0], b"echo");
@@ -1520,8 +1563,15 @@ mod tests {
         use wasm_posix_shared::fd_flags::FD_CLOEXEC;
         let mut proc = Process::new(1);
         // fd 3 with CLOEXEC
-        let ofd_ref = proc.ofd_table.create(crate::ofd::FileType::Regular, 0, 100, b"/test/cloexec".to_vec());
-        proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_ref), FD_CLOEXEC).unwrap();
+        let ofd_ref = proc.ofd_table.create(
+            crate::ofd::FileType::Regular,
+            0,
+            100,
+            b"/test/cloexec".to_vec(),
+        );
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_ref), FD_CLOEXEC)
+            .unwrap();
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
@@ -1536,7 +1586,9 @@ mod tests {
     fn test_exec_state_resets_caught_handler_preserves_ignore() {
         let mut proc = Process::new(1);
         proc.signals.set_handler(2, SignalHandler::Ignore).unwrap(); // SIGINT -> IGN
-        proc.signals.set_handler(15, SignalHandler::Handler(42)).unwrap(); // SIGTERM -> caught
+        proc.signals
+            .set_handler(15, SignalHandler::Handler(42))
+            .unwrap(); // SIGTERM -> caught
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
@@ -1589,9 +1641,21 @@ mod tests {
         use wasm_posix_shared::mmap::*;
         let mut proc = Process::new(1);
         // Parent has several mmap allocations
-        let a1 = proc.memory.mmap_anonymous(0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
-        let a2 = proc.memory.mmap_anonymous(0, 0x20000, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS);
-        let a3 = proc.memory.mmap_anonymous(0, 0x30000, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS);
+        let a1 = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        let a2 = proc
+            .memory
+            .mmap_anonymous(0, 0x20000, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS);
+        let a3 = proc.memory.mmap_anonymous(
+            0,
+            0x30000,
+            PROT_READ | PROT_WRITE | PROT_EXEC,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
         assert_ne!(a1, MAP_FAILED);
         assert_ne!(a2, MAP_FAILED);
         assert_ne!(a3, MAP_FAILED);
@@ -1611,9 +1675,19 @@ mod tests {
         assert_eq!(child_mappings[2].len, 0x30000);
 
         // Child's next mmap must NOT overlap parent's regions
-        let a4 = child.memory.mmap_anonymous(0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        let a4 = child.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
         assert_ne!(a4, MAP_FAILED);
-        assert!(a4 >= a3 + 0x30000, "child mmap at {:#x} overlaps parent mapping at {:#x}", a4, a3);
+        assert!(
+            a4 >= a3 + 0x30000,
+            "child mmap at {:#x} overlaps parent mapping at {:#x}",
+            a4,
+            a3
+        );
     }
 
     #[test]
@@ -1697,7 +1771,9 @@ mod tests {
         w.write_u32(FORK_VERSION).unwrap();
         w.write_u32(0).unwrap(); // total_size (ignored on read)
         // Scalars: ppid, uid, gid, euid, egid, pgid, sid, umask, nice
-        for _ in 0..9 { w.write_u32(0).unwrap(); }
+        for _ in 0..9 {
+            w.write_u32(0).unwrap();
+        }
         // Signal: blocked + handler_count=0
         w.write_u64(0).unwrap();
         w.write_u32(0).unwrap();
@@ -1720,7 +1796,9 @@ mod tests {
         w.write_u32(FORK_MAGIC).unwrap();
         w.write_u32(FORK_VERSION).unwrap();
         w.write_u32(0).unwrap();
-        for _ in 0..9 { w.write_u32(0).unwrap(); }
+        for _ in 0..9 {
+            w.write_u32(0).unwrap();
+        }
         w.write_u64(0).unwrap();
         w.write_u32(0).unwrap(); // handler_count
         w.write_u32(1024).unwrap(); // max_fds

@@ -1,0 +1,63 @@
+Subject: js_std_poll_io: dispatch JS signal handlers + expose js_std_has_io_handlers
+
+Two changes to make js_std_poll_io a complete embedder primitive for
+event loops driven on top of js_std_loop_once.
+
+(1) Dispatch JS signal handlers. js_std_poll_io previously called
+js_os_poll_internal with flags=0, which excludes JS_OS_POLL_SIGNALS.
+The C-level signal trampoline set os_pending_signals correctly, but
+the JS-level os.signal() callbacks were never invoked — pending bits
+sat on the mask forever. Embedders driving their own loop on
+js_std_loop_once (no internal call to js_os_poll) therefore could
+not observe SIGINT / SIGWINCH / etc. in JS even though the handler
+was registered. Flip the flag so embedder polls drain signals on
+the same cadence as js_std_loop's built-in loop.
+
+(2) Add js_std_has_io_handlers: the Node compat layer
+(examples/libs/quickjs/node-main.c) drives its own event loop on top
+of js_std_loop_once() and used to exit as soon as js_std_loop_once
+returned -1 (no microtasks, no timers, no JS jobs) plus its own
+socket/TLS watch tables were empty. That meant the QuickJS REPL —
+which keeps the process alive solely via os.setReadHandler() on
+stdin — exited immediately after printing its banner. Expose a
+public has_io_handlers query that mirrors the os_rw_handlers /
+port_list emptiness check js_os_poll_internal already does
+internally. Embedders can OR it into their loop-exit predicate
+without poking at JSThreadState, which is private.
+---
+diff --git a/quickjs-libc.c b/quickjs-libc.c
+--- a/quickjs-libc.c
++++ b/quickjs-libc.c
+@@ -2947,11 +2947,20 @@ static int js_os_poll(JSContext *ctx)
+ int js_std_poll_io(JSContext *ctx, int timeout_ms)
+ {
+-    int ret = js_os_poll_internal(ctx, timeout_ms, 0);
++    int ret = js_os_poll_internal(ctx, timeout_ms, JS_OS_POLL_SIGNALS);
+     /* map return codes: -1 on error stays -1, negative from handler becomes -2 */
+     if (ret < -1)
+         return -2;
+     return ret;
+ }
++
++/* True iff the embedded program has live os.setReadHandler / setWriteHandler
++   watches or worker MessagePort listeners. Lets external event loops keep
++   running while the QuickJS REPL waits on stdin. */
++int js_std_has_io_handlers(JSContext *ctx)
++{
++    JSThreadState *ts = js_get_thread_state(JS_GetRuntime(ctx));
++    return !list_empty(&ts->os_rw_handlers) || !list_empty(&ts->port_list);
++}
+ #endif // defined(_WIN32)
+
+ static JSValue make_obj_error(JSContext *ctx,
+diff --git a/quickjs-libc.h b/quickjs-libc.h
+--- a/quickjs-libc.h
++++ b/quickjs-libc.h
+@@ -44,6 +44,7 @@ JS_LIBC_EXTERN void js_std_add_helpers(JSContext *ctx, int argc, char **argv);
+ JS_LIBC_EXTERN int js_std_loop(JSContext *ctx);
+ JS_LIBC_EXTERN int js_std_loop_once(JSContext *ctx);
+ JS_LIBC_EXTERN int js_std_poll_io(JSContext *ctx, int timeout_ms);
++JS_LIBC_EXTERN int js_std_has_io_handlers(JSContext *ctx);
+ JS_LIBC_EXTERN JSValue js_std_await(JSContext *ctx, JSValue obj);
+ JS_LIBC_EXTERN void js_std_init_handlers(JSRuntime *rt);
+ JS_LIBC_EXTERN void js_std_free_handlers(JSRuntime *rt);

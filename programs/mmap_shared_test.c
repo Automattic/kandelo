@@ -1,3 +1,4 @@
+#define _GNU_SOURCE  /* for mremap / MREMAP_MAYMOVE */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,6 +52,45 @@ int main(void) {
 
     close(fd);
     unlink(path);
+
+    /* mremap MREMAP_MAYMOVE preserves prefix bytes.
+     * Regression for host/src/kernel-worker.ts SYS_MREMAP post-syscall fixup.
+     * Without it, a moving mremap above MMAP_THRESHOLD returns a zero-filled
+     * new region and every mallocng realloc above ~128 KB loses its prefix. */
+    {
+        const size_t OLD_SIZE = 256 * 1024;
+        const size_t NEW_SIZE = 512 * 1024;
+        const size_t BLOCKER_SIZE = 64 * 1024;
+        unsigned char *src = mmap(NULL, OLD_SIZE, PROT_READ | PROT_WRITE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (src == MAP_FAILED) { perror("mremap-test: mmap src"); return 1; }
+        /* MAP_FIXED blocker right after src forces the kernel to move on grow. */
+        void *blocker = mmap(src + OLD_SIZE, BLOCKER_SIZE,
+                             PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (blocker == MAP_FAILED) { perror("mremap-test: mmap blocker"); return 1; }
+        for (size_t i = 0; i < OLD_SIZE; i++)
+            src[i] = (unsigned char)((i * 0xAB) & 0xFF);
+        void *moved = mremap(src, OLD_SIZE, NEW_SIZE, MREMAP_MAYMOVE);
+        if (moved == MAP_FAILED) { perror("mremap-test: mremap"); return 1; }
+        if (moved == src) {
+            fprintf(stderr, "mremap-test: did not move despite blocker\n");
+            return 1;
+        }
+        unsigned char *dst = moved;
+        for (size_t i = 0; i < OLD_SIZE; i++) {
+            unsigned char expected = (unsigned char)((i * 0xAB) & 0xFF);
+            if (dst[i] != expected) {
+                fprintf(stderr, "mremap-test: byte %zu: expected %02x got %02x\n",
+                        i, expected, dst[i]);
+                return 1;
+            }
+        }
+        munmap(dst, NEW_SIZE);
+        munmap(blocker, BLOCKER_SIZE);
+        printf("mremap ok\n");
+    }
+
     printf("PASS\n");
     return 0;
 }

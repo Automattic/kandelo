@@ -696,10 +696,17 @@ jobs:
     # Use !cancelled() instead of always() so manual/concurrency
     # cancellation is respected and this long test job doesn't keep an
     # obsolete workflow alive.
-    # The empty-matrix case (preflight produced []) is short-circuited:
-    # nothing was built, nothing to test.
+    # Run even when preflight produces an empty matrix. A retry push can
+    # legitimately hit all package archives in pr-<N>-staging (because
+    # the previous run published them) while still needing to validate
+    # the gate itself, especially after workflow/test-gate fixes.
     needs: [preflight, toolchain-cache, lib-matrix-build, matrix-build]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
+    if: |
+      !cancelled() &&
+      needs.preflight.result == 'success' &&
+      needs.toolchain-cache.result == 'success' &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -740,6 +747,7 @@ jobs:
         # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
         # containing one .tar.zst. The pattern excludes the
         # toolchain-sysroots helper artifact uploaded by toolchain-cache.
+        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
         uses: actions/download-artifact@v4
         with:
           pattern: '*-wasm*'
@@ -786,9 +794,9 @@ jobs:
         # tests fail with "rootfs.vfs is missing".
         run: |
           bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
             cargo build --release -p wasm-posix-kernel \
-              -Z build-std=core,alloc \
-              -Z build-std-features=panic_immediate_abort
+              -Z build-std=core,alloc
             mkdir -p local-binaries
             cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
               local-binaries/kernel.wasm

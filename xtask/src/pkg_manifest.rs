@@ -296,13 +296,11 @@ impl VersionConstraint {
         // parse `rest` as a Version, because `Version::parse` would
         // accept e.g. `3.20<4.0` if the operator string ever leaked
         // through.
-        if rest.starts_with(' ')
-            || rest.contains(['<', '>', '=', '^', '~', ',', ' '])
-        {
+        if rest.starts_with(' ') || rest.contains(['<', '>', '=', '^', '~', ',', ' ']) {
             return Err(future_work_err(tool_name, s, "operator after '>='"));
         }
-        let min = Version::parse(rest)
-            .map_err(|e| format!("[[host_tools]] {}: {}", tool_name, e))?;
+        let min =
+            Version::parse(rest).map_err(|e| format!("[[host_tools]] {}: {}", tool_name, e))?;
         Ok(Self { min })
     }
 
@@ -584,27 +582,23 @@ impl BuildToml {
     /// validated: `[binary]` declares exactly one of `index_url` or
     /// `url` (and `url` requires `sha256`).
     pub fn parse(s: &str) -> Result<Self, String> {
-        let raw: BuildTomlRaw =
-            toml::from_str(s).map_err(|e| format!("build.toml parse: {e}"))?;
+        let raw: BuildTomlRaw = toml::from_str(s).map_err(|e| format!("build.toml parse: {e}"))?;
         let binary = match (raw.binary.index_url, raw.binary.url) {
             (Some(index_url), None) => BinarySource::Indexed { index_url },
             (None, Some(url)) => {
-                let sha256 = raw.binary.sha256.ok_or_else(|| {
-                    "build.toml [binary] url requires sha256".to_string()
-                })?;
+                let sha256 = raw
+                    .binary
+                    .sha256
+                    .ok_or_else(|| "build.toml [binary] url requires sha256".to_string())?;
                 BinarySource::Direct { url, sha256 }
             }
             (Some(_), Some(_)) => {
                 return Err(
-                    "build.toml [binary] must specify exactly one of: index_url, url"
-                        .to_string(),
-                )
+                    "build.toml [binary] must specify exactly one of: index_url, url".to_string(),
+                );
             }
             (None, None) => {
-                return Err(
-                    "build.toml [binary] must specify one of: index_url, url"
-                        .to_string(),
-                )
+                return Err("build.toml [binary] must specify one of: index_url, url".to_string());
             }
         };
         Ok(BuildToml {
@@ -620,8 +614,8 @@ impl BuildToml {
     /// `<package_dir>/build.toml`).
     pub fn load(package_dir: &Path) -> Result<Self, String> {
         let path = package_dir.join("build.toml");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 }
@@ -789,12 +783,10 @@ impl DepsManifest {
         let out = outputs
             .iter()
             .find(|o| {
-                Path::new(&o.wasm).file_name().and_then(|s| s.to_str())
-                    == Some(wasm_basename)
+                Path::new(&o.wasm).file_name().and_then(|s| s.to_str()) == Some(wasm_basename)
             })
             .ok_or_else(|| {
-                let declared: Vec<&str> =
-                    outputs.iter().map(|o| o.wasm.as_str()).collect();
+                let declared: Vec<&str> = outputs.iter().map(|o| o.wasm.as_str()).collect();
                 format!(
                     "program {:?} has no [[outputs]] entry whose wasm = {:?} \
                      (declared: {:?})",
@@ -808,14 +800,13 @@ impl DepsManifest {
     /// directory containing the file (used later to resolve
     /// `build.script_path` relative paths).
     pub fn load(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let dir = path
             .parent()
             .ok_or_else(|| format!("{} has no parent directory", path.display()))?
             .to_path_buf();
-        Self::parse(&text, dir)
-            .map_err(|e| format!("{}: {e}", path.display()))
+        Self::parse(&text, dir).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Read a `package.toml` and merge an optional `package.pr.toml`
@@ -848,8 +839,8 @@ impl DepsManifest {
         // build.toml (project-specific publish state).
         let build_path = dir.join("build.toml");
         if build_path.exists() {
-            let build = BuildToml::load(dir)
-                .map_err(|e| format!("{}: {e}", build_path.display()))?;
+            let build =
+                BuildToml::load(dir).map_err(|e| format!("{}: {e}", build_path.display()))?;
             if let Some(rev) = build.revision {
                 manifest.revision = rev;
             }
@@ -869,8 +860,7 @@ impl DepsManifest {
     /// `[compatibility]` block — that block is reserved for archived
     /// `manifest.toml` files (see [`parse_archived`]).
     pub fn parse(text: &str, dir: PathBuf) -> Result<Self, String> {
-        let raw: Raw =
-            toml::from_str(text).map_err(|e| format!("parse package.toml: {e}"))?;
+        let raw: Raw = toml::from_str(text).map_err(|e| format!("parse package.toml: {e}"))?;
         Self::validate_source(raw, dir)
     }
 
@@ -878,8 +868,7 @@ impl DepsManifest {
     /// cached artifact). Requires a `[compatibility]` block; rejects
     /// manifests without one. Used by Task A.9 remote-fetch path.
     pub fn parse_archived(text: &str, dir: PathBuf) -> Result<Self, String> {
-        let raw: Raw = toml::from_str(text)
-            .map_err(|e| format!("parse manifest.toml: {e}"))?;
+        let raw: Raw = toml::from_str(text).map_err(|e| format!("parse manifest.toml: {e}"))?;
         Self::validate_archived(raw, dir)
     }
 
@@ -898,36 +887,28 @@ impl DepsManifest {
         // migration. `validate_archived` keeps accepting them so
         // already-published `manifest.toml` bytes still parse.
         if raw.revision.is_some() {
-            return Err(
-                "source package.toml must not declare revision — \
+            return Err("source package.toml must not declare revision — \
                  the per-package revision counter lives in index.toml. \
                  See docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.1."
-                    .into(),
-            );
+                .into());
         }
         if raw.binary.is_some() {
-            return Err(
-                "source package.toml must not declare [binary] — \
+            return Err("source package.toml must not declare [binary] — \
                  binary URLs live in index.toml (resolved via build.toml). \
                  See docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.1."
-                    .into(),
-            );
+                .into());
         }
         if raw.build.repo_url.is_some() {
-            return Err(
-                "source package.toml must not declare [build].repo_url — \
+            return Err("source package.toml must not declare [build].repo_url — \
                  it moves to build.toml (project-level state, not recipe-level). \
                  See docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.1."
-                    .into(),
-            );
+                .into());
         }
         if raw.build.commit.is_some() {
-            return Err(
-                "source package.toml must not declare [build].commit — \
+            return Err("source package.toml must not declare [build].commit — \
                  it moves to build.toml (project-level state, not recipe-level). \
                  See docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.1."
-                    .into(),
-            );
+                .into());
         }
         // Phase A-bis: source `package.toml` files must use
         // `[build].script_path` (repo-relative). The legacy
@@ -936,13 +917,11 @@ impl DepsManifest {
         // files, but is rejected on the source path so stale source
         // files surface immediately.
         if raw.build.script.is_some() {
-            return Err(
-                "source package.toml uses deprecated [build].script — \
+            return Err("source package.toml uses deprecated [build].script — \
                  use [build].script_path (repo-relative path) instead. \
                  See docs/plans/2026-05-05-decoupled-package-builds-design.md \
                  §3.1."
-                    .into(),
-            );
+                .into());
         }
         // Phase B-2 Task 3: source manifests with a [build] block must
         // declare top-level `kernel_abi`. The [build] block marks "this
@@ -993,19 +972,14 @@ impl DepsManifest {
         // declared a revision in the first place, which is impossible
         // because every published archive has always carried one.
         if raw.revision.is_none() {
-            return Err(
-                "archived manifest.toml must declare revision = N".into(),
-            );
+            return Err("archived manifest.toml must declare revision = N".into());
         }
         Self::validate_common(raw, dir)
     }
 
     fn validate_compatibility(c: &Compatibility) -> Result<(), String> {
         if c.abi_versions.is_empty() {
-            return Err(
-                "compatibility.abi_versions must list at least one ABI version"
-                    .into(),
-            );
+            return Err("compatibility.abi_versions must list at least one ABI version".into());
         }
         if c.cache_key_sha.len() != 64
             || !c
@@ -1042,9 +1016,7 @@ impl DepsManifest {
     /// Mixed shapes (a bare `archive_url` next to a `[binary.wasm64]`
     /// table) are rejected — they're almost certainly a typo, and the
     /// resulting precedence would be confusing either way.
-    fn parse_binary_block(
-        value: toml::Value,
-    ) -> Result<BTreeMap<TargetArch, Binary>, String> {
+    fn parse_binary_block(value: toml::Value) -> Result<BTreeMap<TargetArch, Binary>, String> {
         let table = value
             .as_table()
             .ok_or_else(|| "[binary] must be a table".to_string())?
@@ -1053,8 +1025,7 @@ impl DepsManifest {
         // Detect shape: presence of `archive_url` at the top is the
         // bare form. Presence of an arch-named subtable is the
         // per-arch form. Either, but not both, is allowed.
-        let has_bare = table.contains_key("archive_url")
-            || table.contains_key("archive_sha256");
+        let has_bare = table.contains_key("archive_url") || table.contains_key("archive_sha256");
         let arch_keys: Vec<&str> = table
             .keys()
             .filter(|k| matches!(k.as_str(), "wasm32" | "wasm64"))
@@ -1063,19 +1034,15 @@ impl DepsManifest {
         let has_per_arch = !arch_keys.is_empty();
 
         if has_bare && has_per_arch {
-            return Err(
-                "[binary] mixes the bare form (archive_url at the top) \
+            return Err("[binary] mixes the bare form (archive_url at the top) \
                  with per-arch sub-tables ([binary.wasm32] / [binary.wasm64]). \
                  Pick one shape."
-                    .into(),
-            );
+                .into());
         }
 
         // Reject any unknown keys to surface typos early.
-        let allowed_per_arch: BTreeSet<&str> =
-            ["wasm32", "wasm64"].into_iter().collect();
-        let allowed_bare: BTreeSet<&str> =
-            ["archive_url", "archive_sha256"].into_iter().collect();
+        let allowed_per_arch: BTreeSet<&str> = ["wasm32", "wasm64"].into_iter().collect();
+        let allowed_bare: BTreeSet<&str> = ["archive_url", "archive_sha256"].into_iter().collect();
         for key in table.keys() {
             let allowed = if has_per_arch {
                 allowed_per_arch.contains(key.as_str())
@@ -1107,8 +1074,7 @@ impl DepsManifest {
                 let b: Binary = sub
                     .try_into()
                     .map_err(|e| format!("[binary.{arch_key}]: {e}"))?;
-                Self::validate_binary(&b)
-                    .map_err(|e| format!("[binary.{arch_key}]: {e}"))?;
+                Self::validate_binary(&b).map_err(|e| format!("[binary.{arch_key}]: {e}"))?;
                 out.insert(arch, b);
             }
         } else {
@@ -1164,11 +1130,9 @@ impl DepsManifest {
             None => BTreeMap::new(),
             Some(value) => {
                 if matches!(raw.kind, ManifestKind::Source) {
-                    return Err(
-                        "kind = \"source\" must not declare [binary] \
+                    return Err("kind = \"source\" must not declare [binary] \
                          (sources are not published as remote-fetchable archives)"
-                            .into(),
-                    );
+                        .into());
                 }
                 Self::parse_binary_block(value.clone())?
             }
@@ -1188,11 +1152,9 @@ impl DepsManifest {
             let orig_len = names.len();
             names.dedup();
             if names.len() != orig_len {
-                return Err(
-                    "depends_on lists the same library twice \
+                return Err("depends_on lists the same library twice \
                      (V1 requires exactly one version per transitive dep)"
-                        .into(),
-                );
+                    .into());
             }
         }
 
@@ -1238,7 +1200,10 @@ impl DepsManifest {
                     let version_regex = p
                         .version_regex
                         .unwrap_or_else(|| HostToolProbe::default().version_regex);
-                    HostToolProbe { args, version_regex }
+                    HostToolProbe {
+                        args,
+                        version_regex,
+                    }
                 }
             };
             // Compile-test the regex at parse time so a typo in
@@ -1278,15 +1243,14 @@ impl DepsManifest {
         let (outputs, program_outputs) = match raw.kind {
             ManifestKind::Library => {
                 if raw.outputs.is_array() {
-                    return Err(
-                        "kind = \"library\" requires [outputs] (table); \
+                    return Err("kind = \"library\" requires [outputs] (table); \
                          got [[outputs]] (array of tables)"
-                            .into(),
-                    );
+                        .into());
                 }
-                let outputs: Outputs = raw.outputs.try_into().map_err(|e| {
-                    format!("parse [outputs] table: {e}")
-                })?;
+                let outputs: Outputs = raw
+                    .outputs
+                    .try_into()
+                    .map_err(|e| format!("parse [outputs] table: {e}"))?;
                 (outputs, Vec::new())
             }
             ManifestKind::Program => {
@@ -1297,8 +1261,7 @@ impl DepsManifest {
                 if let Some(table) = raw.outputs.as_table() {
                     if table.is_empty() {
                         return Err(
-                            "kind = \"program\" must declare at least one [[outputs]] entry"
-                                .into(),
+                            "kind = \"program\" must declare at least one [[outputs]] entry".into(),
                         );
                     }
                     return Err(
@@ -1313,31 +1276,24 @@ impl DepsManifest {
                     .map_err(|e| format!("parse [[outputs]] array: {e}"))?;
                 if program_outputs.is_empty() {
                     return Err(
-                        "kind = \"program\" must declare at least one [[outputs]] entry"
-                            .into(),
+                        "kind = \"program\" must declare at least one [[outputs]] entry".into(),
                     );
                 }
                 for (idx, out) in program_outputs.iter().enumerate() {
                     if out.name.is_empty() {
-                        return Err(format!(
-                            "[[outputs]][{idx}].name must not be empty"
-                        ));
+                        return Err(format!("[[outputs]][{idx}].name must not be empty"));
                     }
                     if out.wasm.is_empty() {
-                        return Err(format!(
-                            "[[outputs]][{idx}].wasm must not be empty"
-                        ));
+                        return Err(format!("[[outputs]][{idx}].wasm must not be empty"));
                     }
                 }
                 (Outputs::default(), program_outputs)
             }
             ManifestKind::Source => {
                 if raw.outputs.is_array() {
-                    return Err(
-                        "kind = \"source\" must not declare outputs \
+                    return Err("kind = \"source\" must not declare outputs \
                          ([outputs] or [[outputs]])"
-                            .into(),
-                    );
+                        .into());
                 }
                 // For source kind, accept only an empty table (the
                 // default when the key is absent). Any non-empty
@@ -1348,11 +1304,9 @@ impl DepsManifest {
                         .to_string()
                 })?;
                 if !table.is_empty() {
-                    return Err(
-                        "kind = \"source\" must not declare outputs \
+                    return Err("kind = \"source\" must not declare outputs \
                          ([outputs] or [[outputs]])"
-                            .into(),
-                    );
+                        .into());
                 }
                 (Outputs::default(), Vec::new())
             }
@@ -1366,10 +1320,7 @@ impl DepsManifest {
             let mut seen: Vec<TargetArch> = Vec::new();
             for &a in &raw.arches {
                 if seen.contains(&a) {
-                    return Err(format!(
-                        "arches lists {:?} twice",
-                        a.as_str()
-                    ));
+                    return Err(format!("arches lists {:?} twice", a.as_str()));
                 }
                 seen.push(a);
             }
@@ -1440,12 +1391,9 @@ impl DepsManifest {
 /// from the overlay are preserved — so an overlay declaring just
 /// `[binary.wasm32]` does not silently drop the base's
 /// `[binary.wasm64]`.
-fn apply_pr_overlay(
-    manifest: &mut DepsManifest,
-    overlay_text: &str,
-) -> Result<(), String> {
-    let value: toml::Value = toml::from_str(overlay_text)
-        .map_err(|e| format!("parse package.pr.toml: {e}"))?;
+fn apply_pr_overlay(manifest: &mut DepsManifest, overlay_text: &str) -> Result<(), String> {
+    let value: toml::Value =
+        toml::from_str(overlay_text).map_err(|e| format!("parse package.pr.toml: {e}"))?;
     let table = value
         .as_table()
         .ok_or_else(|| "package.pr.toml must be a TOML table".to_string())?;
@@ -1460,14 +1408,11 @@ fn apply_pr_overlay(
         }
     }
 
-    let binary_value = table
-        .get("binary")
-        .cloned()
-        .ok_or_else(|| {
-            "package.pr.toml has no [binary] section (overlay must \
+    let binary_value = table.get("binary").cloned().ok_or_else(|| {
+        "package.pr.toml has no [binary] section (overlay must \
              override at least one arch)"
-                .to_string()
-        })?;
+            .to_string()
+    })?;
 
     // Reuse the base parser. parse_binary_block accepts both the
     // bare `[binary]` shape (single-arch wasm32-only) and the
@@ -1637,10 +1582,7 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
         // historical bytes — the `remote_fetch` unpack path must
         // continue to parse them. validate_archived deliberately does
         // NOT reject `[build].script` (only validate_source does).
-        let text = format!(
-            "{}\n[build]\nscript = \"build-foo.sh\"\n",
-            EXAMPLE_ARCHIVED
-        );
+        let text = format!("{}\n[build]\nscript = \"build-foo.sh\"\n", EXAMPLE_ARCHIVED);
         let m = DepsManifest::parse_archived(&text, PathBuf::from("/x"))
             .expect("archived parse must accept legacy [build].script");
         // Field is preserved on the struct (parser-level back-compat)
@@ -1670,10 +1612,7 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
 
     #[test]
     fn parses_top_level_kernel_abi() {
-        let text = EXAMPLE.replace(
-            "depends_on = []",
-            "depends_on = []\nkernel_abi = 6",
-        );
+        let text = EXAMPLE.replace("depends_on = []", "depends_on = []\nkernel_abi = 6");
         let m = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
         assert_eq!(m.kernel_abi, Some(6));
     }
@@ -1719,10 +1658,7 @@ libs = ["lib/libtest.a"]
             msg.contains("kernel_abi"),
             "error must mention kernel_abi: {msg}"
         );
-        assert!(
-            msg.contains("declare"),
-            "error must say 'declare': {msg}"
-        );
+        assert!(msg.contains("declare"), "error must say 'declare': {msg}");
     }
 
     #[test]
@@ -1759,8 +1695,7 @@ abi_versions = [7]
 cache_key_sha = "0000000000000000000000000000000000000000000000000000000000000000"
 "#;
         let dir = std::path::PathBuf::from("/tmp/test");
-        DepsManifest::parse_archived(toml, dir)
-            .expect("archive must parse without kernel_abi");
+        DepsManifest::parse_archived(toml, dir).expect("archive must parse without kernel_abi");
     }
 
     #[test]
@@ -2200,10 +2135,7 @@ archive_url = "https://example.test/pcre2.tar.zst"
 archive_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
 "#;
         let err = DepsManifest::parse(text, PathBuf::from("/x")).unwrap_err();
-        assert!(
-            err.contains("binary"),
-            "got: {err}"
-        );
+        assert!(err.contains("binary"), "got: {err}");
     }
 
     #[test]
@@ -2265,9 +2197,17 @@ install_hints = { darwin = "brew install cmake", linux = "apt install cmake" }
 
         // cmake has explicit probe + hints.
         assert_eq!(m.host_tools[1].name, "cmake");
-        assert!(m.host_tools[1].probe.version_regex.starts_with("cmake version"));
+        assert!(
+            m.host_tools[1]
+                .probe
+                .version_regex
+                .starts_with("cmake version")
+        );
         assert_eq!(
-            m.host_tools[1].install_hints.get("darwin").map(String::as_str),
+            m.host_tools[1]
+                .install_hints
+                .get("darwin")
+                .map(String::as_str),
             Some("brew install cmake")
         );
     }
@@ -2402,7 +2342,9 @@ probe = { args = ["--version"], version_regex = "(unclosed" }
 
     #[test]
     fn version_constraint_rejects_other_operators() {
-        for bad in [">3.20", "<3.20", "==3.20", "^3.20", "~3.20", "=3.20", "3.20"] {
+        for bad in [
+            ">3.20", "<3.20", "==3.20", "^3.20", "~3.20", "=3.20", "3.20",
+        ] {
             let err = VersionConstraint::parse(bad, "cmake").unwrap_err();
             assert!(
                 err.contains("unsupported") && err.contains("future work"),
@@ -2796,7 +2738,10 @@ typo_field = "oops"
 index_url = "https://example.com/index.toml"
 "#;
         let err = BuildToml::parse(toml).unwrap_err();
-        assert!(err.contains("typo_field") || err.contains("unknown"), "got: {err}");
+        assert!(
+            err.contains("typo_field") || err.contains("unknown"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -2850,7 +2795,10 @@ commit = "z"
 source = "first-party"
 "#;
         let err = BuildToml::parse(toml).unwrap_err();
-        assert!(err.contains("source") || err.contains("unknown"), "got: {err}");
+        assert!(
+            err.contains("source") || err.contains("unknown"),
+            "got: {err}"
+        );
     }
 
     // ------------------------------------------------------------------

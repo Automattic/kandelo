@@ -26,6 +26,7 @@ import {
   DEFAULT_MOUNT_SPEC,
   resolveForNode,
 } from "./vfs";
+import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
@@ -273,6 +274,9 @@ async function handleInit(msg: InitMessage) {
   const io: PlatformIO = msg.rootfsImage
     ? buildVirtualPlatformIO(msg.rootfsImage)
     : new NodePlatformIO();
+  if (msg.enableTcpNetwork) {
+    io.network = new TcpNetworkBackend();
+  }
 
   kernelWorker = new CentralizedKernelWorker(
     {
@@ -318,6 +322,20 @@ async function handleInit(msg: InitMessage) {
   post({ type: "ready" });
 }
 
+// Init-time failure path. centralizedWorkerMain catches its own throws and
+// posts {type:"error"} — without surfacing those, spawn() hangs on exitResolvers.
+function failProcess(pid: number, reason: string) {
+  const text = `[kernel-worker] pid=${pid}: ${reason}\n`;
+  post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
+  try { kernelWorker.deactivateProcess(pid); } catch {}
+  const info = processes.get(pid);
+  info?.worker.terminate().catch(() => {});
+  processes.delete(pid);
+  threadModuleCache.delete(pid);
+  ptyByPid.delete(pid);
+  post({ type: "exit", pid, status: -1 });
+}
+
 // --- Spawn ---
 
 function handleSpawn(msg: SpawnMessage) {
@@ -355,6 +373,13 @@ function handleSpawn(msg: SpawnMessage) {
     if (msg.pty) {
       const ptyIdx = kernelWorker.setupPty(pid);
       ptyByPid.set(pid, ptyIdx);
+      // Apply initial winsize before the wasm program starts. Without this,
+      // the program's first TIOCGWINSZ returns the kernel default (80x24)
+      // and TUI renderers (ink, blessed) cache the wrong width before the
+      // post-spawn pty_resize lands, causing redraw corruption.
+      if (msg.ptyCols != null && msg.ptyRows != null) {
+        kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
+      }
       kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
         post({ type: "pty_output", pid, data });
       });
@@ -385,8 +410,10 @@ function handleSpawn(msg: SpawnMessage) {
       ptrWidth,
     });
 
-    worker.on("error", (err: Error) => {
-      console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
+    worker.on("error", (err: Error) => failProcess(pid, `worker error: ${err.message ?? err}`));
+    worker.on("message", (m: unknown) => {
+      const wmsg = m as WorkerToHostMessage;
+      if (wmsg.type === "error") failProcess(pid, wmsg.message);
     });
 
     // Process-worker top-level catch in worker-main posts {type:"error"}
@@ -478,9 +505,10 @@ async function handleFork(
     ptrWidth,
   });
 
-  childWorker.on("error", () => {
-    kernelWorker.unregisterProcess(childPid);
-    processes.delete(childPid);
+  childWorker.on("error", (err: Error) => failProcess(childPid, `worker error: ${err.message ?? err}`));
+  childWorker.on("message", (m: unknown) => {
+    const wmsg = m as WorkerToHostMessage;
+    if (wmsg.type === "error") failProcess(childPid, wmsg.message);
   });
 
   childWorker.on("message", (raw: unknown) => {
@@ -564,8 +592,10 @@ async function handleExec(
     ptrWidth: newPtrWidth,
   });
 
-  newWorker.on("error", (err: Error) => {
-    console.error(`[exec] worker error for pid ${pid}:`, err.message);
+  newWorker.on("error", (err: Error) => failProcess(pid, `exec worker error: ${err.message ?? err}`));
+  newWorker.on("message", (m: unknown) => {
+    const wmsg = m as WorkerToHostMessage;
+    if (wmsg.type === "error") failProcess(pid, wmsg.message);
   });
 
   // Forward worker-main top-level errors (instantiation failures,
@@ -740,19 +770,25 @@ async function handleClone(
     }
   };
 
+  const failThread = (reason: string) => {
+    const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
+    post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
+    kernelWorker.notifyThreadExit(pid, tid);
+    kernelWorker.removeChannel(pid, alloc.channelOffset);
+    threadWorker.terminate().catch(() => {});
+    reclaimThread();
+  };
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
     if (m.type === "thread_exit") {
       intentionallyTerminated.add(threadWorker as object);
       threadWorker.terminate().catch(() => {});
       reclaimThread();
+    } else if (m.type === "error") {
+      failThread(m.message);
     }
   });
-  threadWorker.on("error", () => {
-    kernelWorker.notifyThreadExit(pid, tid);
-    kernelWorker.removeChannel(pid, alloc.channelOffset);
-    reclaimThread();
-  });
+  threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
 
   return tid;
 }

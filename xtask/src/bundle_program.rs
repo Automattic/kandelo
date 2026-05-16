@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use crate::build_deps::{programs_by_name, Registry};
+use crate::build_deps::{Registry, programs_by_name};
 use crate::repo_root;
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
@@ -93,8 +93,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         ));
     }
 
-    std::fs::create_dir_all(&out_dir)
-        .map_err(|e| format!("mkdir {}: {e}", out_dir.display()))?;
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("mkdir {}: {e}", out_dir.display()))?;
 
     if plain_wasm {
         return bundle_plain_wasm(
@@ -124,8 +123,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             .unix_permissions(0o644);
 
         // 1. The binary itself.
-        let binary_bytes = std::fs::read(&binary)
-            .map_err(|e| format!("read {}: {e}", binary.display()))?;
+        let binary_bytes =
+            std::fs::read(&binary).map_err(|e| format!("read {}: {e}", binary.display()))?;
         let binary_name_in_zip = binary
             .file_name()
             .and_then(|s| s.to_str())
@@ -145,8 +144,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
         // 3. LICENSE file, if provided.
         if let Some(l) = license.as_deref() {
-            let lic_bytes = std::fs::read(l)
-                .map_err(|e| format!("read {}: {e}", l.display()))?;
+            let lic_bytes = std::fs::read(l).map_err(|e| format!("read {}: {e}", l.display()))?;
             writer
                 .start_file("LICENSE", options)
                 .map_err(|e| format!("zip start LICENSE: {e}"))?;
@@ -157,8 +155,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
         // 4. Extra files the caller specified.
         for (src, dest) in &extra_files {
-            let bytes = std::fs::read(src)
-                .map_err(|e| format!("read {}: {e}", src.display()))?;
+            let bytes = std::fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?;
             writer
                 .start_file(dest.as_str(), options)
                 .map_err(|e| format!("zip start {dest}: {e}"))?;
@@ -167,23 +164,23 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 .map_err(|e| format!("zip write {dest}: {e}"))?;
         }
 
-        writer
-            .finish()
-            .map_err(|e| format!("zip finish: {e}"))?;
+        writer.finish().map_err(|e| format!("zip finish: {e}"))?;
     }
 
-    let final_bytes = std::fs::read(&tmp_path)
-        .map_err(|e| format!("read tmp: {e}"))?;
+    let final_bytes = std::fs::read(&tmp_path).map_err(|e| format!("read tmp: {e}"))?;
     let mut hasher = Sha256::new();
     hasher.update(&final_bytes);
     let short_hash = hex_short(&hasher.finalize());
 
-    let final_name = format!(
-        "{program}-{upstream_version}-rev{revision}-{short_hash}.zip"
-    );
+    let final_name = format!("{program}-{upstream_version}-rev{revision}-{short_hash}.zip");
     let final_path = out_dir.join(&final_name);
-    std::fs::rename(&tmp_path, &final_path)
-        .map_err(|e| format!("rename {} -> {}: {e}", tmp_path.display(), final_path.display()))?;
+    std::fs::rename(&tmp_path, &final_path).map_err(|e| {
+        format!(
+            "rename {} -> {}: {e}",
+            tmp_path.display(),
+            final_path.display()
+        )
+    })?;
 
     println!("wrote {}", final_path.display());
     Ok(())
@@ -196,8 +193,7 @@ fn bundle_plain_wasm(
     binary: &Path,
     out_dir: &Path,
 ) -> Result<(), String> {
-    let bytes = std::fs::read(binary)
-        .map_err(|e| format!("read {}: {e}", binary.display()))?;
+    let bytes = std::fs::read(binary).map_err(|e| format!("read {}: {e}", binary.display()))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let short = hex_short(&hasher.finalize());
@@ -207,8 +203,8 @@ fn bundle_plain_wasm(
         .unwrap_or("wasm");
     let out_name = match (upstream_version, revision) {
         (Some(v), Some(r)) => format!("{program}-{v}-rev{r}-{short}.{ext}"),
-        (Some(v), None)    => format!("{program}-{v}-rev1-{short}.{ext}"),
-        _                  => format!("{program}-{short}.{ext}"),
+        (Some(v), None) => format!("{program}-{v}-rev1-{short}.{ext}"),
+        _ => format!("{program}-{short}.{ext}"),
     };
     let out_path = out_dir.join(&out_name);
     std::fs::copy(binary, &out_path)
@@ -250,8 +246,8 @@ fn add_tree(
     files.sort_by(|a, b| a.1.cmp(&b.1));
 
     for (src, dest) in files {
-        let mut f = std::fs::File::open(&src)
-            .map_err(|e| format!("open {}: {e}", src.display()))?;
+        let mut f =
+            std::fs::File::open(&src).map_err(|e| format!("open {}: {e}", src.display()))?;
         let mut buf = Vec::new();
         f.read_to_end(&mut buf)
             .map_err(|e| format!("read {}: {e}", src.display()))?;

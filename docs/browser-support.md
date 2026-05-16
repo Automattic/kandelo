@@ -134,6 +134,7 @@ Located in `examples/browser/pages/`:
 | perl | Perl 5.40 | `kernel.boot` | REPL + script runner |
 | php | PHP CLI | `kernel.boot` | Script execution |
 | ruby | Ruby 3.3 | `kernel.boot` | REPL + script runner |
+| node | QuickJS-NG (Node-compat) + npm 10.9.2 | `kernel.boot` | xterm REPL; `npm install` reaches the real registry via the host fetch |
 | erlang | OTP 28 BEAM | legacy spawn | Erlang VM, message passing |
 | nginx | nginx | dinit | Static file serving via service worker |
 | nginx-php | nginx + PHP-FPM | dinit | FastCGI, fork workers |
@@ -185,6 +186,7 @@ const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 | Erlang | `erlang.vfs.zst` | `bash examples/browser/scripts/build-erlang-vfs-image.sh` | OTP runtime |
 | Perl | `perl.vfs.zst` | `bash examples/browser/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `bash examples/browser/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
+| Node | `node-vfs.vfs.zst` | `bash examples/browser/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
 | WordPress | `wordpress.vfs.zst` | `bash examples/browser/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash examples/browser/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash examples/browser/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
@@ -239,3 +241,6 @@ Browser sandbox prevents listening on ports. nginx/PHP-FPM demos use a service w
 
 ### Memory per process
 Each process gets `WebAssembly.Memory(shared: true, initial: maxPages, max: maxPages)`. Shared memory reserves the full virtual address space at construction time, so `maxMemoryPages` should be tuned for multi-process demos (e.g., 4096 pages = 256MB for WordPress with 5+ processes).
+
+### npm registry access in the browser
+The node demo's `npm install` cannot speak HTTPS to `registry.npmjs.org` directly: the in-JS TLS-MITM backend triggers a QuickJS-NG cycle-GC bug on large packuments. Instead, the page sets `--registry=http://proxy.local/`, the kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the plaintext path. The QuickJS-NG fix that makes the TLS path safe in principle is in `examples/libs/quickjs/patches/0001-fix-mapped-arguments-mark-attached-var-refs.patch`.

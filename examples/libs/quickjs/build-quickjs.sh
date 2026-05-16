@@ -17,6 +17,14 @@ SRC_DIR="$SCRIPT_DIR/quickjs-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 GEN_DIR="$BIN_DIR/gen"
 
+if [ -z "${BUILD_NODE:-}" ]; then
+    if [ "${WASM_POSIX_DEP_NAME:-}" = "quickjs" ]; then
+        BUILD_NODE=0
+    else
+        BUILD_NODE=1
+    fi
+fi
+
 # SDK tools — use the worktree-local SDK shims unconditionally. We do NOT
 # honour an inherited $CC: in a Nix dev shell (flake.nix), `stdenv.cc`
 # exports CC pointing at a Nix-wrapped host gcc, and that wrapper injects
@@ -40,6 +48,25 @@ fi
 if [ ! -d "$SRC_DIR" ]; then
     echo "Cloning quickjs-ng v0.12.1..."
     git clone --depth=1 --branch v0.12.1 https://github.com/quickjs-ng/quickjs.git "$SRC_DIR"
+fi
+
+# Apply local patches, skipping any already applied. Mirrors the pattern in
+# examples/libs/mariadb/build-mariadb.sh.
+PATCH_DIR="$SCRIPT_DIR/patches"
+if [ -d "$PATCH_DIR" ]; then
+    for patch in "$PATCH_DIR"/*.patch; do
+        [ -f "$patch" ] || continue
+        if patch -p1 -N --dry-run --silent -d "$SRC_DIR" < "$patch" 2>/dev/null; then
+            echo "  Applying $(basename "$patch")..."
+            patch -p1 -N -d "$SRC_DIR" < "$patch"
+        fi
+    done
+fi
+
+YYJSON_SRC_DIR="$SCRIPT_DIR/yyjson-src"
+if [ "$BUILD_NODE" = "1" ] && [ ! -d "$YYJSON_SRC_DIR" ]; then
+    echo "Cloning yyjson 0.10.0..."
+    git clone --depth=1 --branch 0.10.0 https://github.com/ibireme/yyjson.git "$YYJSON_SRC_DIR"
 fi
 
 mkdir -p "$BIN_DIR" "$GEN_DIR"
@@ -121,12 +148,17 @@ fi
 # ----------------------------------------------------------------
 # Step 2: Compile bootstrap.js to bytecode C array
 # ----------------------------------------------------------------
-echo "Compiling Node.js bootstrap to bytecode..."
-"$QJSC" -m \
-    -N qjsc_bootstrap \
-    -o "$GEN_DIR/node-bootstrap.c" \
-    "$SCRIPT_DIR/node-compat/bootstrap.js"
-echo "Bootstrap bytecode generated: $GEN_DIR/node-bootstrap.c"
+if [ "$BUILD_NODE" = "1" ]; then
+    echo "Compiling Node.js bootstrap to bytecode..."
+    # -M qjs:node tells qjsc the module is external (linked in via node.wasm),
+    # so bytecode emission doesn't try to resolve it at compile time.
+    "$QJSC" -m \
+        -N qjsc_bootstrap \
+        -M qjs:node \
+        -o "$GEN_DIR/node-bootstrap.c" \
+        "$SCRIPT_DIR/node-compat/bootstrap.js"
+    echo "Bootstrap bytecode generated: $GEN_DIR/node-bootstrap.c"
+fi
 
 # ----------------------------------------------------------------
 # Step 3: Compile core library objects (shared between qjs and node)
@@ -157,8 +189,14 @@ for src in "${QJS_CLI_SRCS[@]}"; do
     CLI_OBJS+=("$obj")
 done
 
+# QuickJS records the wasm __stack_pointer at JS_NewContext as `stack_top`,
+# then enforces a 1 MiB JS_DEFAULT_STACK_SIZE budget. Bump the wasm stack so
+# the first JS call has headroom. lld only has a positive `--stack-first`
+# switch on this toolchain; omitting it keeps the normal stack-last layout.
+QJS_STACK_FLAGS=(-Wl,-z,stack-size=8388608)
+
 echo "Linking qjs..."
-$CC "${CLI_OBJS[@]}" "${OBJS[@]}" -lm -o "$BIN_DIR/qjs.wasm"
+$CC "${CLI_OBJS[@]}" "${OBJS[@]}" -lm "${QJS_STACK_FLAGS[@]}" -o "$BIN_DIR/qjs.wasm"
 
 # Asyncify for fork support
 echo "Applying asyncify to qjs..."
@@ -170,35 +208,90 @@ $WASM_OPT --asyncify \
 
 QJS_SIZE=$(wc -c < "$BIN_DIR/qjs.wasm" | tr -d ' ')
 
-# ----------------------------------------------------------------
-# Step 5: Build node.wasm (Node.js compat layer)
-# ----------------------------------------------------------------
-echo "Compiling node CLI..."
-NODE_OBJS=()
+if [ "$BUILD_NODE" = "1" ]; then
+    # ----------------------------------------------------------------
+    # Step 5: Build node.wasm (Node.js compat layer)
+    # ----------------------------------------------------------------
+    echo "Compiling node CLI..."
+    NODE_OBJS=()
 
-# Compile node-main.c
-$CC "${CFLAGS[@]}" -c "$SCRIPT_DIR/node-main.c" -o "$BIN_DIR/node-main.o"
-NODE_OBJS+=("$BIN_DIR/node-main.o")
+    # Compile node-main.c
+    $CC "${CFLAGS[@]}" -c "$SCRIPT_DIR/node-main.c" -o "$BIN_DIR/node-main.o"
+    NODE_OBJS+=("$BIN_DIR/node-main.o")
 
-# Compile bootstrap bytecode
-$CC "${CFLAGS[@]}" -c "$GEN_DIR/node-bootstrap.c" -o "$BIN_DIR/node-bootstrap.o"
-NODE_OBJS+=("$BIN_DIR/node-bootstrap.o")
+    # Compile bootstrap bytecode
+    $CC "${CFLAGS[@]}" -c "$GEN_DIR/node-bootstrap.c" -o "$BIN_DIR/node-bootstrap.o"
+    NODE_OBJS+=("$BIN_DIR/node-bootstrap.o")
 
-# node.wasm also needs repl.c for interactive mode
-$CC "${CFLAGS[@]}" -c "$SRC_DIR/gen/repl.c" -o "$BIN_DIR/repl-node.o"
-NODE_OBJS+=("$BIN_DIR/repl-node.o")
+    # node.wasm also needs repl.c for interactive mode
+    $CC "${CFLAGS[@]}" -c "$SRC_DIR/gen/repl.c" -o "$BIN_DIR/repl-node.o"
+    NODE_OBJS+=("$BIN_DIR/repl-node.o")
 
-echo "Linking node..."
-$CC "${NODE_OBJS[@]}" "${OBJS[@]}" -lm -o "$BIN_DIR/node.wasm"
+    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+    resolve_dep() {
+        local name="$1"
+        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+    }
 
-# Asyncify for fork support
-echo "Applying asyncify to node..."
-$WASM_OPT --asyncify \
-    --pass-arg="asyncify-imports@kernel.kernel_fork" \
-    -O2 \
-    "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm"
+    OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
+    if [ -z "$OPENSSL_PREFIX" ]; then
+        echo "Resolving openssl via cargo xtask build-deps..."
+        OPENSSL_PREFIX="$(resolve_dep openssl)"
+    fi
+    if [ ! -f "$OPENSSL_PREFIX/lib/libcrypto.a" ] || [ ! -f "$OPENSSL_PREFIX/lib/libssl.a" ]; then
+        echo "ERROR: openssl resolve returned '$OPENSSL_PREFIX' but libcrypto.a/libssl.a are missing." >&2
+        exit 1
+    fi
 
-NODE_SIZE=$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')
+    ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+    if [ -z "$ZLIB_PREFIX" ]; then
+        echo "Resolving zlib via cargo xtask build-deps..."
+        ZLIB_PREFIX="$(resolve_dep zlib)"
+    fi
+    if [ ! -f "$ZLIB_PREFIX/lib/libz.a" ]; then
+        echo "ERROR: zlib resolve returned '$ZLIB_PREFIX' but libz.a is missing." >&2
+        exit 1
+    fi
+
+    NODE_NATIVE_SRCS=(
+        "$SCRIPT_DIR/node-compat-native/node-native.c"
+        "$SCRIPT_DIR/node-compat-native/hash.c"
+        "$SCRIPT_DIR/node-compat-native/hmac.c"
+        "$SCRIPT_DIR/node-compat-native/zlib.c"
+        "$SCRIPT_DIR/node-compat-native/socket.c"
+        "$SCRIPT_DIR/node-compat-native/tls.c"
+        "$SCRIPT_DIR/node-compat-native/json.c"
+        "$YYJSON_SRC_DIR/src/yyjson.c"
+    )
+    NODE_NATIVE_CFLAGS=(
+        "${CFLAGS[@]}"
+        -I"$OPENSSL_PREFIX/include"
+        -I"$ZLIB_PREFIX/include"
+        -I"$YYJSON_SRC_DIR/src"
+    )
+    for src in "${NODE_NATIVE_SRCS[@]}"; do
+        obj="$BIN_DIR/$(basename "${src%.c}.o")"
+        $CC "${NODE_NATIVE_CFLAGS[@]}" -c "$src" -o "$obj"
+        NODE_OBJS+=("$obj")
+    done
+
+    echo "Linking node..."
+    $CC "${NODE_OBJS[@]}" "${OBJS[@]}" \
+        "$OPENSSL_PREFIX/lib/libssl.a" \
+        "$OPENSSL_PREFIX/lib/libcrypto.a" \
+        "$ZLIB_PREFIX/lib/libz.a" \
+        -lm \
+        "${QJS_STACK_FLAGS[@]}" -o "$BIN_DIR/node.wasm"
+
+    # Asyncify for fork support
+    echo "Applying asyncify to node..."
+    $WASM_OPT --asyncify \
+        --pass-arg="asyncify-imports@kernel.kernel_fork" \
+        -O2 \
+        "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm"
+
+    NODE_SIZE=$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')
+fi
 
 # ----------------------------------------------------------------
 # Summary
@@ -206,19 +299,25 @@ NODE_SIZE=$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')
 echo ""
 echo "=== QuickJS-NG built successfully ==="
 echo "  qjs.wasm:  $QJS_SIZE bytes  (QuickJS interpreter)"
-echo "  node.wasm: $NODE_SIZE bytes (Node.js compat layer)"
+if [ "$BUILD_NODE" = "1" ]; then
+    echo "  node.wasm: $NODE_SIZE bytes (Node.js compat layer)"
+fi
 echo ""
 echo "qjs  — ES2023 JavaScript interpreter with POSIX os/std modules"
-echo "node — Node.js-compatible runtime (require, process, Buffer, fs, etc.)"
+if [ "$BUILD_NODE" = "1" ]; then
+    echo "node — Node.js-compatible runtime (require, process, Buffer, fs, etc.)"
+fi
 echo ""
-echo "This is NOT Node.js. The 'node' command provides API compatibility"
-echo "via QuickJS-NG. Core modules: assert, buffer, child_process, crypto,"
-echo "events, fs, http, net, os, path, querystring, stream, url, util, etc."
+if [ "$BUILD_NODE" = "1" ]; then
+    echo "This is NOT Node.js. The 'node' command provides API compatibility"
+    echo "via QuickJS-NG. Core modules: assert, buffer, child_process, crypto,"
+    echo "events, fs, http, net, os, path, querystring, stream, url, util, etc."
+fi
 
 # Install into local-binaries/ so the resolver picks the freshly-built
-# binary over the fetched release. The manifest currently declares
-# only qjs.wasm under [[outputs]]; node.wasm is built locally for
-# convenience but isn't in the release archive.
+# binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary quickjs "$BIN_DIR/qjs.wasm" qjs.wasm
-[ -f "$BIN_DIR/node.wasm" ] && install_local_binary quickjs "$BIN_DIR/node.wasm" node.wasm || true
+if [ "$BUILD_NODE" = "1" ] && [ -f "$BIN_DIR/node.wasm" ]; then
+    install_local_binary node "$BIN_DIR/node.wasm" node.wasm
+fi

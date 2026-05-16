@@ -83,6 +83,8 @@ export interface PlatformIO {
 
 export interface NetworkIO {
   connect(handle: number, addr: Uint8Array, port: number): void;
+  /** 0 = connected, positive errno = failed, -11 = still pending (EAGAIN). */
+  connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
   recv(handle: number, maxLen: number, flags: number): Uint8Array;
   close(handle: number): void;

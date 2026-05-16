@@ -98,7 +98,10 @@ pub enum FetchError {
     /// `manifest.toml` failed to parse (or compatibility validation).
     ManifestParseError(String),
     /// `compatibility.target_arch` ≠ resolver arch.
-    ArchMismatch { expected: TargetArch, found: TargetArch },
+    ArchMismatch {
+        expected: TargetArch,
+        found: TargetArch,
+    },
     /// Consumer's ABI not in `compatibility.abi_versions`.
     AbiMismatch { current: u32, supported: Vec<u32> },
     /// Archive `cache_key_sha` ≠ locally-computed cache_key sha.
@@ -111,10 +114,9 @@ impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FetchError::Http(s) => write!(f, "fetch failed: {s}"),
-            FetchError::ShaMismatch { expected, actual } => write!(
-                f,
-                "archive sha mismatch: expected {expected}, got {actual}"
-            ),
+            FetchError::ShaMismatch { expected, actual } => {
+                write!(f, "archive sha mismatch: expected {expected}, got {actual}")
+            }
             FetchError::DecompressFailed(s) => write!(f, "zstd decompress failed: {s}"),
             FetchError::ExtractFailed(s) => write!(f, "tar extract failed: {s}"),
             FetchError::ManifestMissing(s) => write!(f, "manifest.toml missing: {s}"),
@@ -189,16 +191,12 @@ pub fn fetch_and_install_direct(
     verify_sha(&bytes, archive_sha256)?;
 
     // 3. Decompress + extract into `<canonical>.tmp-<pid>/`.
-    let parent = canonical
-        .parent()
-        .ok_or_else(|| FetchError::IoError(format!(
-            "canonical has no parent: {}",
-            canonical.display()
-        )))?;
-    fs::create_dir_all(parent).map_err(|e| FetchError::IoError(format!(
-        "create cache parent {}: {e}",
-        parent.display()
-    )))?;
+    let parent = canonical.parent().ok_or_else(|| {
+        FetchError::IoError(format!("canonical has no parent: {}", canonical.display()))
+    })?;
+    fs::create_dir_all(parent).map_err(|e| {
+        FetchError::IoError(format!("create cache parent {}: {e}", parent.display()))
+    })?;
 
     let tmp_name = format!(
         "{}.tmp-{}",
@@ -212,10 +210,8 @@ pub fn fetch_and_install_direct(
     if tmp.exists() {
         let _ = fs::remove_dir_all(&tmp);
     }
-    fs::create_dir_all(&tmp).map_err(|e| FetchError::IoError(format!(
-        "create temp {}: {e}",
-        tmp.display()
-    )))?;
+    fs::create_dir_all(&tmp)
+        .map_err(|e| FetchError::IoError(format!("create temp {}: {e}", tmp.display())))?;
 
     // From here on we own `tmp`; cleanup on every error path.
     if let Err(e) = extract_tar_zst(&bytes, &tmp) {
@@ -330,8 +326,7 @@ pub fn fetch_and_install_direct(
 /// the user already had to add the manifest.
 pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
     if let Some(rest) = url.strip_prefix("file://") {
-        return fs::read(rest)
-            .map_err(|e| FetchError::Http(format!("file://{rest}: {e}")));
+        return fs::read(rest).map_err(|e| FetchError::Http(format!("file://{rest}: {e}")));
     }
     if url.starts_with("http://") || url.starts_with("https://") {
         // Honor WASM_POSIX_OFFLINE: when set to a non-empty, non-"0"
@@ -339,9 +334,7 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
         // to issue HTTP requests. Surfaces as `FetchError::Http` so the
         // caller falls through to source build the same way a network
         // failure would.
-        if std::env::var_os("WASM_POSIX_OFFLINE")
-            .is_some_and(|v| !v.is_empty() && v != "0")
-        {
+        if std::env::var_os("WASM_POSIX_OFFLINE").is_some_and(|v| !v.is_empty() && v != "0") {
             return Err(FetchError::Http(format!(
                 "WASM_POSIX_OFFLINE is set; refusing to fetch {url}. \
                  Run without --offline or pre-populate the cache."
@@ -354,11 +347,7 @@ pub(crate) fn fetch_url(url: &str) -> Result<Vec<u8>, FetchError> {
     )))
 }
 
-fn fetch_http_url(
-    url: &str,
-    attempts: usize,
-    backoff: Duration,
-) -> Result<Vec<u8>, FetchError> {
+fn fetch_http_url(url: &str, attempts: usize, backoff: Duration) -> Result<Vec<u8>, FetchError> {
     let attempts = attempts.max(1);
     // Always set timeouts and a UA so a misbehaving registry can't hang
     // the resolver indefinitely and so server logs can attribute the
@@ -403,10 +392,7 @@ struct HttpFetchAttemptError {
     retryable: bool,
 }
 
-fn fetch_http_url_once(
-    agent: &ureq::Agent,
-    url: &str,
-) -> Result<Vec<u8>, HttpFetchAttemptError> {
+fn fetch_http_url_once(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, HttpFetchAttemptError> {
     let resp = agent.get(url).call().map_err(|e| HttpFetchAttemptError {
         retryable: is_retryable_ureq_error(&e),
         message: e.to_string(),
@@ -469,27 +455,24 @@ fn extract_tar_zst(bytes: &[u8], dest: &Path) -> Result<(), FetchError> {
 fn flatten_archive_layout(tmp: &Path) -> Result<(), FetchError> {
     let artifacts = tmp.join("artifacts");
     if artifacts.is_dir() {
-        let rd = fs::read_dir(&artifacts).map_err(|e| FetchError::IoError(format!(
-            "read_dir {}: {e}",
-            artifacts.display()
-        )))?;
+        let rd = fs::read_dir(&artifacts)
+            .map_err(|e| FetchError::IoError(format!("read_dir {}: {e}", artifacts.display())))?;
         for entry in rd {
-            let entry = entry.map_err(|e| FetchError::IoError(format!(
-                "read_dir {}: {e}",
-                artifacts.display()
-            )))?;
+            let entry = entry.map_err(|e| {
+                FetchError::IoError(format!("read_dir {}: {e}", artifacts.display()))
+            })?;
             let src = entry.path();
             let dst = tmp.join(entry.file_name());
-            fs::rename(&src, &dst).map_err(|e| FetchError::IoError(format!(
-                "rename {} -> {}: {e}",
-                src.display(),
-                dst.display()
-            )))?;
+            fs::rename(&src, &dst).map_err(|e| {
+                FetchError::IoError(format!(
+                    "rename {} -> {}: {e}",
+                    src.display(),
+                    dst.display()
+                ))
+            })?;
         }
-        fs::remove_dir_all(&artifacts).map_err(|e| FetchError::IoError(format!(
-            "remove {}: {e}",
-            artifacts.display()
-        )))?;
+        fs::remove_dir_all(&artifacts)
+            .map_err(|e| FetchError::IoError(format!("remove {}: {e}", artifacts.display())))?;
     }
     let manifest = tmp.join("manifest.toml");
     if manifest.is_file() {
@@ -507,10 +490,7 @@ fn flatten_archive_layout(tmp: &Path) -> Result<(), FetchError> {
 /// publishing pipeline. Used by both this module's unit tests and the
 /// remote-fetch integration tests in `build_deps`.
 #[cfg(test)]
-pub(crate) fn build_test_archive(
-    manifest_text: &str,
-    artifact_files: &[(&str, &[u8])],
-) -> Vec<u8> {
+pub(crate) fn build_test_archive(manifest_text: &str, artifact_files: &[(&str, &[u8])]) -> Vec<u8> {
     use std::io::Write;
 
     let mut tar_bytes: Vec<u8> = Vec::new();
@@ -615,10 +595,7 @@ mod tests {
     fn fetch_url_returns_error_for_missing_file() {
         let url = "file:///definitely/not/here-xyz123.bin";
         let err = fetch_url(url).unwrap_err();
-        assert!(
-            matches!(err, FetchError::Http(_)),
-            "unexpected: {err:?}"
-        );
+        assert!(matches!(err, FetchError::Http(_)), "unexpected: {err:?}");
     }
 
     #[test]
@@ -704,10 +681,7 @@ mod tests {
                     s.contains("WASM_POSIX_OFFLINE"),
                     "expected offline guard message, got: {s}"
                 );
-                assert!(
-                    s.contains(url),
-                    "expected URL in offline error, got: {s}"
-                );
+                assert!(s.contains(url), "expected URL in offline error, got: {s}");
             }
             other => panic!("expected FetchError::Http, got: {other:?}"),
         }

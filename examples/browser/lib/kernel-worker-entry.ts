@@ -297,9 +297,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // In dev mode, use the vite CORS proxy middleware for cross-origin fetches.
   // In production, the service worker handles CORS proxying transparently.
   const devCorsProxy = import.meta.env.DEV ? "/cors-proxy?url=" : undefined;
-  const tlsBackend = new TlsNetworkBackend(
-    devCorsProxy ? { corsProxyUrl: devCorsProxy } : undefined,
-  );
+  const tlsBackend = new TlsNetworkBackend({
+    corsProxyUrl: devCorsProxy,
+    dnsAliases: msg.config.dnsAliases,
+  });
   await tlsBackend.init();
   io.network = tlsBackend;
 
@@ -495,6 +496,13 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
     if (msg.pty) {
       const ptyIdx = kernelWorker.setupPty(pid);
       ptyByPid.set(pid, ptyIdx);
+      // Apply initial winsize before the wasm program starts. Without this,
+      // the program's first TIOCGWINSZ returns the kernel default (80x24)
+      // and TUI renderers (ink, blessed) cache the wrong width before the
+      // post-spawn pty_resize lands, causing redraw corruption.
+      if (msg.ptyCols != null && msg.ptyRows != null) {
+        kernelWorker.ptySetWinsize(ptyIdx, msg.ptyRows, msg.ptyCols);
+      }
     } else if (msg.stdin) {
       const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
       kernelWorker.setStdinData(pid, stdinData);
