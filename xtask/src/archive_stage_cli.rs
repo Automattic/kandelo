@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::archive_stage::{self, StageOptions};
-use crate::build_deps::{self, default_cache_root, parse_target_arch, Registry, ResolveOpts};
+use crate::build_deps::{self, Registry, ResolveOpts, default_cache_root, parse_target_arch};
 use crate::pkg_manifest::{DepsManifest, ManifestKind, TargetArch};
 use crate::repo_root;
 use crate::util::hex;
@@ -71,8 +71,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 
     // Load the manifest. Errors here name the failing path so a typo
     // in --package surfaces clearly.
-    let toml = parsed.package_dir.join("package.toml");
-    let manifest = DepsManifest::load(&toml)?;
+    let manifest = DepsManifest::load_with_overlay(&parsed.package_dir)?;
 
     // kind = "source" produces no archive (decision 6 in the design
     // doc + see archive_stage::stage_archive_with_options). Reject
@@ -119,13 +118,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     // The `<short8>` suffix is the first 8 hex chars of the cache_key
     // sha so a freshly-published archive is content-addressable from
     // its filename alone.
-    let archive_path = archive_path_for(
-        &parsed.out_dir,
-        &manifest,
-        &registry,
-        parsed.arch,
-        abi,
-    )?;
+    let archive_path = archive_path_for(&parsed.out_dir, &manifest, &registry, parsed.arch, abi)?;
 
     // Resolve / build the cache entry. local_libs is intentionally
     // None — staged archives must reproduce from source / cache, never
@@ -140,8 +133,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         // facing layout.
         binaries_dir: None,
     };
-    let cache_path = build_deps::ensure_built(&manifest, &registry, parsed.arch, abi, &resolve_opts)
-        .map_err(|e| format!("ensure_built: {e}"))?;
+    let cache_path =
+        build_deps::ensure_built(&manifest, &registry, parsed.arch, abi, &resolve_opts)
+            .map_err(|e| format!("ensure_built: {e}"))?;
 
     // Same cache-key sha as the one encoded in archive_path's short
     // suffix; recompute with a fresh memo so the result matches what
@@ -228,15 +222,19 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         // Helper closures for both `--flag value` and `--flag=value`.
-        let take_value = |it: &mut std::vec::IntoIter<String>, name: &str| -> Result<String, String> {
-            it.next()
-                .ok_or_else(|| format!("{name} requires a value"))
-        };
+        let take_value =
+            |it: &mut std::vec::IntoIter<String>, name: &str| -> Result<String, String> {
+                it.next().ok_or_else(|| format!("{name} requires a value"))
+            };
 
         if let Some(v) = a.strip_prefix("--package=") {
             assign_once(&mut package, PathBuf::from(v), "--package")?;
         } else if a == "--package" {
-            assign_once(&mut package, PathBuf::from(take_value(&mut it, "--package")?), "--package")?;
+            assign_once(
+                &mut package,
+                PathBuf::from(take_value(&mut it, "--package")?),
+                "--package",
+            )?;
         } else if let Some(v) = a.strip_prefix("--arch=") {
             assign_once(&mut arch, parse_target_arch(v)?, "--arch")?;
         } else if a == "--arch" {
@@ -245,15 +243,27 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         } else if let Some(v) = a.strip_prefix("--out=") {
             assign_once(&mut out_dir, PathBuf::from(v), "--out")?;
         } else if a == "--out" {
-            assign_once(&mut out_dir, PathBuf::from(take_value(&mut it, "--out")?), "--out")?;
+            assign_once(
+                &mut out_dir,
+                PathBuf::from(take_value(&mut it, "--out")?),
+                "--out",
+            )?;
         } else if let Some(v) = a.strip_prefix("--build-timestamp=") {
             assign_once(&mut build_timestamp, v.to_string(), "--build-timestamp")?;
         } else if a == "--build-timestamp" {
-            assign_once(&mut build_timestamp, take_value(&mut it, "--build-timestamp")?, "--build-timestamp")?;
+            assign_once(
+                &mut build_timestamp,
+                take_value(&mut it, "--build-timestamp")?,
+                "--build-timestamp",
+            )?;
         } else if let Some(v) = a.strip_prefix("--build-host=") {
             assign_once(&mut build_host, v.to_string(), "--build-host")?;
         } else if a == "--build-host" {
-            assign_once(&mut build_host, take_value(&mut it, "--build-host")?, "--build-host")?;
+            assign_once(
+                &mut build_host,
+                take_value(&mut it, "--build-host")?,
+                "--build-host",
+            )?;
         } else if let Some(v) = a.strip_prefix("--abi=") {
             let n: u32 = v.parse().map_err(|e| format!("--abi: {e}"))?;
             assign_once(&mut abi, n, "--abi")?;
@@ -264,31 +274,33 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         } else if let Some(v) = a.strip_prefix("--cache-root=") {
             assign_once(&mut cache_root, PathBuf::from(v), "--cache-root")?;
         } else if a == "--cache-root" {
-            assign_once(&mut cache_root, PathBuf::from(take_value(&mut it, "--cache-root")?), "--cache-root")?;
+            assign_once(
+                &mut cache_root,
+                PathBuf::from(take_value(&mut it, "--cache-root")?),
+                "--cache-root",
+            )?;
         } else if let Some(v) = a.strip_prefix("--registry=") {
             assign_once(&mut registry_root, PathBuf::from(v), "--registry")?;
         } else if a == "--registry" {
-            assign_once(&mut registry_root, PathBuf::from(take_value(&mut it, "--registry")?), "--registry")?;
+            assign_once(
+                &mut registry_root,
+                PathBuf::from(take_value(&mut it, "--registry")?),
+                "--registry",
+            )?;
         } else {
             return Err(format!("unexpected argument {a:?}"));
         }
     }
 
-    let package_dir = package.ok_or_else(|| {
-        "archive-stage: --package <dir> is required".to_string()
-    })?;
-    let arch = arch.ok_or_else(|| {
-        "archive-stage: --arch <wasm32|wasm64> is required".to_string()
-    })?;
-    let out_dir = out_dir.ok_or_else(|| {
-        "archive-stage: --out <dir> is required".to_string()
-    })?;
-    let build_timestamp = build_timestamp.ok_or_else(|| {
-        "archive-stage: --build-timestamp <ISO-8601-UTC> is required".to_string()
-    })?;
-    let build_host = build_host.ok_or_else(|| {
-        "archive-stage: --build-host <string> is required".to_string()
-    })?;
+    let package_dir =
+        package.ok_or_else(|| "archive-stage: --package <dir> is required".to_string())?;
+    let arch =
+        arch.ok_or_else(|| "archive-stage: --arch <wasm32|wasm64> is required".to_string())?;
+    let out_dir = out_dir.ok_or_else(|| "archive-stage: --out <dir> is required".to_string())?;
+    let build_timestamp = build_timestamp
+        .ok_or_else(|| "archive-stage: --build-timestamp <ISO-8601-UTC> is required".to_string())?;
+    let build_host =
+        build_host.ok_or_else(|| "archive-stage: --build-host <string> is required".to_string())?;
 
     Ok(Args {
         package_dir,
@@ -336,7 +348,6 @@ mod tests {
 kind = "library"
 name = "{name}"
 version = "1.0.0"
-revision = 1
 
 [source]
 url = "https://example.test/{name}-1.0.0.tar.gz"
@@ -367,7 +378,6 @@ spdx = "TestLicense"
 kind = "source"
 name = "{name}"
 version = "1.0.0"
-revision = 1
 kernel_abi = 7
 
 [source]
@@ -384,7 +394,11 @@ script_path = "{name}/build-{name}.sh"
         );
         fs::write(lib_dir.join("package.toml"), toml).unwrap();
         let script_path = lib_dir.join(format!("build-{name}.sh"));
-        fs::write(&script_path, "#!/bin/bash\necho > $WASM_POSIX_DEP_OUT_DIR/marker\n").unwrap();
+        fs::write(
+            &script_path,
+            "#!/bin/bash\necho > $WASM_POSIX_DEP_OUT_DIR/marker\n",
+        )
+        .unwrap();
         let mut perm = fs::metadata(&script_path).unwrap().permissions();
         perm.set_mode(0o755);
         fs::set_permissions(&script_path, perm).unwrap();
@@ -403,6 +417,21 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libZ.a"
 "#,
             "[outputs]\nlibs = [\"lib/libZ.a\"]\n",
         );
+    }
+
+    fn write_build_toml_revision(registry: &Path, name: &str, revision: u32) {
+        let build_toml = format!(
+            r#"
+script_path = "{name}/build-{name}.sh"
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = {revision}
+
+[binary]
+index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
+"#
+        );
+        fs::write(registry.join(name).join("build.toml"), build_toml).unwrap();
     }
 
     /// End-to-end smoke: a clean run of the CLI produces a real
@@ -441,7 +470,11 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libZ.a"
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
-        assert_eq!(entries.len(), 1, "exactly one archive expected, got: {entries:?}");
+        assert_eq!(
+            entries.len(),
+            1,
+            "exactly one archive expected, got: {entries:?}"
+        );
         let name = &entries[0];
         // <name>-<version>-rev<N>-abi<N>-<arch>-<short8>.tar.zst
         assert!(name.starts_with("z-1.0.0-rev1-abi4-wasm32-"), "got: {name}");
@@ -451,7 +484,55 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libZ.a"
         let suffix = ".tar.zst";
         let short = &name[prefix.len()..name.len() - suffix.len()];
         assert_eq!(short.len(), 8, "short_sha slot must be 8 chars: {short:?}");
-        assert!(short.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(
+            short
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
+        );
+    }
+
+    #[test]
+    fn cli_archive_filename_uses_build_toml_revision() {
+        let dir = tempdir("e2-build-revision");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+        write_wasm32_only_fixture(&registry, "z");
+        write_build_toml_revision(&registry, "z", 2);
+
+        super::run(vec![
+            "--package".into(),
+            registry.join("z").display().to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--out".into(),
+            out_dir.display().to_string(),
+            "--build-timestamp".into(),
+            "2026-05-05T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+            "--abi".into(),
+            "4".into(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+        ])
+        .expect("clean run must succeed");
+
+        let entries: Vec<String> = fs::read_dir(&out_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "exactly one archive expected, got: {entries:?}"
+        );
+        let name = &entries[0];
+        assert!(name.starts_with("z-1.0.0-rev2-abi4-wasm32-"), "got: {name}");
     }
 
     /// Two invocations with identical inputs must produce a
@@ -548,7 +629,10 @@ echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libZ.a"
         // mkdir above, but the archive itself must not appear.
         if out_dir.is_dir() {
             let entries: Vec<_> = fs::read_dir(&out_dir).unwrap().collect();
-            assert!(entries.is_empty(), "no archive should be produced: {entries:?}");
+            assert!(
+                entries.is_empty(),
+                "no archive should be produced: {entries:?}"
+            );
         }
     }
 

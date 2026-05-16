@@ -1,7 +1,6 @@
 kind = "program"
 name = "nano"
 version = "8.0"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://git.savannah.gnu.org/cgit/nano.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/nano/build-nano.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "nano"
 wasm = "nano.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/nano-8.0-rev1-abi7-wasm32-e7becefb.tar.zst"
-archive_sha256 = "0b5ea34a159220d54ec108ff8d360c52fe636d2b0c814379096c8ea13276364e"

@@ -171,16 +171,34 @@ fn build_archive_manifest_text(
     opts: &StageOptions,
 ) -> Result<String, String> {
     let src_path = target.dir.join("package.toml");
-    let mut text = fs::read_to_string(&src_path)
+    let raw_src = fs::read_to_string(&src_path)
         .map_err(|e| format!("read {}: {e}", src_path.display()))?;
+    // Source package.toml is verified by parse() to have no
+    // [compatibility] block AND no `revision` field (post
+    // binary-resolution-via-index-ledger). The archived manifest
+    // schema still requires both. We need `revision` to be at the
+    // TOP level of the TOML, not inside a trailing table — splice it
+    // in immediately after the last top-level scalar (commonly the
+    // header lines before the first `[section]`); `target.revision`
+    // defaults to 1 in validate_common when source omits it.
+    let first_table_idx = raw_src
+        .lines()
+        .scan(0usize, |acc, l| {
+            let start = *acc;
+            *acc = start + l.len() + 1; // approximate newline width
+            Some((start, l))
+        })
+        .find(|(_, l)| l.trim_start().starts_with('['))
+        .map(|(i, _)| i)
+        .unwrap_or(raw_src.len());
+
+    let mut text = String::with_capacity(raw_src.len() + 64);
+    text.push_str(&raw_src[..first_table_idx]);
+    text.push_str(&format!("revision = {}\n", target.revision));
+    text.push_str(&raw_src[first_table_idx..]);
     if !text.ends_with('\n') {
         text.push('\n');
     }
-    // Source package.toml is verified by parse() to have no [compatibility]
-    // block; appending the new block at the end is safe as long as the
-    // source ends without an open trailing table. The parse_archived
-    // round-trip below catches any structural breakage (malformed source
-    // TOML, pre-existing [compatibility], invalid sha) before we ship.
     text.push_str(&format!(
         "\n[compatibility]\ntarget_arch = \"{}\"\nabi_versions = [{}]\n\
          cache_key_sha = \"{}\"\nbuild_timestamp = \"{}\"\nbuild_host = \"{}\"\n",
@@ -220,7 +238,6 @@ mod tests {
 kind = "source"
 name = "pcre2-source"
 version = "10.42"
-revision = 1
 [source]
 url = "file:///dev/null"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -251,7 +268,6 @@ spdx = "BSD-3-Clause"
 kind = "library"
 name = "zlib"
 version = "1.0.0"
-revision = 1
 [source]
 url = "file:///dev/null"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

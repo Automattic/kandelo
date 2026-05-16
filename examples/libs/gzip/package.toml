@@ -1,7 +1,6 @@
 kind = "program"
 name = "gzip"
 version = "1.13"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://git.savannah.gnu.org/cgit/gzip.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/gzip/build-gzip.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "gzip"
 wasm = "gzip.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/gzip-1.13-rev1-abi7-wasm32-2b3899a3.tar.zst"
-archive_sha256 = "b7df6f999f7c6c1251cff55704ac476f01b76e56b0e8810fee3b985558a3d7fb"

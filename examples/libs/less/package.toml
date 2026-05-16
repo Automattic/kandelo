@@ -1,7 +1,6 @@
 kind = "program"
 name = "less"
 version = "668"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://www.greenwoodsoftware.com/less/LICENSE"
 
 [build]
 script_path = "examples/libs/less/build-less.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "less"
 wasm = "less.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/less-668-rev1-abi7-wasm32-e85c5433.tar.zst"
-archive_sha256 = "97fa291b60054991fb489076673abbb6287deaf208b1876165bc870f8459807a"

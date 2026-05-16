@@ -1,7 +1,6 @@
 kind = "program"
 name = "python-vfs"
 version = "0.1.0"
-revision = 2
 kernel_abi = 7
 # Implicit dep: build-python-vfs-image.ts reads the CPython stdlib
 # from `examples/libs/cpython/cpython-src/Lib/` — populated as a
@@ -24,11 +23,7 @@ url = "https://docs.python.org/3/license.html"
 
 [build]
 script_path = "examples/libs/python-vfs/build-python-vfs.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "python-vfs"
 wasm = "python-vfs.vfs.zst"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/python-vfs-0.1.0-rev2-abi7-wasm32-29480d83.tar.zst"
-archive_sha256 = "b8977260b16185527e4c498cb79b6747328b15e937b0a23dbd39ffd438c44416"

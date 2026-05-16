@@ -11,7 +11,6 @@ kind = "library"
 
 name = "ncurses"
 version = "6.5"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -25,7 +24,6 @@ url = "https://invisible-island.net/ncurses/ncurses-license.html"
 
 [build]
 script_path = "examples/libs/ncurses/build-ncurses.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [outputs]
 # Wide variants are the ones we actually build (--enable-widec). Non-wide
@@ -38,6 +36,3 @@ libs = ["lib/libncursesw.a", "lib/libtinfow.a"]
 # every header — churn-free across version bumps.
 headers = ["include/ncursesw"]
 # `--enable-pc-files=no --with-pkg-config=no`: no pkgconfig outputs.
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/ncurses-6.5-rev1-abi7-wasm32-9a33f291.tar.zst"
-archive_sha256 = "c4ff23992307a9ff4e271d6b9189e77f4fde45fec15828408108fa921e78ca49"

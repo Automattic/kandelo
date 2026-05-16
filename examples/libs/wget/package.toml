@@ -1,7 +1,6 @@
 kind = "program"
 name = "wget"
 version = "1.25.0"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://git.savannah.gnu.org/cgit/wget.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/wget/build-wget.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "wget"
 wasm = "wget.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/wget-1.25.0-rev1-abi7-wasm32-b83aa2ea.tar.zst"
-archive_sha256 = "1c2bde4a330067ec433e1ac800b3e22461a20cb1c2cc4d158af48e6be0a926cb"

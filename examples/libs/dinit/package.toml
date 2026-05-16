@@ -1,7 +1,6 @@
 kind = "program"
 name = "dinit"
 version = "0.19.4"
-revision = 1
 kernel_abi = 7
 # build-dinit.sh links against libc++/libc++abi from sysroot/lib/.
 # Without this dep the resolver doesn't pre-stage libcxx and the build
@@ -18,7 +17,6 @@ url = "https://github.com/davmac314/dinit/blob/v0.19.4/LICENSE"
 
 [build]
 script_path = "examples/libs/dinit/build-dinit.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "dinit"
@@ -31,7 +29,3 @@ wasm = "dinitctl.wasm"
 [[outputs]]
 name = "dinitcheck"
 wasm = "dinitcheck.wasm"
-
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/dinit-0.19.4-rev1-abi7-wasm32-6ae33fd0.tar.zst"
-archive_sha256 = "4cf50b0dc013935bc902cc2ef5aa153eda8584536b0d3f19400a7daa334d721a"

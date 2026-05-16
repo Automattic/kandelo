@@ -1,12 +1,11 @@
 kind = "program"
 name = "lamp"
 version = "0.1.0"
-revision = 2
 kernel_abi = 7
 # Implicit deps: build-lamp-vfs-image.ts reads:
-#   - dash.wasm, nginx.wasm, php-fpm.wasm, coreutils.wasm, sed.wasm
-#     via `resolveBinary("programs/<x>.wasm")` (each consumed at
-#     build time via readFileSync — they must exist on disk).
+#   - the eager shell toolset plus nginx.wasm and php-fpm.wasm via
+#     `resolveBinary("programs/<x>.wasm")` (each consumed at build
+#     time via readFileSync — they must exist on disk).
 #   - mariadbd.wasm + bootstrap SQL from
 #     `examples/libs/mariadb/mariadb-install/` (side effect of
 #     build-mariadb.sh).
@@ -27,8 +26,29 @@ depends_on = [
     "nginx@1.24.0",
     "php@8.3.2",
     "dash@0.5.12",
+    "bash@5.2.37",
     "coreutils@9.6",
+    "grep@3.11",
     "sed@4.9",
+    "bc@1.07.1",
+    "file@5.45",
+    "less@668",
+    "m4@1.4.19",
+    "make@4.4.1",
+    "tar@1.35",
+    "curl@8.11.1",
+    "wget@1.25.0",
+    "git@2.47.1",
+    "gzip@1.13",
+    "bzip2@1.0.8",
+    "xz@5.6.2",
+    "zstd@1.5.6",
+    "zip@3.0",
+    "unzip@6.0",
+    "nano@8.0",
+    "lsof@0.1.0",
+    "vim@9.1.0900",
+    "nethack@3.6.7",
     "dinit@0.19.4",
 ]
 
@@ -42,12 +62,7 @@ url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
 
 [build]
 script_path = "examples/libs/lamp/build-lamp.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
-commit = "38512c586399bf2440aafe789aedf30b689a9d04"
 
 [[outputs]]
 name = "lamp"
 wasm = "lamp.vfs.zst"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/lamp-0.1.0-rev2-abi8-wasm32-a4d6d432.tar.zst"
-archive_sha256 = "e2f6c51657050d9571953276e24c7493e892ebc105f6e901a1ebe5c6ff279489"

@@ -1,7 +1,6 @@
 kind = "program"
 name = "m4"
 version = "1.4.19"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://git.savannah.gnu.org/cgit/m4.git/tree/COPYING"
 
 [build]
 script_path = "examples/libs/m4/build-m4.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "m4"
 wasm = "m4.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/m4-1.4.19-rev1-abi7-wasm32-b7b44477.tar.zst"
-archive_sha256 = "b5c7d8728f35cec27dcf2e679a4a99a8ee5671295a815c618ecef0c77534e961"

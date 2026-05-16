@@ -1,7 +1,6 @@
 kind = "program"
 name = "quickjs"
 version = "0.12.1"
-revision = 1
 kernel_abi = 7
 depends_on = []
 
@@ -15,11 +14,7 @@ url = "https://github.com/quickjs-ng/quickjs/blob/master/LICENSE"
 
 [build]
 script_path = "examples/libs/quickjs/build-quickjs.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 
 [[outputs]]
 name = "quickjs"
 wasm = "qjs.wasm"
-[binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v7/quickjs-0.12.1-rev1-abi7-wasm32-1479725f.tar.zst"
-archive_sha256 = "487d9df974091d116395aacc4eb5e2ddc2674a635a3efd018a5da012468d6e92"

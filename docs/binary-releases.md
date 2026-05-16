@@ -5,18 +5,30 @@ archives — live in GitHub Releases rather than the Git repo. This
 keeps the repo small and makes rebuilds optional for contributors:
 fetch once, use everywhere.
 
-The flow is **per-package**: each `examples/libs/<name>/package.toml`
-points at its own published archive. Adding or rebuilding one package
-only re-uploads that package's `.tar.zst`. There is no central
-pinfile.
+The flow is **per-package + index-ledger**: every release tag carries
+a single `index.toml` ledger that records every published archive's
+URL + sha + cache-key. Each `examples/libs/<name>/build.toml` points
+its `[binary]` entry at that ledger (typically via `index_url` with a
+`{abi}` placeholder so one `build.toml` survives ABI bumps).
+
+Adding or rebuilding one package re-uploads that package's `.tar.zst`
+**and** updates exactly that package's entry in `index.toml` —
+atomically, under a workflow-level state-lock so concurrent
+matrix-build jobs serialize their writes to the same ledger without
+clobbering each other.
+
+See [docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md](plans/2026-05-13-binary-resolution-via-index-ledger-design.md)
+for the design rationale and [docs/package-management.md](package-management.md)
+for the resolver behavior, schema, and build-script contract.
 
 ## Producer side: the matrix flow
 
 Every staging-build run (PR push or `workflow_dispatch`) follows the
-same matrix flow in `.github/workflows/staging-build.yml`:
+same matrix flow in `.github/workflows/staging-build.yml`. After this
+PR's [Phase 10 workflow rewrite](plans/2026-05-13-binary-resolution-via-index-ledger-plan.md):
 
 ```
-preflight → toolchain-cache → matrix-build → test-gate → publish → generate-index → f2-status
+preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 ```
 
 - **preflight** computes the build matrix. For each package with a
@@ -31,35 +43,57 @@ preflight → toolchain-cache → matrix-build → test-gate → publish → gen
   artifact, and saves the same content into actions/cache. The
   cache key is content-addressed over the sysroot recipe + musl
   submodule SHA, so toolchain churn is rare.
-- **matrix-build** runs once per `(package, arch)` matrix entry:
-  download the toolchain artifact, run `xtask archive-stage` with
-  pinned commit-bound `--build-timestamp` + `--build-host`, upload
-  the resulting single `.tar.zst` as a per-entry artifact.
-- **test-gate** materializes the full `binaries/` tree by writing
-  `examples/libs/<pkg>/package.pr.toml` overlays for each
-  matrix-built archive (file:// URLs into a runner-local stage dir),
-  then runs `scripts/fetch-binaries.sh`. The resolver picks up the
-  overlay first (matrix bytes) and falls back to the durable
-  release for everything else. Then the standard test suite runs:
-  `cargo test`, `vitest`, libc-test, POSIX, sortix.
-- **publish** uploads the per-entry archives to the target tag
-  (`pr-<NNN>-staging` for PRs, `binaries-abi-v<N>` for non-PR
-  runs). `gh release upload --clobber`. A concurrency group on the
-  tag serializes uploads to avoid metadata races.
-- **generate-index** runs `xtask build-index --archives-dir <staging>
-  --abi <N>` to emit `index.toml` (provenance manifest, not a
-  contract — see [`index.toml`](#indextoml-provenance-not-contract))
-  and uploads it as a release asset.
-- **f2-status** posts/edits a sticky PR comment summarizing
-  per-package outcomes.
+- **matrix-build** runs once per `(package, arch)` matrix entry.
+  Per-entry steps:
+  1. Download the toolchain artifact.
+  2. Run `xtask archive-stage` to produce the per-entry `.tar.zst`
+     (pinned commit-bound `--build-timestamp` + `--build-host`).
+  3. Invoke `scripts/index-update.sh --target-tag <tag> --package
+     <name> --version <v> --revision <r> --arch <a> --status success
+     --archive-path <staged> --archive-name <n> --cache-key-sha <s>`.
+     The script acquires the state-lock for `<tag>`, downloads the
+     current `index.toml` (or bootstraps an empty one for a fresh
+     tag), runs `xtask index-update` to mutate this package's entry,
+     uploads the archive + new `index.toml` with `--clobber`, and
+     releases the lock.
+  4. On failure: a separate `if: failure()` step runs
+     `scripts/index-update.sh --status failed --error <msg>` so the
+     ledger reflects the failure. If a prior successful build for
+     this `(name, version, arch)` exists in the entry, it's
+     preserved in `fallback_archive_url` — consumers can keep
+     using the last-green archive while CI iterates on the rebuild.
+- **test-gate** materializes the full `binaries/` tree by running
+  `scripts/fetch-binaries.sh` — which now reads `build.toml`'s
+  `index_url`, fetches `index.toml` from the target release, and
+  resolves each `(package, arch)` from the ledger. Then the standard
+  test suite runs: `cargo test`, `vitest`, libc-test, POSIX, sortix.
+- **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
+  once test-gate passes. No bot-PR amend step exists anymore — the
+  ledger on the release IS the consumer-visible state, so there's
+  nothing in-tree to amend.
 
-`prepare-merge.yml` (triggered by the `ready-to-ship` label) and
-`force-rebuild.yml` (manual `workflow_dispatch`) reuse the same
-matrix shape. Their post-publish step amends in-tree
-`examples/libs/<pkg>/package.toml` files (`xtask
-set-package-binary` + `xtask set-build-commit`) on a bot PR, which
-auto-merges to bump the durable URLs without tying every package to
-a single pinfile.
+`prepare-merge.yml` (triggered by the `ready-to-ship` label) reuses
+the same shape but targets the durable `binaries-abi-v<N>` tag.
+`force-rebuild.yml` is the manual escape hatch (`workflow_dispatch`)
+for republishing selected packages.
+
+## State-lock serialization
+
+`scripts/index-update.sh` acquires the workflow-level state-lock
+before mutating `index.toml`. The lock ref is per-subject:
+
+```
+refs/heads/github-actions/state-lock/<subject>
+```
+
+Where `<subject>` is the target release tag (`binaries-abi-v8`,
+`pr-447-staging`, etc.). Different tags → different subjects →
+independent locks, so concurrent rebuilds for the durable release
+don't block per-PR staging publishes and vice versa.
+
+The lock uses the existing stale-detection mechanism inherited from
+`durable-release-lock.sh` (run-ID-based + 6h time fallback), so a
+crashed workflow can't leave a wedged lock indefinitely.
 
 ## Release tag convention
 
@@ -76,22 +110,22 @@ PR-staging releases use `pr-<NNN>-staging` (also mutable, but
 ephemeral — closed PRs leave them as historical curios).
 
 The ABI version appears in the tag because a release is tied to a
-specific kernel ABI. Programs from `binaries-abi-v6` cannot run
-against a kernel on ABI 7 — the resolver's compatibility check
+specific kernel ABI. Programs from `binaries-abi-v7` cannot run
+against a kernel on ABI 8 — the resolver's compatibility check
 rejects them.
 
 ## Layout of a release
 
-Flat asset namespace. Per-package archive filenames + a single
-`index.toml` provenance file.
+Flat asset namespace. Per-package archive filenames + one
+`index.toml` ledger.
 
 ```
-binaries-abi-v6 (release)
-├── index.toml                                              ← provenance
-├── zlib-1.3.1-rev1-abi6-wasm32-9acb9405.tar.zst            ← library
-├── zlib-1.3.1-rev1-abi6-wasm64-b1773def.tar.zst            ← library
-├── ncurses-6.5-rev1-abi6-wasm32-2a55c8e0.tar.zst           ← library
-├── vim-9.1-rev1-abi6-wasm32-c4e2118a.tar.zst               ← program
+binaries-abi-v8 (release)
+├── index.toml                                              ← LEDGER (the contract)
+├── zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst            ← library
+├── zlib-1.3.1-rev1-abi8-wasm64-e6c7a02b.tar.zst            ← library
+├── ncurses-6.5-rev1-abi8-wasm32-3ef36fae.tar.zst           ← library
+├── vim-9.1.0900-rev2-abi8-wasm32-0e8b5c34.tar.zst          ← program
 └── …
 ```
 
@@ -107,7 +141,7 @@ and thus distinct names.
 Each `.tar.zst` carries exactly two top-level entries:
 
 ```
-manifest.toml              ← source package.toml + injected [compatibility]
+manifest.toml              ← source package.toml + injected revision + [compatibility]
 artifacts/                 ← cache-tree contents
     lib/libz.a
     include/zlib.h
@@ -116,82 +150,115 @@ artifacts/                 ← cache-tree contents
 ```
 
 The consumer (`xtask build-deps resolve`, calling
-`remote_fetch::fetch_and_install`) flattens `artifacts/*` to the
-cache root after extraction. See `docs/package-management.md`
-"Release archives" for the full producer/consumer round-trip and
-the `[compatibility]` block.
+`remote_fetch::fetch_and_install_direct`) flattens `artifacts/*` to
+the cache root after extraction. See
+[docs/package-management.md](package-management.md) "Release
+archives" for the full producer/consumer round-trip and the
+`[compatibility]` block.
 
-## index.toml: provenance, not contract
+## `index.toml`: the contract
 
-`index.toml` is emitted as a release asset by `generate-index`. It
-records what was published in this run and when, but **the resolver
-does not consume it**. The contract is the per-package
-`[binary.<arch>].archive_url` + `archive_sha256` in
-`examples/libs/<pkg>/package.toml`. `index.toml` exists for human
-auditing and out-of-band tooling (CI scripts that want to inventory
-a release without parsing every package.toml).
+`index.toml` is the **single source of truth** for binary resolution.
+The resolver fetches it (with offline cache fallback at
+`~/.cache/wasm-posix-kernel/indexes/`), looks up
+`(name, version, arch)`, and decides which archive to install based
+on the entry's `status`.
 
-Schema:
+Schema (see [design §3.4](plans/2026-05-13-binary-resolution-via-index-ledger-design.md#34-indextoml--ledger-of-build-state)):
 
 ```toml
-abi_version = 6
-generated_at = "2026-05-09T12:34:56Z"
-generator = "cargo xtask build-index"
+abi_version = 8
+generated_at = "2026-05-13T..."
+generator = "wasm-posix-kernel CI @ <sha>"
 
 [[packages]]
-name = "zlib"
-version = "1.3.1"
+name     = "zlib"
+version  = "1.3.1"
 revision = 1
-arch = "wasm32"
-archive_name = "zlib-1.3.1-rev1-abi6-wasm32-9acb9405.tar.zst"
-archive_sha256 = "…"
-short_sha = "9acb9405"
 
-[[packages]]
-…
+[packages.binary.wasm32]
+status         = "success"
+archive_url    = "zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst"
+archive_sha256 = "<64-hex>"
+cache_key_sha  = "<64-hex>"
+built_at       = "2026-05-13T..."
+built_by       = "https://github.com/.../actions/runs/<id>"
+
+[packages.binary.wasm64]
+status              = "failed"
+error               = "linker: libc++abi missing for wasm64 toolchain"
+last_attempt        = "2026-05-13T..."
+last_attempt_by     = "https://github.com/.../actions/runs/<id>"
+# Last-green fallback: the previous successful build, preserved across
+# the failed rebuild.
+fallback_archive_url    = "zlib-1.3.1-rev1-abi8-wasm64-87766332.tar.zst"
+fallback_archive_sha256 = "<64-hex>"
+fallback_cache_key_sha  = "<64-hex>"
+fallback_built_at       = "2026-05-12T..."
 ```
 
-## Per-package binary metadata
+### Status semantics
 
-`examples/libs/<pkg>/package.toml` is the source of truth for what
-the resolver fetches. Multi-arch shape:
+| Value | Meaning | Resolver behavior |
+|---|---|---|
+| `success` | Latest build succeeded; current archive fields are authoritative | Fetch `archive_url`, verify, install |
+| `failed` | Latest build failed; `error` describes why | Use `fallback_*` if present; else fall through to source build |
+| `pending` / `building` | Transient (rebuild queued or in flight) | Use `fallback_*` if present; else source build |
+
+### Last-green fallback
+
+When a per-package rebuild for `(name, version, arch)` fails, the
+prior successful `archive_url` / `archive_sha256` / `cache_key_sha`
+move into the entry's `fallback_*` slots — consumers keep fetching
+the last working archive while CI iterates on the rebuild. A
+subsequent success clears the fallback (`update_entry_success`
+overwrites current fields and clears `fallback_*`). A repeated
+failure does NOT overwrite the fallback (it's the only working copy;
+preserved across multiple consecutive failures).
+
+## Per-package binary source: `build.toml`
+
+`examples/libs/<pkg>/build.toml` declares where the resolver fetches
+this package's binaries from. Typical shape:
 
 ```toml
-[binary.wasm32]
-archive_url = "https://github.com/.../zlib-1.3.1-rev1-abi6-wasm32-9acb9405.tar.zst"
-archive_sha256 = "<64-hex>"
+script_path = "examples/libs/zlib/build-zlib.sh"
+repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+commit      = "<commit at last successful build>"
+revision    = 1
 
-[binary.wasm64]
-archive_url = "https://github.com/.../zlib-1.3.1-rev1-abi6-wasm64-b1773def.tar.zst"
-archive_sha256 = "<64-hex>"
-```
-
-Single-arch shape (when `arches = ["wasm32"]` is the only declared
-arch):
-
-```toml
 [binary]
-archive_url = "https://github.com/.../foo-1.0-rev1-abi6-wasm32-deadbeef.tar.zst"
-archive_sha256 = "<64-hex>"
+index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
-A `package.toml` with no `[binary]` block is treated as
-local-build-only (the resolver source-builds via
-`scripts/dev-shell.sh`).
+- `{abi}` is substituted with the current `ABI_VERSION` at resolve
+  time, so one `build.toml` survives ABI bumps.
+- `revision` is the publish-time counter the resolver hashes into
+  the cache-key — bump it when output bytes legitimately change.
+- For a legacy archive that doesn't live in an index, replace the
+  `index_url` line with `url = "https://..."` + `sha256 = "..."`.
+  The resolver fetches that archive directly without consulting any
+  `index.toml`.
+
+A `package.toml` without a sibling `build.toml` is treated as
+source-build-only (kernel, userspace, examples, source-kind
+metadata packages) — the resolver source-builds via
+`scripts/dev-shell.sh` instead of fetching.
 
 ## PR overlays: `package.pr.toml`
 
-For PR-staging builds, a sibling `examples/libs/<pkg>/package.pr.toml`
-overrides `[binary.<arch>].archive_url` + `archive_sha256` without
-touching the durable `package.toml`. The overlay is generated by
-the staging-build matrix flow's test-gate step into the runner
-workdir, so PR archives can reference `file://` URLs locally and
-`https://` URLs once published.
+The legacy PR-overlay mechanism still exists for one-off local
+swaps: a sibling `examples/libs/<pkg>/package.pr.toml` injects
+`[binary.<arch>]` entries into the parsed `DepsManifest` at load
+time (see `apply_pr_overlay` in `xtask/src/pkg_manifest.rs`).
+Gitignored.
 
-The overlay parser (`xtask/src/pkg_manifest.rs::apply_pr_overlay`)
-only accepts `[binary]` / `[binary.<arch>]` keys; anything else
-errors out. This keeps overlays narrowly scoped: they cannot replace
-build inputs or change the package's revision.
+For CI-driven PR testing, the matrix flow uses a dedicated
+`pr-<NNN>-staging` release tag instead: that tag has its own
+`index.toml` (separate state-lock subject from the durable
+release), and a PR's `build.toml` either points at the staging
+index temporarily or the consumer manually overrides `index_url`
+via the overlay path.
 
 ## Consumer: `scripts/fetch-binaries.sh`
 
@@ -199,8 +266,7 @@ build inputs or change the package's revision.
 bash scripts/fetch-binaries.sh
 ```
 
-Walks every `examples/libs/<pkg>/package.toml` with a `[binary]` block
-and runs:
+Walks every `examples/libs/<pkg>/` that has a `build.toml` and runs:
 
 ```
 cargo run -p xtask -- build-deps --arch <arch> \
@@ -210,20 +276,30 @@ cargo run -p xtask -- build-deps --arch <arch> \
 For each declared arch in the package's `arches = [...]` (default
 `["wasm32"]`). The resolver:
 
-1. Reads `[binary.<arch>]` from `package.toml`. If
-   `package.pr.toml` exists alongside, applies it as an overlay
-   (replaces `archive_url` + `archive_sha256` for that arch).
-2. Fetches the archive into the content-addressed cache at
+1. Reads `package.toml` (recipe) + `build.toml` (project view) from
+   `examples/libs/<pkg>/`. `revision` from `build.toml` overrides
+   the `DepsManifest`'s default revision before cache-key
+   computation.
+2. Resolves `build.toml`'s `[binary]`:
+   - Indexed form: fetches `index.toml` (with offline cache
+     fallback), looks up `(name, version, arch)`, picks
+     `archive_url` (status=success) or `fallback_archive_url`
+     (status=failed/pending/building with fallback set).
+   - Direct form: uses the inline `url` + `sha256`.
+3. Fetches the archive into the content-addressed cache at
    `~/.cache/wasm-posix-kernel/...`.
-3. Verifies `archive_sha256` against the file bytes.
-4. Verifies the embedded `manifest.toml`'s `[compatibility]` block:
-   `kernel_abi` must match the in-tree `ABI_VERSION`.
-5. Places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
+4. Verifies `archive_sha256` against the file bytes.
+5. Verifies the embedded `manifest.toml`'s `[compatibility]` block:
+   - `target_arch` must match the requested arch.
+   - `abi_versions` must contain the in-tree `ABI_VERSION`.
+   - `cache_key_sha` must match the resolver's locally-computed
+     cache-key sha (catches recipe drift).
+6. Places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
    into the cache, so browser/Node demos can load by relative path
    without re-fetching.
 
 On any verification failure, the resolver logs a warning and falls
-through to a source build (the package's `[build]` script). This
+through to a source build (the package's build script). This
 makes ABI bumps and rev bumps non-fatal: as long as the source-build
 path works, missing archives just slow the first run.
 
@@ -233,6 +309,11 @@ The cache is content-addressed. A different `archive_url` ⇒ a
 different canonical path under `~/.cache/wasm-posix-kernel/`. Old
 entries are never overwritten; they're orphaned. Disk-pressure
 cleanup is the user's responsibility — no automated GC today.
+
+The `index.toml` cache (`~/.cache/wasm-posix-kernel/indexes/`) is
+keyed on the sha8 of the index URL, so different sources land in
+distinct files. Each successful online fetch overwrites the cached
+copy.
 
 ## Reproducibility
 
@@ -248,12 +329,39 @@ The `[compatibility]` block injected into each archive's
 `manifest.toml` is also a pure function of the build inputs (no
 wall-clock or worker-local fields).
 
+`index.toml` itself is also byte-deterministic for a given input
+set: `IndexToml::write()` emits packages alphabetically by
+`(name, version)`, per-arch entries in canonical `wasm32`→`wasm64`
+order, and fields within each entry follow the design's
+success-then-failure-then-fallback grouping.
+
 ## ABI bumps
 
 Bumping `ABI_VERSION` in `crates/shared/src/lib.rs` invalidates every
-durable archive against ABI mismatch (the resolver's `[compatibility]`
-check rejects). The bump PR's matrix flow rebuilds every package
-whose `cache_key_sha` is now stale (the ABI is part of the sha), and
-the merge-time amend rewrites every `[binary.<arch>].archive_url` to
-the freshly-published archive. See [`abi-versioning.md`](abi-versioning.md)
-for the full ABI-bump checklist.
+durable archive against the resolver's ABI check. The bump PR's
+matrix flow rebuilds every package whose `cache_key_sha` is now
+stale (the ABI is part of the sha), and each matrix entry's
+`scripts/index-update.sh` invocation atomically publishes its
+archive + index entry to the new `binaries-abi-v<N+1>/` release.
+
+Because the resolver substitutes `{abi}` in `build.toml`'s
+`index_url`, no in-tree edit is required for the URL pivot — the
+next fetch automatically hits the new release. The v(N) release
+stays as historical state.
+
+See [`abi-versioning.md`](abi-versioning.md) for the full ABI-bump
+checklist.
+
+## Seeding an index from existing archives
+
+When migrating a release from the legacy schema (or recovering after
+a corrupted index), `scripts/compose-initial-index.sh
+<target-tag> <abi>` downloads every `.tar.zst` from the release,
+extracts each archive's internal `manifest.toml` to recover
+`cache_key_sha` + `build_timestamp`, and uploads a freshly composed
+`index.toml`. The script acquires the same state-lock as the
+matrix-build path, so it serializes against any active CI rebuilds.
+
+Day-to-day publishes don't use this script — they go through
+`scripts/index-update.sh` per-matrix-entry. compose-initial-index is
+migration scaffolding kept in-tree for reproducibility.
