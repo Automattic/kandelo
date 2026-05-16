@@ -24,6 +24,7 @@ import type {
   KernelToMainMessage,
   ResolveExecRequestMessage,
 } from "./node-kernel-protocol";
+import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -43,6 +44,10 @@ export interface NodeKernelHostOptions {
   onStderr?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes PTY output */
   onPtyOutput?: (pid: number, data: Uint8Array) => void;
+  /** Called when a process is spawned, execs a new program, or exits.
+   *  Used by Inspector-style UIs to refresh their process table without
+   *  polling. */
+  onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
   /**
    * Called when the worker can't resolve an exec path locally.
    * Return the program bytes or null if not found.
@@ -158,6 +163,8 @@ export class NodeKernelHost {
       this.exitResolvers.set(pid, resolve);
     });
 
+    this.options.onProcessEvent?.({ kind: "spawn", pid });
+
     // Process is now running
     if (options?.onStarted) {
       await options.onStarted(pid);
@@ -203,6 +210,89 @@ export class NodeKernelHost {
       pid,
     });
     return typeof result === "bigint" ? result : BigInt(result as number);
+  }
+
+  /**
+   * Snapshot the kernel's process table — one row per live process. Used
+   * by Kandelo's Inspector → Procs tab. Mirrors `BrowserKernel.enumProcs`.
+   */
+  async enumProcs(): Promise<ProcessSnapshot[]> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "enum_procs",
+      requestId,
+    });
+    return (result as ProcessSnapshot[]) ?? [];
+  }
+
+  /**
+   * Read `/proc/[pid]/maps` for a foreign process. Returns the raw text
+   * (one line per mapping), `""` if the process has no mappings, or
+   * `null` if the pid is gone.
+   */
+  async readProcMaps(pid: number): Promise<string | null> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_proc_maps",
+      requestId,
+      pid,
+    });
+    return (result as string | null) ?? null;
+  }
+
+  /**
+   * Subscribe to the kernel-worker's syscall trace. Returns an
+   * unsubscribe function. Mirrors `BrowserKernel.subscribeSyscalls`.
+   */
+  subscribeSyscalls(cb: (event: SyscallTraceEvent) => void): () => void {
+    this.syscallListeners.add(cb);
+    if (this.syscallListeners.size === 1) {
+      this.sendToWorker({ type: "set_syscall_trace", enabled: true });
+      this.startSyscallPoll();
+    }
+    return () => {
+      this.syscallListeners.delete(cb);
+      if (this.syscallListeners.size === 0) {
+        this.sendToWorker({ type: "set_syscall_trace", enabled: false });
+        this.stopSyscallPoll();
+      }
+    };
+  }
+
+  private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
+  private syscallPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  private startSyscallPoll(): void {
+    if (this.syscallPollTimer !== null) return;
+    this.syscallPollTimer = setInterval(() => {
+      void this.drainAndFanSyscalls();
+    }, 250);
+  }
+
+  private stopSyscallPoll(): void {
+    if (this.syscallPollTimer === null) return;
+    clearInterval(this.syscallPollTimer);
+    this.syscallPollTimer = null;
+  }
+
+  private async drainAndFanSyscalls(): Promise<void> {
+    if (this.syscallListeners.size === 0) return;
+    const requestId = this._nextRequestId++;
+    let events: SyscallTraceEvent[] = [];
+    try {
+      const result = await this.request(requestId, {
+        type: "drain_syscall_trace",
+        requestId,
+      });
+      events = (result as SyscallTraceEvent[]) ?? [];
+    } catch {
+      return;
+    }
+    for (const event of events) {
+      for (const cb of this.syscallListeners) {
+        try { cb(event); } catch { /* listener errors don't break the loop */ }
+      }
+    }
   }
 
   /** Terminate a specific process */
@@ -265,6 +355,14 @@ export class NodeKernelHost {
           this.exitResolvers.delete(msg.pid);
           resolver(msg.status);
         }
+        this.options.onProcessEvent?.({ kind: "exit", pid: msg.pid, exitStatus: msg.status });
+        break;
+      }
+      case "proc_event": {
+        // Kernel-internal fork / exec / posix_spawn. The host doesn't
+        // see these via NodeKernelHost.spawn (forks happen inside the
+        // wasm kernel without going through the request/response loop).
+        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
         break;
       }
       case "stdout":

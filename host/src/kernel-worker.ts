@@ -198,6 +198,72 @@ const CH_SIG_ALT_SIZE = CH_SIG_BASE + 40;  // u32: alt stack size
  * Same as channel layout but used as the kernel-side buffer. */
 const SCRATCH_SIZE = CH_TOTAL_SIZE;
 
+/**
+ * One captured syscall, surfaced by the opt-in trace ring buffer
+ * (enableSyscallTrace + drainSyscallTrace). Used by Kandelo Inspector →
+ * Syscalls and any tooling that wants a live `strace`-equivalent.
+ */
+export interface SyscallTraceEvent {
+  /** Monotonic time in milliseconds since the kernel-worker booted. */
+  t: number;
+  pid: number;
+  /** Linux syscall number from `shared::Syscall`. */
+  nr: number;
+  /** Raw arg values as the wasm program saw them. 6 entries, undefined slots are 0. */
+  args: [number, number, number, number, number, number];
+}
+
+/**
+ * A snapshot of one process from the kernel's table. Mirrors the binary
+ * record kernel_enum_procs writes — see crates/kernel/src/wasm_api.rs
+ * (kernel_enum_procs) for the authoritative wire format.
+ */
+export interface ProcessSnapshot {
+  pid: number;
+  ppid: number;
+  uid: number;
+  gid: number;
+  /** Sum of mmap-region sizes for this process, in bytes. */
+  vsizeBytes: number;
+  /** Current WebAssembly.Memory buffer size for this process, in bytes. */
+  memoryBytes?: number;
+  /** 'R' (running) | 'Z' (zombie); future: 'S','D','T','I'. */
+  state: "R" | "Z" | "S" | "D" | "T" | "I";
+  /** Basename of argv[0], or "[kernel]" for an empty argv. */
+  comm: string;
+  /** Space-separated argv (we decode the kernel's null-separated bytes). */
+  cmdline: string;
+}
+
+function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
+  if (mem.byteLength < 4) return [];
+  const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+  const count = dv.getUint32(0, true);
+  let off = 4;
+  const out: ProcessSnapshot[] = [];
+  const dec = new TextDecoder("utf-8", { fatal: false });
+  for (let i = 0; i < count; i++) {
+    if (off + 36 > mem.byteLength) break;
+    const pid = dv.getUint32(off, true); off += 4;
+    const ppid = dv.getUint32(off, true); off += 4;
+    const uid = dv.getUint32(off, true); off += 4;
+    const gid = dv.getUint32(off, true); off += 4;
+    const vsizeBytes = Number(dv.getBigUint64(off, true)); off += 8;
+    const state = String.fromCharCode(dv.getUint32(off, true)) as ProcessSnapshot["state"]; off += 4;
+    const commLen = dv.getUint32(off, true); off += 4;
+    const cmdLen = dv.getUint32(off, true); off += 4;
+    if (off + commLen + cmdLen > mem.byteLength) break;
+    const comm = dec.decode(mem.subarray(off, off + commLen));
+    off += commLen;
+    const cmdRaw = mem.subarray(off, off + cmdLen);
+    off += cmdLen;
+    // /proc/<pid>/cmdline is null-separated; convert to space-separated.
+    const cmdline = dec.decode(cmdRaw).replace(/\0/g, " ").trimEnd();
+    out.push({ pid, ppid, uid, gid, vsizeBytes, state, comm, cmdline: cmdline || `[${comm}]` });
+  }
+  return out;
+}
+
 /** Struct sizes for output data copying */
 const WASM_STAT_SIZE = 88;
 const TIMESPEC_SIZE = 16; // { i64 tv_sec, i32 tv_nsec, i32 pad } on wasm32
@@ -606,7 +672,7 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
 // This is handled as a special case in the size computation.
 
 /** Syscall number → name mapping for logging */
-const SYSCALL_NAMES: Record<number, string> = {
+export const SYSCALL_NAMES: Record<number, string> = {
   1: "open", 2: "close", 3: "read", 4: "write", 5: "lseek", 6: "fstat",
   7: "dup", 8: "dup2", 9: "pipe", 10: "fcntl", 11: "stat", 12: "lstat",
   13: "mkdir", 14: "rmdir", 15: "unlink", 16: "rename", 17: "link",
@@ -1412,6 +1478,89 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Snapshot the kernel's process table. Returns one ProcessSnapshot per
+   * live process. Used by Inspector → Procs (Kandelo UI) and any host that
+   * wants a `ps`-equivalent without spawning a user-mode reader.
+   *
+   * Reads from the kernel's scratch buffer. If the buffer overflows on a
+   * very large process table, returns an empty array — host can wrap with
+   * a retry on a larger scratch alloc.
+   *
+   * Returns an empty array if the kernel hasn't initialized yet or doesn't
+   * expose the export (older kernels).
+   */
+  // ── Syscall trace (opt-in live ring buffer) ────────────────────────────
+  //
+  // Off by default — zero cost when no subscriber. enableSyscallTrace()
+  // flips a flag; _handleSyscallInner pushes to this.syscallTraceRing
+  // when it's on. drainSyscallTrace() returns + clears the buffer; main
+  // thread polls every ~250ms via a worker→main request/response cycle.
+
+  private syscallTraceEnabled = false;
+  private syscallTraceRing: SyscallTraceEvent[] = [];
+  /** Cap the ring so a forgotten subscriber can't blow memory. */
+  private syscallTraceCap = 4096;
+
+  enableSyscallTrace(): void {
+    this.syscallTraceEnabled = true;
+  }
+
+  disableSyscallTrace(): void {
+    this.syscallTraceEnabled = false;
+    this.syscallTraceRing.length = 0;
+  }
+
+  drainSyscallTrace(): SyscallTraceEvent[] {
+    if (this.syscallTraceRing.length === 0) return [];
+    const out = this.syscallTraceRing;
+    this.syscallTraceRing = [];
+    return out;
+  }
+
+  enumProcs(): ProcessSnapshot[] {
+    if (!this.initialized) return [];
+    const enumProcs = this.kernelInstance!.exports.kernel_enum_procs as
+      ((ptr: bigint, len: number) => number) | undefined;
+    if (!enumProcs) return [];
+    const n = enumProcs(BigInt(this.scratchOffset), SCRATCH_SIZE);
+    if (n <= 0) return [];
+    // The kernel memory is a SharedArrayBuffer; TextDecoder refuses
+    // shared views. Copy to a regular ArrayBuffer before parsing.
+    const shared = new Uint8Array(this.kernelMemory!.buffer, this.scratchOffset, n);
+    const owned = new Uint8Array(n);
+    owned.set(shared);
+    const snapshots = parseProcSnapshots(owned);
+    for (const snapshot of snapshots) {
+      const registration = this.processes.get(snapshot.pid);
+      if (registration) {
+        snapshot.memoryBytes = registration.memory.buffer.byteLength;
+      }
+    }
+    return snapshots;
+  }
+
+  /**
+   * Read `/proc/[pid]/maps` for a foreign process. Returns the raw Linux-
+   * style text (one line per mapped region) or `null` if the pid doesn't
+   * exist. Empty string if the process has no mappings.
+   */
+  readProcMaps(pid: number): string | null {
+    if (!this.initialized) return null;
+    const readMaps = this.kernelInstance!.exports.kernel_read_proc_maps as
+      ((pid: number, ptr: bigint, len: number) => number) | undefined;
+    if (!readMaps) return null;
+    const n = readMaps(pid, BigInt(this.scratchOffset), SCRATCH_SIZE);
+    if (n < 0) return null;          // -ESRCH or similar
+    if (n === 0) return "";
+    // SharedArrayBuffer view → TextDecoder doesn't accept shared views.
+    // Copy out before decoding.
+    const shared = new Uint8Array(this.kernelMemory!.buffer, this.scratchOffset, n);
+    const owned = new Uint8Array(n);
+    owned.set(shared);
+    return new TextDecoder("utf-8", { fatal: false }).decode(owned);
+  }
+
+  /**
    * Unregister a process. Stops listening on its channels and removes
    * it from the kernel's process table.
    */
@@ -1484,6 +1633,25 @@ export class CentralizedKernelWorker {
    * process table. Used for zombie processes that need to remain queryable
    * (getpgid, setpgid) until reaped by wait/waitpid.
    */
+  /**
+   * Remove a pid from the wasm kernel's ProcessTable entirely. Used by
+   * the worker-entry's crash path: when a worker dies via a wasm trap
+   * (signature mismatch, OOM, etc.) the kernel never saw a SYS_EXIT, so
+   * its ProcessTable still has the pid in state=Running. After this
+   * runs, kernel_enum_procs no longer reports it and a parent's
+   * waitpid() returns ECHILD — accurate for "the process really is gone."
+   *
+   * Don't call this for normal exits — the kernel marks those Exited
+   * (zombie) so the parent can still reap.
+   */
+  removeProcessFromKernelTable(pid: number): void {
+    if (!this.initialized) return;
+    const removeProcess = this.kernelInstance?.exports.kernel_remove_process as
+      ((pid: number) => number) | undefined;
+    if (!removeProcess) return;
+    removeProcess(pid);
+  }
+
   deactivateProcess(pid: number): void {
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
@@ -1860,6 +2028,24 @@ export class CentralizedKernelWorker {
     if (!ring) { ring = []; this.syscallRing.set(ringKey, ring); }
     ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
     if (ring.length > 30) ring.shift();
+
+    // Opt-in live trace ring. enableSyscallTrace() flips the flag; the
+    // host polls via drainSyscallTrace(). Zero cost when off.
+    if (this.syscallTraceEnabled) {
+      if (this.syscallTraceRing.length >= this.syscallTraceCap) {
+        // Drop the oldest entry; a forgotten subscriber shouldn't blow memory.
+        this.syscallTraceRing.shift();
+      }
+      this.syscallTraceRing.push({
+        t: performance.now(),
+        pid: channel.pid,
+        nr: syscallNr,
+        args: [
+          origArgs[0] ?? 0, origArgs[1] ?? 0, origArgs[2] ?? 0,
+          origArgs[3] ?? 0, origArgs[4] ?? 0, origArgs[5] ?? 0,
+        ],
+      });
+    }
 
     // Syscall logging (enable globally via enableSyscallLog, or filter by
     // process pointer width via syscallLogPtrWidth — useful when a single

@@ -332,13 +332,22 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     },
     io,
     {
-      onFork: (parentPid, childPid, parentMemory, threadFork) =>
-        handleFork(parentPid, childPid, parentMemory, threadFork),
-      onExec: async (pid, path, argv, envp) =>
-        handleExec(pid, path, argv, envp),
+      onFork: (parentPid, childPid, parentMemory, threadFork) => {
+        // Tell the main thread a kernel-side fork happened so Inspector
+        // panes can refresh their process table without polling.
+        post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
+        return handleFork(parentPid, childPid, parentMemory, threadFork);
+      },
+      onExec: async (pid, path, argv, envp) => {
+        const result = await handleExec(pid, path, argv, envp);
+        // Fire after handleExec updates the kernel Process.argv. If this is
+        // sent before registerProcess(..., { argv }), Kandelo's Procs tab
+        // refreshes against stale cmdline data and only corrects on remount.
+        if (result === 0) post({ type: "proc_event", kind: "exec", pid });
+        return result;
+      },
       onResolveSpawn: async (path) => handlePosixSpawnResolve(path),
-      onSpawn: async (childPid, programBytes, argv, envp) =>
-        handlePosixSpawn(childPid, programBytes, argv, envp),
+      onSpawn: handlePosixSpawn,
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
@@ -544,6 +553,11 @@ function installProcessWorkerListeners(
     exited = true;
     if (processes.get(pid)?.worker !== worker) return; // already replaced (e.g. by exec)
     console.warn(`[kernel-worker] pid=${pid} ${source} → forcing exit ${status}`);
+    // Crash path: the wasm kernel never saw a SYS_EXIT for this pid, so
+    // its ProcessTable still has the entry in state=Running. Tell the
+    // kernel to remove it so Inspector → Procs stops showing a dead pid
+    // and a parent waitpid() correctly returns ECHILD.
+    kernelWorker.removeProcessFromKernelTable(pid);
     handleExit(pid, status);
   };
 
@@ -728,6 +742,10 @@ async function handleExec(
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
     skipKernelCreate: true,
     ptrWidth,
+    // Refresh the kernel's Process.argv so /proc/<pid>/cmdline and
+    // host-side enumeration (Kandelo Inspector → Procs) show the new
+    // program's argv after exec, not the parent's pre-exec argv.
+    argv,
   });
 
   // Re-install the new program's `__heap_base` post-exec — the kernel
@@ -816,6 +834,8 @@ async function handlePosixSpawn(
   argv: string[],
   envp: string[],
 ): Promise<number> {
+  post({ type: "proc_event", kind: "spawn", pid: childPid });
+
   const ptrWidth = detectPtrWidth(programBytes);
   const newMemory = createProcessMemory(ptrWidth, maxPages);
   const newChannelOffset = (maxPages - 2) * PAGE_SIZE;
@@ -1607,6 +1627,38 @@ sw.onmessage = (e: MessageEvent) => {
     }
     case "mouse_inject": handleMouseInject(msg); break;
     case "audio_drain": handleAudioDrain(msg); break;
+    case "enum_procs": {
+      // Snapshot the kernel's process table for the Inspector → Procs tab.
+      // Mirrors the Node-side handler in node-kernel-worker-entry.ts —
+      // dual-host parity is load-bearing here.
+      try {
+        respond(msg.requestId, kernelWorker.enumProcs());
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
+    case "read_proc_maps": {
+      try {
+        respond(msg.requestId, kernelWorker.readProcMaps(msg.pid));
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
+    case "set_syscall_trace": {
+      if (msg.enabled) kernelWorker.enableSyscallTrace();
+      else kernelWorker.disableSyscallTrace();
+      break;
+    }
+    case "drain_syscall_trace": {
+      try {
+        respond(msg.requestId, kernelWorker.drainSyscallTrace());
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;

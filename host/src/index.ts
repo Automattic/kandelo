@@ -1,7 +1,10 @@
 export { WasmPosixKernel } from "./kernel";
 export type { KernelCallbacks } from "./kernel";
 export { CentralizedKernelWorker } from "./kernel-worker";
-export type { CentralizedKernelCallbacks } from "./kernel-worker";
+export type {
+  CentralizedKernelCallbacks, ProcessSnapshot, SyscallTraceEvent,
+} from "./kernel-worker";
+export { SYSCALL_NAMES } from "./kernel-worker";
 export { SyscallChannel, ChannelStatus } from "./channel";
 export { NodePlatformIO } from "./platform/node";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";

@@ -3,46 +3,58 @@ import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
 import { defineConfig, type Plugin } from "vite";
+import react from "@vitejs/plugin-react";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 
 /**
- * Resolve the absolute path to the kernel wasm. The kernel is built locally
- * by `bash build.sh` (it's not in the binaries-abi-v6 release; tracked as
- * deferred future-work), so it lives under `local-binaries/`. Pages don't
- * need to know that — they import `@kernel-wasm?url` and Vite resolves the
- * alias here.
+ * Vite plugin: resolve `@kernel-wasm` and `@rootfs-vfs` lazily.
  *
- * If the local build is missing, fall back to `binaries/kernel.wasm` (a
- * future release that ships the kernel would make this the live path),
- * and finally surface a helpful error if neither exists.
+ * Lookup order for `@kernel-wasm` (first hit wins):
+ *   1. `<repoRoot>/local-binaries/kernel.wasm` — populated by `bash build.sh`.
+ *   2. `<repoRoot>/binaries/kernel.wasm` — populated by `./run.sh fetch`.
+ *
+ * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs` (built by
+ * mkrootfs during `bash build.sh`).
+ *
+ * Resolution is deferred until import time so pages that don't consume
+ * these aliases (the kandelo UI demo, for example) can run without a
+ * kernel build present. Pages that do import them get a clear error
+ * pointing at the build script.
  */
-function resolveKernelWasm(): string {
-  const local = path.resolve(repoRoot, "local-binaries/kernel.wasm");
-  if (fs.existsSync(local)) return local;
-  const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
-  if (fs.existsSync(fetched)) return fetched;
-  throw new Error(
-    "kernel.wasm not found. Run `bash build.sh` from the repo root.\n" +
-    `  Looked at: ${local}\n` +
-    `  Looked at: ${fetched}\n`
-  );
-}
+function resolveKernelArtifactsAlias(): Plugin {
+  const KERNEL = "@kernel-wasm";
+  const ROOTFS = "@rootfs-vfs";
+  return {
+    name: "resolve-kernel-artifacts-alias",
+    enforce: "pre",
+    resolveId(source) {
+      const queryIdx = source.indexOf("?");
+      const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
+      const query = queryIdx === -1 ? "" : source.slice(queryIdx);
 
-/**
- * Resolve the absolute path to the canonical rootfs VFS image. Built by
- * `bash build.sh` (mkrootfs CLI) and written to `host/wasm/rootfs.vfs`.
- * Pages import `@rootfs-vfs?url` and Vite emits it as a static asset
- * (the file is allow-listed via `assetsInclude: ["**\/*.vfs"]`).
- */
-function resolveRootfsVfs(): string {
-  const file = path.resolve(repoRoot, "host/wasm/rootfs.vfs");
-  if (fs.existsSync(file)) return file;
-  throw new Error(
-    "rootfs.vfs not found. Run `bash build.sh` from the repo root.\n" +
-    `  Looked at: ${file}\n`
-  );
+      if (pathPart === KERNEL) {
+        const local = path.resolve(repoRoot, "local-binaries/kernel.wasm");
+        if (fs.existsSync(local)) return local + query;
+        const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
+        if (fs.existsSync(fetched)) return fetched + query;
+        this.error(
+          "kernel.wasm not found. Run `bash build.sh` from the repo root.\n" +
+          `  Looked at: ${local}\n  Looked at: ${fetched}`
+        );
+      }
+      if (pathPart === ROOTFS) {
+        const file = path.resolve(repoRoot, "host/wasm/rootfs.vfs");
+        if (fs.existsSync(file)) return file + query;
+        this.error(
+          "rootfs.vfs not found. Run `bash build.sh` from the repo root.\n" +
+          `  Looked at: ${file}`
+        );
+      }
+      return null;
+    },
+  };
 }
 
 /**
@@ -271,23 +283,9 @@ function injectCorsProxyUrl(): Plugin {
 
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
-  resolve: {
-    // `@kernel-wasm` resolves to the single kernel binary (chosen at
-    // config load time by resolveKernelWasm — local-binaries/ first,
-    // then binaries/). `@binaries/...` is handled by the
-    // resolveBinariesAlias plugin so it can fall back local→fetched
-    // per import.
-    //
-    // The lookahead anchor lets `@kernel-wasm` match both the bare
-    // form and `?query` suffixes (e.g. `?url`); @rollup/plugin-alias's
-    // default object-form matcher only fires on exact match or
-    // `<key>/...`, which would reject the query.
-    alias: [
-      { find: /^@kernel-wasm(?=$|\?)/, replacement: resolveKernelWasm() },
-      { find: /^@rootfs-vfs(?=$|\?)/, replacement: resolveRootfsVfs() },
-    ],
-  },
   plugins: [
+    react(),
+    resolveKernelArtifactsAlias(),
     resolveBinariesAlias(),
     rewriteNavLinks(),
     injectGitRevision(),
@@ -327,6 +325,7 @@ export default defineConfig({
         "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
         benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
         doom: path.resolve(__dirname, "pages/doom/index.html"),
+        kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
         // The perl, python, ruby, erlang, texlive, and redis demos
         // were removed (along with their pages/ subdirectories) while
         // their slow builds are disabled. Re-add an entry — and

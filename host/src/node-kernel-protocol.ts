@@ -96,6 +96,34 @@ export interface ResolveExecResponseMessage {
   programBytes: ArrayBuffer | null;
 }
 
+/** Snapshot the kernel's process table. Mirrors the browser host's
+ * enum_procs request in examples/browser/lib/kernel-worker-protocol.ts.
+ * Response carries `ProcessSnapshot[]`. */
+export interface EnumProcsRequestMessage {
+  type: "enum_procs";
+  requestId: number;
+}
+
+/** Read `/proc/[pid]/maps` for a foreign process via the host. Response
+ * carries a string (Linux maps text) or `null` if the pid is gone. */
+export interface ReadProcMapsRequestMessage {
+  type: "read_proc_maps";
+  requestId: number;
+  pid: number;
+}
+
+/** Enable / disable the syscall trace ring. Mirrors the browser host. */
+export interface SetSyscallTraceMessage {
+  type: "set_syscall_trace";
+  enabled: boolean;
+}
+
+/** Drain pending syscall trace events. Response carries SyscallTraceEvent[]. */
+export interface DrainSyscallTraceMessage {
+  type: "drain_syscall_trace";
+  requestId: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -106,7 +134,11 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | GetForkCountRequestMessage
-  | ResolveExecResponseMessage;
+  | ResolveExecResponseMessage
+  | EnumProcsRequestMessage
+  | ReadProcMapsRequestMessage
+  | SetSyscallTraceMessage
+  | DrainSyscallTraceMessage;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -151,6 +183,18 @@ export interface ResolveExecRequestMessage {
   path: string;
 }
 
+/**
+ * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
+ * browser-side ProcEventMessage. Exit events come via the existing
+ * ExitMessage; we don't duplicate them here.
+ */
+export interface ProcEventMessage {
+  type: "proc_event";
+  kind: "spawn" | "exec";
+  pid: number;
+  ppid?: number;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | ResponseMessage
@@ -158,4 +202,5 @@ export type KernelToMainMessage =
   | StdoutMessage
   | StderrMessage
   | PtyOutputMessage
-  | ResolveExecRequestMessage;
+  | ResolveExecRequestMessage
+  | ProcEventMessage;
