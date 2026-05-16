@@ -1,0 +1,1398 @@
+// KernelHost — the contract between the Kandelo UI and the kernel/host runtime.
+//
+// Every Kandelo UI surface (Sidebar, LiveURLBar, MachineView, Inspector tabs,
+// Gallery, Share dialog, System Config, EmptyState) consumes this one
+// interface. Two implementations:
+//
+//   - MockKernelHost: drives the UI from static fixtures (lives in
+//     examples/browser, alongside the rest of the demo).
+//   - LiveKernelHost (this file): wraps the real host runtime in host/src/.
+//
+// The full schema for BootDescriptor is `docs/plans/2026-05-11-shareable-
+// computer-url-design.md`. The encode/decode/snapshot machinery lives under
+// host/src/kandelo-ui/{boot-descriptor,snapshot}.ts (yet to be built);
+// LiveKernelHost.snapshot will call into those.
+//
+// This file is the first piece of the kandelo-ui port — see the README under
+// design_handoff_kandelo_ui/ for the implementation order. Today the
+// LiveKernelHost stub only implements the four methods the UI chassis needs
+// to come online (status, dmesg subscription, PTY attach); everything else
+// throws so callers fail loudly until the matching host endpoint lands.
+
+// ── Kernel surface this file consumes ──────────────────────────────────────
+//
+// The stub LiveKernelHost wraps a "browser-kernel-shaped" object. We don't
+// import examples/browser/lib/browser-kernel here — host/ must not depend on
+// examples/. Instead we describe the minimum surface attachPty needs so any
+// concrete kernel (KernelLike today, a thinner host/-side wrapper later)
+// satisfies it.
+//
+// All methods match `BrowserKernel`'s existing signatures verbatim.
+
+/**
+ * Synchronous VFS subset LiveKernelHost reaches into for inspector + readDir.
+ * Matches MemoryFileSystem (host/src/vfs/memory-fs.ts).
+ */
+export interface FileSystemLike {
+  /** Throws on missing path. */
+  stat(path: string): { mode: number; size: number; mtimeMs: number; uid: number; gid: number };
+  open(path: string, flags: number, mode: number): number;
+  close(handle: number): number;
+  /** Returns bytes read, 0 on EOF. */
+  read(handle: number, buffer: Uint8Array, offset: number | null, length: number): number;
+  /** Read symlink target. Throws if path isn't a symlink. */
+  readlink(path: string): string;
+  /** Open a directory handle for use with readdir/closedir. Throws on missing. */
+  opendir(path: string): number;
+  /** Returns next entry or null at end-of-dir. */
+  readdir(handle: number): { name: string; type: number; ino: number } | null;
+  closedir(handle: number): void;
+}
+
+/**
+ * Snapshot record returned by `KernelLike.enumProcs`. Mirrors
+ * `host/src/kernel-worker.ts: ProcessSnapshot`. Duplicated as a local
+ * structural type so this file doesn't depend on host/'s wire types.
+ */
+export interface KernelProcessSnapshot {
+  pid: number;
+  ppid: number;
+  uid: number;
+  gid: number;
+  vsizeBytes: number;
+  memoryBytes?: number;
+  state: "R" | "Z" | "S" | "D" | "T" | "I";
+  comm: string;
+  cmdline: string;
+}
+
+/**
+ * Minimum FramebufferRegistry surface the canvas attacher needs. Match
+ * `host/src/framebuffer/registry.ts`; redefined as a structural type so
+ * kandelo-ui doesn't drag the concrete class into UI bundles.
+ */
+export interface FramebufferRegistryLike {
+  list(): Array<{ pid: number }>;
+  onChange(fn: (pid: number, ev: "bind" | "unbind") => void): () => void;
+}
+
+/**
+ * Raw syscall trace event surfaced by `KernelLike.subscribeSyscalls`.
+ * Mirrors host/src/kernel-worker.ts: SyscallTraceEvent — duplicated
+ * as a structural type so kandelo-ui doesn't pull host's wire types.
+ */
+export interface KernelSyscallEvent {
+  t: number;
+  pid: number;
+  nr: number;
+  args: [number, number, number, number, number, number];
+}
+
+export interface KernelLike {
+  /** Sequential pid counter exposed by BrowserKernel. */
+  readonly nextPid: number;
+  /** Synchronous VFS the kernel-worker sees. */
+  readonly fs: FileSystemLike;
+  /** /dev/fb0 binding registry. Used by attachFramebuffer. */
+  readonly framebuffers?: FramebufferRegistryLike;
+  /**
+   * Per-pid wasm Memory accessor. Needed for mmap-based framebuffer
+   * bindings; write-based bindings (fbDOOM) don't reach into this.
+   */
+  getProcessMemory?(pid: number): WebAssembly.Memory | undefined;
+  /**
+   * Append bytes to a process's stdin buffer. Used by the framebuffer
+   * input path so DOM key events on the canvas reach the fb-bound
+   * process (fbDOOM reads scancodes from stdin).
+   */
+  appendStdinData?(pid: number, data: Uint8Array): void;
+  /**
+   * Subscribe to the kernel-worker's live syscall trace. Each event
+   * carries the raw syscall number + args + firing pid. The underlying
+   * ring buffer is enabled lazily; nothing runs on the syscall hot path
+   * when nobody's watching.
+   */
+  subscribeSyscalls?(cb: (event: KernelSyscallEvent) => void): () => void;
+  spawn(
+    programBytes: ArrayBuffer,
+    argv: string[],
+    options?: { env?: string[]; cwd?: string; pty?: boolean; stdin?: Uint8Array },
+  ): Promise<number>;
+  onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
+  ptyWrite(pid: number, data: Uint8Array): void;
+  ptyResize(pid: number, rows: number, cols: number): void;
+  terminateProcess(pid: number, status?: number): Promise<void>;
+  destroy?(): Promise<void>;
+  /**
+   * Snapshot the kernel's process table. Returns an empty array if the
+   * kernel doesn't expose `kernel_enum_procs` yet (older ABI).
+   */
+  enumProcs?(): Promise<KernelProcessSnapshot[]>;
+  /**
+   * Read `/proc/[pid]/maps` for a foreign process. Returns null if the
+   * pid is gone or the export isn't available.
+   */
+  readProcMaps?(pid: number): Promise<string | null>;
+}
+
+// ── Status & lifecycle ─────────────────────────────────────────────────────
+
+export type MachineStatus =
+  | "idle"      // no descriptor applied yet
+  | "booting"   // applyBootDescriptor is in progress; dmesg streams
+  | "running"   // init reached steady state
+  | "halted"    // explicit shutdown
+  | "error";
+
+// ── Boot descriptor (mirrors docs/plans/2026-05-11-shareable-computer-url-design.md) ──
+
+export interface BootDescriptor {
+  version: 1;
+  id: string;                       // short handle, e.g. "lamp-php84"
+  title: string;
+  base: string;                     // "kandelo:shell@abi8"
+  runtime: RuntimeConfig;
+  packages: string[];               // ["python@sha256:..."]
+  mounts: DescriptorMount[];
+  boot: BootCommand;
+  caps?: Capabilities;
+}
+
+export interface RuntimeConfig {
+  arch: "wasm32" | "wasm64";
+  kernel: string;                   // "kernel@sha256:..."
+  memoryPages: number;              // process memory in 64 KiB pages
+  features: string[];               // ["shared-array-buffer","pty","tcp-bridge"]
+  time: "real" | "frozen" | "deterministic";
+}
+
+export type MountSource =
+  | "image"           | "package-layer" | "inline-overlay" | "remote-overlay"
+  | "scratch"         | "opfs"          | "lazy-http"      | "archive"
+  | "git"             | "cas"           | "encrypted"      | "device";
+
+export interface DescriptorMount {
+  path: string;
+  source: MountSource;
+  ref?: string;                     // content hash for image / package-layer / cas
+  name?: string;                    // workspace name for opfs
+  data?: string;                    // base64url(zstd(cbor(...))) for inline-overlay
+  readonly?: boolean;
+  ephemeral?: boolean;
+}
+
+export interface BootCommand {
+  argv: string[];
+  cwd: string;
+  env: Record<string, string>;
+  uid?: number;
+  gid?: number;
+}
+
+export interface Capabilities {
+  network?: boolean;
+  persistence?: boolean;
+  clipboard?: boolean;
+  camera?: boolean;
+  microphone?: boolean;
+  filesystem?: boolean;
+  signedSources?: string[];         // required signature roots
+}
+
+// ── Streaming primitives ───────────────────────────────────────────────────
+
+export type DmesgLevel = "info" | "warn" | "err" | "ok" | "debug";
+
+export interface DmesgLine {
+  t: number;                        // monotonic ms since boot
+  level: DmesgLevel;
+  facility: string;                 // "kernel", "systemd", "init", "audit"
+  msg: string;
+}
+
+export interface PtyHandle {
+  write(bytes: string | Uint8Array): void;
+  onData(cb: (bytes: Uint8Array) => void): () => void;
+  resize(cols: number, rows: number): void;
+  close(): void;
+}
+
+/**
+ * Handle returned by `attachFramebuffer`. The canvas is wired up to paint
+ * frames; this handle lets the embedder send keyboard input to whichever
+ * process is currently bound to `/dev/fb0` (fbDOOM, fbtest, etc.).
+ *
+ * Input is delivered as raw bytes to the bound process's stdin — the same
+ * channel fbDOOM reads scancodes from. Callers responsible for translating
+ * DOM key events into the wire format the receiver expects (typically
+ * Linux MEDIUMRAW scancodes; see `examples/browser/pages/doom/main.ts`).
+ */
+export interface FramebufferHandle {
+  /** Send raw bytes to the fb-bound process's stdin. No-op if nothing is bound. */
+  sendInput(bytes: Uint8Array): void;
+  /** Pid currently bound to /dev/fb0, or null if no binding is live. */
+  getBoundPid(): number | null;
+  /** Subscribe to bound-pid changes. Fires with the new pid or null on unbind. */
+  onBoundPidChange(cb: (pid: number | null) => void): () => void;
+  /** Detach the canvas and stop forwarding events. */
+  close(): void;
+}
+
+export type WebPreviewStatus = "starting" | "running" | "error";
+
+export interface WebPreviewState {
+  label: string;
+  url: string;
+  status: WebPreviewStatus;
+  message?: string;
+}
+
+// ── Process lifecycle events ──────────────────────────────────────────────
+//
+// Surfaces that render process state (Inspector → Procs, Memory map, top-
+// like views) should subscribe to these instead of polling. The kernel
+// already emits spawn/exec/exit internally; we just plumb them out so the
+// UI can refetch enumProcs() on demand without scheduling timers.
+
+export interface ProcessEvent {
+  /** What happened to the process. */
+  kind: "spawn" | "exec" | "exit";
+  pid: number;
+  /** Set when kind === "exit". Same value the kernel returned. */
+  exitStatus?: number;
+  /** Set when kind === "spawn". The parent that called spawn/fork/exec. */
+  ppid?: number;
+}
+
+// ── Inspector data ─────────────────────────────────────────────────────────
+
+export interface ProcessInfo {
+  pid: number;
+  ppid: number;
+  user: string;
+  cmdline: string;
+  state: "R" | "S" | "D" | "T" | "Z" | "I";
+  memory: string;                   // WebAssembly.Memory size when available
+}
+
+export type VfsKind = "d" | "f" | "l" | "b" | "c" | "p" | "s";
+
+export interface VfsDirent {
+  name: string;
+  kind: VfsKind;
+  mode: string;                     // "drwxr-xr-x"
+  owner: string;                    // user name when known, otherwise uid
+  group: string;                    // group name when known, otherwise gid
+  size: string;                     // human-readable
+  mtime?: string;
+  target?: string;                  // for symlinks
+}
+
+export interface MountInfo {
+  source: string;                   // "kandelo-vfs", "tmpfs"
+  target: string;                   // "/", "/proc"
+  fs: string;
+  opts: string;
+}
+
+export interface KernelStateKV {
+  k: string;
+  v: string;
+}
+
+export interface MemMapEntry {
+  range: string;                    // "00400000-005c2000"
+  perm: string;                     // "r-xp", "rw-p"
+  offset: string;
+  size: string;
+  path: string;                     // "/bin/bash", "[heap]", "[stack]"
+}
+
+export interface SyscallEvent {
+  t: string;                        // "+0.001012"
+  pid?: number;
+  call: string;                     // "openat", "mmap"
+  args: string;                     // formatted args string
+  ret: string;                      // "0", "-1 EINVAL"
+}
+
+export interface SyscallFilter {
+  pid?: number;
+  call?: string;
+  names?: string[];
+}
+
+// ── Sharing ────────────────────────────────────────────────────────────────
+
+export type ShareMode =
+  | "preset" | "inline" | "delta" | "manifest" | "private" | "local"
+  | "recipe" | "replay" | "live" | "auto";
+
+export interface Snapshot {
+  descriptor: BootDescriptor;
+  mode: Exclude<ShareMode, "auto">;
+  byteSize: number;
+  reason: string;                   // human-readable explanation
+}
+
+export interface SnapshotOptions {
+  preferMode?: ShareMode;
+  encryptionKey?: CryptoKey;
+}
+
+// ── Gallery ────────────────────────────────────────────────────────────────
+
+export type GalleryTab = "presets" | "recent" | "saved" | "shared" | "public";
+
+export interface GalleryItem {
+  id: string;
+  title: string;
+  summary: string;
+  base: string;
+  packages: string[];
+  bootCommand: string[];
+  accent: string;
+  glyph: string;
+  estimatedUrlBytes: number;
+  lastBootedAt?: string;
+  forks?: number;
+  author?: string;
+}
+
+export interface GalleryQuery {
+  tab: GalleryTab;
+  q?: string;
+}
+
+// ── The interface ──────────────────────────────────────────────────────────
+
+export interface KernelHost {
+  // status
+  getStatus(): MachineStatus;
+  subscribeStatus(cb: (s: MachineStatus) => void): () => void;
+
+  // descriptor lifecycle
+  getBootDescriptor(): BootDescriptor;
+  applyBootDescriptor(desc: BootDescriptor): Promise<void>;
+  halt(): Promise<void>;
+  reboot(): Promise<void>;
+
+  // dmesg ring
+  subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
+  dmesgHistory(): DmesgLine[];
+
+  // Process lifecycle — fires on spawn/exec/exit. Inspector tabs use this
+  // to refetch enumProcs / readMemMap instead of polling on a timer.
+  subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void;
+
+  // shell / pty
+  attachPty(path?: string, opts?: { cols: number; rows: number }): Promise<PtyHandle>;
+
+  // VFS / procfs
+  readFile(path: string): Promise<Uint8Array>;
+  readFileText(path: string): Promise<string>;
+  readDir(path: string): Promise<VfsDirent[]>;
+  stat(path: string): Promise<VfsDirent | null>;
+
+  // inspector
+  enumProcs(): Promise<ProcessInfo[]>;
+  readMemMap(pid: number): Promise<MemMapEntry[]>;
+  getMounts(): Promise<MountInfo[]>;
+  getKernelState(): Promise<KernelStateKV[]>;
+  subscribeSyscalls(cb: (e: SyscallEvent) => void, filter?: SyscallFilter): () => void;
+  syscallHistory(filter?: SyscallFilter): SyscallEvent[];
+
+  // framebuffer — mirrors /dev/fb0 into a 2D canvas and returns a handle
+  // that the embedder uses to forward keyboard / mouse input into the
+  // bound process's stdin.
+  attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle;
+
+  // web preview — service demos can expose an HTTP bridge endpoint.
+  getWebPreview(): WebPreviewState | null;
+  subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void;
+
+  // sharing
+  snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
+
+  // gallery / library
+  galleryQuery(q: GalleryQuery): Promise<GalleryItem[]>;
+  saveCurrentToGallery(title: string): Promise<GalleryItem>;
+}
+
+// ── A tiny helper for typed subscribe-set bookkeeping ──────────────────────
+
+class ListenerSet<T> {
+  private listeners = new Set<(arg: T) => void>();
+  add(cb: (arg: T) => void): () => void {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  }
+  emit(arg: T): void {
+    for (const cb of this.listeners) cb(arg);
+  }
+  size(): number {
+    return this.listeners.size;
+  }
+}
+
+// ── LiveKernelHost — wraps the real host runtime in host/src/ ──────────────
+//
+// Today this is a STUB: only the methods the UI chassis needs to come online
+// have working bodies. Everything else throws "not implemented" so callers
+// fail loudly until the matching host endpoint lands.
+//
+// What works today:
+//   - getStatus / subscribeStatus: tracks an internal MachineStatus, driven
+//     by setStatus() from the boot logic in the consuming page.
+//   - subscribeDmesg / dmesgHistory: in-memory ring buffer. The page is
+//     expected to call pushDmesg() with lines from whatever source it has
+//     until a real kernel-side dmesg ring lands (see kernel-host-contract.md
+//     "dmesg ring buffer" entry).
+//   - attachPty: spawns a PTY-backed shell on the wrapped KernelLike and
+//     returns a PtyHandle that proxies bytes/resize/close.
+//
+// What is stubbed (throws):
+//   - applyBootDescriptor / halt / reboot
+//   - readFile / readDir / stat
+//   - enumProcs / readMemMap / getMounts / getKernelState
+//   - subscribeSyscalls / syscallHistory
+//   - attachFramebuffer
+//   - snapshot
+//   - galleryQuery / saveCurrentToGallery
+//
+// As each host endpoint lands, replace the throwing body with a real wrapper.
+
+export interface LiveKernelHostOptions {
+  /**
+   * The browser-side kernel to wrap. Once provided, attachPty will spawn its
+   * shell on this kernel. May be set/replaced later via attachKernel() — the
+   * UI is expected to construct a LiveKernelHost early (so subscriptions can
+   * attach) and hand the kernel over once it has booted.
+   */
+  kernel?: KernelLike;
+  /**
+   * What to spawn when attachPty is called with no explicit program. Defaults
+   * to bash; pages that ship dash or another shell should override.
+   */
+  shell?: {
+    programBytes: ArrayBuffer;
+    argv: string[];
+    env?: string[];
+    cwd?: string;
+  };
+  /** Initial status. Defaults to "idle". */
+  status?: MachineStatus;
+  /** Initial boot descriptor surfaced to the UI. */
+  descriptor?: BootDescriptor;
+  /** Live-mode reboot hook supplied by the browser page. */
+  applyBootDescriptor?: (desc: BootDescriptor, host: LiveKernelHost) => Promise<void>;
+  /** Preset list for galleryQuery("presets"). */
+  galleryItems?: GalleryItem[];
+}
+
+const DEFAULT_DESCRIPTOR: BootDescriptor = {
+  version: 1,
+  id: "untitled",
+  title: "Untitled machine",
+  base: "kandelo:shell@abi8",
+  runtime: {
+    arch: "wasm32",
+    kernel: "kernel@sha256:unknown",
+    memoryPages: 4096,
+    features: ["shared-array-buffer", "pty"],
+    time: "real",
+  },
+  packages: [],
+  mounts: [],
+  boot: { argv: ["/bin/sh"], cwd: "/", env: {} },
+  caps: {},
+};
+
+const NOT_IMPLEMENTED = (m: string) =>
+  new Error(
+    `LiveKernelHost.${m} is not implemented yet. ` +
+    `Wire it to host/src/ when the matching kernel endpoint lands ` +
+    `(see design_handoff_kandelo_ui/kernel-host-contract.md "What needs to be NEW").`
+  );
+
+export class LiveKernelHost implements KernelHost {
+  private _status: MachineStatus;
+  private statusListeners = new ListenerSet<MachineStatus>();
+
+  private dmesgRing: DmesgLine[] = [];
+  private dmesgListeners = new ListenerSet<DmesgLine>();
+  private dmesgCapacity = 4096;
+  private processListeners = new ListenerSet<ProcessEvent>();
+  private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
+
+  private _descriptor: BootDescriptor;
+  private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
+  private galleryItems: GalleryItem[];
+  private webPreview: WebPreviewState | null = null;
+
+  private kernel?: KernelLike;
+  private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
+  /**
+   * Pid of the currently-attached PTY shell (set by attachPty). Used by
+   * attachFramebuffer to also route input through the PTY master so a
+   * framebuffer-bound process forked from the shell (e.g. `fbdoom` typed
+   * at bash) gets keystrokes — its fd 0 is the PTY slave, not a host-side
+   * stdin buffer.
+   */
+  private shellPid: number | null = null;
+
+  constructor(opts: LiveKernelHostOptions = {}) {
+    this._status = opts.status ?? "idle";
+    this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR;
+    this.kernel = opts.kernel;
+    this.shell = opts.shell;
+    this.applyBootDescriptorImpl = opts.applyBootDescriptor;
+    this.galleryItems = opts.galleryItems ?? [];
+  }
+
+  // ── owner-facing wiring helpers ──────────────────────────────────────────
+
+  /** Replace the wrapped KernelLike. Used after `boot` resolves. */
+  attachKernel(kernel: KernelLike): void {
+    this.kernel = kernel;
+  }
+
+  /** Configure the program attachPty spawns by default. */
+  setDefaultShell(shell: NonNullable<LiveKernelHostOptions["shell"]>): void {
+    this.shell = shell;
+  }
+
+  /** Update the status and fan out to subscribers. */
+  setStatus(s: MachineStatus): void {
+    if (s === this._status) return;
+    this._status = s;
+    this.statusListeners.emit(s);
+  }
+
+  /**
+   * Emit a process lifecycle event. The kernel host (BrowserKernel /
+   * NodeKernelHost / future surfaces) calls this when the kernel-worker
+   * reports a spawn, exec, or exit so subscribed UI panes can refresh
+   * their view of the process table.
+   */
+  emitProcessEvent(event: ProcessEvent): void {
+    this.processListeners.emit(event);
+  }
+
+  /** Push a dmesg line into the ring and fan out to subscribers. */
+  pushDmesg(line: DmesgLine): void {
+    this.dmesgRing.push(line);
+    if (this.dmesgRing.length > this.dmesgCapacity) {
+      this.dmesgRing.splice(0, this.dmesgRing.length - this.dmesgCapacity);
+    }
+    this.dmesgListeners.emit(line);
+  }
+
+  /** Replace the boot descriptor without performing an apply. */
+  setDescriptor(desc: BootDescriptor): void {
+    this._descriptor = desc;
+  }
+
+  clearDmesg(): void {
+    this.dmesgRing = [];
+  }
+
+  setWebPreview(state: WebPreviewState | null): void {
+    this.webPreview = state ? { ...state } : null;
+    this.webPreviewListeners.emit(this.getWebPreview());
+  }
+
+  // ── KernelHost: status ───────────────────────────────────────────────────
+
+  getStatus(): MachineStatus {
+    return this._status;
+  }
+
+  subscribeStatus(cb: (s: MachineStatus) => void): () => void {
+    return this.statusListeners.add(cb);
+  }
+
+  // ── KernelHost: descriptor lifecycle ─────────────────────────────────────
+
+  getBootDescriptor(): BootDescriptor {
+    return structuredClone(this._descriptor);
+  }
+
+  async applyBootDescriptor(desc: BootDescriptor): Promise<void> {
+    if (!this.applyBootDescriptorImpl) {
+      this.setDescriptor(desc);
+      return;
+    }
+    await this.applyBootDescriptorImpl(desc, this);
+  }
+
+  async halt(): Promise<void> {
+    this.setStatus("halted");
+    await this.kernel?.destroy?.();
+  }
+
+  async reboot(): Promise<void> {
+    await this.applyBootDescriptor(this.getBootDescriptor());
+  }
+
+  // ── KernelHost: dmesg ────────────────────────────────────────────────────
+
+  subscribeDmesg(cb: (line: DmesgLine) => void): () => void {
+    return this.dmesgListeners.add(cb);
+  }
+
+  dmesgHistory(): DmesgLine[] {
+    return this.dmesgRing.slice();
+  }
+
+  subscribeProcessEvents(cb: (event: ProcessEvent) => void): () => void {
+    return this.processListeners.add(cb);
+  }
+
+  // ── KernelHost: PTY ──────────────────────────────────────────────────────
+
+  async attachPty(
+    _path: string = "/dev/pts/0",
+    opts: { cols: number; rows: number } = { cols: 80, rows: 24 },
+  ): Promise<PtyHandle> {
+    if (!this.kernel) {
+      throw new Error(
+        "LiveKernelHost.attachPty: no kernel attached. " +
+        "Call attachKernel(browserKernel) once the kernel has booted, " +
+        "or pass { kernel } to the constructor."
+      );
+    }
+    if (!this.shell) {
+      throw new Error(
+        "LiveKernelHost.attachPty: no default shell configured. " +
+        "Call setDefaultShell({ programBytes, argv, env, cwd }) before attachPty()."
+      );
+    }
+    const kernel = this.kernel;
+    const shell = this.shell;
+
+    // Spawn the shell with PTY; PTY pid is `nextPid - 1` per the
+    // existing PtyTerminal pattern (KernelLike assigns pids sequentially
+    // and exposes `nextPid` via the typed-as-any hop below).
+    const exitPromise = kernel.spawn(shell.programBytes, shell.argv, {
+      pty: true,
+      env: shell.env,
+      cwd: shell.cwd,
+    });
+    void exitPromise;
+    const pid = kernel.nextPid - 1;
+    this.shellPid = pid;
+
+    const dataListeners = new ListenerSet<Uint8Array>();
+    kernel.onPtyOutput(pid, (data) => dataListeners.emit(data));
+    kernel.ptyResize(pid, opts.rows, opts.cols);
+
+    const encoder = new TextEncoder();
+    let closed = false;
+
+    return {
+      write: (bytes) => {
+        if (closed) return;
+        const buf = typeof bytes === "string" ? encoder.encode(bytes) : bytes;
+        kernel.ptyWrite(pid, buf);
+      },
+      onData: (cb) => dataListeners.add(cb),
+      resize: (cols, rows) => {
+        if (closed) return;
+        kernel.ptyResize(pid, rows, cols);
+      },
+      close: () => {
+        if (closed) return;
+        closed = true;
+        // Best-effort: tell the kernel to terminate the PTY group. The
+        // exit promise will resolve naturally; we don't await it here.
+        void kernel.terminateProcess(pid, -1).catch(() => {});
+      },
+    };
+  }
+
+  // ── KernelHost: VFS ──────────────────────────────────────────────────────
+
+  async readFile(path: string): Promise<Uint8Array> {
+    return readFileSync(this.requireFs(), path);
+  }
+
+  async readFileText(path: string): Promise<string> {
+    return new TextDecoder().decode(await this.readFile(path));
+  }
+
+  async readDir(path: string): Promise<VfsDirent[]> {
+    const fs = this.requireFs();
+    const handle = fs.opendir(path);
+    try {
+      const out: VfsDirent[] = [];
+      while (true) {
+        const entry = fs.readdir(handle);
+        if (!entry) break;
+        if (entry.name === "." || entry.name === "..") continue;
+        const childPath = path.endsWith("/")
+          ? path + entry.name
+          : path + "/" + entry.name;
+        let mode: number;
+        let size: number;
+        let uid: number;
+        let gid: number;
+        let target: string | undefined;
+        try {
+          const st = fs.stat(childPath);
+          mode = st.mode;
+          size = st.size;
+          uid = st.uid;
+          gid = st.gid;
+        } catch {
+          // Disappearing entries (race with another process) shouldn't blow
+          // up the whole listing.
+          continue;
+        }
+        const kind = direntKind(entry.type, mode);
+        if (kind === "l") {
+          try { target = fs.readlink(childPath); } catch { /* ignore */ }
+        }
+        out.push({
+          name: entry.name,
+          kind,
+          mode: formatMode(mode, kind),
+          owner: numericIdToLabel(uid),
+          group: numericIdToLabel(gid),
+          size: kind === "d" ? "—" : humanSize(size),
+          target,
+        });
+      }
+      return out;
+    } finally {
+      fs.closedir(handle);
+    }
+  }
+
+  async stat(path: string): Promise<VfsDirent | null> {
+    const fs = this.requireFs();
+    try {
+      const st = fs.stat(path);
+      const kind = direntKind(0, st.mode);
+      return {
+        name: path.split("/").pop() || "/",
+        kind,
+        mode: formatMode(st.mode, kind),
+        owner: numericIdToLabel(st.uid),
+        group: numericIdToLabel(st.gid),
+        size: kind === "d" ? "—" : humanSize(st.size),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private requireFs(): FileSystemLike {
+    if (!this.kernel) {
+      throw new Error(
+        "LiveKernelHost: no kernel attached. " +
+        "Call attachKernel() before reading the VFS.",
+      );
+    }
+    return this.kernel.fs;
+  }
+
+  // ── KernelHost: inspector ────────────────────────────────────────────────
+
+  async enumProcs(): Promise<ProcessInfo[]> {
+    // Prefer the direct kernel snapshot (kernel_enum_procs). Falls back to
+    // walking /proc only when an older kernel is wrapped — the fallback
+    // sees no procfs entries unless the static rootfs has them, so it's
+    // mostly a no-op. The fast path lands when both this kandelo-ui
+    // version and the kernel ship together (ABI ≥ 9).
+    if (this.kernel?.enumProcs) {
+      const snaps = await this.kernel.enumProcs();
+      return snaps.map(toProcessInfo);
+    }
+    const fs = this.requireFs();
+    const entries = await this.readDir("/proc").catch(() => [] as VfsDirent[]);
+    const out: ProcessInfo[] = [];
+    for (const e of entries) {
+      const pid = Number(e.name);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      try {
+        out.push(parseProcEntry(fs, pid));
+      } catch {
+        // Process may have exited between readdir and read.
+      }
+    }
+    out.sort((a, b) => a.pid - b.pid);
+    return out;
+  }
+
+  async readMemMap(pid: number): Promise<MemMapEntry[]> {
+    // Direct kernel call when available; falls back to /proc/[pid]/maps
+    // read on older kernels.
+    if (this.kernel?.readProcMaps) {
+      const text = await this.kernel.readProcMaps(pid);
+      if (text === null) return [];
+      return parseMaps(text);
+    }
+    const text = await this.readFileText(`/proc/${pid}/maps`).catch(() => "");
+    return parseMaps(text);
+  }
+
+  async getMounts(): Promise<MountInfo[]> {
+    // Mounts are configured at boot time from the BootDescriptor; the
+    // kernel doesn't grow new mounts dynamically. Source-of-truth is
+    // descriptor.mounts. If a future kernel adds runtime mount/umount
+    // syscalls and exposes /proc/mounts, the catch falls through to
+    // the kernel view.
+    const fromDesc = descriptorMountsToInfo(this._descriptor.mounts);
+    if (fromDesc.length > 0) return fromDesc;
+    const text = await this.readFileText("/proc/mounts").catch(() => "");
+    return parseMounts(text);
+  }
+
+  async getKernelState(): Promise<KernelStateKV[]> {
+    // sysctl-style flat view, filled out as procfs paths become available.
+    const probes: Array<[key: string, path: string]> = [
+      ["kernel.hostname", "/proc/sys/kernel/hostname"],
+      ["kernel.version", "/proc/version"],
+      ["kernel.osrelease", "/proc/sys/kernel/osrelease"],
+      ["kernel.pid_max", "/proc/sys/kernel/pid_max"],
+      ["kernel.threads_max", "/proc/sys/kernel/threads-max"],
+      ["fs.file-max", "/proc/sys/fs/file-max"],
+    ];
+    const out: KernelStateKV[] = [];
+    for (const [k, p] of probes) {
+      try {
+        const v = (await this.readFileText(p)).trim();
+        if (v) out.push({ k, v });
+      } catch {
+        // Path doesn't exist yet — skip silently. Once the kernel grows the
+        // /proc/sys tree, more rows show up automatically.
+      }
+    }
+    // Synthetic kandelo.* keys for image/url metadata. The image hash and
+    // url size are computed from the current descriptor; they're not
+    // sysctls so we synthesize them on every call.
+    out.push({ k: "kandelo.image_hash", v: this._descriptor.runtime.kernel });
+    return out;
+  }
+
+  subscribeSyscalls(cb: (e: SyscallEvent) => void, filter?: SyscallFilter): () => void {
+    if (!this.kernel?.subscribeSyscalls) {
+      throw new Error(
+        "LiveKernelHost.subscribeSyscalls: kernel exposes no syscall trace. " +
+        "Wrap a BrowserKernel/NodeKernelHost ≥ ABI 9 to enable.",
+      );
+    }
+    const t0 = performance.now();
+    const traceOff = this.kernel.subscribeSyscalls((raw) => {
+      // Filter on the raw event before formatting — most of the cost is
+      // in syscallNumberName() and arg formatting, which we want to skip
+      // when the subscriber's filter rejects the event.
+      if (filter?.pid !== undefined && raw.pid !== filter.pid) return;
+      const name = syscallNumberName(raw.nr);
+      if (filter?.call !== undefined && filter.call !== name) return;
+      if (filter?.names && !filter.names.includes(name)) return;
+      const event: SyscallEvent = {
+        t: `+${((raw.t - t0) / 1000).toFixed(6)}`,
+        pid: raw.pid,
+        call: name,
+        args: raw.args.filter((a) => a !== 0).join(", ") || "—",
+        // Return value isn't available at trace-emit time (we only see
+        // the entry, not the completion). v0 leaves this blank; future
+        // work can pair entry/return events.
+        ret: "",
+      };
+      this.syscallHistoryRing.push(event);
+      if (this.syscallHistoryRing.length > 1024) this.syscallHistoryRing.shift();
+      cb(event);
+    });
+    return traceOff;
+  }
+
+  /**
+   * Ring of recent syscall events that subscribers can replay against
+   * when they first attach. Today this is a soft history (filled by
+   * `subscribeSyscalls` callbacks); a v1 syscallHistory()-from-the-
+   * kernel would dump the active trace ring without requiring a
+   * subscription.
+   */
+  private syscallHistoryRing: SyscallEvent[] = [];
+
+  syscallHistory(filter?: SyscallFilter): SyscallEvent[] {
+    let history = this.syscallHistoryRing;
+    if (filter?.pid !== undefined) history = history.filter((e) => e.pid === filter.pid);
+    if (filter?.call !== undefined) history = history.filter((e) => e.call === filter.call);
+    if (filter?.names) {
+      const allowed = new Set(filter.names);
+      history = history.filter((e) => allowed.has(e.call));
+    }
+    return history.slice();
+  }
+
+  /**
+   * Walk the parent chain of `pid` and return true if it descends from
+   * the active shell (i.e., shares the shell's PTY for stdin). Used by
+   * attachFramebuffer to pick the right stdin-routing path.
+   *
+   * Returns false if there's no active shell, or the bound pid is itself
+   * the shell, or enumProcs can't reach the kernel.
+   */
+  private async checkPtyRouting(pid: number): Promise<boolean> {
+    if (this.shellPid === null) return false;
+    if (pid === this.shellPid) return false;
+    try {
+      const procs = await this.enumProcs();
+      const byPid = new Map(procs.map((p) => [p.pid, p.ppid]));
+      // Walk up the parent chain; bounded by the table size so a
+      // cycle (shouldn't happen but defensive) can't loop forever.
+      let cur: number | undefined = byPid.get(pid);
+      const seen = new Set<number>();
+      while (cur !== undefined && cur !== 0 && !seen.has(cur)) {
+        if (cur === this.shellPid) return true;
+        seen.add(cur);
+        cur = byPid.get(cur);
+      }
+    } catch {
+      // Kernel introspection unavailable; default to the non-PTY path.
+    }
+    return false;
+  }
+
+  // ── KernelHost: framebuffer ──────────────────────────────────────────────
+
+  attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle {
+    if (!this.kernel?.framebuffers || !this.kernel.getProcessMemory) {
+      throw new Error(
+        "LiveKernelHost.attachFramebuffer: kernel exposes no framebuffer " +
+        "registry. Wire BrowserKernel's `framebuffers` + `getProcessMemory` " +
+        "through KernelLike before calling.",
+      );
+    }
+    const registry = this.kernel.framebuffers;
+    const kernel = this.kernel;
+    // Narrow the optional-on-interface getProcessMemory down to a concrete
+    // function for the renderer (whose contract requires it to be defined).
+    const getProcessMemoryImpl = kernel.getProcessMemory!.bind(kernel);
+    const getMemory = (pid: number): WebAssembly.Memory | undefined =>
+      getProcessMemoryImpl(pid);
+
+    let stop: (() => void) | null = null;
+    let attachedPid: number | null = null;
+    /**
+     * True when the bound fb process inherits stdin from the shell's PTY
+     * (forked from bash). In that case sendInput routes bytes through
+     * `ptyWrite(shellPid)` so they reach the foreground process. False
+     * for standalone host-spawned processes (e.g. fbdoom #1 from
+     * createLiveHost's auto-spawn) which read from their own stdin
+     * buffer; we route to `appendStdinData(pid)` and skip the PTY to
+     * avoid leaking scancode bytes into the shell after exit.
+     */
+    let attachedUsesPty = false;
+    const boundPidListeners = new ListenerSet<number | null>();
+
+    const setBoundPid = (pid: number | null) => {
+      if (pid === attachedPid) return;
+      attachedPid = pid;
+      if (pid === null) attachedUsesPty = false;
+      boundPidListeners.emit(pid);
+    };
+
+    const tryAttach = (pid: number) => {
+      if (attachedPid !== null) return; // already attached
+      setBoundPid(pid);
+      // Decide which stdin path to use: if this pid descends from the
+      // shell's PTY, route input through the PTY master; otherwise feed
+      // the process's own host-side stdin buffer. We query enumProcs
+      // and check ppid — if it's the shell, use PTY.
+      void this.checkPtyRouting(pid).then((usesPty) => {
+        if (attachedPid === pid) attachedUsesPty = usesPty;
+      });
+      // Lazy-import the renderer so it isn't pulled into kandelo bundles
+      // that don't render framebuffers.
+      void import("../framebuffer/canvas-renderer.js").then(({ attachCanvas }) => {
+        if (attachedPid !== pid) return; // raced with unbind
+        stop = attachCanvas(canvas, registry as unknown as Parameters<typeof attachCanvas>[1], pid, {
+          getProcessMemory: getMemory,
+        });
+      });
+    };
+
+    // Attach to any pid already bound when the pane mounts.
+    const existing = registry.list()[0];
+    if (existing) tryAttach(existing.pid);
+
+    const clearCanvas = () => {
+      // Drop the last painted frame so the "waiting for /dev/fb0"
+      // placeholder can render through. Renderer is stopped before this.
+      const ctx = canvas.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    };
+
+    const offChange = registry.onChange((pid, ev) => {
+      if (ev === "bind") {
+        tryAttach(pid);
+      } else if (ev === "unbind" && pid === attachedPid) {
+        stop?.();
+        stop = null;
+        clearCanvas();
+        setBoundPid(null);
+      }
+    });
+
+    return {
+      sendInput: (bytes) => {
+        if (attachedPid === null) return;
+        // Route input to the source the bound process actually reads from.
+        // Sending to both would leak unread bytes into bash's PTY buffer
+        // when a standalone fb process exits, polluting the next bash
+        // command line.
+        if (attachedUsesPty && this.shellPid !== null) {
+          kernel.ptyWrite(this.shellPid, bytes);
+        } else if (kernel.appendStdinData) {
+          kernel.appendStdinData(attachedPid, bytes);
+        }
+      },
+      getBoundPid: () => attachedPid,
+      onBoundPidChange: (cb) => boundPidListeners.add(cb),
+      close: () => {
+        offChange();
+        stop?.();
+        stop = null;
+        setBoundPid(null);
+      },
+    };
+  }
+
+  getWebPreview(): WebPreviewState | null {
+    return this.webPreview ? { ...this.webPreview } : null;
+  }
+
+  subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void {
+    return this.webPreviewListeners.add(cb);
+  }
+
+  // ── KernelHost: sharing ──────────────────────────────────────────────────
+
+  async snapshot(opts: SnapshotOptions = {}): Promise<Snapshot> {
+    // Lazy import so the snapshot module isn't loaded for the (rare) caller
+    // that only wants status/dmesg/pty.
+    const { takeSnapshot } = await import("./snapshot");
+    return takeSnapshot(this.getBootDescriptor(), opts);
+  }
+
+  // ── KernelHost: gallery ──────────────────────────────────────────────────
+
+  async galleryQuery(q: GalleryQuery): Promise<GalleryItem[]> {
+    if (q.tab !== "presets") return [];
+    const items = this.galleryItems.slice();
+    const needle = q.q?.toLowerCase().trim();
+    if (!needle) return items;
+    return items.filter((i) =>
+      i.title.toLowerCase().includes(needle) ||
+      i.summary.toLowerCase().includes(needle),
+    );
+  }
+
+  async saveCurrentToGallery(_title: string): Promise<GalleryItem> {
+    throw NOT_IMPLEMENTED("saveCurrentToGallery");
+  }
+}
+
+// ── VFS read helpers ───────────────────────────────────────────────────────
+
+// posix open flags — copied locally to avoid a dependency on the host's
+// channel.ts constants. O_RDONLY = 0.
+const O_RDONLY = 0;
+
+function readFileSync(fs: FileSystemLike, path: string): Uint8Array {
+  const st = fs.stat(path);
+  const chunks: Uint8Array[] = [];
+  const handle = fs.open(path, O_RDONLY, 0);
+  try {
+    const total = st.size;
+    // For files of unknown / streaming size we read in chunks; procfs files
+    // sometimes report size 0 but have content.
+    if (total > 0) {
+      const buf = new Uint8Array(total);
+      let off = 0;
+      while (off < total) {
+        const n = fs.read(handle, buf.subarray(off), null, total - off);
+        if (n <= 0) break;
+        off += n;
+      }
+      return buf.subarray(0, off);
+    }
+    const tmp = new Uint8Array(8192);
+    let totalRead = 0;
+    while (true) {
+      const n = fs.read(handle, tmp, null, tmp.byteLength);
+      if (n <= 0) break;
+      chunks.push(tmp.slice(0, n));
+      totalRead += n;
+    }
+    const out = new Uint8Array(totalRead);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+    return out;
+  } finally {
+    try { fs.close(handle); } catch { /* ignore */ }
+  }
+}
+
+// d_type values from MemoryFileSystem.readdir: DT_REG=8, DT_DIR=4, DT_LNK=10.
+function direntKind(dtype: number, mode: number): "d" | "f" | "l" | "b" | "c" | "p" | "s" {
+  if (dtype === 4 || (mode & 0xf000) === 0x4000) return "d";
+  if (dtype === 10 || (mode & 0xf000) === 0xa000) return "l";
+  if ((mode & 0xf000) === 0x6000) return "b";
+  if ((mode & 0xf000) === 0x2000) return "c";
+  if ((mode & 0xf000) === 0x1000) return "p";
+  if ((mode & 0xf000) === 0xc000) return "s";
+  return "f";
+}
+
+function formatMode(mode: number, kind: ReturnType<typeof direntKind>): string {
+  const typeChar = (
+    kind === "d" ? "d"
+    : kind === "l" ? "l"
+    : kind === "b" ? "b"
+    : kind === "c" ? "c"
+    : kind === "p" ? "p"
+    : kind === "s" ? "s"
+    : "-"
+  );
+  const perm = (bits: number) =>
+    (bits & 4 ? "r" : "-") +
+    (bits & 2 ? "w" : "-") +
+    (bits & 1 ? "x" : "-");
+  return (
+    typeChar +
+    perm((mode >> 6) & 7) +
+    perm((mode >> 3) & 7) +
+    perm(mode & 7)
+  );
+}
+
+function humanSize(n: number): string {
+  if (n < 1024) return String(n);
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}K`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}M`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(1)}G`;
+}
+
+/**
+ * Resolve a raw syscall number to a printable name. Falls through to
+ * `syscall_<nr>` for any number not in the table — the table is hand-
+ * maintained against `crates/shared/src/lib.rs:Syscall`, so a brand-new
+ * syscall would show up as `syscall_NNN` until the name is added.
+ */
+function syscallNumberName(nr: number): string {
+  return SYSCALL_NAMES_LOCAL[nr] ?? `syscall_${nr}`;
+}
+
+// Hardcoded shim of the most common syscalls. The authoritative table
+// lives in host/src/kernel-worker.ts:SYSCALL_NAMES. We duplicate the
+// common subset here to keep kandelo-ui from importing the heavyweight
+// kernel-worker module (which transitively pulls in Node-only imports).
+const SYSCALL_NAMES_LOCAL: Record<number, string> = {
+  1: "open", 2: "close", 3: "read", 4: "write", 5: "lseek", 6: "fstat",
+  7: "dup", 8: "dup2", 9: "pipe", 10: "fcntl", 11: "stat", 12: "lstat",
+  13: "mkdir", 14: "rmdir", 15: "unlink", 16: "rename", 17: "link",
+  18: "symlink", 19: "readlink", 20: "chmod", 21: "chown", 22: "access",
+  23: "getcwd", 24: "chdir", 25: "opendir", 26: "readdir", 27: "closedir",
+  28: "getpid", 29: "getppid", 30: "getuid", 31: "geteuid", 32: "getgid",
+  33: "getegid", 34: "exit", 35: "kill", 36: "sigaction", 37: "sigprocmask",
+  38: "raise", 39: "alarm", 40: "clock_gettime", 41: "nanosleep",
+  42: "isatty", 43: "getenv", 44: "setenv", 45: "unsetenv",
+  46: "mmap", 47: "munmap", 48: "brk", 49: "mprotect",
+  50: "socket", 51: "bind", 52: "listen", 53: "accept", 54: "connect",
+  55: "send", 56: "recv", 57: "shutdown", 58: "getsockopt", 59: "setsockopt",
+  60: "poll", 61: "socketpair", 62: "sendto", 63: "recvfrom",
+  64: "pread", 65: "pwrite", 66: "time", 67: "gettimeofday", 68: "usleep",
+  69: "openat", 70: "tcgetattr", 71: "tcsetattr", 72: "ioctl",
+  73: "signal", 74: "umask", 75: "uname", 76: "sysconf",
+  77: "dup3", 78: "pipe2", 79: "ftruncate", 80: "fsync", 81: "writev",
+  82: "readv", 83: "getrlimit", 84: "setrlimit", 85: "truncate",
+  86: "fdatasync", 87: "fchmod", 88: "fchown", 89: "getpgrp",
+  90: "setpgid", 91: "getsid", 92: "setsid", 93: "fstatat",
+  94: "unlinkat", 95: "mkdirat", 96: "renameat", 97: "faccessat",
+  98: "fchmodat", 99: "fchownat", 100: "linkat", 101: "symlinkat",
+  102: "readlinkat", 103: "select", 104: "setuid", 105: "setgid",
+  106: "seteuid", 107: "setegid", 108: "getrusage", 109: "realpath",
+  110: "sigsuspend", 111: "pause", 112: "pathconf", 113: "fpathconf",
+  114: "getsockname", 115: "getpeername", 116: "rewinddir", 117: "telldir",
+  118: "seekdir", 122: "getdents64", 123: "clock_getres", 124: "clock_nanosleep",
+  125: "utimensat", 126: "mremap", 127: "fchdir", 128: "madvise",
+  129: "statfs", 130: "fstatfs", 131: "setresuid", 132: "getresuid",
+  133: "setresgid", 134: "getresgid", 135: "getgroups", 136: "setgroups",
+  137: "sendmsg", 138: "recvmsg", 139: "wait4", 140: "getaddrinfo",
+};
+
+// ── KernelProcessSnapshot → ProcessInfo ───────────────────────────────────
+
+function toProcessInfo(s: KernelProcessSnapshot): ProcessInfo {
+  return {
+    pid: s.pid,
+    ppid: s.ppid,
+    user: s.uid === 0 ? "root" : String(s.uid),
+    cmdline: s.cmdline,
+    state: s.state,
+    memory: humanSize(s.memoryBytes ?? s.vsizeBytes),
+  };
+}
+
+// ── /proc parsers ──────────────────────────────────────────────────────────
+
+function parseProcEntry(fs: FileSystemLike, pid: number): ProcessInfo {
+  // Linux /proc/[pid]/stat format: pid (comm) state ppid ... — the comm
+  // field is parenthesized and may contain spaces. We scan from the last
+  // ')' to skip the executable name field, then split the rest.
+  const statText = decodeBytes(readFileSync(fs, `/proc/${pid}/stat`));
+  const closeParen = statText.lastIndexOf(")");
+  const rest = closeParen === -1 ? statText : statText.slice(closeParen + 2);
+  const fields = rest.trim().split(/\s+/);
+  const state = (fields[0] ?? "S") as ProcessInfo["state"];
+
+  const status = decodeBytes(readFileSync(fs, `/proc/${pid}/status`)).split("\n");
+  const statusMap: Record<string, string> = {};
+  for (const line of status) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    statusMap[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  }
+  const user = statusMap.Uid?.split(/\s+/)[0] ?? "0";
+  const memory = parseStatusBytes(statusMap.VmSize);
+
+  let cmdline = "";
+  try {
+    const raw = readFileSync(fs, `/proc/${pid}/cmdline`);
+    cmdline = decodeBytes(raw).replace(/\0+$/, "").replace(/\0/g, " ");
+  } catch { /* keep blank */ }
+  if (!cmdline) cmdline = statusMap.Name ? `[${statusMap.Name}]` : "[unknown]";
+
+  return {
+    pid,
+    ppid: Number(statusMap.PPid ?? 0) || 0,
+    user: numericUidToLabel(user),
+    cmdline,
+    state,
+    memory,
+  };
+}
+
+function parseStatusBytes(raw: string | undefined): string {
+  if (!raw) return "0";
+  const m = /(\d+)\s*kB/.exec(raw);
+  if (!m) return raw;
+  const kb = Number(m[1]);
+  if (kb < 1024) return `${kb}K`;
+  if (kb < 1024 * 1024) return `${(kb / 1024).toFixed(1)}M`;
+  return `${(kb / 1024 / 1024).toFixed(1)}G`;
+}
+
+function numericUidToLabel(uid: string): string {
+  if (uid === "0") return "root";
+  return uid;
+}
+
+function numericIdToLabel(id: number): string {
+  return id === 0 ? "root" : String(id);
+}
+
+function decodeBytes(b: Uint8Array): string {
+  return new TextDecoder("utf-8", { fatal: false }).decode(b);
+}
+
+function parseMaps(text: string): MemMapEntry[] {
+  // Each line: "00400000-005c2000 r-xp 00000000 fe:00 14222 /bin/bash"
+  const out: MemMapEntry[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 5) continue;
+    const [range, perm, offset] = parts;
+    const path = parts.slice(5).join(" ") || "";
+    const sizeBytes = parseRangeSize(range);
+    out.push({
+      range,
+      perm,
+      offset,
+      size: humanSize(sizeBytes),
+      path,
+    });
+  }
+  return out;
+}
+
+function parseRangeSize(range: string): number {
+  const m = /^([0-9a-f]+)-([0-9a-f]+)$/i.exec(range);
+  if (!m) return 0;
+  return Math.max(0, parseInt(m[2], 16) - parseInt(m[1], 16));
+}
+
+/**
+ * Render the boot descriptor's mount table as the inspector view.
+ * Source-of-truth for mounts is the descriptor — the kernel applies
+ * them at boot and there's no live mount/umount syscall path yet.
+ */
+function descriptorMountsToInfo(mounts: DescriptorMount[]): MountInfo[] {
+  return mounts.map((m) => {
+    // source string: prefer the human-readable kind plus any ref/data/name.
+    const ref = m.ref ?? m.data ?? m.name;
+    const source = ref ? `${m.source}:${shortenRef(ref)}` : m.source;
+    const optsParts: string[] = [];
+    if (m.readonly) optsParts.push("ro");
+    else optsParts.push("rw");
+    if (m.ephemeral) optsParts.push("ephemeral");
+    if (m.source === "scratch") optsParts.push("tmpfs");
+    if (m.source === "image") optsParts.push("relatime");
+    return {
+      source,
+      target: m.path,
+      fs: fsForMountSource(m.source),
+      opts: optsParts.join(","),
+    };
+  });
+}
+
+function fsForMountSource(s: DescriptorMount["source"]): string {
+  switch (s) {
+    case "image":           return "kandelo-vfs";
+    case "package-layer":   return "overlay";
+    case "inline-overlay":  return "overlay";
+    case "remote-overlay":  return "overlay";
+    case "scratch":         return "tmpfs";
+    case "opfs":            return "opfs";
+    case "lazy-http":       return "lazyfs";
+    case "archive":         return "archivefs";
+    case "git":             return "gitfs";
+    case "cas":             return "casfs";
+    case "encrypted":       return "cryptfs";
+    case "device":          return "devfs";
+  }
+}
+
+function shortenRef(ref: string): string {
+  // "rootfs@sha256:9f2a3b81…" is long; trim hashes to short-prefix display.
+  const at = ref.indexOf("@");
+  if (at < 0) return ref;
+  const name = ref.slice(0, at);
+  const hash = ref.slice(at + 1).replace(/^sha256:/, "");
+  return `${name}@${hash.slice(0, 8)}`;
+}
+
+function parseMounts(text: string): MountInfo[] {
+  const out: MountInfo[] = [];
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    // /proc/mounts format: source target fs opts dump pass
+    const parts = line.split(/\s+/);
+    if (parts.length < 4) continue;
+    out.push({
+      source: parts[0],
+      target: parts[1],
+      fs: parts[2],
+      opts: parts[3],
+    });
+  }
+  return out;
+}
