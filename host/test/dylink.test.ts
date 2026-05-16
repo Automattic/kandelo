@@ -302,7 +302,7 @@ describe.skipIf(!hasCompiler())("DynamicLinker", () => {
   });
 
   it("uses the supplied allocator for side-module memory", () => {
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100 });
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
     const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
     const stackPointer = new WebAssembly.Global(
       { value: "i32", mutable: true },

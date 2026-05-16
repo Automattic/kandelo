@@ -35,9 +35,8 @@
 /home/user       d  0755  1000  1000
 
 # ── /etc content (source: rootfs/etc/*) ────────────────────────────
-# passwd/group/hosts are byte-identical to the kernel's current
-# synthetic_file_content() output. PR 4/5 cuts over and removes that
-# Rust function; this file becomes the source of truth.
+# passwd/group/hosts live in rootfs.vfs, which is the source of truth
+# for NSS-style files mounted at /.
 /etc/passwd        f  0644  0  0
 /etc/group         f  0644  0  0
 /etc/hosts         f  0644  0  0
