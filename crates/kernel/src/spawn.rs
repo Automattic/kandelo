@@ -26,10 +26,10 @@ use wasm_posix_shared::Errno;
 /// `posix_spawn.c` passes `a->__flags` into the SYS_SPAWN blob unmodified,
 /// so these values must align byte-for-byte with the libc constants.
 pub mod attr_flags {
-    pub const SETPGROUP:  u32 = 0x02;
-    pub const SETSIGDEF:  u32 = 0x04;
+    pub const SETPGROUP: u32 = 0x02;
+    pub const SETSIGDEF: u32 = 0x04;
     pub const SETSIGMASK: u32 = 0x08;
-    pub const SETSID:     u32 = 0x80;
+    pub const SETSID: u32 = 0x80;
 }
 
 /// Attributes carried by `posix_spawnattr_t`, parsed out of the SYS_SPAWN
@@ -54,7 +54,12 @@ pub struct SpawnAttrs {
 
 impl SpawnAttrs {
     pub const fn empty() -> Self {
-        Self { flags: 0, pgrp: 0, sigdef: 0, sigmask: 0 }
+        Self {
+            flags: 0,
+            pgrp: 0,
+            sigdef: 0,
+            sigmask: 0,
+        }
     }
 }
 
@@ -65,11 +70,16 @@ impl SpawnAttrs {
 pub enum FileAction {
     /// FDOP_OPEN: open `path` with `oflag`/`mode`, then arrange for the
     /// resulting fd to land at `fd` (closing any prior occupant).
-    Open  { fd: i32, path: Vec<u8>, oflag: i32, mode: u32 },
+    Open {
+        fd: i32,
+        path: Vec<u8>,
+        oflag: i32,
+        mode: u32,
+    },
     /// FDOP_CLOSE: `close(fd)`. Errors are ignored (POSIX behavior).
     Close { fd: i32 },
     /// FDOP_DUP2: `dup2(srcfd, fd)`. If `srcfd == fd`, clear FD_CLOEXEC on `fd`.
-    Dup2  { srcfd: i32, fd: i32 },
+    Dup2 { srcfd: i32, fd: i32 },
     /// FDOP_CHDIR: `chdir(path)` in the child only.
     Chdir { path: Vec<u8> },
     /// FDOP_FCHDIR: `fchdir(fd)` in the child only.
@@ -97,10 +107,10 @@ pub enum FileAction {
 
 /// File-action `op` codes shared with `glue/posix_spawn.c`.
 pub mod fdop {
-    pub const OPEN:   u32 = 0;
-    pub const CLOSE:  u32 = 1;
-    pub const DUP2:   u32 = 2;
-    pub const CHDIR:  u32 = 3;
+    pub const OPEN: u32 = 0;
+    pub const CLOSE: u32 = 1;
+    pub const DUP2: u32 = 2;
+    pub const CHDIR: u32 = 3;
     pub const FCHDIR: u32 = 4;
 }
 
@@ -141,10 +151,15 @@ fn read_u64(bytes: &[u8], off: usize) -> Result<u64, Errno> {
 fn read_string(strings: &[u8], off: u32, len: u32) -> Result<Vec<u8>, Errno> {
     let off = off as usize;
     let len = len as usize;
-    let raw = strings.get(off..off.checked_add(len).ok_or(Errno::EINVAL)?)
+    let raw = strings
+        .get(off..off.checked_add(len).ok_or(Errno::EINVAL)?)
         .ok_or(Errno::EINVAL)?;
     // Permit either a trailing NUL or no NUL.
-    let trimmed = if raw.last() == Some(&0u8) { &raw[..raw.len() - 1] } else { raw };
+    let trimmed = if raw.last() == Some(&0u8) {
+        &raw[..raw.len() - 1]
+    } else {
+        raw
+    };
     Ok(trimmed.to_vec())
 }
 
@@ -154,14 +169,14 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
     if bytes.len() < HEADER_LEN {
         return Err(Errno::EINVAL);
     }
-    let argc      = read_u32(bytes, 0)? as usize;
-    let envc      = read_u32(bytes, 4)? as usize;
+    let argc = read_u32(bytes, 0)? as usize;
+    let envc = read_u32(bytes, 4)? as usize;
     let n_actions = read_u32(bytes, 8)? as usize;
     let attr_flags = read_u32(bytes, 12)?;
-    let pgrp      = read_i32(bytes, 16)?;
+    let pgrp = read_i32(bytes, 16)?;
     // bytes 20..24 = _pad
-    let sigdef    = read_u64(bytes, 24)?;
-    let sigmask   = read_u64(bytes, 32)?;
+    let sigdef = read_u64(bytes, 24)?;
+    let sigmask = read_u64(bytes, 32)?;
 
     // Cap counts to avoid pathological allocations on malformed input.
     // Real callers would never approach these limits.
@@ -195,7 +210,9 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
     cursor = envp_offsets_end;
 
     // Action records.
-    let actions_size = n_actions.checked_mul(ACTION_RECORD_LEN).ok_or(Errno::EINVAL)?;
+    let actions_size = n_actions
+        .checked_mul(ACTION_RECORD_LEN)
+        .ok_or(Errno::EINVAL)?;
     let actions_end = cursor.checked_add(actions_size).ok_or(Errno::EINVAL)?;
     let actions_bytes = bytes.get(cursor..actions_end).ok_or(Errno::EINVAL)?;
     cursor = actions_end;
@@ -214,13 +231,13 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
     let mut file_actions: Vec<FileAction> = Vec::with_capacity(n_actions);
     for i in 0..n_actions {
         let base = i * ACTION_RECORD_LEN;
-        let op       = read_u32(actions_bytes, base)?;
-        let fd       = read_i32(actions_bytes, base + 4)?;
-        let newfd    = read_i32(actions_bytes, base + 8)?;
+        let op = read_u32(actions_bytes, base)?;
+        let fd = read_i32(actions_bytes, base + 4)?;
+        let newfd = read_i32(actions_bytes, base + 8)?;
         let path_off = read_u32(actions_bytes, base + 12)?;
         let path_len = read_u32(actions_bytes, base + 16)?;
-        let oflag    = read_i32(actions_bytes, base + 20)?;
-        let mode     = read_u32(actions_bytes, base + 24)?;
+        let oflag = read_i32(actions_bytes, base + 20)?;
+        let mode = read_u32(actions_bytes, base + 24)?;
         let action = match op {
             x if x == fdop::OPEN => FileAction::Open {
                 fd,
@@ -229,7 +246,10 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
                 mode,
             },
             x if x == fdop::CLOSE => FileAction::Close { fd },
-            x if x == fdop::DUP2 => FileAction::Dup2 { srcfd: fd, fd: newfd },
+            x if x == fdop::DUP2 => FileAction::Dup2 {
+                srcfd: fd,
+                fd: newfd,
+            },
             x if x == fdop::CHDIR => FileAction::Chdir {
                 path: read_string(strings, path_off, path_len)?,
             },
@@ -243,7 +263,12 @@ pub fn parse_blob(bytes: &[u8]) -> Result<ParsedBlob, Errno> {
         argv,
         envp,
         file_actions,
-        attrs: SpawnAttrs { flags: attr_flags, pgrp, sigdef, sigmask },
+        attrs: SpawnAttrs {
+            flags: attr_flags,
+            pgrp,
+            sigdef,
+            sigmask,
+        },
     })
 }
 
@@ -275,29 +300,29 @@ mod parser_tests {
     fn build_basic_blob() -> Vec<u8> {
         let mut blob: Vec<u8> = Vec::new();
         // ── header ──
-        blob.extend_from_slice(&1u32.to_le_bytes());            // argc
-        blob.extend_from_slice(&1u32.to_le_bytes());            // envc
-        blob.extend_from_slice(&1u32.to_le_bytes());            // n_actions
+        blob.extend_from_slice(&1u32.to_le_bytes()); // argc
+        blob.extend_from_slice(&1u32.to_le_bytes()); // envc
+        blob.extend_from_slice(&1u32.to_le_bytes()); // n_actions
         blob.extend_from_slice(&attr_flags::SETPGROUP.to_le_bytes()); // attr_flags
-        blob.extend_from_slice(&7i32.to_le_bytes());            // pgrp
-        blob.extend_from_slice(&0u32.to_le_bytes());            // _pad
-        blob.extend_from_slice(&0u64.to_le_bytes());            // sigdef
-        blob.extend_from_slice(&0u64.to_le_bytes());            // sigmask
+        blob.extend_from_slice(&7i32.to_le_bytes()); // pgrp
+        blob.extend_from_slice(&0u32.to_le_bytes()); // _pad
+        blob.extend_from_slice(&0u64.to_le_bytes()); // sigdef
+        blob.extend_from_slice(&0u64.to_le_bytes()); // sigmask
         // ── argv offsets (1) ──
-        blob.extend_from_slice(&0u32.to_le_bytes());            // argv[0] @ strings[0]
+        blob.extend_from_slice(&0u32.to_le_bytes()); // argv[0] @ strings[0]
         // ── envp offsets (1) ──
-        blob.extend_from_slice(&8u32.to_le_bytes());            // envp[0] @ strings[8]
+        blob.extend_from_slice(&8u32.to_le_bytes()); // envp[0] @ strings[8]
         // ── actions (1) ──   FDOP_CLOSE on fd 5
         blob.extend_from_slice(&fdop::CLOSE.to_le_bytes());
-        blob.extend_from_slice(&5i32.to_le_bytes());            // fd
-        blob.extend_from_slice(&0i32.to_le_bytes());            // newfd
-        blob.extend_from_slice(&0u32.to_le_bytes());            // path_off
-        blob.extend_from_slice(&0u32.to_le_bytes());            // path_len
-        blob.extend_from_slice(&0i32.to_le_bytes());            // oflag
-        blob.extend_from_slice(&0u32.to_le_bytes());            // mode
+        blob.extend_from_slice(&5i32.to_le_bytes()); // fd
+        blob.extend_from_slice(&0i32.to_le_bytes()); // newfd
+        blob.extend_from_slice(&0u32.to_le_bytes()); // path_off
+        blob.extend_from_slice(&0u32.to_le_bytes()); // path_len
+        blob.extend_from_slice(&0i32.to_le_bytes()); // oflag
+        blob.extend_from_slice(&0u32.to_le_bytes()); // mode
         // ── strings ──
-        blob.extend_from_slice(b"/bin/ls\0");                    // strings[0..7]
-        blob.extend_from_slice(b"PATH=/usr/bin\0");              // strings[7..]
+        blob.extend_from_slice(b"/bin/ls\0"); // strings[0..7]
+        blob.extend_from_slice(b"PATH=/usr/bin\0"); // strings[7..]
         blob
     }
 
@@ -355,12 +380,12 @@ mod parser_tests {
         blob.extend_from_slice(&0u64.to_le_bytes()); // sigmask
         // No argv/envp offsets, then one action record:
         blob.extend_from_slice(&fdop::CHDIR.to_le_bytes());
-        blob.extend_from_slice(&0i32.to_le_bytes());   // fd
-        blob.extend_from_slice(&0i32.to_le_bytes());   // newfd
+        blob.extend_from_slice(&0i32.to_le_bytes()); // fd
+        blob.extend_from_slice(&0i32.to_le_bytes()); // newfd
         blob.extend_from_slice(&999u32.to_le_bytes()); // path_off (oversized)
-        blob.extend_from_slice(&5u32.to_le_bytes());   // path_len
-        blob.extend_from_slice(&0i32.to_le_bytes());   // oflag
-        blob.extend_from_slice(&0u32.to_le_bytes());   // mode
+        blob.extend_from_slice(&5u32.to_le_bytes()); // path_len
+        blob.extend_from_slice(&0i32.to_le_bytes()); // oflag
+        blob.extend_from_slice(&0u32.to_le_bytes()); // mode
         blob.extend_from_slice(b"/x\0"); // small strings region
         assert!(matches!(parse_blob(&blob), Err(Errno::EINVAL)));
     }

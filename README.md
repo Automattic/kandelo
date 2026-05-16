@@ -24,7 +24,7 @@ Real, unmodified software compiled to WebAssembly:
 | fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |
-| QuickJS-NG | 0.12 | ES2023 JavaScript engine + Node.js compat layer |
+| QuickJS-NG | 0.12 | ES2023 JavaScript engine + Node.js compat layer (`node:crypto` hash + HMAC via OpenSSL, `node:zlib` deflate/inflate/gzip/gunzip via libz, native `JSON.parse` via yyjson). `npm install` works for `lodash`, `express`, and `vite`. |
 | GNU nano | 8.3 | Terminal text editor |
 | dash | 0.5.12 | POSIX shell with pipes, redirects, job control |
 | GNU coreutils | 9.6 | 50+ utilities (ls, cat, sort, wc, etc.) |
@@ -197,7 +197,7 @@ npm install
 npx vite --port 5198
 ```
 
-Open `http://localhost:5198` to try 15 interactive demos — C programs, interactive shell, Python/Perl/Ruby REPLs, nginx, MariaDB, Redis, full WordPress, a LAMP stack, TeX Live, and DOOM — all running in the browser.
+Open `http://localhost:5198` to try 16 interactive demos — C programs, interactive shell, Python/Perl/Ruby/Node REPLs (including in-browser `npm install`), nginx, MariaDB, Redis, full WordPress, a LAMP stack, TeX Live, and DOOM — all running in the browser.
 
 Browser demos use pre-built **VFS images** — binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
 

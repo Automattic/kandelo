@@ -278,7 +278,12 @@ export class WasmPosixKernel {
    */
   async init(wasmBytes: BufferSource): Promise<void> {
     const memory = new WebAssembly.Memory({
-      initial: 17n,
+      // 24 pages = 1.5 MiB of initial address space. Must be ≥ the kernel
+      // wasm's declared minimum, which the linker derives from the data
+      // section. The Mozilla CA bundle (~220 KiB at /etc/ssl/cert.pem)
+      // pushes the kernel's minimum to 20 pages; 24 leaves headroom for
+      // future static data without re-tuning this every time.
+      initial: 24n,
       maximum: 16384n,
       shared: true,
       address: "i64",
@@ -467,6 +472,9 @@ export class WasmPosixKernel {
         },
         host_net_recv: (handle: number, bufPtr: bigint, bufLen: number, flags: number): number => {
           return this.hostNetRecv(handle, Number(bufPtr), bufLen, flags);
+        },
+        host_net_connect_status: (handle: number): number => {
+          return this.hostNetConnectStatus(handle);
         },
         host_net_close: (handle: number): number => {
           return this.hostNetClose(handle);
@@ -1842,6 +1850,17 @@ export class WasmPosixKernel {
     }
   }
 
+  private hostNetConnectStatus(handle: number): number {
+    if (!this.io.network) return -107; // -ENOTCONN
+    try {
+      // Backend returns positive errno on failure; kernel expects negative.
+      const status = this.io.network.connectStatus(handle);
+      return status > 0 ? -status : status;
+    } catch {
+      return -107; // -ENOTCONN
+    }
+  }
+
   private hostNetSend(handle: number, bufPtr: number, bufLen: number, flags: number): number {
     if (!this.io.network) return -107; // -ENOTCONN
     try {
@@ -1895,7 +1914,8 @@ export class WasmPosixKernel {
       if (addr.length > resultLen) return -22; // -EINVAL
       mem.set(addr, resultPtr);
       return addr.length;
-    } catch {
+    } catch (e: any) {
+      if (e?.errno === 11) return -11; // -EAGAIN — kernel-worker retries
       return -2; // -ENOENT
     }
   }

@@ -44,25 +44,25 @@ fn procfs_buf_handle(idx: usize) -> i64 {
 /// A parsed procfs path entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcfsEntry {
-    Root,                    // /proc
-    SelfLink,               // /proc/self (symlink → /proc/<pid>)
-    ThreadSelfLink,         // /proc/thread-self (symlink)
-    PidDir(u32),             // /proc/<pid>
-    FdDir(u32),              // /proc/<pid>/fd
-    FdLink(u32, i32),        // /proc/<pid>/fd/<N> (symlink)
-    FdInfoDir(u32),          // /proc/<pid>/fdinfo
-    FdInfo(u32, i32),        // /proc/<pid>/fdinfo/<N>
-    Stat(u32),               // /proc/<pid>/stat
-    Status(u32),             // /proc/<pid>/status
-    Cmdline(u32),            // /proc/<pid>/cmdline
-    Environ(u32),            // /proc/<pid>/environ
-    Maps(u32),               // /proc/<pid>/maps
-    Cwd(u32),                // /proc/<pid>/cwd (symlink)
-    Exe(u32),                // /proc/<pid>/exe (symlink)
-    Root_(u32),              // /proc/<pid>/root (symlink)
-    NetDir,                  // /proc/net
-    NetTcp,                  // /proc/net/tcp
-    NetUnix,                 // /proc/net/unix
+    Root,             // /proc
+    SelfLink,         // /proc/self (symlink → /proc/<pid>)
+    ThreadSelfLink,   // /proc/thread-self (symlink)
+    PidDir(u32),      // /proc/<pid>
+    FdDir(u32),       // /proc/<pid>/fd
+    FdLink(u32, i32), // /proc/<pid>/fd/<N> (symlink)
+    FdInfoDir(u32),   // /proc/<pid>/fdinfo
+    FdInfo(u32, i32), // /proc/<pid>/fdinfo/<N>
+    Stat(u32),        // /proc/<pid>/stat
+    Status(u32),      // /proc/<pid>/status
+    Cmdline(u32),     // /proc/<pid>/cmdline
+    Environ(u32),     // /proc/<pid>/environ
+    Maps(u32),        // /proc/<pid>/maps
+    Cwd(u32),         // /proc/<pid>/cwd (symlink)
+    Exe(u32),         // /proc/<pid>/exe (symlink)
+    Root_(u32),       // /proc/<pid>/root (symlink)
+    NetDir,           // /proc/net
+    NetTcp,           // /proc/net/tcp
+    NetUnix,          // /proc/net/unix
 }
 
 impl ProcfsEntry {
@@ -178,7 +178,11 @@ fn match_pid_path(rest: &[u8]) -> (u32, &[u8]) {
     let end = rest.iter().position(|&b| b == b'/').unwrap_or(rest.len());
     let pid_bytes = &rest[..end];
     if let Some(pid) = parse_u32(pid_bytes) {
-        let remainder = if end < rest.len() { &rest[end + 1..] } else { b"" };
+        let remainder = if end < rest.len() {
+            &rest[end + 1..]
+        } else {
+            b""
+        };
         (pid, remainder)
     } else {
         // Not a valid pid — return sentinel that won't match anything
@@ -263,13 +267,7 @@ pub fn generate_stat(proc: &Process) -> Vec<u8> {
     // priority nice num_threads itrealvalue starttime vsize rss ...
     let line = format!(
         "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-        proc.pid,
-        name,
-        state,
-        proc.ppid,
-        proc.pgid,
-        proc.sid,
-        proc.nice,
+        proc.pid, name, state, proc.ppid, proc.pgid, proc.sid, proc.nice,
     );
     line.into_bytes()
 }
@@ -308,8 +306,14 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         proc.pid,
         proc.pid,
         proc.ppid,
-        proc.uid, proc.euid, proc.euid, proc.euid,
-        proc.gid, proc.egid, proc.egid, proc.egid,
+        proc.uid,
+        proc.euid,
+        proc.euid,
+        proc.euid,
+        proc.gid,
+        proc.egid,
+        proc.egid,
+        proc.egid,
         count_open_fds(&proc.fd_table),
         1 + proc.threads.len(), // main thread + spawned threads
         proc.signals.pending_mask(),
@@ -408,9 +412,12 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_uid: 0,
             st_gid: 0,
             st_size: 0,
-            st_atime_sec: 0, st_atime_nsec: 0,
-            st_mtime_sec: 0, st_mtime_nsec: 0,
-            st_ctime_sec: 0, st_ctime_nsec: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
             _pad: 0,
         };
     }
@@ -425,9 +432,12 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_uid: 0,
             st_gid: 0,
             st_size: 0,
-            st_atime_sec: 0, st_atime_nsec: 0,
-            st_mtime_sec: 0, st_mtime_nsec: 0,
-            st_ctime_sec: 0, st_ctime_nsec: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
             _pad: 0,
         };
     }
@@ -442,9 +452,12 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
         st_uid: 0,
         st_gid: 0,
         st_size: content_size,
-        st_atime_sec: 0, st_atime_nsec: 0,
-        st_mtime_sec: 0, st_mtime_nsec: 0,
-        st_ctime_sec: 0, st_ctime_nsec: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
         _pad: 0,
     }
 }
@@ -489,19 +502,26 @@ pub fn procfs_open(
 ) -> Result<i32, Errno> {
     use crate::fd::OpenFileDescRef;
     use crate::ofd::FileType;
-    use wasm_posix_shared::flags::{O_WRONLY, O_RDWR, O_CLOEXEC, O_CLOFORK, O_CREAT, O_EXCL, O_TRUNC, O_DIRECTORY, O_NOFOLLOW};
     use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
+    use wasm_posix_shared::flags::{
+        O_CLOEXEC, O_CLOFORK, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDWR, O_TRUNC, O_WRONLY,
+    };
 
     // Procfs is read-only
     if oflags & (O_WRONLY | O_RDWR) != 0 {
         return Err(Errno::EACCES);
     }
 
-    let creation_flags = O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_CLOFORK | O_DIRECTORY | O_NOFOLLOW;
+    let creation_flags =
+        O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_CLOFORK | O_DIRECTORY | O_NOFOLLOW;
     let status_flags = oflags & !creation_flags;
     let mut fd_flags = 0u32;
-    if oflags & O_CLOEXEC != 0 { fd_flags |= FD_CLOEXEC; }
-    if oflags & O_CLOFORK != 0 { fd_flags |= FD_CLOFORK; }
+    if oflags & O_CLOEXEC != 0 {
+        fd_flags |= FD_CLOEXEC;
+    }
+    if oflags & O_CLOFORK != 0 {
+        fd_flags |= FD_CLOFORK;
+    }
 
     if entry.is_symlink() {
         // Opening a symlink with O_NOFOLLOW should fail with ELOOP.
@@ -538,12 +558,9 @@ pub fn procfs_open(
     let buf_idx = alloc_procfs_buf(proc, content);
     let host_handle = procfs_buf_handle(buf_idx);
 
-    let ofd_idx = proc.ofd_table.create(
-        FileType::Regular,
-        status_flags,
-        host_handle,
-        resolved_path,
-    );
+    let ofd_idx =
+        proc.ofd_table
+            .create(FileType::Regular, status_flags, host_handle, resolved_path);
     let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
     Ok(fd)
 }
@@ -640,7 +657,9 @@ pub fn procfs_readlink(
             let s = format!("{}/task/{}", proc.pid, proc.pid);
             s.into_bytes()
         }
-        ProcfsEntry::FdLink(pid, _) | ProcfsEntry::Cwd(pid) | ProcfsEntry::Exe(pid)
+        ProcfsEntry::FdLink(pid, _)
+        | ProcfsEntry::Cwd(pid)
+        | ProcfsEntry::Exe(pid)
         | ProcfsEntry::Root_(pid) => {
             if *pid != proc.pid {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
@@ -737,7 +756,9 @@ pub fn procfs_getdents64(
         let ino = procfs_ino(0, 0);
         let written = write_dirent64(buf, pos, ino, 1, DT_DIR, b".");
         if written == 0 {
-            if pos == 0 { return Err(Errno::EINVAL); }
+            if pos == 0 {
+                return Err(Errno::EINVAL);
+            }
             return Ok((pos, current as i64, false));
         }
         pos += written;
@@ -874,7 +895,6 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
     }
     count
 }
-
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 

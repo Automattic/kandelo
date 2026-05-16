@@ -1,5 +1,5 @@
 {
-  "abi_version": 10,
+  "abi_version": 11,
   "asyncify_save_slots": [
     {
       "meaning": "parent TLS base (__tls_base) saved for child rewind",
@@ -120,6 +120,7 @@
     ],
     "deny_prefixes": [
       "__llvm_",
+      "__tls_",
       "__wasm_apply_",
       "__wasm_call_",
       "__wasm_init_"
@@ -155,24 +156,6 @@
       "kind": "func",
       "name": "__abi_version",
       "signature": "() -> (i32)"
-    },
-    {
-      "kind": "global",
-      "mutable": false,
-      "name": "__tls_align",
-      "type": "i64"
-    },
-    {
-      "kind": "global",
-      "mutable": true,
-      "name": "__tls_base",
-      "type": "i64"
-    },
-    {
-      "kind": "global",
-      "mutable": false,
-      "name": "__tls_size",
-      "type": "i64"
     },
     {
       "kind": "func",

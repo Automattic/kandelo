@@ -119,7 +119,9 @@ impl FdTable {
 
     /// Iterate over all open file descriptors.
     pub fn iter(&self) -> impl Iterator<Item = (i32, &FdEntry)> + '_ {
-        self.entries.iter().enumerate()
+        self.entries
+            .iter()
+            .enumerate()
             .filter_map(|(i, e)| e.as_ref().map(|entry| (i as i32, entry)))
     }
 
@@ -297,14 +299,13 @@ mod tests {
         table.preopen_stdio();
         let max = table.max_fds();
 
-        let entries: Vec<Option<FdEntry>> = table.iter()
-            .fold(Vec::new(), |mut v, (fd, entry)| {
-                while v.len() <= fd as usize {
-                    v.push(None);
-                }
-                v[fd as usize] = Some(entry.clone());
-                v
-            });
+        let entries: Vec<Option<FdEntry>> = table.iter().fold(Vec::new(), |mut v, (fd, entry)| {
+            while v.len() <= fd as usize {
+                v.push(None);
+            }
+            v[fd as usize] = Some(entry.clone());
+            v
+        });
         let rebuilt = FdTable::from_raw(entries, max);
         assert_eq!(rebuilt.get(0).unwrap().ofd_ref, OpenFileDescRef(0));
         assert_eq!(rebuilt.get(1).unwrap().ofd_ref, OpenFileDescRef(1));

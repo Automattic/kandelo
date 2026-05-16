@@ -91,7 +91,9 @@ pub fn write_pcm(data: &[u8]) {
         // default = 4 bytes. Tearing a frame would shift L/R alignment
         // for every subsequent drain, producing inverted-channel hiss.
         let drop = frame.min(r.len());
-        if drop == 0 { break; }
+        if drop == 0 {
+            break;
+        }
         for _ in 0..drop {
             r.pop_front();
         }

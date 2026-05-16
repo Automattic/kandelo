@@ -1,0 +1,39 @@
+Subject: Expose js_std_promise_rejection_check so embedders driving their own
+event loop with js_std_loop_once can still sweep for unhandled rejections.
+
+js_std_loop calls js_std_promise_rejection_check after each microtask drain
+so unhandled promise rejections surface on stderr and exit 1. js_std_loop_once
+deliberately omits the sweep — it returns to the embedder between drains.
+
+The Node compatibility layer (examples/libs/quickjs/node-main.c) drives its
+own loop on top of js_std_loop_once because it also has socket / TLS / fd-
+watch dispatch to run each iteration. Without an external way to call the
+rejection sweep, a top-level `await main()` that rejects sits forever on
+the tracker's list and the process exits cleanly with no diagnostic.
+
+Drop the `static` keyword on js_std_promise_rejection_check and add its
+prototype to quickjs-libc.h alongside the existing tracker callback.
+---
+diff --git a/quickjs-libc.c b/quickjs-libc.c
+--- a/quickjs-libc.c
++++ b/quickjs-libc.c
+@@ -4721,7 +4721,7 @@ void js_std_promise_rejection_tracker(JS
+    asynchrously in case a rejected promise is handled later. Currently
+    we do it once the application is about to sleep. It could be done
+    more often if needed. */
+-static void js_std_promise_rejection_check(JSContext *ctx)
++void js_std_promise_rejection_check(JSContext *ctx)
+ {
+     JSRuntime *rt = JS_GetRuntime(ctx);
+     JSThreadState *ts = js_get_thread_state(rt);
+diff --git a/quickjs-libc.h b/quickjs-libc.h
+--- a/quickjs-libc.h
++++ b/quickjs-libc.h
+@@ -64,6 +64,7 @@ JS_LIBC_EXTERN void js_std_promise_rejec
+                                                      JSValueConst reason,
+                                                      bool is_handled,
+                                                      void *opaque);
++JS_LIBC_EXTERN void js_std_promise_rejection_check(JSContext *ctx);
+ // Defaults to JS_NewRuntime, no-op if compiled without worker support.
+ // Call before creating the first worker thread.
+ JS_LIBC_EXTERN void js_std_set_worker_new_runtime_func(JSRuntime *(*func)(void));

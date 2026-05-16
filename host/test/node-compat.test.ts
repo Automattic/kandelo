@@ -8,9 +8,18 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { NodeKernelHost } from "../src/node-kernel-host";
 
 const nodeWasm = tryResolveBinary("programs/quickjs/node.wasm");
 const hasNode = !!nodeWasm;
+
+function loadBytes(p: string): ArrayBuffer {
+  const buf = readFileSync(p);
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
 
 describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
   it("evaluates a simple expression", async () => {
@@ -216,4 +225,144 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm)", () => {
     expect(result.stdout).toContain("assert: ok");
     expect(result.exitCode).toBe(0);
   });
+});
+
+/* Dynamic TTY behaviors require a real PTY (isatty(fd) must be true) plus the
+   ability to drive ptyResize / ptyWrite from the host while the process is
+   running. runCentralizedProgram uses a stdin buffer with no TTY, so these
+   tests fall through to NodeKernelHost directly. */
+describe.skipIf(!hasNode)("Node.js compat (node.wasm) — dynamic TTY", () => {
+  async function runUnderPty(
+    src: string,
+    drive: (h: NodeKernelHost, getPid: () => number, waitFor: (s: string) => Promise<void>) => Promise<void>,
+    spawnOpts: { ptyCols?: number; ptyRows?: number } = {},
+  ): Promise<{ exitCode: number; out: string }> {
+    let out = "";
+    const host = new NodeKernelHost({
+      maxWorkers: 1,
+      onStdout: () => {},
+      onStderr: () => {},
+      onPtyOutput: (_pid, data) => { out += new TextDecoder().decode(data); },
+    });
+    await host.init();
+
+    const waitFor = async (needle: string, timeoutMs = 8000): Promise<void> => {
+      const start = Date.now();
+      while (!out.includes(needle)) {
+        if (Date.now() - start > timeoutMs) {
+          throw new Error(`timeout waiting for ${JSON.stringify(needle)}; got: ${JSON.stringify(out)}`);
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    };
+
+    let pid = -1;
+    const exitPromise = host.spawn(loadBytes(nodeWasm), ["node", "-e", src], {
+      pty: true,
+      ...spawnOpts,
+      onStarted: (p) => { pid = p; },
+    });
+
+    try {
+      await drive(host, () => pid, waitFor);
+      const exitCode = await Promise.race([
+        exitPromise,
+        new Promise<number>((_, rej) => setTimeout(() => rej(new Error("exit timeout")), 10_000)),
+      ]);
+      return { exitCode, out };
+    } finally {
+      await host.destroy().catch(() => {});
+    }
+  }
+
+  it("process.stdout.columns / rows track PTY resize live", async () => {
+    const src = [
+      "process.stdout.write('READY\\n');",
+      "process.stdin.once('data', () => {",
+      "  process.stdout.write('A ' + process.stdout.columns + 'x' + process.stdout.rows + '\\n');",
+      "  process.stdin.once('data', () => {",
+      "    process.stdout.write('B ' + process.stderr.columns + 'x' + process.stderr.rows + '\\n');",
+      "    process.exit(0);",
+      "  });",
+      "});",
+    ].join(" ");
+
+    const { exitCode, out } = await runUnderPty(src, async (host, getPid, waitFor) => {
+      await waitFor("READY");
+      // Round 1: 150×100 → first sample
+      host.ptyResize(getPid(), 100, 150);
+      await new Promise((r) => setTimeout(r, 100));
+      host.ptyWrite(getPid(), new TextEncoder().encode("x\n"));
+      await waitFor("A ");
+      // Round 2: 60×50 → different sample, proving no caching
+      host.ptyResize(getPid(), 50, 60);
+      await new Promise((r) => setTimeout(r, 100));
+      host.ptyWrite(getPid(), new TextEncoder().encode("x\n"));
+      await waitFor("B ");
+    });
+
+    expect(out).toContain("A 150x100");
+    expect(out).toContain("B 60x50");
+    expect(exitCode).toBe(0);
+  }, 30_000);
+
+  it("process.stdin.setRawMode disables line discipline (single byte delivered without newline)", async () => {
+    const src = [
+      "process.stdin.setRawMode(true);",
+      "process.stdout.write('READY isRaw=' + process.stdin.isRaw + '\\n');",
+      "process.stdin.once('data', (d) => {",
+      "  process.stdout.write('GOT:' + d.length + ' byte=' + d[0] + '\\n');",
+      "  process.exit(0);",
+      "});",
+    ].join(" ");
+
+    const { exitCode, out } = await runUnderPty(src, async (host, getPid, waitFor) => {
+      await waitFor("READY isRaw=true");
+      // Send a single 'a' (0x61) with NO newline. In cooked mode the kernel's
+      // line discipline would buffer until '\n'; in raw mode it delivers now.
+      host.ptyWrite(getPid(), new Uint8Array([0x61]));
+      await waitFor("GOT:1");
+    });
+
+    expect(out).toContain("READY isRaw=true");
+    expect(out).toContain("GOT:1 byte=97");
+    expect(exitCode).toBe(0);
+  }, 30_000);
+
+  it("pre-spawn ptyCols/ptyRows are visible to the program at startup", async () => {
+    const src = [
+      "process.stdout.write('A ' + process.stdout.columns + 'x' + process.stdout.rows + '\\n');",
+      "process.exit(0);",
+    ].join(" ");
+
+    const { exitCode, out } = await runUnderPty(
+      src,
+      async (_host, _getPid, waitFor) => { await waitFor("A "); },
+      { ptyCols: 142, ptyRows: 38 },
+    );
+
+    expect(out).toContain("A 142x38");
+    expect(exitCode).toBe(0);
+  }, 30_000);
+
+  it("process.stdout.on('resize') fires with the new dimensions after ptyResize", async () => {
+    const src = [
+      "process.stdout.write('READY\\n');",
+      "process.stdout.on('resize', () => {",
+      "  process.stdout.write('R ' + process.stdout.columns + 'x' + process.stdout.rows + '\\n');",
+      "  process.exit(0);",
+      "});",
+      // Keep the event loop alive until SIGWINCH lands.
+      "setTimeout(() => process.exit(1), 5000);",
+    ].join(" ");
+
+    const { exitCode, out } = await runUnderPty(src, async (host, getPid, waitFor) => {
+      await waitFor("READY");
+      host.ptyResize(getPid(), 38, 142);
+      await waitFor("R ");
+    });
+
+    expect(out).toContain("R 142x38");
+    expect(exitCode).toBe(0);
+  }, 30_000);
 });

@@ -281,15 +281,23 @@ impl ProcessTable {
                 FileType::PtyMaster => {
                     let pty_idx = ofd.host_handle as usize;
                     if let Some(pty) = crate::pty::get_pty(pty_idx) {
-                        if pty.master_refs > 0 { pty.master_refs -= 1; }
-                        if !pty.is_alive() { crate::pty::free_pty(pty_idx); }
+                        if pty.master_refs > 0 {
+                            pty.master_refs -= 1;
+                        }
+                        if !pty.is_alive() {
+                            crate::pty::free_pty(pty_idx);
+                        }
                     }
                 }
                 FileType::PtySlave => {
                     let pty_idx = ofd.host_handle as usize;
                     if let Some(pty) = crate::pty::get_pty(pty_idx) {
-                        if pty.slave_refs > 0 { pty.slave_refs -= 1; }
-                        if !pty.is_alive() { crate::pty::free_pty(pty_idx); }
+                        if pty.slave_refs > 0 {
+                            pty.slave_refs -= 1;
+                        }
+                        if !pty.is_alive() {
+                            crate::pty::free_pty(pty_idx);
+                        }
                     }
                 }
                 _ => {}
@@ -382,7 +390,10 @@ impl ProcessTable {
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
 
-        Some(RemoveProcessResult { process: proc, host_net_closes })
+        Some(RemoveProcessResult {
+            process: proc,
+            host_net_closes,
+        })
     }
 
     /// Set the current pid for syscall dispatch.
@@ -519,8 +530,8 @@ impl ProcessTable {
         child.gid = inherit.gid;
         child.euid = inherit.euid;
         child.egid = inherit.egid;
-        child.pgid = inherit.pgid;     // POSIX_SPAWN_SETPGROUP may override (Task 9).
-        child.sid = inherit.sid;       // POSIX_SPAWN_SETSID may override (Task 9).
+        child.pgid = inherit.pgid; // POSIX_SPAWN_SETPGROUP may override (Task 9).
+        child.sid = inherit.sid; // POSIX_SPAWN_SETSID may override (Task 9).
         child.umask = inherit.umask;
         child.nice = inherit.nice;
         child.rlimits = inherit.rlimits;
@@ -550,7 +561,9 @@ impl ProcessTable {
             if (inherit.ignored_signals & (1u64 << (sig - 1))) != 0 {
                 // SIGKILL/SIGSTOP can never be ignored, so they can't appear
                 // in this mask; set_handler still rejects them — ignore Err.
-                let _ = child.signals.set_handler(sig, crate::signal::SignalHandler::Ignore);
+                let _ = child
+                    .signals
+                    .set_handler(sig, crate::signal::SignalHandler::Ignore);
             }
         }
 
@@ -641,8 +654,14 @@ impl ProcessTable {
                         let _ = crate::syscalls::sys_dup2(child, host, *srcfd, *fd)?;
                     }
                 }
-                FileAction::Open { fd, path, oflag, mode } => {
-                    let opened = crate::syscalls::sys_open(child, host, path, *oflag as u32, *mode)?;
+                FileAction::Open {
+                    fd,
+                    path,
+                    oflag,
+                    mode,
+                } => {
+                    let opened =
+                        crate::syscalls::sys_open(child, host, path, *oflag as u32, *mode)?;
                     if opened != *fd {
                         // Move opened fd to the requested target slot.
                         let r = crate::syscalls::sys_dup2(child, host, opened, *fd);
@@ -705,7 +724,8 @@ impl ProcessTable {
 
     /// Collect PIDs of all processes in a given process group.
     pub fn pids_in_group(&self, pgid: u32) -> Vec<u32> {
-        self.processes.iter()
+        self.processes
+            .iter()
             .filter(|(_, p)| p.pgid == pgid)
             .map(|(&pid, _)| pid)
             .collect()

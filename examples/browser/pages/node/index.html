@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Node — wasm-posix-kernel</title>
+  <link rel="stylesheet" href="../../lib/layout.css">
+  <style>
+    /* Inset xterm contents from the terminal background edges so lines don't
+       sit flush against the chrome. FitAddon re-measures on resize so the
+       column count adjusts correctly. */
+    .terminal-area #terminal { padding: 0.5rem; background: #0d1117; }
+  </style>
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="sidebar-title">Demos</div>
+    <a href="/">Simple Programs</a>
+    <a href="/pages/nginx/">nginx</a>
+    <a href="/pages/php/">PHP CLI</a>
+    <a href="/pages/nginx-php/">nginx + PHP-FPM</a>
+    <a href="/pages/mariadb/">MariaDB</a>
+    <a href="/pages/redis/">Redis</a>
+    <a href="/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
+    <a href="/pages/lamp/">WordPress (LEMP)</a>
+    <a href="/pages/shell/">Shell</a>
+    <a href="/pages/python/">Python</a>
+    <a href="/pages/perl/">Perl</a>
+    <a href="/pages/ruby/">Ruby</a>
+    <a href="/pages/erlang/">Erlang</a>
+    <a href="/pages/texlive/">TeX Live</a>
+    <a href="/pages/node/" aria-current="page">Node</a>
+  </nav>
+  <div class="main">
+    <div class="main-header">
+      <h1>Node on wasm-posix-kernel</h1>
+      <p class="subtitle">QuickJS-based Node-compatible runtime + npm 10.9.2, running inside a POSIX kernel compiled to WebAssembly</p>
+      <div class="controls" style="padding:0.5rem 0">
+        <select id="presets" style="padding-right:2px">
+          <option value="">Select example</option>
+          <option value="version">node --version</option>
+          <option value="hello">console.log('hello from node-wasm')</option>
+          <option value="process">process.versions</option>
+          <option value="fs">readdir /usr/local/lib/npm</option>
+          <option value="npm-version">npm --version</option>
+          <option value="cowsay">npm install cowsay &amp;&amp; cowsay 'Hello Kandelo'</option>
+        </select>
+        <button id="clear">Clear</button>
+        <span class="hint" style="margin-left:0.5rem;color:#888">↑/↓ history · Enter to run · Ctrl-L to clear · Ctrl-C cancels current line</span>
+      </div>
+    </div>
+    <div class="preview-area">
+      <div class="terminal-area">
+        <div id="terminal"></div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
