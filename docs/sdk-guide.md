@@ -52,6 +52,16 @@ The SDK finds LLVM in this order:
 3. `/opt/homebrew/opt/llvm/bin` (macOS Homebrew)
 4. `/usr/lib/llvm-*/bin` (Linux, highest version)
 
+### Glue and Sysroot Discovery
+
+The SDK locates `glue/` and `sysroot/` in this order:
+
+1. `$WASM_POSIX_GLUE_DIR` / `$WASM_POSIX_SYSROOT` env vars (explicit overrides)
+2. Walk up from `process.cwd()` looking for `glue/abi_constants.h` — anchors to the project root the user is building from
+3. Fall back to the SDK's sibling-repository directory (the `..` of the npm-linked package)
+
+The cwd-walk-up step matters when the SDK is `npm link`-ed: the global `wasm32posix-cc` symlink points at whichever worktree last ran `npm link`, but glue/sysroot must come from the worktree the user is actively building in (otherwise programs link against a different `ABI_VERSION` than the kernel they will run on). If you keep multiple worktrees, you do not need to re-`npm link` when switching between them — the SDK resolves glue/sysroot from your shell's cwd.
+
 ## Compiling Programs
 
 ### Simple C program

@@ -23,8 +23,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::slice;
 
-use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmTimespec};
 use wasm_posix_shared::fd_flags::FD_CLOEXEC;
+use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmTimespec};
 
 use crate::ofd::FileType;
 use crate::process::{HostIO, Process};
@@ -50,7 +50,12 @@ unsafe extern "C" {
     fn host_unlink(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_rename(old_ptr: *const u8, old_len: u32, new_ptr: *const u8, new_len: u32) -> i32;
     fn host_link(old_ptr: *const u8, old_len: u32, new_ptr: *const u8, new_len: u32) -> i32;
-    fn host_symlink(target_ptr: *const u8, target_len: u32, link_ptr: *const u8, link_len: u32) -> i32;
+    fn host_symlink(
+        target_ptr: *const u8,
+        target_len: u32,
+        link_ptr: *const u8,
+        link_len: u32,
+    ) -> i32;
     fn host_readlink(path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_chmod(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
     fn host_chown(path_ptr: *const u8, path_len: u32, uid: u32, gid: u32) -> i32;
@@ -67,33 +72,76 @@ unsafe extern "C" {
     fn host_kill(pid: i32, sig: u32) -> i32;
     fn host_exec(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_set_alarm(seconds: u32) -> i32;
-    fn host_set_posix_timer(timer_id: i32, signo: i32, value_ms_lo: u32, value_ms_hi: u32, interval_ms_lo: u32, interval_ms_hi: u32) -> i32;
+    fn host_set_posix_timer(
+        timer_id: i32,
+        signo: i32,
+        value_ms_lo: u32,
+        value_ms_hi: u32,
+        interval_ms_lo: u32,
+        interval_ms_hi: u32,
+    ) -> i32;
     fn host_sigsuspend_wait() -> i32;
     fn host_call_signal_handler(handler_index: u32, signum: u32, sa_flags: u32) -> i32;
     fn host_getrandom(buf_ptr: *mut u8, buf_len: u32) -> i32;
-    fn host_utimensat(path_ptr: *const u8, path_len: u32, atime_sec: i64, atime_nsec: i64, mtime_sec: i64, mtime_nsec: i64) -> i32;
+    fn host_utimensat(
+        path_ptr: *const u8,
+        path_len: u32,
+        atime_sec: i64,
+        atime_nsec: i64,
+        mtime_sec: i64,
+        mtime_nsec: i64,
+    ) -> i32;
     fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
     fn host_net_connect(handle: i32, addr_ptr: *const u8, addr_len: u32, port: u32) -> i32;
+    fn host_net_connect_status(handle: i32) -> i32;
     fn host_net_send(handle: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_close(handle: i32) -> i32;
-    fn host_net_listen(fd: i32, port: u32, addr_a: u32, addr_b: u32, addr_c: u32, addr_d: u32) -> i32;
-    fn host_getaddrinfo(name_ptr: *const u8, name_len: u32, result_ptr: *mut u8, result_len: u32) -> i32;
+    fn host_net_listen(
+        fd: i32,
+        port: u32,
+        addr_a: u32,
+        addr_b: u32,
+        addr_c: u32,
+        addr_d: u32,
+    ) -> i32;
+    fn host_getaddrinfo(
+        name_ptr: *const u8,
+        name_len: u32,
+        result_ptr: *mut u8,
+        result_len: u32,
+    ) -> i32;
     fn host_fcntl_lock(
-        path_ptr: *const u8, path_len: u32,
-        pid: u32, cmd: u32, lock_type: u32,
-        start_lo: u32, start_hi: u32,
-        len_lo: u32, len_hi: u32,
+        path_ptr: *const u8,
+        path_len: u32,
+        pid: u32,
+        cmd: u32,
+        lock_type: u32,
+        start_lo: u32,
+        start_hi: u32,
+        len_lo: u32,
+        len_hi: u32,
         result_ptr: *mut u8,
     ) -> i32;
     fn host_fork() -> i32;
     fn host_futex_wait(addr: usize, expected: u32, timeout_ns_lo: u32, timeout_ns_hi: u32) -> i32;
     fn host_futex_wake(addr: usize, count: u32) -> i32;
-    fn host_clone(fn_ptr: usize, arg: usize, stack_ptr: usize, tls_ptr: usize, ctid_ptr: usize) -> i32;
+    fn host_clone(
+        fn_ptr: usize,
+        arg: usize,
+        stack_ptr: usize,
+        tls_ptr: usize,
+        ctid_ptr: usize,
+    ) -> i32;
     fn host_is_thread_worker() -> i32;
     fn host_bind_framebuffer(
-        pid: i32, addr: usize, len: usize,
-        w: u32, h: u32, stride: u32, fmt: u32,
+        pid: i32,
+        addr: usize,
+        len: usize,
+        w: u32,
+        h: u32,
+        stride: u32,
+        fmt: u32,
     );
     fn host_unbind_framebuffer(pid: i32);
     fn host_fb_write(pid: i32, offset: usize, src: *const u8, len: usize);
@@ -199,9 +247,20 @@ impl HostIO for WasmHostIO {
 
     fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
         let mut stat = WasmStat {
-            st_dev: 0, st_ino: 0, st_mode: 0, st_nlink: 0, st_uid: 0, st_gid: 0,
-            st_size: 0, st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0,
-            st_mtime_nsec: 0, st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+            st_dev: 0,
+            st_ino: 0,
+            st_mode: 0,
+            st_nlink: 0,
+            st_uid: 0,
+            st_gid: 0,
+            st_size: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
+            _pad: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_stat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -211,9 +270,20 @@ impl HostIO for WasmHostIO {
 
     fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
         let mut stat = WasmStat {
-            st_dev: 0, st_ino: 0, st_mode: 0, st_nlink: 0, st_uid: 0, st_gid: 0,
-            st_size: 0, st_atime_sec: 0, st_atime_nsec: 0, st_mtime_sec: 0,
-            st_mtime_nsec: 0, st_ctime_sec: 0, st_ctime_nsec: 0, _pad: 0,
+            st_dev: 0,
+            st_ino: 0,
+            st_mode: 0,
+            st_nlink: 0,
+            st_uid: 0,
+            st_gid: 0,
+            st_size: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
+            _pad: 0,
         };
         let stat_ptr = &mut stat as *mut WasmStat as *mut u8;
         let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };
@@ -239,8 +309,10 @@ impl HostIO for WasmHostIO {
     fn host_rename(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
         let result = unsafe {
             host_rename(
-                oldpath.as_ptr(), oldpath.len() as u32,
-                newpath.as_ptr(), newpath.len() as u32,
+                oldpath.as_ptr(),
+                oldpath.len() as u32,
+                newpath.as_ptr(),
+                newpath.len() as u32,
             )
         };
         i32_to_result(result)
@@ -249,8 +321,10 @@ impl HostIO for WasmHostIO {
     fn host_link(&mut self, oldpath: &[u8], newpath: &[u8]) -> Result<(), Errno> {
         let result = unsafe {
             host_link(
-                oldpath.as_ptr(), oldpath.len() as u32,
-                newpath.as_ptr(), newpath.len() as u32,
+                oldpath.as_ptr(),
+                oldpath.len() as u32,
+                newpath.as_ptr(),
+                newpath.len() as u32,
             )
         };
         i32_to_result(result)
@@ -259,8 +333,10 @@ impl HostIO for WasmHostIO {
     fn host_symlink(&mut self, target: &[u8], linkpath: &[u8]) -> Result<(), Errno> {
         let result = unsafe {
             host_symlink(
-                target.as_ptr(), target.len() as u32,
-                linkpath.as_ptr(), linkpath.len() as u32,
+                target.as_ptr(),
+                target.len() as u32,
+                linkpath.as_ptr(),
+                linkpath.len() as u32,
             )
         };
         i32_to_result(result)
@@ -268,7 +344,12 @@ impl HostIO for WasmHostIO {
 
     fn host_readlink(&mut self, path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
         let result = unsafe {
-            host_readlink(path.as_ptr(), path.len() as u32, buf.as_mut_ptr(), buf.len() as u32)
+            host_readlink(
+                path.as_ptr(),
+                path.len() as u32,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+            )
         };
         if result < 0 {
             match Errno::from_u32((-result) as u32) {
@@ -307,11 +388,24 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_readdir(&mut self, handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> {
-        let mut dirent = WasmDirent { d_ino: 0, d_type: 0, d_namlen: 0 };
+    fn host_readdir(
+        &mut self,
+        handle: i64,
+        name_buf: &mut [u8],
+    ) -> Result<Option<(u64, u32, usize)>, Errno> {
+        let mut dirent = WasmDirent {
+            d_ino: 0,
+            d_type: 0,
+            d_namlen: 0,
+        };
         let dirent_ptr = &mut dirent as *mut WasmDirent as *mut u8;
         let result = unsafe {
-            host_readdir(handle, dirent_ptr, name_buf.as_mut_ptr(), name_buf.len() as u32)
+            host_readdir(
+                handle,
+                dirent_ptr,
+                name_buf.as_mut_ptr(),
+                name_buf.len() as u32,
+            )
         };
         if result < 0 {
             match Errno::from_u32((-result) as u32) {
@@ -321,7 +415,11 @@ impl HostIO for WasmHostIO {
         } else if result == 0 {
             Ok(None)
         } else {
-            Ok(Some((dirent.d_ino, dirent.d_type, dirent.d_namlen as usize)))
+            Ok(Some((
+                dirent.d_ino,
+                dirent.d_type,
+                dirent.d_namlen as usize,
+            )))
         }
     }
 
@@ -333,9 +431,8 @@ impl HostIO for WasmHostIO {
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno> {
         let mut sec: i64 = 0;
         let mut nsec: i64 = 0;
-        let result = unsafe {
-            host_clock_gettime(clock_id, &mut sec as *mut i64, &mut nsec as *mut i64)
-        };
+        let result =
+            unsafe { host_clock_gettime(clock_id, &mut sec as *mut i64, &mut nsec as *mut i64) };
         i32_to_result(result)?;
         Ok((sec, nsec))
     }
@@ -396,12 +493,21 @@ impl HostIO for WasmHostIO {
         i32_to_result(result)
     }
 
-    fn host_set_posix_timer(&mut self, timer_id: i32, signo: i32, value_ms: i64, interval_ms: i64) -> Result<(), Errno> {
+    fn host_set_posix_timer(
+        &mut self,
+        timer_id: i32,
+        signo: i32,
+        value_ms: i64,
+        interval_ms: i64,
+    ) -> Result<(), Errno> {
         let result = unsafe {
             host_set_posix_timer(
-                timer_id, signo,
-                value_ms as u32, (value_ms >> 32) as u32,
-                interval_ms as u32, (interval_ms >> 32) as u32,
+                timer_id,
+                signo,
+                value_ms as u32,
+                (value_ms >> 32) as u32,
+                interval_ms as u32,
+                (interval_ms >> 32) as u32,
             )
         };
         i32_to_result(result)
@@ -418,7 +524,12 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32, sa_flags: u32) -> Result<(), Errno> {
+    fn host_call_signal_handler(
+        &mut self,
+        handler_index: u32,
+        signum: u32,
+        sa_flags: u32,
+    ) -> Result<(), Errno> {
         let result = unsafe { host_call_signal_handler(handler_index, signum, sa_flags) };
         i32_to_result(result)
     }
@@ -435,8 +546,24 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_utimensat(&mut self, path: &[u8], atime_sec: i64, atime_nsec: i64, mtime_sec: i64, mtime_nsec: i64) -> Result<(), Errno> {
-        let result = unsafe { host_utimensat(path.as_ptr(), path.len() as u32, atime_sec, atime_nsec, mtime_sec, mtime_nsec) };
+    fn host_utimensat(
+        &mut self,
+        path: &[u8],
+        atime_sec: i64,
+        atime_nsec: i64,
+        mtime_sec: i64,
+        mtime_nsec: i64,
+    ) -> Result<(), Errno> {
+        let result = unsafe {
+            host_utimensat(
+                path.as_ptr(),
+                path.len() as u32,
+                atime_sec,
+                atime_nsec,
+                mtime_sec,
+                mtime_nsec,
+            )
+        };
         i32_to_result(result)
     }
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno> {
@@ -455,7 +582,13 @@ impl HostIO for WasmHostIO {
     }
 
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno> {
-        let result = unsafe { host_net_connect(handle, addr.as_ptr(), addr.len() as u32, port as u32) };
+        let result =
+            unsafe { host_net_connect(handle, addr.as_ptr(), addr.len() as u32, port as u32) };
+        i32_to_result(result)
+    }
+
+    fn host_net_connect_status(&mut self, handle: i32) -> Result<(), Errno> {
+        let result = unsafe { host_net_connect_status(handle) };
         i32_to_result(result)
     }
 
@@ -471,7 +604,13 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_net_recv(&mut self, handle: i32, _len: u32, flags: u32, buf: &mut [u8]) -> Result<usize, Errno> {
+    fn host_net_recv(
+        &mut self,
+        handle: i32,
+        _len: u32,
+        flags: u32,
+        buf: &mut [u8],
+    ) -> Result<usize, Errno> {
         let result = unsafe { host_net_recv(handle, buf.as_mut_ptr(), buf.len() as u32, flags) };
         if result < 0 {
             match Errno::from_u32((-result) as u32) {
@@ -490,13 +629,27 @@ impl HostIO for WasmHostIO {
 
     fn host_net_listen(&mut self, fd: i32, port: u16, addr: &[u8; 4]) -> Result<(), Errno> {
         let result = unsafe {
-            host_net_listen(fd, port as u32, addr[0] as u32, addr[1] as u32, addr[2] as u32, addr[3] as u32)
+            host_net_listen(
+                fd,
+                port as u32,
+                addr[0] as u32,
+                addr[1] as u32,
+                addr[2] as u32,
+                addr[3] as u32,
+            )
         };
         i32_to_result(result)
     }
 
     fn host_getaddrinfo(&mut self, name: &[u8], result_buf: &mut [u8]) -> Result<usize, Errno> {
-        let result = unsafe { host_getaddrinfo(name.as_ptr(), name.len() as u32, result_buf.as_mut_ptr(), result_buf.len() as u32) };
+        let result = unsafe {
+            host_getaddrinfo(
+                name.as_ptr(),
+                name.len() as u32,
+                result_buf.as_mut_ptr(),
+                result_buf.len() as u32,
+            )
+        };
         if result < 0 {
             match Errno::from_u32((-result) as u32) {
                 Some(e) => Err(e),
@@ -509,8 +662,12 @@ impl HostIO for WasmHostIO {
 
     fn host_fcntl_lock(
         &mut self,
-        path: &[u8], pid: u32, cmd: u32, lock_type: u32,
-        start: i64, len: i64,
+        path: &[u8],
+        pid: u32,
+        cmd: u32,
+        lock_type: u32,
+        start: i64,
+        len: i64,
         result_buf: &mut [u8],
     ) -> Result<(), Errno> {
         let start_lo = start as u32;
@@ -519,10 +676,15 @@ impl HostIO for WasmHostIO {
         let len_hi = (len >> 32) as u32;
         let result = unsafe {
             host_fcntl_lock(
-                path.as_ptr(), path.len() as u32,
-                pid, cmd, lock_type,
-                start_lo, start_hi,
-                len_lo, len_hi,
+                path.as_ptr(),
+                path.len() as u32,
+                pid,
+                cmd,
+                lock_type,
+                start_lo,
+                start_hi,
+                len_lo,
+                len_hi,
                 result_buf.as_mut_ptr(),
             )
         };
@@ -536,7 +698,12 @@ impl HostIO for WasmHostIO {
         result
     }
 
-    fn host_futex_wait(&mut self, addr: usize, expected: u32, timeout_ns: i64) -> Result<i32, Errno> {
+    fn host_futex_wait(
+        &mut self,
+        addr: usize,
+        expected: u32,
+        timeout_ns: i64,
+    ) -> Result<i32, Errno> {
         let lo = timeout_ns as u32;
         let hi = (timeout_ns >> 32) as u32;
         // Release the GKL before blocking — otherwise no other thread can make
@@ -566,7 +733,14 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_clone(&mut self, fn_ptr: usize, arg: usize, stack_ptr: usize, tls_ptr: usize, ctid_ptr: usize) -> Result<i32, Errno> {
+    fn host_clone(
+        &mut self,
+        fn_ptr: usize,
+        arg: usize,
+        stack_ptr: usize,
+        tls_ptr: usize,
+        ctid_ptr: usize,
+    ) -> Result<i32, Errno> {
         // Release GKL before blocking — host_clone blocks on Atomics.wait
         // until the process-manager assigns a TID.
         gkl_release();
@@ -583,8 +757,14 @@ impl HostIO for WasmHostIO {
     }
 
     fn bind_framebuffer(
-        &mut self, pid: i32, addr: usize, len: usize,
-        w: u32, h: u32, stride: u32, fmt: u32,
+        &mut self,
+        pid: i32,
+        addr: usize,
+        len: usize,
+        w: u32,
+        h: u32,
+        stride: u32,
+        fmt: u32,
     ) {
         unsafe { host_bind_framebuffer(pid, addr, len, w, h, stride, fmt) }
     }
@@ -638,7 +818,10 @@ pub(crate) fn procfs_all_pids() -> Vec<u32> {
 /// Generate procfs content for a foreign process (cross-process access).
 /// Returns None if the pid doesn't exist or is the current process
 /// (caller should use the local Process for self-access).
-pub(crate) fn procfs_generate_for_pid(pid: u32, entry: &crate::procfs::ProcfsEntry) -> Option<Vec<u8>> {
+pub(crate) fn procfs_generate_for_pid(
+    pid: u32,
+    entry: &crate::procfs::ProcfsEntry,
+) -> Option<Vec<u8>> {
     if !crate::is_centralized_mode() {
         return None;
     }
@@ -656,7 +839,11 @@ pub(crate) fn procfs_generate_for_pid(pid: u32, entry: &crate::procfs::ProcfsEnt
 }
 
 /// Get the readlink target for a procfs symlink in a foreign process.
-pub(crate) fn procfs_readlink_for_pid(pid: u32, entry: &crate::procfs::ProcfsEntry, buf: &mut [u8]) -> Option<usize> {
+pub(crate) fn procfs_readlink_for_pid(
+    pid: u32,
+    entry: &crate::procfs::ProcfsEntry,
+    buf: &mut [u8],
+) -> Option<usize> {
     if !crate::is_centralized_mode() {
         return None;
     }
@@ -708,7 +895,9 @@ fn gkl_acquire() {
             Ok(_) => break,
             Err(_) => {
                 // Block via futex until lock is released
-                unsafe { host_futex_wait(gkl_addr(), 1, 0xFFFFFFFF, 0xFFFFFFFF); }
+                unsafe {
+                    host_futex_wait(gkl_addr(), 1, 0xFFFFFFFF, 0xFFFFFFFF);
+                }
             }
         }
     }
@@ -717,7 +906,9 @@ fn gkl_acquire() {
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 fn gkl_release() {
     GKL.store(0, Ordering::Release);
-    unsafe { host_futex_wake(gkl_addr(), 1); }
+    unsafe {
+        host_futex_wake(gkl_addr(), 1);
+    }
 }
 
 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
@@ -778,7 +969,6 @@ unsafe fn get_process() -> (GklGuard, &'static mut Process) {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // 3b. Memory growth helper
 // ---------------------------------------------------------------------------
@@ -815,7 +1005,7 @@ fn ensure_memory_covers(_end_addr: usize) {
 
 /// Check for and deliver pending signals before/after syscall.
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
-    use crate::signal::{DefaultAction, default_action, SignalHandler};
+    use crate::signal::{DefaultAction, SignalHandler, default_action};
     let centralized = crate::is_centralized_mode();
     let tid = crate::process_table::current_tid();
     loop {
@@ -823,9 +1013,13 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
         // (they'll be delivered by the glue code via kernel_dequeue_signal).
         if centralized {
             let deliverable = proc.deliverable_for(tid);
-            if deliverable == 0 { break; }
+            if deliverable == 0 {
+                break;
+            }
             let signum = deliverable.trailing_zeros() + 1;
-            if signum >= wasm_posix_shared::signal::NSIG { break; }
+            if signum >= wasm_posix_shared::signal::NSIG {
+                break;
+            }
             let action = proc.signals.get_action(signum);
             match action.handler {
                 SignalHandler::Handler(_) => break, // Leave for glue-side delivery
@@ -855,7 +1049,10 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
             let action = proc.signals.get_action(signum);
             match action.handler {
                 SignalHandler::Handler(idx) => {
-                    if host.host_call_signal_handler(idx, signum, action.flags).is_err() {
+                    if host
+                        .host_call_signal_handler(idx, signum, action.flags)
+                        .is_err()
+                    {
                         // Handler call failed — fall back to default action (POSIX).
                         // The signal has already been dequeued, so we must handle it here.
                         match default_action(signum) {
@@ -867,19 +1064,19 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                         }
                     }
                 }
-                SignalHandler::Default => {
-                    match default_action(signum) {
-                        DefaultAction::Terminate | DefaultAction::CoreDump => {
-                            proc.state = crate::process::ProcessState::Exited;
-                            proc.exit_status = 128 + signum as i32;
-                        }
-                        _ => {}
+                SignalHandler::Default => match default_action(signum) {
+                    DefaultAction::Terminate | DefaultAction::CoreDump => {
+                        proc.state = crate::process::ProcessState::Exited;
+                        proc.exit_status = 128 + signum as i32;
                     }
-                }
+                    _ => {}
+                },
                 SignalHandler::Ignore => {}
             }
         }
-        if proc.state == crate::process::ProcessState::Exited { break; }
+        if proc.state == crate::process::ProcessState::Exited {
+            break;
+        }
     }
 }
 
@@ -1056,8 +1253,12 @@ pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
             if removed.fb_binding.is_some() {
                 unsafe { host_unbind_framebuffer(pid as i32) };
             }
-            let _ = crate::process_table::FB0_OWNER
-                .compare_exchange(pid as i32, -1, Ordering::SeqCst, Ordering::SeqCst);
+            let _ = crate::process_table::FB0_OWNER.compare_exchange(
+                pid as i32,
+                -1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
             // Tear down host-side AF_INET handles whose cross-process
             // refcount hit zero during teardown. process_table.rs can't
             // call host externs directly; we drain its close-list here.
@@ -1155,7 +1356,13 @@ pub extern "C" fn kernel_get_fork_count(pid: u32) -> u64 {
 pub extern "C" fn kernel_is_fork_child_pid(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
-        Some(proc) => if proc.fork_child { 1 } else { 0 },
+        Some(proc) => {
+            if proc.fork_child {
+                1
+            } else {
+                0
+            }
+        }
         None => -(Errno::ESRCH as i32),
     }
 }
@@ -1166,7 +1373,10 @@ pub extern "C" fn kernel_is_fork_child_pid(pid: u32) -> i32 {
 pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get_mut(pid) {
-        Some(proc) => { proc.fork_child = false; 0 }
+        Some(proc) => {
+            proc.fork_child = false;
+            0
+        }
         None => -(Errno::ESRCH as i32),
     }
 }
@@ -1213,7 +1423,11 @@ pub extern "C" fn kernel_has_sa_nocldwait(pid: u32) -> i32 {
 pub extern "C" fn kernel_reset_signal_mask(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get_mut(pid) {
-        Some(proc) => { proc.signals.blocked = 0; proc.sigsuspend_saved_mask = None; 0 }
+        Some(proc) => {
+            proc.signals.blocked = 0;
+            proc.sigsuspend_saved_mask = None;
+            0
+        }
         None => -(Errno::ESRCH as i32),
     }
 }
@@ -1231,8 +1445,14 @@ pub extern "C" fn kernel_is_signal_blocked(pid: u32, signum: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) => {
-            if signum == 0 || signum >= 65 { return 0; }
-            if proc.pick_thread_for_shared_signal(signum).is_some() { 0 } else { 1 }
+            if signum == 0 || signum >= 65 {
+                return 0;
+            }
+            if proc.pick_thread_for_shared_signal(signum).is_some() {
+                0
+            } else {
+                1
+            }
         }
         None => -(Errno::ESRCH as i32),
     }
@@ -1248,8 +1468,12 @@ pub extern "C" fn kernel_pick_signal_target_tid(pid: u32, signum: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) => {
-            if signum == 0 || signum >= 65 { return 0; }
-            proc.pick_thread_for_shared_signal(signum).map(|t| t as i32).unwrap_or(0)
+            if signum == 0 || signum >= 65 {
+                return 0;
+            }
+            proc.pick_thread_for_shared_signal(signum)
+                .map(|t| t as i32)
+                .unwrap_or(0)
         }
         None => -(Errno::ESRCH as i32),
     }
@@ -1265,7 +1489,11 @@ pub extern "C" fn kernel_thread_has_deliverable(pid: u32, tid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
         Some(proc) => {
-            if proc.deliverable_for(tid) != 0 { 1 } else { 0 }
+            if proc.deliverable_for(tid) != 0 {
+                1
+            } else {
+                0
+            }
         }
         None => -(Errno::ESRCH as i32),
     }
@@ -1313,26 +1541,24 @@ pub extern "C" fn kernel_get_cwd(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i3
 pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.get(pid) {
-        Some(proc) => {
-            match proc.fd_table.get(fd) {
-                Ok(entry) => {
-                    let ofd_idx = entry.ofd_ref.0;
-                    match proc.ofd_table.get(ofd_idx) {
-                        Some(ofd) => {
-                            if ofd.path.is_empty() {
-                                return -(Errno::ENOENT as i32);
-                            }
-                            let len = ofd.path.len().min(buf_len as usize);
-                            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len) };
-                            buf.copy_from_slice(&ofd.path[..len]);
-                            len as i32
+        Some(proc) => match proc.fd_table.get(fd) {
+            Ok(entry) => {
+                let ofd_idx = entry.ofd_ref.0;
+                match proc.ofd_table.get(ofd_idx) {
+                    Some(ofd) => {
+                        if ofd.path.is_empty() {
+                            return -(Errno::ENOENT as i32);
                         }
-                        None => -(Errno::EBADF as i32),
+                        let len = ofd.path.len().min(buf_len as usize);
+                        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, len) };
+                        buf.copy_from_slice(&ofd.path[..len]);
+                        len as i32
                     }
+                    None => -(Errno::EBADF as i32),
                 }
-                Err(e) => -(e as i32),
             }
-        }
+            Err(e) => -(e as i32),
+        },
         None => -(Errno::ESRCH as i32),
     }
 }
@@ -1380,8 +1606,13 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
     const HDR_BYTES: usize = 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4; // 40 bytes per record
     let mut need: usize = 4; // count u32
     for pid in &pids {
-        let proc = match table.get(*pid) { Some(p) => p, None => continue };
-        if proc.state != crate::process::ProcessState::Running { continue; }
+        let proc = match table.get(*pid) {
+            Some(p) => p,
+            None => continue,
+        };
+        if proc.state != crate::process::ProcessState::Running {
+            continue;
+        }
         let cmdline = crate::procfs::generate_cmdline(proc);
         let comm = process_name_bytes(proc);
         need += HDR_BYTES + comm.len() + cmdline.len();
@@ -1398,11 +1629,16 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
     let mut written: u32 = 0;
 
     for pid in &pids {
-        let proc = match table.get(*pid) { Some(p) => p, None => continue };
+        let proc = match table.get(*pid) {
+            Some(p) => p,
+            None => continue,
+        };
         // Drop zombies: the kernel keeps Exited entries for waitpid()
         // reap semantics, but a "currently running" view shouldn't show
         // them.
-        if proc.state != crate::process::ProcessState::Running { continue; }
+        if proc.state != crate::process::ProcessState::Running {
+            continue;
+        }
         let cmdline = crate::procfs::generate_cmdline(proc);
         let comm = process_name_bytes(proc);
         let state: u32 = b'R' as u32;
@@ -1503,9 +1739,13 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
         // single bitmask here — the actual dequeue routine below picks the
         // right queue.
         let deliverable = proc.deliverable_for(tid);
-        if deliverable == 0 { return 0; }
+        if deliverable == 0 {
+            return 0;
+        }
         let signum = deliverable.trailing_zeros() + 1;
-        if signum >= wasm_posix_shared::signal::NSIG { return 0; }
+        if signum >= wasm_posix_shared::signal::NSIG {
+            return 0;
+        }
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
@@ -1593,7 +1833,11 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
 ///
 /// Returns `(signum, si_value, si_code)`; `si_value`/`si_code` default to 0
 /// for coalesced standard signals without `sigqueue` metadata.
-fn dequeue_signal_for(proc: &mut crate::process::Process, tid: u32, signum: u32) -> (u32, i32, i32) {
+fn dequeue_signal_for(
+    proc: &mut crate::process::Process,
+    tid: u32,
+    signum: u32,
+) -> (u32, i32, i32) {
     use crate::signal::sig_bit;
     // Prefer per-thread directed delivery for non-main threads.
     if !proc.is_main_thread(tid) {
@@ -1656,11 +1900,18 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
                             return -(e as i32);
                         }
                     }
-                    FdAction::Open { fd, ref path, flags, mode } => {
+                    FdAction::Open {
+                        fd,
+                        ref path,
+                        flags,
+                        mode,
+                    } => {
                         match syscalls::sys_open(proc, &mut host, path, flags as u32, mode as u32) {
                             Ok(opened_fd) => {
                                 if opened_fd != fd {
-                                    if let Err(e) = syscalls::sys_dup2(proc, &mut host, opened_fd, fd) {
+                                    if let Err(e) =
+                                        syscalls::sys_dup2(proc, &mut host, opened_fd, fd)
+                                    {
                                         return -(e as i32);
                                     }
                                     let _ = syscalls::sys_close(proc, &mut host, opened_fd);
@@ -1683,7 +1934,9 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
             Some(p) => p,
             None => return -(Errno::ESRCH as i32),
         };
-        let cloexec_fds: alloc::vec::Vec<i32> = proc.fd_table.iter()
+        let cloexec_fds: alloc::vec::Vec<i32> = proc
+            .fd_table
+            .iter()
             .filter(|(_, entry)| entry.fd_flags & FD_CLOEXEC != 0)
             .map(|(fd, _)| fd)
             .collect();
@@ -1755,7 +2008,11 @@ fn mq_timed_blocking_errno(timeout_ptr: usize, nonblock: bool) -> i32 {
     let mut now_sec: i64 = 0;
     let mut now_nsec: i64 = 0;
     let rc = unsafe {
-        host_clock_gettime(0 /* CLOCK_REALTIME */, &mut now_sec as *mut i64, &mut now_nsec as *mut i64)
+        host_clock_gettime(
+            0, /* CLOCK_REALTIME */
+            &mut now_sec as *mut i64,
+            &mut now_nsec as *mut i64,
+        )
     };
     if rc == 0 && (sec < now_sec || (sec == now_sec && nsec <= now_nsec)) {
         return -(Errno::ETIMEDOUT as i32);
@@ -1791,15 +2048,26 @@ pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
         core::slice::from_raw_parts(ptr, MIN_CHANNEL_SIZE)
     };
 
-    let syscall_nr = u32::from_le_bytes([mem[SYSCALL_OFFSET], mem[SYSCALL_OFFSET+1], mem[SYSCALL_OFFSET+2], mem[SYSCALL_OFFSET+3]]);
+    let syscall_nr = u32::from_le_bytes([
+        mem[SYSCALL_OFFSET],
+        mem[SYSCALL_OFFSET + 1],
+        mem[SYSCALL_OFFSET + 2],
+        mem[SYSCALL_OFFSET + 3],
+    ]);
 
     // Read i64 args (each arg is 8 bytes in the widened channel layout)
     let mut args = [0i64; ARGS_COUNT];
     for i in 0..ARGS_COUNT {
         let off = ARGS_OFFSET + i * ARG_SIZE;
         args[i] = i64::from_le_bytes([
-            mem[off], mem[off+1], mem[off+2], mem[off+3],
-            mem[off+4], mem[off+5], mem[off+6], mem[off+7],
+            mem[off],
+            mem[off + 1],
+            mem[off + 2],
+            mem[off + 3],
+            mem[off + 4],
+            mem[off + 5],
+            mem[off + 6],
+            mem[off + 7],
         ]);
     }
 
@@ -1829,8 +2097,8 @@ pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
         errno_val = 0;
     }
 
-    out[RETURN_OFFSET..RETURN_OFFSET+8].copy_from_slice(&ret_val.to_le_bytes());
-    out[ERRNO_OFFSET..ERRNO_OFFSET+4].copy_from_slice(&errno_val.to_le_bytes());
+    out[RETURN_OFFSET..RETURN_OFFSET + 8].copy_from_slice(&ret_val.to_le_bytes());
+    out[ERRNO_OFFSET..ERRNO_OFFSET + 4].copy_from_slice(&errno_val.to_le_bytes());
 
     result
 }
@@ -1838,7 +2106,9 @@ pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
 /// Compute the length of a null-terminated C string at `ptr` in kernel memory.
 /// Safety: `ptr` must point to valid kernel memory containing a null terminator.
 unsafe fn cstr_len(ptr: *const u8) -> u32 {
-    if ptr.is_null() { return 0; }
+    if ptr.is_null() {
+        return 0;
+    }
     let mut len = 0u32;
     while unsafe { *ptr.add(len as usize) } != 0 && len < 4096 {
         len += 1;
@@ -1867,15 +2137,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
     // Syscall number constants (must match glue/syscall_glue.c)
     match nr {
         // Process info (0-arg)
-        28 => kernel_getpid(),                     // SYS_GETPID
-        29 => kernel_getppid(),                    // SYS_GETPPID
-        30 => kernel_getuid() as i32,              // SYS_GETUID
-        31 => kernel_geteuid() as i32,             // SYS_GETEUID
-        32 => kernel_getgid() as i32,              // SYS_GETGID
-        33 => kernel_getegid() as i32,             // SYS_GETEGID
-        89 => kernel_getpgrp() as i32,             // SYS_GETPGRP
-        92 => kernel_setsid() as i32,              // SYS_SETSID
-        214 => {                                   // SYS_GETPGID
+        28 => kernel_getpid(),         // SYS_GETPID
+        29 => kernel_getppid(),        // SYS_GETPPID
+        30 => kernel_getuid() as i32,  // SYS_GETUID
+        31 => kernel_geteuid() as i32, // SYS_GETEUID
+        32 => kernel_getgid() as i32,  // SYS_GETGID
+        33 => kernel_getegid() as i32, // SYS_GETEGID
+        89 => kernel_getpgrp() as i32, // SYS_GETPGRP
+        92 => kernel_setsid() as i32,  // SYS_SETSID
+        214 => {
+            // SYS_GETPGID
             let (_gkl, proc) = unsafe { get_process() };
             let pid = a1 as u32;
             // In centralized mode, support cross-process getpgid via ProcessTable
@@ -1894,12 +2165,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
 
         // File operations — musl: (path, flags, mode)
-        1 => { // SYS_OPEN
+        1 => {
+            // SYS_OPEN
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_open(p, len, a2 as u32, a3 as u32)
         }
-        2 => { // SYS_CLOSE
+        2 => {
+            // SYS_CLOSE
             // Check if this is a mqueue descriptor
             let mq_table = unsafe { crate::mqueue::global_mqueue_table() };
             if mq_table.is_mqd(a1 as u32) {
@@ -1914,7 +2187,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         3 => kernel_read(a1, a2 as *mut u8, a3 as u32), // SYS_READ: (fd, buf, count)
         4 => kernel_write(a1, a2 as *const u8, a3 as u32), // SYS_WRITE: (fd, buf, count)
         5 => kernel_lseek(a1, a2 as u32, a3, a4 as u32) as i32, // SYS_LSEEK: (fd, off_lo, off_hi, whence)
-        119 => {  // SYS__LLSEEK: (fd, off_hi, off_lo, result_ptr, whence)
+        119 => {
+            // SYS__LLSEEK: (fd, off_hi, off_lo, result_ptr, whence)
             let result = kernel_lseek(a1, a3 as u32, a2, a5 as u32);
             if result < 0 {
                 result as i32
@@ -1930,120 +2204,143 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 0
             }
         }
-        6 => kernel_fstat(a1, a2 as *mut u8),      // SYS_FSTAT: (fd, stat_ptr)
+        6 => kernel_fstat(a1, a2 as *mut u8), // SYS_FSTAT: (fd, stat_ptr)
         64 => kernel_pread(a1, a2 as *mut u8, a3 as u32, args[3]), // SYS_PREAD: (fd, buf, count, offset)
         65 => kernel_pwrite(a1, a2 as *const u8, a3 as u32, args[3]), // SYS_PWRITE: (fd, buf, count, offset)
 
         // FD operations
-        7 => kernel_dup(a1),                       // SYS_DUP
-        8 => kernel_dup2(a1, a2),                  // SYS_DUP2
-        77 => kernel_dup3(a1, a2, a3 as u32),      // SYS_DUP3
-        9 => kernel_pipe(a1 as *mut i32),          // SYS_PIPE: (pipefd_ptr)
+        7 => kernel_dup(a1),                           // SYS_DUP
+        8 => kernel_dup2(a1, a2),                      // SYS_DUP2
+        77 => kernel_dup3(a1, a2, a3 as u32),          // SYS_DUP3
+        9 => kernel_pipe(a1 as *mut i32),              // SYS_PIPE: (pipefd_ptr)
         78 => kernel_pipe2(a2 as u32, a1 as *mut i32), // SYS_PIPE2: (pipefd_ptr, flags) → kernel wants (flags, pipefd_ptr)
-        10 => {  // SYS_FCNTL: (fd, cmd, arg)
+        10 => {
+            // SYS_FCNTL: (fd, cmd, arg)
             match a2 as u32 {
                 // Lock commands: arg is a pointer to struct flock
                 // POSIX: 5=F_GETLK, 6=F_SETLK, 7=F_SETLKW; 12-14=64-bit variants
                 // OFD:   36=F_OFD_GETLK, 37=F_OFD_SETLK, 38=F_OFD_SETLKW
-                5 | 6 | 7 | 12 | 13 | 14 | 36 | 37 | 38 => kernel_fcntl_lock(a1, a2 as u32, a3 as *mut u8),
+                5 | 6 | 7 | 12 | 13 | 14 | 36 | 37 | 38 => {
+                    kernel_fcntl_lock(a1, a2 as u32, a3 as *mut u8)
+                }
                 _ => kernel_fcntl(a1, a2 as u32, a3 as u32),
             }
         }
-        121 => kernel_flock(a1, a2 as u32),        // SYS_FLOCK
+        121 => kernel_flock(a1, a2 as u32), // SYS_FLOCK
 
         // Stat — musl: (path, stat_buf) / (path, stat_buf) / (dirfd, path, stat_buf, flags)
-        11 => { // SYS_STAT
+        11 => {
+            // SYS_STAT
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_stat(p, len, a2 as *mut u8)
         }
-        12 => { // SYS_LSTAT
+        12 => {
+            // SYS_LSTAT
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_lstat(p, len, a2 as *mut u8)
         }
-        93 => { // SYS_FSTATAT: (dirfd, path, stat_buf, flags)
+        93 => {
+            // SYS_FSTATAT: (dirfd, path, stat_buf, flags)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_fstatat(a1, p, len, a3 as *mut u8, a4 as u32)
         }
 
         // Directory operations — musl passes null-terminated paths
-        13 => { // SYS_MKDIR: (path, mode)
+        13 => {
+            // SYS_MKDIR: (path, mode)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_mkdir(p, len, a2 as u32)
         }
-        14 => { // SYS_RMDIR: (path)
+        14 => {
+            // SYS_RMDIR: (path)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_rmdir(p, len)
         }
-        15 => { // SYS_UNLINK: (path)
+        15 => {
+            // SYS_UNLINK: (path)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_unlink(p, len)
         }
-        16 => { // SYS_RENAME: (old_path, new_path)
+        16 => {
+            // SYS_RENAME: (old_path, new_path)
             let old = a1 as *const u8;
             let new = a2 as *const u8;
             kernel_rename(old, unsafe { cstr_len(old) }, new, unsafe { cstr_len(new) })
         }
-        17 => { // SYS_LINK: (old_path, new_path)
+        17 => {
+            // SYS_LINK: (old_path, new_path)
             let old = a1 as *const u8;
             let new = a2 as *const u8;
             kernel_link(old, unsafe { cstr_len(old) }, new, unsafe { cstr_len(new) })
         }
-        18 => { // SYS_SYMLINK: (target, linkpath)
+        18 => {
+            // SYS_SYMLINK: (target, linkpath)
             let tgt = a1 as *const u8;
             let lnk = a2 as *const u8;
             kernel_symlink(tgt, unsafe { cstr_len(tgt) }, lnk, unsafe { cstr_len(lnk) })
         }
-        19 => { // SYS_READLINK: (path, buf, bufsiz)
+        19 => {
+            // SYS_READLINK: (path, buf, bufsiz)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_readlink(p, len, a2 as *mut u8, a3 as u32)
         }
-        20 => { // SYS_CHMOD: (path, mode)
+        20 => {
+            // SYS_CHMOD: (path, mode)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_chmod(p, len, a2 as u32)
         }
-        21 => { // SYS_CHOWN: (path, uid, gid)
+        21 => {
+            // SYS_CHOWN: (path, uid, gid)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_chown(p, len, a2 as u32, a3 as u32)
         }
-        22 => { // SYS_ACCESS: (path, mode)
+        22 => {
+            // SYS_ACCESS: (path, mode)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_access(p, len, a2 as u32)
         }
         23 => kernel_getcwd(a1 as *mut u8, a2 as u32), // SYS_GETCWD: (buf, size)
-        24 => { // SYS_CHDIR: (path)
+        24 => {
+            // SYS_CHDIR: (path)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_chdir(p, len)
         }
-        127 => kernel_fchdir(a1),                  // SYS_FCHDIR
-        25 => { // SYS_OPENDIR: (path)
+        127 => kernel_fchdir(a1), // SYS_FCHDIR
+        25 => {
+            // SYS_OPENDIR: (path)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_opendir(p, len)
         }
         26 => kernel_readdir(a1, a2 as *mut u8, a3 as *mut u8, a4 as u32), // SYS_READDIR
-        27 => kernel_closedir(a1),                 // SYS_CLOSEDIR
-        122 => kernel_getdents64(a1, a2 as *mut u8, a3 as u32), // SYS_GETDENTS64
+        27 => kernel_closedir(a1),                                         // SYS_CLOSEDIR
+        122 => kernel_getdents64(a1, a2 as *mut u8, a3 as u32),            // SYS_GETDENTS64
 
         // Process control
-        34 => { kernel_exit(a1); }                 // SYS_EXIT (thread exit)
-        387 => { kernel_exit(a1); }                // SYS_EXIT_GROUP (process exit)
-        35 => kernel_kill(a1, a2 as u32),          // SYS_KILL
-        38 => kernel_raise(a1 as u32),             // SYS_RAISE
+        34 => {
+            kernel_exit(a1);
+        } // SYS_EXIT (thread exit)
+        387 => {
+            kernel_exit(a1);
+        } // SYS_EXIT_GROUP (process exit)
+        35 => kernel_kill(a1, a2 as u32), // SYS_KILL
+        38 => kernel_raise(a1 as u32),    // SYS_RAISE
 
         // Signals
         36 => kernel_sigaction(a1 as u32, a2 as *const u8, a3 as *mut u8), // SYS_SIGACTION
-        37 => {  // SYS_SIGPROCMASK: (how, set_ptr, oldset_ptr, sigsetsize)
+        37 => {
+            // SYS_SIGPROCMASK: (how, set_ptr, oldset_ptr, sigsetsize)
             // musl passes pointers to sigset_t (8 bytes). Read set from pointer,
             // call kernel, write old set to output pointer.
             // POSIX: if set is NULL, the signal mask is not changed (query only).
@@ -2063,7 +2360,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     let ptr = a3 as usize as *mut u8;
                     unsafe {
                         let bytes = old_mask.to_le_bytes();
-                        for i in 0..8 { *ptr.add(i) = bytes[i]; }
+                        for i in 0..8 {
+                            *ptr.add(i) = bytes[i];
+                        }
                     }
                 }
                 let mut host = WasmHostIO;
@@ -2075,15 +2374,18 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     let ptr = a3 as usize as *mut u8;
                     unsafe {
                         let bytes = proc.signals.blocked.to_le_bytes();
-                        for i in 0..8 { *ptr.add(i) = bytes[i]; }
+                        for i in 0..8 {
+                            *ptr.add(i) = bytes[i];
+                        }
                     }
                 }
                 0
             }
         }
         73 => kernel_signal(a1 as u32, a2 as u32 as usize), // SYS_SIGNAL
-        39 => kernel_alarm(a1 as u32),             // SYS_ALARM
-        110 => {  // SYS_SIGSUSPEND: (mask_ptr, sigsetsize)
+        39 => kernel_alarm(a1 as u32),                      // SYS_ALARM
+        110 => {
+            // SYS_SIGSUSPEND: (mask_ptr, sigsetsize)
             let (mask_lo, mask_hi) = if a1 != 0 {
                 let ptr = a1 as usize as *const u32;
                 unsafe { (*ptr, *ptr.add(1)) }
@@ -2092,26 +2394,34 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             };
             kernel_sigsuspend(mask_lo, mask_hi)
         }
-        111 => kernel_pause(),                     // SYS_PAUSE
-        206 => {  // SYS_RT_SIGPENDING: (set_ptr, sigsetsize)
+        111 => kernel_pause(), // SYS_PAUSE
+        206 => {
+            // SYS_RT_SIGPENDING: (set_ptr, sigsetsize)
             let (_gkl, proc) = unsafe { get_process() };
             if a1 != 0 {
                 let ptr = a1 as usize as *mut u8;
                 unsafe {
                     let bytes = proc.signals.pending.to_le_bytes();
-                    for i in 0..8 { *ptr.add(i) = bytes[i]; }
+                    for i in 0..8 {
+                        *ptr.add(i) = bytes[i];
+                    }
                 }
             }
             0
         }
-        207 => { // SYS_RT_SIGTIMEDWAIT: (mask_ptr, info_ptr, timeout_ptr, sigsetsize)
+        207 => {
+            // SYS_RT_SIGTIMEDWAIT: (mask_ptr, info_ptr, timeout_ptr, sigsetsize)
             let (_gkl, proc) = unsafe { get_process() };
             let mut host = WasmHostIO;
             // Read the 64-bit signal mask from the pointer
             let mask = if a1 != 0 {
                 let p = a1 as usize as *const u8;
                 let mut bytes = [0u8; 8];
-                unsafe { for i in 0..8 { bytes[i] = *p.add(i); } }
+                unsafe {
+                    for i in 0..8 {
+                        bytes[i] = *p.add(i);
+                    }
+                }
                 u64::from_le_bytes(bytes)
             } else {
                 0
@@ -2122,8 +2432,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let mut sec_bytes = [0u8; 8];
                 let mut nsec_bytes = [0u8; 8];
                 unsafe {
-                    for i in 0..8 { sec_bytes[i] = *p.add(i); }
-                    for i in 0..8 { nsec_bytes[i] = *p.add(8 + i); }
+                    for i in 0..8 {
+                        sec_bytes[i] = *p.add(i);
+                    }
+                    for i in 0..8 {
+                        nsec_bytes[i] = *p.add(8 + i);
+                    }
                 }
                 let sec = i64::from_le_bytes(sec_bytes);
                 let nsec = i64::from_le_bytes(nsec_bytes);
@@ -2144,11 +2458,21 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                         let uid_bytes = proc.uid.to_le_bytes();
                         let val_bytes = si_value.to_le_bytes();
                         unsafe {
-                            for i in 0..4 { *p.add(i) = sig_bytes[i]; }
-                            for i in 0..4 { *p.add(8 + i) = code_bytes[i]; }
-                            for i in 0..4 { *p.add(12 + i) = pid_bytes[i]; }
-                            for i in 0..4 { *p.add(16 + i) = uid_bytes[i]; }
-                            for i in 0..4 { *p.add(20 + i) = val_bytes[i]; }
+                            for i in 0..4 {
+                                *p.add(i) = sig_bytes[i];
+                            }
+                            for i in 0..4 {
+                                *p.add(8 + i) = code_bytes[i];
+                            }
+                            for i in 0..4 {
+                                *p.add(12 + i) = pid_bytes[i];
+                            }
+                            for i in 0..4 {
+                                *p.add(16 + i) = uid_bytes[i];
+                            }
+                            for i in 0..4 {
+                                *p.add(20 + i) = val_bytes[i];
+                            }
                         }
                     }
                     sig as i32
@@ -2161,10 +2485,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // Time
         40 => kernel_clock_gettime(a1 as u32, a2 as *mut u8), // SYS_CLOCK_GETTIME
-        41 => kernel_nanosleep(a1 as *const u8),   // SYS_NANOSLEEP
+        41 => kernel_nanosleep(a1 as *const u8),              // SYS_NANOSLEEP
         123 => kernel_clock_getres(a1 as u32, a2 as *mut u8), // SYS_CLOCK_GETRES
         124 => kernel_clock_nanosleep(a1 as u32, a2 as u32, a3 as *const u8), // SYS_CLOCK_NANOSLEEP
-        125 => { // SYS_UTIMENSAT: (dirfd, path, times, flags)
+        125 => {
+            // SYS_UTIMENSAT: (dirfd, path, times, flags)
             // path can be NULL (0) for futimens(fd, times) → utimensat(fd, NULL, times, 0)
             let (p, len) = if a2 == 0 {
                 (core::ptr::null(), 0u32)
@@ -2174,45 +2499,64 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             };
             kernel_utimensat(a1, p, len, a3 as *const u8, a4 as u32)
         }
-        66 => kernel_time() as i32,                // SYS_TIME
-        68 => kernel_usleep(a1 as u32),            // SYS_USLEEP
+        66 => kernel_time() as i32,     // SYS_TIME
+        68 => kernel_usleep(a1 as u32), // SYS_USLEEP
 
         // Memory
-        46 => { // SYS_MMAP: (addr, len, prot, flags, fd, pgoffset)
+        46 => {
+            // SYS_MMAP: (addr, len, prot, flags, fd, pgoffset)
             // musl sends page offset (off / 4096) as a6.
             // Convert to byte offset for kernel_mmap (lo, hi).
             let pgoff = a6 as u32;
             let byte_off = (pgoff as u64) << 12; // * 4096
-            kernel_mmap(a1 as usize, a2 as usize, a3 as u32, a4 as u32, a5, byte_off as u32, (byte_off >> 32) as i32) as i32
+            kernel_mmap(
+                a1 as usize,
+                a2 as usize,
+                a3 as u32,
+                a4 as u32,
+                a5,
+                byte_off as u32,
+                (byte_off >> 32) as i32,
+            ) as i32
         }
         47 => kernel_munmap(a1 as usize, a2 as usize), // SYS_MUNMAP
-        48 => kernel_brk(a1 as usize) as i32,        // SYS_BRK
+        48 => kernel_brk(a1 as usize) as i32,          // SYS_BRK
         49 => kernel_mprotect(a1 as usize, a2 as usize, a3 as u32), // SYS_MPROTECT
         126 => kernel_mremap(a1 as usize, a2 as usize, a3 as usize, a4 as u32) as i32, // SYS_MREMAP
         128 => kernel_madvise(a1 as usize, a2 as usize, a3 as u32), // SYS_MADVISE
 
         // Environment — musl: name/value are null-terminated strings
-        42 => kernel_isatty(a1),                   // SYS_ISATTY
-        43 => { // SYS_GETENV: (name, buf, buf_len)
+        42 => kernel_isatty(a1), // SYS_ISATTY
+        43 => {
+            // SYS_GETENV: (name, buf, buf_len)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_getenv(p, len, a2 as *mut u8, a3 as u32)
         }
-        44 => { // SYS_SETENV: (name, value, overwrite)
+        44 => {
+            // SYS_SETENV: (name, value, overwrite)
             let n = a1 as *const u8;
             let v = a2 as *const u8;
-            kernel_setenv(n, unsafe { cstr_len(n) }, v, unsafe { cstr_len(v) }, a3 as u32)
+            kernel_setenv(
+                n,
+                unsafe { cstr_len(n) },
+                v,
+                unsafe { cstr_len(v) },
+                a3 as u32,
+            )
         }
-        45 => { // SYS_UNSETENV: (name)
+        45 => {
+            // SYS_UNSETENV: (name)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_unsetenv(p, len)
         }
-        74 => kernel_umask(a1 as u32) as i32,      // SYS_UMASK
+        74 => kernel_umask(a1 as u32) as i32,   // SYS_UMASK
         75 => kernel_uname(a1 as *mut u8, 390), // SYS_UNAME (musl passes 1 arg; struct utsname = 6x65 = 390)
-        76 => kernel_sysconf(a1) as i32,           // SYS_SYSCONF
+        76 => kernel_sysconf(a1) as i32,        // SYS_SYSCONF
         120 => kernel_getrandom(a1 as *mut u8, a2 as u32, a3 as u32), // SYS_GETRANDOM
-        109 => { // SYS_REALPATH: (path, buf, buf_len)
+        109 => {
+            // SYS_REALPATH: (path, buf, buf_len)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_realpath(p, len, a2 as *mut u8, a3 as u32)
@@ -2221,31 +2565,53 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // Sockets
         50 => kernel_socket(a1 as u32, a2 as u32, a3 as u32), // SYS_SOCKET
         61 => kernel_socketpair(a1 as u32, a2 as u32, a3 as u32, a4 as *mut i32), // SYS_SOCKETPAIR
-        51 => kernel_bind(a1, a2 as *const u8, a3 as u32), // SYS_BIND
-        52 => kernel_listen(a1, a2 as u32),        // SYS_LISTEN
+        51 => kernel_bind(a1, a2 as *const u8, a3 as u32),    // SYS_BIND
+        52 => kernel_listen(a1, a2 as u32),                   // SYS_LISTEN
         53 => kernel_accept4(a1, a2 as *mut u8, a3 as *mut u8, 0), // SYS_ACCEPT
         384 => kernel_accept4(a1, a2 as *mut u8, a3 as *mut u8, a4 as u32), // SYS_ACCEPT4
         54 => kernel_connect(a1, a2 as *const u8, a3 as u32), // SYS_CONNECT
         55 => kernel_send(a1, a2 as *const u8, a3 as u32, a4 as u32), // SYS_SEND
         56 => kernel_recv(a1, a2 as *mut u8, a3 as u32, a4 as u32), // SYS_RECV
-        57 => kernel_shutdown(a1, a2 as u32),      // SYS_SHUTDOWN
+        57 => kernel_shutdown(a1, a2 as u32),                 // SYS_SHUTDOWN
         58 => kernel_getsockopt(a1, a2 as u32, a3 as u32, a4 as *mut u8, a5 as *mut u32), // SYS_GETSOCKOPT
         59 => kernel_setsockopt(a1, a2 as u32, a3 as u32, a4 as *const u8, a5 as u32), // SYS_SETSOCKOPT
         114 => kernel_getsockname(a1, a2 as *mut u8, a3 as *mut u32), // SYS_GETSOCKNAME
         115 => kernel_getpeername(a1, a2 as *mut u8, a3 as *mut u32), // SYS_GETPEERNAME
-        140 => { // SYS_GETADDRINFO: (name, result_buf)
+        140 => {
+            // SYS_GETADDRINFO: (name, result_buf)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_getaddrinfo(p, len, a2 as *mut u8)
         }
         137 => kernel_sendmsg(a1, a2 as *const u8, a3 as u32), // SYS_SENDMSG
-        138 => kernel_recvmsg(a1, a2 as *mut u8, a3 as u32), // SYS_RECVMSG
-        62 => kernel_sendto(a1, a2 as *const u8, a3 as u32, a4 as u32, a5 as *const u8, a6 as u32), // SYS_SENDTO
-        63 => kernel_recvfrom(a1, a2 as *mut u8, a3 as u32, a4 as u32, a5 as *mut u8, a6 as *mut u32), // SYS_RECVFROM
+        138 => kernel_recvmsg(a1, a2 as *mut u8, a3 as u32),   // SYS_RECVMSG
+        62 => kernel_sendto(
+            a1,
+            a2 as *const u8,
+            a3 as u32,
+            a4 as u32,
+            a5 as *const u8,
+            a6 as u32,
+        ), // SYS_SENDTO
+        63 => kernel_recvfrom(
+            a1,
+            a2 as *mut u8,
+            a3 as u32,
+            a4 as u32,
+            a5 as *mut u8,
+            a6 as *mut u32,
+        ), // SYS_RECVFROM
 
         // Poll/select
         60 => kernel_poll(a1 as *mut u8, a2 as u32, a3), // SYS_POLL
-        251 => kernel_ppoll(a1 as *mut u8, a2 as u32, a3, a4 as u32, a5 as u32, a6 as u32), // SYS_PPOLL
+        251 => kernel_ppoll(
+            a1 as *mut u8,
+            a2 as u32,
+            a3,
+            a4 as u32,
+            a5 as u32,
+            a6 as u32,
+        ), // SYS_PPOLL
         103 => kernel_select(a1, a2 as *mut u8, a3 as *mut u8, a4 as *mut u8, a5 as i32), // SYS_SELECT
 
         // Terminal
@@ -2255,21 +2621,23 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // File system
         79 => kernel_ftruncate(a1, args[1]), // SYS_FTRUNCATE: (fd, length)
-        80 => kernel_fsync(a1),                    // SYS_FSYNC
-        85 => { // SYS_TRUNCATE: (path, length)
+        80 => kernel_fsync(a1),              // SYS_FSYNC
+        85 => {
+            // SYS_TRUNCATE: (path, length)
             let p = a1 as *const u8;
             let plen = unsafe { cstr_len(p) };
             kernel_truncate(p, plen, args[1])
         }
-        86 => kernel_fdatasync(a1),                // SYS_FDATASYNC
-        87 => kernel_fchmod(a1, a2 as u32),        // SYS_FCHMOD
+        86 => kernel_fdatasync(a1),                    // SYS_FDATASYNC
+        87 => kernel_fchmod(a1, a2 as u32),            // SYS_FCHMOD
         88 => kernel_fchown(a1, a2 as u32, a3 as u32), // SYS_FCHOWN
-        129 => { // SYS_STATFS64: (path, sizeof, statfs_buf)
+        129 => {
+            // SYS_STATFS64: (path, sizeof, statfs_buf)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_statfs(p, len, a3 as *mut u8)
         }
-        130 => kernel_fstatfs(a1, a3 as *mut u8),  // SYS_FSTATFS64: (fd, sizeof, buf)
+        130 => kernel_fstatfs(a1, a3 as *mut u8), // SYS_FSTATFS64: (fd, sizeof, buf)
         81 => kernel_writev(a1, a2 as *const u8, a3), // SYS_WRITEV
         82 => kernel_readv(a1, a2 as *mut u8, a3), // SYS_READV
         295 => kernel_preadv(a1, a2 as *mut u8, a3, a4 as u32, a5), // SYS_PREADV
@@ -2277,52 +2645,74 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         294 => kernel_sendfile(a1, a2, a3 as *mut u8, a4 as u32), // SYS_SENDFILE
 
         // *at variants — musl: (dirfd, path, ...) without explicit path_len
-        69 => { // SYS_OPENAT: (dirfd, path, flags, mode)
+        69 => {
+            // SYS_OPENAT: (dirfd, path, flags, mode)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_openat(a1, p, len, a3 as u32, a4 as u32)
         }
-        94 => { // SYS_UNLINKAT: (dirfd, path, flags)
+        94 => {
+            // SYS_UNLINKAT: (dirfd, path, flags)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_unlinkat(a1, p, len, a3 as u32)
         }
-        95 => { // SYS_MKDIRAT: (dirfd, path, mode)
+        95 => {
+            // SYS_MKDIRAT: (dirfd, path, mode)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_mkdirat(a1, p, len, a3 as u32)
         }
-        96 => { // SYS_RENAMEAT: (olddirfd, oldpath, newdirfd, newpath)
+        96 => {
+            // SYS_RENAMEAT: (olddirfd, oldpath, newdirfd, newpath)
             let old = a2 as *const u8;
             let new = a4 as *const u8;
-            kernel_renameat(a1, old, unsafe { cstr_len(old) }, a3, new, unsafe { cstr_len(new) })
+            kernel_renameat(a1, old, unsafe { cstr_len(old) }, a3, new, unsafe {
+                cstr_len(new)
+            })
         }
-        97 => { // SYS_FACCESSAT: (dirfd, path, mode, flags)
+        97 => {
+            // SYS_FACCESSAT: (dirfd, path, mode, flags)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_faccessat(a1, p, len, a3 as u32, a4 as u32)
         }
-        98 => { // SYS_FCHMODAT: (dirfd, path, mode, flags)
+        98 => {
+            // SYS_FCHMODAT: (dirfd, path, mode, flags)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_fchmodat(a1, p, len, a3 as u32, a4 as u32)
         }
-        99 => { // SYS_FCHOWNAT: (dirfd, path, uid, gid, flags)
+        99 => {
+            // SYS_FCHOWNAT: (dirfd, path, uid, gid, flags)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_fchownat(a1, p, len, a3 as u32, a4 as u32, a5 as u32)
         }
-        100 => { // SYS_LINKAT: (olddirfd, oldpath, newdirfd, newpath, flags)
+        100 => {
+            // SYS_LINKAT: (olddirfd, oldpath, newdirfd, newpath, flags)
             let old = a2 as *const u8;
             let new = a4 as *const u8;
-            kernel_linkat(a1, old, unsafe { cstr_len(old) }, a3, new, unsafe { cstr_len(new) }, a5 as u32)
+            kernel_linkat(
+                a1,
+                old,
+                unsafe { cstr_len(old) },
+                a3,
+                new,
+                unsafe { cstr_len(new) },
+                a5 as u32,
+            )
         }
-        101 => { // SYS_SYMLINKAT: (target, newdirfd, linkpath)
+        101 => {
+            // SYS_SYMLINKAT: (target, newdirfd, linkpath)
             let tgt = a1 as *const u8;
             let lnk = a3 as *const u8;
-            kernel_symlinkat(tgt, unsafe { cstr_len(tgt) }, a2, lnk, unsafe { cstr_len(lnk) })
+            kernel_symlinkat(tgt, unsafe { cstr_len(tgt) }, a2, lnk, unsafe {
+                cstr_len(lnk)
+            })
         }
-        102 => { // SYS_READLINKAT: (dirfd, path, buf, bufsiz)
+        102 => {
+            // SYS_READLINKAT: (dirfd, path, buf, bufsiz)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_readlinkat(a1, p, len, a3 as *mut u8, a4 as u32)
@@ -2331,7 +2721,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // Resource limits
         83 => kernel_getrlimit(a1 as u32, a2 as *mut u8), // SYS_GETRLIMIT
         84 => kernel_setrlimit(a1 as u32, a2 as *const u8), // SYS_SETRLIMIT
-        250 => {  // SYS_PRLIMIT64: (pid, resource, new_rlim_ptr, old_rlim_ptr)
+        250 => {
+            // SYS_PRLIMIT64: (pid, resource, new_rlim_ptr, old_rlim_ptr)
             // Get old limits first, then set new
             let mut ret = 0i32;
             if a4 != 0 {
@@ -2344,7 +2735,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
 
         // UID/GID
-        90 => {                                    // SYS_SETPGID
+        90 => {
+            // SYS_SETPGID
             let pid = a1 as u32;
             let pgid = a2 as u32;
             let (_gkl, proc) = unsafe { get_process() };
@@ -2388,7 +2780,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 -(Errno::ESRCH as i32)
             }
         }
-        91 => {                                    // SYS_GETSID
+        91 => {
+            // SYS_GETSID
             let (_gkl, proc) = unsafe { get_process() };
             let pid = a1 as u32;
             // In centralized mode, support cross-process getsid via ProcessTable
@@ -2405,10 +2798,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 }
             }
         }
-        104 => kernel_setuid(a1 as u32),           // SYS_SETUID
-        105 => kernel_setgid(a1 as u32),           // SYS_SETGID
-        106 => kernel_seteuid(a1 as u32),          // SYS_SETEUID
-        107 => kernel_setegid(a1 as u32),          // SYS_SETEGID
+        104 => kernel_setuid(a1 as u32),  // SYS_SETUID
+        105 => kernel_setgid(a1 as u32),  // SYS_SETGID
+        106 => kernel_seteuid(a1 as u32), // SYS_SETEUID
+        107 => kernel_setegid(a1 as u32), // SYS_SETEGID
         108 => kernel_getrusage(a1, a2 as *mut u8, 144), // SYS_GETRUSAGE (musl passes 2 args; time64 rusage = 18x8 = 144)
         131 => kernel_setresuid(a1 as u32, a2 as u32, a3 as u32), // SYS_SETRESUID
         132 => kernel_getresuid(a1 as *mut u32, a2 as *mut u32, a3 as *mut u32), // SYS_GETRESUID
@@ -2421,26 +2814,43 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         139 => kernel_wait4(a1, a2 as *mut i32, a3 as u32, a4 as *mut u8), // SYS_WAIT4
 
         // Fork/exec/clone
-        211 => { // SYS_EXECVE: (path, ...)
+        211 => {
+            // SYS_EXECVE: (path, ...)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_execve(p, len)
         }
-        386 => { // SYS_EXECVEAT: (dirfd, path, argv, envp, flags)
+        386 => {
+            // SYS_EXECVEAT: (dirfd, path, argv, envp, flags)
             let p = a2 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_execveat(a1 as i32, p, len, a5 as u32)
         }
-        212 => kernel_fork(),                      // SYS_FORK
-        213 => kernel_fork(),                      // SYS_VFORK (treat as fork)
-        201 => kernel_clone(0, a2 as usize, a1 as u32, 0, a3 as usize, a4 as usize, a5 as usize), // SYS_CLONE
+        212 => kernel_fork(), // SYS_FORK
+        213 => kernel_fork(), // SYS_VFORK (treat as fork)
+        201 => kernel_clone(
+            0,
+            a2 as usize,
+            a1 as u32,
+            0,
+            a3 as usize,
+            a4 as usize,
+            a5 as usize,
+        ), // SYS_CLONE
 
         // Futex
-        200 => kernel_futex(a1 as u32 as usize, a2 as u32, a3 as u32, a4 as u32, a5 as u32 as usize, a6 as u32), // SYS_FUTEX
+        200 => kernel_futex(
+            a1 as u32 as usize,
+            a2 as u32,
+            a3 as u32,
+            a4 as u32,
+            a5 as u32 as usize,
+            a6 as u32,
+        ), // SYS_FUTEX
 
         // Thread
-        202 => kernel_gettid(),                    // SYS_GETTID
-        203 => kernel_set_tid_address(a1 as u32 as usize),  // SYS_SET_TID_ADDRESS
+        202 => kernel_gettid(),                            // SYS_GETTID
+        203 => kernel_set_tid_address(a1 as u32 as usize), // SYS_SET_TID_ADDRESS
         261 => kernel_set_robust_list(a1 as u32 as usize, a2 as u32 as usize), // SYS_SET_ROBUST_LIST
         262 => kernel_get_robust_list(a1 as u32, a2 as u32 as usize, a3 as u32 as usize), // SYS_GET_ROBUST_LIST
 
@@ -2448,12 +2858,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         223 => kernel_prctl(a1 as u32, a2 as u32, a3 as *mut u8, a4 as u32), // SYS_PRCTL
 
         // pathconf
-        112 => { // SYS_PATHCONF
+        112 => {
+            // SYS_PATHCONF
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_pathconf(p, len as u32, a2) as i32
         }
-        113 => kernel_fpathconf(a1, a2) as i32,    // SYS_FPATHCONF
+        113 => kernel_fpathconf(a1, a2) as i32, // SYS_FPATHCONF
 
         // setreuid/setregid — map to setresuid/setresgid with -1 for saved ID
         215 => kernel_setresuid(a1 as u32, a2 as u32, 0xFFFFFFFF), // SYS_SETREUID
@@ -2461,7 +2872,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // Timer
         225 => kernel_setitimer(a1 as u32, a2 as *const u8, a3 as *mut u8), // SYS_SETITIMER
-        224 => kernel_getitimer(a1 as u32, a2 as *mut u8), // SYS_GETITIMER
+        224 => kernel_getitimer(a1 as u32, a2 as *mut u8),                  // SYS_GETITIMER
         // clock_settime — always return EPERM (cannot set clock in Wasm sandbox)
         226 => -(Errno::EPERM as i32), // SYS_CLOCK_SETTIME
         // sched_yield — no-op in Wasm (single-threaded per worker)
@@ -2475,7 +2886,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
 
         // SysV IPC — handled by kernel IpcTable
-        337 => { // SYS_MSGGET: (key, flags)
+        337 => {
+            // SYS_MSGGET: (key, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             // Get uid/gid from current process
@@ -2491,7 +2903,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        338 => { // SYS_MSGRCV: (qid, msgp, msgsz, msgtyp, flags)
+        338 => {
+            // SYS_MSGRCV: (qid, msgp, msgsz, msgtyp, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             match ipc.msgrcv(a1, a3 as u32, a4, a5 as u32, pid) {
@@ -2500,7 +2913,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     let out = a2 as *mut u8;
                     let mtype_bytes = result.mtype.to_le_bytes();
                     unsafe {
-                        for i in 0..4 { *out.add(i) = mtype_bytes[i]; }
+                        for i in 0..4 {
+                            *out.add(i) = mtype_bytes[i];
+                        }
                         for (i, &b) in result.data.iter().enumerate() {
                             *out.add(4 + i) = b;
                         }
@@ -2510,22 +2925,23 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        339 => { // SYS_MSGSND: (qid, msgp, msgsz, flags)
+        339 => {
+            // SYS_MSGSND: (qid, msgp, msgsz, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             // Read mtype from msgp, mtext from msgp+4
             let msgp = a2 as *const u8;
             let msgsz = a3 as usize;
-            let mtype = unsafe {
-                i32::from_le_bytes([*msgp, *msgp.add(1), *msgp.add(2), *msgp.add(3)])
-            };
+            let mtype =
+                unsafe { i32::from_le_bytes([*msgp, *msgp.add(1), *msgp.add(2), *msgp.add(3)]) };
             let data = unsafe { core::slice::from_raw_parts(msgp.add(4), msgsz) };
             match ipc.msgsnd(a1, mtype, data, a4 as u32, pid) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
         }
-        340 => { // SYS_MSGCTL: (qid, cmd, buf_ptr)
+        340 => {
+            // SYS_MSGCTL: (qid, cmd, buf_ptr)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             let cmd = a2 & !0x100; // strip IPC_64
@@ -2533,7 +2949,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Ok(Some(info)) => {
                     if a3 != 0 {
                         let out = a3 as *mut u8;
-                        unsafe { write_msqid_ds(out, &info); }
+                        unsafe {
+                            write_msqid_ds(out, &info);
+                        }
                     }
                     0
                 }
@@ -2541,7 +2959,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        341 => { // SYS_SEMGET: (key, nsems, flags)
+        341 => {
+            // SYS_SEMGET: (key, nsems, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             let (uid, gid) = unsafe {
@@ -2556,7 +2975,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        342 => { // SYS_SEMOP: (semid, sops_ptr, nsops)
+        342 => {
+            // SYS_SEMOP: (semid, sops_ptr, nsops)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             let nsops = a3 as usize;
@@ -2574,14 +2994,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        343 => { // SYS_SEMCTL: (semid, semnum, cmd, arg)
+        343 => {
+            // SYS_SEMCTL: (semid, semnum, cmd, arg)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             let cmd = a3 & !0x100; // strip IPC_64
             // SETALL (17): arg points to u16[] in scratch
             if cmd == 17 {
                 // First get nsems via IPC_STAT
-                match ipc.semctl(a1, 0, 2, pid, 0) { // IPC_STAT=2
+                match ipc.semctl(a1, 0, 2, pid, 0) {
+                    // IPC_STAT=2
                     Ok(crate::ipc::SemCtlResult::Stat(info)) => {
                         let nsems = info.nsems as usize;
                         let ptr = a4 as *const u8;
@@ -2604,7 +3026,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     Ok(crate::ipc::SemCtlResult::Stat(info)) => {
                         if a4 != 0 {
                             let out = a4 as *mut u8;
-                            unsafe { write_semid_ds(out, &info); }
+                            unsafe {
+                                write_semid_ds(out, &info);
+                            }
                         }
                         0
                     }
@@ -2626,7 +3050,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 }
             }
         }
-        344 => { // SYS_SHMGET: (key, size, flags)
+        344 => {
+            // SYS_SHMGET: (key, size, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             let (uid, gid) = unsafe {
@@ -2644,7 +3069,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // SYS_SHMAT (345), SYS_SHMDT (346): intercepted by host for process memory management
         345 => kernel_ipc_shmat(a1, a2, a3),
         346 => kernel_ipc_shmdt(a1),
-        347 => { // SYS_SHMCTL: (shmid, cmd, buf_ptr)
+        347 => {
+            // SYS_SHMCTL: (shmid, cmd, buf_ptr)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             let cmd = a2 & !0x100; // strip IPC_64
@@ -2652,7 +3078,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Ok(Some(info)) => {
                     if a3 != 0 {
                         let out = a3 as *mut u8;
-                        unsafe { write_shmid_ds(out, &info); }
+                        unsafe {
+                            write_shmid_ds(out, &info);
+                        }
                     }
                     0
                 }
@@ -2662,15 +3090,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
 
         // epoll
-        239 => kernel_epoll_create1(a1 as u32),     // SYS_EPOLL_CREATE1: (flags)
-        378 => kernel_epoll_create1(0),              // SYS_EPOLL_CREATE: (size) — flags=0
+        239 => kernel_epoll_create1(a1 as u32), // SYS_EPOLL_CREATE1: (flags)
+        378 => kernel_epoll_create1(0),         // SYS_EPOLL_CREATE: (size) — flags=0
         240 => kernel_epoll_ctl(a1, a2, a3, a4 as *const u8), // SYS_EPOLL_CTL: (epfd, op, fd, event_ptr)
         241 => kernel_epoll_pwait(a1, a2 as *mut u8, a3, a4, a5 as *const u8), // SYS_EPOLL_PWAIT: (epfd, events, maxevents, timeout, sigmask_ptr)
         379 => kernel_epoll_pwait(a1, a2 as *mut u8, a3, a4, core::ptr::null()), // SYS_EPOLL_WAIT: (epfd, events, maxevents, timeout)
 
         // eventfd
         242 => kernel_eventfd2(a1 as u32, a2 as u32), // SYS_EVENTFD2: (initval, flags)
-        380 => kernel_eventfd2(a1 as u32, 0),          // SYS_EVENTFD: (initval) — no flags
+        380 => kernel_eventfd2(a1 as u32, 0),         // SYS_EVENTFD: (initval) — no flags
 
         // timerfd
         243 => kernel_timerfd_create(a1 as u32, a2 as u32), // SYS_TIMERFD_CREATE: (clockid, flags)
@@ -2679,11 +3107,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // signalfd
         246 => kernel_signalfd4(a1, a2 as *const u8, a3 as u32, a4 as u32), // SYS_SIGNALFD4: (fd, mask_ptr, sigsetsize, flags)
-        377 => kernel_signalfd4(a1, a2 as *const u8, a3 as u32, 0),          // SYS_SIGNALFD: (fd, mask_ptr, sigsetsize)
+        377 => kernel_signalfd4(a1, a2 as *const u8, a3 as u32, 0), // SYS_SIGNALFD: (fd, mask_ptr, sigsetsize)
 
         // tkill — directed (per-thread) signal delivery. (wasm32 musl
         // uses __NR_tkill for pthread_kill too; __NR_tgkill isn't wired up.)
-        204 => kernel_tkill(a1 as u32, a2 as u32),                    // SYS_TKILL (tid, sig)
+        204 => kernel_tkill(a1 as u32, a2 as u32), // SYS_TKILL (tid, sig)
 
         // SYS_RT_SIGQUEUEINFO: send signal with si_value (sigqueue)
         // a1=pid, a2=sig, a3=siginfo_ptr (copied to CH_DATA by host)
@@ -2698,7 +3126,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 0
             };
             kernel_kill_with_value(a1, a2 as u32, si_value)
-        },
+        }
 
         // SYS_RT_SIGRETURN: signal handler return — clean up alt stack state
         208 => {
@@ -2719,12 +3147,20 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // SYS_SCHED_GET_PRIORITY_MAX: POSIX requires at least 32 levels for SCHED_RR/SCHED_FIFO
         234 => {
             let policy = a1;
-            if policy >= 0 && policy <= 2 { 32 } else { -(Errno::EINVAL as i32) }
+            if policy >= 0 && policy <= 2 {
+                32
+            } else {
+                -(Errno::EINVAL as i32)
+            }
         }
         // SYS_SCHED_GET_PRIORITY_MIN
         235 => {
             let policy = a1;
-            if policy >= 0 && policy <= 2 { 1 } else { -(Errno::EINVAL as i32) }
+            if policy >= 0 && policy <= 2 {
+                1
+            } else {
+                -(Errno::EINVAL as i32)
+            }
         }
 
         // SYS_SCHED_GETPARAM: write sched_priority=0 to param struct
@@ -2752,8 +3188,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 unsafe {
                     let sec_bytes = sec.to_le_bytes();
                     let nsec_bytes = nsec.to_le_bytes();
-                    for i in 0..8 { *p.add(i) = sec_bytes[i]; }
-                    for i in 0..8 { *p.add(8 + i) = nsec_bytes[i]; }
+                    for i in 0..8 {
+                        *p.add(i) = sec_bytes[i];
+                    }
+                    for i in 0..8 {
+                        *p.add(8 + i) = nsec_bytes[i];
+                    }
                 }
                 0
             }
@@ -2761,19 +3201,27 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // mlock/munlock: no-op in Wasm (all memory is "locked")
         // Return ENOMEM for addresses beyond Wasm memory bounds
-        279 | 280 => { // mlock, mlock2: (addr, len, ...)
+        279 | 280 => {
+            // mlock, mlock2: (addr, len, ...)
             let addr = a1 as u32;
             let len = a2 as u32;
-            if addr.checked_add(len).map_or(true, |end| end > 1_073_741_824) {
+            if addr
+                .checked_add(len)
+                .map_or(true, |end| end > 1_073_741_824)
+            {
                 -(Errno::ENOMEM as i32)
             } else {
                 0
             }
         }
-        281 => { // munlock: (addr, len)
+        281 => {
+            // munlock: (addr, len)
             let addr = a1 as u32;
             let len = a2 as u32;
-            if addr.checked_add(len).map_or(true, |end| end > 1_073_741_824) {
+            if addr
+                .checked_add(len)
+                .map_or(true, |end| end > 1_073_741_824)
+            {
                 -(Errno::ENOMEM as i32)
             } else {
                 0
@@ -2788,7 +3236,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        286 => { // SYS_SETPRIORITY
+        286 => {
+            // SYS_SETPRIORITY
             let (_gkl, proc) = unsafe { get_process() };
             match syscalls::sys_setpriority(proc, a1, a2 as u32, a3) {
                 Ok(()) => 0,
@@ -2796,20 +3245,33 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             }
         }
 
-        252 => { // SYS_PSELECT6_TIME64: (nfds, readfds, writefds, exceptfds, timeout_ms, mask_ptr)
+        252 => {
+            // SYS_PSELECT6_TIME64: (nfds, readfds, writefds, exceptfds, timeout_ms, mask_ptr)
             // Args pre-decoded by host: timeout → ms, mask stored at mask_ptr (8 bytes: lo+hi)
             let mask_ptr = a6 as *const u8;
             let (has_mask, mask_lo, mask_hi) = if mask_ptr.is_null() {
                 (0u32, 0u32, 0u32)
             } else {
                 let mb = unsafe { core::slice::from_raw_parts(mask_ptr, 8) };
-                (1u32,
-                 u32::from_le_bytes([mb[0], mb[1], mb[2], mb[3]]),
-                 u32::from_le_bytes([mb[4], mb[5], mb[6], mb[7]]))
+                (
+                    1u32,
+                    u32::from_le_bytes([mb[0], mb[1], mb[2], mb[3]]),
+                    u32::from_le_bytes([mb[4], mb[5], mb[6], mb[7]]),
+                )
             };
-            kernel_pselect6(a1, a2 as *mut u8, a3 as *mut u8, a4 as *mut u8, a5, has_mask, mask_lo, mask_hi)
+            kernel_pselect6(
+                a1,
+                a2 as *mut u8,
+                a3 as *mut u8,
+                a4 as *mut u8,
+                a5,
+                has_mask,
+                mask_lo,
+                mask_hi,
+            )
         }
-        299 => { // SYS_LCHOWN: (path, uid, gid) — treat like chown (no symlink distinction)
+        299 => {
+            // SYS_LCHOWN: (path, uid, gid) — treat like chown (no symlink distinction)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_chown(p, len, a2 as u32, a3 as u32)
@@ -2820,10 +3282,11 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         326 => kernel_timer_create(a1 as u32, a2 as *const u8, a3 as *mut i32), // SYS_TIMER_CREATE
         327 => kernel_timer_settime(a1 as i32, a2 as i32, a3 as *const u8, a4 as *mut u8), // SYS_TIMER_SETTIME
         328 => kernel_timer_gettime(a1 as i32, a2 as *mut u8), // SYS_TIMER_GETTIME
-        329 => kernel_timer_getoverrun(a1 as i32), // SYS_TIMER_GETOVERRUN
-        330 => kernel_timer_delete(a1 as i32), // SYS_TIMER_DELETE
+        329 => kernel_timer_getoverrun(a1 as i32),             // SYS_TIMER_GETOVERRUN
+        330 => kernel_timer_delete(a1 as i32),                 // SYS_TIMER_DELETE
 
-        208 => { // SYS_SYSINFO
+        208 => {
+            // SYS_SYSINFO
             let buf_ptr = a1 as *mut u8;
             let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, 312) };
             match syscalls::sys_sysinfo(buf) {
@@ -2832,7 +3295,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             }
         }
 
-        256 => { // SYS_MEMFD_CREATE: (name, flags)
+        256 => {
+            // SYS_MEMFD_CREATE: (name, flags)
             let (_gkl, proc) = unsafe { get_process() };
             let name_ptr = a1 as *const u8;
             let name_len = unsafe { cstr_len(name_ptr) } as usize;
@@ -2846,7 +3310,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        290 => { // SYS_COPY_FILE_RANGE: (fd_in, off_in*, fd_out, off_out*, len, flags)
+        290 => {
+            // SYS_COPY_FILE_RANGE: (fd_in, off_in*, fd_out, off_out*, len, flags)
             let (_gkl, proc) = unsafe { get_process() };
             let mut host = WasmHostIO;
             let off_in_ptr = a2 as *mut u8;
@@ -2863,7 +3328,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let bytes = unsafe { slice::from_raw_parts(off_out_ptr, 8) };
                 Some(i64::from_le_bytes(bytes.try_into().unwrap()))
             };
-            match syscalls::sys_copy_file_range(proc, &mut host, a1, off_in, a3, off_out, a5 as usize) {
+            match syscalls::sys_copy_file_range(
+                proc,
+                &mut host,
+                a1,
+                off_in,
+                a3,
+                off_out,
+                a5 as usize,
+            ) {
                 Ok(n) => {
                     // Update offset pointers if provided
                     if !off_in_ptr.is_null() {
@@ -2886,7 +3359,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             }
         }
 
-        291 => { // SYS_SPLICE: (fd_in, off_in*, fd_out, off_out*, len, flags)
+        291 => {
+            // SYS_SPLICE: (fd_in, off_in*, fd_out, off_out*, len, flags)
             let (_gkl, proc) = unsafe { get_process() };
             let mut host = WasmHostIO;
             let off_in_ptr = a2 as *mut u8;
@@ -2903,7 +3377,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let bytes = unsafe { slice::from_raw_parts(off_out_ptr, 8) };
                 Some(i64::from_le_bytes(bytes.try_into().unwrap()))
             };
-            match syscalls::sys_splice(proc, &mut host, a1, off_in, a3, off_out, a5 as usize, a6 as u32) {
+            match syscalls::sys_splice(
+                proc,
+                &mut host,
+                a1,
+                off_in,
+                a3,
+                off_out,
+                a5 as usize,
+                a6 as u32,
+            ) {
                 Ok(n) => {
                     if !off_in_ptr.is_null() {
                         if let Some(orig) = off_in {
@@ -2928,14 +3411,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // -- Scheduling stubs (single-CPU Wasm) --
         237 => 0, // SYS_SCHED_SETAFFINITY: no-op (single CPU)
-        238 => { // SYS_SCHED_GETAFFINITY: return a 1-bit cpuset
+        238 => {
+            // SYS_SCHED_GETAFFINITY: return a 1-bit cpuset
             let size = a2 as usize;
             let mask_ptr = a3 as *mut u8;
             if size == 0 || mask_ptr.is_null() {
                 -(Errno::EINVAL as i32)
             } else {
                 let mask = unsafe { slice::from_raw_parts_mut(mask_ptr, size) };
-                for b in mask.iter_mut() { *b = 0; }
+                for b in mask.iter_mut() {
+                    *b = 0;
+                }
                 mask[0] = 1; // CPU 0 available
                 0
             }
@@ -2952,13 +3438,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
 
         // -- Filesystem --
         304 => 0, // SYS_SYSLOG (kernel log): no-op (not the libc syslog)
-        306 => { // SYS_RENAMEAT2: (olddirfd, oldpath, newdirfd, newpath, flags)
+        306 => {
+            // SYS_RENAMEAT2: (olddirfd, oldpath, newdirfd, newpath, flags)
             // Ignore flags (RENAME_NOREPLACE, RENAME_EXCHANGE) — delegate to renameat
             let old = a2 as *const u8;
             let new = a4 as *const u8;
-            kernel_renameat(a1, old, unsafe { cstr_len(old) }, a3, new, unsafe { cstr_len(new) })
+            kernel_renameat(a1, old, unsafe { cstr_len(old) }, a3, new, unsafe {
+                cstr_len(new)
+            })
         }
-        308 => { // SYS_FALLOCATE: (fd, mode, offset, len)
+        308 => {
+            // SYS_FALLOCATE: (fd, mode, offset, len)
             let mode = a2 as u32;
             if mode != 0 {
                 -(Errno::EOPNOTSUPP as i32)
@@ -2974,14 +3464,19 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             }
         }
         323 => 0, // SYS_SYNC_FILE_RANGE: advisory, no-op
-        325 => { // SYS_GETCPU: (cpu*, node*, unused)
+        325 => {
+            // SYS_GETCPU: (cpu*, node*, unused)
             let cpu_ptr = a1 as *mut u32;
             let node_ptr = a2 as *mut u32;
             if !cpu_ptr.is_null() {
-                unsafe { *cpu_ptr = 0; }
+                unsafe {
+                    *cpu_ptr = 0;
+                }
             }
             if !node_ptr.is_null() {
-                unsafe { *node_ptr = 0; }
+                unsafe {
+                    *node_ptr = 0;
+                }
             }
             0
         }
@@ -2989,18 +3484,18 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // --- xattr stubs: no extended attribute support ---
         // fgetxattr/fsetxattr/fremovexattr/flistxattr
         350 => -(Errno::ENODATA as i32), // SYS_FGETXATTR: no attrs → ENODATA
-        351 => 0,                         // SYS_FLISTXATTR: empty list → 0 bytes
+        351 => 0,                        // SYS_FLISTXATTR: empty list → 0 bytes
         352 => -(Errno::ENODATA as i32), // SYS_FREMOVEXATTR: no attrs → ENODATA
-        353 => 0,                         // SYS_FSETXATTR: silently accept
+        353 => 0,                        // SYS_FSETXATTR: silently accept
         // getxattr/setxattr/removexattr/listxattr (path-based)
         354 => -(Errno::ENODATA as i32), // SYS_GETXATTR
-        355 => 0,                         // SYS_LISTXATTR: empty list
+        355 => 0,                        // SYS_LISTXATTR: empty list
         356 => -(Errno::ENODATA as i32), // SYS_LGETXATTR
-        357 => 0,                         // SYS_LLISTXATTR: empty list
+        357 => 0,                        // SYS_LLISTXATTR: empty list
         358 => -(Errno::ENODATA as i32), // SYS_LREMOVEXATTR
-        359 => 0,                         // SYS_LSETXATTR: silently accept
+        359 => 0,                        // SYS_LSETXATTR: silently accept
         360 => -(Errno::ENODATA as i32), // SYS_REMOVEXATTR
-        361 => 0,                         // SYS_SETXATTR: silently accept
+        361 => 0,                        // SYS_SETXATTR: silently accept
 
         // --- setfsuid/setfsgid: return previous fsuid/fsgid (we mirror euid/egid) ---
         370 => {
@@ -3013,17 +3508,20 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
 
         // --- faccessat2/fchmodat2: delegate to existing implementations ---
-        382 => { // SYS_FACCESSAT2: (dirfd, path, mode, flags)
+        382 => {
+            // SYS_FACCESSAT2: (dirfd, path, mode, flags)
             let path = a2 as *const u8;
             kernel_faccessat(a1, path, unsafe { cstr_len(path) }, a3 as u32, a4 as u32)
         }
-        383 => { // SYS_FCHMODAT2: (dirfd, path, mode, flags)
+        383 => {
+            // SYS_FCHMODAT2: (dirfd, path, mode, flags)
             let path = a2 as *const u8;
             kernel_fchmodat(a1, path, unsafe { cstr_len(path) }, a3 as u32, a4 as u32)
         }
 
         // --- inotify stubs: create eventfd-like fd ---
-        247 | 381 => { // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
+        247 | 381 => {
+            // SYS_INOTIFY_INIT1 / SYS_INOTIFY_INIT
             let (_gkl, proc) = unsafe { get_process() };
             match syscalls::sys_inotify_init(proc) {
                 Ok(fd) => fd,
@@ -3036,7 +3534,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // --- mknod/mknodat: create regular files and FIFOs ---
         // S_IFIFO nodes are created as regular files (sufficient for basic
         // mkfifo/mknod tests that don't actually use FIFO I/O semantics).
-        271 => { // SYS_MKNOD: (path, mode, dev)
+        271 => {
+            // SYS_MKNOD: (path, mode, dev)
             let path = a1 as *const u8;
             let mode = a2 as u32;
             let file_type = mode & 0o170000;
@@ -3046,7 +3545,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 kernel_mknod(path, unsafe { cstr_len(path) }, mode & 0o7777)
             }
         }
-        272 => { // SYS_MKNODAT: (dirfd, path, mode, dev)
+        272 => {
+            // SYS_MKNODAT: (dirfd, path, mode, dev)
             let path = a2 as *const u8;
             let mode = a3 as u32;
             let file_type = mode & 0o170000;
@@ -3058,17 +3558,34 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
 
         // POSIX message queues
-        331 => { // SYS_MQ_OPEN: (name_ptr, flags, mode, attr_ptr)
+        331 => {
+            // SYS_MQ_OPEN: (name_ptr, flags, mode, attr_ptr)
             let p = a1 as *const u8;
             let name_len = unsafe { cstr_len(p) };
-            let name = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, name_len as usize)) };
+            let name = unsafe {
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, name_len as usize))
+            };
             let flags = a2 as u32;
             let mode = a3 as u32;
             let has_attr = a4 != 0 && (flags & 0o100) != 0; // O_CREAT
             let (maxmsg, msgsize) = if has_attr {
                 let attr_ptr = a4 as *const u8;
-                let maxmsg = unsafe { i32::from_le_bytes([*attr_ptr.add(4), *attr_ptr.add(5), *attr_ptr.add(6), *attr_ptr.add(7)]) } as u32;
-                let msgsize = unsafe { i32::from_le_bytes([*attr_ptr.add(8), *attr_ptr.add(9), *attr_ptr.add(10), *attr_ptr.add(11)]) } as u32;
+                let maxmsg = unsafe {
+                    i32::from_le_bytes([
+                        *attr_ptr.add(4),
+                        *attr_ptr.add(5),
+                        *attr_ptr.add(6),
+                        *attr_ptr.add(7),
+                    ])
+                } as u32;
+                let msgsize = unsafe {
+                    i32::from_le_bytes([
+                        *attr_ptr.add(8),
+                        *attr_ptr.add(9),
+                        *attr_ptr.add(10),
+                        *attr_ptr.add(11),
+                    ])
+                } as u32;
                 (maxmsg, msgsize)
             } else {
                 (0, 0)
@@ -3079,17 +3596,21 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        332 => { // SYS_MQ_UNLINK: (name_ptr)
+        332 => {
+            // SYS_MQ_UNLINK: (name_ptr)
             let p = a1 as *const u8;
             let name_len = unsafe { cstr_len(p) };
-            let name = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, name_len as usize)) };
+            let name = unsafe {
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(p, name_len as usize))
+            };
             let table = unsafe { crate::mqueue::global_mqueue_table() };
             match table.mq_unlink(name) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
         }
-        333 => { // SYS_MQ_TIMEDSEND: (mqd, msg_ptr, msg_len, priority, timeout_ptr)
+        333 => {
+            // SYS_MQ_TIMEDSEND: (mqd, msg_ptr, msg_len, priority, timeout_ptr)
             let data = unsafe { core::slice::from_raw_parts(a2 as *const u8, a3 as usize) };
             let table = unsafe { crate::mqueue::global_mqueue_table() };
             match table.mq_send(a1 as u32, data, a4 as u32) {
@@ -3103,12 +3624,15 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        334 => { // SYS_MQ_TIMEDRECEIVE: (mqd, msg_ptr, msg_len, prio_ptr, timeout_ptr)
+        334 => {
+            // SYS_MQ_TIMEDRECEIVE: (mqd, msg_ptr, msg_len, prio_ptr, timeout_ptr)
             let table = unsafe { crate::mqueue::global_mqueue_table() };
             match table.mq_receive(a1 as u32, a3 as u32) {
                 Ok(result) => {
                     // Write message data to kernel memory (msg_ptr adjusted by host)
-                    let dst = unsafe { core::slice::from_raw_parts_mut(a2 as *mut u8, result.data.len()) };
+                    let dst = unsafe {
+                        core::slice::from_raw_parts_mut(a2 as *mut u8, result.data.len())
+                    };
                     dst.copy_from_slice(&result.data);
                     // Write priority if pointer provided
                     if a4 != 0 {
@@ -3127,7 +3651,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        335 => { // SYS_MQ_NOTIFY: (mqd, sev_ptr)
+        335 => {
+            // SYS_MQ_NOTIFY: (mqd, sev_ptr)
             let table = unsafe { crate::mqueue::global_mqueue_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             if a2 == 0 {
@@ -3138,19 +3663,35 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 }
             } else {
                 let sev_ptr = a2 as *const u8;
-                let signo = unsafe { i32::from_le_bytes([*sev_ptr.add(4), *sev_ptr.add(5), *sev_ptr.add(6), *sev_ptr.add(7)]) } as u32;
-                let notify = unsafe { i32::from_le_bytes([*sev_ptr.add(8), *sev_ptr.add(9), *sev_ptr.add(10), *sev_ptr.add(11)]) } as u32;
+                let signo = unsafe {
+                    i32::from_le_bytes([
+                        *sev_ptr.add(4),
+                        *sev_ptr.add(5),
+                        *sev_ptr.add(6),
+                        *sev_ptr.add(7),
+                    ])
+                } as u32;
+                let notify = unsafe {
+                    i32::from_le_bytes([
+                        *sev_ptr.add(8),
+                        *sev_ptr.add(9),
+                        *sev_ptr.add(10),
+                        *sev_ptr.add(11),
+                    ])
+                } as u32;
                 match table.mq_notify(a1 as u32, pid, Some(notify), signo) {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
             }
         }
-        336 => { // SYS_MQ_GETSETATTR: (mqd, new_attr_ptr, old_attr_ptr)
+        336 => {
+            // SYS_MQ_GETSETATTR: (mqd, new_attr_ptr, old_attr_ptr)
             let table = unsafe { crate::mqueue::global_mqueue_table() };
             let new_flags = if a2 != 0 {
                 let ptr = a2 as *const u8;
-                let flags = unsafe { i32::from_le_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]) };
+                let flags =
+                    unsafe { i32::from_le_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)]) };
                 Some(flags as u32)
             } else {
                 None
@@ -3165,12 +3706,22 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                             let mm = (attr.maxmsg as i32).to_le_bytes();
                             let ms = (attr.msgsize as i32).to_le_bytes();
                             let cm = (attr.curmsgs as i32).to_le_bytes();
-                            for i in 0..4 { *out.add(i) = f[i]; }
-                            for i in 0..4 { *out.add(4 + i) = mm[i]; }
-                            for i in 0..4 { *out.add(8 + i) = ms[i]; }
-                            for i in 0..4 { *out.add(12 + i) = cm[i]; }
+                            for i in 0..4 {
+                                *out.add(i) = f[i];
+                            }
+                            for i in 0..4 {
+                                *out.add(4 + i) = mm[i];
+                            }
+                            for i in 0..4 {
+                                *out.add(8 + i) = ms[i];
+                            }
+                            for i in 0..4 {
+                                *out.add(12 + i) = cm[i];
+                            }
                             // Zero __unused[4]
-                            for i in 16..32 { *out.add(i) = 0; }
+                            for i in 16..32 {
+                                *out.add(i) = 0;
+                            }
                         }
                     }
                     0
@@ -3182,11 +3733,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         // ───── PTHREAD_PROCESS_SHARED primitives ─────
         // See crates/kernel/src/pshared.rs. Blocking ops return EAGAIN so
         // the centralized-mode host retry loop re-invokes them.
-        400 => { // SYS_PSHARED_MUTEX_INIT: (mtype)
+        400 => {
+            // SYS_PSHARED_MUTEX_INIT: (mtype)
             let t = unsafe { crate::pshared::global_pshared_table() };
             t.mutex_init(a1 as u32) as i32
         }
-        401 => { // SYS_PSHARED_MUTEX_LOCK: (id)
+        401 => {
+            // SYS_PSHARED_MUTEX_LOCK: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             match t.mutex_lock(a1 as u32, pid) {
@@ -3194,7 +3747,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        402 => { // SYS_PSHARED_MUTEX_TRYLOCK: (id)
+        402 => {
+            // SYS_PSHARED_MUTEX_TRYLOCK: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             match t.mutex_trylock(a1 as u32, pid) {
@@ -3202,7 +3756,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        403 => { // SYS_PSHARED_MUTEX_UNLOCK: (id)
+        403 => {
+            // SYS_PSHARED_MUTEX_UNLOCK: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             match t.mutex_unlock(a1 as u32, pid) {
@@ -3210,18 +3765,21 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        404 => { // SYS_PSHARED_MUTEX_DESTROY: (id)
+        404 => {
+            // SYS_PSHARED_MUTEX_DESTROY: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.mutex_destroy(a1 as u32) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
         }
-        405 => { // SYS_PSHARED_COND_INIT: ()
+        405 => {
+            // SYS_PSHARED_COND_INIT: ()
             let t = unsafe { crate::pshared::global_pshared_table() };
             t.cond_init() as i32
         }
-        406 => { // SYS_PSHARED_COND_WAIT_BEGIN: (cond_id, mutex_id)
+        406 => {
+            // SYS_PSHARED_COND_WAIT_BEGIN: (cond_id, mutex_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             match t.cond_wait_begin(a1 as u32, a2 as u32, pid) {
@@ -3229,7 +3787,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        407 => { // SYS_PSHARED_COND_WAIT_CHECK: (cond_id, mutex_id)
+        407 => {
+            // SYS_PSHARED_COND_WAIT_CHECK: (cond_id, mutex_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             match t.cond_wait_check(a1 as u32, a2 as u32, pid) {
@@ -3237,35 +3796,40 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        408 => { // SYS_PSHARED_COND_SIGNAL: (cond_id)
+        408 => {
+            // SYS_PSHARED_COND_SIGNAL: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.cond_signal(a1 as u32) {
                 Ok(_pid) => 0,
                 Err(e) => -(e as i32),
             }
         }
-        409 => { // SYS_PSHARED_COND_BROADCAST: (cond_id)
+        409 => {
+            // SYS_PSHARED_COND_BROADCAST: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.cond_broadcast(a1 as u32) {
                 Ok(_n) => 0,
                 Err(e) => -(e as i32),
             }
         }
-        410 => { // SYS_PSHARED_COND_DESTROY: (cond_id)
+        410 => {
+            // SYS_PSHARED_COND_DESTROY: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.cond_destroy(a1 as u32) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
         }
-        411 => { // SYS_PSHARED_BARRIER_INIT: (count)
+        411 => {
+            // SYS_PSHARED_BARRIER_INIT: (count)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.barrier_init(a1 as u32) {
                 Ok(id) => id as i32,
                 Err(e) => -(e as i32),
             }
         }
-        412 => { // SYS_PSHARED_BARRIER_WAIT: (id)
+        412 => {
+            // SYS_PSHARED_BARRIER_WAIT: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             match t.barrier_wait(a1 as u32, pid) {
@@ -3273,20 +3837,23 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 Err(e) => -(e as i32),
             }
         }
-        413 => { // SYS_PSHARED_BARRIER_DESTROY: (id)
+        413 => {
+            // SYS_PSHARED_BARRIER_DESTROY: (id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             match t.barrier_destroy(a1 as u32) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
         }
-        414 => { // SYS_PSHARED_COND_WAIT_ABORT: (cond_id)
+        414 => {
+            // SYS_PSHARED_COND_WAIT_ABORT: (cond_id)
             let t = unsafe { crate::pshared::global_pshared_table() };
             let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
             t.cond_wait_abort(a1 as u32, pid);
             0
         }
-        415 => { // SYS_THREAD_CANCEL: (target_tid) — host-intercepted; defensive no-op.
+        415 => {
+            // SYS_THREAD_CANCEL: (target_tid) — host-intercepted; defensive no-op.
             // The host's kernel-worker.ts routes this syscall entirely on the TS
             // side because the target's wait state (futex waitAsync, pipe retry
             // registrations, poll/select timers) lives outside the kernel wasm.
@@ -3296,7 +3863,19 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
             0
         }
 
-        253..=254 | 262 | 265..=268 | 289 | 292 | 301..=303 | 305 | 309..=322 | 324 | 348..=349 | 362..=369 | 373..=376 | 386 => {
+        253..=254
+        | 262
+        | 265..=268
+        | 289
+        | 292
+        | 301..=303
+        | 305
+        | 309..=322
+        | 324
+        | 348..=349
+        | 362..=369
+        | 373..=376
+        | 386 => {
             // Remaining stubs: return ENOSYS
             -(Errno::ENOSYS as i32)
         }
@@ -3357,7 +3936,12 @@ pub extern "C" fn kernel_ipc_shmdt(shmid: i32) -> i32 {
 /// Read a chunk of shared memory segment data into scratch area.
 /// Returns bytes written to out_ptr.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shm_read_chunk(shmid: i32, offset: u32, out_ptr: *mut u8, max_len: u32) -> i32 {
+pub extern "C" fn kernel_ipc_shm_read_chunk(
+    shmid: i32,
+    offset: u32,
+    out_ptr: *mut u8,
+    max_len: u32,
+) -> i32 {
     let ipc = unsafe { crate::ipc::global_ipc_table() };
     let buf = unsafe { core::slice::from_raw_parts_mut(out_ptr, max_len as usize) };
     match ipc.shm_read_chunk(shmid, offset, buf) {
@@ -3369,7 +3953,12 @@ pub extern "C" fn kernel_ipc_shm_read_chunk(shmid: i32, offset: u32, out_ptr: *m
 /// Write a chunk of data from scratch area into shared memory segment.
 /// Returns bytes written.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shm_write_chunk(shmid: i32, offset: u32, data_ptr: *const u8, data_len: u32) -> i32 {
+pub extern "C" fn kernel_ipc_shm_write_chunk(
+    shmid: i32,
+    offset: u32,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> i32 {
     let ipc = unsafe { crate::ipc::global_ipc_table() };
     let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
     match ipc.shm_write_chunk(shmid, offset, data) {
@@ -3383,14 +3972,27 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(shmid: i32, offset: u32, data_ptr: 
 // ---------------------------------------------------------------------------
 
 /// Write struct ipc_perm to kernel memory (36 bytes).
-unsafe fn write_ipc_perm(out: *mut u8, key: i32, uid: u32, gid: u32, cuid: u32, cgid: u32, mode: u32, seq: i32) {
+unsafe fn write_ipc_perm(
+    out: *mut u8,
+    key: i32,
+    uid: u32,
+    gid: u32,
+    cuid: u32,
+    cgid: u32,
+    mode: u32,
+    seq: i32,
+) {
     let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
         let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+        for i in 0..4 {
+            *ptr.add(off + i) = bytes[i];
+        }
     };
     let write_u32 = |ptr: *mut u8, off: usize, val: u32| {
         let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+        for i in 0..4 {
+            *ptr.add(off + i) = bytes[i];
+        }
     };
     write_i32(out, 0, key);
     write_u32(out, 4, uid);
@@ -3400,7 +4002,9 @@ unsafe fn write_ipc_perm(out: *mut u8, key: i32, uid: u32, gid: u32, cuid: u32, 
     write_u32(out, 20, mode);
     write_i32(out, 24, seq);
     // Padding bytes 28-35
-    for i in 28..36 { *out.add(i) = 0; }
+    for i in 28..36 {
+        *out.add(i) = 0;
+    }
 }
 
 /// Write i64 as two i32 halves (little-endian) at offset.
@@ -3409,26 +4013,38 @@ unsafe fn write_time(out: *mut u8, offset: usize, secs: i64) {
     let hi = (secs >> 32) as i32;
     let lo_bytes = lo.to_le_bytes();
     let hi_bytes = hi.to_le_bytes();
-    for i in 0..4 { *out.add(offset + i) = lo_bytes[i]; }
-    for i in 0..4 { *out.add(offset + 4 + i) = hi_bytes[i]; }
+    for i in 0..4 {
+        *out.add(offset + i) = lo_bytes[i];
+    }
+    for i in 0..4 {
+        *out.add(offset + 4 + i) = hi_bytes[i];
+    }
 }
 
 /// Write struct msqid_ds to kernel memory (96 bytes).
 unsafe fn write_msqid_ds(out: *mut u8, info: &crate::ipc::MsgQueueInfo) {
     // Zero the whole struct first
-    for i in 0..96 { *out.add(i) = 0; }
-    write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
+    for i in 0..96 {
+        *out.add(i) = 0;
+    }
+    write_ipc_perm(
+        out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq,
+    );
     // 36-39: padding
     write_time(out, 40, info.stime);
     write_time(out, 48, info.rtime);
     write_time(out, 56, info.ctime);
     let write_u32 = |ptr: *mut u8, off: usize, val: u32| {
         let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+        for i in 0..4 {
+            *ptr.add(off + i) = bytes[i];
+        }
     };
     let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
         let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+        for i in 0..4 {
+            *ptr.add(off + i) = bytes[i];
+        }
     };
     write_u32(out, 64, info.cbytes);
     write_u32(out, 68, info.qnum);
@@ -3439,8 +4055,12 @@ unsafe fn write_msqid_ds(out: *mut u8, info: &crate::ipc::MsgQueueInfo) {
 
 /// Write struct semid_ds to kernel memory (72 bytes).
 unsafe fn write_semid_ds(out: *mut u8, info: &crate::ipc::SemSetInfo) {
-    for i in 0..72 { *out.add(i) = 0; }
-    write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
+    for i in 0..72 {
+        *out.add(i) = 0;
+    }
+    write_ipc_perm(
+        out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq,
+    );
     // 36-39: padding
     write_time(out, 40, info.otime);
     write_time(out, 48, info.ctime);
@@ -3452,15 +4072,23 @@ unsafe fn write_semid_ds(out: *mut u8, info: &crate::ipc::SemSetInfo) {
 
 /// Write struct shmid_ds to kernel memory (88 bytes).
 unsafe fn write_shmid_ds(out: *mut u8, info: &crate::ipc::ShmSegInfo) {
-    for i in 0..88 { *out.add(i) = 0; }
-    write_ipc_perm(out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq);
+    for i in 0..88 {
+        *out.add(i) = 0;
+    }
+    write_ipc_perm(
+        out, info.key, info.uid, info.gid, info.cuid, info.cgid, info.mode, info.seq,
+    );
     let write_u32 = |ptr: *mut u8, off: usize, val: u32| {
         let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+        for i in 0..4 {
+            *ptr.add(off + i) = bytes[i];
+        }
     };
     let write_i32 = |ptr: *mut u8, off: usize, val: i32| {
         let bytes = val.to_le_bytes();
-        for i in 0..4 { *ptr.add(off + i) = bytes[i]; }
+        for i in 0..4 {
+            *ptr.add(off + i) = bytes[i];
+        }
     };
     write_u32(out, 36, info.segsz);
     write_time(out, 40, info.atime);
@@ -3486,8 +4114,12 @@ pub extern "C" fn kernel_mq_drain_notification(out_ptr: *mut u8) -> i32 {
                 let pid_bytes = notif.pid.to_le_bytes();
                 let signo_bytes = notif.signo.to_le_bytes();
                 unsafe {
-                    for i in 0..4 { *out_ptr.add(i) = pid_bytes[i]; }
-                    for i in 0..4 { *out_ptr.add(4 + i) = signo_bytes[i]; }
+                    for i in 0..4 {
+                        *out_ptr.add(i) = pid_bytes[i];
+                    }
+                    for i in 0..4 {
+                        *out_ptr.add(4 + i) = signo_bytes[i];
+                    }
                 }
             }
             1
@@ -3528,7 +4160,9 @@ pub extern "C" fn kernel_init_from_fork(buf_ptr: *const u8, buf_len: u32, child_
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_fork_state(buf, child_pid) {
         Ok(proc) => {
-            unsafe { *PROCESS.0.get() = Some(proc); }
+            unsafe {
+                *PROCESS.0.get() = Some(proc);
+            }
             0
         }
         Err(e) => -(e as i32),
@@ -3555,7 +4189,9 @@ pub extern "C" fn kernel_init_from_exec(buf_ptr: *const u8, buf_len: u32, pid: u
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr, buf_len as usize) };
     match crate::fork::deserialize_exec_state(buf, pid) {
         Ok(proc) => {
-            unsafe { *PROCESS.0.get() = Some(proc); }
+            unsafe {
+                *PROCESS.0.get() = Some(proc);
+            }
             0
         }
         Err(e) => -(e as i32),
@@ -3597,7 +4233,11 @@ pub extern "C" fn kernel_get_pipe_ofds(buf_ptr: *mut u8, buf_len: u32) -> i32 {
             // positive host_handle index parity to distinguish read/write.
             // Since pipe pairs share the same |host_handle|, we check status_flags
             // for O_WRONLY (bit 0) to determine end.
-            let is_read = if ofd.status_flags & 1 == 0 { 1u32 } else { 0u32 };
+            let is_read = if ofd.status_flags & 1 == 0 {
+                1u32
+            } else {
+                0u32
+            };
             buf[off + 12..off + 16].copy_from_slice(&is_read.to_le_bytes());
             count += 1;
         }
@@ -3607,12 +4247,7 @@ pub extern "C" fn kernel_get_pipe_ofds(buf_ptr: *mut u8, buf_len: u32) -> i32 {
 
 /// Open a file. Returns fd (>= 0) on success, or negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_open(
-    path_ptr: *const u8,
-    path_len: u32,
-    flags: u32,
-    mode: u32,
-) -> i32 {
+pub extern "C" fn kernel_open(path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let mut host = WasmHostIO;
@@ -3903,7 +4538,8 @@ pub extern "C" fn kernel_epoll_pwait(
         None
     };
 
-    let result = match syscalls::sys_epoll_pwait(proc, &mut host, epfd, maxevents, timeout, sigmask) {
+    let result = match syscalls::sys_epoll_pwait(proc, &mut host, epfd, maxevents, timeout, sigmask)
+    {
         Ok((count, events)) => {
             // Write events to output buffer
             // Each epoll_event: { events: u32, data: u64 } = 12 bytes (packed on wasm32)
@@ -3939,7 +4575,12 @@ pub extern "C" fn kernel_timerfd_create(clock_id: u32, flags: u32) -> i32 {
 /// new_value_ptr points to itimerspec (32 bytes: interval_sec, interval_nsec, value_sec, value_nsec).
 /// old_value_ptr (if non-null) receives the old itimerspec.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_timerfd_settime(fd: i32, flags: u32, new_ptr: *const u8, old_ptr: *mut u8) -> i32 {
+pub extern "C" fn kernel_timerfd_settime(
+    fd: i32,
+    flags: u32,
+    new_ptr: *const u8,
+    old_ptr: *mut u8,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
@@ -3953,20 +4594,21 @@ pub extern "C" fn kernel_timerfd_settime(fd: i32, flags: u32, new_ptr: *const u8
         (isec, insec, vsec, vnsec)
     };
 
-    let result = match syscalls::sys_timerfd_settime(proc, &mut host, fd, flags, isec, insec, vsec, vnsec) {
-        Ok((oisec, oinsec, ovsec, ovnsec)) => {
-            if !old_ptr.is_null() {
-                unsafe {
-                    core::ptr::write_unaligned(old_ptr as *mut i64, oisec);
-                    core::ptr::write_unaligned(old_ptr.add(8) as *mut i64, oinsec);
-                    core::ptr::write_unaligned(old_ptr.add(16) as *mut i64, ovsec);
-                    core::ptr::write_unaligned(old_ptr.add(24) as *mut i64, ovnsec);
+    let result =
+        match syscalls::sys_timerfd_settime(proc, &mut host, fd, flags, isec, insec, vsec, vnsec) {
+            Ok((oisec, oinsec, ovsec, ovnsec)) => {
+                if !old_ptr.is_null() {
+                    unsafe {
+                        core::ptr::write_unaligned(old_ptr as *mut i64, oisec);
+                        core::ptr::write_unaligned(old_ptr.add(8) as *mut i64, oinsec);
+                        core::ptr::write_unaligned(old_ptr.add(16) as *mut i64, ovsec);
+                        core::ptr::write_unaligned(old_ptr.add(24) as *mut i64, ovnsec);
+                    }
                 }
+                0
             }
-            0
-        }
-        Err(e) => -(e as i32),
-    };
+            Err(e) => -(e as i32),
+        };
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -3995,7 +4637,12 @@ pub extern "C" fn kernel_timerfd_gettime(fd: i32, cur_ptr: *mut u8) -> i32 {
 
 /// Create or update a signalfd.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_signalfd4(fd: i32, mask_ptr: *const u8, _sigsetsize: u32, flags: u32) -> i32 {
+pub extern "C" fn kernel_signalfd4(
+    fd: i32,
+    mask_ptr: *const u8,
+    _sigsetsize: u32,
+    flags: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
 
     // Read signal mask from pointer
@@ -4361,9 +5008,8 @@ pub extern "C" fn kernel_readdir(
     name_len: u32,
 ) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
-    let dirent_buf = unsafe {
-        slice::from_raw_parts_mut(dirent_ptr, core::mem::size_of::<WasmDirent>())
-    };
+    let dirent_buf =
+        unsafe { slice::from_raw_parts_mut(dirent_ptr, core::mem::size_of::<WasmDirent>()) };
     let name_buf = unsafe { slice::from_raw_parts_mut(name_ptr, name_len as usize) };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_readdir(proc, &mut host, dir_handle, dirent_buf, name_buf) {
@@ -4741,7 +5387,9 @@ pub extern "C" fn kernel_sched_getparam(pid: i32, param_ptr: *mut u8) -> i32 {
         return -(Errno::EINVAL as i32);
     }
     let validate = kernel_sched_validate_pid(pid);
-    if validate < 0 { return validate; }
+    if validate < 0 {
+        return validate;
+    }
     // Set sched_priority = 0 (SCHED_OTHER always has priority 0)
     let buf = unsafe { slice::from_raw_parts_mut(param_ptr, 4) };
     buf.copy_from_slice(&0i32.to_le_bytes());
@@ -4883,7 +5531,9 @@ pub extern "C" fn kernel_sigaction(sig: u32, act_ptr: *const u8, oldact_ptr: *mu
         let act = unsafe { core::slice::from_raw_parts(act_ptr, 16) };
         let handler = u32::from_le_bytes([act[0], act[1], act[2], act[3]]);
         let flags = u32::from_le_bytes([act[4], act[5], act[6], act[7]]);
-        let mask = u64::from_le_bytes([act[8], act[9], act[10], act[11], act[12], act[13], act[14], act[15]]);
+        let mask = u64::from_le_bytes([
+            act[8], act[9], act[10], act[11], act[12], act[13], act[14], act[15],
+        ]);
         (handler, flags, mask)
     } else {
         // No new action — just read old
@@ -5023,7 +5673,8 @@ pub extern "C" fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *co
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let req = unsafe { &*(req_ptr as *const WasmTimespec) };
-    let result = match syscalls::sys_clock_nanosleep(proc, &mut host, clock_id, flags, req, req_ptr) {
+    let result = match syscalls::sys_clock_nanosleep(proc, &mut host, clock_id, flags, req, req_ptr)
+    {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -5033,7 +5684,13 @@ pub extern "C" fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *co
 
 /// Set file timestamps. Returns 0 or negative errno.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_utimensat(dirfd: i32, path_ptr: *const u8, path_len: u32, times_ptr: *const u8, flags: u32) -> i32 {
+pub extern "C" fn kernel_utimensat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    times_ptr: *const u8,
+    flags: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let times = if times_ptr.is_null() {
@@ -5052,7 +5709,12 @@ pub extern "C" fn kernel_utimensat(dirfd: i32, path_ptr: *const u8, path_len: u3
 
 /// Remap memory. Returns MAP_FAILED (-1 as u32) since Wasm doesn't support this.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_mremap(old_addr: usize, old_len: usize, new_len: usize, flags: u32) -> usize {
+pub extern "C" fn kernel_mremap(
+    old_addr: usize,
+    old_len: usize,
+    new_len: usize,
+    flags: u32,
+) -> usize {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_mremap(proc, old_addr, old_len, new_len, flags) {
@@ -5083,8 +5745,18 @@ pub extern "C" fn kernel_statfs(path_ptr: *const u8, path_len: u32, buf_ptr: *mu
     let (_gkl, proc) = unsafe { get_process() };
     let _path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let statfs = syscalls::sys_statfs(proc);
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, core::mem::size_of::<wasm_posix_shared::WasmStatfs>()) };
-    let bytes = unsafe { core::slice::from_raw_parts(&statfs as *const _ as *const u8, core::mem::size_of::<wasm_posix_shared::WasmStatfs>()) };
+    let buf = unsafe {
+        slice::from_raw_parts_mut(
+            buf_ptr,
+            core::mem::size_of::<wasm_posix_shared::WasmStatfs>(),
+        )
+    };
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            &statfs as *const _ as *const u8,
+            core::mem::size_of::<wasm_posix_shared::WasmStatfs>(),
+        )
+    };
     buf.copy_from_slice(bytes);
     let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
@@ -5099,8 +5771,18 @@ pub extern "C" fn kernel_fstatfs(fd: i32, buf_ptr: *mut u8) -> i32 {
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fstatfs(proc, fd) {
         Ok(statfs) => {
-            let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, core::mem::size_of::<wasm_posix_shared::WasmStatfs>()) };
-            let bytes = unsafe { core::slice::from_raw_parts(&statfs as *const _ as *const u8, core::mem::size_of::<wasm_posix_shared::WasmStatfs>()) };
+            let buf = unsafe {
+                slice::from_raw_parts_mut(
+                    buf_ptr,
+                    core::mem::size_of::<wasm_posix_shared::WasmStatfs>(),
+                )
+            };
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &statfs as *const _ as *const u8,
+                    core::mem::size_of::<wasm_posix_shared::WasmStatfs>(),
+                )
+            };
             buf.copy_from_slice(bytes);
             0
         }
@@ -5126,7 +5808,11 @@ pub extern "C" fn kernel_setresuid(ruid: u32, euid: u32, suid: u32) -> i32 {
 /// getresuid — get real, effective, and saved user IDs.
 /// Writes three u32 values to the pointers.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getresuid(ruid_ptr: *mut u32, euid_ptr: *mut u32, suid_ptr: *mut u32) -> i32 {
+pub extern "C" fn kernel_getresuid(
+    ruid_ptr: *mut u32,
+    euid_ptr: *mut u32,
+    suid_ptr: *mut u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let (ruid, euid, suid) = syscalls::sys_getresuid(proc);
     unsafe {
@@ -5155,7 +5841,11 @@ pub extern "C" fn kernel_setresgid(rgid: u32, egid: u32, sgid: u32) -> i32 {
 /// getresgid — get real, effective, and saved group IDs.
 /// Writes three u32 values to the pointers.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getresgid(rgid_ptr: *mut u32, egid_ptr: *mut u32, sgid_ptr: *mut u32) -> i32 {
+pub extern "C" fn kernel_getresgid(
+    rgid_ptr: *mut u32,
+    egid_ptr: *mut u32,
+    sgid_ptr: *mut u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let (rgid, egid, sgid) = syscalls::sys_getresgid(proc);
     unsafe {
@@ -5176,7 +5866,9 @@ pub extern "C" fn kernel_getgroups(size: u32, list_ptr: *mut u32) -> i32 {
     let result = match syscalls::sys_getgroups(proc, size) {
         Ok((count, gid)) => {
             if size > 0 {
-                unsafe { *list_ptr = gid; }
+                unsafe {
+                    *list_ptr = gid;
+                }
             }
             count as i32
         }
@@ -5208,9 +5900,9 @@ fn extract_scm_rights(
     control_len: usize,
 ) -> Vec<crate::pipe::InFlightFd> {
     use crate::pipe::{InFlightFd, InFlightSocket};
-    use crate::socket::{SocketDomain, SocketType, SocketState};
-    use wasm_posix_shared::socket::SOL_SOCKET;
+    use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::SCM_RIGHTS;
+    use wasm_posix_shared::socket::SOL_SOCKET;
 
     let mut result = Vec::new();
     if control_ptr == 0 || control_len == 0 {
@@ -5224,13 +5916,22 @@ fn extract_scm_rights(
     let mut offset = 0;
     while offset + 12 <= control_len {
         let cmsg_len = u32::from_le_bytes([
-            control[offset], control[offset + 1], control[offset + 2], control[offset + 3],
+            control[offset],
+            control[offset + 1],
+            control[offset + 2],
+            control[offset + 3],
         ]) as usize;
         let cmsg_level = u32::from_le_bytes([
-            control[offset + 4], control[offset + 5], control[offset + 6], control[offset + 7],
+            control[offset + 4],
+            control[offset + 5],
+            control[offset + 6],
+            control[offset + 7],
         ]);
         let cmsg_type = u32::from_le_bytes([
-            control[offset + 8], control[offset + 9], control[offset + 10], control[offset + 11],
+            control[offset + 8],
+            control[offset + 9],
+            control[offset + 10],
+            control[offset + 11],
         ]);
 
         if cmsg_len < 12 || offset + cmsg_len > control_len {
@@ -5244,8 +5945,10 @@ fn extract_scm_rights(
             for i in 0..num_fds {
                 let fd_offset = offset + 12 + i * 4;
                 let fd_num = i32::from_le_bytes([
-                    control[fd_offset], control[fd_offset + 1],
-                    control[fd_offset + 2], control[fd_offset + 3],
+                    control[fd_offset],
+                    control[fd_offset + 1],
+                    control[fd_offset + 2],
+                    control[fd_offset + 3],
                 ]);
 
                 // Look up this FD in the sender's process
@@ -5290,6 +5993,8 @@ fn extract_scm_rights(
                                         SocketState::Listening => 2,
                                         SocketState::Connected => 3,
                                         SocketState::Closed => 4,
+                                        // See fork.rs serialise_fork_state.
+                                        SocketState::Connecting => 4,
                                     },
                                     send_buf_idx: sock.send_buf_idx,
                                     recv_buf_idx: sock.recv_buf_idx,
@@ -5418,7 +6123,7 @@ fn install_scm_rights_fds(
     in_flight: Vec<crate::pipe::InFlightFd>,
 ) -> Vec<i32> {
     use crate::ofd::FileType;
-    use crate::socket::{SocketDomain, SocketType, SocketState, SocketInfo};
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
 
     let mut new_fds = Vec::new();
 
@@ -5466,7 +6171,8 @@ fn install_scm_rights_fds(
                         new_host_handle,
                         entry.path.clone(),
                     );
-                    if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
+                    if let Ok(new_fd) = proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+                    {
                         new_fds.push(new_fd);
                     }
                 }
@@ -5486,10 +6192,18 @@ fn install_scm_rights_fds(
             6 | 7 => {
                 // PTY master (6) or slave (7) — share by incrementing refs
                 let is_master = entry.file_type == 6;
-                let file_type = if is_master { FileType::PtyMaster } else { FileType::PtySlave };
+                let file_type = if is_master {
+                    FileType::PtyMaster
+                } else {
+                    FileType::PtySlave
+                };
                 let pty_idx = entry.host_handle as usize;
                 if let Some(pty) = crate::pty::get_pty(pty_idx) {
-                    if is_master { pty.master_refs += 1; } else { pty.slave_refs += 1; }
+                    if is_master {
+                        pty.master_refs += 1;
+                    } else {
+                        pty.slave_refs += 1;
+                    }
                 }
                 let ofd_idx = proc.ofd_table.create(
                     file_type,
@@ -5621,9 +6335,8 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
                 let cmsg_len = 12 + cmsg_data_len; // cmsghdr + FD data
                 let cmsg_space = (cmsg_len + 3) & !3; // aligned
                 if cmsg_space <= control_len {
-                    let ctrl = unsafe {
-                        slice::from_raw_parts_mut(control_ptr as *mut u8, control_len)
-                    };
+                    let ctrl =
+                        unsafe { slice::from_raw_parts_mut(control_ptr as *mut u8, control_len) };
                     // cmsg_len
                     ctrl[0..4].copy_from_slice(&(cmsg_len as u32).to_le_bytes());
                     // cmsg_level = SOL_SOCKET
@@ -5657,13 +6370,20 @@ pub extern "C" fn kernel_recvmsg(fd: i32, msg_ptr: *mut u8, flags: u32) -> i32 {
 /// wait4 — wait for child process. Writes status to wstatus_ptr, ignores rusage.
 /// Returns child pid on success, negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_wait4(pid: i32, wstatus_ptr: *mut i32, options: u32, _rusage_ptr: *mut u8) -> i32 {
+pub extern "C" fn kernel_wait4(
+    pid: i32,
+    wstatus_ptr: *mut i32,
+    options: u32,
+    _rusage_ptr: *mut u8,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_waitpid(proc, &mut host, pid, options) {
         Ok((child_pid, status)) => {
             if !wstatus_ptr.is_null() {
-                unsafe { *wstatus_ptr = status; }
+                unsafe {
+                    *wstatus_ptr = status;
+                }
             }
             child_pid
         }
@@ -5827,7 +6547,15 @@ pub extern "C" fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) 
 
 /// mmap. Returns address or MAP_FAILED (0xFFFFFFFF).
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_mmap(addr: usize, len: usize, prot: u32, flags: u32, fd: i32, offset_lo: u32, offset_hi: i32) -> usize {
+pub extern "C" fn kernel_mmap(
+    addr: usize,
+    len: usize,
+    prot: u32,
+    flags: u32,
+    fd: i32,
+    offset_lo: u32,
+    offset_hi: i32,
+) -> usize {
     let (_gkl, proc) = unsafe { get_process() };
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
     let mut host = WasmHostIO;
@@ -5908,7 +6636,9 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
     } // _gkl dropped here — GKL released
     // Halt execution — musl's _exit loops forever if we just return.
     #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-    unsafe { core::hint::unreachable_unchecked(); }
+    unsafe {
+        core::hint::unreachable_unchecked();
+    }
     #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
     unreachable!("kernel_exit should not return");
 }
@@ -5940,7 +6670,12 @@ pub extern "C" fn kernel_socket(domain: u32, sock_type: u32, protocol: u32) -> i
 /// Create a connected pair of sockets. Returns 0 on success, negative errno on error.
 /// Writes the two fds to sv_ptr[0] and sv_ptr[1].
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_socketpair(domain: u32, sock_type: u32, protocol: u32, sv_ptr: *mut i32) -> i32 {
+pub extern "C" fn kernel_socketpair(
+    domain: u32,
+    sock_type: u32,
+    protocol: u32,
+    sv_ptr: *mut i32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_socketpair(proc, &mut host, domain, sock_type, protocol) {
@@ -5987,10 +6722,15 @@ pub extern "C" fn kernel_listen(fd: i32, backlog: u32) -> i32 {
 /// Accept a connection with flags. Returns new fd or negative errno.
 /// Flags: SOCK_CLOEXEC, SOCK_NONBLOCK (same values as socket()).
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_accept4(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u8, flags: u32) -> i32 {
-    use wasm_posix_shared::socket::{SOCK_CLOEXEC, SOCK_NONBLOCK};
+pub extern "C" fn kernel_accept4(
+    fd: i32,
+    addr_ptr: *mut u8,
+    addrlen_ptr: *mut u8,
+    flags: u32,
+) -> i32 {
     use wasm_posix_shared::fd_flags::FD_CLOEXEC;
     use wasm_posix_shared::flags::O_NONBLOCK;
+    use wasm_posix_shared::socket::{SOCK_CLOEXEC, SOCK_NONBLOCK};
 
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
@@ -6026,10 +6766,13 @@ pub extern "C" fn kernel_accept4(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u
                                     // Write AF_UNIX sockaddr
                                     let n = max_len.min(2);
                                     if n >= 2 {
-                                        let addr_buf = unsafe { slice::from_raw_parts_mut(addr_ptr, max_len) };
+                                        let addr_buf =
+                                            unsafe { slice::from_raw_parts_mut(addr_ptr, max_len) };
                                         addr_buf[0] = 1; // AF_UNIX
                                         addr_buf[1] = 0;
-                                        for i in 2..max_len { addr_buf[i] = 0; }
+                                        for i in 2..max_len {
+                                            addr_buf[i] = 0;
+                                        }
                                         addrlen_buf.copy_from_slice(&2u32.to_le_bytes());
                                     }
                                 }
@@ -6045,7 +6788,8 @@ pub extern "C" fn kernel_accept4(fd: i32, addr_ptr: *mut u8, addrlen_ptr: *mut u
                                     sa[6] = sock.peer_addr[2];
                                     sa[7] = sock.peer_addr[3];
                                     let n = max_len.min(16);
-                                    let addr_buf = unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
+                                    let addr_buf =
+                                        unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
                                     addr_buf.copy_from_slice(&sa[..n]);
                                     addrlen_buf.copy_from_slice(&16u32.to_le_bytes());
                                 }
@@ -6110,13 +6854,9 @@ pub extern "C" fn kernel_connect(fd: i32, addr_ptr: *const u8, addr_len: u32) ->
 ///
 /// Searches all processes in the ProcessTable for a listening socket on the
 /// target port, then creates global pipe pairs to connect the two processes.
-fn cross_process_loopback_connect(
-    proc: &mut Process,
-    fd: i32,
-    addr: &[u8],
-) -> Result<(), Errno> {
-    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
+    use crate::socket::{SocketState, SocketType};
 
     let port = u16::from_be_bytes([addr[2], addr[3]]);
     let ip = [addr[4], addr[5], addr[6], addr[7]];
@@ -6187,7 +6927,11 @@ fn cross_process_loopback_connect(
 
     // Set up client socket (in current process)
     let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    let client_addr = if client_sock.bind_addr == [0; 4] { [127, 0, 0, 1] } else { client_sock.bind_addr };
+    let client_addr = if client_sock.bind_addr == [0; 4] {
+        [127, 0, 0, 1]
+    } else {
+        client_sock.bind_addr
+    };
     let mut client_port = client_sock.bind_port;
     if client_port == 0 {
         client_port = proc.next_ephemeral_port;
@@ -6213,7 +6957,9 @@ fn cross_process_loopback_connect(
     // The accepting process (any of the listener's fork-inherited copies)
     // creates its own accepted SocketInfo lazily in sys_accept.
     let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ESRCH)?;
-    let shared_idx = listener_proc.sockets.get(listener_sock_idx)
+    let shared_idx = listener_proc
+        .sockets
+        .get(listener_sock_idx)
         .and_then(|s| s.shared_backlog_idx)
         .ok_or(Errno::ECONNREFUSED)?;
 
@@ -6235,20 +6981,19 @@ fn cross_process_loopback_connect(
 /// Looks up the target path in the global UnixSocketRegistry, then creates
 /// global pipe pairs to connect the client (current process) to the listener
 /// (possibly in a different process).
-fn cross_process_unix_connect(
-    proc: &mut Process,
-    fd: i32,
-    addr: &[u8],
-) -> Result<(), Errno> {
-    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Result<(), Errno> {
     use crate::pipe::PipeBuffer;
+    use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
 
     // Parse path from sockaddr_un
     if addr.len() < 3 {
         return Err(Errno::EINVAL);
     }
     let path_bytes = &addr[2..];
-    let path_end = path_bytes.iter().position(|&b| b == 0).unwrap_or(path_bytes.len());
+    let path_end = path_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(path_bytes.len());
     if path_end == 0 {
         return Err(Errno::ECONNREFUSED);
     }
@@ -6276,7 +7021,10 @@ fn cross_process_unix_connect(
 
     // Verify listener exists and is listening
     let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ECONNREFUSED)?;
-    let listener = listener_proc.sockets.get(listener_sock_idx).ok_or(Errno::ECONNREFUSED)?;
+    let listener = listener_proc
+        .sockets
+        .get(listener_sock_idx)
+        .ok_or(Errno::ECONNREFUSED)?;
     if listener.state != SocketState::Listening {
         return Err(Errno::ECONNREFUSED);
     }
@@ -6290,7 +7038,10 @@ fn cross_process_unix_connect(
     let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
 
     // Push to listener's backlog
-    let listener = listener_proc.sockets.get_mut(listener_sock_idx).ok_or(Errno::EBADF)?;
+    let listener = listener_proc
+        .sockets
+        .get_mut(listener_sock_idx)
+        .ok_or(Errno::EBADF)?;
     listener.listen_backlog.push(accepted_idx);
 
     // Set up client socket (in current process)
@@ -6349,7 +7100,13 @@ pub extern "C" fn kernel_shutdown(fd: i32, how: u32) -> i32 {
 /// Writes the option value to optval_ptr. optlen_ptr points to buffer size
 /// on input, receives actual written size on output.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_ptr: *mut u8, optlen_ptr: *mut u32) -> i32 {
+pub extern "C" fn kernel_getsockopt(
+    fd: i32,
+    level: u32,
+    optname: u32,
+    optval_ptr: *mut u8,
+    optlen_ptr: *mut u32,
+) -> i32 {
     use wasm_posix_shared::socket::*;
     let (_gkl, proc) = unsafe { get_process() };
 
@@ -6362,11 +7119,17 @@ pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_pt
                 } else {
                     syscalls::TCP_INFO_SIZE
                 };
-                let write_len = if avail < syscalls::TCP_INFO_SIZE { avail } else { syscalls::TCP_INFO_SIZE };
+                let write_len = if avail < syscalls::TCP_INFO_SIZE {
+                    avail
+                } else {
+                    syscalls::TCP_INFO_SIZE
+                };
                 let out = unsafe { slice::from_raw_parts_mut(optval_ptr, write_len) };
                 out.copy_from_slice(&info_buf[..write_len]);
                 if !optlen_ptr.is_null() {
-                    unsafe { *optlen_ptr = write_len as u32; }
+                    unsafe {
+                        *optlen_ptr = write_len as u32;
+                    }
                 }
                 0
             }
@@ -6387,7 +7150,9 @@ pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_pt
                 buf[0..8].copy_from_slice(&tv_sec.to_le_bytes());
                 buf[8..16].copy_from_slice(&tv_usec.to_le_bytes());
                 if !optlen_ptr.is_null() {
-                    unsafe { *optlen_ptr = 16; }
+                    unsafe {
+                        *optlen_ptr = 16;
+                    }
                 }
                 0
             }
@@ -6402,9 +7167,13 @@ pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_pt
         Ok(val) => {
             // Write as u32 (4 bytes) for int-valued options
             let val_ptr = optval_ptr as *mut u32;
-            unsafe { *val_ptr = val; }
+            unsafe {
+                *val_ptr = val;
+            }
             if !optlen_ptr.is_null() {
-                unsafe { *optlen_ptr = 4; }
+                unsafe {
+                    *optlen_ptr = 4;
+                }
             }
             0
         }
@@ -6418,7 +7187,13 @@ pub extern "C" fn kernel_getsockopt(fd: i32, level: u32, optname: u32, optval_pt
 /// Set socket option. Returns 0 on success, negative errno on error.
 /// optval_ptr points to the option value buffer, optlen is its size.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_setsockopt(fd: i32, level: u32, optname: u32, optval_ptr: *const u8, optlen: u32) -> i32 {
+pub extern "C" fn kernel_setsockopt(
+    fd: i32,
+    level: u32,
+    optname: u32,
+    optval_ptr: *const u8,
+    optlen: u32,
+) -> i32 {
     use wasm_posix_shared::socket::*;
     let (_gkl, proc) = unsafe { get_process() };
 
@@ -6541,7 +7316,9 @@ pub extern "C" fn kernel_recvfrom(
     let result = match syscalls::sys_recvfrom(proc, &mut host, fd, buf, flags, addr_buf) {
         Ok((n, actual_addr_len)) => {
             if !addrlen_ptr.is_null() {
-                unsafe { *addrlen_ptr = actual_addr_len as u32; }
+                unsafe {
+                    *addrlen_ptr = actual_addr_len as u32;
+                }
             }
             n as i32
         }
@@ -6601,7 +7378,13 @@ pub extern "C" fn kernel_usleep(usec: u32) -> i32 {
 /// openat() - open relative to directory fd.
 /// Returns fd on success, negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_openat(dirfd: i32, path_ptr: *const u8, path_len: u32, flags: u32, mode: u32) -> i32 {
+pub extern "C" fn kernel_openat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    flags: u32,
+    mode: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -6616,7 +7399,13 @@ pub extern "C" fn kernel_openat(dirfd: i32, path_ptr: *const u8, path_len: u32, 
 /// fstatat() - stat relative to directory fd.
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_fstatat(dirfd: i32, path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8, flags: u32) -> i32 {
+pub extern "C" fn kernel_fstatat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    stat_ptr: *mut u8,
+    flags: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -6642,7 +7431,12 @@ pub extern "C" fn kernel_fstatat(dirfd: i32, path_ptr: *const u8, path_len: u32,
 /// unlinkat() - unlink relative to directory fd.
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_unlinkat(dirfd: i32, path_ptr: *const u8, path_len: u32, flags: u32) -> i32 {
+pub extern "C" fn kernel_unlinkat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    flags: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -6672,12 +7466,20 @@ pub extern "C" fn kernel_mkdirat(dirfd: i32, path_ptr: *const u8, path_len: u32,
 /// renameat() - rename relative to directory fds.
 /// Returns 0 on success, negative errno on error.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_renameat(olddirfd: i32, old_ptr: *const u8, old_len: u32, newdirfd: i32, new_ptr: *const u8, new_len: u32) -> i32 {
+pub extern "C" fn kernel_renameat(
+    olddirfd: i32,
+    old_ptr: *const u8,
+    old_len: u32,
+    newdirfd: i32,
+    new_ptr: *const u8,
+    new_len: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
     let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
-    let result = match syscalls::sys_renameat(proc, &mut host, olddirfd, oldpath, newdirfd, newpath) {
+    let result = match syscalls::sys_renameat(proc, &mut host, olddirfd, oldpath, newdirfd, newpath)
+    {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -6887,12 +7689,9 @@ pub extern "C" fn kernel_writev(fd: i32, iov_ptr: *const u8, iovcnt: i32) -> i32
         let mut total: usize = 0;
         for i in 0..iovcnt as usize {
             let iov = unsafe { iov_ptr.add(i * 8) };
-            let base = unsafe {
-                u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)])
-            };
-            let len = unsafe {
-                u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)])
-            };
+            let base = unsafe { u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)]) };
+            let len =
+                unsafe { u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)]) };
 
             if len == 0 {
                 continue;
@@ -6935,12 +7734,9 @@ pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
         let mut total: usize = 0;
         for i in 0..iovcnt as usize {
             let iov = unsafe { iov_ptr.add(i * 8) };
-            let base = unsafe {
-                u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)])
-            };
-            let len = unsafe {
-                u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)])
-            };
+            let base = unsafe { u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)]) };
+            let len =
+                unsafe { u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)]) };
 
             if len == 0 {
                 continue;
@@ -6972,7 +7768,13 @@ pub extern "C" fn kernel_readv(fd: i32, iov_ptr: *mut u8, iovcnt: i32) -> i32 {
 /// offset is split into (lo, hi) u32 pair.
 /// Returns total bytes read or negative errno.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_preadv(fd: i32, iov_ptr: *mut u8, iovcnt: i32, offset_lo: u32, offset_hi: i32) -> i32 {
+pub extern "C" fn kernel_preadv(
+    fd: i32,
+    iov_ptr: *mut u8,
+    iovcnt: i32,
+    offset_lo: u32,
+    offset_hi: i32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
@@ -6986,12 +7788,9 @@ pub extern "C" fn kernel_preadv(fd: i32, iov_ptr: *mut u8, iovcnt: i32, offset_l
         let mut cur_offset = offset;
         for i in 0..iovcnt as usize {
             let iov = unsafe { iov_ptr.add(i * 8) };
-            let base = unsafe {
-                u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)])
-            };
-            let len = unsafe {
-                u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)])
-            };
+            let base = unsafe { u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)]) };
+            let len =
+                unsafe { u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)]) };
 
             if len == 0 {
                 continue;
@@ -7024,7 +7823,13 @@ pub extern "C" fn kernel_preadv(fd: i32, iov_ptr: *mut u8, iovcnt: i32, offset_l
 /// offset is split into (lo, hi) u32 pair.
 /// Returns total bytes written or negative errno.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pwritev(fd: i32, iov_ptr: *const u8, iovcnt: i32, offset_lo: u32, offset_hi: i32) -> i32 {
+pub extern "C" fn kernel_pwritev(
+    fd: i32,
+    iov_ptr: *const u8,
+    iovcnt: i32,
+    offset_lo: u32,
+    offset_hi: i32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let offset = ((offset_hi as i64) << 32) | (offset_lo as u64 as i64);
@@ -7038,12 +7843,9 @@ pub extern "C" fn kernel_pwritev(fd: i32, iov_ptr: *const u8, iovcnt: i32, offse
         let mut cur_offset = offset;
         for i in 0..iovcnt as usize {
             let iov = unsafe { iov_ptr.add(i * 8) };
-            let base = unsafe {
-                u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)])
-            };
-            let len = unsafe {
-                u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)])
-            };
+            let base = unsafe { u32::from_le_bytes([*iov, *iov.add(1), *iov.add(2), *iov.add(3)]) };
+            let len =
+                unsafe { u32::from_le_bytes([*iov.add(4), *iov.add(5), *iov.add(6), *iov.add(7)]) };
 
             if len == 0 {
                 continue;
@@ -7086,18 +7888,19 @@ pub extern "C" fn kernel_sendfile(out_fd: i32, in_fd: i32, offset_ptr: *mut u8, 
         i64::from_le_bytes(bytes.try_into().unwrap())
     };
 
-    let result = match syscalls::sys_sendfile(proc, &mut host, out_fd, in_fd, offset, count as usize) {
-        Ok(n) => {
-            // Update offset_ptr if provided
-            if !offset_ptr.is_null() && offset >= 0 {
-                let new_offset = offset + n as i64;
-                let buf = unsafe { slice::from_raw_parts_mut(offset_ptr, 8) };
-                buf.copy_from_slice(&new_offset.to_le_bytes());
+    let result =
+        match syscalls::sys_sendfile(proc, &mut host, out_fd, in_fd, offset, count as usize) {
+            Ok(n) => {
+                // Update offset_ptr if provided
+                if !offset_ptr.is_null() && offset >= 0 {
+                    let new_offset = offset + n as i64;
+                    let buf = unsafe { slice::from_raw_parts_mut(offset_ptr, 8) };
+                    buf.copy_from_slice(&new_offset.to_le_bytes());
+                }
+                n as i32
             }
-            n as i32
-        }
-        Err(e) => -(e as i32),
-    };
+            Err(e) => -(e as i32),
+        };
     deliver_pending_signals(proc, &mut host);
     result
 }
@@ -7195,8 +7998,12 @@ pub extern "C" fn kernel_getrlimit(resource: u32, rlim_ptr: *mut u8) -> i32 {
 pub extern "C" fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let buf = unsafe { core::slice::from_raw_parts(rlim_ptr, 16) };
-    let soft = u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
-    let hard = u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]);
+    let soft = u64::from_le_bytes([
+        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+    ]);
+    let hard = u64::from_le_bytes([
+        buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+    ]);
     let result = match syscalls::sys_setrlimit(proc, resource, soft, hard) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
@@ -7212,7 +8019,13 @@ pub extern "C" fn kernel_setrlimit(resource: u32, rlim_ptr: *const u8) -> i32 {
 
 /// faccessat — check file accessibility relative to directory fd.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_faccessat(dirfd: i32, path_ptr: *const u8, path_len: u32, amode: u32, flags: u32) -> i32 {
+pub extern "C" fn kernel_faccessat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    amode: u32,
+    flags: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -7226,7 +8039,13 @@ pub extern "C" fn kernel_faccessat(dirfd: i32, path_ptr: *const u8, path_len: u3
 
 /// fchmodat — change file mode relative to directory fd.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_fchmodat(dirfd: i32, path_ptr: *const u8, path_len: u32, mode: u32, flags: u32) -> i32 {
+pub extern "C" fn kernel_fchmodat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    mode: u32,
+    flags: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -7240,7 +8059,14 @@ pub extern "C" fn kernel_fchmodat(dirfd: i32, path_ptr: *const u8, path_len: u32
 
 /// fchownat — change file owner/group relative to directory fd.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_fchownat(dirfd: i32, path_ptr: *const u8, path_len: u32, uid: u32, gid: u32, flags: u32) -> i32 {
+pub extern "C" fn kernel_fchownat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    uid: u32,
+    gid: u32,
+    flags: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -7254,22 +8080,37 @@ pub extern "C" fn kernel_fchownat(dirfd: i32, path_ptr: *const u8, path_len: u32
 
 /// linkat — create hard link relative to directory fds.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_linkat(olddirfd: i32, old_ptr: *const u8, old_len: u32, newdirfd: i32, new_ptr: *const u8, new_len: u32, flags: u32) -> i32 {
+pub extern "C" fn kernel_linkat(
+    olddirfd: i32,
+    old_ptr: *const u8,
+    old_len: u32,
+    newdirfd: i32,
+    new_ptr: *const u8,
+    new_len: u32,
+    flags: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let oldpath = unsafe { slice::from_raw_parts(old_ptr, old_len as usize) };
     let newpath = unsafe { slice::from_raw_parts(new_ptr, new_len as usize) };
-    let result = match syscalls::sys_linkat(proc, &mut host, olddirfd, oldpath, newdirfd, newpath, flags) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
+    let result =
+        match syscalls::sys_linkat(proc, &mut host, olddirfd, oldpath, newdirfd, newpath, flags) {
+            Ok(()) => 0,
+            Err(e) => -(e as i32),
+        };
     deliver_pending_signals(proc, &mut host);
     result
 }
 
 /// symlinkat — create symbolic link relative to directory fd.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_symlinkat(target_ptr: *const u8, target_len: u32, newdirfd: i32, link_ptr: *const u8, link_len: u32) -> i32 {
+pub extern "C" fn kernel_symlinkat(
+    target_ptr: *const u8,
+    target_len: u32,
+    newdirfd: i32,
+    link_ptr: *const u8,
+    link_len: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let target = unsafe { slice::from_raw_parts(target_ptr, target_len as usize) };
@@ -7284,7 +8125,13 @@ pub extern "C" fn kernel_symlinkat(target_ptr: *const u8, target_len: u32, newdi
 
 /// readlinkat — read symbolic link relative to directory fd.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_readlinkat(dirfd: i32, path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+pub extern "C" fn kernel_readlinkat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -7332,7 +8179,9 @@ pub extern "C" fn kernel_select(
     };
 
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_select(proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms) {
+    let result = match syscalls::sys_select(
+        proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms,
+    ) {
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
@@ -7483,7 +8332,12 @@ pub extern "C" fn kernel_execve(path_ptr: *const u8, path_len: u32) -> i32 {
 /// Execute a new program via file descriptor (fexecve / execveat).
 /// Same trap-on-success semantics as kernel_execve.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_execveat(dirfd: i32, path_ptr: *const u8, path_len: u32, flags: u32) -> i32 {
+pub extern "C" fn kernel_execveat(
+    dirfd: i32,
+    path_ptr: *const u8,
+    path_len: u32,
+    flags: u32,
+) -> i32 {
     let result = {
         let (_gkl, proc) = unsafe { get_process() };
         let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -7530,12 +8384,19 @@ pub extern "C" fn kernel_fork() -> i32 {
 /// clone — spawn a new thread. Returns child TID in parent, negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_clone(
-    fn_ptr: usize, stack_ptr: usize, flags: u32, arg: usize,
-    ptid_ptr: usize, tls_ptr: usize, ctid_ptr: usize,
+    fn_ptr: usize,
+    stack_ptr: usize,
+    flags: u32,
+    arg: usize,
+    ptid_ptr: usize,
+    tls_ptr: usize,
+    ctid_ptr: usize,
 ) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
-    match syscalls::sys_clone(proc, &mut host, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr) {
+    match syscalls::sys_clone(
+        proc, &mut host, fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr,
+    ) {
         Ok(tid) => tid,
         Err(e) => -(e as i32),
     }
@@ -7597,8 +8458,10 @@ pub extern "C" fn kernel_get_fork_exec_argc() -> i32 {
 /// argv is passed as a pointer to an array of (ptr, len) pairs.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_fork_exec(
-    path_ptr: *const u8, path_len: u32,
-    argv_ptrs: *const u32, argc: u32,
+    path_ptr: *const u8,
+    path_len: u32,
+    argv_ptrs: *const u32,
+    argc: u32,
 ) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -7623,7 +8486,10 @@ pub extern "C" fn kernel_set_fork_fd_action(action_type: u32, fd1: i32, fd2: i32
     let (_gkl, proc) = unsafe { get_process() };
     use crate::process::FdAction;
     match action_type {
-        0 => proc.fork_fd_actions.push(FdAction::Dup2 { old_fd: fd1, new_fd: fd2 }),
+        0 => proc.fork_fd_actions.push(FdAction::Dup2 {
+            old_fd: fd1,
+            new_fd: fd2,
+        }),
         1 => proc.fork_fd_actions.push(FdAction::Close { fd: fd1 }),
         _ => return -(wasm_posix_shared::Errno::EINVAL as i32),
     }
@@ -7648,19 +8514,22 @@ pub extern "C" fn kernel_apply_fork_fd_actions() -> i32 {
                     return -(e as i32);
                 }
             }
-            crate::process::FdAction::Open { fd, ref path, flags, mode } => {
-                match syscalls::sys_open(proc, &mut host, &path, flags as u32, mode as u32) {
-                    Ok(opened_fd) => {
-                        if opened_fd != fd {
-                            if let Err(e) = syscalls::sys_dup2(proc, &mut host, opened_fd, fd) {
-                                return -(e as i32);
-                            }
-                            let _ = syscalls::sys_close(proc, &mut host, opened_fd);
+            crate::process::FdAction::Open {
+                fd,
+                ref path,
+                flags,
+                mode,
+            } => match syscalls::sys_open(proc, &mut host, &path, flags as u32, mode as u32) {
+                Ok(opened_fd) => {
+                    if opened_fd != fd {
+                        if let Err(e) = syscalls::sys_dup2(proc, &mut host, opened_fd, fd) {
+                            return -(e as i32);
                         }
+                        let _ = syscalls::sys_close(proc, &mut host, opened_fd);
                     }
-                    Err(e) => return -(e as i32),
                 }
-            }
+                Err(e) => return -(e as i32),
+            },
         }
     }
     // Clear fork_child flag after applying actions
@@ -7734,8 +8603,13 @@ pub extern "C" fn kernel_setitimer(which: u32, new_ptr: *const u8, old_ptr: *mut
     };
 
     let result = match syscalls::sys_setitimer(
-        proc, &mut host, which,
-        interval_sec, interval_usec, value_sec, value_usec,
+        proc,
+        &mut host,
+        which,
+        interval_sec,
+        interval_usec,
+        value_sec,
+        value_usec,
     ) {
         Ok((old_isec, old_iusec, old_vsec, old_vusec)) => {
             if !old_ptr.is_null() {
@@ -7790,7 +8664,11 @@ const TIMER_ABSTIME: i32 = 1;
 /// musl sends ksigevent = {sigev_value(i32), sigev_signo(i32), sigev_notify(i32), sigev_tid(i32)} = 16 bytes.
 /// Returns 0 on success, negative errno.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_timer_create(clock_id: u32, sevp_ptr: *const u8, timerid_ptr: *mut i32) -> i32 {
+pub extern "C" fn kernel_timer_create(
+    clock_id: u32,
+    sevp_ptr: *const u8,
+    timerid_ptr: *mut i32,
+) -> i32 {
     use crate::process::PosixTimerState;
 
     let (_gkl, proc) = unsafe { get_process() };
@@ -7842,7 +8720,9 @@ pub extern "C" fn kernel_timer_create(clock_id: u32, sevp_ptr: *const u8, timeri
     });
 
     if !timerid_ptr.is_null() {
-        unsafe { *timerid_ptr = timer_id as i32; }
+        unsafe {
+            *timerid_ptr = timer_id as i32;
+        }
     }
 
     let mut host = WasmHostIO;
@@ -7853,7 +8733,12 @@ pub extern "C" fn kernel_timer_create(clock_id: u32, sevp_ptr: *const u8, timeri
 /// timer_settime(timerid, flags, new_value_ptr, old_value_ptr)
 /// new/old are itimerspec as 4 × i64 = 32 bytes: {interval_sec, interval_nsec, value_sec, value_nsec}.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_timer_settime(timerid: i32, flags: i32, new_ptr: *const u8, old_ptr: *mut u8) -> i32 {
+pub extern "C" fn kernel_timer_settime(
+    timerid: i32,
+    flags: i32,
+    new_ptr: *const u8,
+    old_ptr: *mut u8,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
 
@@ -8069,9 +8954,7 @@ pub extern "C" fn kernel_rt_sigtimedwait(mask_lo: u32, mask_hi: u32, timeout_ms:
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pathconf(path_ptr: *const u8, path_len: u32, name: i32) -> i64 {
     let (_gkl, proc) = unsafe { get_process() };
-    let path = unsafe {
-        core::slice::from_raw_parts(path_ptr, path_len as usize)
-    };
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
     let result = match syscalls::sys_pathconf(path, name) {
         Ok(v) => v,
         Err(e) => -(e as i64),
@@ -8104,14 +8987,14 @@ pub extern "C" fn kernel_getsockname(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mu
     } else {
         0
     };
-    let buf = unsafe {
-        core::slice::from_raw_parts_mut(buf_ptr, addrlen as usize)
-    };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, addrlen as usize) };
     let result = match syscalls::sys_getsockname(proc, fd, buf) {
         Ok(n) => {
             // Write actual addrlen back
             if !addrlen_ptr.is_null() {
-                unsafe { *addrlen_ptr = n as u32; }
+                unsafe {
+                    *addrlen_ptr = n as u32;
+                }
             }
             0 // getsockname returns 0 on success
         }
@@ -8131,13 +9014,13 @@ pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mu
     } else {
         0
     };
-    let buf = unsafe {
-        core::slice::from_raw_parts_mut(buf_ptr, addrlen as usize)
-    };
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, addrlen as usize) };
     let result = match syscalls::sys_getpeername(proc, fd, buf) {
         Ok(n) => {
             if !addrlen_ptr.is_null() {
-                unsafe { *addrlen_ptr = n as u32; }
+                unsafe {
+                    *addrlen_ptr = n as u32;
+                }
             }
             0
         }
@@ -8150,7 +9033,11 @@ pub extern "C" fn kernel_getpeername(fd: i32, buf_ptr: *mut u8, addrlen_ptr: *mu
 
 /// Resolve a hostname to an IP address. Returns bytes written or negative errno.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_getaddrinfo(name_ptr: *const u8, name_len: u32, result_ptr: *mut u8) -> i32 {
+pub extern "C" fn kernel_getaddrinfo(
+    name_ptr: *const u8,
+    name_len: u32,
+    result_ptr: *mut u8,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
@@ -8210,7 +9097,14 @@ pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
 
 /// futex — real implementation via host Atomics.wait/notify.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_futex(uaddr: usize, op: u32, val: u32, timeout: u32, uaddr2: usize, val3: u32) -> i32 {
+pub extern "C" fn kernel_futex(
+    uaddr: usize,
+    op: u32,
+    val: u32,
+    timeout: u32,
+    uaddr2: usize,
+    val3: u32,
+) -> i32 {
     let _gkl = GklGuard::acquire();
     let mut host = WasmHostIO;
     match syscalls::sys_futex(&mut host, uaddr, op, val, timeout, uaddr2, val3) {
@@ -8226,7 +9120,14 @@ pub extern "C" fn kernel_futex(uaddr: usize, op: u32, val: u32, timeout: u32, ua
 /// ppoll — poll with atomic signal mask swap.
 /// has_mask: 1 if a signal mask was provided (even if all-zero), 0 if NULL.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ppoll(fds_ptr: *mut u8, nfds: u32, timeout_ms: i32, has_mask: u32, mask_lo: u32, mask_hi: u32) -> i32 {
+pub extern "C" fn kernel_ppoll(
+    fds_ptr: *mut u8,
+    nfds: u32,
+    timeout_ms: i32,
+    has_mask: u32,
+    mask_lo: u32,
+    mask_hi: u32,
+) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let fds = unsafe {
         slice::from_raw_parts_mut(fds_ptr as *mut wasm_posix_shared::WasmPollFd, nfds as usize)
@@ -8283,7 +9184,9 @@ pub extern "C" fn kernel_pselect6(
     };
 
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_pselect6(proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms, mask) {
+    let result = match syscalls::sys_pselect6(
+        proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms, mask,
+    ) {
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
@@ -8322,9 +9225,9 @@ pub extern "C" fn kernel_inject_connection(
     peer_addr_d: u32,
     peer_port: u32,
 ) -> i32 {
+    use crate::ofd::FileType;
     use crate::pipe::PipeBuffer;
     use crate::socket::{PendingConnection, SocketState};
-    use crate::ofd::FileType;
 
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = match table.get_mut(pid) {
@@ -8367,10 +9270,8 @@ pub extern "C" fn kernel_inject_connection(
     // sendPipeIdx as recvPipeIdx + 1), so use alloc_pair which preserves
     // that invariant even when the free list is in play.
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let (recv_pipe_idx, send_pipe_idx) = pipe_table.alloc_pair(
-        PipeBuffer::new(65536),
-        PipeBuffer::new(65536),
-    );
+    let (recv_pipe_idx, send_pipe_idx) =
+        pipe_table.alloc_pair(PipeBuffer::new(65536), PipeBuffer::new(65536));
 
     let pc = PendingConnection {
         peer_addr: [
@@ -8429,7 +9330,12 @@ pub extern "C" fn kernel_pipe_read(pid: u32, pipe_idx: u32, buf_ptr: *mut u8, bu
 ///
 /// `pid == 0` ⇒ use the global pipe table (see `kernel_pipe_read`).
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_pipe_write(pid: u32, pipe_idx: u32, buf_ptr: *const u8, buf_len: u32) -> i32 {
+pub extern "C" fn kernel_pipe_write(
+    pid: u32,
+    pipe_idx: u32,
+    buf_ptr: *const u8,
+    buf_len: u32,
+) -> i32 {
     let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len as usize) };
     if pid == 0 {
         let pipe_table = unsafe { crate::pipe::global_pipe_table() };
@@ -8624,9 +9530,7 @@ pub extern "C" fn kernel_get_fd_pipe_idx(pid: u32, fd: i32) -> i32 {
         None => return -1,
     };
     match ofd.file_type {
-        FileType::Pipe if ofd.host_handle < 0 => {
-            (-(ofd.host_handle + 1)) as i32
-        }
+        FileType::Pipe if ofd.host_handle < 0 => (-(ofd.host_handle + 1)) as i32,
         FileType::Socket => {
             let sock_idx = (-(ofd.host_handle + 1)) as usize;
             match proc.sockets.get(sock_idx) {
@@ -8670,7 +9574,11 @@ pub extern "C" fn kernel_is_fd_nonblock(pid: u32, fd: i32) -> i32 {
         Some(o) => o,
         None => return -1,
     };
-    if ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK != 0 { 1 } else { 0 }
+    if ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK != 0 {
+        1
+    } else {
+        0
+    }
 }
 
 /// Get socket timeout in milliseconds for a fd.
@@ -8701,7 +9609,11 @@ pub extern "C" fn kernel_get_socket_timeout_ms(pid: u32, fd: i32, is_recv: i32) 
         Some(s) => s,
         None => return -1,
     };
-    let timeout_us = if is_recv != 0 { sock.recv_timeout_us } else { sock.send_timeout_us };
+    let timeout_us = if is_recv != 0 {
+        sock.recv_timeout_us
+    } else {
+        sock.send_timeout_us
+    };
     // Convert microseconds to milliseconds (round up to avoid 0ms for non-zero timeouts)
     if timeout_us == 0 {
         0
@@ -8732,9 +9644,7 @@ pub extern "C" fn kernel_get_fd_send_pipe_idx(pid: u32, fd: i32) -> i32 {
         None => return -1,
     };
     match ofd.file_type {
-        FileType::Pipe if ofd.host_handle < 0 => {
-            (-(ofd.host_handle + 1)) as i32
-        }
+        FileType::Pipe if ofd.host_handle < 0 => (-(ofd.host_handle + 1)) as i32,
         FileType::Socket => {
             let sock_idx = (-(ofd.host_handle + 1)) as usize;
             match proc.sockets.get(sock_idx) {
@@ -8793,7 +9703,9 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
         use alloc::format;
         format!("/dev/pts/{}", pty_idx).into_bytes()
     };
-    let ofd_idx = proc.ofd_table.create(FileType::PtySlave, O_RDWR, pty_idx as i64, path);
+    let ofd_idx = proc
+        .ofd_table
+        .create(FileType::PtySlave, O_RDWR, pty_idx as i64, path);
 
     // Close the existing CharDevice OFDs for fds 0, 1, 2
     for fd in 0..3i32 {
@@ -8886,6 +9798,11 @@ pub extern "C" fn kernel_pty_master_read(pty_idx: u32, buf_ptr: *mut u8, buf_len
 
 /// Set the window size of a PTY and send SIGWINCH to the foreground process group.
 /// Returns 0 on success, negative errno on failure.
+///
+/// SIGWINCH is only raised when the new dimensions differ from the stored
+/// dimensions. POSIX SIGWINCH semantics are "on actual size change", and
+/// raising it on no-op calls would mid-render-interrupt TUIs that subscribe
+/// to it (ink/blessed re-render on 'resize'), corrupting cursor accounting.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> i32 {
     let pty = match crate::pty::get_pty(pty_idx as usize) {
@@ -8893,12 +9810,21 @@ pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> 
         None => return -(Errno::ENOENT as i32),
     };
 
+    let new_rows = rows as u16;
+    let new_cols = cols as u16;
+    let changed =
+        pty.terminal.winsize.ws_row != new_rows || pty.terminal.winsize.ws_col != new_cols;
+
     pty.terminal.winsize = crate::terminal::WinSize {
-        ws_row: rows as u16,
-        ws_col: cols as u16,
+        ws_row: new_rows,
+        ws_col: new_cols,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+
+    if !changed {
+        return 0;
+    }
 
     // Send SIGWINCH to foreground process group
     let fg_pgid = pty.terminal.foreground_pgid;
@@ -8984,7 +9910,11 @@ pub extern "C" fn kernel_audio_pending() -> u32 {
 /// Each event is 5 bytes: pipe_idx (u32 LE) + wake_type (u8).
 /// Returns the number of events written.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_drain_wakeup_events(out_ptr: *mut u8, out_len: u32, max_events: u32) -> u32 {
+pub extern "C" fn kernel_drain_wakeup_events(
+    out_ptr: *mut u8,
+    out_len: u32,
+    max_events: u32,
+) -> u32 {
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wakeup::drain(out, max_events)
 }

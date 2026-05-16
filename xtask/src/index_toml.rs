@@ -108,12 +108,7 @@ impl IndexToml {
     /// Look up an entry by `(name, version, arch)`. Returns `None`
     /// when the package isn't in the ledger or the arch hasn't been
     /// recorded.
-    pub fn lookup(
-        &self,
-        name: &str,
-        version: &str,
-        arch: TargetArch,
-    ) -> Option<&BinaryEntry> {
+    pub fn lookup(&self, name: &str, version: &str, arch: TargetArch) -> Option<&BinaryEntry> {
         self.packages
             .iter()
             .find(|p| p.name == name && p.version == version)?
@@ -217,10 +212,7 @@ impl IndexToml {
                 self.packages.len() - 1
             }
         };
-        self.packages[pkg_idx]
-            .binary
-            .entry(arch)
-            .or_default()
+        self.packages[pkg_idx].binary.entry(arch).or_default()
     }
 
     /// Hand-format the ledger to TOML. We avoid `toml::to_string`
@@ -253,10 +245,7 @@ impl IndexToml {
             // then wasm64 (matches the BTreeMap's natural ordering
             // since the enum derives Ord with Wasm32 < Wasm64).
             for (arch, entry) in &p.binary {
-                out.push_str(&format!(
-                    "\n[packages.binary.{}]\n",
-                    arch.as_str()
-                ));
+                out.push_str(&format!("\n[packages.binary.{}]\n", arch.as_str()));
                 out.push_str(&format!(
                     "status = \"{}\"\n",
                     match entry.status {
@@ -292,11 +281,7 @@ impl IndexToml {
                     "fallback_cache_key_sha",
                     &entry.fallback_cache_key_sha,
                 );
-                write_opt(
-                    &mut out,
-                    "fallback_built_at",
-                    &entry.fallback_built_at,
-                );
+                write_opt(&mut out, "fallback_built_at", &entry.fallback_built_at);
             }
         }
         out
@@ -333,8 +318,7 @@ pub fn index_cache_path(index_url: &str, cache_dir: &Path) -> PathBuf {
 /// internet, basically).
 pub fn fetch_index(index_url: &str, cache_dir: &Path) -> Result<IndexToml, String> {
     let cache_path = index_cache_path(index_url, cache_dir);
-    let offline = std::env::var_os("WASM_POSIX_OFFLINE")
-        .is_some_and(|v| !v.is_empty() && v != "0");
+    let offline = std::env::var_os("WASM_POSIX_OFFLINE").is_some_and(|v| !v.is_empty() && v != "0");
 
     if !offline {
         match crate::remote_fetch::fetch_url(index_url) {
@@ -349,8 +333,7 @@ pub fn fetch_index(index_url: &str, cache_dir: &Path) -> Result<IndexToml, Strin
 
                 let s = std::str::from_utf8(&bytes)
                     .map_err(|e| format!("index.toml at {index_url} is not UTF-8: {e}"))?;
-                return IndexToml::parse(s)
-                    .map_err(|e| format!("index.toml at {index_url}: {e}"));
+                return IndexToml::parse(s).map_err(|e| format!("index.toml at {index_url}: {e}"));
             }
             Err(e) => {
                 eprintln!(
@@ -369,8 +352,7 @@ pub fn fetch_index(index_url: &str, cache_dir: &Path) -> Result<IndexToml, Strin
             cache_path.display()
         )
     })?;
-    IndexToml::parse(&content)
-        .map_err(|e| format!("cached index {}: {e}", cache_path.display()))
+    IndexToml::parse(&content).map_err(|e| format!("cached index {}: {e}", cache_path.display()))
 }
 
 fn write_opt(out: &mut String, key: &str, value: &Option<String>) {
@@ -461,13 +443,15 @@ fallback_built_at       = "2026-05-12T00:00:00Z"
             entry.fallback_archive_url.as_deref(),
             Some("foo-1.0-rev1-abi8-wasm64-old.tar.zst")
         );
-        assert_eq!(entry.fallback_archive_sha256.as_deref(), Some("olddeadbeef"));
+        assert_eq!(
+            entry.fallback_archive_sha256.as_deref(),
+            Some("olddeadbeef")
+        );
     }
 
     #[test]
     fn index_toml_round_trips_semantic_equality() {
         use super::*;
-        use crate::pkg_manifest::TargetArch;
 
         let original = r#"
 abi_version = 8
@@ -498,14 +482,21 @@ built_by       = "https://example.com/run/1"
         let url_pos = written.find("archive_url").unwrap();
         let sha_pos = written.find("archive_sha256").unwrap();
         let ck_pos = written.find("cache_key_sha").unwrap();
-        assert!(url_pos < sha_pos, "archive_url must come before archive_sha256");
-        assert!(sha_pos < ck_pos, "archive_sha256 must come before cache_key_sha");
+        assert!(
+            url_pos < sha_pos,
+            "archive_url must come before archive_sha256"
+        );
+        assert!(
+            sha_pos < ck_pos,
+            "archive_sha256 must come before cache_key_sha"
+        );
     }
 
     #[test]
     fn index_toml_write_sorts_packages_alphabetically() {
         use super::*;
-        let mut idx = IndexToml::parse(r#"
+        let mut idx = IndexToml::parse(
+            r#"
 abi_version = 8
 generated_at = "t"
 generator    = "test"
@@ -519,12 +510,17 @@ revision = 1
 name     = "alpha"
 version  = "0.1"
 revision = 1
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let _ = &mut idx; // silence unused-mut warning if any
         let s = idx.write();
         let alpha_pos = s.find("name = \"alpha\"").unwrap();
         let zlib_pos = s.find("name = \"zlib\"").unwrap();
-        assert!(alpha_pos < zlib_pos, "packages must be alphabetized on write");
+        assert!(
+            alpha_pos < zlib_pos,
+            "packages must be alphabetized on write"
+        );
     }
 
     #[test]
@@ -534,7 +530,10 @@ revision = 1
 
         let mut idx = IndexToml::empty(8, "now".into(), "test".into());
         idx.update_entry_success(
-            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
             "foo-new.tar.zst".into(),
             "newsha".into(),
             "newkey".into(),
@@ -555,7 +554,10 @@ revision = 1
         let mut idx = IndexToml::empty(8, "now".into(), "test".into());
         // First publish a success.
         idx.update_entry_success(
-            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
             "foo-good.tar.zst".into(),
             "goodsha".into(),
             "goodkey".into(),
@@ -564,7 +566,10 @@ revision = 1
         );
         // Then fail a rebuild.
         idx.update_entry_failed(
-            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
             "linker error".into(),
             "t2".into(),
             "run2".into(),
@@ -572,7 +577,10 @@ revision = 1
         let entry = idx.lookup("foo", "1.0", TargetArch::Wasm32).unwrap();
         assert_eq!(entry.status, EntryStatus::Failed);
         assert_eq!(entry.error.as_deref(), Some("linker error"));
-        assert!(entry.archive_url.is_none(), "archive_url cleared on failure");
+        assert!(
+            entry.archive_url.is_none(),
+            "archive_url cleared on failure"
+        );
         assert_eq!(
             entry.fallback_archive_url.as_deref(),
             Some("foo-good.tar.zst"),
@@ -589,7 +597,10 @@ revision = 1
         let mut idx = IndexToml::empty(8, "now".into(), "test".into());
         // First-ever attempt fails — no prior success to fall back to.
         idx.update_entry_failed(
-            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
             "first error".into(),
             "t1".into(),
             "run1".into(),
@@ -607,20 +618,36 @@ revision = 1
         let mut idx = IndexToml::empty(8, "now".into(), "test".into());
         // success → failed (fallback set from the first success)
         idx.update_entry_success(
-            "foo", "1.0", 1, TargetArch::Wasm32,
-            "foo-v1.tar.zst".into(), "sha-v1".into(), "key-v1".into(),
-            "t1".into(), "run1".into(),
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            "foo-v1.tar.zst".into(),
+            "sha-v1".into(),
+            "key-v1".into(),
+            "t1".into(),
+            "run1".into(),
         );
         idx.update_entry_failed(
-            "foo", "1.0", 1, TargetArch::Wasm32,
-            "err1".into(), "t2".into(), "run2".into(),
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            "err1".into(),
+            "t2".into(),
+            "run2".into(),
         );
         // Another rebuild fails — the original last-green must
         // survive (we never overwrite a fallback because that's the
         // last working copy consumers can still fetch).
         idx.update_entry_failed(
-            "foo", "1.0", 1, TargetArch::Wasm32,
-            "err2".into(), "t3".into(), "run3".into(),
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            "err2".into(),
+            "t3".into(),
+            "run3".into(),
         );
         let entry = idx.lookup("foo", "1.0", TargetArch::Wasm32).unwrap();
         assert_eq!(entry.status, EntryStatus::Failed);
@@ -639,18 +666,35 @@ revision = 1
 
         let mut idx = IndexToml::empty(8, "now".into(), "test".into());
         idx.update_entry_success(
-            "foo", "1.0", 1, TargetArch::Wasm32,
-            "foo-v1.tar.zst".into(), "sha-v1".into(), "key-v1".into(),
-            "t1".into(), "run1".into(),
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            "foo-v1.tar.zst".into(),
+            "sha-v1".into(),
+            "key-v1".into(),
+            "t1".into(),
+            "run1".into(),
         );
         idx.update_entry_failed(
-            "foo", "1.0", 1, TargetArch::Wasm32,
-            "err".into(), "t2".into(), "run2".into(),
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            "err".into(),
+            "t2".into(),
+            "run2".into(),
         );
         idx.update_entry_success(
-            "foo", "1.0", 1, TargetArch::Wasm32,
-            "foo-v2.tar.zst".into(), "sha-v2".into(), "key-v2".into(),
-            "t3".into(), "run3".into(),
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            "foo-v2.tar.zst".into(),
+            "sha-v2".into(),
+            "key-v2".into(),
+            "t3".into(),
+            "run3".into(),
         );
         let entry = idx.lookup("foo", "1.0", TargetArch::Wasm32).unwrap();
         assert_eq!(entry.archive_url.as_deref(), Some("foo-v2.tar.zst"));
@@ -788,7 +832,10 @@ generator = "cached"
             },
         );
         let s = idx.write();
-        assert!(!s.contains("archive_url"), "absent fields must not be emitted");
+        assert!(
+            !s.contains("archive_url"),
+            "absent fields must not be emitted"
+        );
         assert!(!s.contains("error"), "absent fields must not be emitted");
         assert!(s.contains("status = \"pending\""));
     }

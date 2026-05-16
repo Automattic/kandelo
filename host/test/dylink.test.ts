@@ -4,46 +4,34 @@
 
 import { describe, it, expect } from "vitest";
 import { parseDylinkSection, loadSharedLibrary, loadSharedLibrarySync, DynamicLinker, type LoadSharedLibraryOptions } from "../src/dylink.ts";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-// Resolve clang/wasm-ld via $LLVM_BIN (set by the Nix dev shell or
-// the SDK toolchain) so this test runs on Linux CI as well as on a
-// Mac with Homebrew LLVM. The hardcoded Homebrew paths remain as a
-// last-resort fallback for shells where LLVM_BIN is unset.
-const LLVM_BIN = process.env.LLVM_BIN || "/opt/homebrew/opt/llvm@21/bin";
-const CLANG = `${LLVM_BIN}/clang`;
-const WASM_LD = process.env.LLVM_BIN
-  ? `${LLVM_BIN}/wasm-ld`
-  : "/opt/homebrew/bin/wasm-ld";
+function hasCompiler(): boolean {
+  try {
+    execFileSync("wasm32posix-cc", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Build a shared Wasm library from C source. */
-function buildSharedLib(source: string, name: string, opts?: { allowUndefined?: boolean }): Uint8Array {
+function buildSharedLib(source: string, name: string): Uint8Array {
   const dir = join(tmpdir(), "wasm-dylink-test");
   mkdirSync(dir, { recursive: true });
-
   const srcPath = join(dir, `${name}.c`);
-  const objPath = join(dir, `${name}.o`);
   const soPath = join(dir, `${name}.so`);
-
   writeFileSync(srcPath, source);
-
-  execSync(
-    `${CLANG} --target=wasm32-unknown-unknown -fPIC -O2 -c ${srcPath} -o ${objPath}`,
-    { stdio: "pipe" },
-  );
-  const ldFlags = opts?.allowUndefined ? " --allow-undefined" : "";
-  execSync(
-    `${WASM_LD} --experimental-pic --shared --export-all${ldFlags} -o ${soPath} ${objPath}`,
-    { stdio: "pipe" },
-  );
-
+  execFileSync("wasm32posix-cc",
+    ["-shared", "-fPIC", "-O2", srcPath, "-o", soPath],
+    { stdio: "pipe" });
   return new Uint8Array(readFileSync(soPath));
 }
 
-describe("dylink.0 parser", () => {
+describe.skipIf(!hasCompiler())("dylink.0 parser", () => {
   it("parses a simple shared library", () => {
     const wasmBytes = buildSharedLib(
       `int add(int a, int b) { return a + b; }`,
@@ -86,9 +74,9 @@ describe("dylink.0 parser", () => {
   });
 });
 
-describe("shared library loading", () => {
+describe.skipIf(!hasCompiler())("shared library loading", () => {
   function createLoadOptions(): LoadSharedLibraryOptions {
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100 });
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
     const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
     const stackPointer = new WebAssembly.Global(
       { value: "i32", mutable: true },
@@ -219,14 +207,13 @@ describe("shared library loading", () => {
       "provider",
     );
 
-    // Second library imports and uses it (needs --allow-undefined for the extern)
+    // Second library imports and uses it via extern declaration.
     const consumerBytes = buildSharedLib(
       `
       extern int provided_value(void);
       int doubled_value(void) { return provided_value() * 2; }
       `,
       "consumer",
-      { allowUndefined: true },
     );
 
     const options = createLoadOptions();
@@ -241,9 +228,9 @@ describe("shared library loading", () => {
   });
 });
 
-describe("synchronous loading (loadSharedLibrarySync)", () => {
+describe.skipIf(!hasCompiler())("synchronous loading (loadSharedLibrarySync)", () => {
   function createLoadOptions(): LoadSharedLibraryOptions {
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100 });
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
     const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
     const stackPointer = new WebAssembly.Global(
       { value: "i32", mutable: true },
@@ -274,9 +261,9 @@ describe("synchronous loading (loadSharedLibrarySync)", () => {
   });
 });
 
-describe("DynamicLinker", () => {
+describe.skipIf(!hasCompiler())("DynamicLinker", () => {
   function createLinker(): DynamicLinker {
-    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100 });
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 100, shared: true });
     const table = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
     const stackPointer = new WebAssembly.Global(
       { value: "i32", mutable: true },

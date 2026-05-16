@@ -158,8 +158,16 @@ impl MqueueTable {
             self.queues.get_mut(name).unwrap().open_count += 1;
         } else {
             // Create new queue
-            let maxmsg = if has_attr { attr_maxmsg } else { DEFAULT_MAXMSG };
-            let msgsize = if has_attr { attr_msgsize } else { DEFAULT_MSGSIZE };
+            let maxmsg = if has_attr {
+                attr_maxmsg
+            } else {
+                DEFAULT_MAXMSG
+            };
+            let msgsize = if has_attr {
+                attr_msgsize
+            } else {
+                DEFAULT_MSGSIZE
+            };
             if maxmsg == 0 || msgsize == 0 {
                 return Err(Errno::EINVAL);
             }
@@ -179,11 +187,14 @@ impl MqueueTable {
 
         let mqd = self.next_mqd;
         self.next_mqd += 1;
-        self.descriptors.insert(mqd, MqDescriptor {
-            queue_name: String::from(name),
-            access_mode,
-            nonblock,
-        });
+        self.descriptors.insert(
+            mqd,
+            MqDescriptor {
+                queue_name: String::from(name),
+                access_mode,
+                nonblock,
+            },
+        );
 
         Ok(mqd)
     }
@@ -219,12 +230,7 @@ impl MqueueTable {
     }
 
     /// Send a message. Returns notification to fire if queue was empty.
-    pub fn mq_send(
-        &mut self,
-        mqd: u32,
-        data: &[u8],
-        priority: u32,
-    ) -> Result<MqSendResult, Errno> {
+    pub fn mq_send(&mut self, mqd: u32, data: &[u8], priority: u32) -> Result<MqSendResult, Errno> {
         let desc = self.descriptors.get(&mqd).ok_or(Errno::EBADF)?;
         if desc.access_mode == O_RDONLY {
             return Err(Errno::EBADF);
@@ -269,11 +275,7 @@ impl MqueueTable {
     }
 
     /// Receive the highest-priority message.
-    pub fn mq_receive(
-        &mut self,
-        mqd: u32,
-        buf_size: u32,
-    ) -> Result<MqRecvResult, Errno> {
+    pub fn mq_receive(&mut self, mqd: u32, buf_size: u32) -> Result<MqRecvResult, Errno> {
         let desc = self.descriptors.get(&mqd).ok_or(Errno::EBADF)?;
         if desc.access_mode == O_WRONLY {
             return Err(Errno::EBADF);
@@ -337,11 +339,7 @@ impl MqueueTable {
     }
 
     /// Get/set attributes on a descriptor.
-    pub fn mq_getsetattr(
-        &mut self,
-        mqd: u32,
-        new_flags: Option<u32>,
-    ) -> Result<MqAttr, Errno> {
+    pub fn mq_getsetattr(&mut self, mqd: u32, new_flags: Option<u32>) -> Result<MqAttr, Errno> {
         let desc = self.descriptors.get_mut(&mqd).ok_or(Errno::EBADF)?;
         let queue = self.queues.get(&desc.queue_name).ok_or(Errno::EBADF)?;
 
@@ -402,7 +400,9 @@ mod tests {
     #[test]
     fn test_create_and_open() {
         let mut t = MqueueTable::new();
-        let mqd = t.mq_open("/test", O_CREAT | O_RDWR, 0o644, 10, 1024, true).unwrap();
+        let mqd = t
+            .mq_open("/test", O_CREAT | O_RDWR, 0o644, 10, 1024, true)
+            .unwrap();
         assert!(mqd >= MQD_BASE);
 
         // Open same queue again
@@ -416,13 +416,18 @@ mod tests {
         );
 
         // Open nonexistent without O_CREAT
-        assert_eq!(t.mq_open("/nonexist", O_RDONLY, 0, 0, 0, false), Err(Errno::ENOENT));
+        assert_eq!(
+            t.mq_open("/nonexist", O_RDONLY, 0, 0, 0, false),
+            Err(Errno::ENOENT)
+        );
     }
 
     #[test]
     fn test_send_receive_priority() {
         let mut t = MqueueTable::new();
-        let mqd = t.mq_open("/prio", O_CREAT | O_RDWR, 0o644, 10, 256, true).unwrap();
+        let mqd = t
+            .mq_open("/prio", O_CREAT | O_RDWR, 0o644, 10, 256, true)
+            .unwrap();
 
         // Send messages with different priorities
         t.mq_send(mqd, b"low", 1).unwrap();
@@ -446,7 +451,9 @@ mod tests {
     #[test]
     fn test_nonblock_eagain() {
         let mut t = MqueueTable::new();
-        let mqd = t.mq_open("/nb", O_CREAT | O_RDWR | O_NONBLOCK, 0o644, 2, 64, true).unwrap();
+        let mqd = t
+            .mq_open("/nb", O_CREAT | O_RDWR | O_NONBLOCK, 0o644, 2, 64, true)
+            .unwrap();
 
         // Fill the queue
         t.mq_send(mqd, b"a", 1).unwrap();
@@ -466,7 +473,9 @@ mod tests {
     #[test]
     fn test_msgsize_validation() {
         let mut t = MqueueTable::new();
-        let mqd = t.mq_open("/size", O_CREAT | O_RDWR, 0o644, 10, 4, true).unwrap();
+        let mqd = t
+            .mq_open("/size", O_CREAT | O_RDWR, 0o644, 10, 4, true)
+            .unwrap();
 
         // Message too large
         assert_eq!(t.mq_send(mqd, b"12345", 1).unwrap_err(), Errno::EMSGSIZE);
@@ -479,14 +488,19 @@ mod tests {
     #[test]
     fn test_unlink_semantics() {
         let mut t = MqueueTable::new();
-        let mqd = t.mq_open("/unl", O_CREAT | O_RDWR, 0o644, 10, 64, true).unwrap();
+        let mqd = t
+            .mq_open("/unl", O_CREAT | O_RDWR, 0o644, 10, 64, true)
+            .unwrap();
         t.mq_send(mqd, b"data", 1).unwrap();
 
         // Unlink while still open
         t.mq_unlink("/unl").unwrap();
 
         // Can't open it again
-        assert_eq!(t.mq_open("/unl", O_RDONLY, 0, 0, 0, false), Err(Errno::ENOENT));
+        assert_eq!(
+            t.mq_open("/unl", O_RDONLY, 0, 0, 0, false),
+            Err(Errno::ENOENT)
+        );
 
         // But existing descriptor still works
         let msg = t.mq_receive(mqd, 64).unwrap();
@@ -502,13 +516,18 @@ mod tests {
     #[test]
     fn test_notification() {
         let mut t = MqueueTable::new();
-        let mqd = t.mq_open("/notif", O_CREAT | O_RDWR, 0o644, 10, 64, true).unwrap();
+        let mqd = t
+            .mq_open("/notif", O_CREAT | O_RDWR, 0o644, 10, 64, true)
+            .unwrap();
 
         // Register notification
         t.mq_notify(mqd, 42, Some(SIGEV_SIGNAL), 10).unwrap();
 
         // Second registration should EBUSY
-        assert_eq!(t.mq_notify(mqd, 43, Some(SIGEV_SIGNAL), 11), Err(Errno::EBUSY));
+        assert_eq!(
+            t.mq_notify(mqd, 43, Some(SIGEV_SIGNAL), 11),
+            Err(Errno::EBUSY)
+        );
         assert_eq!(t.mq_notify(mqd, 43, Some(SIGEV_NONE), 0), Err(Errno::EBUSY));
 
         // Send to empty queue should fire notification
@@ -531,7 +550,9 @@ mod tests {
     #[test]
     fn test_getsetattr() {
         let mut t = MqueueTable::new();
-        let mqd = t.mq_open("/attr", O_CREAT | O_RDWR, 0o644, 5, 128, true).unwrap();
+        let mqd = t
+            .mq_open("/attr", O_CREAT | O_RDWR, 0o644, 5, 128, true)
+            .unwrap();
 
         let attr = t.mq_getsetattr(mqd, None).unwrap();
         assert_eq!(attr.flags, 0);
@@ -554,7 +575,9 @@ mod tests {
     #[test]
     fn test_cleanup_process() {
         let mut t = MqueueTable::new();
-        let mqd = t.mq_open("/cleanup", O_CREAT | O_RDWR, 0o644, 10, 64, true).unwrap();
+        let mqd = t
+            .mq_open("/cleanup", O_CREAT | O_RDWR, 0o644, 10, 64, true)
+            .unwrap();
 
         t.mq_notify(mqd, 100, Some(SIGEV_SIGNAL), 10).unwrap();
 
@@ -568,7 +591,8 @@ mod tests {
     #[test]
     fn test_access_mode_enforcement() {
         let mut t = MqueueTable::new();
-        t.mq_open("/ro", O_CREAT | O_RDWR, 0o644, 10, 64, true).unwrap();
+        t.mq_open("/ro", O_CREAT | O_RDWR, 0o644, 10, 64, true)
+            .unwrap();
 
         let ro = t.mq_open("/ro", O_RDONLY, 0, 0, 0, false).unwrap();
         let wo = t.mq_open("/ro", O_WRONLY, 0, 0, 0, false).unwrap();
@@ -590,17 +614,28 @@ mod tests {
         let mut t = MqueueTable::new();
 
         assert_eq!(t.mq_close(MQD_BASE + 999).unwrap_err(), Errno::EBADF);
-        assert_eq!(t.mq_send(MQD_BASE + 999, b"x", 1).unwrap_err(), Errno::EBADF);
+        assert_eq!(
+            t.mq_send(MQD_BASE + 999, b"x", 1).unwrap_err(),
+            Errno::EBADF
+        );
         assert_eq!(t.mq_receive(MQD_BASE + 999, 64).unwrap_err(), Errno::EBADF);
-        assert_eq!(t.mq_notify(MQD_BASE + 999, 1, Some(0), 1).unwrap_err(), Errno::EBADF);
-        assert_eq!(t.mq_getsetattr(MQD_BASE + 999, None).unwrap_err(), Errno::EBADF);
+        assert_eq!(
+            t.mq_notify(MQD_BASE + 999, 1, Some(0), 1).unwrap_err(),
+            Errno::EBADF
+        );
+        assert_eq!(
+            t.mq_getsetattr(MQD_BASE + 999, None).unwrap_err(),
+            Errno::EBADF
+        );
     }
 
     #[test]
     fn test_default_attrs() {
         let mut t = MqueueTable::new();
         // Create without explicit attrs
-        let mqd = t.mq_open("/def", O_CREAT | O_RDWR, 0o644, 0, 0, false).unwrap();
+        let mqd = t
+            .mq_open("/def", O_CREAT | O_RDWR, 0o644, 0, 0, false)
+            .unwrap();
         let attr = t.mq_getsetattr(mqd, None).unwrap();
         assert_eq!(attr.maxmsg, DEFAULT_MAXMSG);
         assert_eq!(attr.msgsize, DEFAULT_MSGSIZE);

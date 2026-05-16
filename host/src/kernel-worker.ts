@@ -1428,6 +1428,27 @@ export class CentralizedKernelWorker {
       ((ptyIdx: number, rows: number, cols: number) => number) | undefined;
     if (!kernelPtySetWinsize) return;
     kernelPtySetWinsize(ptyIdx, rows, cols);
+    this.scheduleWakeBlockedRetries();
+
+    // A process parked in a host-side setTimeout-backed nanosleep won't notice
+    // the SIGWINCH the kernel just raised — the timer just runs to completion.
+    // Speculatively dequeue a Handler signal for each blocked pid; if one was
+    // pending we complete the sleep with EINTR so the glue can dispatch it.
+    // Skipped pids (no signal queued) keep their original sleep deadline.
+    const EINTR = 4;
+    for (const [pid, entry] of Array.from(this.pendingSleeps.entries())) {
+      if (!this.processes.has(pid)) continue;
+      this.dequeueSignalForDelivery(entry.channel);
+      const view = new DataView(entry.channel.memory.buffer, entry.channel.channelOffset);
+      if (view.getUint32(CH_SIG_SIGNUM, true) > 0) {
+        clearTimeout(entry.timer);
+        this.pendingSleeps.delete(pid);
+        this.completeChannel(
+          entry.channel, entry.syscallNr, entry.origArgs,
+          SYSCALL_ARGS[entry.syscallNr], -1, EINTR,
+        );
+      }
+    }
   }
 
   /**
@@ -6995,13 +7016,71 @@ export class CentralizedKernelWorker {
     // requested length up to the page boundary are also zeroed. Without this,
     // reused addresses contain stale data from previous allocations,
     // corrupting musl's malloc metadata (infinite loops / heap corruption).
+    //
+    // For mremap, the existing prefix [old_addr, old_addr + old_len) MUST be
+    // preserved (mremap is content-preserving — that's the contract mallocng's
+    // realloc relies on). Only zero the *new tail* [old_len, new_len) when the
+    // mapping grew in place (retVal === old_addr); the move case is handled
+    // by the memcpy below, which copies the prefix from the old buffer.
     if (mmapLen > 0) {
       const PAGE_SIZE = 65536; // Wasm page size
       const alignedLen = Math.ceil(mmapLen / PAGE_SIZE) * PAGE_SIZE;
       const newBytes = processMemory.buffer.byteLength;
+      let zeroStart = mmapAddr;
       const zeroEnd = Math.min(mmapAddr + alignedLen, newBytes);
-      if (mmapAddr < zeroEnd) {
-        new Uint8Array(processMemory.buffer, mmapAddr, zeroEnd - mmapAddr).fill(0);
+      if (syscallNr === SYS_MREMAP) {
+        const oldAddr = origArgs[0] >>> 0;
+        const oldLen = origArgs[1] >>> 0;
+        if (mmapAddr === oldAddr && oldLen > 0) {
+          // In-place grow: prefix [oldAddr, oldAddr + oldLen) must remain
+          // untouched. Only the new tail [oldAddr + oldLen, ...) needs to be
+          // zeroed. Page-align the start so we don't tear partial-page bytes
+          // either way.
+          const oldEndPageAligned = Math.ceil((oldAddr + oldLen) / PAGE_SIZE) * PAGE_SIZE;
+          zeroStart = Math.max(zeroStart, oldEndPageAligned);
+        }
+        // Move case (mmapAddr !== oldAddr): the new region's prefix gets
+        // overwritten by the memcpy below; zeroing first is harmless and
+        // matches anonymous-mmap semantics for any tail bytes the memcpy
+        // doesn't touch.
+      }
+      if (zeroStart < zeroEnd) {
+        new Uint8Array(processMemory.buffer, zeroStart, zeroEnd - zeroStart).fill(0);
+      }
+    }
+
+    // For a *moving* mremap, restore the user's bytes from old_addr → new_addr.
+    // The kernel runs in its own Wasm linear memory, so it can't memcpy across
+    // the process's address space; mallocng's realloc and any other libc
+    // caller relies on mremap being content-preserving (Linux remaps physical
+    // pages — same effect, different mechanism). Without this copy, every
+    // mallocng allocation that crosses MMAP_THRESHOLD (131,052 bytes) on
+    // grow loses its prefix because mmap_anonymous returns a zeroed region.
+    //
+    // Runs after the zero-fill above, so the prefix is overwritten back to
+    // its original bytes; the tail (new_len > old_len) stays zeroed, matching
+    // anonymous-mmap semantics. The kernel's munmap of old_addr is metadata
+    // only — the underlying bytes are still in the process memory and safe
+    // to read here.
+    if (
+      syscallNr === SYS_MREMAP &&
+      retVal >= 0 &&
+      retVal !== origArgs[0] &&
+      origArgs[0] !== 0 &&
+      origArgs[1] > 0
+    ) {
+      const oldAddr = origArgs[0] >>> 0;
+      const oldLen = origArgs[1] >>> 0;
+      const newAddr = retVal >>> 0;
+      const newLen = origArgs[2] >>> 0;
+      const copyLen = Math.min(oldLen, newLen);
+      if (copyLen > 0) {
+        const buf = processMemory.buffer;
+        const totalBytes = buf.byteLength;
+        if (oldAddr + copyLen <= totalBytes && newAddr + copyLen <= totalBytes) {
+          const src = new Uint8Array(buf, oldAddr, copyLen);
+          new Uint8Array(buf, newAddr, copyLen).set(src);
+        }
       }
     }
   }

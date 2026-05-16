@@ -28,10 +28,10 @@ use std::collections::BTreeMap;
 use std::mem::{offset_of, size_of};
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use wasm_posix_shared as shared;
 
-use crate::{repo_root, JsonMap};
+use crate::{JsonMap, repo_root};
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut out_path: Option<PathBuf> = None;
@@ -81,8 +81,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn check_file(path: &std::path::Path, expected: &str, label: &str) -> Result<(), String> {
-    let existing = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let existing =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     if existing != expected {
         eprintln!(
             "{label} at {} is out of date.\n\
@@ -98,11 +98,9 @@ fn check_file(path: &std::path::Path, expected: &str, label: &str) -> Result<(),
 
 fn write_file(path: &std::path::Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
-    std::fs::write(path, contents)
-        .map_err(|e| format!("write {}: {e}", path.display()))
+    std::fs::write(path, contents).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// C header consumed by `glue/channel_syscall.c` and any other C code
@@ -172,16 +170,22 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
 
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("syscalls".into(), syscalls());
-    root.insert("host_intercepted_syscalls".into(), host_intercepted_syscalls());
+    root.insert(
+        "host_intercepted_syscalls".into(),
+        host_intercepted_syscalls(),
+    );
     root.insert("channel_status_codes".into(), channel_status_codes());
     root.insert("asyncify_save_slots".into(), asyncify_save_slots());
     root.insert("custom_sections".into(), custom_sections());
-    root.insert("process_expected_globals".into(), process_expected_globals());
+    root.insert(
+        "process_expected_globals".into(),
+        process_expected_globals(),
+    );
 
     root.insert("export_deny".into(), export_deny());
 
-    let wasm = std::fs::read(kernel_wasm)
-        .map_err(|e| format!("read {}: {e}", kernel_wasm.display()))?;
+    let wasm =
+        std::fs::read(kernel_wasm).map_err(|e| format!("read {}: {e}", kernel_wasm.display()))?;
     root.insert("kernel_exports".into(), kernel_exports(&wasm)?);
 
     Ok(root)
@@ -241,10 +245,20 @@ fn channel_buffers() -> Value {
 fn channel_signal_area() -> Value {
     use shared::channel::*;
     let entries = [
-        ("SIG_SIGNUM", SIG_SIGNUM, 4u32, "u32, signal number (0=none)"),
+        (
+            "SIG_SIGNUM",
+            SIG_SIGNUM,
+            4u32,
+            "u32, signal number (0=none)",
+        ),
         ("SIG_HANDLER", SIG_HANDLER, 4, "u32, handler table index"),
         ("SIG_FLAGS", SIG_FLAGS, 4, "u32, sa_flags"),
-        ("SIG_OLD_MASK", SIG_OLD_MASK, 8, "u64 (LE), saved blocked mask"),
+        (
+            "SIG_OLD_MASK",
+            SIG_OLD_MASK,
+            8,
+            "u64 (LE), saved blocked mask",
+        ),
     ];
     let mut list = Vec::new();
     for (name, offset, size, meaning) in entries {
@@ -262,27 +276,48 @@ fn channel_signal_area() -> Value {
 }
 
 fn marshalled_structs() -> Value {
-    use shared::{WasmDirent, WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
+    use shared::{WasmDirent, WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
     let mut structs: JsonMap = BTreeMap::new();
     structs.insert(
         "WasmStat".into(),
         struct_layout!(WasmStat {
-            st_dev, st_ino, st_mode, st_nlink, st_uid, st_gid, st_size,
-            st_atime_sec, st_atime_nsec,
-            st_mtime_sec, st_mtime_nsec,
-            st_ctime_sec, st_ctime_nsec,
+            st_dev,
+            st_ino,
+            st_mode,
+            st_nlink,
+            st_uid,
+            st_gid,
+            st_size,
+            st_atime_sec,
+            st_atime_nsec,
+            st_mtime_sec,
+            st_mtime_nsec,
+            st_ctime_sec,
+            st_ctime_nsec,
             _pad,
         }),
     );
     structs.insert(
         "WasmDirent".into(),
-        struct_layout!(WasmDirent { d_ino, d_type, d_namlen }),
+        struct_layout!(WasmDirent {
+            d_ino,
+            d_type,
+            d_namlen
+        }),
     );
     structs.insert(
         "WasmFlock".into(),
-        struct_layout!(WasmFlock { l_type, l_whence, _pad1, l_start, l_len, l_pid, _pad2 }),
+        struct_layout!(WasmFlock {
+            l_type,
+            l_whence,
+            _pad1,
+            l_start,
+            l_len,
+            l_pid,
+            _pad2
+        }),
     );
     structs.insert(
         "WasmTimespec".into(),
@@ -290,38 +325,91 @@ fn marshalled_structs() -> Value {
     );
     structs.insert(
         "WasmPollFd".into(),
-        struct_layout!(WasmPollFd { fd, events, revents }),
+        struct_layout!(WasmPollFd {
+            fd,
+            events,
+            revents
+        }),
     );
     structs.insert(
         "WasmStatfs".into(),
         struct_layout!(WasmStatfs {
-            f_type, f_bsize, f_blocks, f_bfree, f_bavail, f_files, f_ffree,
-            f_fsid, f_namelen, f_frsize, f_flags, _pad,
+            f_type,
+            f_bsize,
+            f_blocks,
+            f_bfree,
+            f_bavail,
+            f_files,
+            f_ffree,
+            f_fsid,
+            f_namelen,
+            f_frsize,
+            f_flags,
+            _pad,
         }),
     );
     structs.insert(
         "FbBitfield".into(),
-        struct_layout!(FbBitfield { offset, length, msb_right }),
+        struct_layout!(FbBitfield {
+            offset,
+            length,
+            msb_right
+        }),
     );
     structs.insert(
         "FbVarScreenInfo".into(),
         struct_layout!(FbVarScreenInfo {
-            xres, yres, xres_virtual, yres_virtual, xoffset, yoffset,
-            bits_per_pixel, grayscale,
-            red, green, blue, transp,
-            nonstd, activate, height, width, accel_flags, pixclock,
-            left_margin, right_margin, upper_margin, lower_margin,
-            hsync_len, vsync_len, sync, vmode, rotate, colorspace,
+            xres,
+            yres,
+            xres_virtual,
+            yres_virtual,
+            xoffset,
+            yoffset,
+            bits_per_pixel,
+            grayscale,
+            red,
+            green,
+            blue,
+            transp,
+            nonstd,
+            activate,
+            height,
+            width,
+            accel_flags,
+            pixclock,
+            left_margin,
+            right_margin,
+            upper_margin,
+            lower_margin,
+            hsync_len,
+            vsync_len,
+            sync,
+            vmode,
+            rotate,
+            colorspace,
             reserved,
         }),
     );
     structs.insert(
         "FbFixScreenInfo".into(),
         struct_layout!(FbFixScreenInfo {
-            id, smem_start, smem_len, fb_type, type_aux, visual,
-            xpanstep, ypanstep, ywrapstep, _pad,
-            line_length, mmio_start, mmio_len, accel,
-            capabilities, reserved, _pad_to_80,
+            id,
+            smem_start,
+            smem_len,
+            fb_type,
+            type_aux,
+            visual,
+            xpanstep,
+            ypanstep,
+            ywrapstep,
+            _pad,
+            line_length,
+            mmio_start,
+            mmio_len,
+            accel,
+            capabilities,
+            reserved,
+            _pad_to_80,
         }),
     );
 
@@ -436,8 +524,8 @@ fn export_deny() -> Value {
 
 fn kernel_exports(bytes: &[u8]) -> Result<Value, String> {
     use wasmparser::{
-        CompositeInnerType, ExternalKind, FuncType, GlobalType, Imports, Operator, Parser,
-        Payload, TypeRef,
+        CompositeInnerType, ExternalKind, FuncType, GlobalType, Imports, Operator, Parser, Payload,
+        TypeRef,
     };
 
     // Accumulate what we need to resolve exports. Wasm section ordering
@@ -478,7 +566,8 @@ fn kernel_exports(bytes: &[u8]) -> Result<Value, String> {
                     // handled here for completeness.
                     let tick = |ty: TypeRef,
                                 imported_funcs: &mut u32,
-                                imported_globals: &mut u32| match ty {
+                                imported_globals: &mut u32| match ty
+                    {
                         TypeRef::Func(_) | TypeRef::FuncExact(_) => *imported_funcs += 1,
                         TypeRef::Global(_) => *imported_globals += 1,
                         _ => {}
@@ -489,8 +578,7 @@ fn kernel_exports(bytes: &[u8]) -> Result<Value, String> {
                         }
                         Imports::Compact1 { items, .. } => {
                             for item in items {
-                                let item =
-                                    item.map_err(|e| format!("import section: {e}"))?;
+                                let item = item.map_err(|e| format!("import section: {e}"))?;
                                 tick(item.ty, &mut imported_funcs, &mut imported_globals);
                             }
                         }
@@ -505,8 +593,7 @@ fn kernel_exports(bytes: &[u8]) -> Result<Value, String> {
             }
             Payload::FunctionSection(r) => {
                 for ti in r {
-                    func_type_for_local_idx
-                        .push(ti.map_err(|e| format!("function section: {e}"))?);
+                    func_type_for_local_idx.push(ti.map_err(|e| format!("function section: {e}"))?);
                 }
             }
             Payload::GlobalSection(r) => {

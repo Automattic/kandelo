@@ -114,9 +114,7 @@ mod tests {
             },
         );
         // Different file handle - no conflict
-        assert!(table
-            .get_blocking_lock(2, F_WRLCK, 0, 100, 2)
-            .is_none());
+        assert!(table.get_blocking_lock(2, F_WRLCK, 0, 100, 2).is_none());
     }
 
     #[test]
@@ -131,9 +129,7 @@ mod tests {
                 len: 100,
             },
         );
-        assert!(table
-            .get_blocking_lock(1, F_RDLCK, 0, 100, 2)
-            .is_none());
+        assert!(table.get_blocking_lock(1, F_RDLCK, 0, 100, 2).is_none());
     }
 
     #[test]
@@ -148,9 +144,7 @@ mod tests {
                 len: 100,
             },
         );
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 50, 50, 2)
-            .is_some());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 50, 50, 2).is_some());
     }
 
     #[test]
@@ -165,9 +159,7 @@ mod tests {
                 len: 100,
             },
         );
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 50, 50, 2)
-            .is_some());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 50, 50, 2).is_some());
     }
 
     #[test]
@@ -183,9 +175,7 @@ mod tests {
             },
         );
         // Same pid - never conflicts (can override)
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 0, 100, 1)
-            .is_none());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 0, 100, 1).is_none());
     }
 
     #[test]
@@ -201,9 +191,7 @@ mod tests {
             },
         );
         // Non-overlapping range
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 50, 50, 2)
-            .is_none());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 50, 50, 2).is_none());
     }
 
     #[test]
@@ -218,9 +206,7 @@ mod tests {
                 len: 100,
             },
         );
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 0, 100, 2)
-            .is_some());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 0, 100, 2).is_some());
         table.set_lock(
             1,
             FileLock {
@@ -230,9 +216,7 @@ mod tests {
                 len: 100,
             },
         );
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 0, 100, 2)
-            .is_none());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 0, 100, 2).is_none());
     }
 
     #[test]
@@ -257,12 +241,8 @@ mod tests {
             },
         );
         table.remove_all_for_pid(1);
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 0, 100, 2)
-            .is_none());
-        assert!(table
-            .get_blocking_lock(2, F_WRLCK, 0, 50, 2)
-            .is_none());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 0, 100, 2).is_none());
+        assert!(table.get_blocking_lock(2, F_WRLCK, 0, 50, 2).is_none());
     }
 
     #[test]
@@ -279,12 +259,8 @@ mod tests {
             },
         );
         // Should conflict with anything from 100 onwards
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 200, 50, 2)
-            .is_some());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 200, 50, 2).is_some());
         // Should not conflict with range before 100
-        assert!(table
-            .get_blocking_lock(1, F_WRLCK, 0, 100, 2)
-            .is_none());
+        assert!(table.get_blocking_lock(1, F_WRLCK, 0, 100, 2).is_none());
     }
 }

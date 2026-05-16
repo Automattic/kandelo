@@ -43,12 +43,28 @@ The bridge is **one** new QuickJS C native module exposing four namespaces (`has
 | 1  | 1 | `feat(quickjs-node): real SHA-256/512 via libcrypto` |
 | 2  | 2 | `feat(quickjs-node): real gzip/inflate via libz` |
 | 3  | 3 | `feat(quickjs-node): real AF_INET sockets + event-loop fd-watch` |
-| 4  | 4 | `feat(quickjs-node): TLS via OpenSSL — https.get works` |
+| 4a | 4 | `feat(quickjs): tls.connect via libssl in the wasm sysroot — Phase 4 part 1` |
+| 4b | 4 | `feat(quickjs): real http/https + Mozilla cacert.pem at /etc/ssl/cert.pem — Phase 4 part 2` |
 | 5  | 5 | `feat(quickjs-node): npm install of zero-dep package` |
 | 6  | 6 | `feat(quickjs-node): npm install of express + vite` |
-| 7+ | 7+ | (decision point — see Phase 7) |
+| 7  | 7 | `feat(quickjs-node,browser): node.wasm runs in the browser demo` |
+| 8+ | 8+ | (decision point — see Phase 8) |
 
-Each PR opens its own focused branch off `main` (or, where it stacks, off the predecessor). None is rolled into another. `XFAIL` / `TIME` are tolerated; any new `FAIL` is a regression.
+**Branching convention.** All branches in this track are prefixed `explore-node-wasm-` and **stack on the previous branch in the series**, never on `main`. Nothing in this track lands on `main` directly — each PR is reviewed against its predecessor. The chain so far:
+
+```
+main
+  └── explore-node-wasm-design                         (PR #2)
+        └── explore-node-wasm-plan                     (PR #4)
+              └── explore-node-wasm-fix-build-toolchain          (Phase 0a)
+                    └── explore-node-wasm-fix-quickjs-cutils-c   (Phase 0b)
+                          └── explore-node-wasm-fix-quickjs-eval (Phase 0c — rename to specific cause)
+                                └── explore-node-wasm-docs-quickjs-phase0  (Phase 0d)
+                                      └── explore-node-wasm-feat-quickjs-node-hashing (Phase 1)
+                                            └── … (Phases 2+)
+```
+
+Each PR's GitHub base is the predecessor branch (not `main`). `XFAIL` / `TIME` are tolerated; any new `FAIL` is a regression. None is rolled into another.
 
 **Verification gauntlet (CLAUDE.md, applies to every PR):**
 
@@ -82,12 +98,11 @@ Phase 0 fixes blockers found before any feature work can land. **Four sub-PRs**,
 
 A PR that updates only `build.sh` would leave `run.sh` broken **and would fail its own verification gauntlet** because step 5 invokes the still-broken `scripts/check-abi-version.sh`. All three must move together.
 
-**Approach.** Do **both** — update flags *and* pin the toolchain — for two independent reasons:
+**Approach.** Pin `rust-toolchain.toml` to `nightly-2026-04-27`, move the panic strategy into `.cargo/config.toml` as `-Zunstable-options -Cpanic=immediate-abort`, add the newer wasm64 `--import-memory` linker arg there, and remove the obsolete `-Z build-std-features=panic_immediate_abort` flag from the kernel build scripts.
 
-1. **Update the flag form** in all three scripts to `RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort"`. This is the minimum to unblock current nightly.
-2. **Pin `rust-toolchain.toml` to a specific dated nightly** (today: `nightly-2026-04-27`, the one that produces the new error message). The current pin is open-ended `channel = "nightly"` — which is precisely what let three scripts silently break the moment upstream rust shipped a breaking change. Without a date pin, this exact PR happens again the next time upstream churns.
+**Why keep the toolchain pinned?** Current `main` uses a dated nightly so toolchain churn is an explicit repository change rather than an ambient local-machine setting. The stack originally used `channel = "nightly"` while it was rebased across newer rustc behavior; the monolithic adaptation keeps the current convention and bumps the date alongside the flag change.
 
-The original plan picked "Approach 1 alone" with the rationale that it tracks upstream rust. Investigation revised this: tracking upstream means tracking *any* breaking change in the build-std flag surface, with no firewall. A dated pin makes future upstream churn an explicit decision (bump the date, see what breaks, fix or revert) rather than a surprise broken `main`.
+**Why not put `panic = "immediate-abort"` in `Cargo.toml`?** The compiler error offers both forms as equivalent. A workspace-level `[profile.release] panic = "immediate-abort"` would apply globally — including to the host-target `xtask` crate, where it's wrong. A per-crate `[profile.release.package.wasm-posix-kernel]` form would work but is a larger change with its own surface area. Keeping the flag in `.cargo/config.toml` scopes it to the wasm64 target and keeps it beside the related wasm linker arguments.
 
 #### Task 0a.1 — Probe the right invocation under current nightly *(verified)*
 
@@ -108,7 +123,7 @@ $ stat -f "%z" host/wasm/wasm_posix_kernel.wasm
 441836                                  # committed
 ```
 
-**Wasm size drifted ~25 KB** (~6%) vs. the committed binary, exceeding the original "~5 KB" tolerance. The drift is almost certainly codegen — `lto = true` + `opt-level = "s"` + a newer nightly's compiler_builtins emit different bytes — but only the ABI snapshot check (Task 0a.5) can confirm that no structural surface (channel layout, syscall numbers, marshalled structs, kernel-wasm exports) shifted.
+**Wasm size drifted ~25 KB** (~6%) vs. the committed binary, exceeding the original "~5 KB" tolerance. The drift is almost certainly codegen — `lto = true` + `opt-level = "s"` + a newer nightly's compiler_builtins emit different bytes — but the structural ABI snapshot check (Task 0a.4) is necessary-but-not-sufficient to declare it harmless. CLAUDE.md is explicit that `abi/snapshot.json` does *not* catch semantic changes that don't shift offsets, and 6% is large enough for "pure codegen" that a symbol-level diff (`twiggy diff` or `wasm-tools dump`) is also required before committing the new binary. See Task 0a.4.
 
 #### Task 0a.2 — Update all three cargo call sites
 
@@ -141,29 +156,7 @@ grep -rnE "build-std-features=panic_immediate_abort" build.sh run.sh scripts/
 ```
 Expected: no matches.
 
-#### Task 0a.3 — Pin the nightly date in `rust-toolchain.toml`
-
-**File:** `rust-toolchain.toml`
-
-Current contents:
-```toml
-[toolchain]
-channel = "nightly"
-targets = ["wasm32-unknown-unknown"]
-```
-
-New contents:
-```toml
-[toolchain]
-channel = "nightly-2026-04-27"
-targets = ["wasm32-unknown-unknown"]
-```
-
-Use whichever nightly date the developer running 0a actually has installed and has verified produces a green build. Future toolchain bumps become a one-line edit + verification gauntlet, never a silent break.
-
-(The repo has no `rust-toolchain` plain-text file — only `.toml` — so no second file to update.)
-
-#### Task 0a.4 — Document the change
+#### Task 0a.3 — Document the change
 
 **Files:**
 - Inspect: `docs/posix-status.md`, `README.md`, `docs/architecture.md`
@@ -171,7 +164,9 @@ Use whichever nightly date the developer running 0a actually has installed and h
 
 Most likely no doc changes needed — the build flag is internal. The historical plan files under `docs/plans/2026-03-08-*.md` reference the old flag in build invocations; these are historical records of past sessions and should **not** be retroactively edited.
 
-#### Task 0a.5 — Run the full verification gauntlet
+#### Task 0a.4 — Run the full verification gauntlet
+
+Standard CLAUDE.md gauntlet:
 
 ```bash
 bash build.sh                                                          # exit 0
@@ -182,28 +177,83 @@ scripts/run-posix-tests.sh                                             # 0 FAIL
 bash scripts/check-abi-version.sh                                      # exit 0
 ```
 
-**Handling the 25 KB wasm drift:**
+**Handling the 25 KB wasm drift — three checks, in this order:**
+
+The structural snapshot alone is necessary-but-not-sufficient. Three independent verifications must all pass before the new `host/wasm/wasm_posix_kernel.wasm` is committed.
+
+**Check 1 — Structural ABI snapshot.**
 
 1. Run `bash scripts/check-abi-version.sh` (now using the new flag form).
 2. If it reports drift in `abi/snapshot.json`:
    - Run `bash scripts/check-abi-version.sh update` to regenerate.
    - `git diff abi/snapshot.json` and inspect.
-   - **Codegen-only drift** (different LTO output, no change to channel header, syscall numbers, struct layouts, or export list) → commit the regenerated snapshot **without** bumping `ABI_VERSION`. Add a one-line note in the PR body.
+   - **Codegen-only drift** (different LTO output, no change to channel header, syscall numbers, struct layouts, or export list) → proceed to Check 2.
    - **Structural drift** (any change to the surfaces enumerated in CLAUDE.md "Kernel ABI stability") → bump `ABI_VERSION` in `crates/shared/src/lib.rs` in the same commit.
 3. Re-run `bash scripts/check-abi-version.sh` — must exit 0 before proceeding.
 
-Also commit the rebuilt `host/wasm/wasm_posix_kernel.wasm` if its bytes changed. Treat the new bytes as the canonical reference for downstream work.
+**Check 2 — Symbol-level size diff.**
 
-#### Task 0a.6 — Commit & PR
+`abi/snapshot.json` records offsets and export *signatures*, not function *sizes*. A 25 KB delta on a 416 KB binary is large enough that one or more functions could have changed materially without shifting the structural surface — and CLAUDE.md is explicit that "semantic changes that don't shift offsets" are not caught. Diff symbol sizes between the committed wasm and the rebuilt one:
 
 ```bash
-git checkout -b fix-build-toolchain origin/main
-git add build.sh run.sh scripts/check-abi-version.sh rust-toolchain.toml
-# Plus host/wasm/wasm_posix_kernel.wasm and abi/snapshot.json IF they changed.
+# twiggy preferred (clearer summary); wasm-tools dump as fallback.
+twiggy diff host/wasm/wasm_posix_kernel.wasm \
+            target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm
+```
+
+Expected shape for "pure codegen" drift: many small per-function deltas spread across `core::*`, `compiler_builtins::*`, allocator/panic helpers, and LTO-coalesced inlining sites. **Acceptable.**
+
+**Stop and investigate** if any of:
+
+- A single user-defined kernel function (anything in `wasm_posix_kernel::*` outside the panic-handler family) grew or shrank by >1 KB — that's a real codegen change inside our code, not just stdlib churn.
+- A new export appears or an existing export disappears (the structural check would catch this; flagged here as a sanity cross-check).
+- Total kernel-crate function size moved >5% in either direction.
+
+In any "stop" case, attach the `twiggy diff` output to the PR and decide before committing the new wasm whether (a) it's still a valid codegen-only change and the threshold was conservative, or (b) something semantic shifted and Phase 0a needs to revert / re-scope / bump `ABI_VERSION`.
+
+**Check 3 — §0c repro on old AND new wasm.**
+
+This is **load-bearing for Phase 0c** and the data point is unrecoverable once 0a lands.
+
+The §0c stack-overflow regression was originally characterised against the *currently-committed* `host/wasm/wasm_posix_kernel.wasm` at HEAD `37814ab5` (`qjs -e '<expr>'` and `node -e '<expr>'` reliably stack-overflow with "Maximum call stack size exceeded"; `qjs --help` and `node --version` both work because they short-circuit before bootstrap). Phase 0a will replace that binary. If the new toolchain's codegen alone changes the §0c symptom on identical kernel source, the entire 106-commit kernel bisect that 0c.3 sets up is the wrong tool — the regression is environmental (toolchain / wasm-opt / asyncify drift), not a kernel commit. Once 0a is reviewed and the new wasm becomes the canonical reference, the "old toolchain × `37814ab5` source" combination is no longer reachable and that diagnosis becomes much harder.
+
+Procedure, before staging any wasm change:
+
+1. Save the currently-committed binary aside:
+   ```bash
+   cp host/wasm/wasm_posix_kernel.wasm /tmp/wasm_posix_kernel.committed.wasm
+   ```
+2. With `host/wasm/wasm_posix_kernel.wasm` = the **committed** binary, run the §0c repro (the same command Phase 0c.1 uses; if 0c hasn't authored the test yet, the manual repro `qjs -e '1+1'` against the existing `examples/libs/quickjs/bin/qjs.wasm` is sufficient for this step). Record: pass / "Maximum call stack size exceeded" / other.
+3. Replace with the freshly-built binary:
+   ```bash
+   cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
+   ```
+4. Re-run the same §0c repro. Record: pass / "Maximum call stack size exceeded" / other.
+
+Possible outcomes and what each means for §0c:
+
+| Old wasm | New wasm | Meaning |
+|---|---|---|
+| crash | crash | §0c is real and toolchain-stable. 0c.2's existing decision tree applies as written. |
+| crash | **pass** | §0c is masked by new-toolchain codegen on `37814ab5` source. Skip 0c.3 (kernel bisect) entirely; treat as environmental. Ship 0a, then in 0c just commit the smoke test as a regression guard. |
+| pass | pass | §0c was already fixed before this session — verify the original repro instructions and re-evaluate whether 0c is still needed. |
+| pass | crash | New toolchain *introduces* the §0c crash. 0a must not ship the new wasm — block on toolchain investigation. |
+
+**Record both outcomes verbatim in the 0a PR body.** Phase 0c.2 keys off this artifact.
+
+After all three checks pass, commit the rebuilt `host/wasm/wasm_posix_kernel.wasm`. Treat the new bytes as the canonical reference for downstream work.
+
+#### Task 0a.5 — Commit & PR
+
+```bash
+git checkout -b explore-node-wasm-fix-build-toolchain explore-node-wasm-plan
+git add build.sh run.sh scripts/check-abi-version.sh
+# Plus host/wasm/wasm_posix_kernel.wasm and abi/snapshot.json IF they changed
+# (and all three checks above passed).
 # Plus crates/shared/src/lib.rs IF ABI_VERSION bumped.
 git commit -m "fix(build): restore build under current nightly toolchain"
-git push -u origin fix-build-toolchain
-gh pr create --base main \
+git push -u origin explore-node-wasm-fix-build-toolchain
+gh pr create --base explore-node-wasm-plan \
   --title "fix(build): restore build under current nightly toolchain" \
   --body "..." # see template below
 ```
@@ -213,20 +263,25 @@ PR body template:
 ## Summary
 
 Current nightly turned `panic_immediate_abort` from a build-std-feature into a
-real panic strategy. The new spelling is `-Zunstable-options -Cpanic=immediate-abort`
-via `RUSTFLAGS`. Three scripts hard-coded the old form — `build.sh`, `run.sh`, and
-`scripts/check-abi-version.sh` — so a partial fix would leave the verification
-gauntlet itself broken.
+real panic strategy. The new spelling is `-Zunstable-options -Cpanic=immediate-abort`.
+The adapted PR keeps the repo's dated-nightly convention, stores the wasm64
+panic/linker flags in `.cargo/config.toml`, and removes the obsolete
+`-Z build-std-features=panic_immediate_abort` flag from `build.sh` and
+`scripts/check-abi-version.sh`.
 
-This PR:
-1. Updates all three scripts to the new flag form.
-2. Pins `rust-toolchain.toml` to `nightly-2026-04-27` (a specific date), so the
-   next breaking upstream change becomes an explicit toolchain bump rather than
-   a silent break in main.
+## Wasm drift
 
-Kernel wasm rebuild produced a ~25 KB size delta from the committed binary;
-`scripts/check-abi-version.sh` confirms this is codegen-only / ABI-clean
-[OR: requires an ABI_VERSION bump because <surface> shifted — pick one in the PR].
+Kernel rebuild produced a ~25 KB (~6%) size delta vs. the committed binary.
+Verified codegen-only via three independent checks:
+
+- `scripts/check-abi-version.sh`: <PASS / regenerated snapshot, no ABI_VERSION
+  bump / regenerated + ABI_VERSION bump because <surface> shifted>.
+- `twiggy diff` on committed vs. rebuilt wasm: <summary — paste the top-N
+  symbol deltas; confirm spread across stdlib/compiler_builtins, no single
+  kernel function moved >1 KB>.
+- §0c repro (`qjs -e '1+1'`) against old committed wasm: <result>. Against
+  freshly-built wasm: <result>. <Interpretation per the 4-cell matrix in
+  plan §0a.4 Check 3>.
 
 ## Test plan
 
@@ -236,6 +291,8 @@ Kernel wasm rebuild produced a ~25 KB size delta from the committed binary;
 - [ ] `scripts/run-libc-tests.sh` — 0 unexpected FAIL
 - [ ] `scripts/run-posix-tests.sh` — 0 FAIL
 - [ ] `scripts/check-abi-version.sh` — exit 0 (with regenerated snapshot if codegen drift, or `ABI_VERSION` bump if structural)
+- [ ] `twiggy diff` — no kernel function moved >1 KB; total kernel-crate size delta within 5%
+- [ ] §0c repro recorded against both old and new wasm — outcome interpreted in PR body
 ```
 
 ---
@@ -301,11 +358,11 @@ Expected: clones quickjs-ng v0.12.1, builds `qjsc` natively, compiles bootstrap 
 #### Task 0b.3 — Commit & PR
 
 ```bash
-git checkout -b fix-quickjs-cutils-c origin/main
+git checkout -b explore-node-wasm-fix-quickjs-cutils-c explore-node-wasm-fix-build-toolchain
 git add examples/libs/quickjs/build-quickjs.sh
 git commit -m "fix(quickjs): drop nonexistent cutils.c refs from build-quickjs.sh"
-git push -u origin fix-quickjs-cutils-c
-gh pr create --base main \
+git push -u origin explore-node-wasm-fix-quickjs-cutils-c
+gh pr create --base explore-node-wasm-fix-build-toolchain \
   --title "fix(quickjs): drop nonexistent cutils.c refs from build-quickjs.sh" \
   --body "..."
 ```
@@ -387,6 +444,15 @@ Expected: 1 fail. The repro is now deterministic and machine-checkable.
 #### Task 0c.2 — Probe the PR #226 baseline
 
 **Goal:** Determine whether the regression is in a kernel commit or in the toolchain / build environment.
+
+**Pre-check the 0a artifact first.** Phase 0a §0a.4 Check 3 records the §0c repro outcome against both the *old-toolchain*-built committed wasm and the *new-toolchain*-built fresh wasm at HEAD `37814ab5` (identical kernel source). If the 0a PR body shows:
+
+- **old wasm crashed, new wasm passed** → regression is environmental on its own. Skip the rest of 0c.2 and skip 0c.3 entirely; proceed to 0c.4 environmental path (commit a regression smoke test).
+- **old wasm passed, new wasm passed** → §0c is no longer reproducible. Confirm the original repro instructions still hold; if not, close out 0c with just the smoke test.
+- **old wasm crashed, new wasm crashed** → §0c is toolchain-stable. Continue with the steps below to determine kernel-vs-environmental.
+- **old wasm passed, new wasm crashed** → 0a should have blocked on this; if it didn't, halt and re-evaluate before further bisect work.
+
+In the "both crash" case, continue:
 
 **Steps:**
 1. Create a sibling worktree off `18bfe4b6` (the merge commit of PR #226):
@@ -537,6 +603,19 @@ This test is the floor. Phase 1+ all assume it passes.
 
 #### Task 0c.6 — Commit & PR
 
+```bash
+# Branch name should encode the specific cause once known — e.g.
+# `explore-node-wasm-fix-quickjs-eval-asyncify-imports` or
+# `explore-node-wasm-fix-quickjs-eval-wasm-opt-pin`. Generic placeholder used here:
+git checkout -b explore-node-wasm-fix-quickjs-eval explore-node-wasm-fix-quickjs-cutils-c
+# git add <files from 0c.4 fix> + host/test/quickjs-eval-smoke.test.ts
+git commit -m "fix(kernel): <specific cause> — restore JS_Eval"
+git push -u origin explore-node-wasm-fix-quickjs-eval
+gh pr create --base explore-node-wasm-fix-quickjs-cutils-c \
+  --title "fix(kernel): <specific cause> — restore JS_Eval" \
+  --body "..."
+```
+
 PR body:
 ```
 ## Summary
@@ -671,10 +750,14 @@ qjs -e / node -e roundtrip — see host/test/quickjs-eval-smoke.test.ts.
 #### Task 0d.8 — Commit & PR
 
 ```bash
-git checkout -b docs-quickjs-phase0 origin/main
+git checkout -b explore-node-wasm-docs-quickjs-phase0 explore-node-wasm-fix-quickjs-eval
 git rm docs/plans/2026-04-28-quickjs-node-compat-session-notes.md
 git add docs/plans/2026-04-28-quickjs-node-compat-phase0.md
 git commit -m "docs(plan): QuickJS-NG Node compat — Phase 0 verification"
+git push -u origin explore-node-wasm-docs-quickjs-phase0
+gh pr create --base explore-node-wasm-fix-quickjs-eval \
+  --title "docs(plan): QuickJS-NG Node compat — Phase 0 verification" \
+  --body "..."
 ```
 
 PR body:
@@ -1177,15 +1260,15 @@ bash scripts/check-abi-version.sh
 ### Task 1.8 — Commit & PR
 
 ```bash
-git checkout -b feat-quickjs-node-hashing origin/main
+git checkout -b explore-node-wasm-feat-quickjs-node-hashing explore-node-wasm-docs-quickjs-phase0
 git add examples/libs/quickjs/node-compat-native/
 git add examples/libs/quickjs/build-quickjs.sh
 git add examples/libs/quickjs/node-main.c
 git add examples/libs/quickjs/node-compat/bootstrap.js
 git add host/test/node-compat.test.ts
 git commit -m "feat(quickjs-node): real SHA-256/512 via libcrypto"
-git push -u origin feat-quickjs-node-hashing
-gh pr create --base main --title "feat(quickjs-node): real SHA-256/512 via libcrypto" --body "..."
+git push -u origin explore-node-wasm-feat-quickjs-node-hashing
+gh pr create --base explore-node-wasm-docs-quickjs-phase0 --title "feat(quickjs-node): real SHA-256/512 via libcrypto" --body "..."
 ```
 
 PR body:
@@ -1733,19 +1816,42 @@ npm 10.x is ~12 MB unpacked of pure JS (no native runtime deps). Ship as a lazy 
 
 Pin a single npm version. Document in `docs/porting-guide.md`.
 
-### Task 5.2 — `package.json exports` field resolution in CommonJS
+### Task 5.2 — `package.json exports`/`imports` field resolution
+
+Split into two halves: CommonJS `require()` (5.2a) and ESM dynamic `import()` (5.2b). The two paths share the algorithm but live on different sides of the C/JS boundary, so they're separate work items.
+
+#### Task 5.2a — CommonJS side
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-compat/bootstrap.js` — `_resolveFile` (around L2369–2480)
+- Modify: `examples/libs/quickjs/node-compat/bootstrap.js` — `_resolveFile`
 
-Implement `package.json#exports` lookup:
-1. If `exports` is a string → use it
-2. If `exports['.']` exists → resolve subpath `.`
-3. If `exports[subpath]` exists → resolve subpath (`./util`, `./package.json`, etc.)
-4. Fall back to `main` field (current behaviour)
-5. Conditional exports: `default`, `node`, `import`, `require` — pick `require` for CJS path, `import` for ESM path.
+Implement `package.json#exports` lookup in `_resolveFile`:
+1. If `exports` is a string → use it.
+2. If `exports['.']` exists → resolve subpath `.`.
+3. If `exports[subpath]` exists → resolve subpath (`./util`, `./package.json`, etc.).
+4. Fall back to `main` field (current behaviour).
+5. Conditional exports: `default`, `node`, `require` — pick `require` (CJS path).
 
-This is a real Node feature; spec at <https://nodejs.org/api/packages.html#exports>. Implement enough to handle the npm + lodash + chalk class of packages.
+Spec at <https://nodejs.org/api/packages.html#exports>.
+
+#### Task 5.2b — ESM dynamic-import side (live blocker for `npm --version`)
+
+**Files:**
+- Modify: `examples/libs/quickjs/node-main.c` — install a `JSModuleNormalizeFunc`/`JSModuleLoaderFunc2` pair via `JS_SetModuleLoaderFunc2`.
+- Modify: `examples/libs/quickjs/node-compat-native/node-native.c` — expose `evalWithFilename(source, filename)` so the bootstrap's CJS loader can pass the resolved path through to QuickJS's `JS_GetScriptOrModuleName`. Without this, dynamic `import()` from `new Function` bodies has an empty base and bare-specifier resolution can't tell which `node_modules/` tree to walk.
+- Modify: `examples/libs/quickjs/node-compat/bootstrap.js` — switch `_makeRequire` from `new Function(...)` to the new native eval so module bodies have a real script identity.
+
+Algorithm in the C normalizer:
+1. `qjs:`, `node:` → pass through.
+2. Relative/absolute → default-style relative resolve, plus directory → `package.json#main` if applicable.
+3. `#subpath` → look up base file's package.json `imports` field; resolve conditionally.
+4. Bare specifier → walk `node_modules/<name>` upward from `dirname(base)`; resolve `exports`/`main` conditionally.
+
+Conditional priority for ESM: `node`, `import`, `default`.
+
+Loader hook for `node:foo`: synthesize `const _m = globalThis.require('foo'); export default _m;` and compile as a module. This is enough for default imports (which is what chalk/supports-color need); named imports of `node:` builtins are out of scope until a user surface needs them.
+
+This is the same algorithm as 5.2a but on the C side because dynamic `import()` reaches QuickJS's module loader before any JS code runs. Sharing the algorithm in JS is tempting but the C normalizer can read `package.json` directly without round-tripping through globals.
 
 ### Task 5.3 — Surface gaps as errors, not silent failures
 
@@ -1812,7 +1918,63 @@ List packages that fail and why (native addons, worker_threads, etc.). Set expec
 
 ---
 
-## Phase 7+ — Decision point
+## Phase 7 — Browser demo — `feat(quickjs-node,browser): node.wasm runs in the browser demo`
+
+**Goal:** Land a `./run.sh browser`-reachable demo that boots `node.wasm` in `BrowserKernel` and exercises the full Node-compat surface from a web page, including `https.get`. The kernel + wasm sysroot is already browser-portable (the kernel runs in a Web Worker on every host, and Slice 4b moved the trust store from host fs into a synthetic kernel file). The remaining gap is the host-delegated TCP transport — `NodePlatformIO` proxies sockets to Node's `net.Socket`, but `BrowserKernel` has no equivalent.
+
+**Estimate:** 1.5 weeks. Two distinct sub-tasks; the bridge is the load-bearing one.
+
+**Branch:** `explore-node-wasm-feat-browser-demo`, stacked on `explore-node-wasm-feat-npm-real` (Phase 6).
+
+### Task 7.1 — Smoke: boot node.wasm in `BrowserKernel`
+
+**Files:**
+- Modify: `host/src/browser-host.ts` (or wherever `BrowserKernel` lives) — surface the same `_nodeNative` shape that `NodePlatformIO` exposes, with the `socketConnect` / `tlsConnect` family stubbed to reject so any non-network code path works.
+- Create: `examples/node-browser/` — minimal HTML+JS demo page that boots `node.wasm`, accepts a JS snippet from a textarea, and pipes stdout/stderr to a console area.
+- Modify: `run.sh` (or the demo registry) — add `node-browser` so `./run.sh browser` lists it.
+
+**Acceptance:**
+- `node.wasm` evaluates JS, `require('fs')` reads/writes synthetic + OPFS-backed paths, `require('crypto')` produces the same SHA-256 as the Node host, `require('zlib')` round-trips a payload, `require('os').platform()` returns the wasm-side value (not the browser's).
+- A snippet that calls `https.get(...)` fails with a clear "no TCP transport on browser host" error — *not* a hang.
+
+This is a deliberate "everything except sockets" milestone — most of the value (REPL, fs, crypto, zlib, util, stream) ships here without needing the bridge.
+
+### Task 7.2 — WebSocket TCP-bridge for `net` and `tls`
+
+**Files:**
+- Create: `examples/node-browser/tcp-bridge.ts` (Node side) — a tiny WebSocket server that accepts `{ host, port }` framing and brokers a TCP socket per connection. ~80 LOC. Runs alongside the existing `./run.sh browser` dev server.
+- Modify: `host/src/browser-host.ts` — implement `socketConnect` / `socketRead` / `socketWrite` / `socketClose` against a `WebSocket` to the bridge URL (configurable; default `ws://localhost:5198/_tcp`). The wire framing on the WS connection is `[u32 length][bytes]`. TLS is unchanged: `tlsConnect` still runs libssl in-wasm and gets bytes via the same socket bindings, so the bridge sees only opaque ciphertext.
+- Modify: `examples/node-browser/index.html` — add a "Try `https.get`" snippet that hits a real URL through the bridge.
+
+**Why a Node-side bridge and not direct browser→TCP**: browsers can't open arbitrary TCP sockets. `WebTransport` is browser-only and not yet broadly shipped; a WebSocket bridge is the smallest portable thing that works in every modern browser today and degrades to a clear error if the bridge isn't running.
+
+**Security note for the demo body:** the bridge is for the local dev demo only. A production deployment of this technique needs an allow-list, rate-limiting, and an authenticated path — `docs/browser-support.md` should call this out.
+
+### Task 7.3 — Tests
+
+**Files:**
+- Create: `host/test/quickjs-node-browser.test.ts` — Playwright-driven, mirrors the existing browser tests (`scripts/run-browser-libc-tests.sh` shape). Cases:
+  1. Boot smoke: `node -e "console.log(1+1)"` in browser → `2`.
+  2. fs + crypto: write a Buffer, read it back, hash it, compare with the Node host's hash for the same input.
+  3. zlib gzip round-trip in the browser.
+  4. `https.get` through the bridge against a self-signed local TLS server (same fixture pattern as `quickjs-node-https.test.ts`). Skips if the bridge isn't running, the same way `pickWasmDialHost` skips today.
+
+### Task 7.4 — Documentation
+
+- `docs/browser-support.md` — new "Node compat in the browser" section. Document the bridge, its security limits, and which `_nodeNative` calls work / don't.
+- `docs/architecture.md` — add a short section on the WebSocket TCP-bridge and how it slots into the kernel-host split.
+- `README.md` — add the new demo to the demo list.
+- `docs/porting-guide.md` — note the `socketConnect`/`tlsConnect` ABI is shared between Node and browser hosts so future native modules don't have to special-case.
+
+### Task 7.5 — Verification gauntlet & commit
+
+Standard gauntlet (`cargo test`, `npm exec vitest -- run`, libc-test, posix-test, ABI check). Plus the new browser tests via `./run.sh browser` and the Playwright suite.
+
+**ABI:** none. Browser host is a JS-side change; the native module + bootstrap.js stays untouched. No `ABI_VERSION` bump.
+
+---
+
+## Phase 8+ — Decision point
 
 **Goal:** Decide whether QuickJS-NG is fit-for-purpose for the long term, or whether the SpiderMonkey-jitless escape hatch becomes necessary.
 
@@ -1830,10 +1992,10 @@ bootstrap.js is mostly Node-API shim and is engine-agnostic at the JS level, exc
 
 ### Tasks (only if we switch)
 
-- Task 7.1: SpiderMonkey jitless build script (`examples/libs/spidermonkey/`)
-- Task 7.2: Port `node-main.c` to SpiderMonkey JSAPI
-- Task 7.3: Re-bind the four native namespaces in JSAPI
-- Task 7.4: Re-run all phase tests on the new binary
+- Task 8.1: SpiderMonkey jitless build script (`examples/libs/spidermonkey/`)
+- Task 8.2: Port `node-main.c` to SpiderMonkey JSAPI
+- Task 8.3: Re-bind the four native namespaces in JSAPI
+- Task 8.4: Re-run all phase tests on the new binary
 
 This is its own multi-week track and gets its own design + plan PR pair.
 

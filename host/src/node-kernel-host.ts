@@ -38,6 +38,9 @@ export interface NodeKernelHostOptions {
   dataBufferSize?: number;
   /** Virtual path → host filesystem path for exec resolution inside the worker */
   execPrograms?: Record<string, string>;
+  /** Attach a real-TCP backend in the worker so wasm programs can dial
+   *  external hosts via Node `net.Socket`. */
+  enableTcpNetwork?: boolean;
   /** Called when a process writes to stdout */
   onStdout?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes to stderr */
@@ -76,6 +79,10 @@ export interface SpawnOptions {
   cwd?: string;
   stdin?: Uint8Array;
   pty?: boolean;
+  /** Initial PTY winsize. Applied before the wasm program starts so the
+   *  first TIOCGWINSZ returns the correct cols/rows. */
+  ptyCols?: number;
+  ptyRows?: number;
   /** Limit heap growth to protect thread channel pages */
   maxAddr?: number;
   /** Called after the process has been created and started */
@@ -132,6 +139,7 @@ export class NodeKernelHost {
         },
         execPrograms: this.options.execPrograms,
         rootfsImage: rootfsImage ?? undefined,
+        enableTcpNetwork: this.options.enableTcpNetwork,
       };
       this.worker.postMessage(initMsg);
     });
@@ -155,6 +163,8 @@ export class NodeKernelHost {
       env: options?.env,
       cwd: options?.cwd,
       pty: options?.pty,
+      ptyCols: options?.ptyCols,
+      ptyRows: options?.ptyRows,
       stdin: options?.stdin,
       maxAddr: options?.maxAddr,
     }) as number;

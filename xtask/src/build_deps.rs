@@ -46,11 +46,11 @@ use std::sync::{Mutex, OnceLock};
 
 use sha2::{Digest, Sha256};
 
+use crate::host_tool_probe::{self, ProbeFailure};
 use crate::index_toml::{self, EntryStatus};
 use crate::pkg_manifest::{
     BinarySource, BuildToml, DepRef, DepsManifest, HostTool, ManifestKind, TargetArch,
 };
-use crate::host_tool_probe::{self, ProbeFailure};
 use crate::remote_fetch;
 use crate::repo_root;
 use crate::source_extract;
@@ -61,9 +61,7 @@ pub fn default_cache_root() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
         PathBuf::from(xdg).join("wasm-posix-kernel")
     } else if let Some(home) = std::env::var_os("HOME") {
-        PathBuf::from(home)
-            .join(".cache")
-            .join("wasm-posix-kernel")
+        PathBuf::from(home).join(".cache").join("wasm-posix-kernel")
     } else {
         // Fall back to a tempdir-adjacent location. Not ideal but
         // avoids panicking on exotic environments.
@@ -148,8 +146,8 @@ impl Registry {
                 if !toml.is_file() {
                     continue;
                 }
-                let m = DepsManifest::load(&toml)
-                    .map_err(|e| format!("{}: {e}", toml.display()))?;
+                let m =
+                    DepsManifest::load(&toml).map_err(|e| format!("{}: {e}", toml.display()))?;
                 // First-root-wins, mirrors `find()`.
                 out.entry(m.name.clone()).or_insert(m);
             }
@@ -633,9 +631,7 @@ fn ensure_built_inner(
         }
     }
 
-    let result = ensure_built_uncached(
-        target, registry, arch, abi_version, opts, memo, building,
-    );
+    let result = ensure_built_uncached(target, registry, arch, abi_version, opts, memo, building);
 
     // Don't poison the cache with cycle errors — those reflect the
     // call stack at the moment of detection, not a stable property
@@ -719,7 +715,11 @@ fn ensure_built_uncached(
                 arch.as_str(),
                 dep_m.spec(),
                 arch.as_str(),
-                dep_m.target_arches.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
+                dep_m
+                    .target_arches
+                    .iter()
+                    .map(|a| a.as_str())
+                    .collect::<Vec<_>>(),
             ));
         };
         let (dep_path, dep_transitive) = ensure_built_inner(
@@ -740,9 +740,7 @@ fn ensure_built_uncached(
         // source deps are linked at compile time via WASM_POSIX_DEP_*
         // env vars and don't need a binaries/ entry.
         if let Some(bdir) = opts.binaries_dir {
-            if matches!(dep_m.kind, ManifestKind::Program)
-                && !dep_m.program_outputs.is_empty()
-            {
+            if matches!(dep_m.kind, ManifestKind::Program) && !dep_m.program_outputs.is_empty() {
                 place_binaries_symlinks(&dep_m, &dep_path, bdir, dep_arch)?;
             }
         }
@@ -831,9 +829,7 @@ fn ensure_built_uncached(
         (ManifestKind::Source, false) => {
             let parent = canonical
                 .parent()
-                .ok_or_else(|| {
-                    format!("canonical path has no parent: {}", canonical.display())
-                })?;
+                .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("create cache parent {}: {e}", parent.display()))?;
             let tmp = parent.join(format!(
@@ -848,11 +844,9 @@ fn ensure_built_uncached(
                 std::fs::remove_dir_all(&tmp)
                     .map_err(|e| format!("clean stale {}: {e}", tmp.display()))?;
             }
-            if let Err(e) = source_extract::fetch_and_extract(
-                &target.source.url,
-                &target.source.sha256,
-                &tmp,
-            ) {
+            if let Err(e) =
+                source_extract::fetch_and_extract(&target.source.url, &target.source.sha256, &tmp)
+            {
                 let _ = std::fs::remove_dir_all(&tmp);
                 return Err(format!(
                     "{}: source fetch+extract failed: {e}",
@@ -866,13 +860,8 @@ fn ensure_built_uncached(
                 let _ = std::fs::remove_dir_all(&tmp);
                 return Ok((canonical, transitive));
             }
-            std::fs::rename(&tmp, &canonical).map_err(|e| {
-                format!(
-                    "rename {} -> {}: {e}",
-                    tmp.display(),
-                    canonical.display()
-                )
-            })?;
+            std::fs::rename(&tmp, &canonical)
+                .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), canonical.display()))?;
             Ok((canonical, transitive))
         }
         (ManifestKind::Source, true) => {
@@ -939,13 +928,9 @@ fn ensure_built_uncached(
                         }
                     }
                 }
-                if let Some(()) = try_index_install(
-                    target,
-                    arch,
-                    abi_version,
-                    &canonical,
-                    &cache_key_sha_hex,
-                ) {
+                if let Some(()) =
+                    try_index_install(target, arch, abi_version, &canonical, &cache_key_sha_hex)
+                {
                     return Ok((canonical, transitive));
                 }
             }
@@ -1105,10 +1090,7 @@ fn try_index_install(
 /// parent directory (i.e. `https://host/dir/index.toml` + `foo.tar.zst`
 /// → `https://host/dir/foo.tar.zst`).
 fn resolve_relative_url(base: &str, rel: &str) -> String {
-    if rel.starts_with("file://")
-        || rel.starts_with("http://")
-        || rel.starts_with("https://")
-    {
+    if rel.starts_with("file://") || rel.starts_with("http://") || rel.starts_with("https://") {
         return rel.to_string();
     }
     // Strip the last path segment of `base` and join with `rel`.
@@ -1177,11 +1159,9 @@ fn build_into_cache(
     ));
     // Fresh temp dir. If a leftover from a crashed build exists, wipe it.
     if tmp.exists() {
-        std::fs::remove_dir_all(&tmp)
-            .map_err(|e| format!("clean stale {}: {e}", tmp.display()))?;
+        std::fs::remove_dir_all(&tmp).map_err(|e| format!("clean stale {}: {e}", tmp.display()))?;
     }
-    std::fs::create_dir_all(&tmp)
-        .map_err(|e| format!("create temp {}: {e}", tmp.display()))?;
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("create temp {}: {e}", tmp.display()))?;
 
     let script = target.build_script_path(repo_root);
     if !script.is_file() {
@@ -1313,13 +1293,8 @@ fn build_into_cache(
         let _ = std::fs::remove_dir_all(&tmp);
         return Ok(());
     }
-    std::fs::rename(&tmp, canonical).map_err(|e| {
-        format!(
-            "rename {} -> {}: {e}",
-            tmp.display(),
-            canonical.display()
-        )
-    })?;
+    std::fs::rename(&tmp, canonical)
+        .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), canonical.display()))?;
     Ok(())
 }
 
@@ -1371,14 +1346,13 @@ fn rewrite_dir(dir: &Path, needle: &str, replacement: &str) -> Result<(), String
         if !meta.file_type().is_file() {
             continue;
         }
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let content =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         if !content.contains(needle) {
             continue;
         }
         let rewritten = content.replace(needle, replacement);
-        std::fs::write(&path, rewritten)
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
+        std::fs::write(&path, rewritten).map_err(|e| format!("write {}: {e}", path.display()))?;
     }
     Ok(())
 }
@@ -1434,8 +1408,8 @@ fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String>
 /// always means the script forgot to write to `$WASM_POSIX_DEP_OUT_DIR`
 /// (e.g. wrote to its own working dir, or hard-coded a path).
 fn validate_source_dir_nonempty(out_dir: &Path) -> Result<(), String> {
-    let mut iter = std::fs::read_dir(out_dir)
-        .map_err(|e| format!("read_dir {}: {e}", out_dir.display()))?;
+    let mut iter =
+        std::fs::read_dir(out_dir).map_err(|e| format!("read_dir {}: {e}", out_dir.display()))?;
     if iter.next().is_none() {
         return Err(format!(
             "source build script left OUT_DIR empty at {}; \
@@ -1500,9 +1474,7 @@ pub(crate) fn parse_target_arch(s: &str) -> Result<TargetArch, String> {
 /// debug "why did my wasm64 build land in the wrong cache slot?").
 fn default_target_arch() -> Result<TargetArch, String> {
     match std::env::var("WASM_POSIX_DEFAULT_ARCH") {
-        Ok(s) => parse_target_arch(&s).map_err(|e| {
-            format!("WASM_POSIX_DEFAULT_ARCH: {e}")
-        }),
+        Ok(s) => parse_target_arch(&s).map_err(|e| format!("WASM_POSIX_DEFAULT_ARCH: {e}")),
         Err(_) => Ok(DEFAULT_ARCH),
     }
 }
@@ -1530,9 +1502,9 @@ fn extract_arch_flag(args: Vec<String>) -> Result<(Option<TargetArch>, Vec<Strin
             if arch.is_some() {
                 return Err("--arch given more than once".to_string());
             }
-            let value = it.next().ok_or_else(|| {
-                "--arch requires a value (wasm32 or wasm64)".to_string()
-            })?;
+            let value = it
+                .next()
+                .ok_or_else(|| "--arch requires a value (wasm32 or wasm64)".to_string())?;
             arch = Some(parse_target_arch(&value)?);
         } else {
             rest.push(a);
@@ -1549,9 +1521,7 @@ fn extract_arch_flag(args: Vec<String>) -> Result<(Option<TargetArch>, Vec<Strin
 /// `<binaries_dir>/programs/<arch>/<name>/<output>.wasm` symlinks at
 /// each declared `[[outputs]]` (see `place_binaries_symlinks`). Other
 /// subcommands ignore the value.
-fn extract_binaries_dir_flag(
-    args: Vec<String>,
-) -> Result<(Option<PathBuf>, Vec<String>), String> {
+fn extract_binaries_dir_flag(args: Vec<String>) -> Result<(Option<PathBuf>, Vec<String>), String> {
     let mut binaries_dir: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::with_capacity(args.len());
     let mut it = args.into_iter();
@@ -1565,9 +1535,9 @@ fn extract_binaries_dir_flag(
             if binaries_dir.is_some() {
                 return Err("--binaries-dir given more than once".to_string());
             }
-            let value = it.next().ok_or_else(|| {
-                "--binaries-dir requires a directory path".to_string()
-            })?;
+            let value = it
+                .next()
+                .ok_or_else(|| "--binaries-dir requires a directory path".to_string())?;
             binaries_dir = Some(PathBuf::from(value));
         } else {
             rest.push(a);
@@ -1624,9 +1594,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             cmd_check(&registry)
         }
         _ => {
-            let target = target.ok_or_else(|| {
-                format!("build-deps {sub}: missing <name|path>")
-            })?;
+            let target = target.ok_or_else(|| format!("build-deps {sub}: missing <name|path>"))?;
             // `target` is either a path to a package.toml (contains '/'
             // or ends with .toml) or a bare name to look up in the
             // registry.
@@ -1671,9 +1639,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 
 fn load_target(target: &str, registry: &Registry) -> Result<DepsManifest, String> {
-    let looks_like_path = target.ends_with(".toml")
-        || target.contains('/')
-        || target.starts_with('.');
+    let looks_like_path =
+        target.ends_with(".toml") || target.contains('/') || target.starts_with('.');
     if looks_like_path {
         // Path form: derive the package dir from the .toml path so the
         // overlay (sibling `package.pr.toml`) gets honored just like
@@ -1682,9 +1649,7 @@ fn load_target(target: &str, registry: &Registry) -> Result<DepsManifest, String
         // top-level filename has no parent). Matches `Registry::load`.
         let path = Path::new(target);
         match path.parent() {
-            Some(dir) if !dir.as_os_str().is_empty() => {
-                DepsManifest::load_with_overlay(dir)
-            }
+            Some(dir) if !dir.as_os_str().is_empty() => DepsManifest::load_with_overlay(dir),
             _ => DepsManifest::load(path),
         }
     } else {
@@ -1715,7 +1680,10 @@ fn cmd_parse(m: &DepsManifest) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    println!("build     = {}", m.build_script_path(&crate::repo_root()).display());
+    println!(
+        "build     = {}",
+        m.build_script_path(&crate::repo_root()).display()
+    );
     println!("outputs.libs     = {:?}", m.outputs.libs);
     println!("outputs.headers  = {:?}", m.outputs.headers);
     if !m.outputs.pkgconfig.is_empty() {
@@ -1849,9 +1817,9 @@ fn place_binaries_symlinks(
             ));
         }
         let dest = arch_root.join(m.output_dest_rel_for(out));
-        let dest_dir = dest.parent().ok_or_else(|| {
-            format!("dest path {} has no parent", dest.display())
-        })?;
+        let dest_dir = dest
+            .parent()
+            .ok_or_else(|| format!("dest path {} has no parent", dest.display()))?;
         std::fs::create_dir_all(dest_dir)
             .map_err(|e| format!("mkdir {}: {e}", dest_dir.display()))?;
         // Replace-in-place: remove any existing entry (file or
@@ -1860,9 +1828,8 @@ fn place_binaries_symlinks(
         if dest.exists() || dest.symlink_metadata().is_ok() {
             let _ = std::fs::remove_file(&dest);
         }
-        std::os::unix::fs::symlink(&src, &dest).map_err(|e| {
-            format!("symlink {} -> {}: {e}", dest.display(), src.display())
-        })?;
+        std::os::unix::fs::symlink(&src, &dest)
+            .map_err(|e| format!("symlink {} -> {}: {e}", dest.display(), src.display()))?;
     }
     Ok(())
 }
@@ -1880,9 +1847,7 @@ fn place_binaries_symlinks(
 /// `--arch` is optional and the positional arguments differ. Keeping
 /// this parser focused makes the contract for the pre-flight workflow
 /// (Phase B-1, Task 2) easy to read at the call site.
-fn parse_compute_cache_key_sha_args(
-    args: Vec<String>,
-) -> Result<(PathBuf, TargetArch), String> {
+fn parse_compute_cache_key_sha_args(args: Vec<String>) -> Result<(PathBuf, TargetArch), String> {
     let mut package: Option<PathBuf> = None;
     let mut arch: Option<TargetArch> = None;
     let mut it = args.into_iter();
@@ -1917,12 +1882,10 @@ fn parse_compute_cache_key_sha_args(
             return Err(format!("unexpected argument {a:?}"));
         }
     }
-    let package = package.ok_or_else(|| {
-        "compute-cache-key-sha: --package <dir> is required".to_string()
-    })?;
-    let arch = arch.ok_or_else(|| {
-        "compute-cache-key-sha: --arch <wasm32|wasm64> is required".to_string()
-    })?;
+    let package =
+        package.ok_or_else(|| "compute-cache-key-sha: --package <dir> is required".to_string())?;
+    let arch = arch
+        .ok_or_else(|| "compute-cache-key-sha: --arch <wasm32|wasm64> is required".to_string())?;
     Ok((package, arch))
 }
 
@@ -1944,7 +1907,14 @@ fn compute_cache_key_sha_for_package(
     let manifest = DepsManifest::load_with_overlay(package_dir)?;
     let mut memo = BTreeMap::new();
     let mut chain = Vec::new();
-    let sha = compute_sha(&manifest, registry, arch, abi_version, &mut memo, &mut chain)?;
+    let sha = compute_sha(
+        &manifest,
+        registry,
+        arch,
+        abi_version,
+        &mut memo,
+        &mut chain,
+    )?;
     Ok(hex(&sha))
 }
 
@@ -1966,12 +1936,8 @@ pub fn run_compute_cache_key_sha(args: Vec<String>) -> Result<(), String> {
     let (package_dir, arch) = parse_compute_cache_key_sha_args(args)?;
     let repo = repo_root();
     let registry = Registry::from_env(&repo);
-    let sha = compute_cache_key_sha_for_package(
-        &package_dir,
-        &registry,
-        arch,
-        current_abi_version(),
-    )?;
+    let sha =
+        compute_cache_key_sha_for_package(&package_dir, &registry, arch, current_abi_version())?;
     println!("{sha}");
     Ok(())
 }
@@ -2174,9 +2140,7 @@ libs = ["lib/lib{name}.a"]
         // Registry has libDep@2.0.0; consumer asks for libDep@1.0.0.
         write(&root, "libDep", "2.0.0", &[]);
         write(&root, "libCons", "1.0.0", &["libDep@1.0.0"]);
-        let reg = Registry {
-            roots: vec![root],
-        };
+        let reg = Registry { roots: vec![root] };
         let cons = reg.load("libCons").unwrap();
         let err = compute_sha(
             &cons,
@@ -2310,7 +2274,8 @@ libs = ["lib/lib{name}.a"]
         .expect("bash@wasm32 cache-key sha should compute cleanly");
         assert_eq!(sha.len(), 64, "expected 64 hex chars, got {sha:?}");
         assert!(
-            sha.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            sha.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "expected lowercase hex chars, got {sha:?}"
         );
     }
@@ -2324,10 +2289,8 @@ libs = ["lib/lib{name}.a"]
         };
 
         let pkg = root.join("libW");
-        let sha_before = compute_cache_key_sha_for_package(
-            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
-        )
-        .unwrap();
+        let sha_before =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
 
         // Bump version in-place (revision lives in index.toml post
         // binary-resolution-via-index-ledger; the source-tree mutable
@@ -2335,12 +2298,14 @@ libs = ["lib/lib{name}.a"]
         // should re-hash and produce a different sha.
         let toml_path = pkg.join("package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
-        std::fs::write(&toml_path, text.replace("version = \"1.0.0\"", "version = \"1.0.1\"")).unwrap();
-
-        let sha_after = compute_cache_key_sha_for_package(
-            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
+        std::fs::write(
+            &toml_path,
+            text.replace("version = \"1.0.0\"", "version = \"1.0.1\""),
         )
         .unwrap();
+
+        let sha_after =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
         assert_ne!(
             sha_before, sha_after,
             "version bump must change cache_key_sha"
@@ -2356,10 +2321,8 @@ libs = ["lib/lib{name}.a"]
         };
 
         let pkg = root.join("libRev");
-        let sha_before = compute_cache_key_sha_for_package(
-            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
-        )
-        .unwrap();
+        let sha_before =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
 
         std::fs::write(
             pkg.join("build.toml"),
@@ -2375,10 +2338,8 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
         )
         .unwrap();
 
-        let sha_after = compute_cache_key_sha_for_package(
-            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
-        )
-        .unwrap();
+        let sha_after =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
         assert_ne!(
             sha_before, sha_after,
             "build.toml revision bump must change cache_key_sha"
@@ -2394,14 +2355,10 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
         };
         let pkg = root.join("libDet");
 
-        let sha1 = compute_cache_key_sha_for_package(
-            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
-        )
-        .unwrap();
-        let sha2 = compute_cache_key_sha_for_package(
-            &pkg, &reg, TargetArch::Wasm32, TEST_ABI,
-        )
-        .unwrap();
+        let sha1 =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
+        let sha2 =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
         assert_eq!(sha1, sha2, "two invocations on identical inputs must agree");
         assert_eq!(sha1.len(), 64);
     }
@@ -2432,21 +2389,15 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
 
     #[test]
     fn compute_cache_key_sha_args_reject_missing_package() {
-        let err = parse_compute_cache_key_sha_args(vec![
-            "--arch".into(),
-            "wasm32".into(),
-        ])
-        .unwrap_err();
+        let err =
+            parse_compute_cache_key_sha_args(vec!["--arch".into(), "wasm32".into()]).unwrap_err();
         assert!(err.contains("--package"), "got: {err}");
     }
 
     #[test]
     fn compute_cache_key_sha_args_reject_missing_arch() {
-        let err = parse_compute_cache_key_sha_args(vec![
-            "--package".into(),
-            "some/dir".into(),
-        ])
-        .unwrap_err();
+        let err = parse_compute_cache_key_sha_args(vec!["--package".into(), "some/dir".into()])
+            .unwrap_err();
         assert!(err.contains("--arch"), "got: {err}");
     }
 
@@ -2460,7 +2411,10 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
             "--bogus".into(),
         ])
         .unwrap_err();
-        assert!(err.contains("--bogus") || err.contains("unexpected"), "got: {err}");
+        assert!(
+            err.contains("--bogus") || err.contains("unexpected"),
+            "got: {err}"
+        );
     }
 
     // --- outputs-folding cache-key tests ---
@@ -2537,8 +2491,7 @@ spdx = "TestLicense"
         // PR #384 transition.
         let toml_path = root.join("lamp/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
-        std::fs::write(&toml_path, text.replace("lamp.vfs", "lamp.vfs.zst"))
-            .unwrap();
+        std::fs::write(&toml_path, text.replace("lamp.vfs", "lamp.vfs.zst")).unwrap();
         let sha_after = sha_of(&reg, "lamp");
 
         assert_ne!(
@@ -2563,8 +2516,11 @@ spdx = "TestLicense"
 
         let toml_path = root.join("tool/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
-        std::fs::write(&toml_path, text.replace("name = \"tool\"\nwasm", "name = \"tool-renamed\"\nwasm"))
-            .unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace("name = \"tool\"\nwasm", "name = \"tool-renamed\"\nwasm"),
+        )
+        .unwrap();
         let sha_after = sha_of(&reg, "tool");
 
         assert_ne!(
@@ -2627,14 +2583,12 @@ spdx = "TestLicense"
         let toml_path = root.join("git/package.toml");
         std::fs::write(
             &toml_path,
-            std::fs::read_to_string(&toml_path)
-                .unwrap()
-                .replace(
-                    "[[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n\n\
+            std::fs::read_to_string(&toml_path).unwrap().replace(
+                "[[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n\n\
                      [[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n",
-                    "[[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n\n\
+                "[[outputs]]\nname = \"git-remote-http\"\nwasm = \"git-remote-http.wasm\"\n\n\
                      [[outputs]]\nname = \"git\"\nwasm = \"git.wasm\"\n",
-                ),
+            ),
         )
         .unwrap();
         let sha_after = sha_of(&reg, "git");
@@ -2657,8 +2611,11 @@ spdx = "TestLicense"
 
         let toml_path = root.join("libZ/package.toml");
         let text = std::fs::read_to_string(&toml_path).unwrap();
-        std::fs::write(&toml_path, text.replace("lib/liblibZ.a", "lib/liblibZ-renamed.a"))
-            .unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace("lib/liblibZ.a", "lib/liblibZ-renamed.a"),
+        )
+        .unwrap();
         let sha_after = sha_of(&reg, "libZ");
 
         assert_ne!(
@@ -2826,14 +2783,8 @@ libs = ["lib/libA.a"]
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libA").unwrap();
 
-        let path = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let path =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
         assert!(path.starts_with(cache.join("libs")));
         assert!(path.join("lib/libA.a").exists());
         let stamp = std::fs::read_to_string(path.join("stamp")).unwrap();
@@ -2867,22 +2818,8 @@ libs = ["lib/libB.a"]
         };
         let m = reg.load("libB").unwrap();
 
-        let p1 = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
-        let p2 = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let p1 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+        let p2 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
         assert_eq!(p1, p2);
         let runs = std::fs::read_to_string(root.join("counter")).unwrap();
         assert_eq!(
@@ -2937,14 +2874,8 @@ libs = ["lib/libC.a"]
         };
         let m = reg.load("libC").unwrap();
 
-        let err = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap_err();
+        let err =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap_err();
         assert!(err.contains("not produced"), "got: {err}");
         // Temp dir was cleaned up; canonical path does not exist.
         let sha = compute_sha(
@@ -2957,7 +2888,10 @@ libs = ["lib/libC.a"]
         )
         .unwrap();
         let canonical = canonical_path(&cache, &m, TEST_ARCH, &sha);
-        assert!(!canonical.exists(), "canonical cache dir must not exist on failure");
+        assert!(
+            !canonical.exists(),
+            "canonical cache dir must not exist on failure"
+        );
 
         // No leftover temp dirs in the libs/ directory.
         if let Ok(rd) = std::fs::read_dir(cache.join("libs")) {
@@ -2990,14 +2924,8 @@ libs = ["lib/libD.a"]
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libD").unwrap();
 
-        let err = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap_err();
+        let err =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap_err();
         assert!(err.contains("exited"), "got: {err}");
         let sha = compute_sha(
             &m,
@@ -3160,14 +3088,8 @@ libs = ["lib/libBar.a"]
         );
         let reg = Registry { roots: vec![root] };
         let bar = reg.load("libBar").unwrap();
-        let bar_path = ensure_built(
-            &bar,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let bar_path =
+            ensure_built(&bar, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
         let pseudo = std::fs::read_to_string(bar_path.join("lib/libBar.a")).unwrap();
         assert_eq!(pseudo.trim(), "foo header body");
@@ -3221,17 +3143,10 @@ pkgconfig = ["lib/pkgconfig/libPc.pc"]
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libPc").unwrap();
 
-        let canonical = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let canonical =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
-        let pc = std::fs::read_to_string(canonical.join("lib/pkgconfig/libPc.pc"))
-            .unwrap();
+        let pc = std::fs::read_to_string(canonical.join("lib/pkgconfig/libPc.pc")).unwrap();
         assert!(
             pc.contains(&format!("prefix={}", canonical.display())),
             "pkgconfig prefix must point at the canonical cache path; got:\n{pc}"
@@ -3268,14 +3183,8 @@ libs = ["lib/libLa.a"]
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libLa").unwrap();
 
-        let canonical = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let canonical =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
         let la = std::fs::read_to_string(canonical.join("lib/libLa.la")).unwrap();
         assert!(
@@ -3321,18 +3230,10 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libSym").unwrap();
 
-        let canonical = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let canonical =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
-        let real =
-            std::fs::read_to_string(canonical.join("lib/pkgconfig/libSym1.pc"))
-                .unwrap();
+        let real = std::fs::read_to_string(canonical.join("lib/pkgconfig/libSym1.pc")).unwrap();
         assert!(
             real.contains(&format!("prefix={}", canonical.display())),
             "real .pc file must have canonical prefix; got:\n{real}"
@@ -3340,17 +3241,12 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         assert!(!real.contains(".tmp-"));
 
         // Reading via the symlink produces the same (rewritten) text.
-        let via_link =
-            std::fs::read_to_string(canonical.join("lib/pkgconfig/libSym.pc"))
-                .unwrap();
+        let via_link = std::fs::read_to_string(canonical.join("lib/pkgconfig/libSym.pc")).unwrap();
         assert_eq!(real, via_link);
 
         // The symlink is still a symlink — we didn't overwrite it
         // with a regular file during the rewrite.
-        let meta = std::fs::symlink_metadata(
-            canonical.join("lib/pkgconfig/libSym.pc"),
-        )
-        .unwrap();
+        let meta = std::fs::symlink_metadata(canonical.join("lib/pkgconfig/libSym.pc")).unwrap();
         assert!(
             meta.file_type().is_symlink(),
             "pkgconfig symlink must survive as a symlink after rewrite"
@@ -3361,9 +3257,7 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
     fn canonical_path_layout() {
         let root = tempdir("cache-path");
         write(&root, "zlib", "1.3.1", &[]);
-        let reg = Registry {
-            roots: vec![root],
-        };
+        let reg = Registry { roots: vec![root] };
         let m = reg.load("zlib").unwrap();
         let sha = compute_sha(
             &m,
@@ -3381,10 +3275,7 @@ pkgconfig = ["lib/pkgconfig/libSym1.pc"]
         assert_eq!(parent, cache.join("libs"));
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         // After A.6 the path includes the arch segment between revN and shortsha.
-        assert!(
-            name.starts_with("zlib-1.3.1-rev1-wasm32-"),
-            "got {name}"
-        );
+        assert!(name.starts_with("zlib-1.3.1-rev1-wasm32-"), "got {name}");
         // 8-char short sha appended after the last dash.
         let short = name.rsplit('-').next().unwrap();
         assert_eq!(short.len(), 8);
@@ -3471,14 +3362,8 @@ libs = ["lib/libA.a"]
 
     #[test]
     fn parse_target_arch_accepts_known_values() {
-        assert_eq!(
-            parse_target_arch("wasm32").unwrap(),
-            TargetArch::Wasm32
-        );
-        assert_eq!(
-            parse_target_arch("wasm64").unwrap(),
-            TargetArch::Wasm64
-        );
+        assert_eq!(parse_target_arch("wasm32").unwrap(), TargetArch::Wasm32);
+        assert_eq!(parse_target_arch("wasm64").unwrap(), TargetArch::Wasm64);
     }
 
     #[test]
@@ -3585,14 +3470,7 @@ libs = ["lib/libBaz.a"]
 
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libBaz").unwrap();
-        ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
     }
 
     /// Libs without a `lib/pkgconfig/` directory (e.g., ncurses ships a
@@ -3648,14 +3526,7 @@ libs = ["lib/libConsumer.a"]
 
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libConsumer").unwrap();
-        ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
     }
 
     // --- Remote-fetch integration tests (Task A.9) -------------------
@@ -3730,11 +3601,7 @@ cache_key_sha = "{cache_key_sha}"
     /// URL to a staged `index.toml`). The build script drops a
     /// `via-build` sentinel so fall-through tests can detect that the
     /// source build ran instead of the index fetch.
-    fn write_lib_with_build_toml(
-        root: &Path,
-        name: &str,
-        index_url: &str,
-    ) {
+    fn write_lib_with_build_toml(root: &Path, name: &str, index_url: &str) {
         let lib_dir = root.join(name);
         std::fs::create_dir_all(&lib_dir).unwrap();
 
@@ -3873,12 +3740,8 @@ libs = ["lib/out.a"]
         )
         .unwrap());
 
-        let manifest_text = archived_manifest_text(
-            "libOverlay",
-            "wasm32",
-            &[TEST_ABI],
-            &cache_key_hex,
-        );
+        let manifest_text =
+            archived_manifest_text("libOverlay", "wasm32", &[TEST_ABI], &cache_key_hex);
         let archive_bytes = crate::remote_fetch::build_test_archive(
             &manifest_text,
             &[("lib/out.a", b"FROM-OVERLAY")],
@@ -3902,14 +3765,8 @@ archive_sha256 = "{archive_sha_hex}"
 
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libOverlay").unwrap();
-        let path = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let path =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
         assert_eq!(
             std::fs::read(path.join("lib/out.a")).unwrap(),
@@ -3941,7 +3798,9 @@ archive_sha256 = "{archive_sha_hex}"
             "true",
             "[outputs]\nlibs = [\"lib/out.a\"]\n",
         );
-        let pre_reg = Registry { roots: vec![throwaway_root.clone()] };
+        let pre_reg = Registry {
+            roots: vec![throwaway_root.clone()],
+        };
         let pre_m = pre_reg.load("libIdx").unwrap();
         let pre_sha = compute_sha(
             &pre_m,
@@ -3957,12 +3816,7 @@ archive_sha256 = "{archive_sha_hex}"
 
         // Build a real archive whose internal manifest matches arch
         // + abi + cache_key.
-        let manifest_text = archived_manifest_text(
-            "libIdx",
-            "wasm32",
-            &[TEST_ABI],
-            &cache_key_hex,
-        );
+        let manifest_text = archived_manifest_text("libIdx", "wasm32", &[TEST_ABI], &cache_key_hex);
         let archive_bytes = crate::remote_fetch::build_test_archive(
             &manifest_text,
             &[("lib/out.a", b"\x00\x01\x02FAKE")],
@@ -3986,14 +3840,8 @@ archive_sha256 = "{archive_sha_hex}"
 
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libIdx").unwrap();
-        let path = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let path =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
         // Artifact installed at the canonical cache path with the
         // archive's bytes.
@@ -4027,10 +3875,8 @@ archive_sha256 = "{archive_sha_hex}"
             // wouldn't complain (defence in depth).
             &"a".repeat(64),
         );
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"REMOTE")],
-        );
+        let archive_bytes =
+            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
         let archive_path = archive_dir.join("libIdxSha-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
         let archive_url = format!("file://{}", archive_path.display());
@@ -4050,14 +3896,8 @@ archive_sha256 = "{archive_sha_hex}"
 
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libIdxSha").unwrap();
-        let path = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let path =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
         // Source build ran.
         assert!(
@@ -4080,16 +3920,10 @@ archive_sha256 = "{archive_sha_hex}"
         // points the wasm32 slot at this archive (an
         // archive-staging bug a real CI would never produce, but
         // the resolver must defend against it).
-        let manifest_text = archived_manifest_text(
-            "libIdxArch",
-            "wasm64",
-            &[TEST_ABI],
-            &"a".repeat(64),
-        );
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"REMOTE")],
-        );
+        let manifest_text =
+            archived_manifest_text("libIdxArch", "wasm64", &[TEST_ABI], &"a".repeat(64));
+        let archive_bytes =
+            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
         let archive_sha = sha256_hex(&archive_bytes);
         let archive_path = archive_dir.join("libIdxArch-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
@@ -4132,16 +3966,9 @@ archive_sha256 = "{archive_sha_hex}"
         let index_dir = tempdir("idx-abifail-index");
 
         // Archive supports only ABI 999 — resolver passes TEST_ABI.
-        let manifest_text = archived_manifest_text(
-            "libIdxAbi",
-            "wasm32",
-            &[999],
-            &"a".repeat(64),
-        );
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"REMOTE")],
-        );
+        let manifest_text = archived_manifest_text("libIdxAbi", "wasm32", &[999], &"a".repeat(64));
+        let archive_bytes =
+            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
         let archive_sha = sha256_hex(&archive_bytes);
         let archive_path = archive_dir.join("libIdxAbi-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
@@ -4186,16 +4013,9 @@ archive_sha256 = "{archive_sha_hex}"
         // Archive's internal compat.cache_key_sha is well-formed but
         // doesn't match what compute_sha would produce for this lib.
         let wrong_ck = "f".repeat(64);
-        let manifest_text = archived_manifest_text(
-            "libIdxCk",
-            "wasm32",
-            &[TEST_ABI],
-            &wrong_ck,
-        );
-        let archive_bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"REMOTE")],
-        );
+        let manifest_text = archived_manifest_text("libIdxCk", "wasm32", &[TEST_ABI], &wrong_ck);
+        let archive_bytes =
+            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
         let archive_sha = sha256_hex(&archive_bytes);
         let archive_path = archive_dir.join("libIdxCk-1.0.0.tar.zst");
         std::fs::write(&archive_path, &archive_bytes).unwrap();
@@ -4215,14 +4035,8 @@ archive_sha256 = "{archive_sha_hex}"
 
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libIdxCk").unwrap();
-        let path = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let path =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
         assert!(
             path.join("via-build").exists(),
@@ -4251,9 +4065,7 @@ archive_sha256 = "{archive_sha_hex}"
             .join(", ");
         let mut outputs_toml = String::new();
         for (n, w) in outputs {
-            outputs_toml.push_str(&format!(
-                "[[outputs]]\nname = \"{n}\"\nwasm = \"{w}\"\n\n"
-            ));
+            outputs_toml.push_str(&format!("[[outputs]]\nname = \"{n}\"\nwasm = \"{w}\"\n\n"));
         }
         fs::write(
             dir.join("package.toml"),
@@ -4345,16 +4157,30 @@ wasm = "vim.wasm"
         );
         let reg = Registry { roots: vec![root] };
         let m = reg.load("miss").unwrap();
-        let err = ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None))
-            .unwrap_err();
+        let err =
+            ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None)).unwrap_err();
         assert!(err.contains("miss.wasm"), "got: {err}");
     }
 
     #[test]
     fn walk_all_finds_libraries_and_programs() {
         let root = tempdir("walk-all");
-        write_lib(&root, "libL", "1.0.0", &[], "true", "[outputs]\nlibs = [\"lib/libL.a\"]\n");
-        write_program(&root, "progP", "0.1.0", &[], "true", &[("progP", "progP.wasm")]);
+        write_lib(
+            &root,
+            "libL",
+            "1.0.0",
+            &[],
+            "true",
+            "[outputs]\nlibs = [\"lib/libL.a\"]\n",
+        );
+        write_program(
+            &root,
+            "progP",
+            "0.1.0",
+            &[],
+            "true",
+            &[("progP", "progP.wasm")],
+        );
         let reg = Registry { roots: vec![root] };
         let all = reg.walk_all().unwrap();
         let names: Vec<_> = all.iter().map(|(n, _)| n.clone()).collect();
@@ -4364,8 +4190,22 @@ wasm = "vim.wasm"
     #[test]
     fn programs_by_name_filters_to_program_kind() {
         let root = tempdir("progs-by-name");
-        write_lib(&root, "libL", "1.0.0", &[], "true", "[outputs]\nlibs = [\"lib/libL.a\"]\n");
-        write_program(&root, "progP", "0.1.0", &[], "true", &[("progP", "progP.wasm")]);
+        write_lib(
+            &root,
+            "libL",
+            "1.0.0",
+            &[],
+            "true",
+            "[outputs]\nlibs = [\"lib/libL.a\"]\n",
+        );
+        write_program(
+            &root,
+            "progP",
+            "0.1.0",
+            &[],
+            "true",
+            &[("progP", "progP.wasm")],
+        );
         let reg = Registry { roots: vec![root] };
         let progs = programs_by_name(&reg).unwrap();
         assert_eq!(progs.len(), 1);
@@ -4375,7 +4215,9 @@ wasm = "vim.wasm"
     #[test]
     fn walk_all_handles_missing_registry_root() {
         // A registry root that doesn't exist must not error; just contribute nothing.
-        let reg = Registry { roots: vec![PathBuf::from("/this/path/does/not/exist/xtask-walk-all")] };
+        let reg = Registry {
+            roots: vec![PathBuf::from("/this/path/does/not/exist/xtask-walk-all")],
+        };
         let all = reg.walk_all().unwrap();
         assert!(all.is_empty());
     }
@@ -4385,12 +4227,32 @@ wasm = "vim.wasm"
         // Two roots both define "libZ"; first one wins.
         let root_a = tempdir("walk-first");
         let root_b = tempdir("walk-second");
-        write_lib(&root_a, "libZ", "1.0.0", &[], "true", "[outputs]\nlibs = [\"lib/libZ.a\"]\n");
-        write_lib(&root_b, "libZ", "9.9.9", &[], "true", "[outputs]\nlibs = [\"lib/libZ.a\"]\n");
-        let reg = Registry { roots: vec![root_a, root_b] };
+        write_lib(
+            &root_a,
+            "libZ",
+            "1.0.0",
+            &[],
+            "true",
+            "[outputs]\nlibs = [\"lib/libZ.a\"]\n",
+        );
+        write_lib(
+            &root_b,
+            "libZ",
+            "9.9.9",
+            &[],
+            "true",
+            "[outputs]\nlibs = [\"lib/libZ.a\"]\n",
+        );
+        let reg = Registry {
+            roots: vec![root_a, root_b],
+        };
         let all = reg.walk_all().unwrap();
         let (_, m) = all.iter().find(|(n, _)| n == "libZ").unwrap();
-        assert_eq!(m.version, "1.0.0", "first root should win, got version {}", m.version);
+        assert_eq!(
+            m.version, "1.0.0",
+            "first root should win, got version {}",
+            m.version
+        );
     }
 
     #[test]
@@ -4491,10 +4353,7 @@ libs = []
         // Build a fixture tarball containing pcre2-10.42/README.
         let mut tar_bytes: Vec<u8> = Vec::new();
         {
-            let enc = flate2::write::GzEncoder::new(
-                &mut tar_bytes,
-                flate2::Compression::default(),
-            );
+            let enc = flate2::write::GzEncoder::new(&mut tar_bytes, flate2::Compression::default());
             let mut builder = tar::Builder::new(enc);
             let mut header = tar::Header::new_gnu();
             header.set_path("pcre2-10.42/README").unwrap();
@@ -4600,8 +4459,7 @@ spdx = "BSD-3-Clause"
 [build]
 script_path = "custom.sh"
 "#;
-        let m =
-            DepsManifest::parse(manifest_text, manifest_dir.clone()).unwrap();
+        let m = DepsManifest::parse(manifest_text, manifest_dir.clone()).unwrap();
 
         let registry = Registry { roots: vec![] };
         let path = ensure_built(
@@ -4657,8 +4515,7 @@ script_path = "noop.sh"
         // Phase A-bis Task 2: pin repo_root = manifest_dir so the
         // repo-relative basename `"noop.sh"` resolves to where the
         // fixture wrote it.
-        let m =
-            DepsManifest::parse(manifest_text, manifest_dir.clone()).unwrap();
+        let m = DepsManifest::parse(manifest_text, manifest_dir.clone()).unwrap();
 
         let registry = Registry { roots: vec![] };
         let err = ensure_built(
@@ -4701,8 +4558,7 @@ script_path = "noop.sh"
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&foo_script, std::fs::Permissions::from_mode(0o755))
-                .unwrap();
+            std::fs::set_permissions(&foo_script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         // Phase A-bis Task 2: `script_path` is repo-root-relative.
         // The test pins `repo_root = root` below, so the script's
@@ -4820,8 +4676,14 @@ version_constraint = ">=99.99"
         std::fs::create_dir_all(canonical.join("lib")).unwrap();
         std::fs::write(canonical.join("lib/libfake.a"), b"").unwrap();
 
-        let path = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None))
-            .expect("cache hit should skip host-tool probes");
+        let path = ensure_built(
+            &m,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .expect("cache hit should skip host-tool probes");
         assert_eq!(path, canonical);
     }
 
@@ -4859,13 +4721,16 @@ install_hints = { darwin = "brew install nope", linux = "apt install nope" }
         let m = DepsManifest::parse(manifest_text, manifest_dir).unwrap();
 
         let registry = Registry { roots: vec![] };
-        let err = ensure_built(&m, &registry, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None))
-            .unwrap_err();
+        let err = ensure_built(
+            &m,
+            &registry,
+            TEST_ARCH,
+            TEST_ABI,
+            &resolve_opts(&cache, None),
+        )
+        .unwrap_err();
         assert!(err.contains("host-tool"), "got: {err}");
-        assert!(
-            err.contains("this-host-tool-does-not-exist"),
-            "got: {err}"
-        );
+        assert!(err.contains("this-host-tool-does-not-exist"), "got: {err}");
         // The fixture provides hints under the keys "darwin" and
         // "linux"; the renderer maps Rust's `std::env::consts::OS`
         // ("macos") to the conventional key "darwin", so on both
@@ -4991,8 +4856,7 @@ version_constraint = "{constraint}"
         write_with_host_tool(&root, "consumerB", "cmake", ">=3.10", "");
 
         let registry = Registry { roots: vec![root] };
-        let err = cmd_check(&registry)
-            .expect_err("mismatched version_constraints should fail");
+        let err = cmd_check(&registry).expect_err("mismatched version_constraints should fail");
         assert!(err.contains("cmake"), "got: {err}");
         assert!(err.contains("inconsistent"), "got: {err}");
     }
@@ -5049,31 +4913,23 @@ touch "$WASM_POSIX_DEP_OUT_DIR/lib/libF1.a"
 libs = ["lib/libF1.a"]
 "#,
         );
-        let reg = Registry { roots: vec![root.clone()] };
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
         let m = reg.load("libF1").unwrap();
 
         // First call — cache miss, script runs.
-        let p1 = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let p1 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
 
         // Second call WITHOUT force — cache hit, script does not run.
-        let p2 = ensure_built(
-            &m,
-            &reg,
-            TEST_ARCH,
-            TEST_ABI,
-            &resolve_opts(&cache, None),
-        )
-        .unwrap();
+        let p2 = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
         assert_eq!(p1, p2);
         let runs = std::fs::read_to_string(root.join("counter")).unwrap();
-        assert_eq!(runs.lines().count(), 1, "without force, cache hit must skip script");
+        assert_eq!(
+            runs.lines().count(),
+            1,
+            "without force, cache hit must skip script"
+        );
 
         // Third call WITH force — script runs again despite cache hit.
         let mut force = BTreeSet::new();
@@ -5116,7 +4972,9 @@ libs = ["lib/libF1.a"]
             "true",
             "[outputs]\nlibs = [\"lib/out.a\"]\n",
         );
-        let pre_reg = Registry { roots: vec![throwaway_root.clone()] };
+        let pre_reg = Registry {
+            roots: vec![throwaway_root.clone()],
+        };
         let pre_m = pre_reg.load("libF2").unwrap();
         let pre_sha = compute_sha(
             &pre_m,
@@ -5132,8 +4990,7 @@ libs = ["lib/libF1.a"]
 
         // Build an archive whose contents differ from the source build
         // so we can tell which path produced the artifact.
-        let manifest_text =
-            archived_manifest_text("libF2", "wasm32", &[TEST_ABI], &cache_key_hex);
+        let manifest_text = archived_manifest_text("libF2", "wasm32", &[TEST_ABI], &cache_key_hex);
         let archive_bytes = crate::remote_fetch::build_test_archive(
             &manifest_text,
             &[("lib/out.a", b"REMOTE-ARCHIVE")],
@@ -5178,8 +5035,7 @@ libs = ["lib/libF1.a"]
         );
         let lib_bytes = std::fs::read(path.join("lib/out.a")).unwrap();
         assert_eq!(
-            lib_bytes,
-            b"BUILD\n",
+            lib_bytes, b"BUILD\n",
             "force-rebuild must use the source-built artifact, not the remote archive"
         );
     }
@@ -5224,7 +5080,9 @@ touch "$WASM_POSIX_DEP_OUT_DIR/lib/libF3b.a"
 libs = ["lib/libF3b.a"]
 "#,
         );
-        let reg = Registry { roots: vec![root.clone()] };
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
         let ma = reg.load("libF3a").unwrap();
         let mb = reg.load("libF3b").unwrap();
 
@@ -5232,11 +5090,17 @@ libs = ["lib/libF3b.a"]
         ensure_built(&ma, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
         ensure_built(&mb, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
         assert_eq!(
-            std::fs::read_to_string(root.join("counter-a")).unwrap().lines().count(),
+            std::fs::read_to_string(root.join("counter-a"))
+                .unwrap()
+                .lines()
+                .count(),
             1
         );
         assert_eq!(
-            std::fs::read_to_string(root.join("counter-b")).unwrap().lines().count(),
+            std::fs::read_to_string(root.join("counter-b"))
+                .unwrap()
+                .lines()
+                .count(),
             1
         );
 
@@ -5255,12 +5119,18 @@ libs = ["lib/libF3b.a"]
 
         // libF3a re-ran (counter-a now has 2), libF3b stayed cached.
         assert_eq!(
-            std::fs::read_to_string(root.join("counter-a")).unwrap().lines().count(),
+            std::fs::read_to_string(root.join("counter-a"))
+                .unwrap()
+                .lines()
+                .count(),
             2,
             "named lib must re-run under force"
         );
         assert_eq!(
-            std::fs::read_to_string(root.join("counter-b")).unwrap().lines().count(),
+            std::fs::read_to_string(root.join("counter-b"))
+                .unwrap()
+                .lines()
+                .count(),
             1,
             "non-named lib must stay cached"
         );
@@ -5297,8 +5167,7 @@ libs = ["lib/libF3b.a"]
 
     #[test]
     fn extract_binaries_dir_flag_absent() {
-        let (got, rest) =
-            extract_binaries_dir_flag(vec!["resolve".into(), "bash".into()]).unwrap();
+        let (got, rest) = extract_binaries_dir_flag(vec!["resolve".into(), "bash".into()]).unwrap();
         assert_eq!(got, None);
         assert_eq!(rest, vec!["resolve".to_string(), "bash".into()]);
     }
@@ -5330,7 +5199,9 @@ libs = ["lib/libF3b.a"]
             r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/tinybin.wasm""#,
             &[("tinybin", "tinybin.wasm")],
         );
-        let reg = Registry { roots: vec![root.clone()] };
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
         let m = reg.load("tinybin").unwrap();
 
         // Repo root for cmd_resolve = registry root (script_path
@@ -5342,12 +5213,20 @@ libs = ["lib/libF3b.a"]
             .unwrap();
 
         let link = bin_dir.join("programs/wasm32/tinybin.wasm");
-        assert!(link.symlink_metadata().is_ok(), "symlink missing: {}", link.display());
+        assert!(
+            link.symlink_metadata().is_ok(),
+            "symlink missing: {}",
+            link.display()
+        );
         let target = std::fs::read_link(&link).unwrap();
         assert!(target.is_absolute(), "symlink must be absolute: {target:?}");
         assert!(target.ends_with("tinybin.wasm"), "got: {target:?}");
         // The symlink resolves to a real file in the cache.
-        assert!(link.exists(), "symlink target unreadable: {}", link.display());
+        assert!(
+            link.exists(),
+            "symlink target unreadable: {}",
+            link.display()
+        );
     }
 
     #[test]
@@ -5367,7 +5246,9 @@ touch "$WASM_POSIX_DEP_OUT_DIR/alpha.wasm"
 touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             &[("alpha", "alpha.wasm"), ("beta", "beta.wasm")],
         );
-        let reg = Registry { roots: vec![root.clone()] };
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
         let m = reg.load("twobin").unwrap();
 
         cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm32, &cache, Some(&bin_dir))
@@ -5394,15 +5275,18 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/noflag.wasm""#,
             &[("noflag", "noflag.wasm")],
         );
-        let reg = Registry { roots: vec![root.clone()] };
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
         let m = reg.load("noflag").unwrap();
 
-        cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm32, &cache, None)
-            .unwrap();
+        cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm32, &cache, None).unwrap();
 
         let link = bin_dir.join("programs/wasm32/noflag.wasm");
-        assert!(!link.exists() && link.symlink_metadata().is_err(),
-            "no symlink should exist without --binaries-dir");
+        assert!(
+            !link.exists() && link.symlink_metadata().is_err(),
+            "no symlink should exist without --binaries-dir"
+        );
     }
 
     #[test]
@@ -5421,7 +5305,9 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
             r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/rep.wasm""#,
             &[("rep", "rep.wasm")],
         );
-        let reg = Registry { roots: vec![root.clone()] };
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
         let m = reg.load("rep").unwrap();
 
         // Pre-create a stale symlink at the destination.

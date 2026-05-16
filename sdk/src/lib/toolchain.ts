@@ -8,7 +8,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const SDK_ROOT = resolve(__dirname, '../..');
-const REPO_ROOT = resolve(SDK_ROOT, '..');
+const SDK_REPO_ROOT = resolve(SDK_ROOT, '..');
+
+// Walk up from cwd because npm-link makes SDK_REPO_ROOT resolve to whichever worktree was linked, not the user's cwd.
+function findProjectRoot(): string | null {
+  let dir = resolve(process.cwd());
+  while (true) {
+    if (existsSync(join(dir, 'glue', 'abi_constants.h'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function projectRootOrSdk(): string {
+  return findProjectRoot() ?? SDK_REPO_ROOT;
+}
 
 export interface Toolchain {
   llvmDir: string;
@@ -84,7 +99,7 @@ export async function findLlvmDir(): Promise<string> {
 export function findSysroot(arch: WasmArch = 'wasm32'): string {
   const envSysroot = process.env.WASM_POSIX_SYSROOT;
   if (envSysroot) return envSysroot;
-  return resolve(REPO_ROOT, sysrootDir(arch));
+  return resolve(projectRootOrSdk(), sysrootDir(arch));
 }
 
 export function validateSysroot(sysroot: string): void {
@@ -99,7 +114,7 @@ export function validateSysroot(sysroot: string): void {
 export function findGlueDir(): string {
   const envGlue = process.env.WASM_POSIX_GLUE_DIR;
   if (envGlue) return envGlue;
-  return resolve(REPO_ROOT, 'glue');
+  return resolve(projectRootOrSdk(), 'glue');
 }
 
 export async function resolveToolchain(arch: WasmArch = 'wasm32'): Promise<Toolchain> {

@@ -36,14 +36,8 @@ impl ArchiveFormat {
     pub fn from_url(url: &str) -> Result<Self, String> {
         // Strip any "?query" or "#fragment" before suffix matching
         // so URLs with auth tokens / anchors still detect format.
-        let path = url
-            .split_once('?')
-            .map(|(p, _)| p)
-            .unwrap_or(url);
-        let path = path
-            .split_once('#')
-            .map(|(p, _)| p)
-            .unwrap_or(path);
+        let path = url.split_once('?').map(|(p, _)| p).unwrap_or(url);
+        let path = path.split_once('#').map(|(p, _)| p).unwrap_or(path);
         let lc = path.to_ascii_lowercase();
         // Order matters: .tar.gz must be checked before .gz, etc.
         if lc.ends_with(".tar.gz") || lc.ends_with(".tgz") {
@@ -75,11 +69,7 @@ impl ArchiveFormat {
 /// the archive contained exactly one top-level entry (a directory),
 /// that segment is *stripped* — consumers see source files at the
 /// cache directory's root, not nested inside `<name>-<version>/`.
-pub fn fetch_and_extract(
-    url: &str,
-    sha256_hex: &str,
-    dest: &Path,
-) -> Result<(), String> {
+pub fn fetch_and_extract(url: &str, sha256_hex: &str, dest: &Path) -> Result<(), String> {
     let bytes = fetch_url(url).map_err(|e| format!("{e}"))?;
     verify_sha(&bytes, sha256_hex).map_err(|e| format!("{e}"))?;
     let format = ArchiveFormat::from_url(url)?;
@@ -138,8 +128,7 @@ fn extract(bytes: &[u8], format: ArchiveFormat, dest: &Path) -> Result<(), Strin
             // traits without forcing an on-disk tempfile or a
             // runtime tempfile dependency.
             let cursor = std::io::Cursor::new(bytes);
-            let mut zip =
-                zip::ZipArchive::new(cursor).map_err(|e| format!("zip parse: {e}"))?;
+            let mut zip = zip::ZipArchive::new(cursor).map_err(|e| format!("zip parse: {e}"))?;
             // ZipArchive::extract trusts each entry's declared
             // uncompressed_size from the central directory and
             // applies no aggregate cap. Pre-flight by summing
@@ -148,9 +137,7 @@ fn extract(bytes: &[u8], format: ArchiveFormat, dest: &Path) -> Result<(), Strin
             // applied to every tar variant above.
             let mut total: u64 = 0;
             for i in 0..zip.len() {
-                let f = zip
-                    .by_index(i)
-                    .map_err(|e| format!("zip entry {i}: {e}"))?;
+                let f = zip.by_index(i).map_err(|e| format!("zip entry {i}: {e}"))?;
                 total = total.saturating_add(f.size());
                 if total > MAX_DECOMPRESSED_BYTES {
                     return Err(format!(
@@ -179,14 +166,14 @@ fn flatten_single_top_level(dest: &Path) -> Result<(), String> {
     }
     let only = entries.pop().unwrap();
     let only_path = only.path();
-    let metadata = fs::metadata(&only_path)
-        .map_err(|e| format!("stat {}: {e}", only_path.display()))?;
+    let metadata =
+        fs::metadata(&only_path).map_err(|e| format!("stat {}: {e}", only_path.display()))?;
     if !metadata.is_dir() {
         return Ok(());
     }
     // Move children one level up.
-    for child in fs::read_dir(&only_path)
-        .map_err(|e| format!("read_dir {}: {e}", only_path.display()))?
+    for child in
+        fs::read_dir(&only_path).map_err(|e| format!("read_dir {}: {e}", only_path.display()))?
     {
         let child = child.map_err(|e| format!("read_dir entry: {e}"))?;
         let from = child.path();
@@ -194,8 +181,7 @@ fn flatten_single_top_level(dest: &Path) -> Result<(), String> {
         fs::rename(&from, &to)
             .map_err(|e| format!("rename {} -> {}: {e}", from.display(), to.display()))?;
     }
-    fs::remove_dir(&only_path)
-        .map_err(|e| format!("rmdir {}: {e}", only_path.display()))?;
+    fs::remove_dir(&only_path).map_err(|e| format!("rmdir {}: {e}", only_path.display()))?;
     Ok(())
 }
 
@@ -212,10 +198,7 @@ mod tests {
         // contents are `hello\n`.
         let mut tar_bytes: Vec<u8> = Vec::new();
         {
-            let enc = flate2::write::GzEncoder::new(
-                &mut tar_bytes,
-                flate2::Compression::default(),
-            );
+            let enc = flate2::write::GzEncoder::new(&mut tar_bytes, flate2::Compression::default());
             let mut builder = tar::Builder::new(enc);
             let mut header = tar::Header::new_gnu();
             header.set_path("pcre2-10.42/README").unwrap();
@@ -250,10 +233,7 @@ mod tests {
         // one entry").
         let mut tar_bytes: Vec<u8> = Vec::new();
         {
-            let enc = flate2::write::GzEncoder::new(
-                &mut tar_bytes,
-                flate2::Compression::default(),
-            );
+            let enc = flate2::write::GzEncoder::new(&mut tar_bytes, flate2::Compression::default());
             let mut builder = tar::Builder::new(enc);
             let mut header = tar::Header::new_gnu();
             header.set_path("a.txt").unwrap();

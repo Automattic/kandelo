@@ -26,12 +26,10 @@ use crate::util::hex;
 pub fn run_index_update(args: &[String]) -> Result<(), String> {
     let parsed = ParsedArgs::from(args)?;
 
-    let index_text = std::fs::read_to_string(&parsed.index_path).map_err(|e| {
-        format!("read {}: {e}", parsed.index_path.display())
-    })?;
-    let mut idx = IndexToml::parse(&index_text).map_err(|e| {
-        format!("{}: {e}", parsed.index_path.display())
-    })?;
+    let index_text = std::fs::read_to_string(&parsed.index_path)
+        .map_err(|e| format!("read {}: {e}", parsed.index_path.display()))?;
+    let mut idx = IndexToml::parse(&index_text)
+        .map_err(|e| format!("{}: {e}", parsed.index_path.display()))?;
 
     let arch = match parsed.arch.as_str() {
         "wasm32" => TargetArch::Wasm32,
@@ -54,9 +52,8 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
                 .as_ref()
                 .ok_or("--status success requires --cache-key-sha")?;
 
-            let bytes = std::fs::read(archive_path).map_err(|e| {
-                format!("read {}: {e}", archive_path.display())
-            })?;
+            let bytes = std::fs::read(archive_path)
+                .map_err(|e| format!("read {}: {e}", archive_path.display()))?;
             let mut h = Sha256::new();
             h.update(&bytes);
             let digest: [u8; 32] = h.finalize().into();
@@ -90,9 +87,7 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
             );
         }
         other => {
-            return Err(format!(
-                "--status must be success or failed, got {other:?}"
-            ));
+            return Err(format!("--status must be success or failed, got {other:?}"));
         }
     }
 
@@ -144,9 +139,11 @@ impl ParsedArgs {
                 "--package" => package = Some(value),
                 "--version" => version = Some(value),
                 "--revision" => {
-                    revision = Some(value.parse().map_err(|e| {
-                        format!("--revision must be a positive integer ({e})")
-                    })?)
+                    revision = Some(
+                        value
+                            .parse()
+                            .map_err(|e| format!("--revision must be a positive integer ({e})"))?,
+                    )
                 }
                 "--arch" => arch = Some(value),
                 "--status" => status = Some(value),
@@ -244,10 +241,7 @@ mod tests {
         let mut h = Sha256::new();
         h.update(b"fake archive bytes");
         let expected_sha: [u8; 32] = h.finalize().into();
-        let expected_hex: String = expected_sha
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let expected_hex: String = expected_sha.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(entry.archive_sha256.as_deref(), Some(expected_hex.as_str()));
     }
 
@@ -270,7 +264,10 @@ mod tests {
         let idx_path = tmp.join("index.toml");
         let mut idx = IndexToml::empty(8, "t1".into(), "test".into());
         idx.update_entry_success(
-            "foo", "1.0", 1, TargetArch::Wasm32,
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
             "foo-old.tar.zst".into(),
             "oldsha".into(),
             "oldkey".into(),
@@ -312,7 +309,10 @@ mod tests {
             "prior success moved to fallback"
         );
         assert_eq!(entry.last_attempt.as_deref(), Some("t2"));
-        assert_eq!(entry.last_attempt_by.as_deref(), Some("https://example.com/run/2"));
+        assert_eq!(
+            entry.last_attempt_by.as_deref(),
+            Some("https://example.com/run/2")
+        );
     }
 
     #[test]

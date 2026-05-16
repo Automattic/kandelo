@@ -32,8 +32,7 @@ KERNEL_WASM="target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm"
 build_kernel() {
     echo "abi: building kernel wasm for export-signature snapshot..."
     cargo build --release -p wasm-posix-kernel \
-        -Z build-std=core,alloc \
-        -Z build-std-features=panic_immediate_abort >&2
+        -Z build-std=core,alloc >&2
     if [ ! -f "$KERNEL_WASM" ]; then
         echo "abi: expected $KERNEL_WASM after build, not found." >&2
         exit 1
