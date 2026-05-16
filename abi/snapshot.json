@@ -341,6 +341,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_enum_procs",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_environ_count",
       "signature": "() -> (i32)"
     },
@@ -1022,6 +1027,11 @@
     {
       "kind": "func",
       "name": "kernel_read",
+      "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_read_proc_maps",
       "signature": "(i32,i64,i32) -> (i32)"
     },
     {

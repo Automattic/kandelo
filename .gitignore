@@ -26,6 +26,15 @@ node_modules/
 # Worktrees
 .worktrees/
 
+# Claude Code worktree config (added when an agent runs `claude` inside
+# a worktree — never tracked).
+.superset/
+
+# Kandelo design handoff bundle (designer's reference prototype + spec).
+# Lives at the repo root as input, not source — the production code is
+# in examples/browser/pages/kandelo/.
+/design_handoff_kandelo_ui/
+
 # musl build artifacts
 /musl/config.mak
 /musl/obj/
