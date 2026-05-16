@@ -744,9 +744,9 @@ jobs:
       - name: Build kernel + test programs + install host deps
         run: |
           bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
             cargo build --release -p wasm-posix-kernel \
-              -Z build-std=core,alloc \
-              -Z build-std-features=panic_immediate_abort
+              -Z build-std=core,alloc
             mkdir -p local-binaries
             cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
               local-binaries/kernel.wasm
