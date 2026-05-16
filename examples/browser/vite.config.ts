@@ -222,30 +222,57 @@ function corsProxyPlugin(): Plugin {
           const parsedUrl = new URL(targetUrl);
           const client = parsedUrl.protocol === "https:" ? https : http;
 
+          // Forward all client headers except hop-by-hop ones, otherwise
+          // upstream POSTs lose `content-type`, auth headers, etc. plus the
+          // request body.
+          const skipReqHeader = new Set([
+            "host", "connection", "keep-alive", "transfer-encoding",
+            "upgrade", "proxy-connection", "te", "trailer", "expect",
+            "origin", "referer",
+          ]);
+          const forwardHeaders: Record<string, string | string[]> = {};
+          for (const [name, value] of Object.entries(req.headers)) {
+            if (value === undefined) continue;
+            if (skipReqHeader.has(name.toLowerCase())) continue;
+            forwardHeaders[name] = value as string | string[];
+          }
+          if (!forwardHeaders["user-agent"]) {
+            forwardHeaders["user-agent"] = "wasm-posix-kernel-proxy";
+          }
+          // The wasm-side fetch can't decompress gzip/br — force identity so
+          // the client sees raw JSON/SSE instead of UTF-8 replacement chars.
+          forwardHeaders["accept-encoding"] = "identity";
+
           const proxyReq = client.request(targetUrl, {
             method: req.method || "GET",
             rejectUnauthorized: false, // Dev proxy — skip cert verification
-            headers: {
-              "User-Agent": req.headers["user-agent"] || "wasm-posix-kernel-proxy",
-              "Accept": req.headers["accept"] || "*/*",
-            },
+            headers: forwardHeaders,
           }, (proxyRes) => {
-            const headers: Record<string, string> = {
-              "Access-Control-Allow-Origin": "*",
-              "Cross-Origin-Resource-Policy": "cross-origin",
+            const skipResHeader = new Set([
+              "connection", "keep-alive", "transfer-encoding",
+              "content-encoding", "content-length",
+            ]);
+            const headers: Record<string, string | string[]> = {
+              "access-control-allow-origin": "*",
+              "cross-origin-resource-policy": "cross-origin",
             };
-            if (proxyRes.headers["content-type"]) {
-              headers["Content-Type"] = proxyRes.headers["content-type"];
+            for (const [k, v] of Object.entries(proxyRes.headers)) {
+              if (v === undefined) continue;
+              if (skipResHeader.has(k.toLowerCase())) continue;
+              headers[k] = v as string | string[];
             }
             res.writeHead(proxyRes.statusCode || 502, headers);
             proxyRes.pipe(res);
           });
           proxyReq.on("error", (err) => {
             console.error("[cors-proxy] Request error:", err.message);
-            res.writeHead(502, { "Content-Type": "text/plain" });
+            if (!res.headersSent) {
+              res.writeHead(502, { "Content-Type": "text/plain" });
+            }
             res.end(`Proxy error: ${err.message}`);
           });
-          proxyReq.end();
+          // Pipe request body (POST/PUT/PATCH); no-op for GET.
+          req.pipe(proxyReq);
         } catch (err: any) {
           console.error("[cors-proxy] Error:", err);
           res.writeHead(502, { "Content-Type": "text/plain" });
@@ -320,6 +347,7 @@ export default defineConfig({
         wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
         lamp: path.resolve(__dirname, "pages/lamp/index.html"),
         shell: path.resolve(__dirname, "pages/shell/index.html"),
+        node: path.resolve(__dirname, "pages/node/index.html"),
         "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
         "git-test": path.resolve(__dirname, "pages/git-test/index.html"),
         "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),

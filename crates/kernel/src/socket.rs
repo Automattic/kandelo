@@ -79,6 +79,8 @@ pub enum SocketState {
     Unbound,
     Bound,
     Listening,
+    /// Host-delegated connect kicked off, TCP handshake not yet completed.
+    Connecting,
     Connected,
     Closed,
 }
@@ -147,6 +149,9 @@ pub struct SocketInfo {
     pub send_timeout_us: u64,
     /// Bound filesystem path for AF_UNIX sockets.
     pub bind_path: Option<Vec<u8>>,
+    /// Errno cached from a failed host-delegated connect; read and cleared
+    /// by SO_ERROR (Linux semantics). 0 means no error.
+    pub connect_error: u32,
 }
 
 impl SocketInfo {
@@ -175,6 +180,7 @@ impl SocketInfo {
             recv_timeout_us: 0,
             send_timeout_us: 0,
             bind_path: None,
+            connect_error: 0,
         }
     }
 
@@ -240,12 +246,13 @@ impl Clone for SocketInfo {
             peer_port: self.peer_port,
             listen_backlog: Vec::new(), // consume-once: don't double-accept
             shared_backlog_idx: self.shared_backlog_idx,
-            dgram_queue: Vec::new(),    // consume-once: don't double-deliver
+            dgram_queue: Vec::new(), // consume-once: don't double-deliver
             global_pipes: self.global_pipes,
-            oob_byte: None,             // consume-once: don't double-deliver
+            oob_byte: None, // consume-once: don't double-deliver
             recv_timeout_us: self.recv_timeout_us,
             send_timeout_us: self.send_timeout_us,
             bind_path: self.bind_path.clone(),
+            connect_error: 0, // fork transitions Connecting → Closed; no error to inherit
         }
     }
 }
@@ -351,7 +358,9 @@ pub struct SharedBacklogTable {
 
 impl SharedBacklogTable {
     pub const fn new() -> Self {
-        SharedBacklogTable { entries: Vec::new() }
+        SharedBacklogTable {
+            entries: Vec::new(),
+        }
     }
 
     /// Allocate a new shared backlog slot, reusing freed slots.
@@ -366,7 +375,11 @@ impl SharedBacklogTable {
             }
         }
         let idx = self.entries.len();
-        self.entries.push(SharedBacklog { queue: Vec::new(), ref_count: 1, in_use: true });
+        self.entries.push(SharedBacklog {
+            queue: Vec::new(),
+            ref_count: 1,
+            in_use: true,
+        });
         idx
     }
 
@@ -385,7 +398,9 @@ impl SharedBacklogTable {
     /// happens when the last process holding a listener fd closes it).
     pub fn dec_ref(&mut self, idx: usize) {
         if let Some(entry) = self.entries.get_mut(idx) {
-            if !entry.in_use { return; }
+            if !entry.in_use {
+                return;
+            }
             entry.ref_count = entry.ref_count.saturating_sub(1);
             if entry.ref_count == 0 {
                 entry.queue.clear();
@@ -417,7 +432,8 @@ impl SharedBacklogTable {
 
     /// Returns the number of pending connections, or 0 if the slot is invalid.
     pub fn len(&self, idx: usize) -> usize {
-        self.entries.get(idx)
+        self.entries
+            .get(idx)
             .map(|e| if e.in_use { e.queue.len() } else { 0 })
             .unwrap_or(0)
     }

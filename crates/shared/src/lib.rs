@@ -17,7 +17,7 @@
 /// commit.
 ///
 /// See `docs/abi-versioning.md` for the full policy.
-pub const ABI_VERSION: u32 = 10;
+pub const ABI_VERSION: u32 = 11;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -749,13 +749,13 @@ pub struct WasmDirent {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WasmFlock {
-    pub l_type: i16,    // F_RDLCK, F_WRLCK, F_UNLCK (short)
-    pub l_whence: i16,  // SEEK_SET, SEEK_CUR, SEEK_END (short)
-    pub _pad1: u32,     // padding to align l_start to 8 bytes
-    pub l_start: i64,   // offset (off_t = long long on wasm32)
-    pub l_len: i64,     // length (0 = to end of file)
-    pub l_pid: u32,     // process ID (pid_t = int)
-    pub _pad2: u32,     // trailing padding for struct alignment
+    pub l_type: i16,   // F_RDLCK, F_WRLCK, F_UNLCK (short)
+    pub l_whence: i16, // SEEK_SET, SEEK_CUR, SEEK_END (short)
+    pub _pad1: u32,    // padding to align l_start to 8 bytes
+    pub l_start: i64,  // offset (off_t = long long on wasm32)
+    pub l_len: i64,    // length (0 = to end of file)
+    pub l_pid: u32,    // process ID (pid_t = int)
+    pub _pad2: u32,    // trailing padding for struct alignment
 }
 
 /// POSIX signal constants.
@@ -804,11 +804,11 @@ pub mod signal {
     pub const SA_RESTORER: u32 = 0x04000000;
 
     // Default actions
-    pub const SA_DEFAULT_TERM: u32 = 0;   // Terminate
-    pub const SA_DEFAULT_IGN: u32 = 1;    // Ignore
-    pub const SA_DEFAULT_CORE: u32 = 2;   // Core dump (treated as terminate in Wasm)
-    pub const SA_DEFAULT_STOP: u32 = 3;   // Stop (not supported in Wasm)
-    pub const SA_DEFAULT_CONT: u32 = 4;   // Continue (not supported in Wasm)
+    pub const SA_DEFAULT_TERM: u32 = 0; // Terminate
+    pub const SA_DEFAULT_IGN: u32 = 1; // Ignore
+    pub const SA_DEFAULT_CORE: u32 = 2; // Core dump (treated as terminate in Wasm)
+    pub const SA_DEFAULT_STOP: u32 = 3; // Stop (not supported in Wasm)
+    pub const SA_DEFAULT_CONT: u32 = 4; // Continue (not supported in Wasm)
 }
 
 /// Resource limit constants for getrlimit/setrlimit.
@@ -944,10 +944,7 @@ pub mod abi {
 
     /// Globals that each user process instance is expected to expose so
     /// the host can thread channel / TLS state through fork and exec.
-    pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &[
-        "__channel_base",
-        "__tls_base",
-    ];
+    pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &["__channel_base", "__tls_base"];
 
     /// Patterns (applied as prefix match) for kernel-wasm exports that
     /// are implementation details of the toolchain, not part of the
@@ -961,6 +958,15 @@ pub mod abi {
         "__wasm_init_",
         "__wasm_apply_",
         "__llvm_",
+        // LLD/wasm-ld emits __tls_align / __tls_base / __tls_size as a
+        // side-effect of TLS-aware codegen. Whether they appear depends
+        // on the toolchain version (newer nightlies optimise them away
+        // when no kernel-internal code references them externally), and
+        // nothing in the host runtime reads them from the kernel module
+        // (host/src/worker-main.ts reads __tls_base only from user-program
+        // instances). Filtering them keeps the snapshot stable across
+        // toolchain churn.
+        "__tls_",
     ];
 
     /// Exact-name variant of [`EXPORT_DENY_PREFIXES`] — exports we
@@ -985,9 +991,7 @@ pub mod abi {
     /// for existence + type, because its value is linker- or
     /// runtime-determined and would churn without encoding real ABI
     /// changes.
-    pub const ABI_VALUE_CAPTURE_PREFIXES: &[&str] = &[
-        "__abi_",
-    ];
+    pub const ABI_VALUE_CAPTURE_PREFIXES: &[&str] = &["__abi_"];
 
     /// Host-intercepted syscall numbers (caught by `host/src/kernel-worker.ts`
     /// before reaching the kernel's syscall dispatcher). The kernel never sees
@@ -1079,36 +1083,36 @@ pub mod fbdev {
     #[derive(Debug, Clone, Copy, Default)]
     #[repr(C)]
     pub struct FbVarScreenInfo {
-        pub xres: u32,                // 0
-        pub yres: u32,                // 4
-        pub xres_virtual: u32,        // 8
-        pub yres_virtual: u32,        // 12
-        pub xoffset: u32,             // 16
-        pub yoffset: u32,             // 20
-        pub bits_per_pixel: u32,      // 24
-        pub grayscale: u32,           // 28
-        pub red: FbBitfield,          // 32 (12)
-        pub green: FbBitfield,        // 44 (12)
-        pub blue: FbBitfield,         // 56 (12)
-        pub transp: FbBitfield,       // 68 (12)
-        pub nonstd: u32,              // 80
-        pub activate: u32,            // 84
-        pub height: u32,              // 88
-        pub width: u32,               // 92
-        pub accel_flags: u32,         // 96
-        pub pixclock: u32,            // 100
-        pub left_margin: u32,         // 104
-        pub right_margin: u32,        // 108
-        pub upper_margin: u32,        // 112
-        pub lower_margin: u32,        // 116
-        pub hsync_len: u32,           // 120
-        pub vsync_len: u32,           // 124
-        pub sync: u32,                // 128
-        pub vmode: u32,               // 132
-        pub rotate: u32,              // 136
-        pub colorspace: u32,          // 140
-        pub reserved: [u32; 4],       // 144 (16)
-                                      // total: 160
+        pub xres: u32,           // 0
+        pub yres: u32,           // 4
+        pub xres_virtual: u32,   // 8
+        pub yres_virtual: u32,   // 12
+        pub xoffset: u32,        // 16
+        pub yoffset: u32,        // 20
+        pub bits_per_pixel: u32, // 24
+        pub grayscale: u32,      // 28
+        pub red: FbBitfield,     // 32 (12)
+        pub green: FbBitfield,   // 44 (12)
+        pub blue: FbBitfield,    // 56 (12)
+        pub transp: FbBitfield,  // 68 (12)
+        pub nonstd: u32,         // 80
+        pub activate: u32,       // 84
+        pub height: u32,         // 88
+        pub width: u32,          // 92
+        pub accel_flags: u32,    // 96
+        pub pixclock: u32,       // 100
+        pub left_margin: u32,    // 104
+        pub right_margin: u32,   // 108
+        pub upper_margin: u32,   // 112
+        pub lower_margin: u32,   // 116
+        pub hsync_len: u32,      // 120
+        pub vsync_len: u32,      // 124
+        pub sync: u32,           // 128
+        pub vmode: u32,          // 132
+        pub rotate: u32,         // 136
+        pub colorspace: u32,     // 140
+        pub reserved: [u32; 4],  // 144 (16)
+                                 // total: 160
     }
 
     /// Linux `struct fb_fix_screeninfo` — fixed screen info (32-bit user-space
@@ -1124,23 +1128,23 @@ pub mod fbdev {
     #[derive(Debug, Clone, Copy, Default)]
     #[repr(C)]
     pub struct FbFixScreenInfo {
-        pub id: [u8; 16],             // 0
-        pub smem_start: u32,          // 16  (always 0 in our model)
-        pub smem_len: u32,            // 20
-        pub fb_type: u32,             // 24  (FB_TYPE_PACKED_PIXELS)
-        pub type_aux: u32,            // 28
-        pub visual: u32,              // 32  (FB_VISUAL_TRUECOLOR)
-        pub xpanstep: u16,            // 36
-        pub ypanstep: u16,            // 38
-        pub ywrapstep: u16,           // 40
-        pub _pad: u16,                // 42
-        pub line_length: u32,         // 44
-        pub mmio_start: u32,          // 48  (always 0)
-        pub mmio_len: u32,            // 52
-        pub accel: u32,               // 56
-        pub capabilities: u16,        // 60
-        pub reserved: [u16; 3],       // 62 (6)
-        pub _pad_to_80: [u8; 12],     // 68 (12) → 80
+        pub id: [u8; 16],         // 0
+        pub smem_start: u32,      // 16  (always 0 in our model)
+        pub smem_len: u32,        // 20
+        pub fb_type: u32,         // 24  (FB_TYPE_PACKED_PIXELS)
+        pub type_aux: u32,        // 28
+        pub visual: u32,          // 32  (FB_VISUAL_TRUECOLOR)
+        pub xpanstep: u16,        // 36
+        pub ypanstep: u16,        // 38
+        pub ywrapstep: u16,       // 40
+        pub _pad: u16,            // 42
+        pub line_length: u32,     // 44
+        pub mmio_start: u32,      // 48  (always 0)
+        pub mmio_len: u32,        // 52
+        pub accel: u32,           // 56
+        pub capabilities: u16,    // 60
+        pub reserved: [u16; 3],   // 62 (6)
+        pub _pad_to_80: [u8; 12], // 68 (12) → 80
     }
 }
 

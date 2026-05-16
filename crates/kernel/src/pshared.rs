@@ -118,11 +118,14 @@ impl PSharedTable {
 
     pub fn mutex_init(&mut self, mtype: u32) -> u32 {
         let id = self.alloc_id();
-        self.mutexes.insert(id, PSharedMutex {
-            owner: 0,
-            recursive_count: 0,
-            mtype: mtype & 0xF,
-        });
+        self.mutexes.insert(
+            id,
+            PSharedMutex {
+                owner: 0,
+                recursive_count: 0,
+                mtype: mtype & 0xF,
+            },
+        );
         id
     }
 
@@ -184,7 +187,12 @@ impl PSharedTable {
 
     pub fn cond_init(&mut self) -> u32 {
         let id = self.alloc_id();
-        self.conds.insert(id, PSharedCond { waiters: VecDeque::new() });
+        self.conds.insert(
+            id,
+            PSharedCond {
+                waiters: VecDeque::new(),
+            },
+        );
         id
     }
 
@@ -232,7 +240,11 @@ impl PSharedTable {
     /// busy). `EINVAL` if the wait was never registered.
     pub fn cond_wait_check(&mut self, cond_id: u32, mutex_id: u32, pid: u32) -> Result<(), Errno> {
         let c = self.conds.get_mut(&cond_id).ok_or(Errno::EINVAL)?;
-        let idx = c.waiters.iter().position(|w| w.pid == pid).ok_or(Errno::EINVAL)?;
+        let idx = c
+            .waiters
+            .iter()
+            .position(|w| w.pid == pid)
+            .ok_or(Errno::EINVAL)?;
         // Guard against the user re-associating the wait with a different
         // mutex between begin and check (POSIX allows mixing only if we
         // detect it; we'd rather return EINVAL than silently relock the
@@ -302,10 +314,13 @@ impl PSharedTable {
             return Err(Errno::EINVAL);
         }
         let id = self.alloc_id();
-        self.barriers.insert(id, PSharedBarrier {
-            count,
-            waiters: Vec::new(),
-        });
+        self.barriers.insert(
+            id,
+            PSharedBarrier {
+                count,
+                waiters: Vec::new(),
+            },
+        );
         Ok(id)
     }
 
@@ -330,13 +345,21 @@ impl PSharedTable {
             if b.waiters[idx].released {
                 let was_serial = b.waiters[idx].is_serial;
                 b.waiters.remove(idx);
-                return Ok(if was_serial { PTHREAD_BARRIER_SERIAL_THREAD } else { 0 });
+                return Ok(if was_serial {
+                    PTHREAD_BARRIER_SERIAL_THREAD
+                } else {
+                    0
+                });
             }
             return Err(Errno::EAGAIN);
         }
 
         // New arrival.
-        b.waiters.push(BarrierWaiter { pid, is_serial: false, released: false });
+        b.waiters.push(BarrierWaiter {
+            pid,
+            is_serial: false,
+            released: false,
+        });
 
         if b.waiters.len() as u32 == b.count {
             // This caller is the last arrival — release the round. Mark

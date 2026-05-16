@@ -104,8 +104,7 @@ pub fn stage_archive_with_options(
                 .to_string_lossy()
                 .into_owned();
             let archive_rel = format!("artifacts/{rel}");
-            let bytes = fs::read(src)
-                .map_err(|e| format!("read {}: {e}", src.display()))?;
+            let bytes = fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?;
             let mut h = tar::Header::new_gnu();
             h.set_size(bytes.len() as u64);
             h.set_mode(0o644);
@@ -130,8 +129,7 @@ pub fn stage_archive_with_options(
     // Atomic write: tmp + rename. Anyone observing `archive_path`
     // sees either nothing or a fully-written file.
     let tmp = archive_path.with_extension("tar.zst.tmp");
-    fs::write(&tmp, &zst_bytes)
-        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    fs::write(&tmp, &zst_bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     fs::rename(&tmp, archive_path).map_err(|e| {
         format!(
             "rename {} -> {}: {e}",
@@ -171,8 +169,8 @@ fn build_archive_manifest_text(
     opts: &StageOptions,
 ) -> Result<String, String> {
     let src_path = target.dir.join("package.toml");
-    let raw_src = fs::read_to_string(&src_path)
-        .map_err(|e| format!("read {}: {e}", src_path.display()))?;
+    let raw_src =
+        fs::read_to_string(&src_path).map_err(|e| format!("read {}: {e}", src_path.display()))?;
     // Source package.toml is verified by parse() to have no
     // [compatibility] block AND no `revision` field (post
     // binary-resolution-via-index-ledger). The archived manifest
@@ -316,8 +314,7 @@ headers = ["include/zlib.h"]
         use crate::remote_fetch::fetch_and_install;
         use sha2::{Digest, Sha256};
 
-        let (cache_dir, archive_path, manifest, opts) =
-            fixture_for_round_trip("round-trip");
+        let (cache_dir, archive_path, manifest, opts) = fixture_for_round_trip("round-trip");
 
         stage_archive_with_options(
             &manifest,
@@ -374,8 +371,7 @@ headers = ["include/zlib.h"]
     fn embedded_manifest_round_trips_through_parse_archived() {
         use std::io::Read;
 
-        let (cache_dir, archive_path, manifest, opts) =
-            fixture_for_round_trip("embed-manifest");
+        let (cache_dir, archive_path, manifest, opts) = fixture_for_round_trip("embed-manifest");
 
         stage_archive_with_options(
             &manifest,
@@ -483,15 +479,9 @@ headers = ["include/zlib.h"]
             build_timestamp: "2026-04-26T00:00:00Z".to_string(),
             build_host: "test-host".to_string(),
         };
-        let err = stage_archive_with_options(
-            &m,
-            TargetArch::Wasm32,
-            4,
-            &empty_cache,
-            &archive,
-            &opts,
-        )
-        .unwrap_err();
+        let err =
+            stage_archive_with_options(&m, TargetArch::Wasm32, 4, &empty_cache, &archive, &opts)
+                .unwrap_err();
         assert!(
             err.contains("contains no files") || err.contains("[outputs]"),
             "got: {err}"

@@ -114,10 +114,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 return Err(format!(
                     "package {:?}: archive {:?} declares version {:?}, but a sibling \
                      arch already declared {:?} — every arch of a package must agree on version",
-                    parsed_archive.name,
-                    parsed_archive.filename,
-                    parsed_archive.version,
-                    prev,
+                    parsed_archive.name, parsed_archive.filename, parsed_archive.version, prev,
                 ));
             }
         } else {
@@ -128,10 +125,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 return Err(format!(
                     "package {:?}: archive {:?} declares revision {}, but a sibling \
                      arch already declared revision {} — every arch must agree on revision",
-                    parsed_archive.name,
-                    parsed_archive.filename,
-                    parsed_archive.revision,
-                    prev,
+                    parsed_archive.name, parsed_archive.filename, parsed_archive.revision, prev,
                 ));
             }
         } else {
@@ -152,8 +146,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     }
 
     if let Some(parent) = parsed.out.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     fs::write(&parsed.out, idx.write())
         .map_err(|e| format!("write {}: {e}", parsed.out.display()))?;
@@ -179,8 +172,8 @@ struct ArchiveMetadata {
 /// `DepsManifest::parse_archived`, and return the
 /// `[compatibility]` fields the ledger needs.
 fn read_archive_metadata(bytes: &[u8]) -> Result<ArchiveMetadata, String> {
-    let decoder = zstd::stream::read::Decoder::new(bytes)
-        .map_err(|e| format!("zstd decode: {e}"))?;
+    let decoder =
+        zstd::stream::read::Decoder::new(bytes).map_err(|e| format!("zstd decode: {e}"))?;
     let mut tar = tar::Archive::new(decoder);
     let entries = tar.entries().map_err(|e| format!("tar entries: {e}"))?;
     for entry in entries {
@@ -275,9 +268,9 @@ fn collect_archives(
 /// Lenient on `<name>` and `<version>` (each can contain `-`); rigorous
 /// on the trailing 4 segments which have a fixed shape.
 fn parse_archive_filename(name: &str) -> Result<ParsedArchive, String> {
-    let stem = name.strip_suffix(".tar.zst").ok_or_else(|| {
-        format!("filename {name:?} does not have .tar.zst suffix")
-    })?;
+    let stem = name
+        .strip_suffix(".tar.zst")
+        .ok_or_else(|| format!("filename {name:?} does not have .tar.zst suffix"))?;
     let parts: Vec<&str> = stem.split('-').collect();
     // Need at least: name, version, rev<N>, abi<N>, arch, short → 6 parts.
     if parts.len() < 6 {
@@ -299,7 +292,7 @@ fn parse_archive_filename(name: &str) -> Result<ParsedArchive, String> {
         other => {
             return Err(format!(
                 "filename {name:?}: arch segment {other:?} must be wasm32 or wasm64"
-            ))
+            ));
         }
     };
     let abi_seg = parts[parts.len() - 3];
@@ -350,7 +343,9 @@ fn parse_archive_filename(name: &str) -> Result<ParsedArchive, String> {
 }
 
 fn is_short_sha(s: &str) -> bool {
-    s.len() == 8 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    s.len() == 8
+        && s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 /// Hand-rolled CLI parser. Mirrors the shape of `archive_stage_cli`'s
@@ -364,9 +359,10 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
-        let take_value = |it: &mut std::vec::IntoIter<String>, name: &str| -> Result<String, String> {
-            it.next().ok_or_else(|| format!("{name} requires a value"))
-        };
+        let take_value =
+            |it: &mut std::vec::IntoIter<String>, name: &str| -> Result<String, String> {
+                it.next().ok_or_else(|| format!("{name} requires a value"))
+            };
         if let Some(v) = a.strip_prefix("--abi=") {
             assign_once(
                 &mut abi,
@@ -419,8 +415,7 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
 
     let abi = abi.ok_or("build-index: --abi <u32> is required")?;
     let generator = generator.ok_or("build-index: --generator <string> is required")?;
-    let archives_dir =
-        archives_dir.ok_or("build-index: --archives-dir <dir> is required")?;
+    let archives_dir = archives_dir.ok_or("build-index: --archives-dir <dir> is required")?;
     let out = out.ok_or("build-index: --out <path> is required")?;
     Ok(Args {
         abi,
@@ -543,10 +538,8 @@ cache_key_sha = "{cache_key_sha}"
 build_timestamp = "2026-05-05T12:34:56Z"
 "#
         );
-        let bytes = crate::remote_fetch::build_test_archive(
-            &manifest_text,
-            &[("lib/out.a", b"PAYLOAD")],
-        );
+        let bytes =
+            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"PAYLOAD")]);
         let fname = format!("{name}-{version}-rev{rev}-abi{abi}-{arch}-{short}.tar.zst");
         let path = dir.join(&fname);
         fs::write(&path, &bytes).unwrap();
@@ -566,10 +559,46 @@ build_timestamp = "2026-05-05T12:34:56Z"
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm32", "11111111", &"a".repeat(64));
-        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm64", "22222222", &"b".repeat(64));
-        write_real_archive(&archives, "beta", "2.0.0", 1, 6, "wasm32", "33333333", &"c".repeat(64));
-        write_real_archive(&archives, "beta", "2.0.0", 1, 6, "wasm64", "44444444", &"d".repeat(64));
+        write_real_archive(
+            &archives,
+            "alpha",
+            "1.0.0",
+            1,
+            6,
+            "wasm32",
+            "11111111",
+            &"a".repeat(64),
+        );
+        write_real_archive(
+            &archives,
+            "alpha",
+            "1.0.0",
+            1,
+            6,
+            "wasm64",
+            "22222222",
+            &"b".repeat(64),
+        );
+        write_real_archive(
+            &archives,
+            "beta",
+            "2.0.0",
+            1,
+            6,
+            "wasm32",
+            "33333333",
+            &"c".repeat(64),
+        );
+        write_real_archive(
+            &archives,
+            "beta",
+            "2.0.0",
+            1,
+            6,
+            "wasm64",
+            "44444444",
+            &"d".repeat(64),
+        );
 
         super::run(vec![
             "--abi".into(),
@@ -599,7 +628,10 @@ build_timestamp = "2026-05-05T12:34:56Z"
         // Both packages present, alphabetical order.
         let alpha_idx = text.find("name = \"alpha\"").expect("alpha header missing");
         let beta_idx = text.find("name = \"beta\"").expect("beta header missing");
-        assert!(alpha_idx < beta_idx, "alpha must precede beta, got:\n{text}");
+        assert!(
+            alpha_idx < beta_idx,
+            "alpha must precede beta, got:\n{text}"
+        );
         // Each package has both arches.
         assert_eq!(text.matches("[packages.binary.wasm32]").count(), 2);
         assert_eq!(text.matches("[packages.binary.wasm64]").count(), 2);
@@ -651,10 +683,12 @@ build_timestamp = "2026-05-05T12:34:56Z"
 
         let text = read_index(&out);
         assert!(text.contains("abi_version = 6"), "got:\n{text}");
-        assert!(!text.contains("[[packages]]"), "no packages expected, got:\n{text}");
+        assert!(
+            !text.contains("[[packages]]"),
+            "no packages expected, got:\n{text}"
+        );
         // Round-trip through IndexToml's parser to confirm.
-        let _ = crate::index_toml::IndexToml::parse(&text)
-            .expect("empty index.toml must parse");
+        let _ = crate::index_toml::IndexToml::parse(&text).expect("empty index.toml must parse");
     }
 
     /// A package present only in wasm32 → only the wasm32 block.
@@ -665,7 +699,16 @@ build_timestamp = "2026-05-05T12:34:56Z"
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_real_archive(&archives, "solo", "1.0.0", 1, 6, "wasm32", "aaaaaaaa", &"e".repeat(64));
+        write_real_archive(
+            &archives,
+            "solo",
+            "1.0.0",
+            1,
+            6,
+            "wasm32",
+            "aaaaaaaa",
+            &"e".repeat(64),
+        );
 
         super::run(vec![
             "--abi".into(),
@@ -702,9 +745,36 @@ build_timestamp = "2026-05-05T12:34:56Z"
         let archives = dir.join("archives");
         fs::create_dir_all(&archives).unwrap();
 
-        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm32", "11111111", &"a".repeat(64));
-        write_real_archive(&archives, "alpha", "1.0.0", 1, 6, "wasm64", "22222222", &"b".repeat(64));
-        write_real_archive(&archives, "beta", "2.3.4", 7, 6, "wasm32", "33333333", &"c".repeat(64));
+        write_real_archive(
+            &archives,
+            "alpha",
+            "1.0.0",
+            1,
+            6,
+            "wasm32",
+            "11111111",
+            &"a".repeat(64),
+        );
+        write_real_archive(
+            &archives,
+            "alpha",
+            "1.0.0",
+            1,
+            6,
+            "wasm64",
+            "22222222",
+            &"b".repeat(64),
+        );
+        write_real_archive(
+            &archives,
+            "beta",
+            "2.3.4",
+            7,
+            6,
+            "wasm32",
+            "33333333",
+            &"c".repeat(64),
+        );
 
         let common = |out: PathBuf| {
             super::run(vec![
@@ -755,8 +825,26 @@ build_timestamp = "2026-05-05T12:34:56Z"
         fs::create_dir_all(&archives).unwrap();
         let out = dir.join("index.toml");
 
-        write_real_archive(&archives, "x", "1.0.0", 1, 6, "wasm32", "11111111", &"a".repeat(64));
-        write_real_archive(&archives, "x", "1.0.1", 1, 6, "wasm64", "22222222", &"b".repeat(64));
+        write_real_archive(
+            &archives,
+            "x",
+            "1.0.0",
+            1,
+            6,
+            "wasm32",
+            "11111111",
+            &"a".repeat(64),
+        );
+        write_real_archive(
+            &archives,
+            "x",
+            "1.0.1",
+            1,
+            6,
+            "wasm64",
+            "22222222",
+            &"b".repeat(64),
+        );
 
         let err = super::run(vec![
             "--abi".into(),
@@ -785,7 +873,16 @@ build_timestamp = "2026-05-05T12:34:56Z"
         // Real archive so collect_archives gets past the read step
         // and into the abi-check (which happens before metadata
         // extraction).
-        write_real_archive(&archives, "x", "1.0.0", 1, 5, "wasm32", "11111111", &"a".repeat(64));
+        write_real_archive(
+            &archives,
+            "x",
+            "1.0.0",
+            1,
+            5,
+            "wasm32",
+            "11111111",
+            &"a".repeat(64),
+        );
 
         let err = super::run(vec![
             "--abi".into(),
@@ -798,7 +895,10 @@ build_timestamp = "2026-05-05T12:34:56Z"
             out.display().to_string(),
         ])
         .expect_err("abi mismatch must error");
-        assert!(err.contains("abi5") && err.contains("--abi is 6"), "got: {err}");
+        assert!(
+            err.contains("abi5") && err.contains("--abi is 6"),
+            "got: {err}"
+        );
     }
 
     /// Filename parser: rejects bad shapes with messages that name the
@@ -814,18 +914,15 @@ build_timestamp = "2026-05-05T12:34:56Z"
         assert!(err.contains("too few"), "got: {err}");
 
         // Bad short_sha (uppercase).
-        let err =
-            parse_archive_filename("x-1.0.0-rev1-abi6-wasm32-AAAAAAAA.tar.zst").unwrap_err();
+        let err = parse_archive_filename("x-1.0.0-rev1-abi6-wasm32-AAAAAAAA.tar.zst").unwrap_err();
         assert!(err.contains("8 lowercase hex"), "got: {err}");
 
         // Bad arch.
-        let err =
-            parse_archive_filename("x-1.0.0-rev1-abi6-armv7-aaaaaaaa.tar.zst").unwrap_err();
+        let err = parse_archive_filename("x-1.0.0-rev1-abi6-armv7-aaaaaaaa.tar.zst").unwrap_err();
         assert!(err.contains("wasm32 or wasm64"), "got: {err}");
 
         // Bad abi prefix.
-        let err =
-            parse_archive_filename("x-1.0.0-rev1-foo6-wasm32-aaaaaaaa.tar.zst").unwrap_err();
+        let err = parse_archive_filename("x-1.0.0-rev1-foo6-wasm32-aaaaaaaa.tar.zst").unwrap_err();
         assert!(err.contains("abi<N>"), "got: {err}");
     }
 
@@ -834,10 +931,8 @@ build_timestamp = "2026-05-05T12:34:56Z"
     /// name/version boundary.
     #[test]
     fn filename_parser_handles_multi_segment_names() {
-        let p = parse_archive_filename(
-            "mariadb-test-10.5.27-rev3-abi6-wasm32-abc12345.tar.zst",
-        )
-        .unwrap();
+        let p = parse_archive_filename("mariadb-test-10.5.27-rev3-abi6-wasm32-abc12345.tar.zst")
+            .unwrap();
         assert_eq!(p.name, "mariadb-test");
         assert_eq!(p.version, "10.5.27");
         assert_eq!(p.revision, 3);

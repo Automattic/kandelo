@@ -207,11 +207,7 @@ mod tests {
         }
     }
 
-    fn write_synthetic_tool(
-        dir: &std::path::Path,
-        name: &str,
-        body: &str,
-    ) -> std::path::PathBuf {
+    fn write_synthetic_tool(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, body).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();

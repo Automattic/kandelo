@@ -154,6 +154,8 @@ has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/exa
 has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/python.vfs.zst" ]; }
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/perl.vfs.zst" ]; }
 has_shell_vfs()     { pkg_has_output shell shell.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs.zst" ]; }
+has_node()          { pkg_has_output node node.wasm || [ -f "$REPO_ROOT/examples/libs/quickjs/bin/node.wasm" ]; }
+has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/node-vfs.vfs.zst" ]; }
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
@@ -202,8 +204,7 @@ need_kernel() {
         step "Building kernel"
         cd "$REPO_ROOT"
         cargo build --release -p wasm-posix-kernel \
-            -Z build-std=core,alloc \
-            -Z build-std-features=panic_immediate_abort
+            -Z build-std=core,alloc
         # Mirror what build.sh does: copy to local-binaries/ (the
         # canonical override tree the binary-resolver checks). The
         # host/wasm/ copy is preserved as a legacy fallback for older
@@ -613,6 +614,31 @@ build_perl_vfs() {
     else
         info "Perl VFS image"
     fi
+}
+
+build_node() {
+    if has_node; then
+        info "node"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Building node.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- build-deps resolve node)
+    info "node built"
+}
+
+build_node_vfs() {
+    if has_node_vfs; then
+        info "Node VFS image"
+        return
+    fi
+    build_node
+    step "Building Node VFS image"
+    bash "$REPO_ROOT/examples/libs/node-vfs/build-node-vfs.sh"
+    info "Node VFS image built"
 }
 
 build_vim_zip() {
@@ -1277,6 +1303,8 @@ build_target() {
         python-vfs) build_python_vfs ;;
         perl-vfs)   build_perl_vfs ;;
         shell-vfs)  build_shell_vfs ;;
+        node)       build_node ;;
+        node-vfs)   build_node_vfs ;;
         wordpress)  build_wordpress ;;
         wp-vfs)     build_wp_vfs ;;
         erlang)     build_erlang ;;
@@ -1329,7 +1357,7 @@ build_target() {
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs redis redis-vfs cpython python-vfs perl perl-vfs ruby shell-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs redis redis-vfs cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1379,6 +1407,7 @@ build_all() {
     build_perl_vfs
     build_ruby
     build_shell_vfs
+    build_node_vfs
     build_wordpress
     build_wp_vfs
     build_lamp_vfs
@@ -1499,6 +1528,14 @@ clean_target() {
         shell-vfs)
             rm -f "$REPO_ROOT/examples/browser/public/shell.vfs.zst"
             warn "Cleaned Shell VFS image" ;;
+        node)
+            rm -rf "$REPO_ROOT/examples/libs/quickjs/bin" \
+                   "$REPO_ROOT/local-binaries/programs/wasm32/node.wasm"
+            warn "Cleaned node" ;;
+        node-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/node-vfs.vfs.zst" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/node-vfs.vfs.zst"
+            warn "Cleaned Node VFS image" ;;
         wordpress)
             rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
@@ -1671,7 +1708,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -1978,6 +2015,8 @@ cmd_list() {
     echo "  python-vfs  Python stdlib VFS image               $(has_python_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl-vfs    Perl stdlib VFS image                 $(has_perl_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  shell-vfs   Shell environment VFS image           $(has_shell_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  node        QuickJS-NG Node compatibility binary  $(has_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  node-vfs    Node + npm VFS image                  $(has_node_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

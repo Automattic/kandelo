@@ -79,7 +79,7 @@ pub struct OpenFileDesc {
     pub offset: i64,
     pub ref_count: u32,
     pub owner_pid: u32,
-    pub path: Vec<u8>,  // resolved absolute path
+    pub path: Vec<u8>, // resolved absolute path
     /// Host directory handle for getdents64 iteration (lazily opened).
     /// -1 means not yet opened, -2 means exhausted (EOF).
     pub dir_host_handle: i64,
@@ -103,7 +103,13 @@ impl OfdTable {
 
     /// Create a new open file description. Returns the OFD index.
     /// Reuses freed slots when available.
-    pub fn create(&mut self, file_type: FileType, status_flags: u32, host_handle: i64, path: Vec<u8>) -> usize {
+    pub fn create(
+        &mut self,
+        file_type: FileType,
+        status_flags: u32,
+        host_handle: i64,
+        path: Vec<u8>,
+    ) -> usize {
         let ofd = OpenFileDesc {
             file_type,
             status_flags,
@@ -168,7 +174,9 @@ impl OfdTable {
 
     /// Iterate over all open file descriptions with their indices.
     pub fn iter(&self) -> impl Iterator<Item = (usize, &OpenFileDesc)> + '_ {
-        self.entries.iter().enumerate()
+        self.entries
+            .iter()
+            .enumerate()
             .filter_map(|(i, e)| e.as_ref().map(|ofd| (i, ofd)))
     }
 
@@ -232,7 +240,10 @@ mod tests {
         // dec_ref -> 0, freed
         let freed = table.dec_ref(idx);
         assert!(freed);
-        assert!(table.get(idx).is_none(), "OFD should be freed when ref_count hits 0");
+        assert!(
+            table.get(idx).is_none(),
+            "OFD should be freed when ref_count hits 0"
+        );
     }
 
     #[test]
@@ -337,8 +348,8 @@ mod tests {
                 owner_pid: ofd.owner_pid,
                 path: ofd.path.clone(),
                 dir_host_handle: -1,
-            dir_synth_state: 0,
-            dir_entry_offset: 0,
+                dir_synth_state: 0,
+                dir_entry_offset: 0,
             });
         }
 

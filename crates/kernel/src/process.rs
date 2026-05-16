@@ -15,8 +15,8 @@ use crate::terminal::TerminalState;
 /// A handle to an open directory stream for readdir iteration.
 pub struct DirStream {
     pub host_handle: i64,
-    pub path: Vec<u8>,     // resolved directory path (for rewinddir)
-    pub position: u64,     // entry counter (for telldir/seekdir)
+    pub path: Vec<u8>, // resolved directory path (for rewinddir)
+    pub position: u64, // entry counter (for telldir/seekdir)
     /// Synthetic "." / ".." state: 0 = emit ".", 1 = emit "..", 2 = host entries
     pub synth_dot_state: u8,
 }
@@ -42,7 +42,11 @@ pub trait HostIO {
     fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno>;
     fn host_access(&mut self, path: &[u8], amode: u32) -> Result<(), Errno>;
     fn host_opendir(&mut self, path: &[u8]) -> Result<i64, Errno>;
-    fn host_readdir(&mut self, handle: i64, name_buf: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno>;
+    fn host_readdir(
+        &mut self,
+        handle: i64,
+        name_buf: &mut [u8],
+    ) -> Result<Option<(u64, u32, usize)>, Errno>;
     fn host_closedir(&mut self, handle: i64) -> Result<(), Errno>;
     fn host_clock_gettime(&mut self, clock_id: u32) -> Result<(i64, i64), Errno>;
     fn host_nanosleep(&mut self, seconds: i64, nanoseconds: i64) -> Result<(), Errno>;
@@ -58,7 +62,13 @@ pub trait HostIO {
     /// `signo` is the signal to deliver on expiry.
     /// `value_ms` is the initial delay in milliseconds (0 = disarm).
     /// `interval_ms` is the repeat interval in milliseconds (0 = one-shot).
-    fn host_set_posix_timer(&mut self, timer_id: i32, signo: i32, value_ms: i64, interval_ms: i64) -> Result<(), Errno>;
+    fn host_set_posix_timer(
+        &mut self,
+        timer_id: i32,
+        signo: i32,
+        value_ms: i64,
+        interval_ms: i64,
+    ) -> Result<(), Errno>;
     /// Block until a signal is delivered. Returns the signal number.
     fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno>;
     /// Ask the host to invoke a user-space signal handler.
@@ -67,21 +77,50 @@ pub trait HostIO {
     /// `sa_flags` is the sigaction flags (SA_SIGINFO, SA_RESTART, etc.)
     /// When SA_SIGINFO is set, the host should call handler(signum, siginfo_ptr, 0)
     /// instead of handler(signum).
-    fn host_call_signal_handler(&mut self, handler_index: u32, signum: u32, sa_flags: u32) -> Result<(), Errno>;
+    fn host_call_signal_handler(
+        &mut self,
+        handler_index: u32,
+        signum: u32,
+        sa_flags: u32,
+    ) -> Result<(), Errno>;
     fn host_getrandom(&mut self, buf: &mut [u8]) -> Result<usize, Errno>;
-    fn host_utimensat(&mut self, path: &[u8], atime_sec: i64, atime_nsec: i64, mtime_sec: i64, mtime_nsec: i64) -> Result<(), Errno>;
+    fn host_utimensat(
+        &mut self,
+        path: &[u8],
+        atime_sec: i64,
+        atime_nsec: i64,
+        mtime_sec: i64,
+        mtime_nsec: i64,
+    ) -> Result<(), Errno>;
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno>;
+    /// Query the status of a host-delegated connect that was previously
+    /// kicked off via `host_net_connect`. Returns `Ok(())` once the TCP
+    /// handshake completed successfully, `Err(EAGAIN)` while still pending,
+    /// and `Err(<other>)` if the connect failed (e.g., ECONNREFUSED).
+    fn host_net_connect_status(&mut self, handle: i32) -> Result<(), Errno>;
     fn host_net_send(&mut self, handle: i32, data: &[u8], flags: u32) -> Result<usize, Errno>;
-    fn host_net_recv(&mut self, handle: i32, len: u32, flags: u32, buf: &mut [u8]) -> Result<usize, Errno>;
+    fn host_net_recv(
+        &mut self,
+        handle: i32,
+        len: u32,
+        flags: u32,
+        buf: &mut [u8],
+    ) -> Result<usize, Errno>;
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     /// Notify the host that an AF_INET socket is now listening, so the host
     /// can open a real TCP server on the given port.
     fn host_net_listen(&mut self, fd: i32, port: u16, addr: &[u8; 4]) -> Result<(), Errno>;
     fn host_getaddrinfo(&mut self, name: &[u8], result: &mut [u8]) -> Result<usize, Errno>;
     fn host_fcntl_lock(
-        &mut self, path: &[u8], pid: u32, cmd: u32, lock_type: u32,
-        start: i64, len: i64, result_buf: &mut [u8],
+        &mut self,
+        path: &[u8],
+        pid: u32,
+        cmd: u32,
+        lock_type: u32,
+        start: i64,
+        len: i64,
+        result_buf: &mut [u8],
     ) -> Result<(), Errno>;
     /// Request the host to fork the current process.
     /// Returns child PID (>= 0) on success, or negative errno on error.
@@ -89,19 +128,37 @@ pub trait HostIO {
     /// Futex wait: block if `*addr == expected`, with optional timeout in nanoseconds.
     /// timeout_ns < 0 means infinite wait.
     /// Returns 0 on wake, negative errno on error.
-    fn host_futex_wait(&mut self, addr: usize, expected: u32, timeout_ns: i64) -> Result<i32, Errno>;
+    fn host_futex_wait(
+        &mut self,
+        addr: usize,
+        expected: u32,
+        timeout_ns: i64,
+    ) -> Result<i32, Errno>;
     /// Futex wake: wake up to `count` waiters on addr. Returns number woken.
     fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno>;
     /// Clone: spawn a new thread worker. Returns child TID on success.
-    fn host_clone(&mut self, fn_ptr: usize, arg: usize, stack_ptr: usize, tls_ptr: usize, ctid_ptr: usize) -> Result<i32, Errno>;
+    fn host_clone(
+        &mut self,
+        fn_ptr: usize,
+        arg: usize,
+        stack_ptr: usize,
+        tls_ptr: usize,
+        ctid_ptr: usize,
+    ) -> Result<i32, Errno>;
     /// Notify the host that process `pid` has mapped its `/dev/fb0`
     /// framebuffer at `[addr, addr+len)` within its wasm `Memory`. The host
     /// should mirror that byte range to whatever display surface it owns.
     /// `fmt` is reserved for future format negotiation; currently always
     /// BGRA32 (0).
     fn bind_framebuffer(
-        &mut self, pid: i32, addr: usize, len: usize,
-        w: u32, h: u32, stride: u32, fmt: u32,
+        &mut self,
+        pid: i32,
+        addr: usize,
+        len: usize,
+        w: u32,
+        h: u32,
+        stride: u32,
+        fmt: u32,
     );
     /// Notify the host that the framebuffer for `pid` is gone (`munmap`,
     /// process exit, or exec). Idempotent: calling unbind on a pid with no
@@ -145,10 +202,10 @@ pub struct FbBinding {
 #[derive(Debug, Clone)]
 pub struct ThreadInfo {
     pub tid: u32,
-    pub ctid_ptr: usize,    // CLONE_CHILD_CLEARTID address (futex wake on exit)
+    pub ctid_ptr: usize, // CLONE_CHILD_CLEARTID address (futex wake on exit)
     pub stack_ptr: usize,
     pub tls_ptr: usize,
-    pub tidptr: usize,       // set_tid_address pointer
+    pub tidptr: usize, // set_tid_address pointer
     /// Per-thread signal state: directed-pending set + blocked mask + RT queue.
     /// Handlers remain process-wide and live on [`Process::signals`].
     pub signals: PerThreadSignalState,
@@ -190,7 +247,9 @@ pub struct EpollInstance {
 
 impl EpollInstance {
     pub fn new() -> Self {
-        EpollInstance { interests: Vec::new() }
+        EpollInstance {
+            interests: Vec::new(),
+        }
     }
 }
 
@@ -235,9 +294,19 @@ pub struct SignalFdState {
 /// File descriptor action to apply in a fork child before exec.
 #[derive(Debug, Clone)]
 pub enum FdAction {
-    Dup2 { old_fd: i32, new_fd: i32 },
-    Close { fd: i32 },
-    Open { fd: i32, path: Vec<u8>, flags: i32, mode: i32 },
+    Dup2 {
+        old_fd: i32,
+        new_fd: i32,
+    },
+    Close {
+        fd: i32,
+    },
+    Open {
+        fd: i32,
+        path: Vec<u8>,
+        flags: i32,
+        mode: i32,
+    },
 }
 
 /// Per-process kernel state: file descriptor table, OFD table, pipes, cwd, and directory streams.
@@ -352,7 +421,7 @@ impl Process {
         fd_table.preopen_stdio(); // fds 0,1,2 → OFD refs 0,1,2
 
         let mut rlimits = [[u64::MAX; 2]; 16]; // Default: infinity for all
-        rlimits[7] = [1024, 4096];             // RLIMIT_NOFILE: soft=1024, hard=4096
+        rlimits[7] = [1024, 4096]; // RLIMIT_NOFILE: soft=1024, hard=4096
         rlimits[3] = [8 * 1024 * 1024, u64::MAX]; // RLIMIT_STACK: soft=8MB, hard=infinity
 
         Process {
@@ -537,9 +606,7 @@ impl Process {
         if self.is_main_thread(tid) {
             self.signals.pending
         } else {
-            let thread_pending = self.get_thread(tid)
-                .map(|t| t.signals.pending)
-                .unwrap_or(0);
+            let thread_pending = self.get_thread(tid).map(|t| t.signals.pending).unwrap_or(0);
             self.signals.pending | thread_pending
         }
     }
@@ -555,7 +622,8 @@ impl Process {
         if self.is_main_thread(tid) {
             shared
         } else {
-            let thread_bit = self.get_thread(tid)
+            let thread_bit = self
+                .get_thread(tid)
                 .map(|t| (t.signals.pending & bit) != 0)
                 .unwrap_or(false);
             shared || thread_bit
@@ -596,7 +664,8 @@ impl Process {
         if self.is_main_thread(tid) {
             self.sigsuspend_saved_mask
         } else {
-            self.get_thread(tid).and_then(|t| t.signals.sigsuspend_saved_mask)
+            self.get_thread(tid)
+                .and_then(|t| t.signals.sigsuspend_saved_mask)
         }
     }
 
@@ -653,54 +722,203 @@ pub(crate) mod test_host {
     pub struct NoopHost;
 
     impl HostIO for NoopHost {
-        fn host_open(&mut self, _path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> { Err(Errno::ENOSYS) }
-        fn host_close(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
-        fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
-        fn host_write(&mut self, _h: i64, b: &[u8]) -> Result<usize, Errno> { Ok(b.len()) }
-        fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> { Ok(0) }
-        fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> { Err(Errno::ENOSYS) }
-        fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> { Err(Errno::ENOENT) }
-        fn host_lstat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> { Err(Errno::ENOENT) }
-        fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_link(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_symlink(&mut self, _t: &[u8], _l: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_readlink(&mut self, _p: &[u8], _b: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOSYS) }
-        fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_access(&mut self, _p: &[u8], _a: u32) -> Result<(), Errno> { Err(Errno::ENOENT) }
-        fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> { Err(Errno::ENOSYS) }
-        fn host_readdir(&mut self, _h: i64, _b: &mut [u8]) -> Result<Option<(u64, u32, usize)>, Errno> { Ok(None) }
-        fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
-        fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> { Ok((0, 0)) }
-        fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> { Ok(()) }
-        fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> { Ok(()) }
-        fn host_fsync(&mut self, _h: i64) -> Result<(), Errno> { Ok(()) }
-        fn host_fchmod(&mut self, _h: i64, _m: u32) -> Result<(), Errno> { Ok(()) }
-        fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> { Ok(()) }
-        fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> { Ok(()) }
-        fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> { Err(Errno::ENOSYS) }
-        fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> { Ok(()) }
-        fn host_set_posix_timer(&mut self, _t: i32, _s: i32, _v: i64, _i: i64) -> Result<(), Errno> { Ok(()) }
-        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> { Err(Errno::EINTR) }
-        fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> { Ok(()) }
-        fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> { for x in b.iter_mut() { *x = 0; } Ok(b.len()) }
-        fn host_utimensat(&mut self, _p: &[u8], _as: i64, _an: i64, _ms: i64, _mn: i64) -> Result<(), Errno> { Ok(()) }
-        fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> { Err(Errno::ECHILD) }
-        fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> { Ok(()) }
-        fn host_net_send(&mut self, _h: i32, d: &[u8], _f: u32) -> Result<usize, Errno> { Ok(d.len()) }
-        fn host_net_recv(&mut self, _h: i32, _l: u32, _f: u32, _b: &mut [u8]) -> Result<usize, Errno> { Ok(0) }
-        fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> { Ok(()) }
-        fn host_net_listen(&mut self, _f: i32, _p: u16, _a: &[u8; 4]) -> Result<(), Errno> { Ok(()) }
-        fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> { Err(Errno::ENOENT) }
-        fn host_fcntl_lock(&mut self, _p: &[u8], _pid: u32, _c: u32, _t: u32, _s: i64, _l: i64, _r: &mut [u8]) -> Result<(), Errno> { Ok(()) }
-        fn host_fork(&self) -> i32 { -(Errno::ENOSYS as i32) }
-        fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> { Err(Errno::EAGAIN) }
-        fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> { Ok(0) }
-        fn host_clone(&mut self, _f: usize, _a: usize, _s: usize, _t: usize, _c: usize) -> Result<i32, Errno> { Err(Errno::ENOSYS) }
-        fn bind_framebuffer(&mut self, _p: i32, _a: usize, _l: usize, _w: u32, _h: u32, _s: u32, _f: u32) {}
+        fn host_open(&mut self, _path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_read(&mut self, _h: i64, _b: &mut [u8]) -> Result<usize, Errno> {
+            Ok(0)
+        }
+        fn host_write(&mut self, _h: i64, b: &[u8]) -> Result<usize, Errno> {
+            Ok(b.len())
+        }
+        fn host_seek(&mut self, _h: i64, _o: i64, _w: u32) -> Result<i64, Errno> {
+            Ok(0)
+        }
+        fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
+            Err(Errno::ENOENT)
+        }
+        fn host_lstat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
+            Err(Errno::ENOENT)
+        }
+        fn host_mkdir(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_rmdir(&mut self, _p: &[u8]) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_unlink(&mut self, _p: &[u8]) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_rename(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_link(&mut self, _o: &[u8], _n: &[u8]) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_symlink(&mut self, _t: &[u8], _l: &[u8]) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_readlink(&mut self, _p: &[u8], _b: &mut [u8]) -> Result<usize, Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_chmod(&mut self, _p: &[u8], _m: u32) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_chown(&mut self, _p: &[u8], _u: u32, _g: u32) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_access(&mut self, _p: &[u8], _a: u32) -> Result<(), Errno> {
+            Err(Errno::ENOENT)
+        }
+        fn host_opendir(&mut self, _p: &[u8]) -> Result<i64, Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_readdir(
+            &mut self,
+            _h: i64,
+            _b: &mut [u8],
+        ) -> Result<Option<(u64, u32, usize)>, Errno> {
+            Ok(None)
+        }
+        fn host_closedir(&mut self, _h: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_clock_gettime(&mut self, _c: u32) -> Result<(i64, i64), Errno> {
+            Ok((0, 0))
+        }
+        fn host_nanosleep(&mut self, _s: i64, _n: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_ftruncate(&mut self, _h: i64, _l: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_fsync(&mut self, _h: i64) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_fchmod(&mut self, _h: i64, _m: u32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_fchown(&mut self, _h: i64, _u: u32, _g: u32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_kill(&mut self, _p: i32, _s: u32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_exec(&mut self, _p: &[u8]) -> Result<(), Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn host_set_alarm(&mut self, _s: u32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_set_posix_timer(
+            &mut self,
+            _t: i32,
+            _s: i32,
+            _v: i64,
+            _i: i64,
+        ) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_sigsuspend_wait(&mut self) -> Result<u32, Errno> {
+            Err(Errno::EINTR)
+        }
+        fn host_call_signal_handler(&mut self, _h: u32, _s: u32, _f: u32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
+            for x in b.iter_mut() {
+                *x = 0;
+            }
+            Ok(b.len())
+        }
+        fn host_utimensat(
+            &mut self,
+            _p: &[u8],
+            _as: i64,
+            _an: i64,
+            _ms: i64,
+            _mn: i64,
+        ) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
+            Err(Errno::ECHILD)
+        }
+        fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_net_connect_status(&mut self, _h: i32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_net_send(&mut self, _h: i32, d: &[u8], _f: u32) -> Result<usize, Errno> {
+            Ok(d.len())
+        }
+        fn host_net_recv(
+            &mut self,
+            _h: i32,
+            _l: u32,
+            _f: u32,
+            _b: &mut [u8],
+        ) -> Result<usize, Errno> {
+            Ok(0)
+        }
+        fn host_net_close(&mut self, _h: i32) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_net_listen(&mut self, _f: i32, _p: u16, _a: &[u8; 4]) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
+            Err(Errno::ENOENT)
+        }
+        fn host_fcntl_lock(
+            &mut self,
+            _p: &[u8],
+            _pid: u32,
+            _c: u32,
+            _t: u32,
+            _s: i64,
+            _l: i64,
+            _r: &mut [u8],
+        ) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn host_fork(&self) -> i32 {
+            -(Errno::ENOSYS as i32)
+        }
+        fn host_futex_wait(&mut self, _a: usize, _e: u32, _t: i64) -> Result<i32, Errno> {
+            Err(Errno::EAGAIN)
+        }
+        fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
+            Ok(0)
+        }
+        fn host_clone(
+            &mut self,
+            _f: usize,
+            _a: usize,
+            _s: usize,
+            _t: usize,
+            _c: usize,
+        ) -> Result<i32, Errno> {
+            Err(Errno::ENOSYS)
+        }
+        fn bind_framebuffer(
+            &mut self,
+            _p: i32,
+            _a: usize,
+            _l: usize,
+            _w: u32,
+            _h: u32,
+            _s: u32,
+            _f: u32,
+        ) {
+        }
         fn unbind_framebuffer(&mut self, _p: i32) {}
         fn fb_write(&mut self, _p: i32, _o: usize, _b: &[u8]) {}
     }
@@ -758,7 +976,7 @@ mod tests {
         // spawned a child would see the backlog free'd when the child
         // exited and called dec_ref one too many times.
         use crate::process_table::ProcessTable;
-        use crate::socket::{shared_listener_backlog_table, SocketDomain, SocketInfo, SocketType};
+        use crate::socket::{SocketDomain, SocketInfo, SocketType, shared_listener_backlog_table};
         use crate::spawn::SpawnAttrs;
 
         let mut table = ProcessTable::new();
@@ -781,7 +999,14 @@ mod tests {
 
         let mut host = test_host::NoopHost;
         let _child_pid = table
-            .spawn_child(200, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child(
+                200,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
             .expect("spawn_child");
 
         let after_spawn = unsafe { shared_listener_backlog_table().entries[backlog_idx].ref_count };
@@ -806,7 +1031,7 @@ mod tests {
         // would kill the other's view of the connection. Now we refcount
         // host_net_handle the same way we refcount file host handles.
         use crate::process_table::ProcessTable;
-        use crate::socket::{host_net_handle_ref_count, SocketDomain, SocketInfo, SocketType};
+        use crate::socket::{SocketDomain, SocketInfo, SocketType, host_net_handle_ref_count};
         use crate::spawn::SpawnAttrs;
 
         let mut table = ProcessTable::new();
@@ -817,12 +1042,7 @@ mod tests {
         const HANDLE: i32 = 42;
         let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         sock.host_net_handle = Some(HANDLE);
-        table
-            .processes
-            .get_mut(&300)
-            .unwrap()
-            .sockets
-            .alloc(sock);
+        table.processes.get_mut(&300).unwrap().sockets.alloc(sock);
 
         // The handle isn't in the cross-process table yet — single-owner.
         assert_eq!(host_net_handle_ref_count(HANDLE), 0);
@@ -831,7 +1051,14 @@ mod tests {
         // (child) = 2".
         let mut host = test_host::NoopHost;
         let _child = table
-            .spawn_child(300, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child(
+                300,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
             .expect("spawn_child");
         assert_eq!(
             host_net_handle_ref_count(HANDLE),
@@ -877,12 +1104,38 @@ mod tests {
         let tcp_idx = parent.sockets.alloc(tcp);
 
         // Sanity: parent still has the consume-once data.
-        assert_eq!(table.get(400).unwrap().sockets.get(udp_idx).unwrap().dgram_queue.len(), 1);
-        assert_eq!(table.get(400).unwrap().sockets.get(tcp_idx).unwrap().oob_byte, Some(0xAB));
+        assert_eq!(
+            table
+                .get(400)
+                .unwrap()
+                .sockets
+                .get(udp_idx)
+                .unwrap()
+                .dgram_queue
+                .len(),
+            1
+        );
+        assert_eq!(
+            table
+                .get(400)
+                .unwrap()
+                .sockets
+                .get(tcp_idx)
+                .unwrap()
+                .oob_byte,
+            Some(0xAB)
+        );
 
         let mut host = test_host::NoopHost;
         let child_pid = table
-            .spawn_child(400, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child(
+                400,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
             .expect("spawn_child");
 
         // Child must NOT see them.
@@ -892,7 +1145,8 @@ mod tests {
             "child must start with empty dgram queue"
         );
         assert_eq!(
-            child.sockets.get(tcp_idx).unwrap().oob_byte, None,
+            child.sockets.get(tcp_idx).unwrap().oob_byte,
+            None,
             "child must not inherit pending OOB byte"
         );
 
@@ -926,30 +1180,65 @@ mod tests {
 
         // Sanity: parent has both pending entries.
         assert_eq!(
-            table.get(500).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.len(),
+            table
+                .get(500)
+                .unwrap()
+                .sockets
+                .get(listener_idx)
+                .unwrap()
+                .listen_backlog
+                .len(),
             2
         );
 
         // Spawn child must NOT inherit them.
         let mut host = test_host::NoopHost;
         let spawn_child = table
-            .spawn_child(500, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child(
+                500,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
             .expect("spawn_child");
         assert!(
-            table.get(spawn_child).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.is_empty(),
+            table
+                .get(spawn_child)
+                .unwrap()
+                .sockets
+                .get(listener_idx)
+                .unwrap()
+                .listen_backlog
+                .is_empty(),
             "spawn child must start with empty listen_backlog"
         );
 
         // Fork child must NOT inherit them either.
         table.fork_process(500, 998).expect("fork_process");
         assert!(
-            table.get(998).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.is_empty(),
+            table
+                .get(998)
+                .unwrap()
+                .sockets
+                .get(listener_idx)
+                .unwrap()
+                .listen_backlog
+                .is_empty(),
             "fork child must start with empty listen_backlog"
         );
 
         // Parent retains them.
         assert_eq!(
-            table.get(500).unwrap().sockets.get(listener_idx).unwrap().listen_backlog.len(),
+            table
+                .get(500)
+                .unwrap()
+                .sockets
+                .get(listener_idx)
+                .unwrap()
+                .listen_backlog
+                .len(),
             2,
             "parent's pending pre-accepted connections are intact"
         );
@@ -962,7 +1251,7 @@ mod tests {
         // the kernel-export wrapper can call host_net_close. Earlier
         // refs (parent still holding it) must NOT report it.
         use crate::process_table::ProcessTable;
-        use crate::socket::{host_net_handle_ref_count, SocketDomain, SocketInfo, SocketType};
+        use crate::socket::{SocketDomain, SocketInfo, SocketType, host_net_handle_ref_count};
         use crate::spawn::SpawnAttrs;
 
         const HANDLE: i32 = 84;
@@ -970,17 +1259,19 @@ mod tests {
         table.create_process(600).unwrap();
         let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         sock.host_net_handle = Some(HANDLE);
-        let _sock_idx = table
-            .processes
-            .get_mut(&600)
-            .unwrap()
-            .sockets
-            .alloc(sock);
+        let _sock_idx = table.processes.get_mut(&600).unwrap().sockets.alloc(sock);
 
         // Spawn a child → bump the refcount to (parent=1, child=2).
         let mut host = test_host::NoopHost;
         let child_pid = table
-            .spawn_child(600, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child(
+                600,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
             .expect("spawn_child");
         assert_eq!(host_net_handle_ref_count(HANDLE), 2);
 
@@ -1021,10 +1312,13 @@ mod tests {
             crate::ofd::FileType::Regular,
             wasm_posix_shared::flags::O_RDONLY,
             42, // host_handle (positive). bump_inherited_resource_refcounts
-                // will register it; close_ref returns false → no host_close.
+            // will register it; close_ref returns false → no host_close.
             b"/tmp/foo".to_vec(),
         );
-        parent.fd_table.alloc_at_min(crate::fd::OpenFileDescRef(ofd_idx), 0, 5).unwrap();
+        parent
+            .fd_table
+            .alloc_at_min(crate::fd::OpenFileDescRef(ofd_idx), 0, 5)
+            .unwrap();
         // Sanity: parent has fd 5.
         assert!(table.get(700).unwrap().fd_table.get(5).is_ok());
 
@@ -1069,7 +1363,10 @@ mod tests {
             43,
             b"/tmp/bar".to_vec(),
         );
-        parent.fd_table.alloc_at_min(crate::fd::OpenFileDescRef(ofd_idx), 0, 5).unwrap();
+        parent
+            .fd_table
+            .alloc_at_min(crate::fd::OpenFileDescRef(ofd_idx), 0, 5)
+            .unwrap();
         let parent_fd1_ofd = table.get(701).unwrap().fd_table.get(1).unwrap().ofd_ref.0;
 
         let mut host = test_host::NoopHost;
@@ -1127,13 +1424,16 @@ mod tests {
         let pids_after: Vec<u32> = table.all_pids();
         assert_eq!(pids_before, pids_after, "no partial child must remain");
         // fork_count still 0.
-        assert_eq!(table.get(702).unwrap().fork_count(), parent_fork_count_before);
+        assert_eq!(
+            table.get(702).unwrap().fork_count(),
+            parent_fork_count_before
+        );
     }
 
     #[test]
     fn spawn_child_setsid_makes_session_leader() {
         use crate::process_table::ProcessTable;
-        use crate::spawn::{attr_flags, SpawnAttrs};
+        use crate::spawn::{SpawnAttrs, attr_flags};
 
         let mut table = ProcessTable::new();
         table.create_process(800).unwrap();
@@ -1141,7 +1441,12 @@ mod tests {
         table.processes.get_mut(&800).unwrap().sid = 50;
         table.processes.get_mut(&800).unwrap().pgid = 60;
 
-        let attrs = SpawnAttrs { flags: attr_flags::SETSID, pgrp: 0, sigdef: 0, sigmask: 0 };
+        let attrs = SpawnAttrs {
+            flags: attr_flags::SETSID,
+            pgrp: 0,
+            sigdef: 0,
+            sigmask: 0,
+        };
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child(800, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
@@ -1149,35 +1454,52 @@ mod tests {
 
         let child = table.get(cpid).unwrap();
         assert_eq!(child.sid, cpid, "SETSID makes child its own session leader");
-        assert_eq!(child.pgid, cpid, "SETSID also makes child its own pgrp leader");
+        assert_eq!(
+            child.pgid, cpid,
+            "SETSID also makes child its own pgrp leader"
+        );
         assert!(child.is_session_leader, "is_session_leader flag set");
     }
 
     #[test]
     fn spawn_child_setpgroup_zero_uses_child_pid() {
         use crate::process_table::ProcessTable;
-        use crate::spawn::{attr_flags, SpawnAttrs};
+        use crate::spawn::{SpawnAttrs, attr_flags};
 
         let mut table = ProcessTable::new();
         table.create_process(801).unwrap();
 
-        let attrs = SpawnAttrs { flags: attr_flags::SETPGROUP, pgrp: 0, sigdef: 0, sigmask: 0 };
+        let attrs = SpawnAttrs {
+            flags: attr_flags::SETPGROUP,
+            pgrp: 0,
+            sigdef: 0,
+            sigmask: 0,
+        };
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child(801, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
             .unwrap();
-        assert_eq!(table.get(cpid).unwrap().pgid, cpid, "SETPGROUP with pgrp=0 → child's own pid");
+        assert_eq!(
+            table.get(cpid).unwrap().pgid,
+            cpid,
+            "SETPGROUP with pgrp=0 → child's own pid"
+        );
     }
 
     #[test]
     fn spawn_child_setpgroup_explicit_lands_in_target() {
         use crate::process_table::ProcessTable;
-        use crate::spawn::{attr_flags, SpawnAttrs};
+        use crate::spawn::{SpawnAttrs, attr_flags};
 
         let mut table = ProcessTable::new();
         table.create_process(802).unwrap();
 
-        let attrs = SpawnAttrs { flags: attr_flags::SETPGROUP, pgrp: 42, sigdef: 0, sigmask: 0 };
+        let attrs = SpawnAttrs {
+            flags: attr_flags::SETPGROUP,
+            pgrp: 42,
+            sigdef: 0,
+            sigmask: 0,
+        };
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child(802, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
@@ -1188,20 +1510,26 @@ mod tests {
     #[test]
     fn spawn_child_setsigmask_overrides_inherited_mask() {
         use crate::process_table::ProcessTable;
-        use crate::spawn::{attr_flags, SpawnAttrs};
+        use crate::spawn::{SpawnAttrs, attr_flags};
 
         let mut table = ProcessTable::new();
         table.create_process(803).unwrap();
         // Parent has SIGINT (bit 0) blocked.
         table.processes.get_mut(&803).unwrap().signals.blocked = 0x1;
 
-        let attrs = SpawnAttrs { flags: attr_flags::SETSIGMASK, pgrp: 0, sigdef: 0, sigmask: 0xFFu64 };
+        let attrs = SpawnAttrs {
+            flags: attr_flags::SETSIGMASK,
+            pgrp: 0,
+            sigdef: 0,
+            sigmask: 0xFFu64,
+        };
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child(803, &[b"a".as_slice()], &[], &[], &attrs, &mut host)
             .unwrap();
         assert_eq!(
-            table.get(cpid).unwrap().signals.blocked, 0xFFu64,
+            table.get(cpid).unwrap().signals.blocked,
+            0xFFu64,
             "SETSIGMASK overrides the inherited mask wholesale"
         );
     }
@@ -1218,7 +1546,14 @@ mod tests {
         table.processes.get_mut(&804).unwrap().signals.blocked = 0xAAu64;
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child(804, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child(
+                804,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
             .unwrap();
         assert_eq!(table.get(cpid).unwrap().signals.blocked, 0xAAu64);
     }
@@ -1235,21 +1570,36 @@ mod tests {
         let mut table = ProcessTable::new();
         table.create_process(805).unwrap();
         let parent = table.processes.get_mut(&805).unwrap();
-        parent.signals.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
-        parent.signals.set_handler(SIGUSR2, SignalHandler::Handler(42)).unwrap();
+        parent
+            .signals
+            .set_handler(SIGUSR1, SignalHandler::Ignore)
+            .unwrap();
+        parent
+            .signals
+            .set_handler(SIGUSR2, SignalHandler::Handler(42))
+            .unwrap();
 
         let mut host = test_host::NoopHost;
         let cpid = table
-            .spawn_child(805, &[b"a".as_slice()], &[], &[], &SpawnAttrs::empty(), &mut host)
+            .spawn_child(
+                805,
+                &[b"a".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
             .unwrap();
 
         let child = table.get(cpid).unwrap();
         assert_eq!(
-            child.signals.get_handler(SIGUSR1), SignalHandler::Ignore,
+            child.signals.get_handler(SIGUSR1),
+            SignalHandler::Ignore,
             "child inherits SIG_IGN across the implicit exec"
         );
         assert_eq!(
-            child.signals.get_handler(SIGUSR2), SignalHandler::Default,
+            child.signals.get_handler(SIGUSR2),
+            SignalHandler::Default,
             "child resets parent's custom handler to SIG_DFL"
         );
     }
@@ -1259,18 +1609,29 @@ mod tests {
         // SETSIGDEF should override SIG_IGN inheritance for named signals.
         use crate::process_table::ProcessTable;
         use crate::signal::SignalHandler;
-        use crate::spawn::{attr_flags, SpawnAttrs};
+        use crate::spawn::{SpawnAttrs, attr_flags};
         use wasm_posix_shared::signal::{SIGUSR1, SIGUSR2};
 
         let mut table = ProcessTable::new();
         table.create_process(806).unwrap();
         let parent = table.processes.get_mut(&806).unwrap();
-        parent.signals.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
-        parent.signals.set_handler(SIGUSR2, SignalHandler::Ignore).unwrap();
+        parent
+            .signals
+            .set_handler(SIGUSR1, SignalHandler::Ignore)
+            .unwrap();
+        parent
+            .signals
+            .set_handler(SIGUSR2, SignalHandler::Ignore)
+            .unwrap();
 
         // Reset SIGUSR1 to SIG_DFL via SETSIGDEF; leave SIGUSR2 alone.
         let sigdef = 1u64 << (SIGUSR1 - 1);
-        let attrs = SpawnAttrs { flags: attr_flags::SETSIGDEF, pgrp: 0, sigdef, sigmask: 0 };
+        let attrs = SpawnAttrs {
+            flags: attr_flags::SETSIGDEF,
+            pgrp: 0,
+            sigdef,
+            sigmask: 0,
+        };
         let mut host = test_host::NoopHost;
         let cpid = table
             .spawn_child(806, &[b"a".as_slice()], &[], &[], &attrs, &mut host)

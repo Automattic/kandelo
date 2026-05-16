@@ -1,8 +1,8 @@
 extern crate alloc;
 
+use crate::terminal::TerminalState;
 use alloc::collections::VecDeque;
 use core::cell::UnsafeCell;
-use crate::terminal::TerminalState;
 
 /// Maximum number of concurrent PTY pairs.
 pub const MAX_PTYS: usize = 64;
@@ -36,7 +36,7 @@ impl PtyPair {
             terminal: TerminalState::new(),
             input_buf: VecDeque::with_capacity(PTY_BUF_CAPACITY),
             output_buf: VecDeque::with_capacity(PTY_BUF_CAPACITY),
-            locked: true,  // locked until unlockpt()
+            locked: true, // locked until unlockpt()
             master_refs: 0,
             slave_refs: 0,
         }
@@ -184,7 +184,9 @@ pub fn alloc_pty() -> Option<usize> {
 
 /// Get a mutable reference to a PTY pair by index.
 pub fn get_pty(idx: usize) -> Option<&'static mut PtyPair> {
-    if idx >= MAX_PTYS { return None; }
+    if idx >= MAX_PTYS {
+        return None;
+    }
     get_table()[idx].as_mut()
 }
 
@@ -236,7 +238,7 @@ mod tests {
         let idx = alloc_pty().unwrap();
         let pty = get_pty(idx).unwrap();
         pty.terminal.c_lflag &= !crate::terminal::ICANON; // raw mode
-        pty.terminal.c_lflag &= !crate::terminal::ECHO;   // no echo
+        pty.terminal.c_lflag &= !crate::terminal::ECHO; // no echo
 
         // Master writes → slave reads
         for &b in b"hello" {
@@ -353,8 +355,8 @@ mod tests {
         let idx = alloc_pty().unwrap();
         let pty = get_pty(idx).unwrap();
         pty.terminal.c_lflag &= !crate::terminal::ICANON; // raw mode
-        pty.terminal.c_lflag &= !crate::terminal::ISIG;   // disable ISIG
-        pty.terminal.c_lflag &= !crate::terminal::ECHO;   // no echo
+        pty.terminal.c_lflag &= !crate::terminal::ISIG; // disable ISIG
+        pty.terminal.c_lflag &= !crate::terminal::ECHO; // no echo
 
         // Ctrl-C without ISIG should pass through as data
         let sig = pty.process_master_input(0x03);

@@ -1,0 +1,40 @@
+Subject: Fix js_mapped_arguments_mark to skip attached var_refs
+
+The cycle GC's mark_func (gc_decref_child / gc_scan_incref_child) performs
+list_del/list_add_tail on a var_ref's link field. Detached var_refs are
+tracked on rt->gc_obj_list and have valid link fields, so this is correct.
+Attached var_refs live on the stack and their JSVarRef.header.link is
+uninitialized (just garbage from the malloc'd JSVarRef chunk).
+
+js_bytecode_function_mark already guards with `var_ref->is_detached`
+before calling mark_func. The sister function js_mapped_arguments_mark,
+which iterates var_refs of the legacy mapped `arguments` object, does
+not — it calls mark_func unconditionally. When gc_scan_incref_child
+runs on an attached var_ref it does:
+
+    list_del(&p->link);                      // operates on garbage links
+    list_add_tail(&p->link, &rt->gc_obj_list);
+
+which splices the attached var_ref onto gc_obj_list. The next cycle-GC
+pass then trips assert(var_ref->is_detached) in mark_children for the
+JS_GC_OBJ_TYPE_VAR_REF case (quickjs.c:6788).
+
+Symptom: intermittent SIGABRT during heavy npm install workloads in
+QuickJS-NG (also "memory access out of bounds" when the random link.prev
+write lands on a sensitive address). Apply the same is_detached guard
+that js_bytecode_function_mark uses.
+---
+diff --git a/quickjs.c b/quickjs.c
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -15986,7 +15986,9 @@ static void js_mapped_arguments_mark(JSRuntime *rt, JSValueConst val,
+         int i;
+         if (var_refs) {
+             for(i = 0; i < p->u.array.count; i++) {
+-                if (var_refs[i])
++                /* only detached var_refs are part of the cycle GC; attached
++                   ones live on the stack and have uninitialized link fields */
++                if (var_refs[i] && var_refs[i]->is_detached)
+                     mark_func(rt, &var_refs[i]->header);
+             }
+         }

@@ -62,10 +62,16 @@ export class PtyTerminal {
     argv: string[],
     options?: { env?: string[]; cwd?: string },
   ): Promise<number> {
-    // Spawn with PTY enabled
+    // Spawn with PTY enabled. Pass cols/rows pre-spawn so the very first
+    // TIOCGWINSZ from the program returns the real width instead of the
+    // kernel's 80x24 default — TUI renderers that latch onto width on
+    // startup otherwise render with the wrong dimensions until a
+    // SIGWINCH arrives mid-render.
     const exitPromise = this.kernel.spawn(programBytes, argv, {
       ...options,
       pty: true,
+      ptyCols: this.terminal.cols,
+      ptyRows: this.terminal.rows,
     });
 
     // The spawn creates the process with the next pid. We need to find it.
@@ -89,15 +95,15 @@ export class PtyTerminal {
     });
     this.disposables.push(dataDisposable);
 
-    // Connect xterm.js resize �� PTY winsize
+    // Connect xterm.js resize -> PTY winsize. Initial winsize is set
+    // pre-spawn via ptyCols/ptyRows above, so no startup ptyResize is
+    // needed — a redundant call here would raise SIGWINCH on the
+    // just-started process and could interrupt mid-render in TUIs.
     const resizeDisposable = this.terminal.onResize(({ cols, rows }) => {
       if (this.pid < 0) return;
       this.kernel.ptyResize(this.pid, rows, cols);
     });
     this.disposables.push(resizeDisposable);
-
-    // Set initial window size
-    this.kernel.ptyResize(pid, this.terminal.rows, this.terminal.cols);
 
     return exitPromise;
   }

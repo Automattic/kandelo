@@ -30,10 +30,10 @@ pub struct InFlightFd {
 /// Serialized socket state for SCM_RIGHTS FD passing.
 #[derive(Clone)]
 pub struct InFlightSocket {
-    pub domain: u8,   // 0=Unix, 1=Inet, 2=Inet6
+    pub domain: u8,    // 0=Unix, 1=Inet, 2=Inet6
     pub sock_type: u8, // 0=Stream, 1=Dgram
     pub protocol: u32,
-    pub state: u8,    // 0=Unbound, ..., 4=Closed
+    pub state: u8, // 0=Unbound, ..., 4=Closed
     pub send_buf_idx: Option<usize>,
     pub recv_buf_idx: Option<usize>,
     pub global_pipes: bool,

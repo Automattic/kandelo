@@ -110,14 +110,14 @@ impl TerminalState {
     /// Create default terminal state matching a typical Linux terminal.
     pub fn new() -> Self {
         let mut c_cc = [0u8; NCCS];
-        c_cc[VINTR] = 0x03;   // Ctrl-C
-        c_cc[VQUIT] = 0x1C;   // Ctrl-backslash
-        c_cc[VERASE] = 0x7F;  // DEL
-        c_cc[VKILL] = 0x15;   // Ctrl-U
-        c_cc[VEOF] = 0x04;    // Ctrl-D
-        c_cc[VSTART] = 0x11;  // Ctrl-Q
-        c_cc[VSTOP] = 0x13;   // Ctrl-S
-        c_cc[VSUSP] = 0x1A;   // Ctrl-Z
+        c_cc[VINTR] = 0x03; // Ctrl-C
+        c_cc[VQUIT] = 0x1C; // Ctrl-backslash
+        c_cc[VERASE] = 0x7F; // DEL
+        c_cc[VKILL] = 0x15; // Ctrl-U
+        c_cc[VEOF] = 0x04; // Ctrl-D
+        c_cc[VSTART] = 0x11; // Ctrl-Q
+        c_cc[VSTOP] = 0x13; // Ctrl-S
+        c_cc[VSUSP] = 0x1A; // Ctrl-Z
         c_cc[VMIN] = 1;
         c_cc[VTIME] = 0;
 
@@ -518,7 +518,7 @@ mod tests {
     fn test_igncr_discards_cr() {
         let mut ts = TerminalState::new();
         ts.c_iflag &= !ICRNL; // disable CR->NL
-        ts.c_iflag |= IGNCR;  // enable ignore CR
+        ts.c_iflag |= IGNCR; // enable ignore CR
 
         for &b in b"ab" {
             ts.process_input_byte(b);

@@ -28,6 +28,9 @@ export interface InitMessage {
    * (custom-io / legacy path).
    */
   rootfsImage?: ArrayBuffer;
+  /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
+   *  so wasm programs can dial external hosts via Node `net.Socket`. */
+  enableTcpNetwork?: boolean;
 }
 
 export interface SpawnMessage {
@@ -38,6 +41,11 @@ export interface SpawnMessage {
   env?: string[];
   cwd?: string;
   pty?: boolean;
+  /** Initial PTY winsize. When set with `pty: true`, the kernel applies
+   *  the winsize before the wasm program starts so the first ioctl
+   *  returns the correct cols/rows. */
+  ptyCols?: number;
+  ptyRows?: number;
   stdin?: Uint8Array;
   /** Limit heap growth to protect thread channel pages */
   maxAddr?: number;

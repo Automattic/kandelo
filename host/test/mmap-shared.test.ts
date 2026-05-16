@@ -12,6 +12,7 @@ describe("MAP_SHARED mmap + msync", () => {
     expect(result.stdout).toContain("mmap ok");
     expect(result.stdout).toContain("msync ok");
     expect(result.stdout).toContain("read back: xyz");
+    expect(result.stdout).toContain("mremap ok");
     expect(result.stdout).toContain("PASS");
   });
 });

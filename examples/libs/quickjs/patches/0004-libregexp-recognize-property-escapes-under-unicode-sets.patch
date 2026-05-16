@@ -1,0 +1,121 @@
+Subject: Recognize \p{...} / \P{...} under the /v flag (UnicodeSetsMode)
+
+ECMA-262 specifies that `\p{<UnicodePropertyValueExpression>}` is a valid
+CharacterClassEscape whenever the regex is in UnicodeMode — which is either
+the `/u` flag (LRE_FLAG_UNICODE / `s->is_unicode`) or the `/v` flag
+(LRE_FLAG_UNICODE_SETS / `s->unicode_sets`). QuickJS-NG's character-class
+escape parser only enters the property-escape branch under `s->is_unicode`,
+so under `/v` the `\p` falls through to the unknown-escape default. The
+default for non-strict mode is "ignore the backslash" — which silently
+turns `[\p{Default_Ignorable_Code_Point}]` into the character class
+`[pDefault_Ignorable_Code_Point{}]` (literal letters from the property
+name plus the braces).
+
+Concrete user-visible regression chain: pi-tui's `visibleWidth()` uses
+`/^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v`
+to strip leading non-printing chars. Under QuickJS-NG every ASCII letter
+that appears in any of those property names matches the misparsed class
+(t, i, n, p, g, m, u, D, k, …), so ordinary words like "settings" or
+"login" are reported as zero-width and downstream padding overshoots the
+viewport. The resulting wrap corrupts pi-tui's incremental redraw and
+stacks menu borders. Reproduced via the pi-coding-agent browser demo and
+isolated to this branch with `lnpMatch="CDFIMPS_abdefgiklmnoprtu{}"`,
+i.e. the union of unique letters in the regex source.
+
+The primary fix routes the `/v` flag through the same property-escape
+branch as `/u`. `parse_unicode_property` already implements the subset
+of property escapes shared by both modes (General_Category, Script,
+Script_Extensions, binary properties), so the existing call site does
+exactly what's needed for the property names pi-tui (and similar code)
+relies on.
+
+The secondary part stubs ECMA-262's `/v`-only "of-strings" properties
+(`RGI_Emoji`, `Basic_Emoji`, `Emoji_Keycap_Sequence`, the four
+`RGI_Emoji_*_Sequence` variants). These match strings of one-or-more
+code points and need string-set support across the regex engine to
+implement correctly — out of scope here. Pre-fix they were silently
+misparsed (the same way every other `\p` was), so existing /v regexes
+that referenced them compiled fine and never matched any single code
+point. With the primary fix in place they would suddenly become hard
+SyntaxErrors at compile time (e.g. pi-tui's `rgiEmojiRegex` fails to
+load), so the stub list preserves the prior "compiles but never matches
+a code point" shape until real of-strings support lands. `\P{<stub>}`
+still inverts the empty range to "matches any code point" — also wrong,
+but the same shape as the previous misparse and not worse.
+
+This brings QuickJS-NG's character-class property-escape parsing in
+line with ECMA-262 §22.2.1.6 (Static Semantics: CharacterValue) read
+together with §22.2.2.1 (Notation: 'UnicodeMode is either +Unicode or
++UnicodeSets') for the subset of properties QuickJS already supports,
+and keeps regexes referencing of-strings properties loadable.
+---
+diff --git a/libregexp.c b/libregexp.c
+--- a/libregexp.c
++++ b/libregexp.c
+@@ -570,6 +570,35 @@ static bool is_unicode_char(int c)
+             (c == '_'));
+ }
+
++/* ECMA-262 §22.2.1.6 valid-under-/v "of-strings" properties. They match
++   sequences of one-or-more code points; QuickJS-NG's regex engine only
++   tracks code-point ranges, so these are stubbed to an empty CharRange.
++   Result: \p{<of-strings>}/v compiles cleanly but never matches a code
++   point — the same observable shape that V8 produces for code points
++   outside the property's set, just not the multi-code-point sequences.
++   This keeps libraries like pi-tui (which use /^\p{RGI_Emoji}$/v for
++   width detection) loadable; emoji width then falls through to the
++   East-Asian-Width tables. A real implementation needs string-set
++   matching across the regex engine — out of scope here. */
++static bool is_unicode_strings_prop_stub(const char *name)
++{
++    static const char * const names[] = {
++        "Basic_Emoji",
++        "Emoji_Keycap_Sequence",
++        "RGI_Emoji",
++        "RGI_Emoji_Modifier_Sequence",
++        "RGI_Emoji_Flag_Sequence",
++        "RGI_Emoji_Tag_Sequence",
++        "RGI_Emoji_ZWJ_Sequence",
++    };
++    size_t i;
++    for (i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
++        if (!strcmp(name, names[i]))
++            return true;
++    }
++    return false;
++}
++
+ static int parse_unicode_property(REParseState *s, CharRange *cr,
+                                   const uint8_t **pp, bool is_inv)
+ {
+@@ -640,11 +669,16 @@ static int parse_unicode_property(REParseState *s, CharRange *cr,
+         if (ret < 0) {
+             ret = unicode_prop(cr, name);
+             if (ret) {
+-                cr_free(cr);
+-                if (ret == -2)
+-                    goto unknown_property_name;
+-                else
+-                    goto out_of_memory;
++                if (ret == -2 && s->unicode_sets &&
++                    is_unicode_strings_prop_stub(name)) {
++                    /* keep cr initialized + empty: stub matches nothing */
++                } else {
++                    cr_free(cr);
++                    if (ret == -2)
++                        goto unknown_property_name;
++                    else
++                        goto out_of_memory;
++                }
+             }
+         }
+     } else {
+@@ -724,7 +758,7 @@ static int parse_unicode_property(REParseState *s, CharRange *cr,
+             break;
+         case 'p':
+         case 'P':
+-            if (s->is_unicode) {
++            if (s->is_unicode || s->unicode_sets) {
+                 if (parse_unicode_property(s, cr, &p, (c == 'P')))
+                     return -1;
+                 c = CLASS_RANGE_BASE;

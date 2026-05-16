@@ -51,18 +51,17 @@ impl SignalAction {
 pub enum DefaultAction {
     Terminate,
     Ignore,
-    CoreDump,  // Treated as terminate in Wasm
-    Stop,      // Not supported in Wasm
-    Continue,  // Not supported in Wasm
+    CoreDump, // Treated as terminate in Wasm
+    Stop,     // Not supported in Wasm
+    Continue, // Not supported in Wasm
 }
 
 /// Get the POSIX default action for a signal number.
 pub fn default_action(signum: u32) -> DefaultAction {
     use wasm_posix_shared::signal::*;
     match signum {
-        SIGHUP | SIGINT | SIGQUIT | SIGILL | SIGTRAP | SIGABRT |
-        SIGBUS | SIGFPE | SIGKILL | SIGUSR1 | SIGUSR2 | SIGPIPE |
-        SIGALRM | SIGTERM => DefaultAction::Terminate,
+        SIGHUP | SIGINT | SIGQUIT | SIGILL | SIGTRAP | SIGABRT | SIGBUS | SIGFPE | SIGKILL
+        | SIGUSR1 | SIGUSR2 | SIGPIPE | SIGALRM | SIGTERM => DefaultAction::Terminate,
         SIGCHLD | SIGWINCH => DefaultAction::Ignore,
         SIGCONT => DefaultAction::Continue,
         SIGSTOP | SIGTSTP => DefaultAction::Stop,
@@ -150,14 +149,22 @@ impl PerThreadSignalState {
         self.pending |= sig_bit(signum);
         if signum >= SIGRTMIN {
             // RT signals: always queue (multiple instances allowed)
-            self.rt_queue.push_back(RtSigEntry { signum, si_value, si_code });
+            self.rt_queue.push_back(RtSigEntry {
+                signum,
+                si_value,
+                si_code,
+            });
         } else if si_code != 0 {
             // Standard signal from sigqueue: store metadata (coalesced).
             if let Some(entry) = self.rt_queue.iter_mut().find(|e| e.signum == signum) {
                 entry.si_value = si_value;
                 entry.si_code = si_code;
             } else {
-                self.rt_queue.push_back(RtSigEntry { signum, si_value, si_code });
+                self.rt_queue.push_back(RtSigEntry {
+                    signum,
+                    si_value,
+                    si_code,
+                });
             }
         }
         true
@@ -173,7 +180,9 @@ impl PerThreadSignalState {
 
     /// Check whether a signal is blocked by this thread.
     pub fn is_blocked(&self, signum: u32) -> bool {
-        if signum >= NSIG { return false; }
+        if signum >= NSIG {
+            return false;
+        }
         (self.blocked & sig_bit(signum)) != 0
     }
 
@@ -185,7 +194,9 @@ impl PerThreadSignalState {
             return None;
         }
         let signum = deliverable.trailing_zeros() + 1;
-        if signum >= NSIG { return None; }
+        if signum >= NSIG {
+            return None;
+        }
         let (mut si_value, mut si_code) = (0i32, 0i32);
         if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
             si_value = self.rt_queue[pos].si_value;
@@ -239,7 +250,11 @@ impl SignalState {
     /// SIGKILL and SIGSTOP cannot have their handlers changed (POSIX).
     /// Per POSIX: setting SIG_IGN discards pending signals; setting SIG_DFL
     /// for signals whose default action is "ignore" also discards pending signals.
-    pub fn set_handler(&mut self, signum: u32, handler: SignalHandler) -> Result<SignalHandler, ()> {
+    pub fn set_handler(
+        &mut self,
+        signum: u32,
+        handler: SignalHandler,
+    ) -> Result<SignalHandler, ()> {
         use wasm_posix_shared::signal::*;
         if signum == 0 || signum >= 65 {
             return Err(());
@@ -303,7 +318,11 @@ impl SignalState {
         self.pending |= sig_bit(signum);
         if signum >= SIGRTMIN {
             // RT signals: always queue (multiple instances allowed)
-            self.rt_queue.push_back(RtSigEntry { signum, si_value, si_code });
+            self.rt_queue.push_back(RtSigEntry {
+                signum,
+                si_value,
+                si_code,
+            });
         } else if si_code != 0 {
             // Standard signal from sigqueue (si_code=SI_QUEUE=-1): store metadata
             // so si_value/si_code are preserved on delivery. Only one entry per
@@ -312,7 +331,11 @@ impl SignalState {
                 entry.si_value = si_value;
                 entry.si_code = si_code;
             } else {
-                self.rt_queue.push_back(RtSigEntry { signum, si_value, si_code });
+                self.rt_queue.push_back(RtSigEntry {
+                    signum,
+                    si_value,
+                    si_code,
+                });
             }
         }
         true
@@ -329,7 +352,9 @@ impl SignalState {
 
     /// Check if a signal is pending.
     pub fn is_pending(&self, signum: u32) -> bool {
-        if signum >= 65 { return false; }
+        if signum >= 65 {
+            return false;
+        }
         (self.pending & sig_bit(signum)) != 0
     }
 
@@ -353,7 +378,9 @@ impl SignalState {
     /// no more instances remain. For standard signals, clears the pending bit.
     /// Returns (si_value, si_code) of the consumed signal instance.
     pub fn consume_one(&mut self, signum: u32) -> (i32, i32) {
-        if signum == 0 || signum >= NSIG { return (0, 0); }
+        if signum == 0 || signum >= NSIG {
+            return (0, 0);
+        }
         let (mut si_value, mut si_code) = (0i32, 0i32);
         if let Some(pos) = self.rt_queue.iter().position(|e| e.signum == signum) {
             si_value = self.rt_queue[pos].si_value;
@@ -374,7 +401,9 @@ impl SignalState {
 
     /// Check if a signal is blocked.
     pub fn is_blocked(&self, signum: u32) -> bool {
-        if signum >= 65 { return false; }
+        if signum >= 65 {
+            return false;
+        }
         (self.blocked & sig_bit(signum)) != 0
     }
 
@@ -451,16 +480,30 @@ impl SignalState {
         for (i, h) in handlers.iter().enumerate() {
             actions[i].handler = *h;
         }
-        SignalState { actions, blocked, pending: 0, rt_queue: VecDeque::new() }
+        SignalState {
+            actions,
+            blocked,
+            pending: 0,
+            rt_queue: VecDeque::new(),
+        }
     }
 
     /// Reconstruct signal state from full actions array (preserves flags/mask).
     pub fn from_actions(actions: [SignalAction; 65], blocked: u64) -> Self {
-        SignalState { actions, blocked, pending: 0, rt_queue: VecDeque::new() }
+        SignalState {
+            actions,
+            blocked,
+            pending: 0,
+            rt_queue: VecDeque::new(),
+        }
     }
 
     /// Reconstruct signal state for exec. Preserves pending signals (POSIX).
-    pub fn from_parts_with_pending(handlers: [SignalHandler; 65], blocked: u64, pending: u64) -> Self {
+    pub fn from_parts_with_pending(
+        handlers: [SignalHandler; 65],
+        blocked: u64,
+        pending: u64,
+    ) -> Self {
         let mut actions = [SignalAction::default(); 65];
         for (i, h) in handlers.iter().enumerate() {
             actions[i].handler = *h;
@@ -469,10 +512,19 @@ impl SignalState {
         let mut rt_queue = VecDeque::new();
         for sig in SIGRTMIN..SIGRTMAX_PLUS1 {
             if (pending & sig_bit(sig)) != 0 {
-                rt_queue.push_back(RtSigEntry { signum: sig, si_value: 0, si_code: 0 });
+                rt_queue.push_back(RtSigEntry {
+                    signum: sig,
+                    si_value: 0,
+                    si_code: 0,
+                });
             }
         }
-        SignalState { actions, blocked, pending, rt_queue }
+        SignalState {
+            actions,
+            blocked,
+            pending,
+            rt_queue,
+        }
     }
 
     /// Get the raw handlers array for serialization.
@@ -573,7 +625,7 @@ mod tests {
     fn test_dequeue_returns_lowest_signal() {
         let mut state = SignalState::new();
         state.raise(SIGTERM); // 15
-        state.raise(SIGINT);  // 2
+        state.raise(SIGINT); // 2
         state.raise(SIGUSR1); // 10
         // Should dequeue lowest first (SIGINT=2)
         assert_eq!(state.dequeue(), Some((SIGINT, 0, 0)));
@@ -601,7 +653,7 @@ mod tests {
     #[test]
     fn test_dequeue_skips_blocked_signals() {
         let mut state = SignalState::new();
-        state.raise(SIGINT);  // 2 - blocked
+        state.raise(SIGINT); // 2 - blocked
         state.raise(SIGTERM); // 15 - not blocked
         state.blocked = sig_bit(SIGINT);
         // Should skip SIGINT and return SIGTERM
@@ -665,7 +717,9 @@ mod tests {
     #[test]
     fn test_should_not_restart_without_flag() {
         let mut state = SignalState::new();
-        state.set_handler(SIGINT, SignalHandler::Handler(10)).unwrap();
+        state
+            .set_handler(SIGINT, SignalHandler::Handler(10))
+            .unwrap();
         state.raise(SIGINT);
         assert!(!state.should_restart());
     }
@@ -689,7 +743,9 @@ mod tests {
     fn test_sig_dfl_discards_pending_for_ignored_signal() {
         // SIGCHLD default action is Ignore, so SIG_DFL should discard pending
         let mut state = SignalState::new();
-        state.set_handler(SIGCHLD, SignalHandler::Handler(42)).unwrap();
+        state
+            .set_handler(SIGCHLD, SignalHandler::Handler(42))
+            .unwrap();
         state.raise(SIGCHLD);
         assert!(state.is_pending(SIGCHLD));
         state.set_handler(SIGCHLD, SignalHandler::Default).unwrap();
@@ -728,7 +784,9 @@ mod tests {
         state.set_handler(SIGUSR1, SignalHandler::Ignore).unwrap();
         assert!(!state.is_pending(SIGUSR1));
         // Set a handler — no pending signal to deliver
-        state.set_handler(SIGUSR1, SignalHandler::Handler(42)).unwrap();
+        state
+            .set_handler(SIGUSR1, SignalHandler::Handler(42))
+            .unwrap();
         state.blocked = 0;
         assert_eq!(state.deliverable(), 0);
     }

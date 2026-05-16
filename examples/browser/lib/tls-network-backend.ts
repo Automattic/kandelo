@@ -138,12 +138,17 @@ export interface TlsNetworkBackendOptions {
   /** CORS proxy URL prefix. The target URL (percent-encoded) is appended.
    *  In dev: "/cors-proxy?url=" (vite middleware). In prod: set via service worker. */
   corsProxyUrl?: string;
+  /** Map of in-VFS hostnames → upstream URL, routed through host fetch +
+   *  CORS proxy (e.g. proxy.local → registry.npmjs.org). Defaults to that
+   *  single npm-registry alias for back-compat. */
+  dnsAliases?: Record<string, string>;
 }
 
 export class TlsNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
   private hostnameMap = new Map<string, string>(); // ip string → hostname
   private corsProxyUrl: string;
+  private dnsAliases: Record<string, string>;
 
   // MITM CA state
   private caKeyPair: CryptoKeyPair | null = null;
@@ -153,6 +158,7 @@ export class TlsNetworkBackend implements NetworkIO {
 
   constructor(options?: TlsNetworkBackendOptions) {
     this.corsProxyUrl = options?.corsProxyUrl ?? "";
+    this.dnsAliases = options?.dnsAliases ?? { "proxy.local": "https://registry.npmjs.org" };
   }
 
   /**
@@ -211,6 +217,10 @@ export class TlsNetworkBackend implements NetworkIO {
         fetchError: null,
       });
     }
+  }
+
+  connectStatus(handle: number): number {
+    return this.connections.has(handle) ? 0 : 107; // 107 = ENOTCONN
   }
 
   send(handle: number, data: Uint8Array, _flags: number): number {
@@ -408,7 +418,12 @@ export class TlsNetworkBackend implements NetworkIO {
     conn.plaintextBuf = conn.plaintextBuf.subarray(totalRequestLen);
 
     const host = headers.get("host") || conn.hostname;
-    const url = `https://${host}${path}`;
+    // Wasm process can't reach cross-origin URLs directly from the browser;
+    // when corsProxyUrl is configured, every fetch goes through it.
+    const upstreamUrl = `https://${host}${path}`;
+    const url = this.corsProxyUrl
+      ? `${this.corsProxyUrl}${encodeURIComponent(upstreamUrl)}`
+      : upstreamUrl;
 
     const fetchHeaders = new Headers();
     for (const [key, value] of headers) {
@@ -423,24 +438,11 @@ export class TlsNetworkBackend implements NetworkIO {
 
     (async () => {
       try {
-        let response: Response;
-        try {
-          response = await fetch(url, {
-            method,
-            headers: fetchHeaders,
-            body: method !== "GET" && method !== "HEAD" ? fetchBody : undefined,
-          });
-        } catch (e) {
-          // Try CORS proxy if configured
-          if (this.corsProxyUrl) {
-            const proxyUrl = `${this.corsProxyUrl}${encodeURIComponent(url)}`;
-            response = await fetch(proxyUrl, {
-              method,
-            });
-          } else {
-            throw e;
-          }
-        }
+        const response = await fetch(url, {
+          method,
+          headers: fetchHeaders,
+          body: method !== "GET" && method !== "HEAD" ? fetchBody : undefined,
+        });
 
         const responseBytes = formatHttpResponse(
           response.status,
@@ -498,7 +500,16 @@ export class TlsNetworkBackend implements NetworkIO {
     // Use Host header as-is (it already includes :port when non-default),
     // otherwise fall back to conn.hostname + port suffix.
     const host = hostHeader ? hostHeader : `${conn.hostname}${portSuffix}`;
-    const url = `${scheme}://${host}${path}`;
+    // Sentinel hostnames in dnsAliases route to an upstream URL through host
+    // fetch + CORS proxy, bypassing the in-process TLS engine.
+    const aliasUpstream = this.dnsAliases[conn.hostname];
+    const upstreamUrl = aliasUpstream !== undefined
+      ? `${aliasUpstream}${path}`
+      : `${scheme}://${host}${path}`;
+    const url = this.corsProxyUrl
+      ? `${this.corsProxyUrl}${encodeURIComponent(upstreamUrl)}`
+      : upstreamUrl;
+    const isNpmRegistry = aliasUpstream === "https://registry.npmjs.org";
 
     const fetchHeaders = new Headers();
     for (const [key, value] of headers) {
@@ -513,20 +524,23 @@ export class TlsNetworkBackend implements NetworkIO {
 
     const doFetch = async () => {
       try {
-        let response: Response;
-        try {
-          response = await fetch(url, {
-            method,
-            headers: fetchHeaders,
-            body: fetchBody,
-          });
-        } catch (e) {
-          if (this.corsProxyUrl) {
-            response = await fetch(`${this.corsProxyUrl}${encodeURIComponent(url)}`, {
-              method,
-            });
-          } else {
-            throw e;
+        const response = await fetch(url, {
+          method,
+          headers: fetchHeaders,
+          body: fetchBody,
+        });
+
+        let bodyBuf = await response.arrayBuffer();
+        // Packument JSON's tarball URLs point back at registry.npmjs.org;
+        // rewrite them to the alias so follow-up fetches stay on the proxy.
+        if (isNpmRegistry && (response.headers.get("content-type") || "").includes("json")) {
+          const text = new TextDecoder().decode(bodyBuf);
+          const rewritten = text.replace(
+            /"tarball"\s*:\s*"https:\/\/registry\.npmjs\.org/g,
+            `"tarball":"http://${conn.hostname}`,
+          );
+          if (rewritten !== text) {
+            bodyBuf = new TextEncoder().encode(rewritten).buffer as ArrayBuffer;
           }
         }
 
@@ -534,7 +548,7 @@ export class TlsNetworkBackend implements NetworkIO {
           response.status,
           response.statusText,
           response.headers,
-          await response.arrayBuffer(),
+          bodyBuf,
         );
         conn.fetchDone = true;
       } catch (e) {
