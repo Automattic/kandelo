@@ -116,10 +116,11 @@ use walrus::{
     AbstractHeapType, FunctionId, FunctionKind, GlobalId, HeapType, LocalFunction, LocalId,
     MemoryId, Module, RefType, TableId, TagId, TypeId, ValType,
     ir::{
-        BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const, GlobalGet,
-        IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind, LocalGet,
-        LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return, StoreKind,
-        TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, Unreachable, Value,
+        AtomicWidth, BinaryOp, Binop, Block, Br, BrIf, BrTable, Call, CallIndirect, Const,
+        GlobalGet, IfElse, Instr, InstrLocId, InstrSeqId, InstrSeqType, LegacyCatch, LoadKind,
+        LocalGet, LocalSet, LocalTee, Loop, MemArg, RefAsNonNull, RefIsNull, RefNull, Return,
+        StoreKind, TableGet, TableSet, Throw, ThrowRef, TryTable, TryTableCatch, UnaryOp,
+        Unreachable, Value,
     },
 };
 
@@ -222,8 +223,7 @@ fn instrument_one_function(
 ) {
     // Choose scheme based on call-site topology. Post-commit-4
     // (2026-05-14) there are TWO live schemes (guard-dispatch was
-    // deleted; UnsupportedLegacyTry panics defensively until commit
-    // 9's libcxx rebuild propagates):
+    // deleted; legacy catch-handler forks still panic defensively):
     //
     //   instrument_one_function_switch — top-level fork-path calls
     //   only. Body is restructured so a top-level `br_table` jumps
@@ -256,11 +256,11 @@ fn instrument_one_function(
         // Nested per-block switch-dispatch: if classify_nested_pattern
         // accepts the function's nesting shape, use the cascading
         // POST_K + per-region br_table transform. Sub-commits 2.5/2.6
-        // expanded "supported" to cover Loops/TryTables/multi-value-
-        // params/carryovers; only UnsupportedLegacyTry remains as a
-        // panic-defensive fallback (eliminated from shipping wasm by
-        // commit 9's modern-EH SDK flip).
-        if classify_nested_pattern(module, func_id, fork_path).is_supported() {
+        // expanded "supported" to cover Loops/TryTables/legacy Try
+        // bodies/multi-value-params/carryovers; only fork-from-legacy-
+        // catch remains a panic-defensive fallback.
+        let nested_status = classify_nested_pattern(module, func_id, fork_path);
+        if nested_status.is_supported() {
             instrument_one_function_nested_switch(
                 module,
                 func_id,
@@ -275,16 +275,13 @@ fn instrument_one_function(
             return;
         }
         // Commit 3 (2026-05-14): the only remaining
-        // `NestedSupportStatus` rejection is `UnsupportedLegacyTry`.
-        // Commit 9 (modern wasm-EH SDK flip) eliminates legacy
-        // `try`/`catch` from shipping wasm; sub-commits 2.5c/2.6c
-        // closed `UnsupportedCarryover` and `UnsupportedMultiValueParams`
-        // respectively. If we reach this branch on a shipping binary,
-        // either commit 9's rebuild missed a port or a hand-written
-        // wasm module legitimately uses legacy try/catch — both are
-        // investigation-worthy. Panic loudly with a message that
-        // names the function and the unsupported pattern so CI logs
-        // surface the specific binary.
+        // `NestedSupportStatus` rejection is fork-from-legacy-catch.
+        // Sub-commits 2.5c/2.6c closed `UnsupportedCarryover` and
+        // `UnsupportedMultiValueParams` respectively; legacy Try bodies
+        // now use the same nested-switch route as TryTable bodies. If
+        // we reach this branch on a shipping binary, the fork-path call
+        // is in a legacy catch handler, which still needs exception
+        // state reconstruction.
         let func = func_name(module, func_id);
         if has_fork_call_in_catch_handler(module, func_id, fork_path) {
             panic!(
@@ -296,18 +293,26 @@ fn instrument_one_function(
                  programs/cpp_eh_fork_from_catch_test.cpp."
             );
         }
-        panic!(
-            "fork-instrument: function `{func}` triggered `UnsupportedLegacyTry` \
-             — a fork-path call inside a legacy `try`/`catch` body or catch handler. \
-             Post-commit-9 (modern wasm-EH SDK flip) this case should not appear \
-             in shipping wasm. Either the libcxx rebuild missed this port (check \
-             that the package depends on libcxx revision ≥ 3) or the source \
-             contains hand-written legacy-EH wasm. Investigate, then either flip \
-             the source to modern EH or extend nested switch-dispatch to handle \
-             the case (currently no trampoline implementation; see \
-             memory/fork-instrument-fierce-wire-paused-pending-423.md \"2.6d \
-             UnsupportedLegacyTry\")."
-        );
+        match nested_status {
+            NestedSupportStatus::UnsupportedLegacyTry => panic!(
+                "fork-instrument: function `{func}` triggered `UnsupportedLegacyTry` \
+                 — a fork-path call inside a legacy `catch` handler. Legacy `try` \
+                 bodies are supported by nested switch-dispatch, but legacy catch \
+                 handlers still need exception-state reconstruction before REWIND \
+                 can re-enter the handler path."
+            ),
+            NestedSupportStatus::UnsupportedCarryover => panic!(
+                "fork-instrument: function `{func}` has a nested fork-path call with \
+                 an operand-stack carryover shape the nested-switch analyser cannot \
+                 type. Extend `compute_nested_carryover_types` / \
+                 `analyze_subregion_spill_types` for the specific producer."
+            ),
+            NestedSupportStatus::UnsupportedMultiValueParams => panic!(
+                "fork-instrument: function `{func}` has unsupported multi-value \
+                 params in nested fork-path control flow."
+            ),
+            NestedSupportStatus::Supported => unreachable!(),
+        }
     }
 
     if has_top_level_stack_carryovers(module, func_id, fork_path) {
@@ -339,9 +344,9 @@ fn instrument_one_function(
         panic!(
             "fork-instrument: function `{func}` has a top-level fork-path call \
              whose operand-stack carryover contains a value of a type the \
-             analyser can't statically determine (Unop / Cmpxchg / TernOp / \
-             RefIsNull / non-fork-path CallIndirect or CallRef / multi-value or \
-             ref-typed structured-control result). The 2.6c push-before \
+             analyser can't statically determine or cannot scalar-spill \
+             (ref-typed producer, non-fork-path CallIndirect or CallRef, \
+             or ref-typed structured-control result). The 2.6c push-before \
              emission can spill this carryover only if its type is known. \
              Extend `compute_carryover_types` to handle the specific producer, \
              or change the source to avoid the pattern."
@@ -929,6 +934,10 @@ fn top_level_stack_effect(
             let (p, r) = block_params_results(t.seq);
             Delta { pops: p, pushes: r }
         }
+        Instr::Try(t) => {
+            let (p, r) = block_params_results(t.seq);
+            Delta { pops: p, pushes: r }
+        }
 
         // --- Function calls ---
         Instr::Call(c) => {
@@ -957,9 +966,9 @@ fn top_level_stack_effect(
         | Instr::ThrowRef(_)
         | Instr::Rethrow(_) => Terminator,
 
-        // --- Wasm-GC and legacy EH: not produced by our LLVM toolchain
-        //     today. Report Unknown so we conservatively force the
-        //     post-commit-3 panic path if any ever appears. ---
+        // --- Wasm-GC: not produced by our LLVM toolchain today. Report
+        //     Unknown so we conservatively force the post-commit-3 panic
+        //     path if any ever appears. ---
         Instr::StructNew(_)
         | Instr::StructNewDefault(_)
         | Instr::StructGet(_)
@@ -979,8 +988,48 @@ fn top_level_stack_effect(
         | Instr::ArrayFill(_)
         | Instr::ArrayCopy(_)
         | Instr::ArrayInitData(_)
-        | Instr::ArrayInitElem(_)
-        | Instr::Try { .. } => Unknown,
+        | Instr::ArrayInitElem(_) => Unknown,
+    }
+}
+
+fn seq_scalar_result_types(
+    module: &Module,
+    local: &LocalFunction,
+    seq_id: InstrSeqId,
+) -> Option<Vec<ValType>> {
+    match local.block(seq_id).ty {
+        InstrSeqType::Simple(None) => Some(Vec::new()),
+        InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => Some(vec![ty]),
+        InstrSeqType::Simple(Some(_)) => None,
+        InstrSeqType::MultiValue(ty_id) => {
+            let results = module.types.get(ty_id).results();
+            if results.iter().all(|&ty| is_scalar(ty)) {
+                Some(results.to_vec())
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn push_structured_results(
+    stack: &mut Vec<Option<ValType>>,
+    module: &Module,
+    local: &LocalFunction,
+    seq_id: InstrSeqId,
+    fallback_pushes: usize,
+) {
+    match seq_scalar_result_types(module, local, seq_id) {
+        Some(types) => {
+            for ty in types {
+                stack.push(Some(ty));
+            }
+        }
+        None => {
+            for _ in 0..fallback_pushes {
+                stack.push(None);
+            }
+        }
     }
 }
 
@@ -1003,37 +1052,183 @@ fn load_pushes(kind: &LoadKind) -> ValType {
 
 /// Return the ValType of a Binop based on its BinaryOp.
 fn binop_pushes(op: &BinaryOp) -> ValType {
+    match op {
+        BinaryOp::I32Eq
+        | BinaryOp::I32Ne
+        | BinaryOp::I32LtS
+        | BinaryOp::I32LtU
+        | BinaryOp::I32GtS
+        | BinaryOp::I32GtU
+        | BinaryOp::I32LeS
+        | BinaryOp::I32LeU
+        | BinaryOp::I32GeS
+        | BinaryOp::I32GeU
+        | BinaryOp::I64Eq
+        | BinaryOp::I64Ne
+        | BinaryOp::I64LtS
+        | BinaryOp::I64LtU
+        | BinaryOp::I64GtS
+        | BinaryOp::I64GtU
+        | BinaryOp::I64LeS
+        | BinaryOp::I64LeU
+        | BinaryOp::I64GeS
+        | BinaryOp::I64GeU
+        | BinaryOp::F32Eq
+        | BinaryOp::F32Ne
+        | BinaryOp::F32Lt
+        | BinaryOp::F32Gt
+        | BinaryOp::F32Le
+        | BinaryOp::F32Ge
+        | BinaryOp::F64Eq
+        | BinaryOp::F64Ne
+        | BinaryOp::F64Lt
+        | BinaryOp::F64Gt
+        | BinaryOp::F64Le
+        | BinaryOp::F64Ge => ValType::I32,
+
+        BinaryOp::I32Add
+        | BinaryOp::I32Sub
+        | BinaryOp::I32Mul
+        | BinaryOp::I32DivS
+        | BinaryOp::I32DivU
+        | BinaryOp::I32RemS
+        | BinaryOp::I32RemU
+        | BinaryOp::I32And
+        | BinaryOp::I32Or
+        | BinaryOp::I32Xor
+        | BinaryOp::I32Shl
+        | BinaryOp::I32ShrS
+        | BinaryOp::I32ShrU
+        | BinaryOp::I32Rotl
+        | BinaryOp::I32Rotr => ValType::I32,
+
+        BinaryOp::I64Add
+        | BinaryOp::I64Sub
+        | BinaryOp::I64Mul
+        | BinaryOp::I64DivS
+        | BinaryOp::I64DivU
+        | BinaryOp::I64RemS
+        | BinaryOp::I64RemU
+        | BinaryOp::I64And
+        | BinaryOp::I64Or
+        | BinaryOp::I64Xor
+        | BinaryOp::I64Shl
+        | BinaryOp::I64ShrS
+        | BinaryOp::I64ShrU
+        | BinaryOp::I64Rotl
+        | BinaryOp::I64Rotr => ValType::I64,
+
+        BinaryOp::F32Add
+        | BinaryOp::F32Sub
+        | BinaryOp::F32Mul
+        | BinaryOp::F32Div
+        | BinaryOp::F32Min
+        | BinaryOp::F32Max
+        | BinaryOp::F32Copysign => ValType::F32,
+
+        BinaryOp::F64Add
+        | BinaryOp::F64Sub
+        | BinaryOp::F64Mul
+        | BinaryOp::F64Div
+        | BinaryOp::F64Min
+        | BinaryOp::F64Max
+        | BinaryOp::F64Copysign => ValType::F64,
+
+        _ => ValType::V128,
+    }
+}
+
+fn unop_pushes(op: &UnaryOp) -> ValType {
     let s = format!("{op:?}");
-    if s.starts_with("I32") || s.starts_with("I8x16") {
-        // I8x16Eq / etc. comparison ops push i32, vector ops push v128;
-        // disambiguate by checking for explicit V128 hint.
-        if s.contains("V128") {
-            ValType::V128
-        } else if s.starts_with("I32") {
-            ValType::I32
-        } else {
-            // Vector comparison: pushes i32 boolean for scalar ops,
-            // v128 for vector ops. Default to v128 for I8x16 ops.
-            ValType::V128
-        }
+    if s.starts_with("I32") || s == "I64Eqz" {
+        ValType::I32
     } else if s.starts_with("I64") {
         ValType::I64
     } else if s.starts_with("F32") {
         ValType::F32
     } else if s.starts_with("F64") {
         ValType::F64
-    } else if s.starts_with("V128")
-        || s.starts_with("I8x16")
-        || s.starts_with("I16x8")
-        || s.starts_with("I32x4")
-        || s.starts_with("I64x2")
-        || s.starts_with("F32x4")
-        || s.starts_with("F64x2")
+    } else if s.starts_with("I8x16ExtractLane")
+        || s.starts_with("I16x8ExtractLane")
+        || s.starts_with("I32x4ExtractLane")
+        || s.contains("AnyTrue")
+        || s.contains("AllTrue")
+        || s.contains("Bitmask")
     {
-        ValType::V128
-    } else {
-        // Unknown op encoding — caller falls back.
         ValType::I32
+    } else if s.starts_with("I64x2ExtractLane") {
+        ValType::I64
+    } else if s.starts_with("F32x4ExtractLane") {
+        ValType::F32
+    } else if s.starts_with("F64x2ExtractLane") {
+        ValType::F64
+    } else {
+        ValType::V128
+    }
+}
+
+fn atomic_width_pushes(width: AtomicWidth) -> ValType {
+    match width {
+        AtomicWidth::I64 | AtomicWidth::I64_8 | AtomicWidth::I64_16 | AtomicWidth::I64_32 => {
+            ValType::I64
+        }
+        AtomicWidth::I32 | AtomicWidth::I32_8 | AtomicWidth::I32_16 => ValType::I32,
+    }
+}
+
+fn select_pushes(explicit: Option<ValType>, pre_stack: &[Option<ValType>]) -> Option<ValType> {
+    if let Some(ty) = explicit {
+        return is_scalar(ty).then_some(ty);
+    }
+    if pre_stack.len() < 3 {
+        return None;
+    }
+    let lhs = pre_stack[pre_stack.len() - 3];
+    let rhs = pre_stack[pre_stack.len() - 2];
+    match (lhs, rhs) {
+        (Some(a), Some(b)) if a == b && is_scalar(a) => Some(a),
+        (Some(a), None) if is_scalar(a) => Some(a),
+        (None, Some(b)) if is_scalar(b) => Some(b),
+        _ => None,
+    }
+}
+
+fn typed_single_push(
+    module: &Module,
+    instr: &Instr,
+    pre_stack: &[Option<ValType>],
+) -> Option<ValType> {
+    match instr {
+        Instr::Const(c) => match c.value {
+            Value::I32(_) => Some(ValType::I32),
+            Value::I64(_) => Some(ValType::I64),
+            Value::F32(_) => Some(ValType::F32),
+            Value::F64(_) => Some(ValType::F64),
+            Value::V128(_) => Some(ValType::V128),
+        },
+        Instr::LocalGet(LocalGet { local: l }) | Instr::LocalTee(LocalTee { local: l }) => {
+            Some(module.locals.get(*l).ty())
+        }
+        Instr::GlobalGet(GlobalGet { global: g }) => Some(module.globals.get(*g).ty),
+        Instr::Load(load) => Some(load_pushes(&load.kind)),
+        Instr::LoadSimd(_) => Some(ValType::V128),
+        Instr::Binop(b) => Some(binop_pushes(&b.op)),
+        Instr::Unop(u) => Some(unop_pushes(&u.op)),
+        Instr::Select(s) => select_pushes(s.ty, pre_stack),
+        Instr::TernOp(_) | Instr::V128Bitselect { .. } => Some(ValType::V128),
+        Instr::AtomicRmw(rmw) => Some(atomic_width_pushes(rmw.width)),
+        Instr::Cmpxchg(cmpxchg) => Some(atomic_width_pushes(cmpxchg.width)),
+        Instr::AtomicNotify(_) | Instr::AtomicWait(_) => Some(ValType::I32),
+        Instr::MemorySize(_)
+        | Instr::MemoryGrow(_)
+        | Instr::TableSize(_)
+        | Instr::TableGrow(_)
+        | Instr::RefIsNull(_)
+        | Instr::RefEq(_)
+        | Instr::I31GetS(_)
+        | Instr::I31GetU(_) => Some(ValType::I32),
+        Instr::I8x16Swizzle { .. } | Instr::I8x16Shuffle { .. } => Some(ValType::V128),
+        _ => None,
     }
 }
 
@@ -1083,7 +1278,7 @@ fn compute_carryover_types(
 
     // Typed operand stack — bottom-to-top. Sub-commit 9-followup
     // (2026-05-14): tracked as `Vec<Option<ValType>>` so unknown
-    // producers (Unop, Cmpxchg, TernOp, non-fork-path CallIndirect/
+    // producers (ref-typed producers, non-fork-path CallIndirect/
     // CallRef, ref-typed structured-control results) push `None`
     // without aborting. Failure is only triggered when a `None` slot
     // ends up in a fork-path call's carryover. This mirrors
@@ -1140,6 +1335,7 @@ fn compute_carryover_types(
                 if stack.len() < pops {
                     return None;
                 }
+                let pre_stack = stack.clone();
                 stack.truncate(stack.len() - pops);
                 if pushes == 0 {
                     continue;
@@ -1173,55 +1369,23 @@ fn compute_carryover_types(
                         continue;
                     }
                     Instr::Block(b) => {
-                        match local.block(b.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, local, b.seq, pushes);
                         continue;
                     }
                     Instr::Loop(l) => {
-                        match local.block(l.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, local, l.seq, pushes);
                         continue;
                     }
                     Instr::IfElse(ie) => {
-                        match local.block(ie.consequent).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, local, ie.consequent, pushes);
                         continue;
                     }
                     Instr::TryTable(t) => {
-                        match local.block(t.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, local, t.seq, pushes);
+                        continue;
+                    }
+                    Instr::Try(t) => {
+                        push_structured_results(&mut stack, module, local, t.seq, pushes);
                         continue;
                     }
                     _ => {}
@@ -1229,31 +1393,7 @@ fn compute_carryover_types(
                 // Single-push, non-call, non-structured-control
                 // producers.
                 debug_assert_eq!(pushes, 1, "multi-push non-Call should not appear");
-                let ty = match instr {
-                    Instr::Const(c) => match c.value {
-                        Value::I32(_) => Some(ValType::I32),
-                        Value::I64(_) => Some(ValType::I64),
-                        Value::F32(_) => Some(ValType::F32),
-                        Value::F64(_) => Some(ValType::F64),
-                        Value::V128(_) => Some(ValType::V128),
-                    },
-                    Instr::LocalGet(LocalGet { local: l })
-                    | Instr::LocalTee(LocalTee { local: l }) => {
-                        Some(module.locals.get(*l).ty())
-                    }
-                    Instr::GlobalGet(GlobalGet { global: g }) => {
-                        Some(module.globals.get(*g).ty)
-                    }
-                    Instr::Load(load) => Some(load_pushes(&load.kind)),
-                    Instr::Binop(b) => Some(binop_pushes(&b.op)),
-                    Instr::MemorySize(_) | Instr::TableSize(_) => Some(ValType::I32),
-                    // Producers we don't statically type (Unop,
-                    // Cmpxchg, TernOp, RefIsNull, …) — push `None`.
-                    // The analyser fails only if this slot reaches a
-                    // fork-path call's carryover.
-                    _ => None,
-                };
-                stack.push(ty);
+                stack.push(typed_single_push(module, instr, &pre_stack));
             }
             StackEffect::Terminator => {
                 // Post-terminator code in the same seq is unreachable
@@ -1362,8 +1502,9 @@ fn compute_nested_carryover_types(
 /// `compute_nested_carryover_types`.
 ///
 /// Stack values are tracked as `Option<ValType>`: producers we can
-/// type statically push `Some(ty)`; producers we can't (e.g. `Unop`,
-/// `Cmpxchg`, multi-value structured control flow) push `None`.
+/// type statically push `Some(ty)`; producers we can't scalar-spill
+/// (e.g. ref-typed producers or non-fork-path CallRef results) push
+/// `None`.
 /// `None` slots are tolerated as long as they're consumed before
 /// the next fork-path call; only `None` slots that end up IN A
 /// carryover force `walk_seq_for_carryovers` to fail conservatively
@@ -1437,6 +1578,7 @@ fn walk_seq_for_carryovers(
                 if stack.len() < pops {
                     return None;
                 }
+                let pre_stack = stack.clone();
                 stack.truncate(stack.len() - pops);
                 if pushes == 0 {
                     continue;
@@ -1475,55 +1617,23 @@ fn walk_seq_for_carryovers(
                         continue;
                     }
                     Instr::Block(b) => {
-                        match f.block(b.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, f, b.seq, pushes);
                         continue;
                     }
                     Instr::Loop(l) => {
-                        match f.block(l.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, f, l.seq, pushes);
                         continue;
                     }
                     Instr::IfElse(ie) => {
-                        match f.block(ie.consequent).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, f, ie.consequent, pushes);
                         continue;
                     }
                     Instr::TryTable(t) => {
-                        match f.block(t.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, f, t.seq, pushes);
+                        continue;
+                    }
+                    Instr::Try(t) => {
+                        push_structured_results(&mut stack, module, f, t.seq, pushes);
                         continue;
                     }
                     _ => {}
@@ -1533,31 +1643,7 @@ fn walk_seq_for_carryovers(
                     pushes, 1,
                     "multi-push non-call/non-structured-control should not reach here"
                 );
-                let ty = match instr {
-                    Instr::Const(c) => match c.value {
-                        Value::I32(_) => Some(ValType::I32),
-                        Value::I64(_) => Some(ValType::I64),
-                        Value::F32(_) => Some(ValType::F32),
-                        Value::F64(_) => Some(ValType::F64),
-                        Value::V128(_) => Some(ValType::V128),
-                    },
-                    Instr::LocalGet(LocalGet { local: l })
-                    | Instr::LocalTee(LocalTee { local: l }) => {
-                        Some(module.locals.get(*l).ty())
-                    }
-                    Instr::GlobalGet(GlobalGet { global: g }) => {
-                        Some(module.globals.get(*g).ty)
-                    }
-                    Instr::Load(load) => Some(load_pushes(&load.kind)),
-                    Instr::Binop(b) => Some(binop_pushes(&b.op)),
-                    Instr::MemorySize(_) | Instr::TableSize(_) => Some(ValType::I32),
-                    // Anything else (Unop, Cmpxchg, TernOp, RefIsNull,
-                    // …) — its pushed value is fine on the stack but
-                    // the analyser can't type it. Push `None`; we'll
-                    // fail only if the slot is observed in a carryover.
-                    _ => None,
-                };
-                stack.push(ty);
+                stack.push(typed_single_push(module, instr, &pre_stack));
             }
             StackEffect::Terminator => {
                 // Post-terminator code in this seq is unreachable.
@@ -4212,9 +4298,10 @@ fn classify_seq(
                 // stack-effect" patterns and routed to guard-dispatch.
             }
             Instr::Try(t) => {
-                if subtree_contains_fork_call(f, t.seq, fork_path) {
-                    return NestedSupportStatus::UnsupportedLegacyTry;
-                }
+                // Legacy try bodies follow the same nested-switch route
+                // as block/loop/try_table bodies. Legacy catch handlers
+                // remain unsupported because REWIND cannot re-enter a
+                // handler without reconstructing the exception path.
                 for c in &t.catches {
                     let handler = match c {
                         LegacyCatch::Catch { handler, .. } => Some(*handler),
@@ -4355,7 +4442,11 @@ fn seq_has_direct_fork_carryover(
         // nested seq's subtree contains a fork-path call (so the
         // partition would emit a SubRegion landing for it).
         let is_subregion_landing = match instr {
-            Instr::Block(_) | Instr::Loop(_) | Instr::TryTable(_) | Instr::IfElse(_) => {
+            Instr::Block(_)
+            | Instr::Loop(_)
+            | Instr::TryTable(_)
+            | Instr::Try(_)
+            | Instr::IfElse(_) => {
                 nested_seqs(instr)
                     .iter()
                     .any(|s| subtree_contains_fork_call(f, *s, fork_path))
@@ -4400,10 +4491,9 @@ fn seq_has_direct_fork_carryover(
 /// after the block runs (juggling with a `tmp_result_local` if the
 /// block produces an i32 result).
 ///
-/// Wider carryover patterns (multi-value, non-i32 types, carryovers
-/// at DirectCall or SubRegionIfElse landings) still fall back to
-/// guard-dispatch; extending support is straightforward but not
-/// needed for the cases we've seen so far.
+/// Wider carryover patterns (multi-value, non-i32 types, carryovers at
+/// DirectCall landings) still reject; extending support is
+/// straightforward but not needed for the cases we've seen so far.
 fn seq_has_unsupported_carryover(
     module: &Module,
     f: &LocalFunction,
@@ -4431,7 +4521,11 @@ fn seq_has_unsupported_carryover(
 
         // Sub-region landings.
         let is_subregion = match instr {
-            Instr::Block(_) | Instr::Loop(_) | Instr::TryTable(_) | Instr::IfElse(_) => {
+            Instr::Block(_)
+            | Instr::Loop(_)
+            | Instr::TryTable(_)
+            | Instr::Try(_)
+            | Instr::IfElse(_) => {
                 nested_seqs(instr)
                     .iter()
                     .any(|s| subtree_contains_fork_call(f, *s, fork_path))
@@ -4453,36 +4547,9 @@ fn seq_has_unsupported_carryover(
                 if is_ifelse { 1 } else { subregion_params };
             let carryover_depth = depth.saturating_sub(expected_input);
             if carryover_depth > 0 {
-                // Reject IfElse carryovers (cond rewrite + carryover
-                // interaction is not yet implemented; the IfElse cond-
-                // rewrite via `select` would need extending to juggle
-                // the additional values too).
-                if is_ifelse {
-                    return true;
-                }
-                // Reject more than 1 EXTRA carryover above the
-                // SubRegion's declared type-params (multi-value
-                // spilling at the EXTRA-carryover level not yet
-                // supported — but params themselves are now allowed).
-                if carryover_depth > 1 {
-                    return true;
-                }
-                // Reject if the SubRegion's result type isn't empty
-                // or a single i32. The 2.6a push-before emission
-                // works for any result shape, but the carryover
-                // tracker downstream still assumes a 0-or-1-i32
-                // result for the extra-carryover case.
-                let result_ok = match seq_result_type(f, instr) {
-                    Some(SubRegionResult::None) => true,
-                    Some(SubRegionResult::SingleI32) => true,
-                    _ => false,
-                };
-                if !result_ok {
-                    return true;
-                }
-                // Otherwise: this is a supported single-i32
-                // extra-carryover (possibly combined with multi-value
-                // params, both spilled together by 2.6a's analyser).
+                // Otherwise: this is a supported extra-carryover
+                // (possibly combined with multi-value params, both
+                // spilled together by 2.6a's analyser).
             }
         }
 
@@ -4512,6 +4579,7 @@ fn subregion_input_param_count(
         Instr::Block(b) => Some(b.seq),
         Instr::Loop(l) => Some(l.seq),
         Instr::TryTable(t) => Some(t.seq),
+        Instr::Try(t) => Some(t.seq),
         _ => None,
     };
     let Some(seq) = body_seq else {
@@ -4521,27 +4589,6 @@ fn subregion_input_param_count(
         InstrSeqType::MultiValue(ty_id) => module.types.get(ty_id).params().len(),
         _ => 0,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubRegionResult {
-    None,
-    SingleI32,
-    Other,
-}
-
-fn seq_result_type(f: &LocalFunction, instr: &Instr) -> Option<SubRegionResult> {
-    let body_seq = match instr {
-        Instr::Block(b) => Some(b.seq),
-        Instr::Loop(l) => Some(l.seq),
-        Instr::TryTable(t) => Some(t.seq),
-        _ => None,
-    }?;
-    Some(match f.block(body_seq).ty {
-        InstrSeqType::Simple(None) => SubRegionResult::None,
-        InstrSeqType::Simple(Some(ValType::I32)) => SubRegionResult::SingleI32,
-        _ => SubRegionResult::Other,
-    })
 }
 
 /// For each non-IfElse SubRegion landing in a fork-bearing seq,
@@ -4565,8 +4612,9 @@ fn seq_result_type(f: &LocalFunction, instr: &Instr) -> Option<SubRegionResult> 
 ///   for the SubRegion's own input requirements, then extra carryover
 ///   above; both ordered deepest-stack-first as they would appear on
 ///   the parent stack just before the SubRegion instr).
-/// - SubRegionIfElse: empty Vec (IfElse carryovers stay rejected by
-///   `seq_has_unsupported_carryover`).
+/// - SubRegionIfElse: the full spill ValType list, where the last
+///   value is the original condition and preceding values are restored
+///   as carryovers below the condition.
 ///
 /// Returns `None` if any producer in this seq pushes a value whose
 /// type can't be statically determined AND that value ends up in a
@@ -4635,18 +4683,15 @@ fn analyze_subregion_spill_types(
                 }
             }
             if is_subregion_landing {
-                if is_ifelse {
-                    // IfElse landings still go through their own
-                    // carryover handling; report empty here.
-                    out.push(Vec::new());
-                } else {
-                    // Spill list = the full current parent stack
-                    // (deepest-first). The SubRegion will consume its
-                    // declared type-params from the top; any extra
-                    // values beneath stay carryover.
-                    let snap = snapshot(&stack)?;
-                    out.push(snap);
-                }
+                // Spill list = the full current parent stack
+                // (deepest-first). For Block/Loop/TryTable/Try, the
+                // SubRegion consumes its declared type-params from the
+                // top and any extra values beneath stay carryover. For
+                // IfElse, the top slot is the original condition; values
+                // beneath it are restored before the selected condition
+                // is pushed back.
+                let snap = snapshot(&stack)?;
+                out.push(snap);
             }
         }
 
@@ -4687,6 +4732,7 @@ fn analyze_subregion_spill_types(
                 if stack.len() < pops {
                     return None;
                 }
+                let pre_stack = stack.clone();
                 stack.truncate(stack.len() - pops);
                 if pushes == 0 {
                     continue;
@@ -4707,81 +4753,29 @@ fn analyze_subregion_spill_types(
                         continue;
                     }
                     Instr::Block(b) => {
-                        match f.block(b.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, f, b.seq, pushes);
                         continue;
                     }
                     Instr::Loop(l) => {
-                        match f.block(l.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, f, l.seq, pushes);
                         continue;
                     }
                     Instr::IfElse(ie) => {
-                        match f.block(ie.consequent).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, f, ie.consequent, pushes);
                         continue;
                     }
                     Instr::TryTable(t) => {
-                        match f.block(t.seq).ty {
-                            InstrSeqType::Simple(Some(ty)) if is_scalar(ty) => {
-                                stack.push(Some(ty));
-                            }
-                            _ => {
-                                for _ in 0..pushes {
-                                    stack.push(None);
-                                }
-                            }
-                        }
+                        push_structured_results(&mut stack, module, f, t.seq, pushes);
+                        continue;
+                    }
+                    Instr::Try(t) => {
+                        push_structured_results(&mut stack, module, f, t.seq, pushes);
                         continue;
                     }
                     _ => {}
                 }
                 debug_assert_eq!(pushes, 1);
-                let ty = match instr {
-                    Instr::Const(c) => match c.value {
-                        Value::I32(_) => Some(ValType::I32),
-                        Value::I64(_) => Some(ValType::I64),
-                        Value::F32(_) => Some(ValType::F32),
-                        Value::F64(_) => Some(ValType::F64),
-                        Value::V128(_) => Some(ValType::V128),
-                    },
-                    Instr::LocalGet(LocalGet { local: l })
-                    | Instr::LocalTee(LocalTee { local: l }) => {
-                        Some(module.locals.get(*l).ty())
-                    }
-                    Instr::GlobalGet(GlobalGet { global: g }) => {
-                        Some(module.globals.get(*g).ty)
-                    }
-                    Instr::Load(load) => Some(load_pushes(&load.kind)),
-                    Instr::Binop(b) => Some(binop_pushes(&b.op)),
-                    Instr::MemorySize(_) | Instr::TableSize(_) => Some(ValType::I32),
-                    _ => None,
-                };
-                stack.push(ty);
+                stack.push(typed_single_push(module, instr, &pre_stack));
             }
             StackEffect::Terminator => return Some(out),
             StackEffect::Unknown => return None,
@@ -5143,16 +5137,17 @@ fn instrument_one_function_nested_switch(
                     continue;
                 }
                 let is_subregion = match instr {
-                    Instr::Block(_) | Instr::Loop(_) | Instr::TryTable(_) | Instr::IfElse(_) => {
-                        nested_seqs(instr)
-                            .iter()
-                            .any(|s| regions.contains_key(s))
-                    }
+                    Instr::Block(_)
+                    | Instr::Loop(_)
+                    | Instr::TryTable(_)
+                    | Instr::Try(_)
+                    | Instr::IfElse(_) => nested_seqs(instr)
+                        .iter()
+                        .any(|s| regions.contains_key(s)),
                     _ => false,
                 };
                 if is_subregion {
-                    let is_ifelse = matches!(instr, Instr::IfElse(_));
-                    if !is_ifelse && landing_idx < spill_types.len() {
+                    if landing_idx < spill_types.len() {
                         let types = &spill_types[landing_idx];
                         if !types.is_empty() {
                             to_allocate.push((seq_id, landing_idx, types.clone()));
@@ -5468,7 +5463,13 @@ fn emit_chunk_tail_for_landing(
             emit_spill_args(out, &arg_spills[call_idx], cr);
         }
         LandingKind::SubRegionIfElse { .. } => {
-            push_instr(out, Instr::LocalSet(LocalSet { local: cond_swap_local }));
+            if let Some(plan) = &landing.carryover {
+                for (l, _ty) in plan.spill_locals.iter().rev() {
+                    push_instr(out, Instr::LocalSet(LocalSet { local: *l }));
+                }
+            } else {
+                push_instr(out, Instr::LocalSet(LocalSet { local: cond_swap_local }));
+            }
         }
         LandingKind::SubRegion { .. } => {
             // Sub-commit 2.6a: spill ALL parent-stack values at this
@@ -6212,6 +6213,19 @@ fn emit_post_landing(
                 .expect("SubRegionIfElse landing must have its enclosing instr stashed");
 
             let s = &mut local.block_mut(seq_id).instrs;
+            let cond_local = if let Some(plan) = &landing.carryover {
+                let (cond_local, _ty) = plan
+                    .spill_locals
+                    .last()
+                    .copied()
+                    .expect("IfElse spill plan must include the condition");
+                for (l, _ty) in plan.spill_locals.iter().take(plan.spill_locals.len() - 1) {
+                    push_instr(s, Instr::LocalGet(LocalGet { local: *l }));
+                }
+                cond_local
+            } else {
+                cond_swap_local
+            };
             // Push force_flag.
             match (then_range, else_range) {
                 (Some(_), None) => {
@@ -6236,7 +6250,7 @@ fn emit_post_landing(
                 }
             }
             // Push orig_cond from the spill local.
-            push_instr(s, Instr::LocalGet(LocalGet { local: cond_swap_local }));
+            push_instr(s, Instr::LocalGet(LocalGet { local: cond_local }));
             // Push is_rewind.
             push_instr(s, Instr::GlobalGet(GlobalGet { global: state_global }));
             push_instr(
@@ -6642,20 +6656,14 @@ mod trampoline_tests {
 
     #[test]
     fn compute_carryover_types_unknown_producer_consumed_before_call_returns_some() {
-        // Post-2.6c-followup: an `Unop` (i32.eqz here) pushes a value
-        // whose type the analyser doesn't statically track, but the
-        // value is consumed (by `br_if`) BEFORE the fork-path call.
-        // Pre-followup: analyser returned None, forcing guard-dispatch.
-        // Post-followup: `None` slots are tolerated as long as they
-        // don't end up in a carryover — the call has no carryover
-        // here, so the analyser succeeds with an empty Vec.
+        // Post-2.6c-followup: non-carryover stack values do not force
+        // the old guard-dispatch path. The call has no carryover here,
+        // so the analyser succeeds with an empty Vec.
         let wat = r#"
             (module
               (import "kernel" "kernel_fork" (func $fork (result i32)))
               (func $main (export "_start") (result i32)
                 (local $i i32)
-                ;; Unop-producer pattern: i32.eqz pushes an unknown-type
-                ;; slot, br_if consumes it before the fork call.
                 (local.set $i (i32.add (local.get $i) (i32.const 1)))
                 (drop (call $fork))
                 (local.get $i)))
@@ -6672,22 +6680,18 @@ mod trampoline_tests {
 
     #[test]
     fn compute_carryover_types_unknown_producer_in_carryover_returns_none() {
-        // Contrast case: an unknown-type producer's value IS the
-        // carryover at a fork-path call. Analyser correctly fails so
-        // the caller falls back to guard-dispatch.
+        // Contrast case: a ref-typed producer's value IS the carryover
+        // at a fork-path call. The switch-dispatch spill path only
+        // supports scalar ValTypes, so the analyser correctly fails.
         let wat = r#"
             (module
               (import "kernel" "kernel_fork" (func $fork (result i32)))
-              (memory (export "memory") 1)
               (func $main (export "_start") (result i32)
-                (local $p i32)
-                (local.set $p (i32.const 100))
-                ;; Push an unknown-type slot (i32.eqz result) BEFORE
-                ;; the fork call — it becomes the carryover.
-                local.get $p
-                i32.eqz
+                ;; Push a ref-typed slot BEFORE the fork call — it
+                ;; becomes the carryover.
+                ref.null extern
                 call $fork
-                ;; Consume both: eqz_result + fork_pid.
+                ;; Consume both: fork_pid + ref.null.
                 drop
                 drop
                 (i32.const 0)))
@@ -6697,8 +6701,8 @@ mod trampoline_tests {
         let main = find_func_id(&module, "main");
         let fork_path = build_fork_path(&module, &["fork", "main"]);
         let result = compute_carryover_types(&module, main, &fork_path);
-        // Carryover would be [None] (the i32.eqz result). Analyser
-        // refuses → None.
+        // Carryover would be [None] (the ref-typed result). Analyser
+        // refuses -> None.
         assert_eq!(result, None);
     }
 
@@ -7166,4 +7170,3 @@ mod trampoline_tests {
         }
     }
 }
-

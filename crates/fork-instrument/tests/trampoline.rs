@@ -35,31 +35,30 @@
 //!   `has_nested_fork_calls` treats every nested `call_indirect` as
 //!   fork-bearing and the type-matched indirect-reverse closure in
 //!   `call_graph::reaching_closure` covers it.
-//! - **Legacy `try`/`catch`** — commit 9 (modern wasm-EH SDK flip)
-//!   removed legacy lowering from the SDK; commits 3-4 deleted
-//!   guard-dispatch and replaced its callers with panics. Shipping
-//!   wasm post-libcxx-revision-3-rebuild no longer contains
-//!   `Instr::Try` in fork-path functions.
+//! - **Legacy `try` body** — 2026-05-17 CI showed that shipping C
+//!   ports can still contain legacy `try` in fork-path functions even
+//!   with explicit modern-EH flags. Forks in the try body are absorbed
+//!   by nested switch-dispatch; legacy catch-handler forks still panic.
 //!
 //! Net result: the trampoline scaffolding is preserved in
 //! `crates/fork-instrument/src/instrument.rs` but currently has no
 //! callers. The tests below verify that each "reserved for the
 //! trampoline" fixture now routes to switch-dispatch (not the
-//! trampoline) and that the legacy-Try case panics loudly per
-//! commit 3's invariant.
+//! trampoline) and that the legacy-Try-body case also routes through
+//! nested switch-dispatch.
 //!
 //! | Fixture                              | Routes to (post-commit-4) | Notes                          |
 //! |--------------------------------------|---------------------------|--------------------------------|
 //! | `top_level_carryover.wat`            | switch-dispatch (2.4c)    | per-call carryover spilling    |
 //! | `nested_carryover_in_loop.wat`       | nested switch (2.5c)      | direct-call carryover spills   |
 //! | `nested_multivalue_params.wat`       | nested switch (2.6c)      | body-param prespill + reload   |
-//! | `legacy_try_fork.wat`                | panics (commit 3)         | commit 9 removes from shipping |
+//! | `legacy_try_fork.wat`                | nested switch             | fork in try body only          |
 //! | `nested_call_indirect.wat`           | nested switch (2.1)       | already handled empirically    |
 
 use fork_instrument::{Options, instrument};
 use walrus::{
     LocalFunction, Module,
-    ir::{Block, IfElse, Instr, InstrSeqId, Loop, TryTable},
+    ir::{Block, IfElse, Instr, InstrSeqId, Loop, Try, TryTable},
 };
 
 /// Validate emitted bytes via wasmparser (independent from walrus).
@@ -101,6 +100,7 @@ fn nested_of(instr: &Instr) -> Vec<InstrSeqId> {
         Instr::Loop(Loop { seq }) => vec![*seq],
         Instr::IfElse(IfElse { consequent, alternative }) => vec![*consequent, *alternative],
         Instr::TryTable(TryTable { seq, .. }) => vec![*seq],
+        Instr::Try(Try { seq, .. }) => vec![*seq],
         _ => vec![],
     }
 }
@@ -251,8 +251,7 @@ fn nested_multivalue_params_uses_nested_switch_dispatch() {
     );
     // Trampoline post-table is NOT emitted — switch-dispatch absorbs
     // this case. The trampoline scaffolding stays reserved for
-    // genuinely-impossible cases (currently UnsupportedLegacyTry,
-    // which commit 9's modern-EH SDK flip largely obsoletes).
+    // unimplemented cases such as fork-from-legacy-catch.
     assert!(
         !has_table_with_prefix(&module, "_start_post_table"),
         "post-2.6c: nested switch-dispatch absorbs multi-value-params; \
@@ -261,50 +260,33 @@ fn nested_multivalue_params_uses_nested_switch_dispatch() {
 }
 
 // ---------------------------------------------------------------------
-// Legacy try/catch fork-path call — panics post-commit-9
+// Legacy try/catch fork-path call in try body
 // ---------------------------------------------------------------------
 //
-// Commit 9 (modern wasm-EH SDK flip) removed `-wasm-use-legacy-eh=true`
-// from the SDK and rebuilt libcxx under modern EH lowering. Shipping
-// wasm should no longer contain `Instr::Try` in fork-path functions.
-// Sub-commits 2.5c/2.6c absorbed the other `NestedSupportStatus`
-// rejections; commit 3 replaced `instrument_one_function_guard_dispatch`'s
-// callers with panics. If a hand-written or third-party fixture still
-// has legacy try in a fork-path, the instrument tool panics with a
-// clear message naming the function — that's what this test asserts.
+// 2026-05-17 CI disproved the "modern flags remove every legacy Try"
+// invariant for C ports such as bash, quickjs, and vim. A fork in the
+// legacy try body can use the same per-region nested-switch route as
+// Block/Loop/TryTable bodies. Legacy catch handlers still need their
+// exception path reconstructed and remain unsupported.
 //
 // Note: the wat crate may not parse legacy try/catch on the host's
 // version (it's gated behind the legacy-EH feature). Skip cleanly
 // in that case.
 
 #[test]
-fn legacy_try_fork_panics_post_commit_9() {
+fn legacy_try_body_fork_uses_nested_switch_dispatch() {
     let wat = include_str!("fixtures/trampoline/legacy_try_fork.wat");
     let Some(input) = try_parse(wat) else {
         eprintln!("skip: wat crate did not parse legacy try/catch fixture");
         return;
     };
-    // catch_unwind so the test can assert the panic message rather
-    // than just letting the panic propagate.
-    let result = std::panic::catch_unwind(|| {
-        instrument(&input, &Options::default())
-    });
-    let payload = match result {
-        Ok(_) => panic!(
-            "expected instrument() to panic on legacy try/catch fork-path \
-             (post-commit-9 invariant), but it returned Ok"
-        ),
-        Err(p) => p,
-    };
-    // Panic payload is typically a String (from `panic!("...")`).
-    let msg = payload
-        .downcast::<String>()
-        .map(|s| *s)
-        .or_else(|p| p.downcast::<&'static str>().map(|s| (*s).to_string()))
-        .unwrap_or_else(|_| "<unknown panic>".into());
+    let output = instrument(&input, &Options::default()).expect("instrument");
+    validate(&output);
+    let module = Module::from_buffer(&output).expect("walrus parse");
+
     assert!(
-        msg.contains("UnsupportedLegacyTry"),
-        "expected panic message to mention `UnsupportedLegacyTry`; got: {msg}"
+        has_br_table_in(&module, "_start"),
+        "legacy try-body fork must route to nested switch-dispatch (br_table emitted)"
     );
 }
 
