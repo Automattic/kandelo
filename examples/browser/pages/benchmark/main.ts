@@ -34,10 +34,6 @@ import helloWasmUrl from "../../../../benchmarks/wasm/hello.wasm?url";
 // Kernel
 import kernelWasmUrl from "@kernel-wasm?url";
 
-// VFS images (fetched lazily; 404 handled per-suite)
-import ERLANG_VFS_URL from "@binaries/programs/wasm32/erlang-vfs.vfs.zst?url";
-import WP_VFS_URL from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
-
 /**
  * Optional application-binary URL imports are resolved via `import.meta.glob`.
  * Static top-level `?url` imports fail the whole page load if any file is
@@ -53,10 +49,16 @@ const OPTIONAL_URLS = {
   ...import.meta.glob("../../../libs/erlang/bin/beam.wasm", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../libs/erlang/beam.wasm", {
+    query: "?url", import: "default",
+  }),
   ...import.meta.glob("../../../nginx/nginx.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../binaries/programs/wasm32/php/php-fpm.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/php/php-fpm.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../libs/coreutils/bin/coreutils.wasm", {
@@ -86,6 +88,24 @@ const OPTIONAL_URLS = {
   ...import.meta.glob("../../../libs/mariadb/mariadb-install-64/share/mysql/mysql_system_tables_data.sql", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/erlang-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/erlang-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../public/erlang.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/wordpress.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/wordpress.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../public/wordpress.vfs.zst", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function loadOptionalUrl(
@@ -98,6 +118,18 @@ async function loadOptionalUrl(
     throw new Error(`${label} is not built. Run: ${buildHint}`);
   }
   return loader();
+}
+
+async function loadOptionalUrlFrom(
+  relPaths: string[],
+  label: string,
+  buildHint: string,
+): Promise<string> {
+  for (const relPath of relPaths) {
+    const loader = OPTIONAL_URLS[relPath];
+    if (loader) return loader();
+  }
+  throw new Error(`${label} is not built. Run: ${buildHint}`);
 }
 
 const logEl = document.getElementById("log")!;
@@ -134,13 +166,17 @@ async function runProgram(
     onStdout: (data) => { stdout += new TextDecoder().decode(data); },
     onStderr: () => {},
   });
-  await kernel.init();
+  try {
+    await kernel.init();
 
-  // Create /tmp for file benchmarks (may already exist after init)
-  try { kernel.fs.mkdir("/tmp", 0o777); } catch {};
+    // Create /tmp for file benchmarks (may already exist after init)
+    try { kernel.fs.mkdir("/tmp", 0o777); } catch {};
 
-  const exitCode = await kernel.spawn(programBytes, argv);
-  return { exitCode, stdout };
+    const exitCode = await kernel.spawn(programBytes, argv);
+    return { exitCode, stdout };
+  } finally {
+    try { await kernel.destroy(); } catch {}
+  }
 }
 
 /**
@@ -160,17 +196,21 @@ async function runProgramWithExecMap(
     onStdout: (data) => { stdout += new TextDecoder().decode(data); },
     onStderr: () => {},
   });
-  await kernel.init();
-  try { kernel.fs.mkdir("/tmp", 0o777); } catch {};
+  try {
+    await kernel.init();
+    try { kernel.fs.mkdir("/tmp", 0o777); } catch {};
 
-  if (execMap.length > 0) {
-    kernel.registerLazyFiles(execMap.map(e => ({
-      path: e.path, url: e.url, size: e.size, mode: 0o755,
-    })));
+    if (execMap.length > 0) {
+      kernel.registerLazyFiles(execMap.map(e => ({
+        path: e.path, url: e.url, size: e.size, mode: 0o755,
+      })));
+    }
+
+    const exitCode = await kernel.spawn(programBytes, argv);
+    return { exitCode, stdout };
+  } finally {
+    try { await kernel.destroy(); } catch {}
   }
-
-  const exitCode = await kernel.spawn(programBytes, argv);
-  return { exitCode, stdout };
 }
 
 // ─── syscall-io ─────────────────────────────────────────────────────────────
@@ -284,7 +324,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
   let beamWasmUrl: string;
   try {
     beamWasmUrl = await loadOptionalUrl(
-      "../../../libs/erlang/bin/beam.wasm",
+      "../../../libs/erlang/beam.wasm",
       "BEAM binary",
       "bash examples/libs/erlang/build-erlang.sh",
     );
@@ -294,9 +334,21 @@ async function runErlangRing(): Promise<Record<string, number>> {
   }
 
   log("  Loading BEAM + OTP runtime...");
-  const vfsResp = await fetch(ERLANG_VFS_URL);
+  let erlangVfsUrl: string;
+  try {
+    erlangVfsUrl = await loadOptionalUrlFrom([
+      "../../public/erlang.vfs.zst",
+      "../../../../local-binaries/programs/wasm32/erlang-vfs.vfs.zst",
+      "../../../../binaries/programs/wasm32/erlang-vfs.vfs.zst",
+    ], "Erlang VFS image", "bash examples/browser/scripts/build-erlang-vfs-image.sh");
+  } catch (err) {
+    log(`  Skipping erlang-ring: ${(err as Error).message}`);
+    return {};
+  }
+
+  const vfsResp = await fetch(erlangVfsUrl);
   if (!vfsResp.ok) {
-    log(`  Skipping erlang-ring: ${ERLANG_VFS_URL} not found (HTTP ${vfsResp.status}). Build: bash examples/browser/scripts/build-erlang-vfs-image.sh`);
+    log(`  Skipping erlang-ring: ${erlangVfsUrl} not found (HTTP ${vfsResp.status}). Build: bash examples/browser/scripts/build-erlang-vfs-image.sh`);
     return {};
   }
   const [kernelBytes, beamBytes, vfsImageBuf] = await Promise.all([
@@ -425,8 +477,10 @@ async function runWordPress(): Promise<Record<string, number>> {
       "nginx binary",
       "bash examples/nginx/build.sh",
     );
-    phpFpmWasmUrl = await loadOptionalUrl(
+    phpFpmWasmUrl = await loadOptionalUrlFrom([
+      "../../../../local-binaries/programs/wasm32/php/php-fpm.wasm",
       "../../../../binaries/programs/wasm32/php/php-fpm.wasm",
+    ],
       "PHP-FPM binary",
       "bash examples/nginx/build.sh",
     );
@@ -453,9 +507,21 @@ async function runWordPress(): Promise<Record<string, number>> {
   ).catch(() => null);
 
   log("  Fetching binaries and VFS image...");
-  const vfsResp = await fetch(WP_VFS_URL);
+  let wpVfsUrl: string;
+  try {
+    wpVfsUrl = await loadOptionalUrlFrom([
+      "../../public/wordpress.vfs.zst",
+      "../../../../local-binaries/programs/wasm32/wordpress.vfs.zst",
+      "../../../../binaries/programs/wasm32/wordpress.vfs.zst",
+    ], "WordPress VFS image", "bash examples/browser/scripts/build-wp-vfs-image.sh");
+  } catch (err) {
+    log(`  Skipping wordpress: ${(err as Error).message}`);
+    return {};
+  }
+
+  const vfsResp = await fetch(wpVfsUrl);
   if (!vfsResp.ok) {
-    log(`  Skipping wordpress: ${WP_VFS_URL} not found (HTTP ${vfsResp.status}). Build: bash examples/browser/scripts/build-wp-vfs-image.sh`);
+    log(`  Skipping wordpress: ${wpVfsUrl} not found (HTTP ${vfsResp.status}). Build: bash examples/browser/scripts/build-wp-vfs-image.sh`);
     return {};
   }
   const [kernelBytes, vfsImageBuf, nginxSize, phpFpmSize, coreutilsSize, grepSize, sedSize] = await Promise.all([

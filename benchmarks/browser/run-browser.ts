@@ -65,6 +65,9 @@ export async function runBrowserBenchmarks(
         "Cross-Origin-Embedder-Policy": "require-corp",
       },
     },
+    optimizeDeps: {
+      entries: [resolve(browserDir, "pages/benchmark/index.html")],
+    },
     logLevel: "warn",
   });
   await server.listen();
