@@ -502,8 +502,8 @@ describe("fork_instrument_coverage / F-* accepted limits", () => {
   // F-03, F-04 — wasm-GC anyref / struct.new. No C-source surface
   // (LLVM-emitted C doesn't produce these); covered by cargo-level
   // tests in `crates/fork-instrument/tests/coverage_wat.rs` which
-  // verify fork-instrument either rejects gracefully with a clear
-  // error or accepts-and-validates without silent miscompilation.
+  // verify fork-instrument rejects the accepted-limit shapes with a
+  // clear diagnostic rather than silently accepting them.
   it.skip("F-03 wasm-GC anyref accepted limit [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
   it.skip("F-04 wasm-GC struct.new accepted limit [tested via crates/fork-instrument/tests/coverage_wat.rs]", () => {});
 });

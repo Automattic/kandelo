@@ -29,6 +29,26 @@ fn assert_instruments_and_validates(wat: &str, label: &str) {
         .unwrap_or_else(|e| panic!("{label}: wasmparser validation: {e}"));
 }
 
+fn assert_instrument_rejects(wat: &str, label: &str, expected: &[&str]) {
+    let input = wat::parse_str(wat).unwrap_or_else(|e| panic!("{label}: wat parse: {e}"));
+    let result = std::panic::catch_unwind(|| instrument(&input, &Options::default()));
+    let msg = match result {
+        Ok(Ok(_)) => panic!("{label}: fork-instrument unexpectedly accepted accepted-limit wasm"),
+        Ok(Err(e)) => e.to_string(),
+        Err(p) => p
+            .downcast::<String>()
+            .map(|s| *s)
+            .or_else(|p| p.downcast::<&'static str>().map(|s| (*s).to_string()))
+            .unwrap_or_else(|_| "<unknown panic>".into()),
+    };
+    for needle in expected {
+        assert!(
+            msg.contains(needle),
+            "{label}: rejection diagnostic did not contain `{needle}`; got: {msg}",
+        );
+    }
+}
+
 // ---------------------------------------------------------------------
 // S-04..S-07: side effects before fork
 // ---------------------------------------------------------------------
@@ -150,7 +170,7 @@ fn s_07_non_nullable_funcref_call_result_before_fork() {
 // `classify_ref` step rather than silently miscompile.
 
 #[test]
-fn f_03_anyref_on_fork_path_panics() {
+fn f_03_anyref_on_fork_path_rejects_with_diagnostic() {
     // Use anyref as a function-local on a fork-path function.
     let wat = r#"
         (module
@@ -158,64 +178,38 @@ fn f_03_anyref_on_fork_path_panics() {
           (memory 1)
           (func $main (export "_start") (result i32)
             (local $r anyref)
+            ref.null any
+            local.set $r
             (drop (call $fork))
+            local.get $r
+            drop
             (i32.const 0)))
     "#;
-    let input = wat::parse_str(wat).unwrap_or_else(|e| panic!("wat parse: {e}"));
-    let result = std::panic::catch_unwind(|| {
-        instrument(&input, &Options::default())
-    });
-    match result {
-        Ok(_) => {
-            // Some toolchains may not produce anyref locals; if
-            // fork-instrument accepts this module, it should still
-            // validate. Accept that outcome too — the goal is
-            // "either reject or accept-and-validate", not silent
-            // miscompile.
-        }
-        Err(p) => {
-            // Panic — confirm it's about a wasm-GC ref.
-            let msg = p
-                .downcast::<String>()
-                .map(|s| *s)
-                .or_else(|p| p.downcast::<&'static str>().map(|s| (*s).to_string()))
-                .unwrap_or_else(|_| "<unknown>".into());
-            assert!(
-                msg.contains("ref") || msg.contains("GC") || msg.contains("any") || msg.contains("HeapType"),
-                "expected panic to mention wasm-GC ref type; got: {msg}"
-            );
-        }
-    }
+    assert_instrument_rejects(wat, "F-03 anyref", &["fork-instrument 4f", "not yet supported"]);
 }
 
 #[test]
-fn f_04_struct_new_on_fork_path_panics_or_skips() {
+fn f_04_struct_ref_on_fork_path_rejects_with_diagnostic() {
     // wasm-GC struct.new isn't produced by our LLVM toolchain,
-    // but if it appears on a fork-path the tool must not silently
-    // miscompile. Since the wat crate likely doesn't parse GC
-    // struct types on the current host, this test gracefully
-    // skips when the parse fails.
+    // but concrete GC references on a fork-path must not silently
+    // miscompile. A local of `(ref null $pair)` is enough to exercise
+    // the same accepted-limit rejection path that a `struct.new`
+    // producer would need before its value could survive fork.
     let wat = r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
           (memory 1)
           (type $pair (struct (field i32) (field i32)))
           (func $main (export "_start") (result i32)
+            (local $r (ref null $pair))
+            ref.null $pair
+            local.set $r
             (drop (call $fork))
+            local.get $r
+            drop
             (i32.const 0)))
     "#;
-    match wat::parse_str(wat) {
-        Ok(input) => {
-            // If GC types parse, fork-instrument should still
-            // validate the output (no fork-path use of the type).
-            let _ = std::panic::catch_unwind(|| {
-                let _ = instrument(&input, &Options::default());
-            });
-        }
-        Err(_) => {
-            eprintln!("skip: wat crate did not parse GC struct type");
-        }
-    }
+    assert_instrument_rejects(wat, "F-04 struct ref", &["fork-instrument 4f", "not yet supported"]);
 }
 
 // ---------------------------------------------------------------------
