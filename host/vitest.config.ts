@@ -19,15 +19,15 @@ export default defineConfig({
     // expected to ship the fix; revisit then.
     pool: "forks",
     // Even with forks, the post-run aggregation RPC (`onTaskUpdate`)
-    // can time out on a heavily contended GHA runner. Cap fork
-    // parallelism and extend the teardown window so the final
-    // result-flush has room to complete. Without this, runs of
-    // 392+ tests succeed individually but the run-summary call
-    // fails the whole job on a 3s default RPC timeout.
+    // can time out on a heavily contended GHA runner. Fork-instrumented
+    // user programs also spawn multiple Node workers of their own; when
+    // dash/nginx/fork-coverage files run concurrently on the 2-core GHA
+    // runner, fork/exec paths can starve long enough to trip the program
+    // watchdog. Keep local runs parallel, but serialize CI files.
     teardownTimeout: 60_000,
     poolOptions: {
       forks: {
-        maxForks: 4,
+        maxForks: process.env.CI ? 1 : 4,
       },
     },
   },
