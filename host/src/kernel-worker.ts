@@ -5713,6 +5713,7 @@ export class CentralizedKernelWorker {
       // Strip trailing NUL if the user copied a C string with the terminator.
       if (path.endsWith("\0")) path = path.slice(0, -1);
     }
+    const rawPath = path;
     if (path && !path.startsWith("/")) {
       path = this.resolveExecPathAgainstCwd(parentPid, path);
     }
@@ -5747,7 +5748,21 @@ export class CentralizedKernelWorker {
     // its own state from the first. Resolve bytes via the host's
     // side-effect-free preflight first; only call the kernel if the
     // program actually exists.
-    this.callbacks.onResolveSpawn(path).then((programBytes) => {
+    const resolveSpawnProgram = async (): Promise<ArrayBuffer | null> => {
+      const resolved = await this.callbacks.onResolveSpawn!(path);
+      if (resolved || rawPath === path || !rawPath || rawPath.startsWith("/")) {
+        return resolved;
+      }
+
+      // SYS_SPAWN is also used by posix_spawnp-style PATH probes. Those
+      // callers may hand us a relative executable name that exists only in
+      // the host execPrograms map, not in the kernel VFS at CWD/name.
+      // Keep the CWD-resolved path as the primary POSIX exec target, but
+      // fall back to the original token for host-side program maps.
+      return this.callbacks.onResolveSpawn!(rawPath);
+    };
+
+    resolveSpawnProgram().then((programBytes) => {
       if (!programBytes) {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
         return;
