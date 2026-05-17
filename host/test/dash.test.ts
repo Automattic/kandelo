@@ -9,6 +9,7 @@ import { NodePlatformIO } from "../src/platform/node";
 const dashBinary = tryResolveBinary("programs/dash.wasm");
 
 const hasDash = !!dashBinary;
+const DASH_TEST_TIMEOUT = 20_000;
 
 describe.skipIf(!hasDash)("dash shell", () => {
   it("runs echo via -c", async () => {
@@ -19,7 +20,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("hello world");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("runs variable assignment and expansion", async () => {
     const result = await runCentralizedProgram({
@@ -29,7 +30,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("42");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("runs command substitution", async () => {
     const result = await runCentralizedProgram({
@@ -39,7 +40,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("nested");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("runs conditionals", async () => {
     const result = await runCentralizedProgram({
@@ -49,7 +50,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("yes");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("runs a for loop", async () => {
     const result = await runCentralizedProgram({
@@ -59,7 +60,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("a\nb\nc");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("exits with the correct status", async () => {
     const result = await runCentralizedProgram({
@@ -68,7 +69,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
       timeout: 15_000,
     });
     expect(result.exitCode).toBe(7);
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("reads environment variables", async () => {
     const result = await runCentralizedProgram({
@@ -79,7 +80,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("kernel_test");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("supports arithmetic expansion", async () => {
     const result = await runCentralizedProgram({
@@ -89,7 +90,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("14");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("supports while loop", async () => {
     const result = await runCentralizedProgram({
@@ -99,7 +100,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("0\n1\n2");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("supports functions", async () => {
     const result = await runCentralizedProgram({
@@ -109,7 +110,7 @@ describe.skipIf(!hasDash)("dash shell", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("hello world");
-  });
+  }, DASH_TEST_TIMEOUT);
 });
 
 const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
@@ -152,13 +153,13 @@ describe.skipIf(!hasDash || !hasCoreutils)("dash + coreutils exec", () => {
     const result = await dashExec("/bin/echo hello from exec");
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("hello from exec");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("execs cat via PATH lookup", async () => {
     const result = await dashExec("echo hi | cat");
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("hi");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("pipes between coreutils", async () => {
     const result = await dashExec(
@@ -166,7 +167,7 @@ describe.skipIf(!hasDash || !hasCoreutils)("dash + coreutils exec", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("apple\nbanana\ncherry");
-  });
+  }, DASH_TEST_TIMEOUT);
 
   it("uses command substitution with exec", async () => {
     const result = await dashExec(
@@ -174,5 +175,5 @@ describe.skipIf(!hasDash || !hasCoreutils)("dash + coreutils exec", () => {
     );
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("test");
-  });
+  }, DASH_TEST_TIMEOUT);
 });

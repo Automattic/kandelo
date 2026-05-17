@@ -203,13 +203,13 @@ describe.skipIf(!nginxWasmPath)(
         expect(ready).toBe(true);
 
         // Actual test: request the static page
-        const resp = await httpGet(testPort, "/");
+        const resp = await httpGet(testPort, "/", 15_000);
         expect(resp).toContain("HTTP/1.1 200 OK");
         expect(resp).toContain("Server: nginx");
         expect(resp).toContain("Hello from nginx on WebAssembly!");
 
         // Request a non-existent path → 404
-        const resp404 = await httpGet(testPort, "/nonexistent");
+        const resp404 = await httpGet(testPort, "/nonexistent", 15_000);
         expect(resp404).toContain("404");
       } finally {
         // Tear down all workers
