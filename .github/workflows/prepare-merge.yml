@@ -292,6 +292,20 @@ jobs:
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
 
+            BASE_REF="${{ github.event.pull_request.base.ref }}"
+            git fetch origin "$BASE_REF" --depth=1
+            changed_files=$(git diff --name-only "origin/$BASE_REF"...HEAD || true)
+            force_package_rebuild=0
+            if echo "$changed_files" | grep -E \
+              -e "^crates/fork-instrument/" \
+              -e "^scripts/build-fork-instrument-tool\\.sh$" \
+              -e "^scripts/dev-shell\\.sh$" \
+              -e "^(Cargo\\.(lock|toml)|flake\\.(nix|lock)|rust-toolchain\\.toml)$" \
+              >/dev/null; then
+              force_package_rebuild=1
+              echo "preflight: forcing package matrix because fork-instrument/toolchain inputs changed"
+            fi
+
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
@@ -364,7 +378,8 @@ jobs:
                 short=${sha:0:8}
                 prefix="${pkg}-"
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
-                if echo "$existing_assets" | jq -e --arg pre "$prefix" --arg suf "$suffix" \
+                if [ "$force_package_rebuild" != "1" ] && \
+                  echo "$existing_assets" | jq -e --arg pre "$prefix" --arg suf "$suffix" \
                     "any(.[]; startswith(\$pre) and endswith(\$suf))" >/dev/null; then
                   echo "preflight: skip $pkg/$arch (sha $short already published)"
                   continue

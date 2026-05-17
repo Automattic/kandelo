@@ -71,9 +71,12 @@ async function runFixture(relPath: string, expected: Expected) {
     timeout: expected.timeout ?? 10_000,
     execPrograms: expected.execPrograms,
   });
-  expect(result.exitCode).toBe(expected.exitCode ?? 0);
+  expect(
+    result.exitCode,
+    `${relPath} exited unexpectedly\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  ).toBe(expected.exitCode ?? 0);
   for (const fragment of expected.contains) {
-    expect(result.stdout).toContain(fragment);
+    expect(result.stdout, `${relPath} stdout`).toContain(fragment);
   }
 }
 
