@@ -18,7 +18,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CentralizedKernelWorker } from "./kernel-worker";
-import type { ForkFromThreadContext } from "./kernel-worker";
+import type { ForkFromThreadContext, ResolvedSpawnProgram } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import {
   VirtualPlatformIO,
@@ -235,6 +235,41 @@ async function resolveExec(path: string): Promise<ArrayBuffer | null> {
     pendingExecResolves.set(requestId, resolve);
     post({ type: "resolve_exec", requestId, path });
   });
+}
+
+const MAX_SHEBANG_DEPTH = 4;
+
+function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
+  const view = new Uint8Array(bytes);
+  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
+  let end = 2;
+  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
+  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
+  if (!line) return null;
+  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
+  if (!match) return null;
+  return { interpreter: match[1], arg: match[2] };
+}
+
+async function resolveExecutableForLaunch(
+  path: string,
+  argv: string[],
+  depth = 0,
+): Promise<ResolvedSpawnProgram | null> {
+  if (depth > MAX_SHEBANG_DEPTH) return null;
+  const bytes = await resolveExec(path);
+  if (!bytes) return null;
+
+  const shebang = parseShebang(bytes);
+  if (!shebang) return { programBytes: bytes, argv };
+
+  const scriptArgv = [
+    shebang.interpreter,
+    ...(shebang.arg ? [shebang.arg] : []),
+    path,
+    ...argv.slice(1),
+  ];
+  return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
 }
 
 // --- Init ---
@@ -533,10 +568,11 @@ async function handleExec(
   argv: string[],
   envp: string[],
 ): Promise<number> {
-  const resolved = await resolveExec(path);
+  const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
+  const { programBytes, argv: launchArgv } = resolved;
 
-  const newPtrWidth = detectPtrWidth(resolved);
+  const newPtrWidth = detectPtrWidth(programBytes);
   const setupResult = kernelWorker.kernelExecSetup(pid);
   if (setupResult < 0) return setupResult;
 
@@ -559,10 +595,10 @@ async function handleExec(
     // Refresh kernel-side Process.argv so /proc/<pid>/cmdline reflects
     // the post-exec image, not the parent's argv. Mirrors the browser
     // handleExec fix.
-    argv,
+    argv: launchArgv,
   });
 
-  const heapBase = extractHeapBase(resolved);
+  const heapBase = extractHeapBase(programBytes);
   if (heapBase !== null) {
     kernelWorker.setBrkBase(pid, heapBase);
   }
@@ -574,10 +610,10 @@ async function handleExec(
     type: "centralized_init",
     pid,
     ppid: 0,
-    programBytes: resolved,
+    programBytes,
     memory: newMemory,
     channelOffset: newChannelOffset,
-    argv,
+    argv: launchArgv,
     env: envp,
     ptrWidth: newPtrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
@@ -586,7 +622,7 @@ async function handleExec(
   const newWorker = workerAdapter.createWorker(initData);
   processes.set(pid, {
     memory: newMemory,
-    programBytes: resolved,
+    programBytes,
     worker: newWorker,
     channelOffset: newChannelOffset,
     ptrWidth: newPtrWidth,
@@ -643,8 +679,11 @@ async function handleExec(
  * inside `spawn_child`) never execute on a doomed PATH iteration —
  * see the POSIX "exactly once" rule.
  */
-async function handlePosixSpawnResolve(path: string): Promise<ArrayBuffer | null> {
-  return resolveExec(path);
+async function handlePosixSpawnResolve(
+  path: string,
+  argv: string[],
+): Promise<ResolvedSpawnProgram | null> {
+  return resolveExecutableForLaunch(path, argv);
 }
 
 /**
