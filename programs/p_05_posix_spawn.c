@@ -16,14 +16,48 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 extern char **environ;
 
+static int prepare_echo_path(void) {
+    int fd = open("/tmp/echo", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (fd < 0) {
+        printf("FAIL: create /tmp/echo errno=%d\n", errno);
+        return -1;
+    }
+    const char placeholder[] = "placeholder\n";
+    if (write(fd, placeholder, sizeof(placeholder) - 1) < 0) {
+        printf("FAIL: write /tmp/echo errno=%d\n", errno);
+        close(fd);
+        return -1;
+    }
+    if (fchmod(fd, 0755) != 0) {
+        printf("FAIL: chmod /tmp/echo errno=%d\n", errno);
+        close(fd);
+        return -1;
+    }
+    if (close(fd) != 0) {
+        printf("FAIL: close /tmp/echo errno=%d\n", errno);
+        return -1;
+    }
+    if (setenv("PATH", "/tmp", 1) != 0) {
+        printf("FAIL: setenv PATH errno=%d\n", errno);
+        return -1;
+    }
+    return 0;
+}
+
 int main(void) {
+    if (prepare_echo_path() != 0) {
+        return 1;
+    }
+
     pid_t pid = -1;
     char *argv[] = { (char *)"echo", (char *)"posix-spawn-ok", NULL };
 

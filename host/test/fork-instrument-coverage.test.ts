@@ -33,11 +33,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import {
-  findRepoRoot,
-  resolveBinary,
-  tryResolveBinary,
-} from "../src/binary-resolver";
+import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,31 +76,28 @@ async function runFixture(relPath: string, expected: Expected) {
   }
 }
 
-/** Echo binary built from examples/echo.c, registered for popen/posix_spawn. */
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-const echoCandidate = join(findRepoRoot(), "examples", "echo.wasm");
-const echoBinary = existsSync(echoCandidate) ? echoCandidate : null;
-const echoExecMap = echoBinary
-  ? new Map<string, string>([
-      ["echo", echoBinary],
-      ["/bin/echo", echoBinary],
-      ["/usr/bin/echo", echoBinary],
-    ])
-  : undefined;
+/** Echo fixture registered for popen/posix_spawn child exec targets. */
+const echoBinary = resolveBinary("programs/echo.wasm");
+const echoExecMap = new Map<string, string>([
+  ["echo", echoBinary],
+  ["/echo", echoBinary],
+  ["/tmp/echo", echoBinary],
+  ["/bin/echo", echoBinary],
+  ["/usr/bin/echo", echoBinary],
+]);
 
 /** Minimal sh fixture built from programs/sh.c for popen("/bin/sh -c ..."). */
 const shCandidate = resolveBinary("programs/sh.wasm");
-const popenExecMap = echoBinary
-  ? new Map<string, string>([
-      ["sh", shCandidate],
-      ["/bin/sh", shCandidate],
-      ["/usr/bin/sh", shCandidate],
-      ["echo", echoBinary],
-      ["/bin/echo", echoBinary],
-      ["/usr/bin/echo", echoBinary],
-    ])
-  : undefined;
+const popenExecMap = new Map<string, string>([
+  ["sh", shCandidate],
+  ["/bin/sh", shCandidate],
+  ["/usr/bin/sh", shCandidate],
+  ["echo", echoBinary],
+  ["/echo", echoBinary],
+  ["/tmp/echo", echoBinary],
+  ["/bin/echo", echoBinary],
+  ["/usr/bin/echo", echoBinary],
+]);
 
 // ---------------------------------------------------------------------------
 // D-* dispatch coverage
