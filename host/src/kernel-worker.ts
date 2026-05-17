@@ -777,6 +777,13 @@ export interface ForkFromThreadContext {
   forkBufAddr: number;
 }
 
+export interface ResolvedSpawnProgram {
+  programBytes: ArrayBuffer;
+  argv: string[];
+}
+
+export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram;
+
 /** Callbacks for fork/exec/exit handling in centralized mode. */
 export interface CentralizedKernelCallbacks {
   /**
@@ -817,7 +824,8 @@ export interface CentralizedKernelCallbacks {
 
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
-   * for `path`, or `null` for ENOENT. **Must NOT have side effects** —
+   * for `path` (or `{ programBytes, argv }` when resolution rewrites argv,
+   * e.g. a shebang script), or `null` for ENOENT. **Must NOT have side effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -828,11 +836,11 @@ export interface CentralizedKernelCallbacks {
    *
    * Required if `onSpawn` is set; together they form the spawn surface.
    */
-  onResolveSpawn?: (path: string) => Promise<ArrayBuffer | null>;
+  onResolveSpawn?: (path: string, argv: string[]) => Promise<SpawnProgramResolution | null>;
 
   /**
    * Launch a worker for the spawned child with already-resolved bytes
-   * (from `onResolveSpawn`). The kernel has constructed the child Process
+   * and argv (from `onResolveSpawn`). The kernel has constructed the child Process
    * descriptor under `childPid` and applied file actions + attrs by the
    * time this is called. The callback instantiates a fresh Worker and
    * registers it via `registerProcess({ skipKernelCreate: true })`.
@@ -5749,13 +5757,15 @@ export class CentralizedKernelWorker {
     // its own state from the first. Resolve bytes via the host's
     // side-effect-free preflight first; only call the kernel if the
     // program actually exists.
-    this.callbacks.onResolveSpawn(path).then((programBytes) => {
-      if (!programBytes) {
+    this.callbacks.onResolveSpawn(path, argv).then((resolved) => {
+      if (!resolved) {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
         return;
       }
+      const programBytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;
+      const launchArgv = resolved instanceof ArrayBuffer ? argv : resolved.argv;
       this.handleSpawnAfterResolve(
-        channel, origArgs, parentPid, pidOutPtr, blobBytes, blobLen, argv, envp, programBytes,
+        channel, origArgs, parentPid, pidOutPtr, blobBytes, blobLen, launchArgv, envp, programBytes,
       );
     }).catch((err) => {
       console.error(`[kernel] spawn resolve error for parent ${parentPid}:`, err);

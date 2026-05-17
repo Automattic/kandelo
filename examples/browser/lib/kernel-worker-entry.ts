@@ -61,7 +61,10 @@ if (typeof globalThis.setImmediate === "undefined") {
 }
 
 import { CentralizedKernelWorker } from "../../../host/src/kernel-worker";
-import type { ForkFromThreadContext } from "../../../host/src/kernel-worker";
+import type {
+  ForkFromThreadContext,
+  ResolvedSpawnProgram,
+} from "../../../host/src/kernel-worker";
 import { BrowserWorkerAdapter } from "../../../host/src/worker-adapter-browser";
 import { VirtualPlatformIO } from "../../../host/src/vfs/vfs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
@@ -139,6 +142,42 @@ function createProcessMemory(ptrWidth: 4 | 8, pages: number): WebAssembly.Memory
     maximum: pages,
     shared: true,
   });
+}
+
+const MAX_SHEBANG_DEPTH = 4;
+
+function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
+  const view = new Uint8Array(bytes);
+  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
+  let end = 2;
+  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
+  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
+  if (!line) return null;
+  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
+  if (!match) return null;
+  return { interpreter: match[1], arg: match[2] };
+}
+
+async function resolveExecutableForLaunch(
+  path: string,
+  argv: string[],
+  depth = 0,
+): Promise<ResolvedSpawnProgram | null> {
+  if (depth > MAX_SHEBANG_DEPTH) return null;
+  await memfs.ensureMaterialized(path);
+  const bytes = readFileFromFs(path);
+  if (!bytes) return null;
+
+  const shebang = parseShebang(bytes);
+  if (!shebang) return { programBytes: bytes, argv };
+
+  const scriptArgv = [
+    shebang.interpreter,
+    ...(shebang.arg ? [shebang.arg] : []),
+    path,
+    ...argv.slice(1),
+  ];
+  return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
 }
 
 // Per-PID thread module cache: lazily compiled on first clone(), shared across
@@ -347,7 +386,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         if (result === 0) post({ type: "proc_event", kind: "exec", pid });
         return result;
       },
-      onResolveSpawn: async (path) => handlePosixSpawnResolve(path),
+      onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: handlePosixSpawn,
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
@@ -709,12 +748,9 @@ async function handleExec(
   argv: string[],
   envp: string[],
 ): Promise<number> {
-  // Materialize lazy file if needed (async fetch avoids sync XHR + SW deadlock)
-  await memfs.ensureMaterialized(path);
-
-  // Read binary from the shared filesystem
-  const bytes = readFileFromFs(path);
-  if (!bytes) return -2; // ENOENT
+  const resolved = await resolveExecutableForLaunch(path, argv);
+  if (!resolved) return -2; // ENOENT
+  const { programBytes: bytes, argv: launchArgv } = resolved;
 
   // Program found — run kernel exec setup
   const setupResult = kernelWorker.kernelExecSetup(pid);
@@ -753,7 +789,7 @@ async function handleExec(
     // Refresh the kernel's Process.argv so /proc/<pid>/cmdline and
     // host-side enumeration (Kandelo Inspector → Procs) show the new
     // program's argv after exec, not the parent's pre-exec argv.
-    argv,
+    argv: launchArgv,
   });
 
   // Re-install the new program's `__heap_base` post-exec — the kernel
@@ -772,7 +808,7 @@ async function handleExec(
     programBytes: bytes,
     memory: newMemory,
     channelOffset: newChannelOffset,
-    argv,
+    argv: launchArgv,
     env: envp,
     ptrWidth,
   };
@@ -825,10 +861,11 @@ async function handleExec(
  * contents from the VFS. Side-effect-free; safe to call on PATH search
  * iterations that may not resolve.
  */
-async function handlePosixSpawnResolve(path: string): Promise<ArrayBuffer | null> {
-  await memfs.ensureMaterialized(path);
-  const bytes = readFileFromFs(path);
-  return bytes ?? null;
+async function handlePosixSpawnResolve(
+  path: string,
+  argv: string[],
+): Promise<ResolvedSpawnProgram | null> {
+  return resolveExecutableForLaunch(path, argv);
 }
 
 /**

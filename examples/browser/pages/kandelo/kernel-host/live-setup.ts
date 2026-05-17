@@ -23,10 +23,12 @@ import { PRESET_LIBRARY } from "../fixtures";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
+import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
 import nginxVfsUrl from "@binaries/programs/wasm32/nginx-vfs.vfs.zst?url";
 import nginxPhpVfsUrl from "@binaries/programs/wasm32/nginx-php-vfs.vfs.zst?url";
 import wordpressVfsUrl from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
+import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
@@ -49,13 +51,14 @@ import zstdWasmUrl from "@binaries/programs/wasm32/zstd.wasm?url";
 import zipWasmUrl from "@binaries/programs/wasm32/zip.wasm?url";
 import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
-import lsofWasmUrl from "../../../../lsof.wasm?url";
+import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
 import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom/fbdoom.wasm?url";
 import doomWadUrl from "@binaries/programs/wasm32/fbdoom/doom1.wad?url";
 
 type LiveDemoId =
   | "shell"
+  | "node"
   | "nginx"
   | "nginx-php"
   | "wordpress-sqlite"
@@ -93,6 +96,24 @@ const SHELL_ENV: string[] = [
   "HISTFILE=/home/.bash_history",
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
+];
+
+const NODE_SHELL_ENV: string[] = [
+  "HOME=/work",
+  "PWD=/work",
+  "TMPDIR=/tmp",
+  "TERM=xterm-256color",
+  "LANG=en_US.UTF-8",
+  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+  "PS1=node$ ",
+  "HISTFILE=/work/.bash_history",
+  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+  "SSL_CERT_DIR=/etc/ssl/certs",
+  "npm_config_cache=/tmp/.npm-cache",
+  "npm_config_registry=http://proxy.local/",
+  "npm_config_fund=false",
+  "npm_config_audit=false",
+  "npm_config_progress=false",
 ];
 
 const SERVICE_ENV: string[] = [
@@ -139,6 +160,12 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
   const desc = descriptorFor(normalized);
   const dinit = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"];
   switch (normalized) {
+    case "node":
+      return {
+        id: "node",
+        vfsUrl: nodeVfsUrl,
+        descriptor: desc,
+      };
     case "nginx":
       return {
         id: "nginx",
@@ -230,7 +257,7 @@ async function bootProfile(
     fetch(profile.vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer()),
     fetch(bashWasmUrl).then(failOn("bash.wasm")).then((r) => r.arrayBuffer()),
     fetch(dashWasmUrl).then(failOn("dash.wasm")).then((r) => r.arrayBuffer()),
-    loadShellUtilityDefs(),
+    loadShellUtilityDefs(profile.id === "node"),
   ]);
 
   tick(`kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`);
@@ -261,11 +288,12 @@ async function bootProfile(
   stageShellUtilities(kernel, dashBytes, bashBytes, lazyBinaries);
   await registerFbPrograms(kernel);
   host.attachKernel(kernel);
+  const shellEnv = profile.id === "node" ? NODE_SHELL_ENV : SHELL_ENV;
   host.setDefaultShell({
     programBytes: bashBytes,
     argv: ["bash", "-l", "-i"],
-    env: SHELL_ENV,
-    cwd: "/home",
+    env: shellEnv,
+    cwd: profile.id === "node" ? "/work" : "/home",
   });
 
   if (profile.init?.web) {
@@ -336,8 +364,13 @@ function stageShellUtilities(
   try { kernel.fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
 }
 
-async function loadShellUtilityDefs(): Promise<BinaryDef[]> {
+async function loadShellUtilityDefs(includeNode: boolean): Promise<BinaryDef[]> {
   const defs: Array<Omit<BinaryDef, "size">> = [
+    ...(includeNode ? [{
+      url: nodeWasmUrl,
+      path: "/usr/bin/node",
+      symlinks: ["/bin/node", "/usr/local/bin/node"],
+    }] : []),
     { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap((n) => [`/bin/${n}`, `/usr/bin/${n}`]) },
     { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
     { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
@@ -457,7 +490,7 @@ function descriptorFor(id: LiveDemoId): BootDescriptor {
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
-      memoryPages: id === "wordpress-mariadb" ? 4096 : 2048,
+      memoryPages: id === "wordpress-mariadb" || id === "node" ? 4096 : 2048,
       features: ["shared-array-buffer", "pty", ...(item.id === "doom" ? ["framebuffer"] : []), ...(item.id === "shell" || item.id === "doom" ? [] : ["tcp-bridge"])],
       time: "real",
     },
@@ -468,8 +501,8 @@ function descriptorFor(id: LiveDemoId): BootDescriptor {
     ],
     boot: {
       argv: item.bootCommand,
-      cwd: "/home",
-      env: Object.fromEntries(SHELL_ENV.map((kv) => {
+      cwd: item.id === "node" ? "/work" : "/home",
+      env: Object.fromEntries((item.id === "node" ? NODE_SHELL_ENV : SHELL_ENV).map((kv) => {
         const idx = kv.indexOf("=");
         return [kv.slice(0, idx), kv.slice(idx + 1)];
       })),
@@ -495,6 +528,7 @@ function liveGalleryItems(): GalleryItem[] {
 function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
   switch (id) {
     case "shell":
+    case "node":
     case "nginx":
     case "nginx-php":
     case "wordpress-sqlite":

@@ -1,13 +1,13 @@
 /**
- * Build a pre-built VFS image containing npm 10.9.2 + a writable workspace
- * for the browser node demo.
+ * Build a pre-built VFS image containing the Shell VFS base, npm 10.9.2,
+ * and a writable workspace for the browser Node demos.
  *
  * Layout produced:
+ *   Shell VFS base         — dash + shell utility symlinks/config/lazy archives
  *   /usr/local/lib/npm/...   — full npm dist (bin/npm-cli.js + lib + node_modules)
+ *   /usr/bin/npm          — wrapper that runs npm through the node binary
  *   /work/package.json       — empty starter package, used as --prefix and HOME
  *   /tmp/                    — writable, mode 0o777
- *   /root/                   — fallback HOME
- *   /usr/bin, /bin           — placeholder PATH dirs
  *
  * Excludes npm's man/ and docs/ (man pages + markdown docs add ~3 MB and
  * are never read during `npm install`).
@@ -20,12 +20,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  ensureDir,
   ensureDirRecursive,
   walkAndWrite,
   writeVfsFile,
   saveImage,
+  symlink,
 } from "./vfs-image-helpers";
+import { populateShellEnvironment } from "./shell-vfs-build";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
@@ -41,23 +42,22 @@ async function main() {
     process.exit(1);
   }
 
-  // 32 MiB SAB. npm dist is ~17 MiB on disk; rest is overhead + scratch headroom.
+  // 32 MiB SAB. npm dist is ~17 MiB on disk; rest is shell base metadata,
+  // magic data, npm wrappers, and scratch headroom.
   // The .vfs file size equals the SAB size verbatim (saveImage writes the full buffer).
   const sab = new SharedArrayBuffer(32 * 1024 * 1024);
   const fs = MemoryFileSystem.create(sab);
 
-  // Filesystem skeleton
+  console.log("Populating shell base...");
+  populateShellEnvironment(fs, { eagerBinaries: false });
+
+  // Node/npm workspace additions.
   ensureDirRecursive(fs, "/usr/local/lib");
-  ensureDir(fs, "/usr/bin");
-  ensureDir(fs, "/bin");
-  ensureDir(fs, "/work");
-  ensureDir(fs, "/root");
-  ensureDir(fs, "/tmp");
+  ensureDirRecursive(fs, "/work");
   // /etc/ssl needs to exist before kernel-worker auto-writes the bundled
   // CA cert to /etc/ssl/cert.pem on init. Without this, npm install over
   // HTTPS fails — see kernel-worker-entry.ts handleInit.
   ensureDirRecursive(fs, "/etc/ssl");
-  fs.chmod("/tmp", 0o777);
   fs.chmod("/work", 0o777);
 
   // npm dist — skip man/ and docs/ (not used at install time)
@@ -75,6 +75,22 @@ async function main() {
     JSON.stringify({ name: "demo", version: "0.0.1" }, null, 2) + "\n",
     0o644,
   );
+  writeVfsFile(
+    fs,
+    "/usr/bin/npm",
+    "#!/bin/sh\nexec node /usr/local/lib/npm/bin/npm-cli.js \"$@\"\n",
+    0o755,
+  );
+  writeVfsFile(
+    fs,
+    "/usr/bin/npx",
+    "#!/bin/sh\nexec node /usr/local/lib/npm/bin/npx-cli.js \"$@\"\n",
+    0o755,
+  );
+  symlink(fs, "/usr/bin/npm", "/bin/npm");
+  symlink(fs, "/usr/bin/npm", "/usr/local/bin/npm");
+  symlink(fs, "/usr/bin/npx", "/bin/npx");
+  symlink(fs, "/usr/bin/npx", "/usr/local/bin/npx");
 
   await saveImage(fs, OUT_FILE);
 }
