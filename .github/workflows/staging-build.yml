@@ -339,14 +339,17 @@ jobs:
             done
           '
 
-      - name: Pack toolchain sysroots
+      - name: Build fork-instrument host tool
+        run: bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
+
+      - name: Pack toolchain sysroots + host tools
         # Matrix jobs fan out from this per-run artifact instead of
         # each restoring the same large sysroot cache. That keeps
         # Actions Cache traffic to one restore/save per workflow run
         # and shifts matrix fanout onto workflow artifacts.
         run: |
           tar --zstd -cf "$RUNNER_TEMP/toolchain-sysroots.tar.zst" \
-            sysroot sysroot64
+            sysroot sysroot64 tools/bin/wasm-fork-instrument
 
       - name: Upload toolchain sysroots artifact
         uses: actions/upload-artifact@v4
