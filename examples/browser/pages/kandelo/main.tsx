@@ -1,10 +1,10 @@
 // Kandelo entry point.
 //
-// Default: mounts the React tree against a MockKernelHost so the chassis
-// is exercisable end-to-end without a running kernel.
-//
-// `?live=1`: builds a LiveKernelHost over a real BrowserKernel (kernel.wasm
+// Default: builds a LiveKernelHost over a real BrowserKernel (kernel.wasm
 // + rootfs.vfs + bash.wasm). Shell pane attaches to a real /dev/pts/0.
+//
+// `?mock=1`: mounts the React tree against a MockKernelHost so the chassis
+// is exercisable end-to-end without a running kernel.
 
 import * as React from "react";
 import * as ReactDOM from "react-dom/client";
@@ -19,7 +19,7 @@ if (!container) {
 }
 
 const qs = new URLSearchParams(location.search);
-const useLive = qs.get("live") === "1";
+const useMock = qs.get("mock") === "1";
 const useIdle = qs.get("idle") === "1";
 const demo = qs.get("demo");
 const fbDemo = qs.get("fb"); // "test" | "doom" | null
@@ -34,7 +34,13 @@ const mount = (host: KernelHost) => {
   );
 };
 
-if (useLive) {
+if (useMock) {
+  mount(new MockKernelHost(
+    useIdle
+      ? { status: "idle" }
+      : { status: "booting", bootSpeed: 4 },
+  ));
+} else {
   // Lazy-load so the bundle doesn't pull in BrowserKernel when running
   // against the mock host.
   void (async () => {
@@ -54,19 +60,13 @@ if (useLive) {
           <div style="font-weight:600;margin-bottom:8px">LiveKernelHost setup failed</div>
           <pre style="white-space:pre-wrap;font-size:12px;color:var(--k-text-muted)">${escapeHtml(detail)}</pre>
           <div style="margin-top:12px;font-size:12px;color:var(--k-text-faint)">
-            Falling back to the mock host requires removing <code>?live=1</code> from the URL.
+            Falling back to the mock host requires adding <code>?mock=1</code> to the URL.
             See <code>examples/browser/pages/kandelo/kernel-host/live-setup.ts</code>.
           </div>
         </div>`;
       console.error(err);
     }
   })();
-} else {
-  mount(new MockKernelHost(
-    useIdle
-      ? { status: "idle" }
-      : { status: "booting", bootSpeed: 4 },
-  ));
 }
 
 function escapeHtml(s: string): string {

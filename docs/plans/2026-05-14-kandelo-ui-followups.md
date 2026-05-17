@@ -86,7 +86,7 @@ host/test). Worth doing once it's set up:
 
 ### Browser-side end-to-end (Playwright)
 
-- Kandelo `?live=1` boots, bash prompt appears in shell, Procs lists
+- Kandelo default route boots live, bash prompt appears in shell, Procs lists
   bash + init.
 - Quit DOOM via menu → Procs drops fbdoom; canvas clears.
 - Relaunch fbdoom from bash → canvas re-attaches.

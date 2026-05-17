@@ -19,9 +19,8 @@ const repoRoot = path.resolve(__dirname, "../..");
  * mkrootfs during `bash build.sh`).
  *
  * Resolution is deferred until import time so pages that don't consume
- * these aliases (the kandelo UI demo, for example) can run without a
- * kernel build present. Pages that do import them get a clear error
- * pointing at the build script.
+ * these aliases can run without a kernel build present. Pages that do
+ * import them get a clear error pointing at the build script.
  */
 function resolveKernelArtifactsAlias(): Plugin {
   const KERNEL = "@kernel-wasm";

@@ -1,5 +1,5 @@
-// Builds a LiveKernelHost over a real BrowserKernel. Used when the kandelo
-// page is loaded with `?live=1` (otherwise the page uses MockKernelHost).
+// Builds a LiveKernelHost over a real BrowserKernel. Used by default when the
+// kandelo page is loaded (use `?mock=1` for MockKernelHost).
 
 import { BrowserKernel } from "../../../lib/browser-kernel";
 import { initServiceWorkerBridge } from "../../../lib/init/service-worker-bridge";
