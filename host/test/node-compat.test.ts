@@ -306,6 +306,27 @@ describe.skipIf(!hasNode)("Node.js compat (node.wasm) — dynamic TTY", () => {
     expect(exitCode).toBe(0);
   }, 30_000);
 
+  it("TTY cursor and line controls emit ANSI repaint sequences", async () => {
+    const src = [
+      "const readline = require('readline');",
+      "process.stdout.write('A');",
+      "process.stdout.cursorTo(0);",
+      "process.stdout.clearLine(0);",
+      "readline.cursorTo(process.stdout, 2);",
+      "readline.clearLine(process.stdout, 1);",
+      "process.stdout.write('B\\n');",
+      "process.exit(0);",
+    ].join(" ");
+
+    const { exitCode, out } = await runUnderPty(
+      src,
+      async (_host, _getPid, waitFor) => { await waitFor("B"); },
+    );
+
+    expect(out).toContain("A\x1b[1G\x1b[2K\x1b[3G\x1b[0KB");
+    expect(exitCode).toBe(0);
+  }, 30_000);
+
   it("process.stdin.setRawMode disables line discipline (single byte delivered without newline)", async () => {
     const src = [
       "process.stdin.setRawMode(true);",
