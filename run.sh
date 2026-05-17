@@ -1348,7 +1348,13 @@ build_target() {
     esac
 }
 
-# All targets needed for browser demos. Each entry's `has_X` short-
+# Packages backing demos that are currently absent from
+# examples/browser/pages/ and disabled in vite.config.ts. `./run.sh browser`
+# must not fetch them: a stale or missing archive would otherwise fall
+# through to slow local source builds for pages the dev server cannot serve.
+BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-vfs texlive redis)
+
+# All targets needed for enabled browser demos. Each entry's `has_X` short-
 # circuits when its release binary is in `binaries/`, so this loop is
 # a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
 # listed: they're toolchain prerequisites for source builds, and any
@@ -1357,12 +1363,19 @@ build_target() {
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs redis redis-vfs cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs)
+BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
         build_target "$t"
     done
+}
+
+fetch_browser_binaries() {
+    local disabled_pkgs
+    disabled_pkgs="${BROWSER_DISABLED_DEMO_PKGS[*]}"
+    WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $disabled_pkgs" \
+        "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}"
 }
 
 build_all() {
@@ -1843,13 +1856,14 @@ cmd_fetch() {
 cmd_browser() {
     local BROWSER_DIR="$REPO_ROOT/examples/browser"
 
-    # Fetch the per-package binaries first. The resolver-aware has_X
+    # Fetch the per-package binaries for enabled browser demos first.
+    # The resolver-aware has_X
     # guards below then treat fetched binaries as "already built", so
     # build_browser's per-target loop is a no-op for anything that's
     # already published. Only genuinely missing artifacts (local-only
     # programs, stale VFS images) trigger a build.
-    step "Fetching binaries pinned by per-package package.toml"
-    "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}"
+    step "Fetching binaries for enabled browser demos"
+    fetch_browser_binaries
 
     build_browser
 
