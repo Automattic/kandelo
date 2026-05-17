@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 import { runCentralizedProgram } from "../../host/test/centralized-test-helper.js";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
+import { NodePlatformIO } from "../../host/src/platform/node.js";
 import type { BenchmarkSuite } from "../types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +46,7 @@ async function measureCliRequire(): Promise<number> {
     programPath: phpBinaryPath,
     argv: ["php", ...opcacheArgs, "-r", `chdir('${wpDir}'); require 'wp-load.php';`],
     env: ["HOME=/tmp", "TMPDIR=/tmp"],
+    io: new NodePlatformIO(),
     timeout: 120_000,
   });
   const t1 = performance.now();

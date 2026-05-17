@@ -8,9 +8,10 @@
  */
 import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
-import { existsSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const browserDir = resolve(__dirname, "../../examples/browser");
@@ -88,6 +89,31 @@ function assertBrowserArtifactsAvailable(): void {
   }
 }
 
+function materializePublicAsset(relBinaryPath: string, publicName: string): void {
+  const publicPath = resolve(browserDir, "public", publicName);
+  if (existsSync(publicPath)) return;
+
+  const sourcePath = tryResolveBinary(relBinaryPath);
+  if (!sourcePath || !existsSync(sourcePath)) return;
+
+  mkdirSync(dirname(publicPath), { recursive: true });
+  copyFileSync(sourcePath, publicPath);
+}
+
+function materializeBrowserSuiteAssets(suiteNames: string[]): void {
+  if (suiteNames.includes("wordpress")) {
+    materializePublicAsset("programs/wordpress.vfs.zst", "wordpress.vfs.zst");
+  }
+
+  if (suiteNames.some((suite) => suite === "mariadb-aria" || suite === "mariadb-innodb")) {
+    materializePublicAsset("programs/mariadb-vfs.vfs.zst", "mariadb.vfs.zst");
+  }
+
+  if (suiteNames.some((suite) => suite === "mariadb-aria-64" || suite === "mariadb-innodb-64")) {
+    materializePublicAsset("programs/wasm64/mariadb-vfs.vfs.zst", "mariadb-64.vfs.zst");
+  }
+}
+
 export interface BrowserBenchmarkOptions {
   suites?: string[];
   rounds?: number;
@@ -130,6 +156,7 @@ export async function runBrowserBenchmarks(
   }
 
   assertBrowserArtifactsAvailable();
+  materializeBrowserSuiteAssets(suiteNames);
 
   // Start Vite dev server
   console.log("Starting Vite dev server...");

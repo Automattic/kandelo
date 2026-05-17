@@ -175,7 +175,7 @@ async function loadOptionalUrlFrom(
 ): Promise<string> {
   for (const relPath of relPaths) {
     const loader = OPTIONAL_URLS[relPath];
-    if (loader) return loader();
+    if (loader) return loadOptionalUrl(relPath, label, buildHint);
   }
   throw new Error(`${label} is not built. Run: ${buildHint}`);
 }
@@ -569,8 +569,7 @@ async function runWordPress(): Promise<Record<string, number>> {
 
   // Spawn PHP-FPM
   log("  Starting PHP-FPM...");
-  const phpFpmBytes = await readVfsBytes(kernel.fs, "/usr/sbin/php-fpm");
-  kernel.spawn(phpFpmBytes, [
+  await kernel.spawnFromVfs("/usr/sbin/php-fpm", [
     "/usr/sbin/php-fpm", "-y", "/etc/php-fpm.conf", "-c", "/dev/null", "--nodaemonize",
   ]);
   // Wait for PHP-FPM to be ready
@@ -578,8 +577,7 @@ async function runWordPress(): Promise<Record<string, number>> {
 
   // Spawn nginx
   log("  Starting nginx...");
-  const nginxBytes = await readVfsBytes(kernel.fs, "/usr/sbin/nginx");
-  kernel.spawn(nginxBytes, [
+  await kernel.spawnFromVfs("/usr/sbin/nginx", [
     "/usr/sbin/nginx", "-p", "/etc/nginx", "-c", "nginx.conf",
   ]);
   // Wait for nginx to be ready

@@ -7,7 +7,7 @@
 import { existsSync, readFileSync, mkdirSync, rmSync } from "fs";
 import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { createConnection, createServer, type Socket } from "net";
+import { createServer } from "net";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 import { ensureSourceExtract } from "../../examples/browser/scripts/source-extract-helper.js";
@@ -79,21 +79,12 @@ function getFreePort(): Promise<number> {
   });
 }
 
-function tryConnect(port: number, timeoutMs = 2000): Promise<boolean> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => { sock.destroy(); resolve(false); }, timeoutMs);
-    const sock: Socket = createConnection({ host: "127.0.0.1", port }, () => {
-      clearTimeout(timer);
-      sock.destroy();
-      resolve(true);
-    });
-    sock.on("error", () => { clearTimeout(timer); resolve(false); });
-  });
-}
-
 interface MariaDBInstance {
   host: NodeKernelHost;
   port: number;
+  getOutput: () => string;
+  getProcessOutput: (pid: number) => { stdout: string; stderr: string };
+  dataDir: string;
   cleanup: () => Promise<void>;
 }
 
@@ -106,18 +97,41 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
   const mysqldBytes = loadBytes(mysqldPath);
 
   const verbose = process.env.MARIADB_BENCH_VERBOSE === "1";
+  let output = "";
+  const processOutput = new Map<number, { stdout: string; stderr: string }>();
+  const appendOutput = (data: Uint8Array) => {
+    const text = new TextDecoder().decode(data);
+    output += text;
+    if (output.length > 16_384) output = output.slice(-16_384);
+    return text;
+  };
+  const appendProcessOutput = (pid: number, kind: "stdout" | "stderr", text: string) => {
+    const entry = processOutput.get(pid) ?? { stdout: "", stderr: "" };
+    entry[kind] += text;
+    processOutput.set(pid, entry);
+  };
   const host = new NodeKernelHost({
     maxWorkers: 8,
+    enableTcpNetwork: true,
     // InnoDB writes log files in 1MB+ chunks; increase from 64KB default
     dataBufferSize: engineArgs.some(a => a.includes("InnoDB")) ? 2 * 1024 * 1024 : undefined,
-    onStdout: verbose ? (_pid, data) => process.stdout.write(new TextDecoder().decode(data)) : () => {},
-    onStderr: verbose ? (_pid, data) => process.stderr.write(new TextDecoder().decode(data)) : () => {},
+    onStdout: (pid, data) => {
+      const text = appendOutput(data);
+      appendProcessOutput(pid, "stdout", text);
+      if (verbose) process.stdout.write(text);
+    },
+    onStderr: (pid, data) => {
+      const text = appendOutput(data);
+      appendProcessOutput(pid, "stderr", text);
+      if (verbose) process.stderr.write(text);
+    },
   });
 
   await host.init();
 
   const commonArgs = [
     "mariadbd", "--no-defaults",
+    "--user=root",
     `--datadir=${dataDir}`,
     `--tmpdir=${resolve(dataDir, "tmp")}`,
     "--skip-grant-tables",
@@ -155,7 +169,14 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
     await host.destroy().catch(() => {});
   };
 
-  return { host, port, cleanup };
+  return {
+    host,
+    port,
+    dataDir,
+    getOutput: () => output,
+    getProcessOutput: (pid) => processOutput.get(pid) ?? { stdout: "", stderr: "" },
+    cleanup,
+  };
 }
 
 async function runMysqlTest(
@@ -163,25 +184,33 @@ async function runMysqlTest(
   instance: MariaDBInstance,
   sql: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const { runCentralizedProgram } = await import("../../host/test/centralized-test-helper.js");
   const mysqltestPath = resolveMariaDBProgram(arch, "mysqltest.wasm");
   if (!mysqltestPath) {
     throw new Error(`MariaDB ${arch} mysqltest binary not found`);
   }
-  const result = await runCentralizedProgram({
-    programPath: mysqltestPath,
-    argv: [
+  const mysqltestBytes = loadBytes(mysqltestPath);
+  let pid = 0;
+  const exitPromise = instance.host.spawn(
+    mysqltestBytes,
+    [
       "mysqltest",
       "--host=127.0.0.1",
       `--port=${instance.port}`,
       "--user=root",
       "--silent",
     ],
-    stdin: sql,
-    enableTcpNetwork: true,
-    timeout: 120_000,
+    {
+      env: ["HOME=/tmp", "PATH=/usr/local/bin:/usr/bin:/bin", "TMPDIR=/tmp"],
+      cwd: instance.dataDir,
+      stdin: new TextEncoder().encode(sql),
+      onStarted: (startedPid) => { pid = startedPid; },
+    },
+  );
+  const timeout = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error("mysqltest timed out after 120000ms")), 120_000);
   });
-  return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+  const exitCode = await Promise.race([exitPromise, timeout]);
+  return { ...instance.getProcessOutput(pid), exitCode };
 }
 
 async function runMysqlTestChecked(
@@ -240,19 +269,25 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
   // 2. Start server
   const instance = await startMariaDB(arch, dataDir, false, engineArgs);
 
-  // Wait for TCP readiness
+  // Wait for server readiness. Avoid a socket-level probe here: the Node TCP
+  // bridge treats the probe as a real MariaDB client connection, and aborting
+  // that connection can destabilize the benchmark before mysqltest starts.
   const deadline = Date.now() + 120_000;
   let ready = false;
   while (Date.now() < deadline) {
-    if (await tryConnect(instance.port)) {
+    if (instance.getOutput().includes("ready for connections")) {
       ready = true;
       break;
     }
     await new Promise((r) => setTimeout(r, 500));
   }
   if (!ready) {
+    const output = instance.getOutput().trim();
     await instance.cleanup();
-    throw new Error(`MariaDB ${arch} server did not listen on port ${instance.port}`);
+    throw new Error(
+      `MariaDB ${arch} server did not listen on port ${instance.port}` +
+      (output ? `:\n${output}` : ""),
+    );
   }
 
   try {
