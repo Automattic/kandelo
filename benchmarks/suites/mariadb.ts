@@ -5,10 +5,12 @@
  * with different engine configurations.
  */
 import { existsSync, readFileSync, mkdirSync, rmSync } from "fs";
-import { resolve, dirname } from "path";
+import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { createConnection, createServer, type Socket } from "net";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
+import { tryResolveBinary } from "../../host/src/binary-resolver.js";
+import { ensureSourceExtract } from "../../examples/browser/scripts/source-extract-helper.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -19,6 +21,45 @@ export type WasmArch = "wasm32" | "wasm64";
 
 function installDirFor(arch: WasmArch): string {
   return resolve(mariadbLibDir, arch === "wasm64" ? "mariadb-install-64" : "mariadb-install");
+}
+
+function resolverPathFor(arch: WasmArch, file: "mariadbd.wasm" | "mysqltest.wasm"): string {
+  return arch === "wasm64"
+    ? `programs/wasm64/mariadb/${file}`
+    : `programs/mariadb/${file}`;
+}
+
+function resolveMariaDBProgram(
+  arch: WasmArch,
+  file: "mariadbd.wasm" | "mysqltest.wasm",
+): string | null {
+  const resolved = tryResolveBinary(resolverPathFor(arch, file));
+  if (resolved) return resolved;
+
+  const legacy = resolve(installDirFor(arch), "bin", file);
+  if (existsSync(legacy)) return legacy;
+
+  if (file === "mariadbd.wasm") {
+    const legacyNoExtension = resolve(installDirFor(arch), "bin/mariadbd");
+    if (existsSync(legacyNoExtension)) return legacyNoExtension;
+  }
+
+  return null;
+}
+
+function resolveMariaDBBootstrapSql(arch: WasmArch): { systemTables: string; systemData: string } {
+  const installDir = installDirFor(arch);
+  const legacyTables = resolve(installDir, "share/mysql/mysql_system_tables.sql");
+  const legacyData = resolve(installDir, "share/mysql/mysql_system_tables_data.sql");
+  if (existsSync(legacyTables) && existsSync(legacyData)) {
+    return { systemTables: legacyTables, systemData: legacyData };
+  }
+
+  const sourceDir = ensureSourceExtract("mariadb", repoRoot);
+  return {
+    systemTables: join(sourceDir, "scripts/mysql_system_tables.sql"),
+    systemData: join(sourceDir, "scripts/mysql_system_tables_data.sql"),
+  };
 }
 
 function loadBytes(path: string): ArrayBuffer {
@@ -58,8 +99,11 @@ interface MariaDBInstance {
 
 async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean, engineArgs: string[]): Promise<MariaDBInstance> {
   const port = await getFreePort();
-  const installDir = installDirFor(arch);
-  const mysqldBytes = loadBytes(resolve(installDir, "bin/mariadbd"));
+  const mysqldPath = resolveMariaDBProgram(arch, "mariadbd.wasm");
+  if (!mysqldPath) {
+    throw new Error(`MariaDB ${arch} server binary not found`);
+  }
+  const mysqldBytes = loadBytes(mysqldPath);
 
   const verbose = process.env.MARIADB_BENCH_VERBOSE === "1";
   const host = new NodeKernelHost({
@@ -89,9 +133,9 @@ async function startMariaDB(arch: WasmArch, dataDir: string, bootstrap: boolean,
 
   let stdinData: Uint8Array | undefined;
   if (bootstrap) {
-    const shareDir = resolve(installDirFor(arch), "share/mysql");
-    const systemTables = readFileSync(resolve(shareDir, "mysql_system_tables.sql"), "utf-8");
-    const systemData = readFileSync(resolve(shareDir, "mysql_system_tables_data.sql"), "utf-8");
+    const sqlPaths = resolveMariaDBBootstrapSql(arch);
+    const systemTables = readFileSync(sqlPaths.systemTables, "utf-8");
+    const systemData = readFileSync(sqlPaths.systemData, "utf-8");
     const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n`;
     stdinData = new TextEncoder().encode(bootstrapSql);
   }
@@ -118,10 +162,14 @@ async function runMysqlTest(
   arch: WasmArch,
   instance: MariaDBInstance,
   sql: string,
-): Promise<{ stdout: string; exitCode: number }> {
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const { runCentralizedProgram } = await import("../../host/test/centralized-test-helper.js");
+  const mysqltestPath = resolveMariaDBProgram(arch, "mysqltest.wasm");
+  if (!mysqltestPath) {
+    throw new Error(`MariaDB ${arch} mysqltest binary not found`);
+  }
   const result = await runCentralizedProgram({
-    programPath: resolve(installDirFor(arch), "bin/mysqltest.wasm"),
+    programPath: mysqltestPath,
     argv: [
       "mysqltest",
       "--host=127.0.0.1",
@@ -130,20 +178,37 @@ async function runMysqlTest(
       "--silent",
     ],
     stdin: sql,
+    enableTcpNetwork: true,
     timeout: 120_000,
   });
-  return { stdout: result.stdout, exitCode: result.exitCode };
+  return { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+}
+
+async function runMysqlTestChecked(
+  arch: WasmArch,
+  instance: MariaDBInstance,
+  sql: string,
+): Promise<void> {
+  const result = await runMysqlTest(arch, instance, sql);
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `mysqltest failed with exit ${result.exitCode}:\n${result.stdout}\n${result.stderr}`,
+    );
+  }
 }
 
 export function isMariaDBAvailable(arch: WasmArch = "wasm32"): boolean {
-  return existsSync(resolve(installDirFor(arch), "bin/mariadbd"));
+  return resolveMariaDBProgram(arch, "mariadbd.wasm") !== null
+    && resolveMariaDBProgram(arch, "mysqltest.wasm") !== null;
 }
 
 export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm32"): Promise<Record<string, number>> {
   if (!isMariaDBAvailable(arch)) {
     const flag = arch === "wasm64" ? " --wasm64" : "";
-    console.warn(`  MariaDB ${arch} not found, skipping. Run: bash examples/libs/mariadb/build-mariadb.sh${flag}`);
-    return {};
+    throw new Error(
+      `MariaDB ${arch} benchmark prerequisites are missing. ` +
+      `Run: bash examples/libs/mariadb/build-mariadb.sh${flag}`,
+    );
   }
 
   const engineArgs = [`--default-storage-engine=${engine}`];
@@ -177,15 +242,23 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
 
   // Wait for TCP readiness
   const deadline = Date.now() + 120_000;
+  let ready = false;
   while (Date.now() < deadline) {
-    if (await tryConnect(instance.port)) break;
+    if (await tryConnect(instance.port)) {
+      ready = true;
+      break;
+    }
     await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!ready) {
+    await instance.cleanup();
+    throw new Error(`MariaDB ${arch} server did not listen on port ${instance.port}`);
   }
 
   try {
     // 3. CREATE TABLE
     const t1 = performance.now();
-    await runMysqlTest(arch, instance,`
+    await runMysqlTestChecked(arch, instance,`
       CREATE DATABASE IF NOT EXISTS bench;
       USE bench;
       CREATE TABLE t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine};
@@ -202,12 +275,12 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
       insertSql += `INSERT INTO t2 (t1_id, data) VALUES (${i + 1}, 'data_for_item_${i}');\n`;
     }
     const t2 = performance.now();
-    await runMysqlTest(arch, instance,insertSql);
+    await runMysqlTestChecked(arch, instance,insertSql);
     results.query_insert_ms = performance.now() - t2;
 
     // 5. SELECT with WHERE
     const t3 = performance.now();
-    await runMysqlTest(arch, instance,`
+    await runMysqlTestChecked(arch, instance,`
       USE bench;
       SELECT * FROM t1 WHERE value > 500 AND value < 800;
     `);
@@ -215,7 +288,7 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
 
     // 6. JOIN
     const t4 = performance.now();
-    await runMysqlTest(arch, instance,`
+    await runMysqlTestChecked(arch, instance,`
       USE bench;
       SELECT t1.name, t2.data FROM t1 JOIN t2 ON t1.id = t2.t1_id WHERE t1.value > 500;
     `);

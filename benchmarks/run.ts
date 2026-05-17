@@ -5,7 +5,7 @@
  * Usage:
  *   npx tsx benchmarks/run.ts                        # All suites, Node.js
  *   npx tsx benchmarks/run.ts --host=browser         # All suites, browser
- *   npx tsx benchmarks/run.ts --suite=erlang-ring    # Single suite
+ *   npx tsx benchmarks/run.ts --suite=wordpress      # Single suite
  *   npx tsx benchmarks/run.ts --rounds=5             # Multiple rounds (median)
  */
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
@@ -215,14 +215,37 @@ const SUITE_MODULES: Record<string, string> = {
   "mariadb-innodb-64": "./suites/mariadb-innodb-64.js",
 };
 
+const DISABLED_SUITES: Record<string, string> = {
+  "erlang-ring": "disabled while the Erlang benchmark is unstable",
+};
+
 async function loadNodeSuites(filter?: string): Promise<BenchmarkSuite[]> {
-  const names = filter ? [filter] : Object.keys(SUITE_MODULES);
+  const names = filter
+    ? [filter]
+    : Object.keys(SUITE_MODULES).filter((name) => !(name in DISABLED_SUITES));
   const suites: BenchmarkSuite[] = [];
 
   for (const name of names) {
+    const disabledReason = DISABLED_SUITES[name];
+    if (disabledReason) {
+      console.warn(`Skipping suite "${name}" (${disabledReason})`);
+      if (filter) {
+        suites.push({
+          name,
+          async run(): Promise<Record<string, number>> {
+            console.warn(`  Skipping ${name}: ${disabledReason}`);
+            return {};
+          },
+        });
+      }
+      continue;
+    }
+
     const modPath = SUITE_MODULES[name];
     if (!modPath) {
-      console.error(`Suite "${name}" not found. Available: ${Object.keys(SUITE_MODULES).join(", ")}`);
+      const available = Object.keys(SUITE_MODULES)
+        .filter((suiteName) => !(suiteName in DISABLED_SUITES));
+      console.error(`Suite "${name}" not found. Available: ${available.join(", ")}`);
       process.exit(1);
     }
     try {

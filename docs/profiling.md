@@ -93,7 +93,9 @@ Some suites require additional binaries:
 | `wordpress` | Pre-built PHP, nginx, WordPress |
 | `mariadb` | Pre-built MariaDB |
 
-Suites skip gracefully if their binaries are not found.
+Application benchmark suites fail if their required binaries are not found. A
+missing artifact means the suite did not measure its workload; build or fetch
+the prerequisite before running it.
 
 ### Running Benchmarks
 
