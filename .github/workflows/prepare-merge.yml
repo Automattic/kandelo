@@ -294,7 +294,7 @@ jobs:
 
             BASE_REF="${{ github.event.pull_request.base.ref }}"
             git fetch origin "$BASE_REF" --depth=1
-            changed_files=$(git diff --name-only "origin/$BASE_REF"...HEAD || true)
+            changed_files=$(git diff --name-only "origin/$BASE_REF"..HEAD || true)
             force_package_rebuild=0
             if echo "$changed_files" | grep -E \
               -e "^crates/fork-instrument/" \
