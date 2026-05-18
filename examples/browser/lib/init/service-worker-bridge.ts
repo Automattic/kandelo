@@ -6,6 +6,20 @@
  */
 import { HttpBridgeHost } from "../http-bridge";
 
+function waitForServiceWorkerController(): Promise<ServiceWorker> {
+  if (navigator.serviceWorker.controller) {
+    return Promise.resolve(navigator.serviceWorker.controller);
+  }
+
+  return new Promise((resolve) => {
+    navigator.serviceWorker.addEventListener(
+      "controllerchange",
+      () => resolve(navigator.serviceWorker.controller!),
+      { once: true },
+    );
+  });
+}
+
 /**
  * Initialize the service worker HTTP bridge.
  *
@@ -34,13 +48,14 @@ export async function initServiceWorkerBridge(
   await navigator.serviceWorker.register(swUrl);
 
   // Wait for the service worker to activate and claim this client
-  const reg = await navigator.serviceWorker.ready;
+  await navigator.serviceWorker.ready;
+  const controller = await waitForServiceWorkerController();
 
   // Send bridge port and wait for SW to confirm it's initialized
   await new Promise<void>((resolve) => {
     const reply = new MessageChannel();
     reply.port1.onmessage = () => resolve();
-    reg.active!.postMessage(
+    controller.postMessage(
       { type: "init-bridge", appPrefix },
       [bridge.getSwPort(), reply.port2],
     );
