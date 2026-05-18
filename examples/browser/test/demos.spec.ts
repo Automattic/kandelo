@@ -383,10 +383,11 @@ test.skip("@slow redis: starts and accepts commands", async ({ page }) => {
 
 // ─── WordPress ──────────────────────────────────────────────────────
 
-test("@slow wordpress: install, login, and load dashboard", async ({
+test("@slow wordpress: install, login, and load site editor from menu", async ({
   page,
 }) => {
   test.setTimeout(600_000);
+  await page.setViewportSize({ width: 1800, height: 1100 });
 
   // Capture browser console for debugging
   const consoleMessages: string[] = [];
@@ -396,6 +397,26 @@ test("@slow wordpress: install, login, and load dashboard", async ({
   });
   page.on("pageerror", (err) => {
     consoleMessages.push(`[pageerror] ${err.message}`);
+  });
+  let sawSiteEditorAppRedirect = false;
+  page.on("response", (response) => {
+    try {
+      const responseUrl = new URL(response.url());
+      const location = response.headers()["location"];
+      if (
+        response.status() === 307 &&
+        responseUrl.pathname.includes("/wp-admin/site-editor.php") &&
+        !responseUrl.pathname.includes("/app/") &&
+        location &&
+        new URL(location, response.url()).pathname.includes(
+          "/app/wp-admin/site-editor.php",
+        )
+      ) {
+        sawSiteEditorAppRedirect = true;
+      }
+    } catch {
+      // Ignore malformed debug URLs/headers.
+    }
   });
 
   await gotoOrSkip(page, "/pages/wordpress/");
@@ -441,11 +462,11 @@ test("@slow wordpress: install, login, and load dashboard", async ({
   // (class="hide-if-js") that's visible when jQuery fails to load in Wasm.
   const passField = frame.locator("#pass1");
   if ((await passField.count()) > 0) {
-    await passField.fill("testpass123");
+    await passField.fill("Testpass123!Testpass123!");
   }
   const pass2Field = frame.locator("#pass2");
-  if ((await pass2Field.count()) > 0) {
-    await pass2Field.fill("testpass123");
+  if ((await pass2Field.count()) > 0 && await pass2Field.isVisible()) {
+    await pass2Field.fill("Testpass123!Testpass123!");
   }
   // Check the "Confirm use of weak password" checkbox if visible.
   // WordPress JS may hide this element, so use a short timeout.
@@ -486,7 +507,7 @@ test("@slow wordpress: install, login, and load dashboard", async ({
 
   // --- Fill in login credentials ---
   await frame.locator("#user_login").fill("admin");
-  await frame.locator("#user_pass").fill("testpass123");
+  await frame.locator("#user_pass").fill("Testpass123!Testpass123!");
   await frame.locator("#wp-submit").click();
 
   // Wait for login to process, then navigate to the dashboard explicitly.
@@ -497,9 +518,8 @@ test("@slow wordpress: install, login, and load dashboard", async ({
     f.src = "/app/wp-admin/";
   });
 
-  // Wait for the dashboard to load. The admin menu is hidden by responsive
-  // CSS (iframe is ~450px wide, WordPress hides menu at <960px), so check
-  // for DOM presence rather than visibility.
+  // Wait for the dashboard to load. The viewport is widened above so the
+  // WordPress admin menu renders in its normal desktop layout.
   await expect(
     frame.locator("#wpadminbar, .wrap h1").first(),
   ).toBeVisible({ timeout: 120_000 });
@@ -507,11 +527,26 @@ test("@slow wordpress: install, login, and load dashboard", async ({
     frame.locator("#adminmenu").first(),
   ).toBeAttached({ timeout: 30_000 });
 
-  // --- Navigate to the Site Editor ---
-  await page.evaluate(() => {
-    const f = document.getElementById("frame") as HTMLIFrameElement;
-    f.src = "/app/wp-admin/site-editor.php";
-  });
+  // --- Navigate to the Site Editor through the wp-admin menu ---
+  const siteEditorLink = frame
+    .locator("#adminmenu a[href*='site-editor.php']")
+    .first();
+  await expect(siteEditorLink).toBeAttached({ timeout: 60_000 });
+  const appearanceMenu = frame.locator("#menu-appearance > a").first();
+  if ((await appearanceMenu.count()) > 0) {
+    await appearanceMenu.hover();
+  }
+  await siteEditorLink.click({ timeout: 60_000 });
+
+  await page.waitForFunction(
+    () => {
+      const f = document.getElementById("frame") as HTMLIFrameElement | null;
+      return f?.contentWindow?.location.pathname.includes("/wp-admin/site-editor.php");
+    },
+    { timeout: 60_000 },
+  );
+  expect(sawSiteEditorAppRedirect).toBe(true);
+  await expect(frame.locator("body")).not.toContainText("Simple Programs");
 
   // The site editor loads the Gutenberg block editor via heavy JS bundles.
   // Wait for the editor interface to appear — the .edit-site class on the
