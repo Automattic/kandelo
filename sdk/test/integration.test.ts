@@ -14,7 +14,7 @@ const TMP_DIR = join(SDK_ROOT, '.test-tmp');
 
 /**
  * Find the main repo root. In a worktree, REPO_ROOT is the worktree dir,
- * but sysroot/glue live in the main checkout. Use git to find it.
+ * but sysroot/libc/glue live in the main checkout. Use git to find it.
  */
 function findMainRepoRoot(): string {
   try {
@@ -34,7 +34,10 @@ beforeAll(() => {
     const mainRepo = findMainRepoRoot();
     if (existsSync(join(mainRepo, 'sysroot', 'lib', 'libc.a'))) {
       process.env.WASM_POSIX_SYSROOT = join(mainRepo, 'sysroot');
-      process.env.WASM_POSIX_GLUE_DIR = join(mainRepo, 'glue');
+      const mainGlue = join(mainRepo, 'libc', 'glue');
+      if (existsSync(join(mainGlue, 'abi_constants.h'))) {
+        process.env.WASM_POSIX_GLUE_DIR = mainGlue;
+      }
     }
   }
 });

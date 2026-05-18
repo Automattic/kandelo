@@ -52,6 +52,6 @@ describe('buildClangArgs', () => {
   it('filters ignored flags', () => {
     const args = buildClangArgs(['-c', '-pthread', '-fPIC', 'foo.c'], toolchain);
     expect(args).not.toContain('-pthread');
-    expect(args).not.toContain('-fPIC');
+    expect(args).toContain('-fPIC');
   });
 });

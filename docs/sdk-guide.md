@@ -294,7 +294,7 @@ wasm-opt --asyncify \
 |----------|---------|
 | `WASM_POSIX_LLVM_DIR` | Path to LLVM bin directory |
 | `WASM_POSIX_SYSROOT` | Override sysroot path (default: `<repo>/sysroot`) |
-| `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/glue`) |
+| `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/libc/glue`) |
 
 ## Running Programs
 

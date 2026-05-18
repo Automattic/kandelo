@@ -24,7 +24,7 @@ import { NodePlatformIO } from "../src/platform/node";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
 const SYSROOT = join(REPO_ROOT, "sysroot");
-const GLUE_DIR = join(REPO_ROOT, "glue");
+const GLUE_DIR = join(REPO_ROOT, "libc", "glue");
 const LLVM_BIN = process.env.LLVM_BIN || "/opt/homebrew/opt/llvm@21/bin";
 const CLANG = `${LLVM_BIN}/clang`;
 const WASM_LD = process.env.LLVM_BIN
