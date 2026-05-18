@@ -201,7 +201,10 @@ impl IndexToml {
             .iter()
             .position(|p| p.name == name && p.version == version)
         {
-            Some(i) => i,
+            Some(i) => {
+                self.packages[i].revision = revision;
+                i
+            }
             None => {
                 self.packages.push(PackageEntry {
                     name: name.into(),
@@ -544,6 +547,44 @@ revision = 1
         assert_eq!(entry.status, EntryStatus::Success);
         assert_eq!(entry.archive_url.as_deref(), Some("foo-new.tar.zst"));
         assert!(entry.fallback_archive_url.is_none());
+    }
+
+    #[test]
+    fn update_entry_success_refreshes_existing_package_revision() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let mut idx = IndexToml::empty(8, "now".into(), "test".into());
+        idx.update_entry_success(
+            "foo",
+            "1.0",
+            1,
+            TargetArch::Wasm32,
+            "foo-rev1.tar.zst".into(),
+            "sha-v1".into(),
+            "key-v1".into(),
+            "t1".into(),
+            "run1".into(),
+        );
+        idx.update_entry_success(
+            "foo",
+            "1.0",
+            2,
+            TargetArch::Wasm32,
+            "foo-rev2.tar.zst".into(),
+            "sha-v2".into(),
+            "key-v2".into(),
+            "t2".into(),
+            "run2".into(),
+        );
+
+        let pkg = idx
+            .packages
+            .iter()
+            .find(|p| p.name == "foo" && p.version == "1.0")
+            .unwrap();
+        assert_eq!(pkg.revision, 2);
+        assert_eq!(idx.packages.len(), 1);
     }
 
     #[test]
