@@ -21,8 +21,8 @@
 import type {
   BootDescriptor, DmesgLine, FramebufferHandle, GalleryItem, GalleryQuery,
   KernelHost, KernelStateKV, MachineStatus, MemMapEntry, MountInfo,
-  ProcessEvent, ProcessInfo, PtyHandle, Snapshot, SnapshotOptions,
-  SyscallEvent, SyscallFilter, VfsDirent, WebPreviewState,
+  DemoPresentation, ProcessEvent, ProcessInfo, PtyHandle, Snapshot, SnapshotOptions,
+  SurfaceAvailability, SyscallEvent, SyscallFilter, VfsDirent, WebPreviewState,
 } from "../../../../../host/src/kandelo-ui/kernel-host";
 import { takeSnapshot } from "../../../../../host/src/kandelo-ui/snapshot";
 import {
@@ -58,6 +58,8 @@ export class MockKernelHost implements KernelHost {
   private dmesgListeners = new ListenerSet<DmesgLine>();
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
+  private presentationListeners = new ListenerSet<DemoPresentation>();
+  private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private bootSpeed: number;
   private bootStarted = false;
   private bootTimers: number[] = [];
@@ -84,6 +86,8 @@ export class MockKernelHost implements KernelHost {
     if (s === this._status) return;
     this._status = s;
     this.statusListeners.emit(s);
+    this.webPreviewListeners.emit(this.getWebPreview());
+    this.surfaceListeners.emit(this.getSurfaceAvailability());
   }
 
   // ── descriptor ───────────────────────────────────────────────────────────
@@ -92,6 +96,8 @@ export class MockKernelHost implements KernelHost {
   async applyBootDescriptor(desc: BootDescriptor): Promise<void> {
     this.setStatus("booting");
     this.descriptor = structuredClone(desc);
+    this.presentationListeners.emit(this.getPresentation());
+    this.surfaceListeners.emit(this.getSurfaceAvailability());
     this.dmesgRing = [];
     this.dmesgListeners.emit({ t: 0, level: "info", facility: "kernel", msg: "reboot" });
     this.bootStarted = false;
@@ -286,6 +292,54 @@ export class MockKernelHost implements KernelHost {
 
   subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void {
     return this.webPreviewListeners.add(cb);
+  }
+
+  getPresentation(): DemoPresentation {
+    switch (this.descriptor.id) {
+      case "doom":
+        return {
+          bootPrimary: "syslog",
+          runningPrimary: ["framebuffer", "terminal"],
+          terminalAccess: "drawer",
+          internalsAccess: "drawer",
+          autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+        };
+      case "nginx":
+      case "nginx-php":
+      case "wordpress-sqlite":
+      case "wordpress-mariadb":
+        return {
+          bootPrimary: "syslog",
+          runningPrimary: ["web", "terminal", "syslog"],
+          terminalAccess: "drawer",
+          internalsAccess: "drawer",
+        };
+      default:
+        return {
+          bootPrimary: "syslog",
+          runningPrimary: ["terminal", "syslog"],
+          terminalAccess: "primary",
+          internalsAccess: "drawer",
+        };
+    }
+  }
+
+  subscribePresentation(cb: (state: DemoPresentation) => void): () => void {
+    return this.presentationListeners.add(cb);
+  }
+
+  getSurfaceAvailability(): SurfaceAvailability {
+    const preview = this.getWebPreview();
+    return {
+      syslog: true,
+      terminal: this._status !== "idle",
+      framebuffer: this.descriptor.id === "doom" && this._status === "running",
+      web: preview?.status === "running",
+    };
+  }
+
+  subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void {
+    return this.surfaceListeners.add(cb);
   }
 
   // ── Snapshot ─────────────────────────────────────────────────────────────

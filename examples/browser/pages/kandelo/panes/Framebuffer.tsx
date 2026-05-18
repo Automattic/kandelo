@@ -67,13 +67,15 @@ export interface FramebufferProps {
   onCollapse?: () => void;
   onMaximize?: () => void;
   isMax?: boolean;
+  autoFocus?: boolean;
 }
 
-export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse, onMaximize, isMax }) => {
+export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse, onMaximize, isMax, autoFocus = false }) => {
   const host = useKernelHost();
   const status = useStatus();
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<FramebufferHandle | null>(null);
+  const releaseTimersRef = React.useRef<number[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
@@ -119,6 +121,14 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
       }
       h.sendInput(bytes);
     };
+    const sendReleaseScancodes = (codes: readonly number[]) => {
+      const timer = window.setTimeout(() => {
+        releaseTimersRef.current = releaseTimersRef.current.filter((id) => id !== timer);
+        if (handleRef.current?.getBoundPid() === null) return;
+        sendScancodes(codes, false);
+      }, 16);
+      releaseTimersRef.current.push(timer);
+    };
 
     const isReleaseCombo = (e: KeyboardEvent) =>
       e.ctrlKey && e.shiftKey && e.code === "Escape";
@@ -147,7 +157,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
       if (!codes) return;
       e.preventDefault();
       held.delete(e.code);
-      sendScancodes(codes, false);
+      sendReleaseScancodes(codes);
     };
     const onBlur = () => {
       // Flush held keys so the game doesn't keep walking if focus moves
@@ -166,12 +176,22 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
     canvas.addEventListener("blur", onBlur);
     canvas.addEventListener("focus", onFocus);
     return () => {
+      for (const timer of releaseTimersRef.current) window.clearTimeout(timer);
+      releaseTimersRef.current = [];
       canvas.removeEventListener("keydown", onDown);
       canvas.removeEventListener("keyup", onUp);
       canvas.removeEventListener("blur", onBlur);
       canvas.removeEventListener("focus", onFocus);
     };
   }, [status]);
+
+  React.useEffect(() => {
+    if (!autoFocus || status !== "running" || error) return;
+    const handle = window.requestAnimationFrame(() => {
+      canvasRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [autoFocus, error, status]);
 
   const onCanvasClick = () => {
     canvasRef.current?.focus();

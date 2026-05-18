@@ -90,6 +90,7 @@ export const App: React.FC = () => {
           <>
             <LiveUrlBar onOpenShare={() => onNav("share")} />
             <MachineView
+              focusInternals={view === "internals"}
               internalsTab={internalsTab}
               onInternalsTab={(t) => setInternalsTab(t as InternalsTab)}
             />

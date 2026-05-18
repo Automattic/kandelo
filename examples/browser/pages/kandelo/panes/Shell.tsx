@@ -32,9 +32,10 @@ export interface ShellProps {
   onCollapse?: () => void;
   onMaximize?: () => void;
   isMax?: boolean;
+  autoFocus?: boolean;
 }
 
-export const Shell: React.FC<ShellProps> = ({ dragProps, onCollapse, onMaximize, isMax }) => {
+export const Shell: React.FC<ShellProps> = ({ dragProps, onCollapse, onMaximize, isMax, autoFocus = false }) => {
   const host = useKernelHost();
   const status = useStatus();
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -60,9 +61,15 @@ export const Shell: React.FC<ShellProps> = ({ dragProps, onCollapse, onMaximize,
     term.loadAddon(fit);
     term.open(containerRef.current);
     fit.fit();
-
     let unsubData = () => {};
     let disposed = false;
+    const focusTerm = () => {
+      if (!autoFocus) return;
+      window.requestAnimationFrame(() => {
+        if (!disposed) term.focus();
+      });
+    };
+    focusTerm();
 
     void (async () => {
       try {
@@ -83,6 +90,7 @@ export const Shell: React.FC<ShellProps> = ({ dragProps, onCollapse, onMaximize,
         });
         ro.observe(containerRef.current!);
         setAttached(true);
+        focusTerm();
 
         // store extra disposers via the unsubData closure
         const origUnsubData = unsubData;
@@ -107,7 +115,7 @@ export const Shell: React.FC<ShellProps> = ({ dragProps, onCollapse, onMaximize,
       term.dispose();
       setAttached(false);
     };
-  }, [host, status]);
+  }, [autoFocus, host, status]);
 
   return (
     <div className="kpane">
