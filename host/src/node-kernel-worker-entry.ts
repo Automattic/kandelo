@@ -25,9 +25,11 @@ import {
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
   DeviceFileSystem,
+  HostFileSystem,
   MemoryFileSystem,
   resolveForNode,
 } from "./vfs";
+import type { MountConfig } from "./vfs/types";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
@@ -310,7 +312,10 @@ async function resolveExecutableForLaunch(
  * else. The session dir is created once per boot and torn down by
  * `cleanupSessionDir` on `destroy`.
  */
-function buildVirtualPlatformIO(rootfsImage: ArrayBuffer): VirtualPlatformIO {
+function buildVirtualPlatformIO(
+  rootfsImage: ArrayBuffer,
+  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>,
+): VirtualPlatformIO {
   sessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
   const specMounts = resolveForNode(
     DEFAULT_MOUNT_SPEC,
@@ -320,10 +325,16 @@ function buildVirtualPlatformIO(rootfsImage: ArrayBuffer): VirtualPlatformIO {
   const shmSab = new SharedArrayBuffer(16 * 1024 * 1024);
   const shmfs = MemoryFileSystem.create(shmSab);
   shmfs.chmod("/", 0o1777);
+  const extras: MountConfig[] = (extraMounts ?? []).map((m) => ({
+    mountPoint: m.mountPoint,
+    backend: new HostFileSystem(m.hostPath),
+    readonly: m.readonly,
+  }));
   const mounts = [
     { mountPoint: "/dev/shm", backend: shmfs },
     { mountPoint: "/dev", backend: new DeviceFileSystem() },
     ...specMounts,
+    ...extras,
   ];
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
@@ -345,7 +356,7 @@ async function handleInit(msg: InitMessage) {
   workerAdapter = new NodeWorkerAdapter();
 
   const io: PlatformIO = msg.rootfsImage
-    ? buildVirtualPlatformIO(msg.rootfsImage)
+    ? buildVirtualPlatformIO(msg.rootfsImage, msg.extraMounts)
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
   if (msg.enableTcpNetwork) {

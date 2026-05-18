@@ -72,6 +72,7 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
 }
 
 export interface SpawnOptions {
@@ -139,6 +140,7 @@ export class NodeKernelHost {
         },
         execPrograms: this.options.execPrograms,
         rootfsImage: rootfsImage ?? undefined,
+        extraMounts: this.options.extraMounts,
         enableTcpNetwork: this.options.enableTcpNetwork,
       };
       this.worker.postMessage(initMsg);
