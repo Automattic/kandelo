@@ -458,8 +458,8 @@ jobs:
       - name: Install host npm deps (build prereq)
         run: |
           bash scripts/dev-shell.sh bash -c '
-            npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
       - name: Resolve target package's transitive deps
@@ -585,8 +585,8 @@ jobs:
       - name: Install host npm deps (build prereq)
         run: |
           bash scripts/dev-shell.sh bash -c '
-            npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
       - name: Download library archives from lib-matrix-build
@@ -725,8 +725,8 @@ jobs:
         # Must run before Materialize binaries (see staging-build.yml).
         run: |
           bash scripts/dev-shell.sh bash -c '
-            npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
       - name: Materialize binaries (per-package package.pr.toml overlay)
@@ -751,8 +751,8 @@ jobs:
             cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
-            npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund && cd ..
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
           '
 
