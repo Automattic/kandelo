@@ -17,6 +17,7 @@ import {
 import {
   LiveKernelHost,
   type BootDescriptor,
+  type DemoPresentation,
   type GalleryItem,
 } from "../../../../../host/src/kandelo-ui/kernel-host";
 import { PRESET_LIBRARY } from "../fixtures";
@@ -53,8 +54,7 @@ import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
-import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom/fbdoom.wasm?url";
-import doomWadUrl from "@binaries/programs/wasm32/fbdoom/doom1.wad?url";
+import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 
 type LiveDemoId =
   | "shell"
@@ -69,6 +69,7 @@ interface LiveProfile {
   id: LiveDemoId;
   vfsUrl: string;
   descriptor: BootDescriptor;
+  presentation: DemoPresentation;
   init?: {
     argv: string[];
     env?: string[];
@@ -85,6 +86,7 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
+const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
 
 const SHELL_ENV: string[] = [
   "HOME=/home",
@@ -125,6 +127,8 @@ const SERVICE_ENV: string[] = [
   "SSL_CERT_DIR=/etc/ssl/certs",
 ];
 
+const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
+
 export type FbDemo = "none" | "test" | "doom";
 
 export interface CreateLiveHostOptions {
@@ -158,6 +162,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
 function profileFor(id: string, fb?: FbDemo): LiveProfile {
   const normalized = normalizeDemoId(id) ?? "shell";
   const desc = descriptorFor(normalized);
+  const presentation = presentationFor(normalized);
   const dinit = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"];
   switch (normalized) {
     case "node":
@@ -165,12 +170,14 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         id: "node",
         vfsUrl: nodeVfsUrl,
         descriptor: desc,
+        presentation,
       };
     case "nginx":
       return {
         id: "nginx",
         vfsUrl: nginxVfsUrl,
         descriptor: desc,
+        presentation,
         init: {
           argv: dinit,
           env: SERVICE_ENV,
@@ -183,6 +190,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         id: "nginx-php",
         vfsUrl: nginxPhpVfsUrl,
         descriptor: desc,
+        presentation,
         init: {
           argv: dinit,
           env: SERVICE_ENV,
@@ -195,6 +203,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         id: "wordpress-sqlite",
         vfsUrl: wordpressVfsUrl,
         descriptor: desc,
+        presentation,
         init: {
           argv: dinit,
           env: [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
@@ -208,6 +217,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         id: "wordpress-mariadb",
         vfsUrl: lampVfsUrl,
         descriptor: desc,
+        presentation,
         init: {
           argv: dinit,
           env: [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
@@ -217,13 +227,14 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         },
       };
     case "doom":
-      return { id: "doom", vfsUrl: shellVfsUrl, descriptor: desc, framebuffer: "doom" };
+      return { id: "doom", vfsUrl: shellVfsUrl, descriptor: desc, presentation, framebuffer: "doom" };
     case "shell":
     default:
       return {
         id: "shell",
         vfsUrl: shellVfsUrl,
         descriptor: desc,
+        presentation,
         framebuffer: fb === "test" ? "test" : undefined,
       };
   }
@@ -244,6 +255,7 @@ async function bootProfile(
       ? requestedDescriptor.packages
       : profile.descriptor.packages,
   });
+  host.setPresentation(profile.presentation);
   host.setStatus("booting");
 
   let t = 0;
@@ -343,11 +355,46 @@ async function bootProfile(
   if (profile.framebuffer === "test") {
     void spawnLazy(kernel, "/usr/local/bin/fbtest", ["fbtest"], tick);
   } else if (profile.framebuffer === "doom") {
-    void spawnLazy(kernel, "/usr/local/bin/fbdoom", ["fbdoom", "-iwad", "/doom1.wad"], tick);
+    tick("starting Doom from bash...");
+    void host.runShellCommand(profile.presentation.autoCommand ?? DOOM_COMMAND).catch((err) => {
+      tick(`doom command failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   tick("ready");
   return kernel;
+}
+
+function presentationFor(id: LiveDemoId): DemoPresentation {
+  switch (id) {
+    case "doom":
+      return {
+        bootPrimary: "syslog",
+        runningPrimary: ["framebuffer", "terminal", "syslog"],
+        terminalAccess: "drawer",
+        internalsAccess: "drawer",
+        autoCommand: DOOM_COMMAND,
+      };
+    case "nginx":
+    case "nginx-php":
+    case "wordpress-sqlite":
+    case "wordpress-mariadb":
+      return {
+        bootPrimary: "syslog",
+        runningPrimary: ["web", "terminal", "syslog"],
+        terminalAccess: "drawer",
+        internalsAccess: "drawer",
+      };
+    case "shell":
+    case "node":
+    default:
+      return {
+        bootPrimary: "syslog",
+        runningPrimary: ["terminal", "syslog"],
+        terminalAccess: "primary",
+        internalsAccess: "drawer",
+      };
+  }
 }
 
 function stageShellUtilities(
@@ -404,6 +451,7 @@ async function registerFbPrograms(kernel: BrowserKernel): Promise<void> {
     { path: "/usr/local/bin/fbdoom", url: fbdoomWasmUrl },
     { path: "/usr/local/bin/fbtest", url: fbtestWasmUrl },
   ];
+  ensureDirRecursive(kernel.fs, "/usr/local/bin");
   const sizes = await Promise.all(probes.map((p) => fetchSize(p.url)));
   const entries = probes
     .map((p, i) => ({ ...p, size: sizes[i], mode: 0o755 }))
@@ -414,7 +462,10 @@ async function registerFbPrograms(kernel: BrowserKernel): Promise<void> {
 async function stageDoomWad(kernel: BrowserKernel, tick: (msg: string) => void): Promise<void> {
   tick("staging /doom1.wad...");
   try {
-    const wadBytes = await fetch(doomWadUrl).then(failOn("doom1.wad")).then((r) => r.arrayBuffer());
+    const url = import.meta.env.DEV
+      ? `/cors-proxy?url=${encodeURIComponent(DOOM_WAD_URL)}`
+      : DOOM_WAD_URL;
+    const wadBytes = await fetch(url).then(failOn("doom1.wad")).then((r) => r.arrayBuffer());
     writeVfsBinary(kernel.fs, "/doom1.wad", new Uint8Array(wadBytes), 0o644);
   } catch (err) {
     tick(`doom1.wad stage failed: ${err instanceof Error ? err.message : String(err)}`);

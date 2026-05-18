@@ -8,7 +8,8 @@
 
 import * as React from "react";
 import type {
-  KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState,
+  KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState, DemoPresentation,
+  SurfaceAvailability,
 } from "../../../../../host/src/kandelo-ui/kernel-host";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
@@ -70,5 +71,25 @@ export function useWebPreview(): WebPreviewState | null {
     setState(host.getWebPreview());
     return host.subscribeWebPreview(setState);
   }, [host, status]);
+  return state;
+}
+
+export function usePresentation(): DemoPresentation {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<DemoPresentation>(() => host.getPresentation());
+  React.useEffect(() => {
+    setState(host.getPresentation());
+    return host.subscribePresentation(setState);
+  }, [host]);
+  return state;
+}
+
+export function useSurfaceAvailability(): SurfaceAvailability {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<SurfaceAvailability>(() => host.getSurfaceAvailability());
+  React.useEffect(() => {
+    setState(host.getSurfaceAvailability());
+    return host.subscribeSurfaceAvailability(setState);
+  }, [host]);
   return state;
 }

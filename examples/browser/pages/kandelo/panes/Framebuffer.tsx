@@ -67,9 +67,10 @@ export interface FramebufferProps {
   onCollapse?: () => void;
   onMaximize?: () => void;
   isMax?: boolean;
+  autoFocus?: boolean;
 }
 
-export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse, onMaximize, isMax }) => {
+export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse, onMaximize, isMax, autoFocus = false }) => {
   const host = useKernelHost();
   const status = useStatus();
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
@@ -172,6 +173,14 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
       canvas.removeEventListener("focus", onFocus);
     };
   }, [status]);
+
+  React.useEffect(() => {
+    if (!autoFocus || status !== "running" || error) return;
+    const handle = window.requestAnimationFrame(() => {
+      canvasRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [autoFocus, error, status]);
 
   const onCanvasClick = () => {
     canvasRef.current?.focus();
