@@ -25,6 +25,9 @@ inputs:
   backoff-seconds:
     description: Sleep between attempts.
     default: '10'
+  attempt-timeout-seconds:
+    description: Maximum seconds to allow one git submodule update attempt.
+    default: '120'
 
 runs:
   using: composite
@@ -34,13 +37,18 @@ runs:
         SUBMODULES: ${{ inputs.submodules }}
         ATTEMPTS: ${{ inputs.attempts }}
         BACKOFF: ${{ inputs.backoff-seconds }}
+        ATTEMPT_TIMEOUT: ${{ inputs.attempt-timeout-seconds }}
       run: |
         set -eo pipefail
         git config --global url."https://github.com/".insteadOf "git@github.com:"
 
         for i in $(seq 1 "$ATTEMPTS"); do
-          if git submodule update --init --depth 1 $SUBMODULES; then
+          if timeout "${ATTEMPT_TIMEOUT}s" git submodule update --init --depth 1 $SUBMODULES; then
             exit 0
+          fi
+          status=$?
+          if [ "$status" -eq 124 ]; then
+            echo "::warning::submodule fetch timed out after ${ATTEMPT_TIMEOUT}s (attempt $i/$ATTEMPTS)"
           fi
           if [ "$i" -lt "$ATTEMPTS" ]; then
             echo "::warning::submodule fetch failed (attempt $i/$ATTEMPTS); retrying in ${BACKOFF}s"
