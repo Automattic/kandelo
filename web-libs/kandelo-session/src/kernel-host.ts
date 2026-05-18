@@ -1174,9 +1174,9 @@ export class LiveKernelHost implements KernelHost {
       void this.checkPtyRouting(pid).then((usesPty) => {
         if (attachedPid === pid) attachedUsesPty = usesPty;
       });
-      // Lazy-import the renderer so it isn't pulled into kandelo bundles
-      // that don't render framebuffers.
-      void import("../framebuffer/canvas-renderer.js").then(({ attachCanvas }) => {
+      // Lazy-import the host renderer so it is not pulled into Kandelo
+      // bundles that do not render framebuffers.
+      void import("../../../host/src/framebuffer/canvas-renderer.js").then(({ attachCanvas }) => {
         if (attachedPid !== pid) return; // raced with unbind
         stop = attachCanvas(canvas, registry as unknown as Parameters<typeof attachCanvas>[1], pid, {
           getProcessMemory: getMemory,

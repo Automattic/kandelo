@@ -10,7 +10,7 @@ import { usePresentation, useStatus, useSurfaceAvailability } from "../kernel-ho
 import { Inspector } from "../panes/Inspector";
 import { Display } from "../panes/Display";
 import { Shell } from "../panes/Shell";
-import type { PrimarySurface, SurfaceAvailability } from "../../../../../host/src/kandelo-ui/kernel-host";
+import type { PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface MachineViewProps {
   focusInternals?: boolean;
