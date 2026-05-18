@@ -25,9 +25,9 @@ inputs:
   backoff-seconds:
     description: Sleep between attempts.
     default: '10'
-  attempt-timeout-seconds:
-    description: Maximum seconds to allow one git submodule update attempt.
-    default: '120'
+  timeout-seconds:
+    description: Maximum runtime for each fetch attempt before retrying.
+    default: '180'
 
 runs:
   using: composite
@@ -37,7 +37,7 @@ runs:
         SUBMODULES: ${{ inputs.submodules }}
         ATTEMPTS: ${{ inputs.attempts }}
         BACKOFF: ${{ inputs.backoff-seconds }}
-        ATTEMPT_TIMEOUT: ${{ inputs.attempt-timeout-seconds }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
       run: |
         set -eo pipefail
         git config --global url."https://github.com/".insteadOf "git@github.com:"
@@ -48,15 +48,20 @@ runs:
         fi
 
         for i in $(seq 1 "$ATTEMPTS"); do
-          if timeout "${ATTEMPT_TIMEOUT}s" git submodule update --init --depth 1 $SUBMODULES; then
+          status=0
+          timeout "${TIMEOUT_SECONDS}s" git submodule update --init --depth 1 $SUBMODULES || status=$?
+          if [ "$status" -eq 0 ]; then
             exit 0
           fi
-          status=$?
           if [ "$status" -eq 124 ]; then
-            echo "::warning::submodule fetch timed out after ${ATTEMPT_TIMEOUT}s (attempt $i/$ATTEMPTS)"
+            echo "::warning::submodule fetch timed out after ${TIMEOUT_SECONDS}s (attempt $i/$ATTEMPTS)"
+          else
+            echo "::warning::submodule fetch failed with exit code $status (attempt $i/$ATTEMPTS)"
           fi
+          rm -f .git/index.lock
+          find .git/modules -type f -name '*.lock' -delete 2>/dev/null || true
           if [ "$i" -lt "$ATTEMPTS" ]; then
-            echo "::warning::submodule fetch failed (attempt $i/$ATTEMPTS); retrying in ${BACKOFF}s"
+            echo "::warning::retrying submodule fetch in ${BACKOFF}s"
             sleep "$BACKOFF"
           fi
         done
