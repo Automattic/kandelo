@@ -56,7 +56,7 @@ fi
 
 # check mode ----------------------------------------------------------
 
-# Detect whether the snapshot drifted from the source of truth.
+# Detect whether the committed snapshot drifted from the source of truth.
 drift=0
 if ! run_xtask dump-abi --check --kernel-wasm "$KERNEL_WASM" ; then
     drift=1
@@ -69,12 +69,22 @@ else
     echo "abi: snapshot DRIFTED from sources (see above)." >&2
 fi
 
-# Detect whether ABI_VERSION was bumped in this change.
-# We look at the working tree + staged changes vs the base branch. If the
-# snapshot drifted but ABI_VERSION is unchanged, that's a hard error —
-# the contract quietly moved under our feet.
+if [ "$drift" -eq 1 ]; then
+    echo
+    echo "ERROR: ABI snapshot is out of date. Run:" >&2
+    echo "         bash scripts/check-abi-version.sh update" >&2
+    echo "       and commit the regenerated abi/snapshot.json." >&2
+    exit 1
+fi
+
+# Detect whether ABI_VERSION or the committed ABI snapshot changed in this
+# branch. A no-bump snapshot diff is acceptable only if it is narrowly
+# additive: new syscalls, new host-intercepted syscalls, new kernel exports,
+# or new marshalled struct names. Existing entries and every other section
+# must remain byte-for-byte identical.
 base_ref="${ABI_CHECK_BASE_REF:-origin/main}"
 version_bumped=0
+snapshot_changed=0
 if git rev-parse --verify --quiet "$base_ref" >/dev/null ; then
     if ! git diff --quiet "$base_ref" -- crates/shared/src/lib.rs 2>/dev/null ; then
         if git diff "$base_ref" -- crates/shared/src/lib.rs \
@@ -82,22 +92,38 @@ if git rev-parse --verify --quiet "$base_ref" >/dev/null ; then
             version_bumped=1
         fi
     fi
+    if ! git diff --quiet "$base_ref" -- abi/snapshot.json 2>/dev/null ; then
+        snapshot_changed=1
+    fi
+else
+    echo "abi: base ref $base_ref not found; skipping base-branch ABI diff classification." >&2
 fi
 
-if [ "$drift" -eq 1 ] && [ "$version_bumped" -eq 0 ]; then
-    echo
-    echo "ERROR: ABI snapshot changed but ABI_VERSION was not bumped." >&2
-    echo "       Either regenerate and bump, or revert the ABI-affecting change." >&2
-    echo "       (See docs/abi-versioning.md for policy.)" >&2
-    exit 1
+if [ "$snapshot_changed" -eq 1 ] && [ "$version_bumped" -eq 0 ]; then
+    old_snapshot="$(mktemp "${TMPDIR:-/tmp}/wasm-posix-abi-old.XXXXXX.json")"
+    cleanup() {
+        rm -f "$old_snapshot"
+    }
+    trap cleanup EXIT
+    git show "$base_ref:abi/snapshot.json" > "$old_snapshot"
+
+    if ! run_xtask dump-abi --classify-compat "$old_snapshot" abi/snapshot.json ; then
+        echo
+        echo "ERROR: ABI snapshot changed in a backward-incompatible way but ABI_VERSION was not bumped." >&2
+        echo "       Either bump ABI_VERSION, or keep the ABI change purely additive." >&2
+        echo "       (See docs/abi-versioning.md for policy.)" >&2
+        exit 1
+    fi
 fi
 
-if [ "$drift" -eq 1 ]; then
+if [ "$snapshot_changed" -eq 1 ] && [ "$version_bumped" -eq 1 ]; then
+    echo "abi: snapshot changed and ABI_VERSION was bumped."
+elif [ "$snapshot_changed" -eq 1 ]; then
+    echo "abi: snapshot changed only by backward-compatible additions; ABI_VERSION may stay unchanged."
+elif [ "$version_bumped" -eq 1 ]; then
     echo
-    echo "ERROR: ABI snapshot is out of date. Run:" >&2
-    echo "         bash scripts/check-abi-version.sh update" >&2
-    echo "       and commit the regenerated abi/snapshot.json." >&2
-    exit 1
+    echo "abi: ABI_VERSION changed but abi/snapshot.json did not change." >&2
+    echo "     Verify this was intentional; the snapshot/header are still in sync." >&2
 fi
 
 echo "abi: ABI_VERSION and snapshot are consistent."
