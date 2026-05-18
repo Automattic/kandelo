@@ -187,11 +187,11 @@ Grep shows: `host/test/centralized-test-helper.ts:213` defaults to `new NodePlat
 
 **Demos/examples (6):**
 1. `examples/run-hello.ts:32`
-2. `examples/nginx-test/nginx-wrapper.ts:173`
-3. `examples/wordpress/test/wordpress-server.test.ts:74`
-4. `examples/mariadb-test/run-tests.ts:190`
+2. `packages/examples/nginx-test/nginx-wrapper.ts:173`
+3. `packages/examples/wordpress/test/wordpress-server.test.ts:74`
+4. `packages/examples/mariadb-test/run-tests.ts:190`
 5. `packages/registry/openssl/test/ssl-basic.test.ts:39`
-6. `examples/cpython/debug-test.ts:37`
+6. `packages/examples/cpython/debug-test.ts:37`
 
 **Tests (15):**
 1. `host/test/nginx.test.ts:92`

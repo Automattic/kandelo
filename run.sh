@@ -135,9 +135,9 @@ has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/h
 # Package-system entries: layout derived from package.toml's
 # `[[outputs]]` via `xtask build-deps output-path`. Source-tree
 # fallbacks left in place for the developer-hand-built case.
-has_nginx()         { pkg_has_output nginx nginx.wasm || [ -f "$REPO_ROOT/examples/nginx/nginx.wasm" ]; }
+has_nginx()         { pkg_has_output nginx nginx.wasm || [ -f "$REPO_ROOT/packages/examples/nginx/nginx.wasm" ]; }
 has_php()           { pkg_has_output php php.wasm || [ -f "$REPO_ROOT/packages/registry/php/php-src/sapi/cli/php" ]; }
-has_php_fpm()       { pkg_has_output php php-fpm.wasm || [ -f "$REPO_ROOT/examples/nginx/php-fpm.wasm" ]; }
+has_php_fpm()       { pkg_has_output php php-fpm.wasm || [ -f "$REPO_ROOT/packages/examples/nginx/php-fpm.wasm" ]; }
 has_mariadb()       { pkg_has_output mariadb mariadbd.wasm || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd" ]; }
 has_mariadb64()     { pkg_has_output mariadb mariadbd.wasm wasm64 || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64/bin/mariadbd" ]; }
 has_mariadb_vfs()   { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst; }
@@ -331,7 +331,7 @@ build_nginx() {
     need_sdk
     if ! has_nginx; then
         step "Building nginx"
-        bash "$REPO_ROOT/examples/nginx/build.sh"
+        bash "$REPO_ROOT/packages/examples/nginx/build.sh"
         info "nginx built"
     else
         info "nginx"
@@ -435,7 +435,7 @@ build_mariadb64_vfs() {
 build_wordpress() {
     if ! has_wordpress; then
         step "Downloading WordPress"
-        bash "$REPO_ROOT/examples/wordpress/setup.sh"
+        bash "$REPO_ROOT/packages/examples/wordpress/setup.sh"
         info "WordPress downloaded"
     else
         info "WordPress"
@@ -1484,16 +1484,16 @@ clean_target() {
                    "$REPO_ROOT/packages/registry/sed/bin"
             warn "Cleaned sed" ;;
         nginx)
-            rm -rf "$REPO_ROOT/examples/nginx/nginx-src"
-            rm -f "$REPO_ROOT/examples/nginx/nginx.wasm"
+            rm -rf "$REPO_ROOT/packages/examples/nginx/nginx-src"
+            rm -f "$REPO_ROOT/packages/examples/nginx/nginx.wasm"
             warn "Cleaned nginx" ;;
         php)
             rm -rf "$REPO_ROOT/packages/registry/php/php-src" \
                    "$REPO_ROOT/packages/registry/php/php-install"
             warn "Cleaned PHP CLI" ;;
         php-fpm)
-            rm -f "$REPO_ROOT/examples/nginx/php-fpm.wasm"
-            rm -rf "$REPO_ROOT/examples/nginx/php-fpm-src"
+            rm -f "$REPO_ROOT/packages/examples/nginx/php-fpm.wasm"
+            rm -rf "$REPO_ROOT/packages/examples/nginx/php-fpm-src"
             warn "Cleaned PHP-FPM" ;;
         mariadb)
             rm -rf "$REPO_ROOT/packages/registry/mariadb/mariadb-src" \
@@ -1550,7 +1550,7 @@ clean_target() {
                   "$REPO_ROOT/local-binaries/programs/wasm32/node-vfs.vfs.zst"
             warn "Cleaned Node VFS image" ;;
         wordpress)
-            rm -rf "$REPO_ROOT/examples/wordpress/wordpress"
+            rm -rf "$REPO_ROOT/packages/examples/wordpress/wordpress"
             warn "Cleaned WordPress" ;;
         wp-vfs)
             rm -f "$REPO_ROOT/apps/browser-demos/public/wordpress.vfs.zst" \
@@ -1783,42 +1783,42 @@ cmd_run() {
         nginx)
             build_nginx
             step "Starting nginx"
-            exec npx tsx "$REPO_ROOT/examples/nginx/serve.ts" "$@"
+            exec npx tsx "$REPO_ROOT/packages/examples/nginx/serve.ts" "$@"
             ;;
         mariadb)
             build_mariadb
             step "Starting MariaDB"
-            exec npx tsx "$REPO_ROOT/examples/mariadb/serve.ts" "$@"
+            exec npx tsx "$REPO_ROOT/packages/examples/mariadb/serve.ts" "$@"
             ;;
         redis)
             build_redis
             step "Starting Redis"
-            exec npx tsx "$REPO_ROOT/examples/redis/serve.ts" "$@"
+            exec npx tsx "$REPO_ROOT/packages/examples/redis/serve.ts" "$@"
             ;;
         wordpress)
             build_php
             build_wordpress
             step "Starting WordPress (PHP built-in server + SQLite)"
-            exec npx tsx "$REPO_ROOT/examples/wordpress/serve.ts" "$@"
+            exec npx tsx "$REPO_ROOT/packages/examples/wordpress/serve.ts" "$@"
             ;;
         wordpress-nginx)
             build_nginx
             build_php_fpm
             build_wordpress
             step "Starting WordPress (nginx + PHP-FPM + SQLite)"
-            exec npx tsx "$REPO_ROOT/examples/wordpress/serve-nginx.ts" "$@"
+            exec npx tsx "$REPO_ROOT/packages/examples/wordpress/serve-nginx.ts" "$@"
             ;;
         lamp)
             build_mariadb
             build_nginx
             build_php_fpm
             # LAMP uses its own WordPress setup (MySQL mode)
-            if [ ! -f "$REPO_ROOT/examples/lamp/wordpress/wp-settings.php" ]; then
+            if [ ! -f "$REPO_ROOT/packages/examples/lamp/wordpress/wp-settings.php" ]; then
                 step "Setting up LAMP WordPress"
-                bash "$REPO_ROOT/examples/lamp/setup.sh"
+                bash "$REPO_ROOT/packages/examples/lamp/setup.sh"
             fi
             step "Starting LAMP stack (MariaDB + PHP-FPM + nginx + WordPress)"
-            exec npx tsx "$REPO_ROOT/examples/lamp/serve.ts" "$@"
+            exec npx tsx "$REPO_ROOT/packages/examples/lamp/serve.ts" "$@"
             ;;
         shell)
             build_programs
@@ -1828,12 +1828,12 @@ cmd_run() {
             build_sed
             need_host
             step "Starting interactive shell"
-            exec npx tsx "$REPO_ROOT/examples/shell/serve.ts" "$@"
+            exec npx tsx "$REPO_ROOT/packages/examples/shell/serve.ts" "$@"
             ;;
         erlang)
             build_erlang
             step "Starting Erlang BEAM"
-            exec npx tsx "$REPO_ROOT/examples/erlang/serve.ts" "$@"
+            exec npx tsx "$REPO_ROOT/packages/examples/erlang/serve.ts" "$@"
             ;;
         dlopen)
             build_dlopen

@@ -27,7 +27,7 @@ const CH_TOTAL_SIZE = 72 + 65536;
 const ASYNCIFY_BUF_SIZE = 16384;
 
 const nginxWasmPath = tryResolveBinary("programs/nginx.wasm");
-const nginxPrefix = join(repoRoot, "examples/nginx");
+const nginxPrefix = join(repoRoot, "packages/examples/nginx");
 
 /** Find a free TCP port by briefly binding to port 0. */
 function getFreePort(): Promise<number> {

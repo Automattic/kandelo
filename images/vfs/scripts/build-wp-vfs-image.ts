@@ -30,7 +30,7 @@ const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 const WP_EXAMPLE_DIR = join(REPO_ROOT, "examples", "wordpress");
 // WordPress + SQLite-Database-Integration plugin trees: prefer the local
-// `examples/wordpress/setup.sh` outputs if present (back-compat with
+// `packages/examples/wordpress/setup.sh` outputs if present (back-compat with
 // existing local workflows), otherwise download both via
 // source-extract-helper. The WP version + sha live in the wordpress
 // package's package.toml; the SQLite plugin is a wp.org-hosted zip with

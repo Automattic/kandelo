@@ -9,7 +9,7 @@ set -euo pipefail
 #                                       fork support)
 #
 # The two builds were previously separate scripts (this one + the
-# now-removed examples/nginx/build-php-fpm.sh). Unifying them lets a
+# now-removed packages/examples/nginx/build-php-fpm.sh). Unifying them lets a
 # single autoconf invocation produce both sapis from one source tree
 # and one set of patched config.h/Makefile.
 #
@@ -114,7 +114,7 @@ fi
 # `opcache.enable_cli`). With the upstream default of "1", every CLI
 # invocation under cli-server pays opcache MINIT cost (128MB SHM
 # allocation + per-request validation) — heavy enough to push the
-# wordpress-site-editor E2E test (examples/wordpress/test/) past its
+# wordpress-site-editor E2E test (packages/examples/wordpress/test/) past its
 # 10-minute install deadline on CI runners. Our LAMP/WP/nginx-php
 # php-fpm demos explicitly set opcache.enable=1 in /etc/php.ini, so
 # flipping the compile-time default to "0" preserves the per-worker

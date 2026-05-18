@@ -1,6 +1,11 @@
-# Examples
+# Kernel Examples
 
-C programs demonstrating Kandelo capabilities. Each can be compiled with the SDK and run on the TypeScript host.
+C programs demonstrating Kandelo kernel and SDK capabilities. Each can be
+compiled with the SDK and run on the TypeScript host.
+
+Package-specific demos, service harnesses, and package test drivers live under
+[`packages/examples/`](../packages/examples/). Browser-facing demos live under
+[`apps/browser-demos/`](../apps/browser-demos/).
 
 ## Building and Running
 
@@ -48,7 +53,8 @@ See [docs/sdk-guide.md](../docs/sdk-guide.md) for full SDK documentation.
 
 ### Browser Demos
 
-The `browser/` directory contains interactive demos running real software in the browser via Vite:
+The `apps/browser-demos/` app contains interactive demos running real software
+in the browser via Vite:
 
 ```bash
 cd apps/browser-demos
@@ -75,7 +81,8 @@ See [docs/porting-guide.md](../docs/porting-guide.md) for how to create new demo
 
 ### Ported Software
 
-Build scripts for real-world software are in `packages/registry/`:
+Build scripts for real-world software are in `packages/registry/`. Runnable
+package examples and integration harnesses are in `packages/examples/`.
 
 | Software | Build script | Binary output |
 |----------|-------------|---------------|
@@ -87,7 +94,7 @@ Build scripts for real-world software are in `packages/registry/`:
 | MariaDB 10.5 | `packages/registry/mariadb/build-mariadb.sh` | `packages/registry/mariadb/bin/mariadbd.wasm` |
 | Redis 7.2 | `packages/registry/redis/build-redis.sh` | `packages/registry/redis/bin/redis-server.wasm` |
 | CPython 3.13 | `packages/registry/cpython/build-cpython.sh` | `packages/registry/cpython/bin/python.wasm` |
-| nginx 1.27 | via `examples/nginx/` | `examples/nginx/bin/nginx.wasm` |
+| nginx 1.24 | `packages/registry/nginx/build-nginx.sh` | `packages/registry/nginx/bin/nginx.wasm` |
 | SQLite | `packages/registry/sqlite/build-sqlite.sh` | (library, linked into PHP) |
 | zlib | `packages/registry/zlib/build-zlib.sh` | (library, linked into PHP) |
 | libxml2 | `packages/registry/libxml2/build-libxml2.sh` | (library, linked into PHP) |

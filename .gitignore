@@ -98,20 +98,20 @@ packages/registry/less/libtermcap/
 examples/dlopen/hello-lib.so
 
 # nginx source (downloaded by build.sh)
-examples/nginx/nginx-src/
+packages/examples/nginx/nginx-src/
 
 # PHP-FPM source (downloaded by build-php-fpm.sh)
-examples/nginx/php-fpm-src/
+packages/examples/nginx/php-fpm-src/
 
 # PHP-FPM configure cache
-examples/nginx/php-fpm-config.cache
+packages/examples/nginx/php-fpm-config.cache
 
 # MariaDB data directory
-examples/mariadb/data/
+packages/examples/mariadb/data/
 
 # WordPress download artifacts
-examples/wordpress/wordpress/
-examples/wordpress/sqlite-database-integration/
+packages/examples/wordpress/wordpress/
+packages/examples/wordpress/sqlite-database-integration/
 
 # libc-test build artifacts (source is a git submodule)
 tests/libc/libc-test/build/
@@ -124,7 +124,7 @@ examples/fp128*.c
 examples/strtod_debug*.c
 examples/div_trace.c
 examples/mul_*.c
-examples/mariadb-test/test-data/
+packages/examples/mariadb-test/test-data/
 
 # Benchmark results and built wasm
 benchmarks/results/

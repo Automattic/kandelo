@@ -29,7 +29,7 @@ wasm = "php.wasm"
 
 # php-fpm shipped as a second output. The CLI + FPM builds were
 # previously two parallel scripts (this dir's build-php.sh + the
-# now-removed examples/nginx/build-php-fpm.sh) using two separate
+# now-removed packages/examples/nginx/build-php-fpm.sh) using two separate
 # php-src checkouts and a sysroot-copy dance. Build-php.sh now does
 # both from one source tree: --enable-cli + --enable-fpm produce
 # sapi/cli/php and sapi/fpm/php-fpm; FPM gets asyncify-onlylist on
