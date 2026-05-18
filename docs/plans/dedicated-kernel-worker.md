@@ -34,14 +34,14 @@ Main Thread (BrowserKernel)              Kernel Worker
 
 | File | Role | Change |
 |------|------|--------|
-| `examples/browser/lib/browser-kernel.ts` | Main thread coordinator | Major refactor — becomes thin proxy |
-| `examples/browser/lib/kernel-worker-entry.ts` | **New** — kernel web worker entry | Create |
-| `examples/browser/lib/kernel-worker-protocol.ts` | **New** — message protocol types | Create |
+| `apps/browser-demos/lib/browser-kernel.ts` | Main thread coordinator | Major refactor — becomes thin proxy |
+| `apps/browser-demos/lib/kernel-worker-entry.ts` | **New** — kernel web worker entry | Create |
+| `apps/browser-demos/lib/kernel-worker-protocol.ts` | **New** — message protocol types | Create |
 | `host/src/kernel-worker.ts` | CentralizedKernelWorker | Minor — expose methods for worker use |
 | `host/src/worker-adapter-browser.ts` | Creates process web workers | Used from kernel worker (sub-workers) |
-| `examples/browser/lib/connection-pump.ts` | HTTP → kernel pipe bridge | Async pipe ops |
-| `examples/browser/lib/mysql-client.ts` | MySQL wire protocol over pipes | Async pipe ops |
-| `examples/browser/lib/redis-client.ts` | RESP protocol over pipes | Async pipe ops |
+| `apps/browser-demos/lib/connection-pump.ts` | HTTP → kernel pipe bridge | Async pipe ops |
+| `apps/browser-demos/lib/mysql-client.ts` | MySQL wire protocol over pipes | Async pipe ops |
+| `apps/browser-demos/lib/redis-client.ts` | RESP protocol over pipes | Async pipe ops |
 | `docs/browser-support.md` | Architecture docs | Update |
 
 ## Steps
@@ -52,7 +52,7 @@ Rewrite Architecture section: the kernel runs in a dedicated web worker with `At
 
 ### 2. Define message protocol
 
-**New file:** `examples/browser/lib/kernel-worker-protocol.ts`
+**New file:** `apps/browser-demos/lib/kernel-worker-protocol.ts`
 
 **Main → Kernel Worker:**
 - `init` — kernel wasm bytes, FS SABs, config, worker entry URL
@@ -81,7 +81,7 @@ Note: no `need_exec` message — exec resolution is entirely within the kernel w
 
 ### 3. Create kernel worker entry point
 
-**New file:** `examples/browser/lib/kernel-worker-entry.ts`
+**New file:** `apps/browser-demos/lib/kernel-worker-entry.ts`
 
 This web worker hosts `CentralizedKernelWorker` and manages all process lifecycle.
 
@@ -129,7 +129,7 @@ Direct kernel Wasm export calls — synchronous within the worker:
 
 ### 4. Refactor BrowserKernel to thin proxy
 
-Major refactor of `examples/browser/lib/browser-kernel.ts`:
+Major refactor of `apps/browser-demos/lib/browser-kernel.ts`:
 
 **`init()` changes:**
 1. Create MemoryFileSystem SABs on main thread (keep reference for `kernel.fs`)
@@ -206,7 +206,7 @@ Demo pages load programs into `kernel.fs` (MemoryFileSystem) before spawning. Mo
 2. **Vitest**: `cd host && npx vitest run` (host tests use Node.js, not browser)
 3. **SDK tests**: `cd sdk && npm test` (unchanged)
 4. **Browser demo testing** (manually verify each):
-   - `cd examples/browser && npx vite --port 5198`
+   - `cd apps/browser-demos && npx vite --port 5198`
    - PHP CLI: run a script, check output
    - Shell: interactive commands, pipes, command substitution
    - Python: REPL + script

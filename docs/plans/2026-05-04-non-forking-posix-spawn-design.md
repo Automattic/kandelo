@@ -227,7 +227,7 @@ exec-replacement message tears down the calling worker; spawn must not.
 
 ## Section 4 — Musl overlay
 
-### `musl-overlay/src/process/wasm32posix/posix_spawn.c` — full rewrite
+### `libc/musl-overlay/src/process/wasm32posix/posix_spawn.c` — full rewrite
 
 Drop the `fork() + exec` body. New body:
 
@@ -253,7 +253,7 @@ Drop the `fork() + exec` body. New body:
 The supplied `path` is used verbatim — already absolute by the time it
 reaches plain `posix_spawn` (PATH search happens in `posix_spawnp`).
 
-### `musl-overlay/src/process/wasm32posix/posix_spawnp.c` — new file
+### `libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c` — new file
 
 Replaces musl's stock implementation. Per Q1 Option A: do the PATH walk in
 libc, call `posix_spawn` with the resolved absolute path. If `path` contains
@@ -267,7 +267,7 @@ files that exist but aren't executable (EACCES handling matches
 - Existing `posix_spawn_file_actions_*.c` and `posix_spawnattr_sched.c`
   overlay files stay — they manipulate libc-side opaque structs, no kernel
   involvement.
-- `glue/channel_syscall.c`: add `#define SYS_SPAWN 141`. No special-case
+- `libc/glue/channel_syscall.c`: add `#define SYS_SPAWN 141`. No special-case
   needed — generic 6-arg dispatch handles it. The existing
   `SYS_FORK`/`SYS_VFORK` special path stays for plain `fork()`/`vfork()`.
 

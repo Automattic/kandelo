@@ -21,7 +21,7 @@ const repoRoot = resolve(scriptDir, "../..");
 
 const useWasm64 = process.argv.includes("--wasm64");
 const useInnoDB = process.argv.includes("--innodb");
-const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
+const mariadbLibDir = resolve(repoRoot, "packages/registry/mariadb");
 const installDir = resolve(mariadbLibDir, useWasm64 ? "mariadb-install-64" : "mariadb-install");
 
 // Create data directory on host (arch-specific so wasm32 and wasm64 don't
@@ -39,7 +39,7 @@ function loadBytes(path: string): ArrayBuffer {
 async function main() {
     const mysqldWasm = resolve(installDir, "bin/mariadbd");
     if (!existsSync(mysqldWasm)) {
-        console.error("mariadbd not found. Run: bash examples/libs/mariadb/build-mariadb.sh");
+        console.error("mariadbd not found. Run: bash packages/registry/mariadb/build-mariadb.sh");
         process.exit(1);
     }
 

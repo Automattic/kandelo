@@ -15,14 +15,14 @@ set -euo pipefail
 # Default: runs the quick test set.
 #
 # Prerequisites:
-#   - bash examples/libs/tcl/build-tcl.sh
-#   - bash examples/libs/sqlite/build-testfixture.sh
+#   - bash packages/registry/tcl/build-tcl.sh
+#   - bash packages/registry/sqlite/build-testfixture.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SQLITE_FULL="$REPO_ROOT/examples/libs/sqlite/sqlite-full-src"
-TCL_INSTALL="$REPO_ROOT/examples/libs/tcl/tcl-install"
-TESTFIXTURE="$REPO_ROOT/examples/libs/sqlite/bin/testfixture.wasm"
+SQLITE_FULL="$REPO_ROOT/packages/registry/sqlite/sqlite-full-src"
+TCL_INSTALL="$REPO_ROOT/packages/registry/tcl/tcl-install"
+TESTFIXTURE="$REPO_ROOT/packages/registry/sqlite/bin/testfixture.wasm"
 
 # Per-test timeout in seconds
 TEST_TIMEOUT="${SQLITE_TEST_TIMEOUT:-180}"
@@ -40,8 +40,8 @@ fi
 # ─── Prerequisites ────────────────────────────────────────────────────────────
 if [ ! -f "$TESTFIXTURE" ]; then
     echo "ERROR: testfixture.wasm not found. Run:" >&2
-    echo "  bash examples/libs/tcl/build-tcl.sh" >&2
-    echo "  bash examples/libs/sqlite/build-testfixture.sh" >&2
+    echo "  bash packages/registry/tcl/build-tcl.sh" >&2
+    echo "  bash packages/registry/sqlite/build-testfixture.sh" >&2
     exit 1
 fi
 

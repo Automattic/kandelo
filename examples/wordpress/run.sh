@@ -31,10 +31,10 @@ else
 fi
 
 # Step 3: PHP CLI binary (builds sqlite, zlib as needed)
-PHP_BINARY="$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php"
+PHP_BINARY="$REPO_ROOT/packages/registry/php/php-src/sapi/cli/php"
 if [ ! -f "$PHP_BINARY" ]; then
     echo "--- Building PHP CLI + dependencies ---"
-    bash "$REPO_ROOT/examples/libs/php/build-php.sh"
+    bash "$REPO_ROOT/packages/registry/php/build-php.sh"
 else
     echo "--- PHP CLI: OK ---"
 fi

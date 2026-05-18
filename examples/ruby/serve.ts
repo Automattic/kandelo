@@ -2,7 +2,7 @@
  * serve.ts — Run Ruby 3.3.6 in the wasm-posix-kernel.
  *
  * Usage:
- *   bash examples/libs/ruby/build-ruby.sh
+ *   bash packages/registry/ruby/build-ruby.sh
  *   npx tsx examples/ruby/serve.ts [ruby-args...]
  *
  * Examples:
@@ -19,11 +19,11 @@ const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
 
 async function main() {
-    const rubyWasm = resolve(scriptDir, "../libs/ruby/bin/ruby.wasm");
-    const rubyLib = resolve(scriptDir, "../libs/ruby/ruby-install/lib/ruby/3.3.0");
+    const rubyWasm = resolve(repoRoot, "packages/registry/ruby/bin/ruby.wasm");
+    const rubyLib = resolve(repoRoot, "packages/registry/ruby/ruby-install/lib/ruby/3.3.0");
 
     if (!existsSync(rubyWasm)) {
-        console.error("ruby.wasm not found. Run: bash examples/libs/ruby/build-ruby.sh");
+        console.error("ruby.wasm not found. Run: bash packages/registry/ruby/build-ruby.sh");
         process.exit(1);
     }
 

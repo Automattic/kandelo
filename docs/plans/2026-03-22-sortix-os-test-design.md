@@ -6,9 +6,9 @@ Integrate [Sortix os-test](https://gitlab.com/sortix/os-test) as a POSIX conform
 
 ## Architecture
 
-- **Submodule**: `os-test/` (ISC license, gitlab.com/sortix/os-test)
+- **Submodule**: `tests/sortix/os-test/` (ISC license, gitlab.com/sortix/os-test)
 - **Runner**: `scripts/run-sortix-tests.sh` — discovers, compiles, and runs tests
-- **Build output**: `os-test/build/` (gitignored)
+- **Build output**: `tests/sortix/os-test/build/` (gitignored)
 
 ## Suites
 

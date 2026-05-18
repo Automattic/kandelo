@@ -31,10 +31,10 @@ else
 fi
 
 # Step 3: MariaDB
-MARIADB_BINARY="$REPO_ROOT/examples/libs/mariadb/mariadb-install/bin/mariadbd"
+MARIADB_BINARY="$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd"
 if [ ! -f "$MARIADB_BINARY" ]; then
     echo "--- Building MariaDB ---"
-    bash "$REPO_ROOT/examples/libs/mariadb/build-mariadb.sh"
+    bash "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
 else
     echo "--- MariaDB: OK ---"
 fi
@@ -51,7 +51,7 @@ fi
 # Step 5: PHP-FPM (builds sqlite, zlib, openssl, libxml2 as needed)
 if [ ! -f "$NGINX_DIR/php-fpm.wasm" ]; then
     echo "--- Building PHP-FPM + dependencies ---"
-    bash "$REPO_ROOT/examples/libs/php/build-php.sh"
+    bash "$REPO_ROOT/packages/registry/php/build-php.sh"
 else
     echo "--- php-fpm.wasm: OK ---"
 fi

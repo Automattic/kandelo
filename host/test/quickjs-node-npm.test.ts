@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const NODE = join(__dirname, "../../examples/libs/quickjs/bin/node.wasm");
-const NPM_DIST = join(__dirname, "../../examples/libs/npm/dist");
+const NODE = join(__dirname, "../../packages/registry/quickjs/bin/node.wasm");
+const NPM_DIST = join(__dirname, "../../packages/registry/npm/dist");
 const NPM_CLI = join(NPM_DIST, "bin/npm-cli.js");
 const HAS_NODE = existsSync(NODE);
 const HAS_NPM = existsSync(NPM_CLI);

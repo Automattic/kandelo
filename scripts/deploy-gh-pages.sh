@@ -12,7 +12,7 @@ REPO_NAME="${1:-wasm-posix-kernel}"
 CORS_PROXY="${VITE_CORS_PROXY_URL:-https://wordpress-playground-cors-proxy.net/?}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BROWSER_DIR="$ROOT_DIR/examples/browser"
+BROWSER_DIR="$ROOT_DIR/apps/browser-demos"
 
 echo "=== Building browser demos for /${REPO_NAME}/ ==="
 echo "    CORS proxy: ${CORS_PROXY}"

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { saveImage } from "../../examples/browser/scripts/vfs-image-helpers";
+import { saveImage } from "../../images/vfs/scripts/vfs-image-helpers";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;

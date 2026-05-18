@@ -5,7 +5,7 @@ members = [
     "crates/kernel",
     "crates/userspace",
     "crates/fork-instrument",
-    "xtask",
+    "tools/xtask",
 ]
 
 # Exclude xtask from build-std defaults used by the kernel crate.

@@ -33,7 +33,7 @@ const MAX_PAGES = 16384;
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
-const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
+const mariadbLibDir = resolve(repoRoot, "packages/registry/mariadb");
 const installDir = resolve(mariadbLibDir, "mariadb-install");
 const mysqlTestDir = resolve(installDir, "mysql-test");
 

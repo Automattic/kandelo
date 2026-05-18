@@ -275,7 +275,7 @@ int main(void) {
 $CC --target=wasm32-unknown-unknown --sysroot=sysroot -nostdlib -O2 \
   -matomics -mbulk-memory -fno-trapping-math \
   -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false \
-  examples/test-pthread.c glue/channel_syscall.c glue/compiler_rt.c \
+  examples/test-pthread.c libc/glue/channel_syscall.c libc/glue/compiler_rt.c \
   sysroot/lib/crt1.o sysroot/lib/libc.a \
   -Wl,--entry=_start -Wl,--export=__wasm_init_tls \
   -Wl,--export=__set_channel_base -Wl,--export=__wasm_thread_init \

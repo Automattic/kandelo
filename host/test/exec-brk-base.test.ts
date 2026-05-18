@@ -26,13 +26,13 @@ import { NodeKernelHost } from "../src/node-kernel-host";
 import { extractAbiVersion } from "../src/constants";
 import { tryResolveBinary, findRepoRoot } from "../src/binary-resolver";
 
-// Read the kernel's expected ABI version from `glue/abi_constants.h`,
+// Read the kernel's expected ABI version from `libc/glue/abi_constants.h`,
 // which `scripts/check-abi-version.sh` keeps in sync with
 // `crates/shared/src/lib.rs::ABI_VERSION`.
 function readKernelAbiVersion(): number {
-  const header = readFileSync(join(findRepoRoot(), "glue/abi_constants.h"), "utf-8");
+  const header = readFileSync(join(findRepoRoot(), "libc/glue/abi_constants.h"), "utf-8");
   const m = header.match(/#define\s+WASM_POSIX_ABI_VERSION\s+(\d+)u?/);
-  if (!m) throw new Error("could not parse glue/abi_constants.h for WASM_POSIX_ABI_VERSION");
+  if (!m) throw new Error("could not parse libc/glue/abi_constants.h for WASM_POSIX_ABI_VERSION");
   return parseInt(m[1], 10);
 }
 const ABI_VERSION_EXPECTED = readKernelAbiVersion();
@@ -138,7 +138,7 @@ const MARIADB_ARGS =
 
 // What looked like a "spin loop" was a cascade of two wasm-port bugs:
 //
-//   1. musl-overlay/arch/wasm32posix/atomic_arch.h didn't override
+//   1. libc/musl-overlay/arch/wasm32posix/atomic_arch.h didn't override
 //      `a_crash`, so the generic `*(volatile char *)0 = 0` fallback was
 //      used. On Linux x86 address 0 is unmapped → SIGSEGV (clean abort);
 //      on wasm32 address 0 is the start of valid linear memory, so the

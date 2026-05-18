@@ -181,7 +181,7 @@ git commit -m "chore(state-lock): remove now-unused durable-release-lock.sh"
 ### Task 2.1: Add a failing test for `BuildToml::parse` with valid input
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs` (add new test at end of `tests` mod)
+- Modify: `tools/xtask/src/pkg_manifest.rs` (add new test at end of `tests` mod)
 
 **Step 1: Add the failing test**
 
@@ -189,7 +189,7 @@ git commit -m "chore(state-lock): remove now-unused durable-release-lock.sh"
 #[test]
 fn parses_build_toml_with_named_source() {
     let toml = r#"
-script_path = "examples/libs/foo/build-foo.sh"
+script_path = "packages/registry/foo/build-foo.sh"
 repo_url = "https://github.com/example/foo.git"
 commit = "abc123"
 
@@ -197,7 +197,7 @@ commit = "abc123"
 source = "first-party"
 "#;
     let bt = BuildToml::parse(toml).expect("should parse");
-    assert_eq!(bt.script_path, "examples/libs/foo/build-foo.sh");
+    assert_eq!(bt.script_path, "packages/registry/foo/build-foo.sh");
     assert_eq!(bt.repo_url, "https://github.com/example/foo.git");
     assert_eq!(bt.commit, "abc123");
     assert!(matches!(bt.binary, BinarySource::Named { ref name } if name == "first-party"));
@@ -212,14 +212,14 @@ Expected: compile error — `BuildToml`, `BinarySource` not found.
 **Step 3: Commit the failing test**
 
 ```bash
-git add xtask/src/pkg_manifest.rs
+git add tools/xtask/src/pkg_manifest.rs
 git commit -m "test(pkg-manifest): parse build.toml with named source"
 ```
 
 ### Task 2.2: Implement minimal `BuildToml::parse` + `BinarySource` for named source
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs`
+- Modify: `tools/xtask/src/pkg_manifest.rs`
 
 **Step 1: Add the struct + parser**
 
@@ -297,14 +297,14 @@ Expected: PASS.
 **Step 3: Commit**
 
 ```bash
-git add xtask/src/pkg_manifest.rs
+git add tools/xtask/src/pkg_manifest.rs
 git commit -m "feat(pkg-manifest): BuildToml::parse for named source form"
 ```
 
 ### Task 2.3: Add tests for inline and direct binary forms
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs` (add two more tests)
+- Modify: `tools/xtask/src/pkg_manifest.rs` (add two more tests)
 
 **Step 1: Write two failing tests**
 
@@ -312,7 +312,7 @@ git commit -m "feat(pkg-manifest): BuildToml::parse for named source form"
 #[test]
 fn parses_build_toml_with_inline_source() {
     let toml = r#"
-script_path = "examples/libs/foo/build.sh"
+script_path = "packages/registry/foo/build.sh"
 repo_url = "https://github.com/example/foo.git"
 commit = "abc"
 [binary]
@@ -377,7 +377,7 @@ If any fail, fix the implementation in `pkg_manifest.rs` to match.
 **Step 3: Commit**
 
 ```bash
-git add xtask/src/pkg_manifest.rs
+git add tools/xtask/src/pkg_manifest.rs
 git commit -m "test(pkg-manifest): BuildToml inline/direct/validation tests"
 ```
 
@@ -388,7 +388,7 @@ git commit -m "test(pkg-manifest): BuildToml inline/direct/validation tests"
 ### Task 3.1: Add `WasmPkgConfig` parser with a failing test
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs`
+- Modify: `tools/xtask/src/pkg_manifest.rs`
 
 **Step 1: Add the failing test**
 
@@ -418,14 +418,14 @@ Expected: `WasmPkgConfig not found`.
 **Step 3: Commit failing test**
 
 ```bash
-git add xtask/src/pkg_manifest.rs
+git add tools/xtask/src/pkg_manifest.rs
 git commit -m "test(pkg-manifest): parse .wasm-posix-pkg.toml"
 ```
 
 ### Task 3.2: Implement `WasmPkgConfig::parse`
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs`
+- Modify: `tools/xtask/src/pkg_manifest.rs`
 
 **Step 1: Add the struct + parser**
 
@@ -504,7 +504,7 @@ Expected: 3 tests PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/pkg_manifest.rs
+git add tools/xtask/src/pkg_manifest.rs
 git commit -m "feat(pkg-manifest): WasmPkgConfig parser + source resolution"
 ```
 
@@ -515,7 +515,7 @@ git commit -m "feat(pkg-manifest): WasmPkgConfig parser + source resolution"
 ### Task 4.1: Add a test that the new package.toml parser rejects old `[binary]` block
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs`
+- Modify: `tools/xtask/src/pkg_manifest.rs`
 
 **Step 1: Write the failing test**
 
@@ -537,7 +537,7 @@ sha256 = "abc"
 spdx = "MIT"
 
 [build]
-script_path = "examples/libs/foo/build.sh"
+script_path = "packages/registry/foo/build.sh"
 
 [binary.wasm32]
 archive_url = "https://example.com/foo-wasm32.tar.zst"
@@ -566,7 +566,7 @@ sha256 = "abc"
 spdx = "MIT"
 
 [build]
-script_path = "examples/libs/foo/build.sh"
+script_path = "packages/registry/foo/build.sh"
 "#;
     let err = PackageManifest::parse(toml).unwrap_err();
     assert!(err.contains("revision"), "expected error mentioning revision, got: {err}");
@@ -588,7 +588,7 @@ sha256 = "abc"
 spdx = "MIT"
 
 [build]
-script_path = "examples/libs/foo/build.sh"
+script_path = "packages/registry/foo/build.sh"
 "#;
     let pkg = PackageManifest::parse(toml).expect("should parse");
     assert_eq!(pkg.name, "foo");
@@ -605,14 +605,14 @@ Expected: 2 tests FAIL (parser still accepts the old format).
 **Step 3: Commit failing tests**
 
 ```bash
-git add xtask/src/pkg_manifest.rs
+git add tools/xtask/src/pkg_manifest.rs
 git commit -m "test(pkg-manifest): reject legacy [binary] / revision in package.toml"
 ```
 
 ### Task 4.2: Remove legacy fields from package.toml parser
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs`
+- Modify: `tools/xtask/src/pkg_manifest.rs`
 
 **Step 1: Find the relevant structs**
 
@@ -639,7 +639,7 @@ Expected: all three PASS. (The first two reject the legacy fields; the third par
 **Step 6: Commit (with broken downstream callers as TODOs)**
 
 ```bash
-git add xtask/src/pkg_manifest.rs xtask/src/*.rs
+git add tools/xtask/src/pkg_manifest.rs tools/xtask/src/*.rs
 git commit -m "feat(pkg-manifest): drop [binary]/revision from package.toml schema
 
 Replaces broken read sites with todo!() placeholders to be fixed in
@@ -653,12 +653,12 @@ later phases that introduce IndexEntry/BuildToml-based reads."
 ### Task 5.1: Add a test for parsing the new `IndexToml` schema with `status` fields
 
 **Files:**
-- Create: `xtask/src/index_toml.rs`
-- Modify: `xtask/src/main.rs` (add `mod index_toml;`)
+- Create: `tools/xtask/src/index_toml.rs`
+- Modify: `tools/xtask/src/main.rs` (add `mod index_toml;`)
 
 **Step 1: Write the failing test**
 
-In `xtask/src/index_toml.rs`:
+In `tools/xtask/src/index_toml.rs`:
 
 ```rust
 //! Parser + writer for the index.toml ledger.
@@ -736,18 +736,18 @@ Expected: `index_toml not found` or `IndexToml not found`.
 **Step 3: Commit failing test (no implementation yet)**
 
 ```bash
-git add xtask/src/index_toml.rs xtask/src/main.rs
+git add tools/xtask/src/index_toml.rs tools/xtask/src/main.rs
 git commit -m "test(index-toml): parse success and failed-with-fallback entries"
 ```
 
 ### Task 5.2: Implement `IndexToml` parser
 
 **Files:**
-- Modify: `xtask/src/index_toml.rs`
+- Modify: `tools/xtask/src/index_toml.rs`
 
 **Step 1: Add the schema + parser**
 
-Write the parser at the top of `xtask/src/index_toml.rs`. Use `serde` for deserialization. Define:
+Write the parser at the top of `tools/xtask/src/index_toml.rs`. Use `serde` for deserialization. Define:
 
 - `pub struct IndexToml { abi_version: u32, generated_at: String, generator: String, packages: Vec<PackageEntry> }`
 - `pub struct PackageEntry { name: String, version: String, revision: u32, binary: BTreeMap<TargetArch, BinaryEntry> }`
@@ -780,14 +780,14 @@ Expected: both tests PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/index_toml.rs
+git add tools/xtask/src/index_toml.rs
 git commit -m "feat(index-toml): parser + lookup for new ledger schema"
 ```
 
 ### Task 5.3: Add `IndexToml::write` (round-trip writer)
 
 **Files:**
-- Modify: `xtask/src/index_toml.rs`
+- Modify: `tools/xtask/src/index_toml.rs`
 
 **Step 1: Write a round-trip test**
 
@@ -834,14 +834,14 @@ Expected: PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/index_toml.rs
+git add tools/xtask/src/index_toml.rs
 git commit -m "feat(index-toml): write() round-trips the ledger schema"
 ```
 
 ### Task 5.4: Add `IndexToml::update_entry` with last-green fallback logic
 
 **Files:**
-- Modify: `xtask/src/index_toml.rs`
+- Modify: `tools/xtask/src/index_toml.rs`
 
 **Step 1: Write tests for the success/failed/fallback transitions**
 
@@ -992,7 +992,7 @@ Expected: 3 tests PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/index_toml.rs
+git add tools/xtask/src/index_toml.rs
 git commit -m "feat(index-toml): update_entry with last-green fallback semantics"
 ```
 
@@ -1003,7 +1003,7 @@ git commit -m "feat(index-toml): update_entry with last-green fallback semantics
 ### Task 6.1: Add a failing test that the resolver fetches via index lookup
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (test mod at end)
+- Modify: `tools/xtask/src/build_deps.rs` (test mod at end)
 
 **Step 1: Write the failing test**
 
@@ -1098,14 +1098,14 @@ Expected: FAIL — `cmd_resolve` doesn't know about `build.toml` or index lookup
 **Step 3: Commit failing test**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "test(build-deps): resolver fetches via index lookup"
 ```
 
 ### Task 6.2: Implement `load_build_toml` + `load_index` helpers
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs`
+- Modify: `tools/xtask/src/build_deps.rs`
 
 **Step 1: Add helper functions**
 
@@ -1192,14 +1192,14 @@ Expected: 3 PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat(build-deps): load_build_toml + resolve_index_url helpers"
 ```
 
 ### Task 6.3: Implement `fetch_index` with offline caching
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (or new `xtask/src/index_cache.rs`)
+- Modify: `tools/xtask/src/build_deps.rs` (or new `tools/xtask/src/index_cache.rs`)
 
 **Step 1: Write test for online fetch + cache write**
 
@@ -1291,14 +1291,14 @@ Expected: 2 PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat(build-deps): fetch_index with offline cache fallback"
 ```
 
 ### Task 6.4: Wire `cmd_resolve` to use the index lookup path
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs`
+- Modify: `tools/xtask/src/build_deps.rs`
 
 **Step 1: Update `cmd_resolve` to load build.toml + fetch index + dispatch**
 
@@ -1425,14 +1425,14 @@ Expected: all tests pass. The existing tests that used `[binary]` in `package.to
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs xtask/src/remote_fetch.rs
+git add tools/xtask/src/build_deps.rs tools/xtask/src/remote_fetch.rs
 git commit -m "feat(build-deps): index-lookup resolver path with last-green fallback"
 ```
 
 ### Task 6.5: Migrate existing resolver tests to the new schema
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (the `tests` mod has ~20 tests that build fake package.toml's with `[binary]` blocks)
+- Modify: `tools/xtask/src/build_deps.rs` (the `tests` mod has ~20 tests that build fake package.toml's with `[binary]` blocks)
 
 **Step 1: Run failing tests to enumerate**
 
@@ -1456,7 +1456,7 @@ Expected: ALL PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "test(build-deps): migrate resolver tests to build.toml + index.toml fixtures"
 ```
 
@@ -1467,8 +1467,8 @@ git commit -m "test(build-deps): migrate resolver tests to build.toml + index.to
 ### Task 7.1: Add a failing test for `xtask index-update` (success path)
 
 **Files:**
-- Create: `xtask/src/index_update.rs`
-- Modify: `xtask/src/main.rs` (add `mod index_update;` + dispatch)
+- Create: `tools/xtask/src/index_update.rs`
+- Modify: `tools/xtask/src/main.rs` (add `mod index_update;` + dispatch)
 
 **Step 1: Write the test**
 
@@ -1513,14 +1513,14 @@ mod tests {
 **Step 3: Commit failing test**
 
 ```bash
-git add xtask/src/index_update.rs xtask/src/main.rs
+git add tools/xtask/src/index_update.rs tools/xtask/src/main.rs
 git commit -m "test(index-update): success-path writes entry into index.toml"
 ```
 
 ### Task 7.2: Implement `run_index_update`
 
 **Files:**
-- Modify: `xtask/src/index_update.rs`, `xtask/src/main.rs`
+- Modify: `tools/xtask/src/index_update.rs`, `tools/xtask/src/main.rs`
 
 **Step 1: Implement**
 
@@ -1554,7 +1554,7 @@ Run + pass.
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/index_update.rs xtask/src/main.rs
+git add tools/xtask/src/index_update.rs tools/xtask/src/main.rs
 git commit -m "feat(index-update): xtask subcommand for atomic ledger mutations"
 ```
 
@@ -1686,7 +1686,7 @@ git commit -m "feat(compose-initial-index): one-shot script to seed index.toml f
 ### Task 8.3: Update `xtask build-index` to emit the new schema
 
 **Files:**
-- Modify: `xtask/src/build_index.rs`
+- Modify: `tools/xtask/src/build_index.rs`
 
 **Step 1: Add a test for the new schema**
 
@@ -1732,7 +1732,7 @@ Expected: all PASS.
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/build_index.rs
+git add tools/xtask/src/build_index.rs
 git commit -m "feat(build-index): emit new index.toml schema with status + cache_key_sha"
 ```
 
@@ -1769,7 +1769,7 @@ git commit -m "feat(packages): add .wasm-posix-pkg.toml with first-party source"
 
 **Step 1: Write the script**
 
-For each `examples/libs/<pkg>/package.toml`:
+For each `packages/registry/<pkg>/package.toml`:
 
 1. Parse the existing `package.toml` to extract `[build].script_path`, `[build].repo_url`, `[build].commit`.
 2. Use `xtask` (add a `migrate-package-toml` subcommand, OR do it with `sed`/`awk` inline) to:
@@ -1791,7 +1791,7 @@ cd "$REPO_ROOT"
 
 HEAD_COMMIT="${MIGRATION_COMMIT:-$(git rev-parse HEAD)}"
 
-for ptoml in examples/libs/*/package.toml; do
+for ptoml in packages/registry/*/package.toml; do
   pkg_dir="$(dirname "$ptoml")"
   pkg=$(basename "$pkg_dir")
   echo "migrating $pkg..."
@@ -1835,14 +1835,14 @@ with open(path, 'w') as f:
 PY
 done
 
-echo "migrated $(ls examples/libs/*/build.toml | wc -l) package(s)"
+echo "migrated $(ls packages/registry/*/build.toml | wc -l) package(s)"
 ```
 
 **Step 2: Run on a copy of one package first**
 
 ```bash
 # Test on a single package to verify script behavior.
-cp -r examples/libs/bash /tmp/bash-test
+cp -r packages/registry/bash /tmp/bash-test
 (cd /tmp/bash-test && bash $REPO_ROOT/scripts/migrate-package-tomls.sh)
 # Inspect output: cat /tmp/bash-test/package.toml /tmp/bash-test/build.toml
 ```
@@ -1861,7 +1861,7 @@ For each migrated package, the xtask parser should accept the new `package.toml`
 **Step 5: Commit**
 
 ```bash
-git add examples/libs/*/package.toml examples/libs/*/build.toml scripts/migrate-package-tomls.sh
+git add packages/registry/*/package.toml packages/registry/*/build.toml scripts/migrate-package-tomls.sh
 git commit -m "chore(packages): migrate 53 package.toml + add build.toml siblings
 
 Stripped [binary] blocks, revision, [build].repo_url, [build].commit

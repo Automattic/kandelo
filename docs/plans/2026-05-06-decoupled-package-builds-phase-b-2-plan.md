@@ -252,7 +252,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ## Task 2: `kernel_abi` backfill survey + populate
 
-**Files:** Up to 55 `examples/libs/*/package.toml` files.
+**Files:** Up to 55 `packages/registry/*/package.toml` files.
 
 **Goal:** Ensure every first-party `package.toml` with a `[build]` block declares `kernel_abi = N` matching the current `ABI_VERSION` (per `crates/shared/src/lib.rs`). Phase A-bis added the field as optional; Phase B-2 Task 3 will tighten the parser to require it for source manifests, so all source files must have it set first.
 
@@ -269,7 +269,7 @@ Capture the value as `$ABI` for the rest of this task.
 **Step 2: Survey which packages already have `kernel_abi`.**
 
 ```bash
-for f in examples/libs/*/package.toml; do
+for f in packages/registry/*/package.toml; do
   pkg=$(basename "$(dirname "$f")")
   has_build=$(grep -q '^\[build\]' "$f" && echo y || echo n)
   has_kernel_abi=$(grep -q '^kernel_abi' "$f" && echo y || echo n)
@@ -288,7 +288,7 @@ The `build=y kernel_abi=n` count is the backfill target. The `build=n` packages 
 
 ```bash
 ABI=7   # confirm matches Step 1
-for f in examples/libs/*/package.toml; do
+for f in packages/registry/*/package.toml; do
   if grep -q '^\[build\]' "$f" && ! grep -q '^kernel_abi' "$f"; then
     pkg=$(basename "$(dirname "$f")")
     # Insert "kernel_abi = $ABI" after the line beginning with "revision"
@@ -320,7 +320,7 @@ If any package lacks a `revision` line (the python script will warn), inspect ma
 **Step 4: Verify all `[build]`-having packages now declare `kernel_abi`.**
 
 ```bash
-for f in examples/libs/*/package.toml; do
+for f in packages/registry/*/package.toml; do
   if grep -q '^\[build\]' "$f"; then
     if ! grep -q '^kernel_abi *=' "$f"; then
       echo "MISSING: $f"
@@ -335,7 +335,7 @@ Expected: empty output. Any `MISSING:` lines must be backfilled manually.
 
 ```bash
 fail=0
-for f in examples/libs/*/package.toml; do
+for f in packages/registry/*/package.toml; do
   if ! bash scripts/dev-shell.sh cargo run --release -p xtask --target $(rustc -vV | awk '/^host/ {print $2}') --quiet -- build-deps parse "$f" >/dev/null 2>&1; then
     echo "PARSE FAIL: $f"
     fail=$((fail+1))
@@ -349,7 +349,7 @@ Expected: 0 failures.
 **Step 6: Commit.**
 
 ```bash
-git add examples/libs/
+git add packages/registry/
 git commit -m "refactor(packages): backfill [build]-having package.toml with kernel_abi = $ABI
 
 Phase A-bis added [build].kernel_abi as optional. Phase B-2 Task 3
@@ -373,14 +373,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 3: Parser tightens `kernel_abi` from optional to required
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs`
+- Modify: `tools/xtask/src/pkg_manifest.rs`
 
 **Goal:** Source-manifest parsing rejects `package.toml` files that lack `kernel_abi` (with a clear error pointing at the design doc). Archived `manifest.toml` files (legacy bytes published before A-bis) keep accepting absence — they're immutable historical artifacts and the parser must tolerate them just like it does the deprecated `[build].script` field.
 
 **Step 1: Read the current state.**
 
 ```bash
-grep -nB 2 -A 6 'kernel_abi\|fn validate_source\|fn validate_archived' xtask/src/pkg_manifest.rs | head -40
+grep -nB 2 -A 6 'kernel_abi\|fn validate_source\|fn validate_archived' tools/xtask/src/pkg_manifest.rs | head -40
 ```
 
 Phase A-bis defined:
@@ -390,7 +390,7 @@ Phase A-bis defined:
 
 **Step 2: Write the failing test.**
 
-In `xtask/src/pkg_manifest.rs`'s test module, add:
+In `tools/xtask/src/pkg_manifest.rs`'s test module, add:
 
 ```rust
 #[test]
@@ -409,7 +409,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 spdx = "TestLicense"
 
 [build]
-script_path = "examples/libs/test/build-test.sh"
+script_path = "packages/registry/test/build-test.sh"
 repo_url = "https://example.com/repo.git"
 
 [binary.wasm32]
@@ -491,7 +491,7 @@ Expected: the new tests fail (parse currently doesn't enforce `kernel_abi` for a
 
 **Step 4: Tighten the parser.**
 
-In `validate_source` (around line 628 of `xtask/src/pkg_manifest.rs`), add the check after the existing source-only validations:
+In `validate_source` (around line 628 of `tools/xtask/src/pkg_manifest.rs`), add the check after the existing source-only validations:
 
 ```rust
 fn validate_source(raw: Raw, dir: PathBuf) -> Result<Self, String> {
@@ -536,7 +536,7 @@ Expected: post-Phase-B-1 baseline (211 tests) + 3 new = 214 passed, 0 failed.
 
 ```bash
 fail=0
-for f in examples/libs/*/package.toml; do
+for f in packages/registry/*/package.toml; do
   if ! bash scripts/dev-shell.sh cargo run --release -p xtask --target $(rustc -vV | awk '/^host/ {print $2}') --quiet -- build-deps parse "$f" >/dev/null 2>&1; then
     echo "PARSE FAIL: $f"
     fail=$((fail+1))
@@ -550,7 +550,7 @@ Expected: 0 failures. If any package fails, Task 2's backfill missed it.
 **Step 8: Commit.**
 
 ```bash
-git add xtask/src/pkg_manifest.rs
+git add tools/xtask/src/pkg_manifest.rs
 git commit -m "feat(xtask): parser requires kernel_abi on source [build] manifests
 
 Phase A-bis added [build] schema fields including kernel_abi as

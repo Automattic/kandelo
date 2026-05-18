@@ -6,8 +6,8 @@
  * interpolation ($) conflicts with template literal escaping.
  *
  * Requires:
- *   1. PHP binary: examples/libs/php/php-src/sapi/cli/php
- *      (build with: cd examples/libs/php && bash build.sh)
+ *   1. PHP binary: packages/registry/php/php-src/sapi/cli/php
+ *      (build with: cd packages/registry/php && bash build.sh)
  *   2. WordPress files: examples/wordpress/wordpress/
  *      (download with: bash examples/wordpress/setup.sh)
  */
@@ -23,7 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
 const phpBinaryPath =
   tryResolveBinary("programs/php/php.wasm") ??
-  join(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
+  join(repoRoot, "packages/registry/php/php-src/sapi/cli/php");
 const wpDir = join(__dirname, "../wordpress");
 const dbPath = join(wpDir, "wp-content/database/wordpress.db");
 

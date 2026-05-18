@@ -3,7 +3,7 @@
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Migrate `scripts/build-libcxx.sh` into the package-management
-system as `examples/libs/libcxx/`, and bundle LLVM libunwind into the
+system as `packages/registry/libcxx/`, and bundle LLVM libunwind into the
 resulting `libc++abi.a` so C++ programs that throw exceptions actually
 propagate them at runtime (today they hang on `_Unwind_RaiseException`,
 which is unresolved).
@@ -34,7 +34,7 @@ which is unresolved).
 
 Today `scripts/build-libcxx.sh` builds libc++.a + libc++abi.a and
 installs to `sysroot/lib/`. It's invoked imperatively only by
-`examples/libs/mariadb/build-mariadb.sh`. It sits outside the
+`packages/registry/mariadb/build-mariadb.sh`. It sits outside the
 package-management resolver, so:
 
 - libcxx's outputs aren't cached or published.
@@ -60,7 +60,7 @@ and continues the spike.
 
 ## What's NOT in scope
 
-- Migrating libcxx **headers** into `examples/libs/libcxx/include/`
+- Migrating libcxx **headers** into `packages/registry/libcxx/include/`
   source-tree. Headers continue to come from Homebrew LLVM at build
   time (the libcxx build copies them from `$LLVM_PREFIX/include/c++/v1`
   into `WASM_POSIX_DEP_OUT_DIR/include/c++/v1`). Sourcing headers
@@ -91,7 +91,7 @@ Before opening the PR all of the following must be green:
 7. Sortix tests not regressed (`scripts/run-sortix-tests.sh --all` —
    memory says 4827 PASS / 0 FAIL is current baseline; after this
    change must be ≥ 4827 PASS / 0 FAIL).
-8. `bash examples/libs/mariadb/build-mariadb.sh` succeeds end-to-end
+8. `bash packages/registry/mariadb/build-mariadb.sh` succeeds end-to-end
    (it's the existing libcxx consumer; verifies the migration didn't
    break it).
 9. The new `programs/cpp_throw_test.wasm` runs through the kernel
@@ -310,26 +310,26 @@ Refs spike: memory/spidermonkey-spike-eh-toolchain-gap.md
 
 ---
 
-## Task 2: Migrate scripts/build-libcxx.sh into examples/libs/libcxx/
+## Task 2: Migrate scripts/build-libcxx.sh into packages/registry/libcxx/
 
 Move the existing build script into the package-management layout,
 adapt it to the resolver contract. Library content unchanged this
 task — only location, manifest, and env-var contract.
 
 **Files:**
-- Create: `examples/libs/libcxx/deps.toml`
-- Create: `examples/libs/libcxx/build-libcxx.sh` (moved from
+- Create: `packages/registry/libcxx/deps.toml`
+- Create: `packages/registry/libcxx/build-libcxx.sh` (moved from
   `scripts/build-libcxx.sh`, adapted)
-- Create: `examples/libs/libcxx/package.json` (matches sibling lib
+- Create: `packages/registry/libcxx/package.json` (matches sibling lib
   pattern — minimal `{"name":"...","scripts":{"build-libcxx":"..."}}`)
 - Delete: `scripts/build-libcxx.sh`
-- Modify: `examples/libs/mariadb/build-mariadb.sh:184-189` (replace
+- Modify: `packages/registry/mariadb/build-mariadb.sh:184-189` (replace
   direct call with `cargo xtask build-deps resolve libcxx` pattern)
 
 **Step 1: Read and copy the existing script**
 
 ```
-cp scripts/build-libcxx.sh examples/libs/libcxx/build-libcxx.sh
+cp scripts/build-libcxx.sh packages/registry/libcxx/build-libcxx.sh
 ```
 Then adapt the new copy:
 
@@ -369,7 +369,7 @@ Then adapt the new copy:
 
 **Step 2: Write the manifest**
 
-Create `examples/libs/libcxx/deps.toml`:
+Create `packages/registry/libcxx/deps.toml`:
 
 ```toml
 # Per-library manifest for libc++ and libc++abi (with bundled
@@ -415,7 +415,7 @@ back without error after Step 4.)
 
 **Step 3: Add package.json shim**
 
-Create `examples/libs/libcxx/package.json`:
+Create `packages/registry/libcxx/package.json`:
 
 ```json
 {
@@ -428,12 +428,12 @@ Create `examples/libs/libcxx/package.json`:
 }
 ```
 
-(Match what other libs ship — `cat examples/libs/openssl/package.json`
+(Match what other libs ship — `cat packages/registry/openssl/package.json`
 for reference.)
 
 **Step 4: Update mariadb's call site**
 
-Find: `examples/libs/mariadb/build-mariadb.sh:184-189` (the block that
+Find: `packages/registry/mariadb/build-mariadb.sh:184-189` (the block that
 checks for `$SYSROOT/lib/libc++.a` and runs `bash $REPO_ROOT/scripts/build-libcxx.sh`).
 
 Replace with the standard resolve pattern:
@@ -484,7 +484,7 @@ Expected: prints same path immediately, no rebuild.
 **Step 8: Run mariadb build to verify the migration**
 
 ```
-bash examples/libs/mariadb/build-mariadb.sh 2>&1 | tail -10
+bash packages/registry/mariadb/build-mariadb.sh 2>&1 | tail -10
 ```
 Expected: succeeds (it's a long build — set aside ~10–20 minutes).
 This validates the resolver-pattern adaptation.
@@ -492,11 +492,11 @@ This validates the resolver-pattern adaptation.
 **Step 9: Commit Task 2**
 
 ```
-git add examples/libs/libcxx/ examples/libs/mariadb/
+git add packages/registry/libcxx/ packages/registry/mariadb/
 git rm scripts/build-libcxx.sh
 git commit -m "deps(libcxx): migrate libcxx into the package-management system
 
-Move scripts/build-libcxx.sh to examples/libs/libcxx/build-libcxx.sh
+Move scripts/build-libcxx.sh to packages/registry/libcxx/build-libcxx.sh
 and add deps.toml so libcxx is resolved through cargo xtask build-deps
 like every other library. mariadb's call site updated to consume via
 the resolver. No behavior change in this commit — libunwind bundling
@@ -513,8 +513,8 @@ statically linked into libc++abi.a. This is the actual functional
 fix.
 
 **Files:**
-- Modify: `examples/libs/libcxx/build-libcxx.sh`
-- Modify: `examples/libs/libcxx/deps.toml` (bump `revision` from 1 to 2)
+- Modify: `packages/registry/libcxx/build-libcxx.sh`
+- Modify: `packages/registry/libcxx/deps.toml` (bump `revision` from 1 to 2)
 
 **Step 1: Update sparse-checkout list**
 
@@ -583,7 +583,7 @@ the user-supplied target list controls what `make` runs.)
 
 **Step 5: Bump revision**
 
-In `examples/libs/libcxx/deps.toml`:
+In `packages/registry/libcxx/deps.toml`:
 ```
 revision = 2
 ```
@@ -639,7 +639,7 @@ Expected: `1 passed`.
 **Step 10: Commit Task 3**
 
 ```
-git add examples/libs/libcxx/build-libcxx.sh examples/libs/libcxx/deps.toml
+git add packages/registry/libcxx/build-libcxx.sh packages/registry/libcxx/deps.toml
 git commit -m "deps(libcxx): bundle LLVM libunwind into libc++abi.a
 
 Build LLVM libunwind alongside libcxx + libcxxabi via
@@ -818,7 +818,7 @@ Use `gh pr create`:
 gh pr create --base package-management --title "deps(libcxx): publish libcxx as a package, bundle libunwind" --body "$(cat <<'EOF'
 ## Summary
 
-- Migrate `scripts/build-libcxx.sh` → `examples/libs/libcxx/` (deps.toml + build script + package.json), making libcxx the 8th cached binary lib in the package-management system.
+- Migrate `scripts/build-libcxx.sh` → `packages/registry/libcxx/` (deps.toml + build script + package.json), making libcxx the 8th cached binary lib in the package-management system.
 - Set `LIBCXXABI_USE_LLVM_UNWINDER=ON` and bundle libunwind statically into `libc++abi.a` so C++ programs that throw exceptions actually propagate them at runtime. Closes a gap discovered by the SpiderMonkey EH spike on 2026-04-28.
 - Add `programs/cpp_throw_test.cpp` + matching vitest case as a permanent regression gate.
 - mariadb's libcxx call site moved onto the standard resolver pattern; declares `depends_on = ["libcxx@21"]`.
@@ -836,7 +836,7 @@ The 2026-04-28 spike found that `_Unwind_RaiseException` was an unresolved impor
 - [ ] `scripts/run-sortix-tests.sh --all` — ≥ 4827 PASS / 0 FAIL
 - [ ] `bash scripts/check-abi-version.sh` — exits 0 (no drift)
 - [ ] `cargo xtask build-deps resolve libcxx` — builds, then cache-hits
-- [ ] `bash examples/libs/mariadb/build-mariadb.sh` — succeeds
+- [ ] `bash packages/registry/mariadb/build-mariadb.sh` — succeeds
 - [ ] `cpp_throw_test.wasm` runs in the kernel, exit 0, three PASSes
 
 ## Follow-up

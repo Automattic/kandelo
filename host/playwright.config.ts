@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const phpTestDir = join(__dirname, "../examples/libs/php/test");
+const phpTestDir = join(__dirname, "../packages/registry/php/test");
 
 export default defineConfig({
   testDir: join(__dirname, "test"),

@@ -14,7 +14,7 @@
  * bootstrap path.
  */
 
-// --- Channel layout (must match crates/shared/src/lib.rs + glue/channel_syscall.c) ---
+// --- Channel layout (must match crates/shared/src/lib.rs + libc/glue/channel_syscall.c) ---
 const CH_STATUS = 0;
 const CH_SYSCALL = 4;
 const CH_ARGS = 8;
@@ -28,7 +28,7 @@ const CH_DATA_SIZE = 65536;
 const CH_IDLE = 0;
 const CH_PENDING = 1;
 
-// --- Syscall numbers (from musl/arch/wasm32posix/bits/syscall.h.in) ---
+// --- Syscall numbers (from libc/musl/arch/wasm32posix/bits/syscall.h.in) ---
 const SYS_CLOSE = 2;
 const SYS_READ = 3;
 const SYS_WRITE = 4;

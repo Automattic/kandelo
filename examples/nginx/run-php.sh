@@ -40,7 +40,7 @@ fi
 # Step 4: PHP-FPM binary (builds sqlite, zlib, openssl, libxml2 as needed)
 if [ ! -f "$SCRIPT_DIR/php-fpm.wasm" ]; then
     echo "--- Building PHP-FPM + dependencies ---"
-    bash "$REPO_ROOT/examples/libs/php/build-php.sh"
+    bash "$REPO_ROOT/packages/registry/php/build-php.sh"
 else
     echo "--- php-fpm.wasm: OK ---"
 fi

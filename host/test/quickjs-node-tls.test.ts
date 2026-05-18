@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const NODE = join(__dirname, "../../examples/libs/quickjs/bin/node.wasm");
+const NODE = join(__dirname, "../../packages/registry/quickjs/bin/node.wasm");
 const HAS_NODE = existsSync(NODE);
 
 const TEST_HOSTNAME = "wasm-tls-test.local";

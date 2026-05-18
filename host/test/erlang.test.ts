@@ -18,15 +18,15 @@ const beamBinary = tryResolveBinary("programs/erlang/erlang.wasm");
 const serveScript = join(repoRoot, "examples/erlang/serve.ts");
 
 // serve.ts passes -root/-bindir/-boot pointing at
-// `examples/libs/erlang/erlang-install/` on the host; NodeKernelHost
+// `packages/registry/erlang/erlang-install/` on the host; NodeKernelHost
 // passes those paths through to the BEAM emulator. Without the
 // install tree, BEAM crashes during boot. The tree comes from
-// `bash examples/libs/erlang/build-erlang.sh` (a full source build);
+// `bash packages/registry/erlang/build-erlang.sh` (a full source build);
 // the binaries-abi-v6 release ships only erlang.wasm. Skip when the
 // host-side OTP runtime isn't present — re-running this test on a
 // machine without a local erlang build is an environment setup
 // issue, not a regression.
-const installDir = join(repoRoot, "examples/libs/erlang/erlang-install");
+const installDir = join(repoRoot, "packages/registry/erlang/erlang-install");
 const hasErlang = !!beamBinary && existsSync(installDir);
 
 function runErlang(evalExpr: string, timeoutMs = 30_000): string {

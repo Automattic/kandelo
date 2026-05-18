@@ -7,8 +7,8 @@
  *   node --experimental-strip-types examples/wordpress/serve.ts [port]
  *
  * Requires:
- *   1. PHP binary: examples/libs/php/php-src/sapi/cli/php
- *      (build with: cd examples/libs/php && bash build.sh)
+ *   1. PHP binary: packages/registry/php/php-src/sapi/cli/php
+ *      (build with: cd packages/registry/php && bash build.sh)
  *   2. WordPress files: examples/wordpress/wordpress/
  *      (download with: bash examples/wordpress/setup.sh)
  */
@@ -23,7 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const phpBinaryPath =
   tryResolveBinary("programs/php/php.wasm") ??
-  join(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
+  join(repoRoot, "packages/registry/php/php-src/sapi/cli/php");
 const wpDir = join(__dirname, "wordpress");
 const routerScript = join(__dirname, "router.php");
 
@@ -31,7 +31,7 @@ const port = parseInt(process.argv[2] || "3000", 10);
 
 // Validate prerequisites
 if (!existsSync(phpBinaryPath)) {
-  console.error("Error: PHP binary not found. Build with: cd examples/libs/php && bash build.sh");
+  console.error("Error: PHP binary not found. Build with: cd packages/registry/php && bash build.sh");
   process.exit(1);
 }
 if (!existsSync(join(wpDir, "wp-settings.php"))) {
@@ -61,7 +61,7 @@ async function main() {
   // Load opcache as a Zend extension so the cli-server SAPI caches
   // parsed bytecode across requests instead of re-parsing every .php
   // file on every hit (~50 files for WordPress install per page).
-  // opcache.so is a third [[outputs]] entry in examples/libs/php/
+  // opcache.so is a third [[outputs]] entry in packages/registry/php/
   // package.toml; the resolver places it at programs/php/opcache.so
   // alongside php.wasm. Pass that directory as `extension_dir`.
   const opcachePath = tryResolveBinary("programs/php/opcache.so");

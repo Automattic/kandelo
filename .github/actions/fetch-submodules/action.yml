@@ -17,7 +17,7 @@ inputs:
   submodules:
     description: |
       Whitespace-separated submodule paths to fetch. Common values:
-      `musl`, `musl libc-test os-test`.
+      `libc/musl`, `libc/musl tests/libc/libc-test tests/sortix/os-test`.
     required: true
   attempts:
     description: Maximum number of attempts before giving up.
@@ -41,7 +41,7 @@ runs:
       run: |
         set -eo pipefail
         git config --global url."https://github.com/".insteadOf "git@github.com:"
-        if [[ " $SUBMODULES " == *" musl "* ]]; then
+        if [[ " $SUBMODULES " == *" musl "* || " $SUBMODULES " == *" libc/musl "* ]]; then
           # git.musl-libc.org often hangs from GitHub-hosted runners.
           # This mirror carries the same musl release tags used by the submodule.
           git config submodule.musl.url "https://github.com/ifduyue/musl.git"

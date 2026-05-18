@@ -57,7 +57,7 @@ Expected: clean build; 190+ tests pass (post-Phase-A-bis baseline was 188 + 2 fr
 **Step 4: Quick recon on `compute_sha`.**
 
 ```bash
-grep -n 'pub fn compute_sha\|fn compute_sha' xtask/src/build_deps.rs | head
+grep -n 'pub fn compute_sha\|fn compute_sha' tools/xtask/src/build_deps.rs | head
 ```
 
 Expected: `compute_sha` at line ~197 — internal function used by the resolver. Phase B-1 Task 1 promotes it to a CLI subcommand.
@@ -205,23 +205,23 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 1: `xtask compute-cache-key-sha` CLI subcommand
 
 **Files:**
-- Modify: `xtask/src/main.rs` (subcommand dispatch)
-- Modify: `xtask/src/build_deps.rs` (expose `compute_sha` via the new subcommand)
-- Possibly: `xtask/src/build_deps.rs` test module (test the CLI surface)
+- Modify: `tools/xtask/src/main.rs` (subcommand dispatch)
+- Modify: `tools/xtask/src/build_deps.rs` (expose `compute_sha` via the new subcommand)
+- Possibly: `tools/xtask/src/build_deps.rs` test module (test the CLI surface)
 
-**Goal:** Add `cargo xtask compute-cache-key-sha --package examples/libs/bash --arch wasm32` that prints the package's `cache_key_sha` (64-hex). The pre-flight workflow (Task 2) calls this for every (package, arch) pair to decide which matrix entries to skip.
+**Goal:** Add `cargo xtask compute-cache-key-sha --package packages/registry/bash --arch wasm32` that prints the package's `cache_key_sha` (64-hex). The pre-flight workflow (Task 2) calls this for every (package, arch) pair to decide which matrix entries to skip.
 
 **Step 1: Find `compute_sha` and understand its inputs.**
 
 ```bash
-grep -nB 2 -A 20 'pub fn compute_sha' xtask/src/build_deps.rs | head -40
+grep -nB 2 -A 20 'pub fn compute_sha' tools/xtask/src/build_deps.rs | head -40
 ```
 
 It already exists as an internal function. The subcommand wraps it with CLI argument parsing and stdout output.
 
 **Step 2: Write the failing test.**
 
-In `xtask/src/build_deps.rs`'s test module:
+In `tools/xtask/src/build_deps.rs`'s test module:
 
 ```rust
 #[test]
@@ -247,7 +247,7 @@ Expected: FAIL — function/subcommand doesn't exist yet.
 
 **Step 4: Implement the subcommand.**
 
-In `xtask/src/main.rs`, add the dispatch entry. In `xtask/src/build_deps.rs`, add the public CLI function:
+In `tools/xtask/src/main.rs`, add the dispatch entry. In `tools/xtask/src/build_deps.rs`, add the public CLI function:
 
 ```rust
 pub fn run_compute_cache_key_sha(args: &[String]) -> Result<(), String> {
@@ -269,7 +269,7 @@ cargo test --release -p xtask --target aarch64-apple-darwin compute_cache_key_sh
 
 ```bash
 cargo run --release -p xtask --target aarch64-apple-darwin --quiet -- \
-  compute-cache-key-sha --package examples/libs/bash --arch wasm32
+  compute-cache-key-sha --package packages/registry/bash --arch wasm32
 ```
 
 Expected: a 64-hex string + newline. Run twice; should produce the same output.
@@ -277,7 +277,7 @@ Expected: a 64-hex string + newline. Run twice; should produce the same output.
 **Step 7: Commit.**
 
 ```bash
-git add xtask/src/main.rs xtask/src/build_deps.rs
+git add tools/xtask/src/main.rs tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): compute-cache-key-sha CLI subcommand
 
 Wraps the existing internal compute_sha function as a stable CLI
@@ -372,7 +372,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `.github/workflows/staging-build.yml`
 
-**Goal:** A separate job builds the musl sysroot + libc++ once, uploads them as a GHA cache layer keyed on `scripts/build-musl.sh` + `scripts/build-libcxx.sh` + `glue/` content hash. Matrix entries restore from this cache instead of rebuilding the toolchain N times.
+**Goal:** A separate job builds the musl sysroot + libc++ once, uploads them as a GHA cache layer keyed on `scripts/build-musl.sh` + `scripts/build-libcxx.sh` + `libc/glue/` content hash. Matrix entries restore from this cache instead of rebuilding the toolchain N times.
 
 **Step 1: Add the `toolchain-cache` job.**
 
@@ -569,7 +569,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `.github/workflows/staging-build.yml`
-- Possibly modify: `xtask/src/stage_release.rs` if a per-file upload helper is needed
+- Possibly modify: `tools/xtask/src/stage_release.rs` if a per-file upload helper is needed
 
 **Goal:** After `test-gate` passes, a `publish` job uploads each successful archive directly to the release tag (`pr-<NNN>-staging` for PR builds, `binaries-abi-v<N>` for prepare-merge / force-rebuild). One asset per (package, arch); no monolithic combined archive.
 
@@ -622,8 +622,8 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 7: `index.toml` generation + upload
 
 **Files:**
-- Create: `xtask/src/build_index_toml.rs` (or add to existing module — implementer's call)
-- Modify: `xtask/src/main.rs` (subcommand dispatch)
+- Create: `tools/xtask/src/build_index_toml.rs` (or add to existing module — implementer's call)
+- Modify: `tools/xtask/src/main.rs` (subcommand dispatch)
 - Modify: `.github/workflows/staging-build.yml` (post-publish step)
 
 **Goal:** After `publish` uploads all archives, a final job generates `index.toml` from the asset list and uploads it to the same release tag. The manifest format matches `docs/plans/2026-05-05-decoupled-package-builds-design.md` §3.2.
@@ -682,7 +682,7 @@ generate-index:
 **Step 5: Commit.**
 
 ```bash
-git add xtask/src/ .github/workflows/staging-build.yml
+git add tools/xtask/src/ .github/workflows/staging-build.yml
 git commit -m "feat(xtask,ci): index.toml generation + upload
 
 After per-file uploads, generate index.toml from the asset list

@@ -1,0 +1,22 @@
+name = "wordpress-playground"
+description = "Packages needed to support WordPress-style Kandelo environments."
+
+packages = [
+  "kernel",
+  "userspace",
+  "dash",
+  "bash",
+  "coreutils",
+  "grep",
+  "sed",
+  "curl",
+  "wget",
+  "git",
+  "nginx",
+  "php",
+  "sqlite",
+  "mariadb",
+  "dinit",
+  "wordpress",
+  "lamp",
+]

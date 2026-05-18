@@ -19,7 +19,7 @@ const repoRoot = resolve(__dirname, "../..");
 
 const phpBinaryPath =
   tryResolveBinary("programs/php/php.wasm") ??
-  resolve(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
+  resolve(repoRoot, "packages/registry/php/php-src/sapi/cli/php");
 const opcachePath = tryResolveBinary("programs/php/opcache.so");
 const wpDir = resolve(repoRoot, "examples/wordpress/wordpress");
 const routerScript = resolve(repoRoot, "examples/wordpress/router.php");
@@ -31,7 +31,7 @@ function loadBytes(path: string): ArrayBuffer {
 
 function missingPrereqsMessage(): string | null {
   if (!existsSync(phpBinaryPath)) {
-    return "PHP benchmark binary is missing. Run: bash examples/libs/php/build-php.sh";
+    return "PHP benchmark binary is missing. Run: bash packages/registry/php/build-php.sh";
   }
   if (!existsSync(join(wpDir, "wp-settings.php"))) {
     return "WordPress source tree is missing. Run: bash examples/wordpress/setup.sh";

@@ -16,9 +16,9 @@ This file is the counterpart to [wasm-limitations.md](wasm-limitations.md), whic
 
 **How deferred cancellation works:** Stock musl dispatches cancellation-point syscalls through `__syscall_cp_asm` + SIGCANCEL (interrupt the syscall, rewrite the PC to `__cp_cancel`). Wasm has neither signal-based preemption nor PC rewrite, so we implement deferred cancellation on the guest side and a one-shot wake syscall on the host side:
 
-- `musl-overlay/src/thread/wasm32posix/pthread_cancel.c` provides `pthread_cancel`, `__cancel`, `__testcancel`, and `__syscall_cp_check` (the moral equivalent of `__syscall_cp_asm` + `__syscall_cp_c` in one function). The overlay reuses musl's existing per-thread `pthread_t->cancel` atomic field as the pending-cancel flag — no new channel slot or TLS global needed.
-- `musl-overlay/src/thread/wasm32posix/pthread_testcancel.c` strips the weak `dummy __testcancel` alias so wasm-ld can't accidentally pull the weak over our strong definition.
-- `glue/channel_syscall.c::__syscall_cp` calls `__testcancel()` before each cancellation-point syscall and `__syscall_cp_check(r)` after, handling the three cancel states (ENABLE → pthread_exit, MASKED → synthesize -ECANCELED, DISABLE → pass-through) the way stock musl's asm does.
+- `libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c` provides `pthread_cancel`, `__cancel`, `__testcancel`, and `__syscall_cp_check` (the moral equivalent of `__syscall_cp_asm` + `__syscall_cp_c` in one function). The overlay reuses musl's existing per-thread `pthread_t->cancel` atomic field as the pending-cancel flag — no new channel slot or TLS global needed.
+- `libc/musl-overlay/src/thread/wasm32posix/pthread_testcancel.c` strips the weak `dummy __testcancel` alias so wasm-ld can't accidentally pull the weak over our strong definition.
+- `libc/glue/channel_syscall.c::__syscall_cp` calls `__testcancel()` before each cancellation-point syscall and `__syscall_cp_check(r)` after, handling the three cancel states (ENABLE → pthread_exit, MASKED → synthesize -ECANCELED, DISABLE → pass-through) the way stock musl's asm does.
 - `pthread_cancel(t)` atomically sets `t->cancel = 1` and issues a new `SYS_THREAD_CANCEL` syscall so the host can wake a blocked target. The host (`kernel-worker.ts::handleThreadCancel`) notifies any in-flight futex wait (via `Atomics.notify` on the futex address), clears pipe/poll/select retry registrations, and arms a `pendingCancels` flag so a wait that hasn't entered its blocking state yet still short-circuits with -EINTR on entry.
 - `SYS_THREAD_CANCEL = 415` is a new host-handled syscall number; this PR bumps `ABI_VERSION` to 4 because the kernel/guest contract now depends on it.
 
@@ -35,7 +35,7 @@ This file is the counterpart to [wasm-limitations.md](wasm-limitations.md), whic
 **Root cause (fixed):** `__NR_exit_group` was aliased to `__NR_exit` (both = 34) in the wasm syscall headers. When a non-main thread called `exit()` / `_Exit()` → `SYS_exit_group`, it emitted syscall 34. The host's channel dispatcher saw syscall 34 from a non-main channel and ran the *thread-exit* path (remove channel only), leaving the main process worker to spin forever. Tests that called `exit(0)` from a spawned thread therefore hung.
 
 **Fix:**
-- `musl-overlay/arch/wasm{32,64}posix/bits/syscall.h.in`: give `__NR_exit_group` its own number (387, matching what `host/src/kernel-worker.ts` already expected).
+- `libc/musl-overlay/arch/wasm{32,64}posix/bits/syscall.h.in`: give `__NR_exit_group` its own number (387, matching what `host/src/kernel-worker.ts` already expected).
 - `crates/kernel/src/wasm_api.rs`: dispatch 387 → `kernel_exit` alongside 34.
 - `host/src/node-kernel-worker-entry.ts`: on process exit, terminate surviving thread workers so they don't linger after their parent is gone.
 
@@ -62,7 +62,7 @@ This entry is retained below as **optional future hardening work**, not as an XF
 **Starting files (if Option A is pursued):**
 - `crates/kernel/src/memory.rs` — add a "poisoned ranges" structure separate from the live-mmap range list
 - `crates/kernel/src/syscalls.rs` — add `validate_user_ptr(proc, addr, len)` helper; call from each pointer-taking syscall
-- `glue/channel_syscall.c` — no changes expected; validation stays kernel-side
+- `libc/glue/channel_syscall.c` — no changes expected; validation stays kernel-side
 
 **Future wasm-platform path to real fix.** If a wasm proposal ships that permits page-level protection (current candidates: Memory Control `memory.protect`, or Multi-memory combined with compiler fat-pointer support), `munmap/1-*` can be revisited as a real target. See [wasm-limitations.md §6](wasm-limitations.md) for the platform-side analysis.
 
@@ -96,7 +96,7 @@ This entry is retained below as **optional future hardening work**, not as an XF
 **Starting files:**
 - `crates/kernel/src/process.rs` — Process struct (add uid/gid fields)
 - `crates/kernel/src/syscalls.rs` — `sys_kill`, `sys_sched_*`, add `sys_setuid/setgid`
-- `glue/channel_syscall.c` — syscall plumbing
+- `libc/glue/channel_syscall.c` — syscall plumbing
 
 ---
 
@@ -117,7 +117,7 @@ And a matching `/etc/group`. Low-risk change — pure userspace + VFS.
 **Starting files:**
 - `host/src/filesystem/` — VFS population
 - `scripts/build-programs.sh` or `build.sh` — where default VFS entries get seeded
-- `musl/src/passwd/` — reference for what `getpwnam` expects
+- `libc/musl/src/passwd/` — reference for what `getpwnam` expects
 
 ---
 

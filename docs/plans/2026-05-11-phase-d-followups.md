@@ -24,7 +24,7 @@ The underlying constraint is permissions. The matrix flow's `amend-package-toml`
 The bot PR's HEAD is a branch on the upstream repo (already what we do for same-repo PRs). The bot PR's BASE stays `main`. The only thing that changes is who owns the changes: the contributor's original PR remains untouched, and the bot PR squash-merges onto main in addition to (not instead of) the original PR. The contributor's PR closes as merged via the squash-merge resolution. Minor wiring: drop the `head.repo.full_name == github.repository` gate, route the bot-branch push through the upstream token (which is the default), confirm `gh pr create` from `pull_request` event context works against fork-base PRs.
 
 **Shape B — `pull_request_target` event + PAT.**
-`pull_request_target` runs in the upstream repo's context, so its `GITHUB_TOKEN` has write scope even for fork PRs. The catch: the workflow file that runs is the one on `main`, not the one in the fork's branch. So fork contributors can't change the workflow at the same time as they change package recipes. This is a security boundary, not a bug — but it has surprising UX (a fork PR that edits both `.github/workflows/*.yml` and `examples/libs/*/build-*.sh` would silently use main's workflow).
+`pull_request_target` runs in the upstream repo's context, so its `GITHUB_TOKEN` has write scope even for fork PRs. The catch: the workflow file that runs is the one on `main`, not the one in the fork's branch. So fork contributors can't change the workflow at the same time as they change package recipes. This is a security boundary, not a bug — but it has surprising UX (a fork PR that edits both `.github/workflows/*.yml` and `packages/registry/*/build-*.sh` would silently use main's workflow).
 
 Plus a PAT (or fine-grained app token) with write scope on the upstream repo, stored as a secret. That's another moving piece to maintain.
 
@@ -62,7 +62,7 @@ wasm-posix-pkg search doom
 wasm-posix-pkg add doom@1.10
 ```
 
-…without editing any TOML by hand. Today the resolver only walks `examples/libs/*/package.toml` in the in-tree registry. There is no API for "add an external source" or "search across registered sources".
+…without editing any TOML by hand. Today the resolver only walks `packages/registry/*/package.toml` in the in-tree registry. There is no API for "add an external source" or "search across registered sources".
 
 ### Architecture sketch
 
@@ -96,7 +96,7 @@ The CLI resolves a package name by querying each source's `index.toml` (with a l
 
 ### Open questions
 
-- Where do consumed packages land? Same `examples/libs/<name>/package.toml` registry as first-party? A separate `vendor/<name>/package.toml`? Project-scoped vs. user-scoped?
+- Where do consumed packages land? Same `packages/registry/<name>/package.toml` registry as first-party? A separate `vendor/<name>/package.toml`? Project-scoped vs. user-scoped?
 - Sources without a manifest signature — what's the trust story? `archive_sha256` in `index.toml` is the integrity root, but the source URL itself isn't authenticated (HTTPS gives transport, not source identity). Defer signing to "Future work" but document the gap.
 - Per-source `priority` semantics: highest-wins or first-match? Strongly recommend highest-wins (matches every other package manager).
 - Multi-source name collision UX: error and require explicit `<source>:<name>`, or silently pick the highest-priority? Pick the latter with a warning, mirror apt's behavior.
@@ -117,7 +117,7 @@ Goal (c) of the parent design is "third-party software sources are first-class."
 
 A new repo, probably `<owner>/wasm-posix-fun-pack`, containing:
 
-- `examples/libs/<game>/package.toml` for each ported game.
+- `packages/registry/<game>/package.toml` for each ported game.
 - A `.github/workflows/staging-build.yml` derived from the parent repo's, retargeting its own release tag (e.g. `fun-pack-abi-v7` instead of `binaries-abi-v7`).
 - A `flake.nix` (or equivalent) reproducing the toolchain.
 - An `index.toml` published as a release asset alongside each archive.

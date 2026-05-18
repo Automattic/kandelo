@@ -19,10 +19,10 @@
 #
 # Fixture choice
 # --------------
-# bzip2: smallest no-deps program in examples/libs/. ~750KB tarball,
+# bzip2: smallest no-deps program in packages/registry/. ~750KB tarball,
 # plain Makefile, no transitive build chain. The mutation is
 # `revision = 1` → `revision = 99` (TOML integer → integer; matches the
-# field's existing schema in xtask/src/deps_manifest.rs).
+# field's existing schema in tools/xtask/src/deps_manifest.rs).
 #
 # Cleanup
 # -------
@@ -36,7 +36,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 PKG=bzip2
-DEPS_TOML="examples/libs/$PKG/package.toml"
+DEPS_TOML="packages/registry/$PKG/package.toml"
 BACKUP="$DEPS_TOML.bak.allowstale-test"
 EXPECTED="local-binaries/programs/wasm32/$PKG.wasm"
 
@@ -101,7 +101,7 @@ wipe_built_artifacts
 # Without the flag, fetch must refuse to install bzip2 and exit
 # non-zero. We only assert non-zero exit + an error message that
 # mentions either "stale" or "cache_key_sha" — the exact wording lives
-# in xtask/src/remote_fetch.rs.
+# in tools/xtask/src/remote_fetch.rs.
 echo
 echo "smoke: [mode 1/3] strict default — expect failure"
 # strict_log is declared at script scope so the EXIT trap cleans it up

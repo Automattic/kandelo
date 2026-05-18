@@ -123,7 +123,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `fork()` (syscall) | Full | Centralized mode: glue traps to kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. |
 | `vfork()` | Full | Alias for fork() in centralized mode. |
 | `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host parses the blob, calls `kernel_spawn_process` to allocate a child pid + build the child Process descriptor, then invokes `onSpawn` to launch a fresh Worker. No fork, no asyncify rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
-| `posix_spawnp()` | Full | PATH search lives in libc (`musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
+| `posix_spawnp()` | Full | PATH search lives in libc (`libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
 | `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. Centralized mode: kernel allocates TID, host spawns thread Worker sharing parent's Memory. Traditional mode: delegates to host_clone. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
@@ -617,7 +617,7 @@ Programs must be linked with two extra flags for signal handler dispatch to work
 
 C++ programs that throw exceptions work end-to-end (commit `9482326ef`).
 Itanium-EH unwinding uses LLVM `libunwind` statically bundled into
-`libc++abi.a` via the libcxx package (`examples/libs/libcxx/`,
+`libc++abi.a` via the libcxx package (`packages/registry/libcxx/`,
 `LIBCXXABI_USE_LLVM_UNWINDER` + `LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY`),
 so consumers link `-lc++ -lc++abi` and `_Unwind_*` resolves internally —
 no separate `-lunwind`. clang must be invoked with `-fwasm-exceptions`;

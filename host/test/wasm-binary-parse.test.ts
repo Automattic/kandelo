@@ -219,7 +219,7 @@ describe("extractHeapBase", () => {
 // ---------------------------------------------------------------------------
 
 function abiVersionBody(value: number): FuncBody {
-  // Mirrors what glue/channel_syscall.c emits: __wasm_call_ctors prefix
+  // Mirrors what libc/glue/channel_syscall.c emits: __wasm_call_ctors prefix
   // (call <ctors-func-idx>) then `i32.const value`.
   return {
     locals: [0x00],                                // 0 local groups

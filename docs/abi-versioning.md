@@ -135,7 +135,7 @@ classifies the diff and accepts only the additive cases listed above.
 - **Things not in the generator's coverage list.** Whatever
   `xtask dump-abi` doesn't inspect isn't tracked. Treat the coverage
   list as itself ABI-critical: adding or removing an entry from
-  `xtask/src/dump_abi.rs` is an ABI-relevant change. (The export
+  `tools/xtask/src/dump_abi.rs` is an ABI-relevant change. (The export
   filter lists in `shared::abi::EXPORT_DENY_*` are themselves in the
   snapshot, so at least those are self-tracking.)
 - **Host-side assumptions not reflected in kernel source.** Wherever
@@ -154,7 +154,7 @@ binary whose custom-section version does not match the kernel's
 When the ABI is bumped, all binaries must be rebuilt and a new
 `binaries-abi-v{N}` release is cut. Old releases remain valid for old
 kernel revisions; the new release's `index.toml` ledger lists all
-v(N) archives. Each `examples/libs/<pkg>/build.toml`'s `[binary]
+v(N) archives. Each `packages/registry/<pkg>/build.toml`'s `[binary]
 index_url` templates `{abi}` against the current `ABI_VERSION`, so
 the next fetch automatically hits the v(N+1) release after the
 constant bumps — no per-package URL pinning in-tree to amend. The

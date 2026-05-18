@@ -4369,7 +4369,7 @@ fn subtree_contains_fork_call(
 ///     params blocks elsewhere in classify_nested_pattern).
 ///   - IfElse: 1 (the cond).
 ///
-/// ## Known unfixed case: `os-test/basic/spawn/posix_spawnattr_setpgroup` -O2
+/// ## Known unfixed case: `tests/sortix/os-test/basic/spawn/posix_spawnattr_setpgroup` -O2
 ///
 /// LLVM-O2 inlines `posix_spawn` into `main` and emits a sub-region
 /// carryover at the `kernel_fork`-bearing block:

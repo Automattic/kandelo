@@ -15,7 +15,7 @@ import { tryResolveBinary } from "../src/binary-resolver";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bashBinary =
   tryResolveBinary("programs/bash.wasm") ??
-  join(__dirname, "../../examples/libs/bash/bin/bash.wasm");
+  join(__dirname, "../../packages/registry/bash/bin/bash.wasm");
 
 const hasBash = existsSync(bashBinary);
 

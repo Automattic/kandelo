@@ -38,9 +38,9 @@ fi
 # Step 3: PHP binary (builds sqlite, zlib, openssl, libxml2 as needed)
 echo ""
 echo "--- Step 3/4: PHP + dependencies ---"
-PHP_BINARY="$REPO_ROOT/examples/libs/php/php-src/sapi/cli/php"
+PHP_BINARY="$REPO_ROOT/packages/registry/php/php-src/sapi/cli/php"
 if [ ! -f "$PHP_BINARY" ]; then
-    bash "$REPO_ROOT/examples/libs/php/build-php.sh"
+    bash "$REPO_ROOT/packages/registry/php/build-php.sh"
 else
     echo "==> PHP binary already built"
 fi

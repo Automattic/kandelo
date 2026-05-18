@@ -6,7 +6,7 @@ Worktree: `emdash/worktrees/kandelo/wasm-posix-kernel/emdash/explore-node-wasm-r
 
 ## §1. Goals & non-goals
 
-**Goal.** Get `npm install` of a real multi-dep package running seamlessly on `node.wasm` (the QuickJS-NG-based Node compat binary built by `examples/libs/quickjs/build-quickjs.sh`), under our kernel.
+**Goal.** Get `npm install` of a real multi-dep package running seamlessly on `node.wasm` (the QuickJS-NG-based Node compat binary built by `packages/registry/quickjs/build-quickjs.sh`), under our kernel.
 
 Success criteria, in order:
 
@@ -20,7 +20,7 @@ Success criteria, in order:
 
 - Native addons (`.node` files): npm packages with C++ addons (sharp, sqlite3 native, node-sass) won't load. `bindings`-style packages fail at runtime. This includes most of the data-processing ecosystem.
 - HTTP/2, HTTP/3 — `registry.npmjs.org` serves over HTTP/1.1 just fine; npm's fetch falls back automatically.
-- WASI compatibility — we are explicitly not WASI (per `examples/libs/quickjs/build-quickjs.sh:60`).
+- WASI compatibility — we are explicitly not WASI (per `packages/registry/quickjs/build-quickjs.sh:60`).
 - Inspector / debugger protocol.
 - Real `worker_threads` parallelism — single-threaded JS only. Async I/O concurrency is fine.
 - Intl (already excluded from the parent Node-port effort).
@@ -42,7 +42,7 @@ Two paths were on the table before this design.
 
 ## §3. Prior art — what's in the tree today
 
-`examples/libs/quickjs/` (PR #226, merged):
+`packages/registry/quickjs/` (PR #226, merged):
 
 | Artifact | What it is |
 |---|---|
@@ -61,7 +61,7 @@ Tested-and-real today (backed by `qjs:os` syscalls — `bootstrap.js` calls `os.
 
 ## §4. Key finding — the gap to npm is three native modules
 
-Line-precise survey of the stubs in `examples/libs/quickjs/node-compat/bootstrap.js` (verified 2026-04-28 against `37814ab5`):
+Line-precise survey of the stubs in `packages/registry/quickjs/node-compat/bootstrap.js` (verified 2026-04-28 against `37814ab5`):
 
 | Module | Stub site | What it actually does today | What npm needs |
 |---|---|---|---|
@@ -77,8 +77,8 @@ Other secondary gaps (lower priority — don't block npm but will surface):
 
 The kernel and userspace toolchain already have:
 
-- `examples/libs/openssl/` — full OpenSSL build for our wasm32 sysroot. Provides SHA-256/512 (libcrypto) and TLS (libssl).
-- `examples/libs/zlib/` — standalone libz build script (`build-zlib.sh`, builds `libz.a` against the sysroot).
+- `packages/registry/openssl/` — full OpenSSL build for our wasm32 sysroot. Provides SHA-256/512 (libcrypto) and TLS (libssl).
+- `packages/registry/zlib/` — standalone libz build script (`build-zlib.sh`, builds `libz.a` against the sysroot).
 - AF_INET + AF_UNIX sockets, real `connect()` / `send()` / `recv()` syscalls (PR #287, PR #356).
 
 So the bridge work is C: a QuickJS native module that exposes openssl + zlib + sockets to the bootstrap. **No new kernel work for the happy path.**
@@ -123,7 +123,7 @@ So the bridge work is C: a QuickJS native module that exposes openssl + zlib + s
 
 ### §5.2 Bridge: a single QuickJS native module `qjs:node`
 
-Add `examples/libs/quickjs/node-compat-native/` — C source for a QuickJS C module loaded by `node-main.c` alongside `qjs:std` / `qjs:os` / `qjs:bjson`. It exposes typed JS bindings to:
+Add `packages/registry/quickjs/node-compat-native/` — C source for a QuickJS C module loaded by `node-main.c` alongside `qjs:std` / `qjs:os` / `qjs:bjson`. It exposes typed JS bindings to:
 
 | Binding namespace | C calls into | Used by bootstrap.js |
 |---|---|---|
@@ -183,7 +183,7 @@ Each phase is a PR. Each PR closes its own test gap. Match Brandon's `area(scope
 
 ### Phase 0 — Verification (½ day)
 
-- Build `node.wasm` from current `main`: full chain (`git submodule update --init musl` → `bash scripts/build-musl.sh` → `bash build.sh` → `bash examples/libs/openssl/build-openssl.sh` → `bash examples/libs/zlib/build-zlib.sh` → `bash examples/libs/quickjs/build-quickjs.sh`).
+- Build `node.wasm` from current `main`: full chain (`git submodule update --init libc/musl` → `bash scripts/build-musl.sh` → `bash build.sh` → `bash packages/registry/openssl/build-openssl.sh` → `bash packages/registry/zlib/build-zlib.sh` → `bash packages/registry/quickjs/build-quickjs.sh`).
 - Run `cd host && npx vitest run test/node-compat.test.ts`. Confirm baseline passes.
 - Audit OpenSSL sysroot: confirm `libcrypto.a` and `libssl.a`, `OPENSSLDIR`, default cert paths.
 - Audit zlib sysroot: confirm `libz.a` installed.
@@ -196,7 +196,7 @@ Phase 0 may surface foundation bugs (toolchain drift, build-script staleness, ru
 
 PR title: `feat(quickjs-node): real SHA-256/512 via libcrypto`
 
-- Add `examples/libs/quickjs/node-compat-native/hash.c` — QuickJS C module exposing `node:hash` with `Sha256` / `Sha512` / `Md5` / `Sha1` constructors, each with `update(buf)` / `digest(encoding)`.
+- Add `packages/registry/quickjs/node-compat-native/hash.c` — QuickJS C module exposing `node:hash` with `Sha256` / `Sha512` / `Md5` / `Sha1` constructors, each with `update(buf)` / `digest(encoding)`.
 - Wire into `build-quickjs.sh`: link against `-lcrypto`.
 - Patch `bootstrap.js` `crypto` section (L2089–2148): replace XOR stub with the binding when `globalThis._nodeNative.hash` is present.
 - Tests: extend `node-compat.test.ts` with a `crypto` describe block. Vector each algorithm against known SHA-256 / SHA-512 / MD5 / SHA-1 outputs (NIST test vectors).
@@ -273,10 +273,10 @@ After Phase 6, evaluate:
 - **Asyncify × event loop.** `node.wasm` is asyncified for `kernel_fork`. The fd-watch loop must not deadlock if a callback triggers `fork()`. Worst case: forbid `fork()` from socket callbacks; surface as `EAGAIN`.
 - **TLS cert chain depth.** Some npm registry mirrors use deep chains. `cacert.pem` has all of Mozilla's roots (~140 CAs) and works with stock OpenSSL.
 - **npm itself uses workers.** `npm install` parallelism: npm 10 uses internal `Promise.all` over fetches, not real worker threads. The `worker_threads` no-op stub is fine; if a dep's postinstall fires up workers, that dep fails — surface as a known limitation.
-- **QuickJS-NG drift.** PR #226 merged the foundation but no commits touch `examples/libs/quickjs/` since (current HEAD `37814ab5`). Bit-rot is possible vs. the current kernel; Phase 0 verifies and any regression is fixed in its own PR, not folded into Phase 1.
+- **QuickJS-NG drift.** PR #226 merged the foundation but no commits touch `packages/registry/quickjs/` since (current HEAD `37814ab5`). Bit-rot is possible vs. the current kernel; Phase 0 verifies and any regression is fixed in its own PR, not folded into Phase 1.
 
 ## §8. Open questions
 
 - Does npm 10 work over HTTP/1.1 to `registry.npmjs.org` without HTTP/2 negotiation hiccups? (Phase 0 spike: `curl --http1.1 https://registry.npmjs.org/lodash` — if curl works, npm will.)
 - Is there a smaller npm we should start with (e.g. `pnpm` or just `npm-fetch` standalone)? Phase 5 reassesses based on size of npm-in-VFS vs. cold-start cost.
-- Should the native module live in `examples/libs/quickjs/node-compat-native/` (port-local) or `glue/node-native/` (shared)? Lean port-local — keeps the `quickjs-ng` clone clean and follows the pattern of other examples.
+- Should the native module live in `packages/registry/quickjs/node-compat-native/` (port-local) or `libc/glue/node-native/` (shared)? Lean port-local — keeps the `quickjs-ng` clone clean and follows the pattern of other examples.

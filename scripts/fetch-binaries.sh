@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Fetch published Wasm binaries by walking every package under
-# `examples/libs/<name>/` that has both package.toml and build.toml.
+# `packages/registry/<name>/` that has both package.toml and build.toml.
 #
 # The resolver consumes the central binary index configured by
 # `WASM_POSIX_BINARY_INDEX_URL`. For each package that has a
@@ -37,7 +37,7 @@
 #                  to hit the network. (No-op if every archive is
 #                  already in the cache.)
 #   --pr <N>       Force PR overlay handling. With Phase C the overlay
-#                  lives at `examples/libs/<name>/package.pr.toml`,
+#                  lives at `packages/registry/<name>/package.pr.toml`,
 #                  one file per package. The fetcher does NOT install
 #                  overlays itself — that's Task 4's CI job. This
 #                  flag is reserved for future use; today it warns
@@ -114,7 +114,7 @@ HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 
 if [ "$ALLOW_STALE" = "1" ]; then
     # The resolver source-builds automatically on archive verification
-    # failure (xtask/src/build_deps.rs cmd_resolve fallback: any
+    # failure (tools/xtask/src/build_deps.rs cmd_resolve fallback: any
     # remote_fetch error logs a warning and falls through to
     # build_into_cache). --allow-stale also degrades any per-package
     # resolve FAILURE to a warning so a meta-package whose source
@@ -138,7 +138,7 @@ if [ "$OFFLINE" = "1" ]; then
 fi
 
 # --- Walk packages and resolve each --------------------------------------
-LIBS_DIR="$REPO_ROOT/examples/libs"
+LIBS_DIR="$REPO_ROOT/packages/registry"
 [ -d "$LIBS_DIR" ] || { echo "fetch-binaries: $LIBS_DIR not found" >&2; exit 2; }
 
 # Collect failures and report them after the loop. A single archive
@@ -207,7 +207,7 @@ read_package_toml() {
     ' "$toml"
 }
 
-# Walk every immediate child directory of examples/libs/.
+# Walk every immediate child directory of packages/registry/.
 for pkg_dir in "$LIBS_DIR"/*/; do
     [ -d "$pkg_dir" ] || continue
     pkg=$(basename "$pkg_dir")
@@ -235,7 +235,7 @@ for pkg_dir in "$LIBS_DIR"/*/; do
     fi
 
     # Default arches = ["wasm32"]. Mirror the resolver's parser
-    # (xtask/src/pkg_manifest.rs default for absent `arches`).
+    # (tools/xtask/src/pkg_manifest.rs default for absent `arches`).
     arches="${ARCHES:-}"
     [ -z "$arches" ] && arches="wasm32"
 

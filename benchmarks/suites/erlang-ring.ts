@@ -20,7 +20,7 @@ const repoRoot = resolve(__dirname, "../..");
 
 const MAX_PAGES = 16384;
 
-const erlangLibDir = resolve(repoRoot, "examples/libs/erlang");
+const erlangLibDir = resolve(repoRoot, "packages/registry/erlang");
 const installDir = resolve(erlangLibDir, "erlang-install");
 const beamWasm = tryResolveBinary("programs/erlang/erlang.wasm");
 const ringDir = resolve(repoRoot, "examples/erlang");

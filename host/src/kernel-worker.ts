@@ -37,7 +37,7 @@ const CH_COMPLETE = 2;
  * frames + saved __tls_base / __stack_pointer that the host writes
  * during fork(). Must match the constant in `worker-main.ts` and the
  * onFork handlers in node-kernel-worker-entry.ts /
- * examples/browser/lib/kernel-worker-entry.ts.
+ * apps/browser-demos/lib/kernel-worker-entry.ts.
  */
 const ASYNCIFY_BUF_SIZE = 16384;
 
@@ -79,7 +79,7 @@ const SYS_SETSID = 92;
 const SYS_WAIT4 = 139;
 const SYS_WAITID = 288;
 /** SYS_THREAD_CANCEL: host-side wake-up for deferred pthread cancellation.
- * See musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
+ * See libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
 const SYS_THREAD_CANCEL = 415;
 
 /** waitpid options */
@@ -984,7 +984,7 @@ export class CentralizedKernelWorker {
      *  a few ms for these retries so follow-up cross-process signals have
      *  time to land before ppoll observes "pipe ready, no signal" and
      *  restores its mask. See scheduleWakeBlockedRetriesDeferred and
-     *  os-test/signal/ppoll-block-sleep-write-raise. */
+     *  tests/sortix/os-test/signal/ppoll-block-sleep-write-raise. */
     needsSignalSafeWake?: boolean;
   }>();
   /** Pending pselect6/select retries — used for signal-driven wakeup and timeout tracking */
@@ -3123,7 +3123,7 @@ export class CentralizedKernelWorker {
     // uv_async round-trip takes 1–5ms). If the retry fires first, ppoll
     // returns POLLIN and restores its sigmask; the late signal is then
     // blocked and the handler never fires. See
-    // os-test/signal/ppoll-block-sleep-write-raise.
+    // tests/sortix/os-test/signal/ppoll-block-sleep-write-raise.
     //
     // Deferring the broad wake a few ms gives X's follow-up syscalls
     // time to land. Kill-triggered wakes (line ~2050) always use the
@@ -3321,7 +3321,7 @@ export class CentralizedKernelWorker {
    *
    * The guest pthread_cancel() overlay has already atomically set
    * target->cancel = 1 in shared memory before calling this syscall — see
-   * musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the full flow.
+   * libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the full flow.
    *
    * This handler's sole job is to force the target out of its Atomics.wait32
    * on CH_STATUS (if blocked). Strategy depends on what the target is
@@ -3692,7 +3692,7 @@ export class CentralizedKernelWorker {
     // has no way to actually block). For non-blocking descriptors we must
     // return EAGAIN to the caller; otherwise the default retry loop spins
     // forever waiting for state that will never change (e.g., the final
-    // mq_receive in os-test/basic/mqueue/mq_receive.c after mq_setattr sets
+    // mq_receive in tests/sortix/os-test/basic/mqueue/mq_receive.c after mq_setattr sets
     // O_NONBLOCK on an empty queue).
     if (syscallNr === SYS_MQ_TIMEDSEND || syscallNr === SYS_MQ_TIMEDRECEIVE) {
       const mqd = origArgs[0];

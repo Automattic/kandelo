@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Reuse PHP source from the main PHP example
-PHP_EXAMPLE_DIR="$REPO_ROOT/examples/libs/php"
+PHP_EXAMPLE_DIR="$REPO_ROOT/packages/registry/php"
 SRC_DIR="$PHP_EXAMPLE_DIR/php-src"
 PHP_BINARY="$SRC_DIR/sapi/cli/php"
 
@@ -30,10 +30,10 @@ SYSROOT="$REPO_ROOT/sysroot"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 # Build SQLite if not already built
-SQLITE_DIR="$REPO_ROOT/examples/libs/sqlite/sqlite-install"
+SQLITE_DIR="$REPO_ROOT/packages/registry/sqlite/sqlite-install"
 if [ ! -f "$SQLITE_DIR/lib/libsqlite3.a" ]; then
     echo "==> Building SQLite..."
-    bash "$REPO_ROOT/examples/libs/sqlite/build-sqlite.sh"
+    bash "$REPO_ROOT/packages/registry/sqlite/build-sqlite.sh"
 fi
 
 # Install SQLite into sysroot
@@ -45,10 +45,10 @@ sed "s|^prefix=.*|prefix=$SYSROOT|" "$SQLITE_DIR/lib/pkgconfig/sqlite3.pc" \
     > "$SYSROOT/lib/pkgconfig/sqlite3.pc"
 
 # Build zlib if not already built
-ZLIB_DIR="$REPO_ROOT/examples/libs/zlib/zlib-install"
+ZLIB_DIR="$REPO_ROOT/packages/registry/zlib/zlib-install"
 if [ ! -f "$ZLIB_DIR/lib/libz.a" ]; then
     echo "==> Building zlib..."
-    bash "$REPO_ROOT/examples/libs/zlib/build-zlib.sh"
+    bash "$REPO_ROOT/packages/registry/zlib/build-zlib.sh"
 fi
 
 # Install zlib into sysroot

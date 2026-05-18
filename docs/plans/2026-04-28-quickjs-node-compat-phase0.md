@@ -9,11 +9,11 @@ Branch: `explore-node-wasm-docs-quickjs-phase0` (stacked on `explore-node-wasm-f
 |------|--------|------|--------|
 | musl    | `sysroot/lib/libc.a`                         | 1.4 MB  | ✓ |
 | kernel  | `host/wasm/wasm_posix_kernel.wasm`           | 416 KB  | ✓ |
-| OpenSSL | `examples/libs/openssl/openssl-install/lib/libcrypto.a` | 4.9 MB  | ✓ |
-| OpenSSL | `examples/libs/openssl/openssl-install/lib/libssl.a`    | 1.2 MB  | ✓ |
-| zlib    | `examples/libs/zlib/zlib-install/lib/libz.a`            | 100 KB  | ✓ |
-| qjs     | `examples/libs/quickjs/bin/qjs.wasm`         | 1.95 MB | ✓ |
-| node    | `examples/libs/quickjs/bin/node.wasm`        | 2.17 MB | ✓ |
+| OpenSSL | `packages/registry/openssl/openssl-install/lib/libcrypto.a` | 4.9 MB  | ✓ |
+| OpenSSL | `packages/registry/openssl/openssl-install/lib/libssl.a`    | 1.2 MB  | ✓ |
+| zlib    | `packages/registry/zlib/zlib-install/lib/libz.a`            | 100 KB  | ✓ |
+| qjs     | `packages/registry/quickjs/bin/qjs.wasm`         | 1.95 MB | ✓ |
+| node    | `packages/registry/quickjs/bin/node.wasm`        | 2.17 MB | ✓ |
 
 ## Vitest — node-compat.test.ts
 
@@ -33,7 +33,7 @@ Branch: `explore-node-wasm-docs-quickjs-phase0` (stacked on `explore-node-wasm-f
 ## OpenSSL audit
 
 ```
-$ strings examples/libs/openssl/openssl-install/lib/libcrypto.a | grep -E '^OPENSSLDIR|^/etc/ssl'
+$ strings packages/registry/openssl/openssl-install/lib/libcrypto.a | grep -E '^OPENSSLDIR|^/etc/ssl'
 /etc/ssl/ct_log_list.cnf
 OPENSSLDIR: "/etc/ssl"
 /etc/ssl

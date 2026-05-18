@@ -12,7 +12,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../..");
 const phpBinaryPath =
   tryResolveBinary("programs/php/php.wasm") ??
-  join(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
+  join(repoRoot, "packages/registry/php/php-src/sapi/cli/php");
 
 const PHP_AVAILABLE = existsSync(phpBinaryPath);
 

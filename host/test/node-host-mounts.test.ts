@@ -6,7 +6,7 @@
  * Each probe runs `examples/mount_probe_test.wasm` with a mode argv:
  *
  *   rootfs    /etc/services exists in the rootfs image and matches
- *             the on-disk source under `rootfs/etc/services`.
+ *             the on-disk source under `images/rootfs/etc/services`.
  *
  *   scratch   /tmp/<file> is writable through the mount router and
  *             persists across open/close within the same process.
@@ -29,7 +29,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const probeWasm = join(repoRoot, "examples/mount_probe_test.wasm");
 const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
-const servicesSource = join(repoRoot, "rootfs/etc/services");
+const servicesSource = join(repoRoot, "images/rootfs/etc/services");
 
 const haveProbe = existsSync(probeWasm);
 const haveRootfs = existsSync(rootfsImage);

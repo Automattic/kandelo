@@ -41,7 +41,7 @@
 #
 # Arch is taken from $WASM_POSIX_DEP_TARGET_ARCH (set by the resolver
 # while running build scripts) and falls back to "wasm32" for direct
-# build-script invocations like `bash examples/libs/dash/build-dash.sh`.
+# build-script invocations like `bash packages/registry/dash/build-dash.sh`.
 
 install_local_binary() {
     local program="$1"
@@ -78,7 +78,7 @@ install_local_binary() {
 
     # Ask xtask for the package.toml-driven destination relative path.
     # On hit, that's the canonical location matching the resolver's
-    # symlink layout (xtask/src/build_deps.rs `place_binaries_symlinks`).
+    # symlink layout (tools/xtask/src/build_deps.rs `place_binaries_symlinks`).
     # On miss (package not in the registry, e.g. the dash→sh alias
     # call site, or no [[outputs]] entry for this basename) fall back
     # to the legacy heuristic so existing build scripts keep working.
@@ -118,7 +118,7 @@ install_local_binary() {
     # declared `[[outputs]].wasm` files there so `validate_outputs`
     # finds them and `archive_stage` packs them into the release
     # archive — and `validate_outputs` looks them up by EXACT
-    # `[[outputs]].wasm` filename (xtask/src/build_deps.rs:1136).
+    # `[[outputs]].wasm` filename (tools/xtask/src/build_deps.rs:1136).
     #
     # The src filename (build script's own output) is what the build
     # script declared via `[[outputs]].wasm`, so basename(src) is

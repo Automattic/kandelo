@@ -13,7 +13,7 @@
  *   npx tsx examples/lamp/serve.ts [port]
  *
  * Requires:
- *   1. MariaDB:  examples/libs/mariadb/mariadb-install/bin/mariadbd
+ *   1. MariaDB:  packages/registry/mariadb/mariadb-install/bin/mariadbd
  *   2. PHP-FPM:  examples/nginx/php-fpm.wasm (with --with-pdo-mysql)
  *   3. nginx:    examples/nginx/nginx.wasm
  *   4. WordPress: examples/lamp/wordpress/
@@ -29,7 +29,7 @@ const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../..");
 
 // Binary paths
-const mariadbInstall = resolve(repoRoot, "examples/libs/mariadb/mariadb-install");
+const mariadbInstall = resolve(repoRoot, "packages/registry/mariadb/mariadb-install");
 const mysqldPath = resolve(mariadbInstall, "bin/mariadbd");
 const phpFpmWasmPath = resolveBinary("programs/php/php-fpm.wasm");
 const nginxWasmPath = resolveBinary("programs/nginx.wasm");
@@ -47,8 +47,8 @@ const port = parseInt(process.argv[2] || "8080", 10);
 
 // Validate prerequisites
 for (const [name, path, hint] of [
-  ["mariadbd", mysqldPath, "bash examples/libs/mariadb/build-mariadb.sh"],
-  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/libs/php/build-php.sh"],
+  ["mariadbd", mysqldPath, "bash packages/registry/mariadb/build-mariadb.sh"],
+  ["php-fpm.wasm", phpFpmWasmPath, "bash packages/registry/php/build-php.sh"],
   ["nginx.wasm", nginxWasmPath, "bash examples/nginx/build.sh"],
 ] as const) {
   if (!existsSync(path)) {

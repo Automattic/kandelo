@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dashBinary = join(__dirname, "../../examples/libs/dash/bin/dash.wasm");
+const dashBinary = join(__dirname, "../../packages/registry/dash/bin/dash.wasm");
 const fallbackShBinary = join(__dirname, "../wasm/sh.wasm");
 
 // Prefer the freshly built dash binary over the fallback shell.

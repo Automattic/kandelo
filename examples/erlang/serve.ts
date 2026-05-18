@@ -17,7 +17,7 @@ import { findRepoRoot, tryResolveBinary } from "../../host/src/binary-resolver";
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = findRepoRoot();
 
-const erlangLibDir = resolve(repoRoot, "examples/libs/erlang");
+const erlangLibDir = resolve(repoRoot, "packages/registry/erlang");
 const installDir = resolve(erlangLibDir, "erlang-install");
 
 function loadBytes(path: string): ArrayBuffer {
@@ -30,7 +30,7 @@ async function main() {
     if (!beamWasm) {
         console.error(
             "erlang.wasm not found. Run: scripts/fetch-binaries.sh " +
-            "(or bash examples/libs/erlang/build-erlang.sh to build locally).",
+            "(or bash packages/registry/erlang/build-erlang.sh to build locally).",
         );
         process.exit(1);
     }

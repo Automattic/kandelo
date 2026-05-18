@@ -160,7 +160,7 @@ feat: add ThreadPageAllocator for onClone deduplication
 4. `examples/shell/serve.ts`
 5. `examples/wordpress/serve.ts`
 6. `examples/lamp/serve.ts`
-7. `examples/browser/lib/kernel-worker-entry.ts`
+7. `apps/browser-demos/lib/kernel-worker-entry.ts`
 8. `host/test/centralized-test-helper.ts`
 9. `examples/wordpress/test/wordpress-server.test.ts`
 

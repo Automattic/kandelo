@@ -2,7 +2,7 @@
  * serve.ts — Run CPython 3.13.3 in the wasm-posix-kernel.
  *
  * Usage:
- *   bash examples/libs/cpython/build-cpython.sh
+ *   bash packages/registry/cpython/build-cpython.sh
  *   npx tsx examples/cpython/serve.ts [python-args...]
  *
  * Examples:
@@ -21,18 +21,18 @@ const repoRoot = resolve(scriptDir, "../..");
 
 async function main() {
     const pythonWasm = tryResolveBinary("programs/cpython.wasm");
-    const pythonHome = resolve(scriptDir, "../libs/cpython/cpython-install");
+    const pythonHome = resolve(repoRoot, "packages/registry/cpython/cpython-install");
 
     if (!pythonWasm) {
         console.error(
             "cpython.wasm not found. Run: scripts/fetch-binaries.sh " +
-            "(or bash examples/libs/cpython/build-cpython.sh to build locally).",
+            "(or bash packages/registry/cpython/build-cpython.sh to build locally).",
         );
         process.exit(1);
     }
 
     if (!existsSync(resolve(pythonHome, "lib/python3.13/os.py"))) {
-        console.error("Python stdlib not found. Run: bash examples/libs/cpython/build-cpython.sh");
+        console.error("Python stdlib not found. Run: bash packages/registry/cpython/build-cpython.sh");
         process.exit(1);
     }
 

@@ -6,7 +6,7 @@ Worktree: `.superset/worktrees/wasm-posix-kernel/kernel-processes-writing-to-fra
 
 ## §1. Goals & non-goals
 
-**Goal.** A process running on this kernel can `open("/dev/fb0")`, query geometry/format via Linux `fbdev` ioctls, `mmap` the pixel buffer, write BGRA32 pixels, and have those pixels appear in a browser `<canvas>`. An unmodified [fbDOOM](https://github.com/maximevince/fbDOOM) build runs in `examples/browser/pages/doom/` and is playable with keyboard input. Save games persist to the in-memory VFS for the session.
+**Goal.** A process running on this kernel can `open("/dev/fb0")`, query geometry/format via Linux `fbdev` ioctls, `mmap` the pixel buffer, write BGRA32 pixels, and have those pixels appear in a browser `<canvas>`. An unmodified [fbDOOM](https://github.com/maximevince/fbDOOM) build runs in `apps/browser-demos/pages/doom/` and is playable with keyboard input. Save games persist to the in-memory VFS for the session.
 
 **Non-goals (v1).**
 
@@ -247,7 +247,7 @@ Canvas needs `tabindex="0"` to receive keyboard focus. Auto-focus on click.
 
 **Source**: `https://github.com/maximevince/fbDOOM`, `fbdoom/` subdir is the actual fbdev frontend (there's also a `chocdoom/` tree we ignore). Pure C, ~30k LoC, one Makefile.
 
-**Build script** `examples/libs/fbdoom/build-fbdoom.sh`:
+**Build script** `packages/registry/fbdoom/build-fbdoom.sh`:
 
 ```bash
 #!/usr/bin/env bash
@@ -286,7 +286,7 @@ Expected gotchas, in order of likelihood:
 
 fbDOOM looks for the WAD via `-iwad` (we pass `-iwad /usr/local/games/doom/doom1.wad`) and writes savegames to `$HOME` (set `HOME=/home/doom`). Saves persist for the session via the existing in-memory VFS — they survive new-game/load-game/quit-and-restart-the-process within a tab, but not page reload. Page-reload persistence is a future enhancement via OPFS or IndexedDB; out of scope.
 
-**Demo page** `examples/browser/pages/doom/`:
+**Demo page** `apps/browser-demos/pages/doom/`:
 
 ```
 index.html    <canvas tabindex=0> + start button

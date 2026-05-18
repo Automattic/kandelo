@@ -1,0 +1,6 @@
+node_modules/
+tests/results/
+playwright-report/
+public/*.vfs
+public/vim.zip
+public/nethack.zip

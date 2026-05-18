@@ -26,9 +26,9 @@ function loadBytes(path: string): ArrayBuffer {
 async function main() {
     const port = process.argv[2] || "6379";
 
-    const redisWasm = resolve(scriptDir, "../libs/redis/bin/redis-server.wasm");
+    const redisWasm = resolve(repoRoot, "packages/registry/redis/bin/redis-server.wasm");
     if (!existsSync(redisWasm)) {
-        console.error("redis-server.wasm not found. Run: bash examples/libs/redis/build-redis.sh");
+        console.error("redis-server.wasm not found. Run: bash packages/registry/redis/build-redis.sh");
         process.exit(1);
     }
 

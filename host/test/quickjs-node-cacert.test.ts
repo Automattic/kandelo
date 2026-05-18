@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const NODE = join(__dirname, "../../examples/libs/quickjs/bin/node.wasm");
+const NODE = join(__dirname, "../../packages/registry/quickjs/bin/node.wasm");
 const HAS_NODE = existsSync(NODE);
 
 /* Smoke test for the in-kernel cacert bundle vendored at /etc/ssl/cert.pem.

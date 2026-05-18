@@ -7,7 +7,7 @@
  * the site editor. It ensures the Gutenberg editor iframe renders blocks.
  *
  * Requires:
- *   1. PHP binary: examples/libs/php/php-src/sapi/cli/php
+ *   1. PHP binary: packages/registry/php/php-src/sapi/cli/php
  *   2. WordPress files: examples/wordpress/wordpress/
  *   3. Kernel wasm: host/wasm/wasm_posix_kernel.wasm
  *   4. Playwright browsers: npx playwright install chromium

@@ -5,7 +5,7 @@ name: Prepare merge
 # toolchain-cache + matrix-build + test-gate + publish + generate-index;
 # Phase B-1's pattern, targeting the durable `binaries-abi-v<N>` tag),
 # then opens a bot PR amending each rebuilt package's
-# `examples/libs/<name>/package.toml` so consumers resolve the freshly
+# `packages/registry/<name>/package.toml` so consumers resolve the freshly
 # published archives. The bot PR is what auto-merges.
 #
 # Flow (see docs/plans/2026-05-05-decoupled-package-builds-design.md
@@ -17,7 +17,7 @@ name: Prepare merge
 #   * builds each remaining pair in parallel via `xtask archive-stage`,
 #     gates on the test-suite, then publishes per archive,
 #   * regenerates `index.toml`, and
-#   * amends each rebuilt package's `examples/libs/<name>/package.toml`
+#   * amends each rebuilt package's `packages/registry/<name>/package.toml`
 #     `[binary]` URLs on a bot PR — that PR is the one that actually
 #     auto-merges to `main`.
 #
@@ -246,7 +246,7 @@ jobs:
       - name: Fetch musl submodule
         # Hardened submodule fetch via the reusable action (PR #435).
         # preflight only needs musl (it builds xtask and computes the
-        # matrix; libc-test/os-test materialize in matrix-build / test-gate
+        # matrix; tests/libc/libc-test and tests/sortix/os-test materialize in matrix-build / test-gate
         # via their own checkouts). The durable-release-lock and the
         # mergeability/change-scope gates from the legacy publish job
         # have moved to `gate` (`Validate PR is mergeable into main`)
@@ -254,7 +254,7 @@ jobs:
         # the Phase C restructure.
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl
+          submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -273,7 +273,7 @@ jobs:
           path: |
             ~/.cargo/registry
             target
-          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'xtask/**') }}
+          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/xtask/**') }}
           restore-keys: |
             preflight-${{ runner.os }}-
 
@@ -334,7 +334,7 @@ jobs:
             # (and mirror in staging-build.yml) to re-enable rebuilds.
             disabled_pkgs=" cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive "
 
-            for pkg_dir in examples/libs/*/; do
+            for pkg_dir in packages/registry/*/; do
               pkg=$(basename "$pkg_dir")
               if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
                 continue
@@ -417,7 +417,7 @@ jobs:
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl
+          submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
@@ -430,7 +430,7 @@ jobs:
         # exactly so a hit on either workflow's cache warms both.
         id: key
         run: |
-          KEY="musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'examples/libs/libcxx/**', 'musl-overlay/**', 'glue/**') }}"
+          KEY="musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**') }}"
           echo "value=$KEY" >> "$GITHUB_OUTPUT"
           echo "toolchain-cache key: $KEY"
 
@@ -571,7 +571,7 @@ jobs:
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl
+          submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -612,7 +612,7 @@ jobs:
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
               archive-stage \
-                --package "examples/libs/${{ matrix.package }}" \
+                --package "packages/registry/${{ matrix.package }}" \
                 --arch "${{ matrix.arch }}" \
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
@@ -710,7 +710,7 @@ jobs:
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl
+          submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -763,7 +763,7 @@ jobs:
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
               archive-stage \
-                --package "examples/libs/${{ matrix.package }}" \
+                --package "packages/registry/${{ matrix.package }}" \
                 --arch "${{ matrix.arch }}" \
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
@@ -839,7 +839,7 @@ jobs:
       - name: Fetch submodules (musl, libc-test, os-test)
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl libc-test os-test
+          submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18

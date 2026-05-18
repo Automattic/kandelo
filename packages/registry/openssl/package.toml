@@ -1,0 +1,34 @@
+# Per-library manifest for OpenSSL. See docs/package-management.md.
+
+kind = "library"
+
+name = "openssl"
+version = "3.3.2"
+kernel_abi = 7
+depends_on = []
+# Opt into wasm64 because PHP depends on it. See
+# memory/wasm64-build-policy.md.
+arches = ["wasm32", "wasm64"]
+
+[source]
+url = "https://github.com/openssl/openssl/releases/download/openssl-3.3.2/openssl-3.3.2.tar.gz"
+sha256 = "2e8a40b01979afe8be0bbfb3de5dc1c6709fedb46d6c89c10da114ab5fc3d281"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/openssl/openssl/blob/openssl-3.3.2/LICENSE.txt"
+
+[build]
+script_path = "packages/registry/openssl/build-openssl.sh"
+
+[outputs]
+# Both static libs — consumers (libcurl, php, git, mariadb, ruby) link
+# against one or both depending on whether they need TLS layer or just
+# crypto primitives.
+libs = ["lib/libssl.a", "lib/libcrypto.a"]
+# OpenSSL installs ~130 public headers under include/openssl/. Declaring
+# the directory is enough — `validate_outputs` accepts a directory path,
+# and listing every header individually would be churn on every version
+# bump.
+headers = ["include/openssl"]
+pkgconfig = ["lib/pkgconfig/libssl.pc", "lib/pkgconfig/libcrypto.pc"]

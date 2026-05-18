@@ -2,7 +2,7 @@
  * Unit-ish test for `scripts/fetch-binaries.sh` (Phase C cutover).
  *
  * Exercises the per-package walk: for each
- * `examples/libs/<name>/package.toml` with a sibling `build.toml`,
+ * `packages/registry/<name>/package.toml` with a sibling `build.toml`,
  * the script runs
  *
  *     cargo run -p xtask -- build-deps --arch <arch> \
@@ -12,7 +12,7 @@
  * skipped (kernel/userspace/source/etc).
  *
  * Strategy: stage a fake "repo root" in a tempdir with a hand-
- * written `examples/libs/` tree of one-line package.toml files
+ * written `packages/registry/` tree of one-line package.toml files
  * (covering: a single-arch binary package, a multi-arch binary
  * package, a package without build.toml, and a stray dir without
  * package.toml). Put a fake `cargo` script first on PATH that logs
@@ -22,7 +22,7 @@
  * compute HOST_TARGET, and there's no good reason to shim that.
  *
  * Companion to xtask's resolver/symlink unit tests in
- * `xtask/src/build_deps.rs` (`cmd_resolve_with_binaries_dir_*`).
+ * `tools/xtask/src/build_deps.rs` (`cmd_resolve_with_binaries_dir_*`).
  * Together they cover both ends of the cutover: this test pins the
  * shell-side walk + flag passthrough, the Rust tests pin the
  * symlink layout the walk depends on.
@@ -66,7 +66,7 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
 
   /**
    * Set up a fake "repo root" with:
-   *   <root>/examples/libs/<name>/package.toml   (per-package fixtures)
+   *   <root>/packages/registry/<name>/package.toml   (per-package fixtures)
    *   <root>/scripts/fetch-binaries.sh           (copy of the real script)
    *   <root>/fake-bin/cargo                       (PATH shim)
    *

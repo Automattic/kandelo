@@ -1,0 +1,58 @@
+kind = "program"
+name = "wordpress"
+version = "6.8"
+kernel_abi = 7
+# build-wp-vfs-image.ts:
+#   - uses `resolveBinary("programs/<x>.wasm")` (strict) for
+#     the eager shell toolset plus nginx/php-fpm
+#   - reads `examples/wordpress/wordpress/` (the WordPress PHP source,
+#     downloaded by examples/wordpress/setup.sh — invoked from
+#     build-wordpress.sh; not a registry package)
+#   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()`
+#     (strict — throws if neither tryResolveBinary nor the source-tree
+#     path resolves) to bake the PID-1 init system. The demo boots from
+#     /sbin/dinit; without dinit baked in the VFS is unbootable.
+depends_on = [
+    "dash@0.5.12",
+    "bash@5.2.37",
+    "nginx@1.24.0",
+    "php@8.3.2",
+    "coreutils@9.6",
+    "grep@3.11",
+    "sed@4.9",
+    "bc@1.07.1",
+    "file@5.45",
+    "less@668",
+    "m4@1.4.19",
+    "make@4.4.1",
+    "tar@1.35",
+    "curl@8.11.1",
+    "wget@1.25.0",
+    "git@2.47.1",
+    "gzip@1.13",
+    "bzip2@1.0.8",
+    "xz@5.6.2",
+    "zstd@1.5.6",
+    "zip@3.0",
+    "unzip@6.0",
+    "nano@8.0",
+    "lsof@0.1.0",
+    "vim@9.1.0900",
+    "nethack@3.6.7",
+    "dinit@0.19.4",
+]
+
+[source]
+url = "https://wordpress.org/wordpress-6.8.tar.gz"
+sha256 = "f7dbedc423ddb3f2f3e98e9140f1720bfd6d4a8f4873c85da2e62f6a078de10a"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://wordpress.org/about/gpl/"
+
+[build]
+script_path = "packages/registry/wordpress/build-wordpress.sh"
+
+[[outputs]]
+name = "wordpress"
+wasm = "wordpress.vfs.zst"

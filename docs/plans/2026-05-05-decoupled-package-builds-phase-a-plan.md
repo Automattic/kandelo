@@ -38,7 +38,7 @@ Expected: xtask builds without errors. (We'll verify the full test suite is also
 **Step 3: Confirm 61 deps.toml files exist.**
 
 ```bash
-find examples/libs -name "deps.toml" | wc -l
+find packages/registry -name "deps.toml" | wc -l
 ```
 
 Expected: `61`. (If different, the rest of the plan's counts are off — investigate before proceeding.)
@@ -48,12 +48,12 @@ Expected: `61`. (If different, the rest of the plan's counts are off — investi
 ## Task 1: Rename `deps.toml` files (mechanical bulk rename)
 
 **Files:**
-- Rename: `examples/libs/*/deps.toml` → `examples/libs/*/package.toml` (61 files)
+- Rename: `packages/registry/*/deps.toml` → `packages/registry/*/package.toml` (61 files)
 
 **Step 1: Bulk-rename via `git mv`.**
 
 ```bash
-for f in $(find examples/libs -name "deps.toml"); do
+for f in $(find packages/registry -name "deps.toml"); do
   git mv "$f" "$(dirname "$f")/package.toml"
 done
 ```
@@ -61,8 +61,8 @@ done
 **Step 2: Verify count.**
 
 ```bash
-find examples/libs -name "package.toml" | wc -l         # should be 61
-find examples/libs -name "deps.toml" | wc -l            # should be 0
+find packages/registry -name "package.toml" | wc -l         # should be 61
+find packages/registry -name "deps.toml" | wc -l            # should be 0
 ```
 
 **Step 3: Verify the rename didn't break TOML parsing.**
@@ -70,7 +70,7 @@ find examples/libs -name "deps.toml" | wc -l            # should be 0
 ```bash
 # Just spot-check a few files round-trip through `toml` parsing.
 nix develop --accept-flake-config --command bash -c '
-  for f in examples/libs/{bash,mariadb,nginx,curl,php}/package.toml; do
+  for f in packages/registry/{bash,mariadb,nginx,curl,php}/package.toml; do
     [ -f "$f" ] && python3 -c "import tomllib; tomllib.loads(open(\"$f\",\"rb\").read().decode())" && echo "ok: $f"
   done
 '
@@ -84,7 +84,7 @@ Expected: 5 lines of `ok: ...`. (No actual parse errors expected — `git mv` do
 
 ```bash
 git status -s | wc -l       # should be ~122 lines (61 deletes + 61 adds)
-git commit -m "refactor(packages): rename examples/libs/*/deps.toml to package.toml
+git commit -m "refactor(packages): rename packages/registry/*/deps.toml to package.toml
 
 Mechanical bulk rename via 'git mv'. Build is broken at this commit
 (xtask, scripts, workflows still expect deps.toml); subsequent commits
@@ -99,22 +99,22 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 2: Update xtask Rust references
 
 **Files:**
-- Modify: `xtask/src/archive_stage.rs` (~10 string literals + 2 doc comments)
-- Modify: `xtask/src/build_deps.rs` (string literals)
-- Modify: `xtask/src/build_manifest.rs` (~7 string literals + doc comments)
-- Modify: `xtask/src/bundle_program.rs` (1 error message)
-- Modify: `xtask/src/deps_manifest.rs` (string literals + doc comments)
-- Modify: `xtask/src/install_release.rs` (string literals)
-- Modify: `xtask/src/main.rs` (CLI help text and any path references)
-- Modify: `xtask/src/remote_fetch.rs` (string literals)
-- Modify: `xtask/src/stage_pr_overlay.rs` (string literals + 1 fixture path)
-- Modify: `xtask/src/stage_release.rs` (string literals + 2 fixture paths)
+- Modify: `tools/xtask/src/archive_stage.rs` (~10 string literals + 2 doc comments)
+- Modify: `tools/xtask/src/build_deps.rs` (string literals)
+- Modify: `tools/xtask/src/build_manifest.rs` (~7 string literals + doc comments)
+- Modify: `tools/xtask/src/bundle_program.rs` (1 error message)
+- Modify: `tools/xtask/src/deps_manifest.rs` (string literals + doc comments)
+- Modify: `tools/xtask/src/install_release.rs` (string literals)
+- Modify: `tools/xtask/src/main.rs` (CLI help text and any path references)
+- Modify: `tools/xtask/src/remote_fetch.rs` (string literals)
+- Modify: `tools/xtask/src/stage_pr_overlay.rs` (string literals + 1 fixture path)
+- Modify: `tools/xtask/src/stage_release.rs` (string literals + 2 fixture paths)
 
 **Step 1: Survey all `deps.toml` literals in xtask.**
 
 ```bash
-grep -rn '"deps\.toml"' xtask/src/
-grep -rn 'deps\.toml' xtask/src/  # broader sweep (includes doc comments)
+grep -rn '"deps\.toml"' tools/xtask/src/
+grep -rn 'deps\.toml' tools/xtask/src/  # broader sweep (includes doc comments)
 ```
 
 Expected: ~30 hits across 10 files. Read each in context — most are file path joins like `dir.join("deps.toml")`, but some are user-facing error messages that should be updated for clarity.
@@ -123,24 +123,24 @@ Expected: ~30 hits across 10 files. Read each in context — most are file path 
 
 ```bash
 # Path-style literals (function args). Keep doc comments for separate review.
-find xtask/src -name '*.rs' -exec \
+find tools/xtask/src -name '*.rs' -exec \
   sed -i.bak 's/"deps\.toml"/"package.toml"/g' {} \;
 
 # Doc comments and bare-word references (e.g. "the deps.toml at ...").
 # Review each by hand — sed across all of these would over-rename.
-grep -rn 'deps\.toml' xtask/src/         # what's left should be doc/comments
+grep -rn 'deps\.toml' tools/xtask/src/         # what's left should be doc/comments
 ```
 
-Then update the doc-comment references by hand — e.g. in `xtask/src/build_manifest.rs:6,229,359` and similar, change "examples/libs/<name>/deps.toml" → "examples/libs/<name>/package.toml" and "deps.toml" → "package.toml" in error messages.
+Then update the doc-comment references by hand — e.g. in `tools/xtask/src/build_manifest.rs:6,229,359` and similar, change "packages/registry/<name>/deps.toml" → "packages/registry/<name>/package.toml" and "deps.toml" → "package.toml" in error messages.
 
 ```bash
-rm xtask/src/*.bak                      # clean up sed backups
+rm tools/xtask/src/*.bak                      # clean up sed backups
 ```
 
 **Step 3: Verify nothing references `deps.toml` left in xtask.**
 
 ```bash
-grep -rn 'deps\.toml' xtask/src/
+grep -rn 'deps\.toml' tools/xtask/src/
 ```
 
 Expected: zero hits.
@@ -151,7 +151,7 @@ Expected: zero hits.
 cargo build --release -p xtask --target aarch64-apple-darwin 2>&1 | tail -10
 ```
 
-Expected: clean build. If a unit test fixture under `xtask/src/stage_release.rs` or `xtask/src/stage_pr_overlay.rs` writes a literal `deps.toml` filename, it'll now fail to find it after rename — fix by updating the fixture string.
+Expected: clean build. If a unit test fixture under `tools/xtask/src/stage_release.rs` or `tools/xtask/src/stage_pr_overlay.rs` writes a literal `deps.toml` filename, it'll now fail to find it after rename — fix by updating the fixture string.
 
 **Step 5: Run xtask unit tests.**
 
@@ -164,7 +164,7 @@ Expected: all xtask unit tests pass. Watch for fixture path mismatches — most 
 **Step 6: Commit.**
 
 ```bash
-git add xtask/src/
+git add tools/xtask/src/
 git commit -m "refactor(xtask): update string literals deps.toml -> package.toml
 
 Mechanical follow-up to the file rename in the prior commit. xtask
@@ -179,14 +179,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 3: Rename Rust module `deps_manifest.rs` → `pkg_manifest.rs`
 
 **Files:**
-- Rename: `xtask/src/deps_manifest.rs` → `xtask/src/pkg_manifest.rs`
-- Modify: `xtask/src/main.rs` (or wherever `mod deps_manifest;` is declared)
+- Rename: `tools/xtask/src/deps_manifest.rs` → `tools/xtask/src/pkg_manifest.rs`
+- Modify: `tools/xtask/src/main.rs` (or wherever `mod deps_manifest;` is declared)
 - Modify: every Rust file using `crate::deps_manifest::*`
 
 **Step 1: Find references to the module.**
 
 ```bash
-grep -rn 'deps_manifest' xtask/src/
+grep -rn 'deps_manifest' tools/xtask/src/
 ```
 
 Expected: at least one `mod deps_manifest;` declaration plus `use crate::deps_manifest::...` imports across other files.
@@ -194,20 +194,20 @@ Expected: at least one `mod deps_manifest;` declaration plus `use crate::deps_ma
 **Step 2: Rename the file.**
 
 ```bash
-git mv xtask/src/deps_manifest.rs xtask/src/pkg_manifest.rs
+git mv tools/xtask/src/deps_manifest.rs tools/xtask/src/pkg_manifest.rs
 ```
 
 **Step 3: Update module declaration and imports.**
 
 ```bash
-grep -rln 'deps_manifest' xtask/src/ | xargs sed -i.bak 's/deps_manifest/pkg_manifest/g'
-rm xtask/src/*.bak
+grep -rln 'deps_manifest' tools/xtask/src/ | xargs sed -i.bak 's/deps_manifest/pkg_manifest/g'
+rm tools/xtask/src/*.bak
 ```
 
 **Step 4: Verify no `deps_manifest` references remain.**
 
 ```bash
-grep -rn 'deps_manifest' xtask/src/
+grep -rn 'deps_manifest' tools/xtask/src/
 ```
 
 Expected: zero hits.
@@ -224,10 +224,10 @@ Expected: clean build, tests pass.
 **Step 6: Commit.**
 
 ```bash
-git add xtask/src/
+git add tools/xtask/src/
 git commit -m "refactor(xtask): rename deps_manifest module to pkg_manifest
 
-Module hosts the parser/types for examples/libs/*/package.toml; the
+Module hosts the parser/types for packages/registry/*/package.toml; the
 old name reflects the original 'dependency' framing before the file
 became a full package manifest.
 
@@ -243,14 +243,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 - Modify: `scripts/fetch-binaries.sh`
 - Modify: `scripts/backfill-binary-blocks.sh`
 - Modify: `scripts/test-allow-stale.sh`
-- Modify: `examples/libs/nginx/build-nginx.sh`
-- Modify: `examples/libs/wordpress/build-wordpress.sh`
+- Modify: `packages/registry/nginx/build-nginx.sh`
+- Modify: `packages/registry/wordpress/build-wordpress.sh`
 - (And any other `*.sh` that references `deps.toml`.)
 
 **Step 1: Survey shell-script references.**
 
 ```bash
-grep -rln 'deps\.toml' scripts/ examples/libs/*/build-*.sh
+grep -rln 'deps\.toml' scripts/ packages/registry/*/build-*.sh
 ```
 
 Expected: ~6 files.
@@ -258,9 +258,9 @@ Expected: ~6 files.
 **Step 2: Replace literal references.**
 
 ```bash
-grep -rl 'deps\.toml' scripts/ examples/libs/*/build-*.sh \
+grep -rl 'deps\.toml' scripts/ packages/registry/*/build-*.sh \
   | xargs sed -i.bak 's/deps\.toml/package.toml/g'
-find scripts examples/libs -name '*.bak' -delete
+find scripts packages/registry -name '*.bak' -delete
 ```
 
 **Step 3: Spot-check at least one updated script for context-sensitive cases.**
@@ -276,8 +276,8 @@ Expected: only `package.toml` references; no leftover `deps.toml`. Look for any 
 ```bash
 for f in scripts/stage-release.sh scripts/fetch-binaries.sh \
          scripts/backfill-binary-blocks.sh scripts/test-allow-stale.sh \
-         examples/libs/nginx/build-nginx.sh \
-         examples/libs/wordpress/build-wordpress.sh; do
+         packages/registry/nginx/build-nginx.sh \
+         packages/registry/wordpress/build-wordpress.sh; do
   bash -n "$f" && echo "ok: $f"
 done
 ```
@@ -287,7 +287,7 @@ Expected: 6 lines of `ok: ...`.
 **Step 5: Commit.**
 
 ```bash
-git add scripts/ examples/libs/*/build-*.sh
+git add scripts/ packages/registry/*/build-*.sh
 git commit -m "refactor(scripts): update deps.toml -> package.toml references
 
 Mechanical update across release tooling and per-package build
@@ -322,7 +322,7 @@ grep -rl 'deps\.toml' .github/workflows/ \
 rm .github/workflows/*.bak
 ```
 
-Several workflows have `actions/cache@v4` keys that hash `examples/libs/**/deps.toml` — those become `examples/libs/**/package.toml`, which after rename glob-matches the renamed files. **Cache will invalidate once on first run after this PR merges**, which is correct behaviour (the renamed files have the same content but a different glob target).
+Several workflows have `actions/cache@v4` keys that hash `packages/registry/**/deps.toml` — those become `packages/registry/**/package.toml`, which after rename glob-matches the renamed files. **Cache will invalidate once on first run after this PR merges**, which is correct behaviour (the renamed files have the same content but a different glob target).
 
 **Step 3: Verify no `deps\.toml` references remain.**
 
@@ -351,8 +351,8 @@ If no lint tool is available, skip — the next CI run after PR push will catch 
 git add .github/workflows/
 git commit -m "refactor(ci): update workflow deps.toml refs to package.toml
 
-Includes cache-key glob inputs (examples/libs/**/deps.toml ->
-examples/libs/**/package.toml). Caches will invalidate once on first
+Includes cache-key glob inputs (packages/registry/**/deps.toml ->
+packages/registry/**/package.toml). Caches will invalidate once on first
 run, which is correct — the renamed files have the same content but
 a different glob target.
 
@@ -501,14 +501,14 @@ Expected: exit 0. Phase A is a pure file rename — should NOT bump `ABI_VERSION
 ```bash
 git push -u origin phase-a-rename-deps-to-package
 gh pr create \
-  --title "refactor(packages): rename examples/libs/*/deps.toml to package.toml" \
+  --title "refactor(packages): rename packages/registry/*/deps.toml to package.toml" \
   --body "$(cat <<'EOF'
 ## Summary
 
 Phase A of the decoupled-package-builds design (`docs/plans/2026-05-05-decoupled-package-builds-design.md`).
 
-- Renames 61 `examples/libs/*/deps.toml` files to `package.toml`.
-- Renames Rust module `xtask/src/deps_manifest.rs` to `pkg_manifest.rs`.
+- Renames 61 `packages/registry/*/deps.toml` files to `package.toml`.
+- Renames Rust module `tools/xtask/src/deps_manifest.rs` to `pkg_manifest.rs`.
 - Updates string literals in xtask, shell scripts, workflows, docs, and the schema.
 - No behavior change. `binaries.lock` is unchanged. CI flows are unchanged. The release tag and content-addressed cache are unchanged.
 

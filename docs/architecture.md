@@ -123,7 +123,7 @@ Key host components:
 
 ### 3. Glue Layer (C)
 
-**Location**: `glue/`
+**Location**: `libc/glue/`
 
 Compiled into every user program. Three main files:
 
@@ -239,7 +239,7 @@ no asyncify rewind, no exec replay. This is the fast path popen,
 `system`, shell pipelines, nginx-FastCGI, and any direct posix_spawn
 caller now take.
 
-1. Glue (`musl-overlay/src/process/wasm32posix/posix_spawn.c`) marshals
+1. Glue (`libc/musl-overlay/src/process/wasm32posix/posix_spawn.c`) marshals
    argv + envp + file actions + spawn attrs into a contiguous blob and
    issues `__syscall6(SYS_SPAWN, path, path_len, blob, blob_len,
    &pid_out, 0)`. Wire format documented in
@@ -260,7 +260,7 @@ caller now take.
 5. The kernel returns the allocated pid via `pid_out_ptr` in caller
    memory. The host's `onSpawn` callback (Node:
    `node-kernel-worker-entry.ts::handlePosixSpawn`; Browser:
-   `examples/browser/lib/kernel-worker-entry.ts::handlePosixSpawn`)
+   `apps/browser-demos/lib/kernel-worker-entry.ts::handlePosixSpawn`)
    resolves the program bytes and instantiates a fresh Worker for the
    child, registered with `skipKernelCreate: true` because the kernel
    already inserted the Process.
@@ -284,7 +284,7 @@ fell back to fork.
   capturing the spawned pid before awaiting exit (same shape as
   `NodeKernelHost.spawn`).
 * End-to-end Playwright coverage lives in
-  `examples/browser/test/demos.spec.ts` ("simple: spawn-smoke uses
+  `apps/browser-demos/test/demos.spec.ts` ("simple: spawn-smoke uses
   non-forking SYS_SPAWN on browser host"). The simple browser page
   registers `/usr/bin/hello` as a lazy file pointing at `hello.wasm`
   via `BrowserKernel.registerLazyFiles`, then spawns spawn-smoke. The
@@ -439,7 +439,7 @@ There are two consumption patterns for VFS images, depending on whether the demo
 | Shell | `shell.vfs.zst` | `build-shell-vfs-image.sh` | legacy `kernel.spawn` → dash |
 | Benchmark | (multiple) | (per-suite) | legacy `kernel.spawn` |
 
-Build scripts are in `examples/browser/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`).
+Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`).
 
 **Binary format:**
 
@@ -575,18 +575,18 @@ Main Thread                              Kernel Worker
 └── PTY terminal (xterm.js)              └── Connection pump, blocking retries
 ```
 
-**`BrowserKernel`** (`examples/browser/lib/browser-kernel.ts`): Main-thread proxy that communicates with the kernel worker via `postMessage`. The current API has two boot paths:
+**`BrowserKernel`** (`apps/browser-demos/lib/browser-kernel.ts`): Main-thread proxy that communicates with the kernel worker via `postMessage`. The current API has two boot paths:
 
 - `kernel.boot({ kernelWasm, vfsImage, argv, env, ... })` — preferred. Combined with `kernelOwnedFs: true`, the main thread never holds a `MemoryFileSystem` reference. The kernel worker restores the image and exec()s `argv[0]` as the first process. All FS operations stay inside the worker, off the syscall hot path.
 - `kernel.spawn(programBytes, argv, opts)` — legacy. Allocates a pid on the main thread, posts the wasm bytes to the worker, and starts a process. Kept for transient binary launches (REPLs, test runners, benchmarks) that the kernel can't currently load via fork+exec from a baked binary.
 
 The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY routing, framebuffer registry mirroring, HTTP bridge handoff) are pid-addressed and work the same in both boot paths.
 
-**Kernel Worker** (`examples/browser/lib/kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. The dedicated worker provides a clean event loop for fast `Atomics.waitAsync` notification delivery and avoids V8's microtask freeze bug that occurs on the main thread.
+**Kernel Worker** (`apps/browser-demos/lib/kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. The dedicated worker provides a clean event loop for fast `Atomics.waitAsync` notification delivery and avoids V8's microtask freeze bug that occurs on the main thread.
 
-**dinit (PID 1)** (`examples/libs/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit handles SIGCHLD reaping, restarts disabled by default, and inter-service `depends-on` ordering.
+**dinit (PID 1)** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit handles SIGCHLD reaping, restarts disabled by default, and inter-service `depends-on` ordering.
 
-**Service Worker** (`examples/browser/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
+**Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
 
 ## Performance Architecture
 
@@ -633,9 +633,9 @@ bash build.sh
 2. Copies `wasm_posix_kernel.wasm` to `host/wasm/`
 3. Builds user programs from `programs/*.c` via `scripts/build-programs.sh`
 4. Builds TypeScript host via `npm run build` (tsup → ESM + CJS)
-5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `rootfs/` source tree and writes `host/wasm/rootfs.vfs`
+5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree and writes `host/wasm/rootfs.vfs`
 
-`host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `rootfs/`.
+`host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
 
 ### User Program Compilation
 
@@ -650,7 +650,7 @@ For programs that use `fork()`, Binaryen's `wasm-opt --asyncify` post-processing
 
 ### Package system
 
-Every artifact under `examples/libs/<name>/` is a **package**. Each ships two TOML files:
+Every artifact under `packages/registry/<name>/` is a **package**. Each ships two TOML files:
 
 - **`package.toml`** — the **recipe**: name, version, upstream source pin, license, dependencies, `[build].script_path`. Identity-and-constraints. Project-agnostic; same content across any project that depends on this package.
 - **`build.toml`** — the **project view**: `script_path` (this project's actual build), `repo_url` + `commit` (where the recipe lives in this project), publish-time `revision`, and `[binary]` declaring where binaries are published. Differs per project.
@@ -659,8 +659,8 @@ Binary resolution does not look at either of those files for archive URLs. Inste
 
 **Resolver flow** (`xtask build-deps resolve`, called from build scripts):
 
-1. Read `examples/libs/<name>/package.toml` for the recipe.
-2. Read `examples/libs/<name>/build.toml` for the binary source and publish-time `revision`.
+1. Read `packages/registry/<name>/package.toml` for the recipe.
+2. Read `packages/registry/<name>/build.toml` for the binary source and publish-time `revision`.
 3. `build.toml`'s `[binary]` declares one of:
    - `index_url = "https://.../binaries-abi-v{abi}/index.toml"` — indexed lookup. `{abi}` is substituted with the current `ABI_VERSION` from `crates/shared/src/lib.rs`.
    - `url = "..." sha256 = "..."` — direct archive URL, no index.

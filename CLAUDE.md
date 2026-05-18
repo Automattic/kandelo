@@ -71,12 +71,12 @@ The script is also run as step 5 of the test suite above. CI refuses to merge a 
 |-------|-----------------|---------------------|
 | `syscall-io` | Pipe/file throughput, syscall latency | `scripts/build-programs.sh` |
 | `process-lifecycle` | fork, exec, clone, cold start | `scripts/build-programs.sh` |
-| `erlang-ring` | BEAM VM message passing (1000 processes) | `bash examples/libs/erlang/build-erlang.sh` |
-| `wordpress` | PHP CLI + WordPress HTTP first response | `bash examples/libs/php/build-php.sh` + WordPress checkout |
-| `mariadb` | SQL bootstrap + query performance | `bash examples/libs/mariadb/build-mariadb.sh` |
+| `erlang-ring` | BEAM VM message passing (1000 processes) | `bash packages/registry/erlang/build-erlang.sh` |
+| `wordpress` | PHP CLI + WordPress HTTP first response | `bash packages/registry/php/build-php.sh` + WordPress checkout |
+| `mariadb` | SQL bootstrap + query performance | `bash packages/registry/mariadb/build-mariadb.sh` |
 
 Application suites require the SDK. The SDK is worktree-local: every
-build script under `examples/libs/*/build-*.sh` sources
+build script under `packages/registry/*/build-*.sh` sources
 `sdk/activate.sh` to put `<worktree>/sdk/bin/` on PATH. No `npm link`
 needed (and explicitly avoided — a global symlink can route a build
 in one worktree to a sibling worktree's SDK source). `npm link` still
@@ -121,17 +121,17 @@ These are not edge cases. They are the same failure mode repeated. The cost land
 
 A change is incomplete unless ALL of these hold:
 
-1. **Symmetry check first.** Before writing any host-side change, run `grep -rn "<symbol>" host/ examples/browser/` for every callsite of the affected function. Both trees should show parallel structure; if one is missing handlers the other has, that's the change.
+1. **Symmetry check first.** Before writing any host-side change, run `grep -rn "<symbol>" host/ apps/browser-demos/` for every callsite of the affected function. Both trees should show parallel structure; if one is missing handlers the other has, that's the change.
 2. **Both PRs of the wiring land in the same commit.** Don't merge a host-side change with a TODO/follow-up note for the other side. The follow-up will be lost — see PR #388/#397 above.
-3. **Tests cover both paths.** A vitest test (Node) does not protect the browser path. Add a browser test under `host/test/*.spec.ts` (Playwright) or `examples/browser/test/`, OR — at minimum — manually verify the affected demo via `./run.sh browser` per the [Test Verification](#test-verification) checklist (item 6: browser demo verification).
+3. **Tests cover both paths.** A vitest test (Node) does not protect the browser path. Add a browser test under `host/test/*.spec.ts` (Playwright) or `apps/browser-demos/test/`, OR — at minimum — manually verify the affected demo via `./run.sh browser` per the [Test Verification](#test-verification) checklist (item 6: browser demo verification).
 4. **PR description names both hosts.** The reviewer should not have to ask "what about the browser?" — the answer should be in the PR body, with the diff to prove it. If the answer is "browser doesn't need this," the PR must explain *why* (e.g., "browser uses a different mechanism that already handles this case, see X").
 
 ### Where the parallel implementations live
 
 | Concern | Node.js | Browser |
 |---|---|---|
-| Host entry | `host/src/node-kernel-host.ts` | `examples/browser/lib/browser-kernel.ts` |
-| Worker entry / spawn / fork / exec / clone / exit / terminate | `host/src/node-kernel-worker-entry.ts` | `examples/browser/lib/kernel-worker-entry.ts` |
+| Host entry | `host/src/node-kernel-host.ts` | `apps/browser-demos/lib/browser-kernel.ts` |
+| Worker entry / spawn / fork / exec / clone / exit / terminate | `host/src/node-kernel-worker-entry.ts` | `apps/browser-demos/lib/kernel-worker-entry.ts` |
 | Worker adapter | `host/src/worker-adapter.ts` | `host/src/worker-adapter-browser.ts` |
 | Process-worker entry | shared: `host/src/worker-main.ts` |
 | Kernel | shared: `host/src/kernel-worker.ts` (`CentralizedKernelWorker`) |
@@ -166,7 +166,7 @@ scripts/build-programs.sh    # Re-build test/example C programs
 **`bash build.sh` does NOT rebuild musl.** It rebuilds the kernel
 (`crates/kernel/`), the host TS package (`host/dist/`), and — if
 `programs/*.c` exists — user programs. After editing anything under
-`musl-overlay/` or `glue/channel_syscall.c`, run
+`libc/musl-overlay/` or `libc/glue/channel_syscall.c`, run
 `scripts/build-musl.sh` first; otherwise user programs link against a
 stale `sysroot/lib/libc.a` and the kernel-side and libc-side ABI
 constants can drift silently. Vitest will pick up the stale binary and
@@ -208,7 +208,7 @@ not for tools.
 
 ## Package system
 
-Every artifact under `examples/libs/<name>/` is a **package** with two
+Every artifact under `packages/registry/<name>/` is a **package** with two
 TOML files:
 - **`package.toml`** — the **recipe** (project-agnostic): name,
   version, source pin, license, deps, `[build].script_path`.
@@ -264,7 +264,7 @@ for the full design.
 | Resolve a single package (fetch via index or source-build, cache) | `cargo xtask build-deps resolve <name>` |
 | Materialize all consumer-facing symlinks under `binaries/` | `scripts/fetch-binaries.sh --allow-stale` |
 | Where does a package's output land? | `cargo xtask build-deps output-path <name> <wasm-basename>` |
-| Stage a single archive (matrix-build's per-entry step) | `cargo xtask archive-stage --package examples/libs/<name> --arch <arch> --out <dir>` |
+| Stage a single archive (matrix-build's per-entry step) | `cargo xtask archive-stage --package packages/registry/<name> --arch <arch> --out <dir>` |
 | Force a re-publish of selected packages | dispatch `.github/workflows/force-rebuild.yml` with the comma list |
 | Atomically publish one archive + index entry (matrix-build sequence) | `scripts/index-update.sh --target-tag <tag> --package <p> --version <v> --revision <r> --arch <a> --status success --archive-path <f> --archive-name <n> --cache-key-sha <s>` |
 | Compose initial index.toml from existing archives (migration only) | `scripts/compose-initial-index.sh <target-tag> <abi>` |
@@ -333,5 +333,5 @@ Do not skip documentation. If a feature is worth implementing, it is worth docum
 - `crates/kernel/` — Rust kernel (no_std on wasm32)
 - `host/src/` — TypeScript host runtime
 - `host/test/` — Vitest integration tests
-- `glue/channel_syscall.c` — Syscall glue compiled into every user program
+- `libc/glue/channel_syscall.c` — Syscall glue compiled into every user program
 - `scripts/` — Build and test scripts

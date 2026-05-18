@@ -76,7 +76,7 @@ static int check_servbyname(const char *name, const char *proto, int expect_port
         return expect_port > 0 ? 1 : 0;
     }
     /* s_port is in network byte order. Decode by hand to avoid pulling
-     * in arpa/inet.h here — the rootfs/etc/services entries are small
+     * in arpa/inet.h here — the images/rootfs/etc/services entries are small
      * port numbers so a straight ntohs equivalent is fine. */
     unsigned short port = ((unsigned short)se->s_port << 8) | ((unsigned short)se->s_port >> 8);
     printf("SERV name=%s proto=%s port=%u\n", se->s_name, proto, (unsigned)port);

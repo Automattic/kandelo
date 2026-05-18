@@ -53,7 +53,7 @@ Service Worker ──MessagePort──> Kernel Worker       │
 - **Kernel-owned VFS** (preferred path, `kernelOwnedFs: true` + `kernel.boot()`): the kernel worker restores a pre-built VFS image and exec()s `argv[0]` as the first process. The main thread never instantiates a `MemoryFileSystem` and is not in the FS hot path. Service-supervised demos run dinit (PID 1) inside this image; single-program demos exec the language interpreter directly.
 - **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). Kept in place until the kernel grows a "spawn-into-running-kernel" path that doesn't need a main-thread pid.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
-- **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`examples/browser/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
+- **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.
 
@@ -124,7 +124,7 @@ Browser fetch → Service Worker intercepts
 
 ## Browser Demos
 
-Located in `examples/browser/pages/`:
+Located in `apps/browser-demos/pages/`:
 
 | Demo | Software | Boot pattern | Features |
 |------|----------|--------------|----------|
@@ -152,7 +152,7 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
 - **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary.
 
-Run demos: `cd examples/browser && npx vite --port 5198`
+Run demos: `cd apps/browser-demos && npx vite --port 5198`
 
 ## VFS Images
 
@@ -182,14 +182,14 @@ const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 
 | Demo | Image | Build command | What's inside |
 |------|-------|--------------|---------------|
-| Python | `python.vfs.zst` | `bash examples/browser/scripts/build-python-vfs-image.sh` | CPython stdlib |
-| Erlang | `erlang.vfs.zst` | `bash examples/browser/scripts/build-erlang-vfs-image.sh` | OTP runtime |
-| Perl | `perl.vfs.zst` | `bash examples/browser/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `bash examples/browser/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
-| Node | `node-vfs.vfs.zst` | `bash examples/browser/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
-| WordPress | `wordpress.vfs.zst` | `bash examples/browser/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
-| LAMP | `lamp.vfs.zst` | `bash examples/browser/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
-| MariaDB test | `mariadb-test.vfs.zst` | `bash examples/browser/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
+| Python | `python.vfs.zst` | `bash images/vfs/scripts/build-python-vfs-image.sh` | CPython stdlib |
+| Erlang | `erlang.vfs.zst` | `bash images/vfs/scripts/build-erlang-vfs-image.sh` | OTP runtime |
+| Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
+| Shell | `shell.vfs.zst` | `bash images/vfs/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
+| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
+| WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
+| LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
+| MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
 
@@ -205,8 +205,8 @@ Each build script requires the corresponding software to be compiled first (e.g.
 
 ### Adding a new VFS image
 
-1. Create `examples/browser/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
-2. Create `examples/browser/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
+1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
+2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
 3. Update the demo's `main.ts` to fetch the `.vfs.zst` file and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
 4. Add a build target in `run.sh`
 
@@ -243,4 +243,4 @@ Browser sandbox prevents listening on ports. nginx/PHP-FPM demos use a service w
 Each process gets `WebAssembly.Memory(shared: true, initial: maxPages, max: maxPages)`. Shared memory reserves the full virtual address space at construction time, so `maxMemoryPages` should be tuned for multi-process demos (e.g., 4096 pages = 256MB for WordPress with 5+ processes).
 
 ### npm registry access in the browser
-The node demo's `npm install` cannot speak HTTPS to `registry.npmjs.org` directly: the in-JS TLS-MITM backend triggers a QuickJS-NG cycle-GC bug on large packuments. Instead, the page sets `--registry=http://proxy.local/`, the kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the plaintext path. The QuickJS-NG fix that makes the TLS path safe in principle is in `examples/libs/quickjs/patches/0001-fix-mapped-arguments-mark-attached-var-refs.patch`.
+The node demo's `npm install` cannot speak HTTPS to `registry.npmjs.org` directly: the in-JS TLS-MITM backend triggers a QuickJS-NG cycle-GC bug on large packuments. Instead, the page sets `--registry=http://proxy.local/`, the kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the plaintext path. The QuickJS-NG fix that makes the TLS path safe in principle is in `packages/registry/quickjs/patches/0001-fix-mapped-arguments-mark-attached-var-refs.patch`.

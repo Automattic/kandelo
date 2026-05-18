@@ -7,7 +7,7 @@
  *   3. Script:  npx tsx examples/shell/serve.ts script.sh
  *
  * Build dash first:
- *   bash examples/libs/dash/build-dash.sh
+ *   bash packages/registry/dash/build-dash.sh
  */
 
 import { readFileSync } from "fs";
@@ -43,7 +43,7 @@ async function main() {
   if (!dashBinary) {
     console.error(
       "dash.wasm not found. Run: scripts/fetch-binaries.sh " +
-      "(or bash examples/libs/dash/build-dash.sh to build locally).",
+      "(or bash packages/registry/dash/build-dash.sh to build locally).",
     );
     process.exit(1);
   }

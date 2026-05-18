@@ -2,7 +2,7 @@
 # scripts/migrate-package-tomls.sh — one-shot migration tool for
 # binary-resolution-via-index-ledger Phase 9 Task 9.2.
 #
-# Walks every examples/libs/*/package.toml and:
+# Walks every packages/registry/*/package.toml and:
 #   1. Strips `revision = N`           (moves to index.toml)
 #   2. Strips [binary] / [binary.<arch>] blocks (moves to index.toml)
 #   3. Strips [build].repo_url + [build].commit (moves to build.toml)
@@ -43,7 +43,7 @@ migrated = 0
 build_toml_written = 0
 already_clean = 0
 
-for pkg_toml in sorted(repo_root.glob("examples/libs/*/package.toml")):
+for pkg_toml in sorted(repo_root.glob("packages/registry/*/package.toml")):
     pkg_dir = pkg_toml.parent
     pkg_name = pkg_dir.name
     original = pkg_toml.read_text()
@@ -143,7 +143,7 @@ for pkg_toml in sorted(repo_root.glob("examples/libs/*/package.toml")):
         # carry one (edge case — every first-party package on main
         # has script_path today).
         if not script_path:
-            script_path = f"examples/libs/{pkg_name}/build-{pkg_name}.sh"
+            script_path = f"packages/registry/{pkg_name}/build-{pkg_name}.sh"
 
         build_toml_path = pkg_dir / "build.toml"
         # Default revision to 1 if the source manifest didn't carry one

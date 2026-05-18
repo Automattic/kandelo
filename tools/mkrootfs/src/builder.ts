@@ -38,7 +38,7 @@ import {
 const DEFAULT_SAB_SIZE = 16 * 1024 * 1024;
 
 export interface BuildOptions {
-  /** Absolute or repo-relative path to the implicit source tree (typically `rootfs/`). */
+  /** Absolute or repo-relative path to the implicit source tree (typically `images/rootfs/`). */
   sourceTree: string;
   /** Absolute or repo-relative path to the MANIFEST file. */
   manifest: string;

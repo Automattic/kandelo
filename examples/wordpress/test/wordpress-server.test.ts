@@ -3,8 +3,8 @@
  * serve HTTP requests through the TCP bridge on wasm-posix-kernel.
  *
  * Requires:
- *   1. PHP binary: examples/libs/php/php-src/sapi/cli/php
- *      (build with: cd examples/libs/php && bash build.sh)
+ *   1. PHP binary: packages/registry/php/php-src/sapi/cli/php
+ *      (build with: cd packages/registry/php && bash build.sh)
  *   2. WordPress files: examples/wordpress/wordpress/
  *      (download with: bash examples/wordpress/setup.sh)
  */

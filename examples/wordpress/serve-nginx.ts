@@ -15,7 +15,7 @@
  *
  * Requires:
  *   1. WordPress VFS image: programs/wordpress.vfs.zst
- *      (build with: bash examples/browser/scripts/build-wp-vfs-image.sh)
+ *      (build with: bash images/vfs/scripts/build-wp-vfs-image.sh)
  *   2. dinit binary: programs/dinit/dinit.wasm
  */
 

@@ -105,7 +105,7 @@ export interface ResolveExecResponseMessage {
 }
 
 /** Snapshot the kernel's process table. Mirrors the browser host's
- * enum_procs request in examples/browser/lib/kernel-worker-protocol.ts.
+ * enum_procs request in apps/browser-demos/lib/kernel-worker-protocol.ts.
  * Response carries `ProcessSnapshot[]`. */
 export interface EnumProcsRequestMessage {
   type: "enum_procs";

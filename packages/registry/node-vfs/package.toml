@@ -1,0 +1,22 @@
+kind = "program"
+name = "node-vfs"
+version = "0.1.0"
+kernel_abi = 7
+depends_on = ["node@0.1.0", "shell@0.1.0"]
+
+# Pre-built VFS image containing the shell VFS base, npm 10.9.2, and a
+# writable /work tree for the browser Node demos.
+[source]
+url = "https://registry.npmjs.org/npm/-/npm-10.9.2.tgz"
+sha256 = "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4"
+
+[license]
+spdx = "Artistic-2.0"
+url = "https://github.com/npm/cli/blob/v10.9.2/LICENSE"
+
+[build]
+script_path = "packages/registry/node-vfs/build-node-vfs.sh"
+
+[[outputs]]
+name = "node-vfs"
+wasm = "node-vfs.vfs.zst"
