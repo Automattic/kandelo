@@ -1,0 +1,25 @@
+diff --git a/fbdoom/d_main.c b/fbdoom/d_main.c
+index 0a6d001..c3df7d2 100644
+--- a/fbdoom/d_main.c
++++ b/fbdoom/d_main.c
+@@ -1082,4 +1082,9 @@ static void D_Endoom(void)
+     I_Endoom(endoom);
+ }
+-
++
++static void D_CheckDemoStatusAtExit(void)
++{
++    (void) G_CheckDemoStatus();
++}
++
+ #if ORIGCODE
+@@ -1507,6 +1512,6 @@ void D_DoomMain (void)
+         printf("Playing demo %s.\n", file);
+     }
+-
+-    I_AtExit((atexit_func_t) G_CheckDemoStatus, true);
+-
++
++    I_AtExit(D_CheckDemoStatusAtExit, true);
++
+     // Generate the WAD hash table.  Speed things up a bit.

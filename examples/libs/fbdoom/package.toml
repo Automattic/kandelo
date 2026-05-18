@@ -1,10 +1,12 @@
 kind = "program"
 name = "fbdoom"
 version = "0.1.0"
-# rev3: drop the bundled IWAD. The browser demo fetches the DOOM
-# shareware `doom1.wad` (id Software, freely redistributable) at page
-# load from a Linux-distro mirror and caches it via the Cache API —
-# the archive carries only `fbdoom.wasm`.
+# rev4: fix fbDOOM's wasm exit path by avoiding an invalid
+# G_CheckDemoStatus -> atexit_func_t cast. rev3 dropped the bundled
+# IWAD; the browser demo fetches the DOOM shareware `doom1.wad`
+# (id Software, freely redistributable) at page load from a Linux-distro
+# mirror and caches it via the Cache API. The archive carries only
+# `fbdoom.wasm`.
 kernel_abi = 7
 depends_on = []
 
