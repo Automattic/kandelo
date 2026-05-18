@@ -185,7 +185,7 @@ export function ensureSourceExtract(
   repoRoot: string,
   legacyLocalPath?: string,
 ): string {
-  const packageToml = join(repoRoot, "examples", "libs", packageName, "package.toml");
+  const packageToml = join(repoRoot, "packages", "registry", packageName, "package.toml");
   const { url, sha256 } = readSourceBlock(packageToml);
   return ensureExtract({
     url,

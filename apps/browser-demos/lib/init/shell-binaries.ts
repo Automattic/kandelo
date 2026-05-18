@@ -11,6 +11,7 @@ import {
   writeVfsBinary,
   ensureDir,
 } from "./vfs-utils";
+export { COREUTILS_NAMES } from "../../../../images/vfs/lib/init/shell-binaries";
 
 /**
  * Definition of a lazily-loaded binary. The binary is registered in the
@@ -22,27 +23,6 @@ export interface BinaryDef {
   size: number;
   symlinks: string[];
 }
-
-/**
- * GNU coreutils multicall binary command names (91 names).
- * Each becomes a symlink to /bin/coreutils in both /bin and /usr/bin.
- */
-export const COREUTILS_NAMES = [
-  "arch", "b2sum", "base32", "base64", "basename", "basenc", "cat",
-  "chcon", "chgrp", "chmod", "chown", "chroot", "cksum", "comm", "cp",
-  "csplit", "cut", "date", "dd", "df", "dir", "dircolors", "dirname",
-  "du", "echo", "env", "expand", "expr", "factor", "false", "fmt",
-  "fold", "groups", "head", "hostid", "id", "install", "join", "link",
-  "ln", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp",
-  "mv", "nice", "nl", "nohup", "nproc", "numfmt", "od", "paste",
-  "pathchk", "pr", "printenv", "printf", "ptx", "pwd", "readlink",
-  "realpath", "rm", "rmdir", "runcon", "seq", "sha1sum", "sha224sum",
-  "sha256sum", "sha384sum", "sha512sum", "shred", "shuf", "sleep",
-  "sort", "split", "stat", "stty", "sum", "sync", "tac", "tail",
-  "tee", "test", "timeout", "touch", "tr", "true", "truncate", "tsort",
-  "tty", "uname", "unexpand", "uniq", "unlink", "vdir", "wc", "whoami",
-  "yes",
-] as const;
 
 /**
  * Populate the virtual filesystem with shell binaries.
