@@ -1205,10 +1205,25 @@ export class LiveKernelHost implements KernelHost {
         setBoundPid(null);
       }
     });
+    const offProcessExit = this.processListeners.add((event) => {
+      if (event.kind !== "exit" || event.pid !== attachedPid) return;
+      stop?.();
+      stop = null;
+      clearCanvas();
+      setBoundPid(null);
+    });
 
     return {
       sendInput: (bytes) => {
         if (attachedPid === null) return;
+        const stillBound = registry.list().some((entry) => entry.pid === attachedPid);
+        if (!stillBound) {
+          stop?.();
+          stop = null;
+          clearCanvas();
+          setBoundPid(null);
+          return;
+        }
         // Route input to the source the bound process actually reads from.
         // Sending to both would leak unread bytes into bash's PTY buffer
         // when a standalone fb process exits, polluting the next bash
@@ -1223,6 +1238,7 @@ export class LiveKernelHost implements KernelHost {
       onBoundPidChange: (cb) => boundPidListeners.add(cb),
       close: () => {
         offChange();
+        offProcessExit();
         stop?.();
         stop = null;
         setBoundPid(null);

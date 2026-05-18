@@ -23,9 +23,10 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
   const presentation = usePresentation();
   const availability = useSurfaceAvailability();
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
-  const [userTouchedLayout, setUserTouchedLayout] = React.useState(false);
+  const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
   const [terminalOpen, setTerminalOpen] = React.useState(false);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
+  const previousAvailability = React.useRef(availability);
 
   const defaultPrimary = React.useMemo<PrimarySurface>(() => {
     if (status !== "running") return presentation.bootPrimary;
@@ -33,27 +34,40 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
   }, [availability, presentation, status]);
 
   React.useEffect(() => {
-    if (!isSurfaceAvailable(activePrimary, availability) || !userTouchedLayout) {
+    if (primaryMode === "following-demo" || !isSurfaceAvailable(activePrimary, availability)) {
       setActivePrimary(defaultPrimary);
     }
-  }, [activePrimary, availability, defaultPrimary, userTouchedLayout]);
+  }, [activePrimary, availability, defaultPrimary, primaryMode]);
+
+  React.useEffect(() => {
+    const previous = previousAvailability.current;
+    previousAvailability.current = availability;
+    if (status !== "running") return;
+    if (activePrimary !== "terminal") return;
+    const preferred = presentation.runningPrimary[0];
+    if (!preferred || preferred === "terminal") return;
+    if (previous[preferred] || !availability[preferred]) return;
+
+    setActivePrimary(preferred);
+    setPrimaryMode("following-demo");
+  }, [activePrimary, availability, presentation.runningPrimary, status]);
 
   React.useEffect(() => {
     if (!focusInternals) return;
     setActivePrimary("syslog");
-    setUserTouchedLayout(true);
+    setPrimaryMode("pinned");
   }, [focusInternals, internalsTab]);
 
   React.useEffect(() => {
-    setUserTouchedLayout(false);
+    setPrimaryMode("following-demo");
     setTerminalOpen(false);
     setInternalsOpen(false);
   }, [presentation.runningPrimary, presentation.autoCommand]);
 
   const choosePrimary = (surface: PrimarySurface) => {
     if (!isSurfaceAvailable(surface, availability)) return;
-    setUserTouchedLayout(true);
     setActivePrimary(surface);
+    setPrimaryMode(surface === defaultPrimary ? "following-demo" : "pinned");
   };
 
   const primaryLabel = surfaceLabel(activePrimary);
@@ -96,7 +110,6 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
           title="Terminal"
           open={terminalOpen}
           onToggle={() => {
-            setUserTouchedLayout(true);
             setTerminalOpen((v) => !v);
           }}
         >
@@ -109,7 +122,6 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
           title="Internals"
           open={internalsOpen}
           onToggle={() => {
-            setUserTouchedLayout(true);
             setInternalsOpen((v) => !v);
           }}
         >
