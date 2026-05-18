@@ -70,7 +70,10 @@ export class HostFileSystem implements FileSystemBackend {
       this.rootPath,
       relative.replace(/^\//, ""),
     );
-    if (resolved !== this.rootPath && !resolved.startsWith(this.rootPath + "/")) {
+    if (
+      resolved !== this.rootPath &&
+      !resolved.startsWith(this.rootPath + nodePath.sep)
+    ) {
       throw new Error("EACCES: path traversal blocked");
     }
     return resolved;
