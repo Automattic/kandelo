@@ -22,8 +22,8 @@ import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const LEGACY_INSTALL_DIR = join(REPO_ROOT, "examples", "libs", "erlang", "erlang-install");
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "erlang.vfs.zst");
+const LEGACY_INSTALL_DIR = join(REPO_ROOT, "packages", "registry", "erlang", "erlang-install");
+const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "erlang.vfs.zst");
 
 /**
  * Resolve the OTP install tree.

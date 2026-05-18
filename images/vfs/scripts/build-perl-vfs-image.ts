@@ -21,9 +21,9 @@ const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
 // Prefer the local Perl source-build tree if present; otherwise download
 // + extract the upstream tarball. The directory layout matches:
 // `bash packages/registry/perl/build-perl.sh` extracts into perl-src/.
-const LEGACY_SRC = join(REPO_ROOT, "examples", "libs", "perl", "perl-src");
+const LEGACY_SRC = join(REPO_ROOT, "packages", "registry", "perl", "perl-src");
 const PERL_SRC = ensureSourceExtract("perl", REPO_ROOT, LEGACY_SRC);
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "perl.vfs.zst");
+const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "perl.vfs.zst");
 
 // Target prefix in the VFS (matches Perl's compiled-in privlib)
 const PRIVLIB = "/usr/lib/perl5/5.40.3";

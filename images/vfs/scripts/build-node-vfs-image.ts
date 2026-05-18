@@ -30,8 +30,8 @@ import { populateShellEnvironment } from "./shell-vfs-build";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
-const NPM_DIST = join(REPO_ROOT, "examples", "libs", "npm", "dist");
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "node-vfs.vfs.zst");
+const NPM_DIST = join(REPO_ROOT, "packages", "registry", "npm", "dist");
+const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "node-vfs.vfs.zst");
 
 const NPM_MOUNT = "/usr/local/lib/npm";
 

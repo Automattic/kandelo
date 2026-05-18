@@ -30,7 +30,7 @@ import { ensureSourceExtract } from "./source-extract-helper";
 import { populateShellEnvironment } from "./shell-vfs-build";
 
 const REPO_ROOT = findRepoRoot();
-const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
+const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 // WordPress + MariaDB source-tree fallbacks so the demo builds in a
 // fetch-only checkout. The mariadbd binary comes from the resolver
 // (already in the binary release); the system_tables SQL files are
@@ -41,7 +41,7 @@ const WP_DIR = ensureSourceExtract(
   REPO_ROOT,
   join(REPO_ROOT, "examples", "wordpress", "wordpress"),
 );
-const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "examples", "libs", "mariadb", "mariadb-install");
+const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages", "registry", "mariadb", "mariadb-install");
 const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
 const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
 const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))

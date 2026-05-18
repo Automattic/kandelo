@@ -20,9 +20,9 @@ const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
 // Prefer the local CPython source-build tree if present (faster, matches
 // `bash packages/registry/cpython/build-cpython.sh` output). Otherwise download
 // + extract the upstream tarball into the resolver's source cache.
-const LEGACY_SRC = join(REPO_ROOT, "examples", "libs", "cpython", "cpython-src");
+const LEGACY_SRC = join(REPO_ROOT, "packages", "registry", "cpython", "cpython-src");
 const STDLIB_DIR = join(ensureSourceExtract("cpython", REPO_ROOT, LEGACY_SRC), "Lib");
-const OUT_FILE = join(REPO_ROOT, "examples", "browser", "public", "python.vfs.zst");
+const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "python.vfs.zst");
 
 // Directories to exclude from the stdlib (test suites, GUI, unnecessary modules)
 const EXCLUDED_DIRS = new Set([

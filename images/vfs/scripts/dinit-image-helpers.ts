@@ -29,9 +29,9 @@ const REPO_ROOT = findRepoRoot();
  */
 function resolveDinitBinaries(): { dinit: string; dinitctl: string } {
   const dinit = tryResolveBinary("programs/dinit/dinit.wasm")
-    ?? join(REPO_ROOT, "examples", "libs", "dinit", "bin", "dinit.wasm");
+    ?? join(REPO_ROOT, "packages", "registry", "dinit", "bin", "dinit.wasm");
   const dinitctl = tryResolveBinary("programs/dinit/dinitctl.wasm")
-    ?? join(REPO_ROOT, "examples", "libs", "dinit", "bin", "dinitctl.wasm");
+    ?? join(REPO_ROOT, "packages", "registry", "dinit", "bin", "dinitctl.wasm");
   if (!existsSync(dinit) || !existsSync(dinitctl)) {
     throw new Error(
       "dinit binaries not found. Run 'bash run.sh build dinit' or place\n" +

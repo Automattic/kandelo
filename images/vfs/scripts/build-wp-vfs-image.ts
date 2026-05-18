@@ -27,7 +27,7 @@ import { ensureSourceExtract, ensureExtract } from "./source-extract-helper";
 import { populateShellEnvironment } from "./shell-vfs-build";
 
 const REPO_ROOT = findRepoRoot();
-const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
+const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 const WP_EXAMPLE_DIR = join(REPO_ROOT, "examples", "wordpress");
 // WordPress + SQLite-Database-Integration plugin trees: prefer the local
 // `examples/wordpress/setup.sh` outputs if present (back-compat with
