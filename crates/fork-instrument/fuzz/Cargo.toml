@@ -1,0 +1,32 @@
+[package]
+name = "fork-instrument-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+walrus = "0.26"
+wasmparser = "0.247"
+wat = "1"
+
+[dependencies.fork-instrument]
+path = ".."
+
+# Detach from the repo's wasm64-defaulting workspace so this crate
+# builds for the host without build-std dances.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_try_table"
+path = "fuzz_targets/fuzz_try_table.rs"
+test = false
+doc = false
+bench = false
