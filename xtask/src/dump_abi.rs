@@ -36,6 +36,8 @@ use crate::{JsonMap, repo_root};
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut out_path: Option<PathBuf> = None;
     let mut kernel_wasm: Option<PathBuf> = None;
+    let mut compat_old: Option<PathBuf> = None;
+    let mut compat_new: Option<PathBuf> = None;
     let mut check = false;
 
     let mut it = args.into_iter();
@@ -45,9 +47,27 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             "--kernel-wasm" => {
                 kernel_wasm = Some(it.next().ok_or("--kernel-wasm requires a path")?.into())
             }
+            "--classify-compat" => {
+                compat_old = Some(
+                    it.next()
+                        .ok_or("--classify-compat requires <old-snapshot> <new-snapshot>")?
+                        .into(),
+                );
+                compat_new = Some(
+                    it.next()
+                        .ok_or("--classify-compat requires <old-snapshot> <new-snapshot>")?
+                        .into(),
+                );
+            }
             "--check" => check = true,
             other => return Err(format!("unknown arg {other:?}")),
         }
+    }
+
+    if compat_old.is_some() || compat_new.is_some() {
+        let old = compat_old.ok_or("--classify-compat requires <old-snapshot> <new-snapshot>")?;
+        let new = compat_new.ok_or("--classify-compat requires <old-snapshot> <new-snapshot>")?;
+        return classify_compat_files(&old, &new);
     }
 
     let kernel_wasm = kernel_wasm.ok_or_else(|| {
@@ -101,6 +121,37 @@ fn write_file(path: &std::path::Path, contents: &str) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
     }
     std::fs::write(path, contents).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn classify_compat_files(
+    old_path: &std::path::Path,
+    new_path: &std::path::Path,
+) -> Result<(), String> {
+    let old_text = std::fs::read_to_string(old_path)
+        .map_err(|e| format!("read {}: {e}", old_path.display()))?;
+    let new_text = std::fs::read_to_string(new_path)
+        .map_err(|e| format!("read {}: {e}", new_path.display()))?;
+    let old: Value = serde_json::from_str(&old_text)
+        .map_err(|e| format!("parse {}: {e}", old_path.display()))?;
+    let new: Value = serde_json::from_str(&new_text)
+        .map_err(|e| format!("parse {}: {e}", new_path.display()))?;
+
+    let report = classify_compat_change(&old, &new)?;
+    for item in &report.additive {
+        println!("abi: additive-compatible change: {item}");
+    }
+    if report.breaking.is_empty() && report.additive.is_empty() {
+        println!("abi: snapshots are identical for backward-compatibility purposes.");
+        Ok(())
+    } else if report.breaking.is_empty() {
+        println!("abi: snapshot changes are backward-compatible additions.");
+        Ok(())
+    } else {
+        for item in &report.breaking {
+            eprintln!("abi: breaking/incompatible snapshot change: {item}");
+        }
+        Err("snapshot changes require ABI_VERSION bump".to_string())
+    }
 }
 
 /// C header consumed by `glue/channel_syscall.c` and any other C code
@@ -705,4 +756,265 @@ fn render_deterministic(root: &JsonMap) -> String {
     let mut s = serde_json::to_string_pretty(&value).expect("serialize");
     s.push('\n');
     s
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+struct CompatReport {
+    additive: Vec<String>,
+    breaking: Vec<String>,
+}
+
+fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, String> {
+    let old_obj = old
+        .as_object()
+        .ok_or("old ABI snapshot root must be a JSON object")?;
+    let new_obj = new
+        .as_object()
+        .ok_or("new ABI snapshot root must be a JSON object")?;
+
+    let mut report = CompatReport::default();
+
+    for key in old_obj.keys() {
+        if !new_obj.contains_key(key) {
+            report.breaking.push(format!("removed top-level section {key:?}"));
+        }
+    }
+    for key in new_obj.keys() {
+        if !old_obj.contains_key(key) {
+            report.breaking.push(format!("added top-level section {key:?}"));
+        }
+    }
+
+    let mut keys: Vec<&String> = old_obj.keys().filter(|key| new_obj.contains_key(*key)).collect();
+    keys.sort();
+
+    for key in keys {
+        let old_value = &old_obj[key];
+        let new_value = &new_obj[key];
+        match key.as_str() {
+            "syscalls" | "host_intercepted_syscalls" => {
+                classify_additive_array_by_number_name(key, old_value, new_value, &mut report)?
+            }
+            "kernel_exports" => {
+                classify_additive_array_by_name(key, old_value, new_value, &mut report)?
+            }
+            "marshalled_structs" => {
+                classify_additive_object_by_key(key, old_value, new_value, &mut report)?
+            }
+            _ if old_value != new_value => {
+                report
+                    .breaking
+                    .push(format!("changed top-level section {key:?}"));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(report)
+}
+
+fn classify_additive_object_by_key(
+    section: &str,
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    let old_obj = old
+        .as_object()
+        .ok_or_else(|| format!("old {section} section must be a JSON object"))?;
+    let new_obj = new
+        .as_object()
+        .ok_or_else(|| format!("new {section} section must be a JSON object"))?;
+
+    for key in old_obj.keys() {
+        match new_obj.get(key) {
+            Some(new_value) if new_value == &old_obj[key] => {}
+            Some(_) => report.breaking.push(format!("changed {section} entry {key:?}")),
+            None => report.breaking.push(format!("removed {section} entry {key:?}")),
+        }
+    }
+    for key in new_obj.keys() {
+        if !old_obj.contains_key(key) {
+            report.additive.push(format!("added {section} entry {key:?}"));
+        }
+    }
+
+    Ok(())
+}
+
+fn classify_additive_array_by_name(
+    section: &str,
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    classify_additive_array(section, old, new, report, |entry| {
+        entry
+            .get("name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| format!("{section} entry missing string name: {entry}"))
+    })
+}
+
+fn classify_additive_array_by_number_name(
+    section: &str,
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    classify_additive_array(section, old, new, report, |entry| {
+        let number = entry
+            .get("number")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("{section} entry missing numeric number: {entry}"))?;
+        if entry.get("name").and_then(Value::as_str).is_none() {
+            return Err(format!("{section} entry missing string name: {entry}"));
+        }
+        Ok(number.to_string())
+    })
+}
+
+fn classify_additive_array<F>(
+    section: &str,
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+    key_for: F,
+) -> Result<(), String>
+where
+    F: Fn(&Value) -> Result<String, String>,
+{
+    let old_entries = keyed_array(section, old, &key_for)?;
+    let new_entries = keyed_array(section, new, &key_for)?;
+
+    for (key, old_value) in &old_entries {
+        match new_entries.get(key) {
+            Some(new_value) if new_value == old_value => {}
+            Some(_) => report
+                .breaking
+                .push(format!("changed {section} entry {key:?}")),
+            None => report
+                .breaking
+                .push(format!("removed {section} entry {key:?}")),
+        }
+    }
+    for key in new_entries.keys() {
+        if !old_entries.contains_key(key) {
+            report.additive.push(format!("added {section} entry {key:?}"));
+        }
+    }
+
+    Ok(())
+}
+
+fn keyed_array<F>(
+    section: &str,
+    value: &Value,
+    key_for: F,
+) -> Result<BTreeMap<String, Value>, String>
+where
+    F: Fn(&Value) -> Result<String, String>,
+{
+    let array = value
+        .as_array()
+        .ok_or_else(|| format!("{section} section must be a JSON array"))?;
+    let mut out = BTreeMap::new();
+    for entry in array {
+        let key = key_for(entry)?;
+        if out.insert(key.clone(), entry.clone()).is_some() {
+            return Err(format!("{section} contains duplicate entry key {key:?}"));
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn base_snapshot() -> Value {
+        json!({
+            "abi_version": 10,
+            "channel_header": {"size": 64},
+            "host_intercepted_syscalls": [
+                {"number": 201, "name": "SYS_EXECVE"}
+            ],
+            "kernel_exports": [
+                {"name": "__abi_version", "kind": "func", "signature": "() -> (i32)"},
+                {"name": "kernel_set_current_pid", "kind": "func", "signature": "(i32) -> ()"}
+            ],
+            "marshalled_structs": {
+                "WasmStat": {"size": 96, "fields": []}
+            },
+            "syscalls": [
+                {"number": 1, "name": "Open"},
+                {"number": 2, "name": "Close"}
+            ]
+        })
+    }
+
+    #[test]
+    fn additive_syscall_export_and_struct_are_compatible() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["syscalls"].as_array_mut().unwrap().push(json!({
+            "number": 3,
+            "name": "Read"
+        }));
+        new["host_intercepted_syscalls"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"number": 202, "name": "SYS_FORK"}));
+        new["kernel_exports"].as_array_mut().unwrap().push(json!({
+            "name": "kernel_new_helper",
+            "kind": "func",
+            "signature": "(i32) -> (i32)"
+        }));
+        new["marshalled_structs"]["WasmTimespec"] = json!({
+            "size": 16,
+            "fields": []
+        });
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(report.additive.len(), 4);
+    }
+
+    #[test]
+    fn changed_existing_export_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["kernel_exports"][1]["signature"] = json!("(i64) -> ()");
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed kernel_exports entry \"kernel_set_current_pid\""]
+        );
+    }
+
+    #[test]
+    fn renamed_syscall_number_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["syscalls"][1]["name"] = json!("Dup");
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(report.breaking, vec!["changed syscalls entry \"2\""]);
+    }
+
+    #[test]
+    fn changed_channel_layout_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["channel_header"]["size"] = json!(72);
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed top-level section \"channel_header\""]
+        );
+    }
 }

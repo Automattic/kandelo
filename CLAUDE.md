@@ -34,31 +34,32 @@
    ```bash
    bash scripts/check-abi-version.sh
    ```
-   Expected: exit 0. Rebuilds the kernel wasm, regenerates the structural snapshot (covering channel layout, syscall numbers, marshalled structs, and kernel-wasm exports), and fails if `abi/snapshot.json` drifts from source, or if the snapshot changed vs `origin/main` without a matching `ABI_VERSION` bump in `crates/shared/src/lib.rs`. See [docs/abi-versioning.md](docs/abi-versioning.md).
+   Expected: exit 0. Rebuilds the kernel wasm, regenerates the structural snapshot (covering channel layout, syscall numbers, marshalled structs, and kernel-wasm exports), and fails if `abi/snapshot.json` drifts from source, or if the snapshot changed vs `origin/main` without either a matching `ABI_VERSION` bump in `crates/shared/src/lib.rs` or an additive-compatible ABI diff. See [docs/abi-versioning.md](docs/abi-versioning.md).
 
 6. **Browser demo verification**: When fixing browser demo bugs, run `./run.sh browser` and manually verify the fix in a browser before claiming it works. Code reasoning alone is not sufficient — browser timing, service workers, and Wasm behavior must be observed.
 
-## Kernel ABI stability — DO NOT change without bumping `ABI_VERSION`
+## Kernel ABI stability — DO NOT change incompatibly without bumping `ABI_VERSION`
 
-The kernel's binary interface to user programs is load-bearing: any silent change can corrupt memory in any binary compiled against an older kernel. **Every change to the following requires bumping `ABI_VERSION` in `crates/shared/src/lib.rs` and regenerating `abi/snapshot.json` in the same commit:**
+The kernel's binary interface to user programs is load-bearing: any silent incompatible change can corrupt memory in any binary compiled against an older kernel. **Every incompatible change to the following requires bumping `ABI_VERSION` in `crates/shared/src/lib.rs` and regenerating `abi/snapshot.json` in the same commit:**
 
 - Channel header layout (`shared::channel::*`), channel data buffer, signal-delivery area.
-- Syscall numbers (additions, removals, renames).
-- Marshalled `repr(C)` structs (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`, `WasmStatfs`).
+- Syscall numbers (removals, renames, reassignments; additions are allowed without a bump if existing entries are unchanged).
+- Existing marshalled `repr(C)` structs (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`, `WasmStatfs`).
 - Asyncify save slots (`shared::abi::ASYNCIFY_SAVE_SLOTS`).
 - `shared::abi::*` constants (custom section name, process-expected globals, export filter lists).
-- Kernel-wasm exports (any `kernel_*` function signature change, global type/mutability change, or new/removed export that isn't on the toolchain denylist).
+- Kernel-wasm exports (any existing `kernel_*` function signature change, global type/mutability change, or removed export that isn't on the toolchain denylist; additions are allowed without a bump if existing entries are unchanged).
 
 **Workflow when you've changed something that might be ABI-affecting:**
 
 ```bash
 bash scripts/check-abi-version.sh update   # regenerate abi/snapshot.json
 git diff abi/snapshot.json                 # inspect — is this actually an ABI change?
-# If yes: bump ABI_VERSION in crates/shared/src/lib.rs and commit both files together.
+# If it changes existing ABI surface: bump ABI_VERSION in crates/shared/src/lib.rs and commit both files together.
+# If it is only additive-compatible: commit the snapshot without bumping ABI_VERSION.
 bash scripts/check-abi-version.sh          # verify
 ```
 
-The script is also run as step 5 of the test suite above. CI refuses to merge a change where the snapshot drifts without a version bump. See [docs/abi-versioning.md](docs/abi-versioning.md) for full policy, including what the structural check does *not* catch (e.g., semantic changes that don't shift offsets — reviewers must flag those).
+The script is also run as step 5 of the test suite above. CI refuses to merge a change where the snapshot drifts from source, or where a no-bump snapshot diff changes existing ABI surface. See [docs/abi-versioning.md](docs/abi-versioning.md) for full policy, including what the structural check does *not* catch (e.g., semantic changes that don't shift offsets — reviewers must flag those).
 
 ## Performance Benchmarks
 
