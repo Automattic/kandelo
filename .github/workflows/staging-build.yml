@@ -141,41 +141,6 @@ jobs:
               : > "$existing_index"
             fi
 
-            index_has_current_entry() {
-              local pkg="$1" arch="$2" sha="$3" rev="$4"
-              awk -v pkg="$pkg" -v arch="$arch" -v sha="$sha" -v rev="$rev" '
-                $0 == "[[packages]]" {
-                  in_pkg = 0
-                  in_arch = 0
-                  revision_match = 0
-                  success = 0
-                  sha_match = 0
-                }
-                $0 == "name = \"" pkg "\"" {
-                  in_pkg = 1
-                }
-                in_pkg && $0 == "revision = " rev {
-                  revision_match = 1
-                }
-                in_pkg && $0 == "[packages.binary." arch "]" {
-                  in_arch = 1
-                  success = 0
-                  sha_match = 0
-                }
-                in_pkg && in_arch && $0 == "status = \"success\"" {
-                  success = 1
-                }
-                in_pkg && in_arch && $0 == "cache_key_sha = \"" sha "\"" {
-                  sha_match = 1
-                }
-                in_pkg && in_arch && revision_match && success && sha_match {
-                  found = 1
-                  exit
-                }
-                END { exit found ? 0 : 1 }
-              ' "$existing_index"
-            }
-
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             library_matrix="[]"
             program_matrix="[]"
@@ -247,7 +212,7 @@ jobs:
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
                 existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
                     "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
-                if [ -n "$existing_archive" ] && index_has_current_entry "$pkg" "$arch" "$sha" "$revision"; then
+                if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
                   echo "preflight: skip $pkg/$arch (sha $short already indexed)"
                   continue
                 fi
