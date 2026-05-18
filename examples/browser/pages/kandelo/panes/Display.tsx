@@ -18,7 +18,7 @@ export const Display: React.FC<FramebufferProps> = (props) => {
 
 const WebPreviewPane: React.FC<FramebufferProps & {
   preview: NonNullable<ReturnType<typeof useWebPreview>>;
-}> = ({ preview, dragProps, onCollapse, onMaximize, isMax }) => {
+}> = ({ preview, dragProps, onCollapse, onMaximize, isMax, autoFocus = false }) => {
   const [reloadKey, setReloadKey] = React.useState(0);
   const [path, setPath] = React.useState("/");
   const [draftPath, setDraftPath] = React.useState("/");
@@ -31,6 +31,14 @@ const WebPreviewPane: React.FC<FramebufferProps & {
     setDraftPath("/");
     setReloadKey(0);
   }, [preview.url]);
+
+  React.useEffect(() => {
+    if (!autoFocus || !ready) return;
+    const handle = window.requestAnimationFrame(() => {
+      iframeRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [autoFocus, iframeSrc, ready]);
 
   const navigate = React.useCallback((raw: string) => {
     const next = normalizePreviewPath(raw, preview.url);
@@ -107,7 +115,10 @@ const WebPreviewPane: React.FC<FramebufferProps & {
               key={`${reloadKey}:${iframeSrc}`}
               src={iframeSrc}
               title={preview.label}
-              onLoad={syncFromFrame}
+              onLoad={() => {
+                syncFromFrame();
+                if (autoFocus) iframeRef.current?.focus();
+              }}
               style={{
                 border: 0,
                 width: "100%",

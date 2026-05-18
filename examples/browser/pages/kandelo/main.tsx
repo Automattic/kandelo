@@ -12,6 +12,7 @@ import { App } from "./app/App";
 import { KernelHostProvider } from "./kernel-host/react";
 import { MockKernelHost } from "./kernel-host/mock";
 import type { KernelHost } from "./kernel-host";
+import { CURRENT_DESCRIPTOR_TEMPLATE, PRESET_LIBRARY } from "./fixtures";
 
 const container = document.getElementById("kandelo-root");
 if (!container) {
@@ -35,10 +36,20 @@ const mount = (host: KernelHost) => {
 };
 
 if (useMock) {
+  const preset = PRESET_LIBRARY.find((p) => p.id === demo);
+  const descriptor = preset
+    ? {
+      ...CURRENT_DESCRIPTOR_TEMPLATE,
+      id: preset.id,
+      title: preset.title,
+      packages: preset.packages,
+      boot: { ...CURRENT_DESCRIPTOR_TEMPLATE.boot, argv: preset.bootCommand },
+    }
+    : undefined;
   mount(new MockKernelHost(
     useIdle
-      ? { status: "idle" }
-      : { status: "booting", bootSpeed: 4 },
+      ? { status: "idle", descriptor }
+      : { status: "booting", bootSpeed: 4, descriptor },
   ));
 } else {
   // Lazy-load so the bundle doesn't pull in BrowserKernel when running

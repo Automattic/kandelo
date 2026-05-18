@@ -247,6 +247,34 @@ export interface WebPreviewState {
   message?: string;
 }
 
+// ── Presentation intent ──────────────────────────────────────────────────
+
+export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web";
+
+export type SurfaceAvailability = Record<PrimarySurface, boolean>;
+
+export interface DemoPresentation {
+  /**
+   * Surface that should dominate while the machine is booting. Demos default
+   * to syslog so users can see real startup progress.
+   */
+  bootPrimary: "syslog";
+  /**
+   * Ordered surface preferences once the demo is ready for use. The UI picks
+   * the first available surface and falls back as runtime state changes.
+   */
+  runningPrimary: PrimarySurface[];
+  /** Where the terminal lives when it is not the primary surface. */
+  terminalAccess: "primary" | "drawer" | "side";
+  /** Where detailed system views live when they are not primary. */
+  internalsAccess: "primary" | "drawer" | "side";
+  /**
+   * Optional command to inject into the persistent shell after boot. Used by
+   * framebuffer demos so exiting the app returns to the shell command.
+   */
+  autoCommand?: string;
+}
+
 // ── Process lifecycle events ──────────────────────────────────────────────
 //
 // Surfaces that render process state (Inspector → Procs, Memory map, top-
@@ -411,6 +439,12 @@ export interface KernelHost {
   getWebPreview(): WebPreviewState | null;
   subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void;
 
+  // presentation — declares what users should see by default for this demo.
+  getPresentation(): DemoPresentation;
+  subscribePresentation(cb: (state: DemoPresentation) => void): () => void;
+  getSurfaceAvailability(): SurfaceAvailability;
+  subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
+
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
 
@@ -433,6 +467,27 @@ class ListenerSet<T> {
   size(): number {
     return this.listeners.size;
   }
+}
+
+function waitForPtyReadiness(pty: PtyHandle): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    let buffer = "";
+    let off = () => {};
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      off();
+      resolve();
+    };
+    const decoder = new TextDecoder();
+    const timer = setTimeout(finish, 1200);
+    off = pty.onData((bytes) => {
+      buffer += decoder.decode(bytes, { stream: true });
+      if (/\$ $|# $|> $/.test(buffer)) finish();
+    });
+  });
 }
 
 // ── LiveKernelHost — wraps the real host runtime in host/src/ ──────────────
@@ -484,6 +539,8 @@ export interface LiveKernelHostOptions {
   status?: MachineStatus;
   /** Initial boot descriptor surfaced to the UI. */
   descriptor?: BootDescriptor;
+  /** Initial presentation intent surfaced to the UI. */
+  presentation?: DemoPresentation;
   /** Live-mode reboot hook supplied by the browser page. */
   applyBootDescriptor?: (desc: BootDescriptor, host: LiveKernelHost) => Promise<void>;
   /** Preset list for galleryQuery("presets"). */
@@ -508,6 +565,20 @@ const DEFAULT_DESCRIPTOR: BootDescriptor = {
   caps: {},
 };
 
+const DEFAULT_PRESENTATION: DemoPresentation = {
+  bootPrimary: "syslog",
+  runningPrimary: ["terminal"],
+  terminalAccess: "primary",
+  internalsAccess: "drawer",
+};
+
+const DEFAULT_SURFACE_AVAILABILITY: SurfaceAvailability = {
+  syslog: true,
+  terminal: false,
+  framebuffer: false,
+  web: false,
+};
+
 const NOT_IMPLEMENTED = (m: string) =>
   new Error(
     `LiveKernelHost.${m} is not implemented yet. ` +
@@ -524,14 +595,25 @@ export class LiveKernelHost implements KernelHost {
   private dmesgCapacity = 4096;
   private processListeners = new ListenerSet<ProcessEvent>();
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
+  private presentationListeners = new ListenerSet<DemoPresentation>();
+  private surfaceListeners = new ListenerSet<SurfaceAvailability>();
 
   private _descriptor: BootDescriptor;
+  private presentation: DemoPresentation;
   private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
+  private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
+  private offFramebufferAvailability: (() => void) | null = null;
 
   private kernel?: KernelLike;
   private shell?: NonNullable<LiveKernelHostOptions["shell"]>;
+  private ptySession: {
+    pid: number;
+    dataListeners: ListenerSet<Uint8Array>;
+    history: Uint8Array[];
+    closed: boolean;
+  } | null = null;
   /**
    * Pid of the currently-attached PTY shell (set by attachPty). Used by
    * attachFramebuffer to also route input through the PTY master so a
@@ -544,22 +626,55 @@ export class LiveKernelHost implements KernelHost {
   constructor(opts: LiveKernelHostOptions = {}) {
     this._status = opts.status ?? "idle";
     this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR;
+    this.presentation = opts.presentation ?? DEFAULT_PRESENTATION;
     this.kernel = opts.kernel;
     this.shell = opts.shell;
     this.applyBootDescriptorImpl = opts.applyBootDescriptor;
     this.galleryItems = opts.galleryItems ?? [];
+    this.refreshTerminalAvailability();
+    this.refreshFramebufferAvailability();
+    this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
   }
 
   // ── owner-facing wiring helpers ──────────────────────────────────────────
 
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
+    this.offFramebufferAvailability?.();
+    this.offFramebufferAvailability = null;
     this.kernel = kernel;
+    this.ptySession = null;
+    this.shellPid = null;
+    if (kernel.framebuffers) {
+      this.offFramebufferAvailability = kernel.framebuffers.onChange(() => {
+        this.refreshFramebufferAvailability();
+      });
+    }
+    this.refreshTerminalAvailability();
+    this.refreshFramebufferAvailability();
   }
 
   /** Configure the program attachPty spawns by default. */
   setDefaultShell(shell: NonNullable<LiveKernelHostOptions["shell"]>): void {
     this.shell = shell;
+    this.refreshTerminalAvailability();
+  }
+
+  /** Update the presentation intent and fan out to subscribers. */
+  setPresentation(presentation: DemoPresentation): void {
+    this.presentation = { ...presentation, runningPrimary: presentation.runningPrimary.slice() };
+    this.presentationListeners.emit(this.getPresentation());
+  }
+
+  /**
+   * Write a command into the persistent PTY-backed shell. Owner code uses
+   * this for demos like Doom where the app should visibly originate from a
+   * real terminal command even when the terminal drawer starts closed.
+   */
+  async runShellCommand(command: string): Promise<void> {
+    const pty = await this.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+    await waitForPtyReadiness(pty);
+    pty.write(command.endsWith("\n") ? command : `${command}\n`);
   }
 
   /** Update the status and fan out to subscribers. */
@@ -600,6 +715,31 @@ export class LiveKernelHost implements KernelHost {
   setWebPreview(state: WebPreviewState | null): void {
     this.webPreview = state ? { ...state } : null;
     this.webPreviewListeners.emit(this.getWebPreview());
+    this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+  }
+
+  private setSurfaceAvailability(patch: Partial<SurfaceAvailability>): void {
+    const next = { ...this.surfaceAvailability, ...patch };
+    if (
+      next.syslog === this.surfaceAvailability.syslog &&
+      next.terminal === this.surfaceAvailability.terminal &&
+      next.framebuffer === this.surfaceAvailability.framebuffer &&
+      next.web === this.surfaceAvailability.web
+    ) {
+      return;
+    }
+    this.surfaceAvailability = next;
+    this.surfaceListeners.emit(this.getSurfaceAvailability());
+  }
+
+  private refreshTerminalAvailability(): void {
+    this.setSurfaceAvailability({ terminal: Boolean(this.kernel && this.shell) });
+  }
+
+  private refreshFramebufferAvailability(): void {
+    this.setSurfaceAvailability({
+      framebuffer: Boolean(this.kernel?.framebuffers?.list().length),
+    });
   }
 
   // ── KernelHost: status ───────────────────────────────────────────────────
@@ -628,6 +768,9 @@ export class LiveKernelHost implements KernelHost {
 
   async halt(): Promise<void> {
     this.setStatus("halted");
+    this.offFramebufferAvailability?.();
+    this.offFramebufferAvailability = null;
+    this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false });
     await this.kernel?.destroy?.();
   }
 
@@ -671,20 +814,42 @@ export class LiveKernelHost implements KernelHost {
     const kernel = this.kernel;
     const shell = this.shell;
 
-    // Spawn the shell with PTY; PTY pid is `nextPid - 1` per the
-    // existing PtyTerminal pattern (KernelLike assigns pids sequentially
-    // and exposes `nextPid` via the typed-as-any hop below).
-    const exitPromise = kernel.spawn(shell.programBytes, shell.argv, {
-      pty: true,
-      env: shell.env,
-      cwd: shell.cwd,
-    });
-    void exitPromise;
-    const pid = kernel.nextPid - 1;
-    this.shellPid = pid;
+    if (!this.ptySession || this.ptySession.closed) {
+      // Spawn the shell with PTY; PTY pid is `nextPid - 1` per the
+      // existing PtyTerminal pattern (KernelLike assigns pids sequentially
+      // and exposes `nextPid`).
+      const exitPromise = kernel.spawn(shell.programBytes, shell.argv, {
+        pty: true,
+        env: shell.env,
+        cwd: shell.cwd,
+      });
+      const pid = kernel.nextPid - 1;
+      this.shellPid = pid;
 
-    const dataListeners = new ListenerSet<Uint8Array>();
-    kernel.onPtyOutput(pid, (data) => dataListeners.emit(data));
+      const dataListeners = new ListenerSet<Uint8Array>();
+      const session = {
+        pid,
+        dataListeners,
+        history: [] as Uint8Array[],
+        closed: false,
+      };
+      this.ptySession = session;
+      kernel.onPtyOutput(pid, (data) => {
+        const copy = data.slice();
+        session.history.push(copy);
+        if (session.history.length > 2048) session.history.shift();
+        dataListeners.emit(copy);
+      });
+      void exitPromise.finally(() => {
+        session.closed = true;
+        if (this.ptySession === session) this.ptySession = null;
+        if (this.shellPid === pid) this.shellPid = null;
+      });
+    }
+
+    const session = this.ptySession!;
+    const pid = session.pid;
+    const dataListeners = session.dataListeners;
     kernel.ptyResize(pid, opts.rows, opts.cols);
 
     const encoder = new TextEncoder();
@@ -696,7 +861,10 @@ export class LiveKernelHost implements KernelHost {
         const buf = typeof bytes === "string" ? encoder.encode(bytes) : bytes;
         kernel.ptyWrite(pid, buf);
       },
-      onData: (cb) => dataListeners.add(cb),
+      onData: (cb) => {
+        for (const chunk of session.history) cb(chunk);
+        return dataListeners.add(cb);
+      },
       resize: (cols, rows) => {
         if (closed) return;
         kernel.ptyResize(pid, rows, cols);
@@ -704,9 +872,8 @@ export class LiveKernelHost implements KernelHost {
       close: () => {
         if (closed) return;
         closed = true;
-        // Best-effort: tell the kernel to terminate the PTY group. The
-        // exit promise will resolve naturally; we don't await it here.
-        void kernel.terminateProcess(pid, -1).catch(() => {});
+        // Detach this UI handle only. The PTY-backed shell intentionally
+        // persists across drawer open/close so users keep command history.
       },
     };
   }
@@ -1038,10 +1205,25 @@ export class LiveKernelHost implements KernelHost {
         setBoundPid(null);
       }
     });
+    const offProcessExit = this.processListeners.add((event) => {
+      if (event.kind !== "exit" || event.pid !== attachedPid) return;
+      stop?.();
+      stop = null;
+      clearCanvas();
+      setBoundPid(null);
+    });
 
     return {
       sendInput: (bytes) => {
         if (attachedPid === null) return;
+        const stillBound = registry.list().some((entry) => entry.pid === attachedPid);
+        if (!stillBound) {
+          stop?.();
+          stop = null;
+          clearCanvas();
+          setBoundPid(null);
+          return;
+        }
         // Route input to the source the bound process actually reads from.
         // Sending to both would leak unread bytes into bash's PTY buffer
         // when a standalone fb process exits, polluting the next bash
@@ -1056,6 +1238,7 @@ export class LiveKernelHost implements KernelHost {
       onBoundPidChange: (cb) => boundPidListeners.add(cb),
       close: () => {
         offChange();
+        offProcessExit();
         stop?.();
         stop = null;
         setBoundPid(null);
@@ -1069,6 +1252,22 @@ export class LiveKernelHost implements KernelHost {
 
   subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void {
     return this.webPreviewListeners.add(cb);
+  }
+
+  getPresentation(): DemoPresentation {
+    return { ...this.presentation, runningPrimary: this.presentation.runningPrimary.slice() };
+  }
+
+  subscribePresentation(cb: (state: DemoPresentation) => void): () => void {
+    return this.presentationListeners.add(cb);
+  }
+
+  getSurfaceAvailability(): SurfaceAvailability {
+    return { ...this.surfaceAvailability };
+  }
+
+  subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void {
+    return this.surfaceListeners.add(cb);
   }
 
   // ── KernelHost: sharing ──────────────────────────────────────────────────

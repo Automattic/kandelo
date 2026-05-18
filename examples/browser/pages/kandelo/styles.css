@@ -358,6 +358,126 @@
 
 /* ── Tile area & splitters ──────────────────────────────────────────────── */
 
+.kmachine {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kmachine-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  flex-shrink: 0;
+}
+
+.kmachine-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface);
+}
+
+.kmachine-switch-btn {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--k-text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.kmachine-switch-btn:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--k-text) 7%, transparent);
+  color: var(--k-text);
+}
+.kmachine-switch-btn[aria-current="true"] {
+  background: color-mix(in oklch, var(--k-accent) 16%, transparent);
+  color: var(--k-accent);
+}
+.kmachine-switch-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.kmachine-current {
+  margin-left: auto;
+  color: var(--k-text-faint);
+  font-family: var(--k-font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kmachine-primary {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+.kmachine-primary > .kpane {
+  flex: 1;
+}
+
+.kmachine-drawer {
+  flex-shrink: 0;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow);
+  overflow: hidden;
+}
+
+.kmachine-drawer-toggle {
+  width: 100%;
+  height: 32px;
+  border: 0;
+  background: var(--k-pane-head);
+  color: var(--k-pane-head-text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.kmachine-drawer-toggle svg {
+  margin-left: auto;
+  color: var(--k-text-muted);
+}
+.kmachine-drawer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--k-accent);
+  box-shadow: 0 0 8px var(--k-accent);
+}
+.kmachine-drawer-body {
+  height: min(36vh, 320px);
+  min-height: 180px;
+  border-top: 1px solid var(--k-border);
+  display: flex;
+  min-width: 0;
+}
+.kmachine-drawer-body > .kpane {
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .ktile {
   flex: 1;
   display: flex;
