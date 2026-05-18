@@ -86,13 +86,13 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
     mkdirSync(fakeBinDir, { recursive: true });
     mkdirSync(path.join(fakeRepoRoot, "scripts"), { recursive: true });
 
-    const libs = path.join(fakeRepoRoot, "examples", "libs");
-    mkdirSync(libs, { recursive: true });
+    const registry = path.join(fakeRepoRoot, "packages", "registry");
+    mkdirSync(registry, { recursive: true });
 
     // alpha: single-arch (default wasm32), publishable via build.toml.
-    mkdirSync(path.join(libs, "alpha"), { recursive: true });
+    mkdirSync(path.join(registry, "alpha"), { recursive: true });
     writeFileSync(
-      path.join(libs, "alpha", "package.toml"),
+      path.join(registry, "alpha", "package.toml"),
       [
         `kind = "program"`,
         `name = "alpha"`,
@@ -112,12 +112,12 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
         ``,
       ].join("\n"),
     );
-    writeFileSync(path.join(libs, "alpha", "build.toml"), `revision = 1\n`);
+    writeFileSync(path.join(registry, "alpha", "build.toml"), `revision = 1\n`);
 
     // bravo: multi-arch with single-line `arches = [...]`.
-    mkdirSync(path.join(libs, "bravo"), { recursive: true });
+    mkdirSync(path.join(registry, "bravo"), { recursive: true });
     writeFileSync(
-      path.join(libs, "bravo", "package.toml"),
+      path.join(registry, "bravo", "package.toml"),
       [
         `kind = "program"`,
         `name = "bravo"`,
@@ -138,12 +138,12 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
         ``,
       ].join("\n"),
     );
-    writeFileSync(path.join(libs, "bravo", "build.toml"), `revision = 1\n`);
+    writeFileSync(path.join(registry, "bravo", "build.toml"), `revision = 1\n`);
 
     // charlie: another multi-arch package.
-    mkdirSync(path.join(libs, "charlie"), { recursive: true });
+    mkdirSync(path.join(registry, "charlie"), { recursive: true });
     writeFileSync(
-      path.join(libs, "charlie", "package.toml"),
+      path.join(registry, "charlie", "package.toml"),
       [
         `kind = "program"`,
         `name = "charlie"`,
@@ -164,13 +164,13 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
         ``,
       ].join("\n"),
     );
-    writeFileSync(path.join(libs, "charlie", "build.toml"), `revision = 1\n`);
+    writeFileSync(path.join(registry, "charlie", "build.toml"), `revision = 1\n`);
 
     // delta: kind=program, no build.toml (mirrors kernel/userspace/
     // examples). Must be skipped silently.
-    mkdirSync(path.join(libs, "delta"), { recursive: true });
+    mkdirSync(path.join(registry, "delta"), { recursive: true });
     writeFileSync(
-      path.join(libs, "delta", "package.toml"),
+      path.join(registry, "delta", "package.toml"),
       [
         `kind = "program"`,
         `name = "delta"`,
@@ -193,7 +193,7 @@ describe.skipIf(!rustcAvailable)("fetch-binaries.sh per-package walk", () => {
 
     // stray: dir without package.toml. Must be skipped silently
     // (no error, no "missing" warning).
-    mkdirSync(path.join(libs, "stray"), { recursive: true });
+    mkdirSync(path.join(registry, "stray"), { recursive: true });
 
     // Copy the real fetch-binaries.sh so it computes
     // REPO_ROOT=fakeRepoRoot via "$(cd "$(dirname "$0")/.." && pwd)".
