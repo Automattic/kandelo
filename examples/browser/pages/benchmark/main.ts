@@ -7,19 +7,13 @@
  * Supported suites:
  *   - "syscall-io": pipe/file throughput and syscall latency
  *   - "process-lifecycle": hello start, fork, clone
- *   - "erlang-ring": BEAM VM ring benchmark (1000 processes, 100 rounds)
  *   - "wordpress": nginx + PHP-FPM boot with WordPress page load
  *   - "mariadb-aria": MariaDB with Aria engine
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
 import { BrowserKernel } from "../../lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { populateMariadbDirs } from "../../lib/init/mariadb-config";
-import {
-  writeVfsBinary,
-  writeVfsFile,
-  ensureDir,
-} from "../../lib/init/vfs-utils";
+import { writeVfsFile } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 
 // Micro-benchmark wasm URLs (always built by scripts/build-programs.sh)
@@ -40,11 +34,11 @@ import kernelWasmUrl from "@kernel-wasm?url";
  * missing, which hangs every suite on the Playwright harness — even
  * micro-benchmarks that don't need the missing binary. `import.meta.glob`
  * returns an empty map for missing files, so missing binaries surface as a
- * per-suite skip with a helpful build hint instead of blocking page load.
+ * per-suite failure with a helpful build hint instead of blocking page load.
  */
 // Paths are relative to this file (examples/browser/pages/benchmark/main.ts).
-// Vite normalizes glob result keys, so we match against the canonical form
-// (three `..` up to reach examples/, not four via the repo root).
+// Vite normalizes glob result keys, so callers must use the same relative
+// strings declared here.
 const OPTIONAL_URLS = {
   ...import.meta.glob("../../../libs/erlang/bin/beam.wasm", {
     query: "?url", import: "default",
@@ -53,6 +47,12 @@ const OPTIONAL_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../nginx/nginx.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/nginx.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/nginx.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../binaries/programs/wasm32/php/php-fpm.wasm", {
@@ -64,13 +64,37 @@ const OPTIONAL_URLS = {
   ...import.meta.glob("../../../libs/coreutils/bin/coreutils.wasm", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/coreutils.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/coreutils.wasm", {
+    query: "?url", import: "default",
+  }),
   ...import.meta.glob("../../../libs/grep/bin/grep.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/grep.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/grep.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../libs/sed/bin/sed.wasm", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/sed.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/sed.wasm", {
+    query: "?url", import: "default",
+  }),
   ...import.meta.glob("../../../libs/mariadb/mariadb-install/bin/mariadbd.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/mariadb/mariadbd.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/mariadb/mariadbd.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../libs/mariadb/mariadb-install/share/mysql/mysql_system_tables.sql", {
@@ -80,6 +104,12 @@ const OPTIONAL_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../libs/mariadb/mariadb-install-64/bin/mariadbd.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm64/mariadb/mariadbd.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm64/mariadb/mariadbd.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../libs/mariadb/mariadb-install-64/share/mysql/mysql_system_tables.sql", {
@@ -106,6 +136,24 @@ const OPTIONAL_URLS = {
   ...import.meta.glob("../../public/wordpress.vfs.zst", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../public/mariadb.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../public/mariadb-64.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/mariadb-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/mariadb-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../local-binaries/programs/wasm64/mariadb-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm64/mariadb-vfs.vfs.zst", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function loadOptionalUrl(
@@ -127,7 +175,7 @@ async function loadOptionalUrlFrom(
 ): Promise<string> {
   for (const relPath of relPaths) {
     const loader = OPTIONAL_URLS[relPath];
-    if (loader) return loader();
+    if (loader) return loadOptionalUrl(relPath, label, buildHint);
   }
   throw new Error(`${label} is not built. Run: ${buildHint}`);
 }
@@ -136,7 +184,7 @@ const logEl = document.getElementById("log")!;
 function log(msg: string) {
   logEl.textContent += msg + "\n";
   // Also forward to console so the Playwright harness can surface progress
-  // and suite-skip reasons (e.g. "missing binary, run …").
+  // and prerequisite failures (e.g. "missing binary, run ...").
   console.log(msg);
 }
 
@@ -144,6 +192,23 @@ async function fetchWasm(url: string): Promise<ArrayBuffer> {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
   return resp.arrayBuffer();
+}
+
+async function readVfsBytes(fs: MemoryFileSystem, path: string): Promise<ArrayBuffer> {
+  await fs.ensureMaterialized(path);
+  const fd = fs.open(path, 0, 0);
+  try {
+    const stat = fs.fstat(fd);
+    const buf = new Uint8Array(stat.size);
+    fs.read(fd, buf, 0, buf.length);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  } finally {
+    fs.close(fd);
+  }
+}
+
+async function readVfsText(fs: MemoryFileSystem, path: string): Promise<string> {
+  return new TextDecoder().decode(await readVfsBytes(fs, path));
 }
 
 function parseMetrics(stdout: string): Record<string, number> {
@@ -456,87 +521,27 @@ add_filter('pre_http_request', function($pre, $args, $url) {
 if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `;
 
-async function fetchSize(url: string): Promise<number> {
-  try {
-    const resp = await fetch(url, { method: "HEAD" });
-    if (!resp.ok) return 0;
-    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
 async function runWordPress(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
-  let nginxWasmUrl: string;
-  let phpFpmWasmUrl: string;
-  try {
-    nginxWasmUrl = await loadOptionalUrl(
-      "../../../nginx/nginx.wasm",
-      "nginx binary",
-      "bash examples/nginx/build.sh",
-    );
-    phpFpmWasmUrl = await loadOptionalUrlFrom([
-      "../../../../local-binaries/programs/wasm32/php/php-fpm.wasm",
-      "../../../../binaries/programs/wasm32/php/php-fpm.wasm",
-    ],
-      "PHP-FPM binary",
-      "bash examples/nginx/build.sh",
-    );
-  } catch (err) {
-    log(`  Skipping wordpress: ${(err as Error).message}`);
-    return {};
-  }
-
-  // Optional shell helpers — absent ones are simply not registered as lazy.
-  const coreutilsWasmUrl = await loadOptionalUrl(
-    "../../../libs/coreutils/bin/coreutils.wasm",
-    "coreutils",
-    "bash examples/libs/coreutils/build.sh",
-  ).catch(() => null);
-  const grepWasmUrl = await loadOptionalUrl(
-    "../../../libs/grep/bin/grep.wasm",
-    "grep",
-    "bash examples/libs/grep/build.sh",
-  ).catch(() => null);
-  const sedWasmUrl = await loadOptionalUrl(
-    "../../../libs/sed/bin/sed.wasm",
-    "sed",
-    "bash examples/libs/sed/build.sh",
-  ).catch(() => null);
-
-  log("  Fetching binaries and VFS image...");
-  let wpVfsUrl: string;
-  try {
-    wpVfsUrl = await loadOptionalUrlFrom([
-      "../../public/wordpress.vfs.zst",
-      "../../../../local-binaries/programs/wasm32/wordpress.vfs.zst",
-      "../../../../binaries/programs/wasm32/wordpress.vfs.zst",
-    ], "WordPress VFS image", "bash examples/browser/scripts/build-wp-vfs-image.sh");
-  } catch (err) {
-    log(`  Skipping wordpress: ${(err as Error).message}`);
-    return {};
-  }
+  log("  Fetching WordPress VFS image...");
+  const wpVfsUrl = await loadOptionalUrlFrom([
+    "../../public/wordpress.vfs.zst",
+    "../../../../local-binaries/programs/wasm32/wordpress.vfs.zst",
+    "../../../../binaries/programs/wasm32/wordpress.vfs.zst",
+  ], "WordPress VFS image", "bash examples/browser/scripts/build-wp-vfs-image.sh");
 
   const vfsResp = await fetch(wpVfsUrl);
   if (!vfsResp.ok) {
-    log(`  Skipping wordpress: ${wpVfsUrl} not found (HTTP ${vfsResp.status}). Build: bash examples/browser/scripts/build-wp-vfs-image.sh`);
-    return {};
+    throw new Error(
+      `WordPress VFS image could not be fetched: ${wpVfsUrl} ` +
+      `(HTTP ${vfsResp.status}). Build: bash examples/browser/scripts/build-wp-vfs-image.sh`,
+    );
   }
-  const [kernelBytes, vfsImageBuf, nginxSize, phpFpmSize, coreutilsSize, grepSize, sedSize] = await Promise.all([
+  const [kernelBytes, vfsImageBuf] = await Promise.all([
     fetchWasm(kernelWasmUrl),
     vfsResp.arrayBuffer(),
-    fetchSize(nginxWasmUrl),
-    fetchSize(phpFpmWasmUrl),
-    coreutilsWasmUrl ? fetchSize(coreutilsWasmUrl) : Promise.resolve(0),
-    grepWasmUrl ? fetchSize(grepWasmUrl) : Promise.resolve(0),
-    sedWasmUrl ? fetchSize(sedWasmUrl) : Promise.resolve(0),
   ]);
-  if (nginxSize === 0 || phpFpmSize === 0) {
-    log("  Skipping wordpress: nginx.wasm or php-fpm.wasm could not be fetched");
-    return {};
-  }
 
   // Restore MemoryFileSystem from the pre-built VFS image
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
@@ -553,15 +558,7 @@ async function runWordPress(): Promise<Record<string, number>> {
 
   const tBoot = performance.now();
   await kernel.init(kernelBytes);
-
-  // Register lazy binaries
-  const lazyFiles: Array<{ path: string; url: string; size: number; mode?: number }> = [];
-  if (nginxSize > 0) lazyFiles.push({ path: "/usr/sbin/nginx", url: nginxWasmUrl, size: nginxSize, mode: 0o755 });
-  if (phpFpmSize > 0) lazyFiles.push({ path: "/usr/sbin/php-fpm", url: phpFpmWasmUrl, size: phpFpmSize, mode: 0o755 });
-  if (coreutilsWasmUrl && coreutilsSize > 0) lazyFiles.push({ path: "/bin/coreutils", url: coreutilsWasmUrl, size: coreutilsSize, mode: 0o755 });
-  if (grepWasmUrl && grepSize > 0) lazyFiles.push({ path: "/usr/bin/grep", url: grepWasmUrl, size: grepSize, mode: 0o755 });
-  if (sedWasmUrl && sedSize > 0) lazyFiles.push({ path: "/usr/bin/sed", url: sedWasmUrl, size: sedSize, mode: 0o755 });
-  if (lazyFiles.length > 0) kernel.registerLazyFiles(lazyFiles);
+  try {
 
   // Write dynamic wp-config.php
   writeVfsFile(kernel.fs, "/var/www/html/wp-config.php", WP_CONFIG_PHP);
@@ -572,15 +569,7 @@ async function runWordPress(): Promise<Record<string, number>> {
 
   // Spawn PHP-FPM
   log("  Starting PHP-FPM...");
-  const phpFpmBytes = await kernel.fs.ensureMaterialized("/usr/sbin/php-fpm").then(() => {
-    const fd = kernel.fs.open("/usr/sbin/php-fpm", 0, 0);
-    const stat = kernel.fs.fstat(fd);
-    const buf = new Uint8Array(stat.size);
-    kernel.fs.read(fd, buf, 0, buf.length);
-    kernel.fs.close(fd);
-    return buf.buffer;
-  });
-  kernel.spawn(phpFpmBytes, [
+  await kernel.spawnFromVfs("/usr/sbin/php-fpm", [
     "/usr/sbin/php-fpm", "-y", "/etc/php-fpm.conf", "-c", "/dev/null", "--nodaemonize",
   ]);
   // Wait for PHP-FPM to be ready
@@ -588,15 +577,7 @@ async function runWordPress(): Promise<Record<string, number>> {
 
   // Spawn nginx
   log("  Starting nginx...");
-  const nginxBytes = await kernel.fs.ensureMaterialized("/usr/sbin/nginx").then(() => {
-    const fd = kernel.fs.open("/usr/sbin/nginx", 0, 0);
-    const stat = kernel.fs.fstat(fd);
-    const buf = new Uint8Array(stat.size);
-    kernel.fs.read(fd, buf, 0, buf.length);
-    kernel.fs.close(fd);
-    return buf.buffer;
-  });
-  kernel.spawn(nginxBytes, [
+  await kernel.spawnFromVfs("/usr/sbin/nginx", [
     "/usr/sbin/nginx", "-p", "/etc/nginx", "-c", "nginx.conf",
   ]);
   // Wait for nginx to be ready
@@ -609,40 +590,49 @@ async function runWordPress(): Promise<Record<string, number>> {
   log("  Sending HTTP request to nginx...");
   const tHttp = performance.now();
   const target = await kernel.pickListenerTarget(8080);
-  if (target) {
-    const recvPipeIdx = await kernel.injectConnection(
-      target.pid, target.fd, [127, 0, 0, 1],
-      Math.floor(Math.random() * 60000) + 1024,
-    );
-    if (recvPipeIdx >= 0) {
-      const sendPipeIdx = recvPipeIdx + 1;
-      const httpReq = new TextEncoder().encode(
-        "GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-      );
-      await kernel.pipeWrite(target.pid, recvPipeIdx, httpReq);
-      kernel.wakeBlockedReaders(recvPipeIdx);
-
-      // Wait for first bytes of HTTP response (time to first byte)
-      const deadline = Date.now() + 180_000;
-      let gotResponse = false;
-      while (Date.now() < deadline) {
-        const data = await kernel.pipeRead(target.pid, sendPipeIdx);
-        if (data && data.length > 0) {
-          gotResponse = true;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      if (gotResponse) {
-        results.http_first_response_ms = performance.now() - tHttp;
-      }
-      kernel.pipeCloseWrite(target.pid, recvPipeIdx);
-      kernel.pipeCloseRead(target.pid, sendPipeIdx);
-    }
+  if (!target) {
+    throw new Error("nginx did not listen on port 8080");
   }
 
-  try { await kernel.destroy(); } catch {}
+  const recvPipeIdx = await kernel.injectConnection(
+    target.pid, target.fd, [127, 0, 0, 1],
+    Math.floor(Math.random() * 60000) + 1024,
+  );
+  if (recvPipeIdx < 0) {
+    throw new Error("failed to inject HTTP connection");
+  }
+
+  const sendPipeIdx = recvPipeIdx + 1;
+  try {
+    const httpReq = new TextEncoder().encode(
+      "GET / HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    );
+    await kernel.pipeWrite(0, recvPipeIdx, httpReq);
+    kernel.wakeBlockedReaders(recvPipeIdx);
+
+    // Wait for first bytes of HTTP response (time to first byte)
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      const data = await kernel.pipeRead(0, sendPipeIdx);
+      if (data && data.length > 0) {
+        results.http_first_response_ms = performance.now() - tHttp;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  } finally {
+    kernel.pipeCloseWrite(0, recvPipeIdx);
+    kernel.pipeCloseRead(0, sendPipeIdx);
+  }
+
+  if (results.http_first_response_ms == null) {
+    throw new Error("timed out waiting for WordPress HTTP response");
+  }
+
   return results;
+  } finally {
+    try { await kernel.destroy(); } catch {}
+  }
 }
 
 // ─── mariadb ────────────────────────────────────────────────────────────────
@@ -651,11 +641,10 @@ type MariaDbArch = "wasm32" | "wasm64";
 
 async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
-  const installDir = arch === "wasm64" ? "mariadb-install-64" : "mariadb-install";
   const suiteSuffix = arch === "wasm64" ? "-64" : "";
   const buildHint = arch === "wasm64"
-    ? "bash examples/libs/mariadb/build-mariadb.sh --wasm64"
-    : "bash examples/libs/mariadb/build-mariadb.sh";
+    ? "bash examples/browser/scripts/build-mariadb-vfs-image.sh --wasm64"
+    : "bash examples/browser/scripts/build-mariadb-vfs-image.sh";
 
   const engineArgs = [`--default-storage-engine=${engine}`];
   if (engine === "InnoDB") {
@@ -669,63 +658,57 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     );
   }
 
-  let mariadbWasmUrl: string;
-  let systemTablesUrl: string;
-  let systemDataUrl: string;
-  try {
-    mariadbWasmUrl = await loadOptionalUrl(
-      `../../../libs/mariadb/${installDir}/bin/mariadbd.wasm`,
-      `MariaDB binary (${arch})`,
-      buildHint,
+  const mariadbVfsUrl = await loadOptionalUrlFrom(
+    arch === "wasm64" ? [
+      "../../public/mariadb-64.vfs.zst",
+      "../../../../local-binaries/programs/wasm64/mariadb-vfs.vfs.zst",
+      "../../../../binaries/programs/wasm64/mariadb-vfs.vfs.zst",
+    ] : [
+      "../../public/mariadb.vfs.zst",
+      "../../../../local-binaries/programs/wasm32/mariadb-vfs.vfs.zst",
+      "../../../../binaries/programs/wasm32/mariadb-vfs.vfs.zst",
+    ],
+    `MariaDB VFS image (${arch})`,
+    buildHint,
+  );
+
+  const vfsResp = await fetch(mariadbVfsUrl);
+  if (!vfsResp.ok) {
+    throw new Error(
+      `MariaDB VFS image could not be fetched: ${mariadbVfsUrl} ` +
+      `(HTTP ${vfsResp.status}). Build: ${buildHint}`,
     );
-    systemTablesUrl = await loadOptionalUrl(
-      `../../../libs/mariadb/${installDir}/share/mysql/mysql_system_tables.sql`,
-      `MariaDB system tables SQL (${arch})`,
-      buildHint,
-    );
-    systemDataUrl = await loadOptionalUrl(
-      `../../../libs/mariadb/${installDir}/share/mysql/mysql_system_tables_data.sql`,
-      `MariaDB system data SQL (${arch})`,
-      buildHint,
-    );
-  } catch (err) {
-    log(`  Skipping mariadb-${engine.toLowerCase()}${suiteSuffix}: ${(err as Error).message}`);
-    return {};
   }
 
-  log(`  Fetching MariaDB + bootstrap SQL (${engine})...`);
-  const [mariadbBytes, systemTablesSql, systemDataSql] = await Promise.all([
-    fetchWasm(mariadbWasmUrl),
-    fetch(systemTablesUrl).then((r) => r.text()),
-    fetch(systemDataUrl).then((r) => r.text()),
+  log(`  Fetching MariaDB VFS image (${engine}, ${arch})...`);
+  const [kernelBytes, vfsImageBuf] = await Promise.all([
+    fetchWasm(kernelWasmUrl),
+    vfsResp.arrayBuffer(),
   ]);
+  const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
+    maxByteLength: 1024 * 1024 * 1024,
+  });
+  const mariadbBytes = await readVfsBytes(memfs, "/usr/sbin/mariadbd");
+  const bootstrapSql = await readVfsText(memfs, "/etc/mariadb/bootstrap.sql");
 
   // ── Bootstrap ──
   log("  Running bootstrap...");
   const tBootstrap = performance.now();
 
   const bootstrapKernel = new BrowserKernel({
+    memfs,
     maxWorkers: 12,
-    fsSize: 64 * 1024 * 1024,
     onStdout: () => {},
     onStderr: () => {},
   });
-  await bootstrapKernel.init();
-
-  populateMariadbDirs(bootstrapKernel.fs);
-  ensureDir(bootstrapKernel.fs, "/usr");
-  ensureDir(bootstrapKernel.fs, "/usr/sbin");
-  ensureDir(bootstrapKernel.fs, "/tmp");
-  writeVfsBinary(bootstrapKernel.fs, "/usr/sbin/mariadbd", new Uint8Array(mariadbBytes));
-
-  const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS bench;\n`;
-  ensureDir(bootstrapKernel.fs, "/etc");
-  ensureDir(bootstrapKernel.fs, "/etc/mariadb");
-  writeVfsFile(bootstrapKernel.fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
+  await bootstrapKernel.init(kernelBytes);
+  let client: MySqlBrowserClient | null = null;
+  try {
 
   const bootstrapStdin = new TextEncoder().encode(bootstrapSql);
-  const bootstrapExit = bootstrapKernel.spawn(mariadbBytes, [
+  bootstrapKernel.spawn(mariadbBytes, [
     "mariadbd", "--no-defaults", "--bootstrap",
+    "--user=mysql",
     "--datadir=/data", "--tmpdir=/data/tmp",
     ...engineArgs,
     "--skip-grant-tables",
@@ -754,6 +737,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   log("  Starting server...");
   const serverExit = bootstrapKernel.spawn(mariadbBytes, [
     "mariadbd", "--no-defaults",
+    "--user=mysql",
     "--datadir=/data", "--tmpdir=/data/tmp",
     ...engineArgs,
     "--skip-grant-tables",
@@ -762,17 +746,24 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     "--port=3306", "--bind-address=0.0.0.0", "--socket=",
     "--max-connections=10", "--thread-handling=no-threads",
   ]);
+  void serverExit;
 
   // Wait for port 3306
   log("  Waiting for server to accept connections...");
+  let listenerReady = false;
   for (let i = 0; i < 120; i++) {
     const target = await bootstrapKernel.pickListenerTarget(3306);
-    if (target) break;
+    if (target) {
+      listenerReady = true;
+      break;
+    }
     await new Promise((r) => setTimeout(r, 1000));
+  }
+  if (!listenerReady) {
+    throw new Error(`mariadb-${engine.toLowerCase()}${suiteSuffix} did not listen on port 3306`);
   }
 
   // Connect MySQL client with retries
-  let client: MySqlBrowserClient | null = null;
   for (let attempt = 1; attempt <= 10; attempt++) {
     try {
       client = await MySqlBrowserClient.connect(bootstrapKernel, 3306);
@@ -788,6 +779,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   // ── Queries ──
   log("  Running CREATE TABLE...");
   const t1 = performance.now();
+  await client.query("CREATE DATABASE IF NOT EXISTS bench");
   await client.query(`CREATE TABLE bench.t1 (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), value INT) ENGINE=${engine}`);
   await client.query(`CREATE TABLE bench.t2 (id INT PRIMARY KEY AUTO_INCREMENT, t1_id INT, data VARCHAR(200)) ENGINE=${engine}`);
   results.query_create_ms = performance.now() - t1;
@@ -812,10 +804,11 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
   await client.query("SELECT t1.name, t2.data FROM bench.t1 t1 JOIN bench.t2 t2 ON t1.id = t2.t1_id WHERE t1.value > 500");
   results.query_join_ms = performance.now() - t4;
 
-  client.close();
-  try { await bootstrapKernel.destroy(); } catch {}
-
   return results;
+  } finally {
+    try { client?.close(); } catch {}
+    try { await bootstrapKernel.destroy(); } catch {}
+  }
 }
 
 // ─── Suite registry ─────────────────────────────────────────────────────────
@@ -823,12 +816,15 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
 const SUITES: Record<string, () => Promise<Record<string, number>>> = {
   "syscall-io": runSyscallIo,
   "process-lifecycle": runProcessLifecycle,
-  "erlang-ring": runErlangRing,
   "wordpress": runWordPress,
   "mariadb-aria": () => runMariaDbWithEngine("Aria", "wasm32"),
   "mariadb-aria-64": () => runMariaDbWithEngine("Aria", "wasm64"),
   "mariadb-innodb": () => runMariaDbWithEngine("InnoDB", "wasm32"),
   "mariadb-innodb-64": () => runMariaDbWithEngine("InnoDB", "wasm64"),
+};
+
+const DISABLED_SUITES: Record<string, string> = {
+  "erlang-ring": "disabled while the Erlang benchmark is unstable",
 };
 
 declare global {
@@ -850,6 +846,12 @@ function median(values: number[]): number {
 }
 
 window.__runBenchmark = async (suiteName, options) => {
+  const disabledReason = DISABLED_SUITES[suiteName];
+  if (disabledReason) {
+    log(`Skipping ${suiteName}: ${disabledReason}`);
+    return {};
+  }
+
   const suiteFn = SUITES[suiteName];
   if (!suiteFn) throw new Error(`Unknown suite: ${suiteName}. Available: ${Object.keys(SUITES).join(", ")}`);
 

@@ -10,12 +10,17 @@ import { resolve, dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { runCentralizedProgram } from "../../host/test/centralized-test-helper.js";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
+import { tryResolveBinary } from "../../host/src/binary-resolver.js";
+import { NodePlatformIO } from "../../host/src/platform/node.js";
 import type { BenchmarkSuite } from "../types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
 
-const phpBinaryPath = resolve(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
+const phpBinaryPath =
+  tryResolveBinary("programs/php/php.wasm") ??
+  resolve(repoRoot, "examples/libs/php/php-src/sapi/cli/php");
+const opcachePath = tryResolveBinary("programs/php/opcache.so");
 const wpDir = resolve(repoRoot, "examples/wordpress/wordpress");
 const routerScript = resolve(repoRoot, "examples/wordpress/router.php");
 
@@ -24,16 +29,24 @@ function loadBytes(path: string): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-function hasPrereqs(): boolean {
-  return existsSync(phpBinaryPath) && existsSync(join(wpDir, "wp-settings.php"));
+function missingPrereqsMessage(): string | null {
+  if (!existsSync(phpBinaryPath)) {
+    return "PHP benchmark binary is missing. Run: bash examples/libs/php/build-php.sh";
+  }
+  if (!existsSync(join(wpDir, "wp-settings.php"))) {
+    return "WordPress source tree is missing. Run: bash examples/wordpress/setup.sh";
+  }
+  return null;
 }
 
 async function measureCliRequire(): Promise<number> {
+  const opcacheArgs = phpOpcacheArgs();
   const t0 = performance.now();
   const result = await runCentralizedProgram({
     programPath: phpBinaryPath,
-    argv: ["php", "-r", `chdir('${wpDir}'); require 'wp-load.php';`],
+    argv: ["php", ...opcacheArgs, "-r", `chdir('${wpDir}'); require 'wp-load.php';`],
     env: ["HOME=/tmp", "TMPDIR=/tmp"],
+    io: new NodePlatformIO(),
     timeout: 120_000,
   });
   const t1 = performance.now();
@@ -41,6 +54,18 @@ async function measureCliRequire(): Promise<number> {
     throw new Error(`PHP wp-load.php failed (exit ${result.exitCode}): ${result.stderr}`);
   }
   return t1 - t0;
+}
+
+function phpOpcacheArgs(): string[] {
+  if (process.env.NO_OPCACHE === "1" || !opcachePath) return [];
+  return [
+    "-d", `extension_dir=${dirname(opcachePath)}`,
+    "-d", "zend_extension=opcache",
+    "-d", "opcache.enable=1",
+    "-d", "opcache.enable_cli=1",
+    "-d", "opcache.memory_consumption=128",
+    "-d", "opcache.validate_timestamps=0",
+  ];
 }
 
 async function measureHttpFirstResponse(): Promise<number> {
@@ -62,13 +87,15 @@ async function measureHttpFirstResponse(): Promise<number> {
   await host.init();
 
   const t0 = performance.now();
+  const opcacheArgs = phpOpcacheArgs();
 
   const exitPromise = host.spawn(programBytes, [
-    "php", "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript,
+    "php", ...opcacheArgs, "-S", `0.0.0.0:${port}`, "-t", wpDir, routerScript,
   ], {
     env: ["HOME=/tmp", "TMPDIR=/tmp"],
     cwd: wpDir,
   });
+  void exitPromise;
 
   // Wait for server startup (PHP prints "Development Server started" to stderr)
   const startDeadline = Date.now() + 60_000;
@@ -113,9 +140,9 @@ const suite: BenchmarkSuite = {
   name: "wordpress",
 
   async run(): Promise<Record<string, number>> {
-    if (!hasPrereqs()) {
-      console.warn("  Skipping (PHP or WordPress not found)");
-      return {};
+    const missing = missingPrereqsMessage();
+    if (missing) {
+      throw new Error(`WordPress benchmark prerequisites are missing. ${missing}`);
     }
 
     const results: Record<string, number> = {};

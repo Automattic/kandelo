@@ -327,7 +327,7 @@ export class NodeKernelHost {
     } catch {
       // Worker may have already exited
     }
-    this.worker.terminate();
+    await this.worker.terminate();
     this.exitResolvers.clear();
     this.pendingRequests.clear();
   }

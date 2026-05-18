@@ -1,119 +1,80 @@
 /**
  * serve-nginx.ts — WordPress behind nginx + PHP-FPM on wasm-posix-kernel.
  *
- * Starts multiple Wasm processes in the same kernel:
- *   - php-fpm master (pid 1) → forks 1 worker (pid 2)
- *   - nginx master   (pid 3) → forks 2 workers (pid 4, 5)
+ * Boots the same fully virtualized dinit/nginx/PHP-FPM/WordPress VFS image
+ * used by the browser demo. dinit starts:
+ *   - wp-config-init
+ *   - php-fpm master → static worker pool
+ *   - nginx master   → 2 workers
  *
  * nginx handles HTTP connections (multi-worker) and proxies all requests
- * to PHP-FPM via FastCGI over the kernel's loopback TCP. A PHP router
- * script serves static files and routes WordPress requests.
+ * to PHP-FPM via FastCGI over the kernel's loopback TCP.
  *
  * Usage:
  *   npx tsx examples/wordpress/serve-nginx.ts [port]
  *
  * Requires:
- *   1. nginx binary:   examples/nginx/nginx.wasm
- *      (build with: bash examples/nginx/build.sh)
- *   2. PHP-FPM binary: examples/nginx/php-fpm.wasm
- *      (build with: bash examples/libs/php/build-php.sh)
- *   3. WordPress files: examples/wordpress/wordpress/
- *      (download with: bash examples/wordpress/setup.sh)
+ *   1. WordPress VFS image: programs/wordpress.vfs.zst
+ *      (build with: bash examples/browser/scripts/build-wp-vfs-image.sh)
+ *   2. dinit binary: programs/dinit/dinit.wasm
  */
 
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
-import { resolve, dirname, join } from "path";
+import { readFileSync } from "fs";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
 import { resolveBinary } from "../../host/src/binary-resolver";
+import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
+import { writeVfsFile } from "../../host/src/vfs/image-helpers";
 
-const scriptDir = dirname(new URL(import.meta.url).pathname);
-const repoRoot = resolve(scriptDir, "../..");
-
-const nginxWasmPath = resolveBinary("programs/nginx.wasm");
-const phpFpmWasmPath = resolveBinary("programs/php/php-fpm.wasm");
-const wpDir = resolve(scriptDir, "wordpress");
-const confTemplate = resolve(scriptDir, "nginx.conf");
-const phpFpmConf = resolve(scriptDir, "php-fpm.conf");
-const routerScript = resolve(scriptDir, "fpm-router.php");
+const wordpressVfsPath = resolveBinary("programs/wordpress.vfs.zst");
+const dinitWasmPath = resolveBinary("programs/dinit/dinit.wasm");
 
 const port = parseInt(process.argv[2] || "8080", 10);
-
-// Validate prerequisites
-for (const [name, path, hint] of [
-  ["nginx.wasm", nginxWasmPath, "bash examples/nginx/build.sh"],
-  ["php-fpm.wasm", phpFpmWasmPath, "bash examples/libs/php/build-php.sh"],
-] as const) {
-  if (!existsSync(path)) {
-    console.error(`Error: ${name} not found. Run: ${hint}`);
-    process.exit(1);
-  }
-}
-if (!existsSync(join(wpDir, "wp-settings.php"))) {
-  console.error("Error: WordPress not found. Run: bash examples/wordpress/setup.sh");
-  process.exit(1);
-}
-
-// Create temp directories nginx needs
-for (const dir of ["client_body_temp", "fastcgi_temp"]) {
-  mkdirSync(join("/tmp/nginx-wasm", dir), { recursive: true });
-}
-mkdirSync("/tmp/nginx-wasm/logs", { recursive: true });
 
 function loadBytes(path: string): ArrayBuffer {
   const buf = readFileSync(path);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-function generateNginxConf(): string {
-  let conf = readFileSync(confTemplate, "utf-8");
-  conf = conf.replace(/WORDPRESS_ROOT/g, wpDir);
-  conf = conf.replace(/ROUTER_SCRIPT/g, routerScript);
-  conf = conf.replace("listen 8080", `listen ${port}`);
-  const outPath = "/tmp/nginx-wasm/wordpress-nginx.conf";
-  writeFileSync(outPath, conf);
-  return outPath;
-}
-
 async function main() {
-  const phpFpmBytes = loadBytes(phpFpmWasmPath);
-  const nginxBytes = loadBytes(nginxWasmPath);
+  const wordpressVfs = await configureWordPressVfs(loadBytes(wordpressVfsPath));
+  const dinitBytes = loadBytes(dinitWasmPath);
 
   const host = new NodeKernelHost({
     maxWorkers: 8,
+    rootfsImage: wordpressVfs,
     onStdout: (_pid, data) => process.stdout.write(data),
     onStderr: (_pid, data) => process.stderr.write(data),
   });
 
   await host.init();
 
-  // --- Process 1: php-fpm master ---
-  console.log("Starting php-fpm master (pid 1) on 127.0.0.1:9000...");
-  const fpmExit = host.spawn(phpFpmBytes, [
-    "php-fpm",
-    "-y", phpFpmConf,
-    "-c", "/dev/null",
-    "--nodaemonize",
+  console.log("Booting WordPress VFS with dinit...");
+  const dinitExit = host.spawn(dinitBytes, [
+    "/sbin/dinit",
+    "--container",
+    "-p",
+    "/tmp/dinitctl",
   ], {
-    env: ["HOME=/tmp", "PATH=/usr/local/bin:/usr/bin:/bin"],
-    cwd: wpDir,
+    env: [
+      "HOME=/root",
+      "TERM=xterm-256color",
+      "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+      "WP_APP_PATH=/",
+      "WP_PROTO=http",
+    ],
+    cwd: "/",
   });
 
-  // Wait for php-fpm to start listening before starting nginx
-  console.log("Waiting for php-fpm to initialize...");
-  await new Promise((r) => setTimeout(r, 2000));
-
-  // --- nginx master ---
-  const confPath = generateNginxConf();
-  console.log(`Starting nginx master (pid 3) on http://localhost:${port}/...`);
-  console.log("  nginx will fork 2 worker processes");
-  host.spawn(nginxBytes, [
-    "nginx",
-    "-p", scriptDir + "/",
-    "-c", confPath,
-  ], {
-    env: ["HOME=/tmp", "PATH=/usr/local/bin:/usr/bin:/bin"],
-    cwd: scriptDir,
+  let dinitExited = false;
+  dinitExit.then((code) => {
+    dinitExited = true;
+    console.error(`dinit exited with code ${code}`);
+  }).catch(() => {
+    dinitExited = true;
   });
+
+  console.log(`Waiting for nginx on http://localhost:${port}/...`);
+  await waitForHttp(`http://localhost:${port}/`, 180_000, () => dinitExited);
 
   console.log("\nWordPress running behind nginx + php-fpm!");
   console.log(`  Homepage:  curl http://localhost:${port}/`);
@@ -126,8 +87,67 @@ async function main() {
     process.exit(0);
   });
 
-  await fpmExit;
+  await dinitExit;
   await host.destroy().catch(() => {});
+}
+
+async function configureWordPressVfs(image: ArrayBuffer): Promise<ArrayBuffer> {
+  const fs = MemoryFileSystem.fromImage(new Uint8Array(image), {
+    maxByteLength: 1024 * 1024 * 1024,
+  });
+  const nginxConf = readVfsText(fs, "/etc/nginx/nginx.conf")
+    .replace(/listen\s+8080;/, `listen ${port};`);
+  writeVfsFile(fs, "/etc/nginx/nginx.conf", nginxConf);
+  for (const service of ["wp-config-init", "php-fpm", "nginx"]) {
+    const path = `/etc/dinit.d/${service}`;
+    const conf = readVfsText(fs, path).replace(/^logfile\s*=.*\n/gm, "");
+    writeVfsFile(fs, path, conf);
+  }
+  try {
+    fs.unlink("/var/www/html/wp-content/database/wordpress.db");
+  } catch {
+    // Fresh release images do not contain an installed database.
+  }
+  const saved = await fs.saveImage();
+  return saved.buffer.slice(saved.byteOffset, saved.byteOffset + saved.byteLength);
+}
+
+function readVfsText(fs: MemoryFileSystem, path: string): string {
+  const st = fs.stat(path);
+  const fd = fs.open(path, 0, 0);
+  try {
+    const bytes = new Uint8Array(st.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const n = fs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
+      if (n <= 0) break;
+      offset += n;
+    }
+    return new TextDecoder().decode(bytes.subarray(0, offset));
+  } finally {
+    fs.close(fd);
+  }
+}
+
+async function waitForHttp(
+  url: string,
+  timeoutMs: number,
+  didExit: () => boolean,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (didExit()) {
+      throw new Error("dinit exited before nginx responded to HTTP");
+    }
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      await resp.body?.cancel();
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  throw new Error(`nginx did not respond to HTTP within ${timeoutMs}ms`);
 }
 
 main().catch((e) => {
