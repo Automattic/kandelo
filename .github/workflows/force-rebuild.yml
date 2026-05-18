@@ -763,6 +763,13 @@ jobs:
             cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
           '
 
+      - name: Run fork-instrument tests
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+            cargo test -p fork-instrument --target "$HOST_TARGET"
+          '
+
       - name: Run vitest (host integration tests)
         run: |
           bash scripts/dev-shell.sh bash -c '
