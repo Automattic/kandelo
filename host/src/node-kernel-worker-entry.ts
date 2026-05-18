@@ -24,6 +24,8 @@ import {
   VirtualPlatformIO,
   NodeTimeProvider,
   DEFAULT_MOUNT_SPEC,
+  DeviceFileSystem,
+  MemoryFileSystem,
   resolveForNode,
 } from "./vfs";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
@@ -59,6 +61,7 @@ let workerAdapter: NodeWorkerAdapter;
 let threadAllocator: ThreadPageAllocator;
 let maxPages = DEFAULT_MAX_PAGES;
 let execPrograms: Record<string, string> = {};
+let vfsExecIO: PlatformIO | null = null;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
@@ -225,9 +228,36 @@ function resolveExecLocal(path: string): ArrayBuffer | null {
   return null;
 }
 
+function readExecFromVfs(path: string): ArrayBuffer | null {
+  if (!vfsExecIO) return null;
+  let fd: number | null = null;
+  try {
+    const st = vfsExecIO.stat(path);
+    if ((st.mode & 0o170000) === 0o040000) return null;
+    fd = vfsExecIO.open(path, 0, 0);
+    const bytes = new Uint8Array(st.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const n = vfsExecIO.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
+      if (n <= 0) break;
+      offset += n;
+    }
+    return bytes.slice(0, offset).buffer;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { vfsExecIO.close(fd); } catch {}
+    }
+  }
+}
+
 async function resolveExec(path: string): Promise<ArrayBuffer | null> {
   const local = resolveExecLocal(path);
   if (local) return local;
+
+  const vfs = readExecFromVfs(path);
+  if (vfs) return vfs;
 
   // Ask main thread to resolve
   const requestId = ++execResolveId;
@@ -247,11 +277,19 @@ async function resolveExec(path: string): Promise<ArrayBuffer | null> {
  */
 function buildVirtualPlatformIO(rootfsImage: ArrayBuffer): VirtualPlatformIO {
   sessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
-  const mounts = resolveForNode(
+  const specMounts = resolveForNode(
     DEFAULT_MOUNT_SPEC,
     new Uint8Array(rootfsImage),
     sessionDir,
   );
+  const shmSab = new SharedArrayBuffer(16 * 1024 * 1024);
+  const shmfs = MemoryFileSystem.create(shmSab);
+  shmfs.chmod("/", 0o1777);
+  const mounts = [
+    { mountPoint: "/dev/shm", backend: shmfs },
+    { mountPoint: "/dev", backend: new DeviceFileSystem() },
+    ...specMounts,
+  ];
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
 
@@ -274,6 +312,7 @@ async function handleInit(msg: InitMessage) {
   const io: PlatformIO = msg.rootfsImage
     ? buildVirtualPlatformIO(msg.rootfsImage)
     : new NodePlatformIO();
+  vfsExecIO = msg.rootfsImage ? io : null;
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
   }

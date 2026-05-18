@@ -2,7 +2,7 @@
 /**
  * wasm-posix-kernel WordPress — Site Editor Performance Benchmark
  *
- * Spawns the WordPress server, installs WordPress, then launches
+ * Spawns WordPress behind nginx + PHP-FPM, installs WordPress, then launches
  * headless Chromium to measure site-editor performance.
  *
  * Designed to produce output comparable to WordPress Playground's
@@ -20,7 +20,6 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { parseArgs } from "util";
-import { chromium } from "@playwright/test";
 import {
   measureSiteEditor,
   METRIC_NAMES,
@@ -39,8 +38,6 @@ interface BenchmarkResult {
 }
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
-const WP_DIR = path.resolve(import.meta.dirname, "../wordpress");
-const DB_PATH = path.join(WP_DIR, "wp-content/database/wordpress.db");
 
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "benchmarkpass123";
@@ -74,11 +71,6 @@ async function main() {
   process.on("exit", cleanup);
 
   try {
-    // Fresh database for each benchmark
-    if (fs.existsSync(DB_PATH)) {
-      fs.unlinkSync(DB_PATH);
-    }
-
     // Start server and measure startup
     console.log("--- Starting server ---");
     const { proc, startupMs } = await startServer(opts.port);
@@ -162,7 +154,7 @@ async function startServer(port: number): Promise<{ proc: ChildProcess; startupM
   const startTime = Date.now();
   const proc = spawn(
     "npx",
-    ["tsx", "examples/wordpress/serve.ts", String(port)],
+    ["tsx", "examples/wordpress/serve-nginx.ts", String(port)],
     {
       cwd: REPO_ROOT,
       stdio: ["ignore", "pipe", "pipe"],
@@ -177,7 +169,7 @@ async function startServer(port: number): Promise<{ proc: ChildProcess; startupM
   proc.stderr?.on("data", (data) => { stderr += data.toString(); });
   proc.stdout?.on("data", (data) => { stdout += data.toString(); });
 
-  const readyPattern = /Development Server.*started/i;
+  const readyPattern = /WordPress running behind nginx \+ php-fpm/i;
 
   await new Promise<void>((resolve, reject) => {
     const timeoutId = setTimeout(() => {
@@ -251,44 +243,31 @@ async function stopServer(proc: ChildProcess): Promise<void> {
 
 async function installWordPress(baseUrl: string, headed: boolean): Promise<number> {
   const startTime = Date.now();
+  void headed;
 
-  const browser = await chromium.launch({ headless: !headed });
-  const context = await browser.newContext();
-  const page = await context.newPage();
+  const body = new URLSearchParams({
+    weblog_title: "Wasm WordPress",
+    user_name: ADMIN_USER,
+    admin_password: ADMIN_PASS,
+    admin_password2: ADMIN_PASS,
+    admin_email: ADMIN_EMAIL,
+    blog_public: "1",
+    Submit: "Install WordPress",
+  });
 
-  try {
-    await page.goto(`${baseUrl}/wp-admin/install.php`, {
-      waitUntil: "domcontentloaded",
-      timeout: 120_000,
-    });
-    await page.waitForLoadState("networkidle", { timeout: 30_000 }).catch(() => {});
+  const resp = await fetch(`${baseUrl}/wp-admin/install.php?step=2`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+    signal: AbortSignal.timeout(600_000),
+  });
 
-    // Fill install form
-    await page.getByRole("textbox", { name: "Site Title" }).fill("Wasm WordPress");
-    await page.getByRole("textbox", { name: "Username" }).fill(ADMIN_USER);
-
-    // Clear the auto-generated password and set our own
-    const passwordField = page.getByRole("textbox", { name: "Password" });
-    await passwordField.fill(ADMIN_PASS);
-
-    await page.getByRole("textbox", { name: "Your Email" }).fill(ADMIN_EMAIL);
-
-    // Check "Confirm use of weak password" if visible
-    const weakPwCheckbox = page.getByRole("checkbox", { name: /weak password/i });
-    if (await weakPwCheckbox.isVisible({ timeout: 1000 }).catch(() => false)) {
-      await weakPwCheckbox.check();
-    }
-
-    await page.getByRole("button", { name: "Install WordPress" }).click();
-
-    // Wait for success
-    await page.getByRole("heading", { name: "Success!" }).waitFor({
-      timeout: 120_000,
-    });
-  } finally {
-    await page.close();
-    await context.close();
-    await browser.close();
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new Error(`WordPress install failed with HTTP ${resp.status}`);
+  }
+  if (!/Success/i.test(text)) {
+    throw new Error("WordPress install response did not contain the success marker");
   }
 
   return Date.now() - startTime;
