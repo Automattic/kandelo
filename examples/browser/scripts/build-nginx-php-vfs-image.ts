@@ -19,6 +19,7 @@ import {
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
+import { prewarmOpcache } from "./opcache-prewarm";
 
 const OUT_FILE = join(findRepoRoot(), "examples", "browser", "public", "nginx-php.vfs.zst");
 
@@ -106,26 +107,18 @@ slowlog = /dev/null
 request_slowlog_trace_depth = 0
 `;
 
-// opcache: each php-fpm worker keeps its own bytecode cache (no cross-
-// process SHM in our wasm port — the static worker pool is small and
-// warmups are fast). validate_timestamps=0 is safe because VFS files
+// opcache: file-cache backend, populated at build time by
+// prewarmOpcache (see end of main()). See build-wp-vfs-image.ts for
+// the rationale. validate_timestamps=0 is safe because VFS files
 // don't change at runtime.
-//
-// TEMPORARILY DISABLED for the binary-resolution-via-index-ledger
-// Phase 12.3 verification: when PHP is source-built from the current
-// recipe (cache_key mismatch with the indexed rev2 archive), opcache.so
-// loads via dlopen successfully but traps with "index out of bounds"
-// during zend_activate_modules' per-request startup. Tracked
-// separately as a pre-existing PHP-on-wasm bug surfaced by the
-// resolver's correct-by-design source-build fallback. Re-enable
-// after a working rev=N PHP archive is republished AND the trap is
-// debugged.
-const PHP_INI = `; opcache disabled — see build-nginx-php-vfs-image.ts comment
-;zend_extension=/usr/lib/php/extensions/opcache.so
+const PHP_INI = `zend_extension=/usr/lib/php/extensions/opcache.so
 
 [opcache]
-opcache.enable=0
-opcache.enable_cli=0
+opcache.enable=1
+opcache.enable_cli=1
+opcache.file_cache=/var/cache/opcache
+opcache.file_cache_only=1
+opcache.validate_timestamps=0
 `;
 
 const FPM_ROUTER_PHP = `<?php
@@ -242,6 +235,14 @@ async function main() {
   writeVfsFile(fs, "/etc/php.ini", PHP_INI);
   writeVfsFile(fs, "/var/www/fpm-router.php", FPM_ROUTER_PHP);
   writeVfsFile(fs, "/var/www/html/index.php", INDEX_PHP);
+
+  // Prewarm opcache: compile the demo's .php files into the file
+  // cache so the first request doesn't pay the parse cost. See
+  // build-wp-vfs-image.ts for the full rationale.
+  await prewarmOpcache(fs, {
+    sourceRoots: ["/var/www/html"],
+    label: "nginx-php",
+  });
 
   // dinit + service tree. nginx depends on php-fpm so the FastCGI port
   // is up by the time nginx accepts its first request.

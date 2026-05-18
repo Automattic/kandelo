@@ -28,6 +28,7 @@ import {
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { populateShellEnvironment } from "./shell-vfs-build";
+import { prewarmOpcache } from "./opcache-prewarm";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "examples", "browser");
@@ -179,33 +180,23 @@ request_slowlog_trace_depth = 0
 `;
   writeVfsFile(fs, "/etc/php-fpm.conf", phpFpmConf);
 
-  // opcache: each php-fpm worker keeps its own bytecode cache (no cross-
-  // process SHM in our wasm port — the static worker pool is small and
-  // warmups are fast). validate_timestamps=0 is safe because VFS files
-  // don't change at runtime.
-  //
-  // TEMPORARILY DISABLED. Loading opcache.so via dlopen in the FPM
-  // master succeeds, but the first request in a forked worker traps
-  // with "table index is out of bounds" inside zend_activate_modules.
-  // Root cause: fork doesn't replay parent dlopens — the child's
-  // wasm instance has a fresh indirect_function_table at module-
-  // initial size, while opcache's data section (copied via fork's
-  // memcpy) references table indices the parent grew the table to
-  // during dlopen. Tracked in
-  // docs/plans/2026-05-14-binary-resolution-followups.md (#1).
-  // Re-enable after fork replays dlopen state in children.
+  // opcache: file-cache backend, populated at build time by
+  // prewarmOpcache (see end of main()). See build-wp-vfs-image.ts for
+  // the rationale — same WordPress codebase, same win.
   ensureDirRecursive(fs, "/usr/lib/php/extensions");
   writeVfsBinary(
     fs,
     "/usr/lib/php/extensions/opcache.so",
     new Uint8Array(readFileSync(OPCACHE_SO_PATH)),
   );
-  const phpIni = `; opcache disabled — see build-lamp-vfs-image.ts comment
-;zend_extension=/usr/lib/php/extensions/opcache.so
+  const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
 
 [opcache]
-opcache.enable=0
-opcache.enable_cli=0
+opcache.enable=1
+opcache.enable_cli=1
+opcache.file_cache=/var/cache/opcache
+opcache.file_cache_only=1
+opcache.validate_timestamps=0
 `;
   writeVfsFile(fs, "/etc/php.ini", phpIni);
 
@@ -447,6 +438,12 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 
   // Service tree
   addDinitInit(fs, buildServices());
+
+  // Prewarm opcache: see build-wp-vfs-image.ts for context.
+  await prewarmOpcache(fs, {
+    sourceRoots: ["/var/www/html"],
+    label: "lamp",
+  });
 
   await saveImage(fs, OUT_FILE);
   console.log(`${wpCount} WordPress files total`);
