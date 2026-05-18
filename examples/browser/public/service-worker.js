@@ -69,6 +69,7 @@ if (typeof window !== "undefined") {
   // Set to true once a bridge has been configured (via init-bridge or cache restore).
   // Used to distinguish "never configured" from "configured but SW restarted".
   var bridgeConfigured = false;
+  var appClientIds = new Set();
 
   // --- Bridge restoration state ---
   // Single in-flight restoration promise, shared by concurrent fetch events
@@ -303,6 +304,96 @@ if (typeof window !== "undefined") {
     return url.origin !== self.location.origin;
   }
 
+  function appRootPath() {
+    return appPrefix.endsWith("/") ? appPrefix.slice(0, -1) : appPrefix;
+  }
+
+  function appBasePath() {
+    var root = appRootPath();
+    var idx = root.lastIndexOf("/");
+    return idx > 0 ? root.slice(0, idx) : "";
+  }
+
+  function isAppPath(pathname) {
+    return pathname === appRootPath() || pathname.startsWith(appPrefix);
+  }
+
+  function stripAppPath(pathname) {
+    if (pathname === appRootPath()) return "/";
+    return pathname.slice(appRootPath().length);
+  }
+
+  function getRequestReferer(request) {
+    // In a service worker, the Referer header is not reliably exposed
+    // through Headers. Request.referrer is the fetch-owned source of truth;
+    // keep the header fallback for engines that expose it.
+    return request.referrer || request.headers.get("referer") || "";
+  }
+
+  function getAppReferer(request) {
+    var referer = getRequestReferer(request);
+    if (!referer) return null;
+    try {
+      var refererUrl = new URL(referer);
+      if (
+        refererUrl.origin === self.location.origin &&
+        isAppPath(refererUrl.pathname)
+      ) {
+        return refererUrl;
+      }
+    } catch (e) {
+      /* malformed referer — ignore */
+    }
+    return null;
+  }
+
+  function isNavigationRequest(request) {
+    return request.mode === "navigate" || request.destination === "document";
+  }
+
+  function isAppClient(event) {
+    return event.clientId && appClientIds.has(event.clientId);
+  }
+
+  function isAppInitiatedRequest(event, request) {
+    return getAppReferer(request) !== null || isAppClient(event);
+  }
+
+  function shouldRedirectIntoApp(event, request, url) {
+    return !isAppPath(url.pathname) && isAppInitiatedRequest(event, request);
+  }
+
+  function markAppClient(event, request) {
+    if (isNavigationRequest(request)) {
+      if (event.resultingClientId) {
+        appClientIds.add(event.resultingClientId);
+      }
+      if (getAppReferer(request) !== null && event.clientId) {
+        appClientIds.add(event.clientId);
+      }
+      return;
+    }
+
+    if (event.clientId) {
+      appClientIds.add(event.clientId);
+    }
+  }
+
+  function pathInsideApp(pathname) {
+    var base = appBasePath();
+    if (base && pathname === base) return "/";
+    if (base && pathname.startsWith(base + "/")) {
+      return pathname.slice(base.length);
+    }
+    return pathname;
+  }
+
+  function redirectIntoApp(url) {
+    var redirectUrl = new URL(url.href);
+    redirectUrl.pathname = appRootPath() + pathInsideApp(url.pathname);
+    return Response.redirect(redirectUrl.href, 307);
+  }
+
   /**
    * Fetch a cross-origin URL, routing through the CORS proxy if configured.
    * Returns a Response with CORP headers added so COEP: require-corp is satisfied.
@@ -398,8 +489,9 @@ if (typeof window !== "undefined") {
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
 
-    // Fast path: bridge is active and URL matches app prefix
-    if (bridgePort && url.pathname.startsWith(appPrefix)) {
+    // Fast path: bridge is active and the URL matches app prefix.
+    if (bridgePort && isAppPath(url.pathname)) {
+      markAppClient(event, event.request);
       event.respondWith(handleAppRequest(event.request, url));
       return;
     }
@@ -410,13 +502,26 @@ if (typeof window !== "undefined") {
       return;
     }
 
+    // A bridge-owned document can still create root-relative or relative
+    // requests that resolve outside appPrefix. Redirect those requests back
+    // into the browser-visible app namespace so the generic app bridge can
+    // handle them without app-specific path allowlists.
+    if (bridgePort && shouldRedirectIntoApp(event, event.request, url)) {
+      event.respondWith(redirectIntoApp(url));
+      return;
+    }
+
     // Bridge may need restoration (SW was terminated and restarted by browser).
     // Wait for cached appPrefix to load, then check if this URL should go
     // through the bridge.
     if (!bridgePort) {
       event.respondWith(
         appPrefixReady.then(function () {
-          if (bridgeConfigured && url.pathname.startsWith(appPrefix)) {
+          if (bridgeConfigured && shouldRedirectIntoApp(event, event.request, url)) {
+            return redirectIntoApp(url);
+          }
+          if (bridgeConfigured && isAppPath(url.pathname)) {
+            markAppClient(event, event.request);
             return ensureBridge().then(function (restored) {
               if (restored) {
                 return handleAppRequest(event.request, url);
@@ -447,8 +552,11 @@ if (typeof window !== "undefined") {
   function handleAppRequest(request, url) {
     return (async function () {
       try {
-        // Strip the app prefix so nginx sees the original path
-        var appPath = url.pathname.slice(appPrefix.length - 1); // Keep leading /
+        // Strip appPrefix so nginx sees the original path.
+        var hasAppPrefix = isAppPath(url.pathname);
+        var appPath = hasAppPrefix
+          ? stripAppPath(url.pathname)
+          : url.pathname;
 
         var headers = {};
         request.headers.forEach(function (value, key) {
@@ -457,7 +565,10 @@ if (typeof window !== "undefined") {
         headers["host"] = url.host;
 
         // Inject cookies from our jar
-        var jarCookies = getCookiesForPath(url.pathname);
+        var cookiePath = hasAppPrefix
+          ? url.pathname
+          : appPrefix.slice(0, -1) + url.pathname;
+        var jarCookies = getCookiesForPath(cookiePath);
         if (jarCookies) {
           var existing = headers["cookie"];
           headers["cookie"] = existing
