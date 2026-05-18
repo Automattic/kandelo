@@ -169,7 +169,7 @@ class WorkerChannel {
 
 // --- OPFS handle management ---
 
-interface FileEntry {
+interface OpfsFileEntry {
   handle: FileSystemSyncAccessHandle;
   position: number;
   appendMode: boolean;
@@ -184,7 +184,7 @@ let channel: WorkerChannel;
 let opfsRoot: FileSystemDirectoryHandle;
 let nextFileHandle = 1;
 let nextDirHandle = 1;
-const fileHandles = new Map<number, FileEntry>();
+const fileHandles = new Map<number, OpfsFileEntry>();
 const dirHandles = new Map<number, DirIterator>();
 
 // --- Path resolution ---
