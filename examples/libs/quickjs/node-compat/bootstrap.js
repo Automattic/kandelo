@@ -880,6 +880,43 @@ function _refreshWs(fd) {
     if (ws) _wsCache.set(fd, ws);
     return _wsCache.get(fd) || null;
 }
+
+function _writeControl(stream, seq, cb) {
+    stream.write(seq);
+    if (typeof cb === 'function') cb();
+    return true;
+}
+
+function _cursorTo(stream, x, y, cb) {
+    if (typeof y === 'function') { cb = y; y = undefined; }
+    x = Math.max(0, x | 0);
+    if (typeof y === 'number') {
+        return _writeControl(stream, `\x1b[${Math.max(0, y | 0) + 1};${x + 1}H`, cb);
+    }
+    return _writeControl(stream, `\x1b[${x + 1}G`, cb);
+}
+
+function _moveCursor(stream, dx, dy, cb) {
+    let seq = '';
+    dx = dx | 0;
+    dy = dy | 0;
+    if (dx < 0) seq += `\x1b[${-dx}D`;
+    else if (dx > 0) seq += `\x1b[${dx}C`;
+    if (dy < 0) seq += `\x1b[${-dy}A`;
+    else if (dy > 0) seq += `\x1b[${dy}B`;
+    return _writeControl(stream, seq, cb);
+}
+
+function _clearLine(stream, dir, cb) {
+    if (typeof dir === 'function') { cb = dir; dir = 0; }
+    const mode = dir < 0 ? 1 : dir > 0 ? 0 : 2;
+    return _writeControl(stream, `\x1b[${mode}K`, cb);
+}
+
+function _clearScreenDown(stream, cb) {
+    return _writeControl(stream, '\x1b[0J', cb);
+}
+
 function _createWriteStream(fd) {
     if (fd === 1 && _stdout) return _stdout;
     if (fd === 2 && _stderr) return _stderr;
@@ -939,11 +976,10 @@ function _createWriteStream(fd) {
             const arr = listeners.get(event);
             return arr ? arr.length : 0;
         },
-        // tty.WriteStream cursor/line no-ops. npm's progress spinner calls
-        // cursorTo(0) and clearLine(1) unconditionally even when the fd
-        // isn't a tty.
-        cursorTo() { return true; },
-        clearLine() { return true; },
+        cursorTo(x, y, cb) { return _cursorTo(s, x, y, cb); },
+        moveCursor(dx, dy, cb) { return _moveCursor(s, dx, dy, cb); },
+        clearLine(dir, cb) { return _clearLine(s, dir, cb); },
+        clearScreenDown(cb) { return _clearScreenDown(s, cb); },
         isTTY: os.isatty(fd),
     };
     Object.defineProperties(s, {
@@ -3768,6 +3804,10 @@ const _builtinModules = {
             rl.setPrompt = () => {};
             return rl;
         },
+        cursorTo: _cursorTo,
+        moveCursor: _moveCursor,
+        clearLine: _clearLine,
+        clearScreenDown: _clearScreenDown,
     },
     'perf_hooks': {
         performance: {
