@@ -1,7 +1,7 @@
 # Binary releases
 
-Prebuilt Wasm binaries — the kernel, user programs, and library
-archives — live in GitHub Releases rather than the Git repo. This
+Prebuilt Wasm binaries — the kernel, userspace stub, user programs,
+and library archives — live in GitHub Releases rather than the Git repo. This
 keeps the repo small and makes rebuilds optional for contributors:
 fetch once, use everywhere.
 
@@ -122,6 +122,8 @@ Flat asset namespace. Per-package archive filenames + one
 ```
 binaries-abi-v8 (release)
 ├── index.toml                                              ← LEDGER (the contract)
+├── kernel-0.1.0-rev1-abi8-wasm64-0a51ff38.tar.zst          ← kernel.wasm
+├── userspace-0.1.0-rev1-abi8-wasm64-6fbf3622.tar.zst       ← userspace.wasm
 ├── zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst            ← library
 ├── zlib-1.3.1-rev1-abi8-wasm64-e6c7a02b.tar.zst            ← library
 ├── ncurses-6.5-rev1-abi8-wasm32-3ef36fae.tar.zst           ← library

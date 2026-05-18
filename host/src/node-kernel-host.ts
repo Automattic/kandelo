@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Worker as NodeThreadWorker } from "node:worker_threads";
-import { findRepoRoot, resolveBinary } from "./binary-resolver";
+import { resolveBinary } from "./binary-resolver";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -26,7 +26,12 @@ import type {
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+function currentModuleDir(): string {
+  if (typeof __dirname !== "undefined") return __dirname;
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+const MODULE_DIR = currentModuleDir();
 
 export interface NodeKernelHostOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -420,7 +425,7 @@ function resolveRootfsImage(
 ): ArrayBuffer | null {
   if (override === undefined) return null;
   if (override === "default") {
-    const path = join(findRepoRoot(), "host/wasm/rootfs.vfs");
+    const path = resolveBinary("rootfs.vfs");
     if (!existsSync(path)) {
       throw new Error(
         `rootfsImage:"default" requested but ${path} is missing — ` +
@@ -442,8 +447,8 @@ function resolveRootfsImage(
 
 /** Spawn a worker_thread running node-kernel-worker-entry.ts */
 function spawnKernelWorkerThread(): NodeThreadWorker {
-  const entryTs = join(__dirname, "node-kernel-worker-entry.ts");
-  const entryJs = join(__dirname, "node-kernel-worker-entry.js");
+  const entryTs = join(MODULE_DIR, "node-kernel-worker-entry.ts");
+  const entryJs = join(MODULE_DIR, "node-kernel-worker-entry.js");
   const distJs = entryTs.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js");
 
   // Check for compiled .js version first (much faster startup)
@@ -455,7 +460,7 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
   }
 
   // Fallback: tsx eval bootstrap
-  const require = createRequire(import.meta.url);
+  const require = createRequire(pathToFileURL(join(MODULE_DIR, "node-kernel-host.js")).href);
   const tsxApiPath = require.resolve("tsx/esm/api");
   const tsxApiUrl = pathToFileURL(tsxApiPath).href;
   const entryUrl = pathToFileURL(entryTs).href;

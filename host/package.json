@@ -31,6 +31,46 @@
         "default": "./dist/browser.cjs"
       }
     },
+    "./vfs": {
+      "import": {
+        "types": "./dist/vfs/index.d.ts",
+        "default": "./dist/vfs/index.js"
+      },
+      "require": {
+        "types": "./dist/vfs/index.d.cts",
+        "default": "./dist/vfs/index.cjs"
+      }
+    },
+    "./networking": {
+      "import": {
+        "types": "./dist/networking/index.d.ts",
+        "default": "./dist/networking/index.js"
+      },
+      "require": {
+        "types": "./dist/networking/index.d.cts",
+        "default": "./dist/networking/index.cjs"
+      }
+    },
+    "./framebuffer": {
+      "import": {
+        "types": "./dist/framebuffer/index.d.ts",
+        "default": "./dist/framebuffer/index.js"
+      },
+      "require": {
+        "types": "./dist/framebuffer/index.d.cts",
+        "default": "./dist/framebuffer/index.cjs"
+      }
+    },
+    "./kandelo-ui": {
+      "import": {
+        "types": "./dist/kandelo-ui/index.d.ts",
+        "default": "./dist/kandelo-ui/index.js"
+      },
+      "require": {
+        "types": "./dist/kandelo-ui/index.d.cts",
+        "default": "./dist/kandelo-ui/index.cjs"
+      }
+    },
     "./worker-entry": {
       "browser": {
         "types": "./dist/worker-entry-browser.d.ts",
@@ -51,7 +91,27 @@
         "default": "./dist/worker-entry-browser.js"
       }
     },
-    "./wasm": "./wasm/wasm_posix_kernel.wasm"
+    "./node-kernel-worker-entry": {
+      "import": {
+        "types": "./dist/node-kernel-worker-entry.d.ts",
+        "default": "./dist/node-kernel-worker-entry.js"
+      },
+      "require": {
+        "types": "./dist/node-kernel-worker-entry.d.cts",
+        "default": "./dist/node-kernel-worker-entry.cjs"
+      }
+    },
+    "./vfs/opfs-worker": {
+      "import": {
+        "types": "./dist/vfs/opfs-worker.d.ts",
+        "default": "./dist/vfs/opfs-worker.js"
+      }
+    },
+    "./wasm": "./wasm/wasm_posix_kernel.wasm",
+    "./kernel.wasm": "./wasm/wasm_posix_kernel.wasm",
+    "./rootfs.vfs": "./wasm/rootfs.vfs",
+    "./wasm/*": "./wasm/*",
+    "./package.json": "./package.json"
   },
   "sideEffects": false,
   "files": [
@@ -62,7 +122,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "docs": "typedoc",
-    "test": "vitest"
+    "test": "vitest",
+    "prepack": "npm run build && bash ../scripts/prepare-host-package.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

@@ -7,7 +7,10 @@
     "wordpress:benchmark": "npx tsx examples/wordpress/perf/benchmark.ts",
     "bench": "npx tsx benchmarks/run.ts",
     "bench:browser": "npx tsx benchmarks/run.ts --host browser",
-    "bench:compare": "npx tsx benchmarks/compare.ts"
+    "bench:compare": "npx tsx benchmarks/compare.ts",
+    "pack:host": "npm --prefix host pack",
+    "pack:sdk": "npm --prefix sdk pack",
+    "pack:packages": "npm run pack:host && npm run pack:sdk"
   },
   "devDependencies": {
     "playwright": "^1.59.1",

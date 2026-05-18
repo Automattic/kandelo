@@ -1785,6 +1785,7 @@ fn cmd_resolve(
 /// Layout (per arch — wasm32 and wasm64 mirror in parallel):
 ///   * 1 output: `<binaries_dir>/programs/<arch>/<output.name>.wasm`.
 ///   * ≥2 outputs: `<binaries_dir>/programs/<arch>/<program.name>/<output.name>.wasm`.
+///   * first-party kernel/userspace: `<binaries_dir>/<output.name>.wasm`.
 ///
 /// This is the single source of truth for the symlink layout. Browser
 /// demos hardcode these paths (see `examples/browser/vite.config.ts`
@@ -1816,7 +1817,11 @@ fn place_binaries_symlinks(
                 src.display()
             ));
         }
-        let dest = arch_root.join(m.output_dest_rel_for(out));
+        let dest = if (m.name == "kernel" || m.name == "userspace") && outputs.len() == 1 {
+            binaries_dir.join(format!("{}.wasm", out.name))
+        } else {
+            arch_root.join(m.output_dest_rel_for(out))
+        };
         let dest_dir = dest
             .parent()
             .ok_or_else(|| format!("dest path {} has no parent", dest.display()))?;
@@ -5226,6 +5231,42 @@ libs = ["lib/libF3b.a"]
             link.exists(),
             "symlink target unreadable: {}",
             link.display()
+        );
+    }
+
+    #[test]
+    fn cmd_resolve_with_binaries_dir_places_kernel_at_root() {
+        // First-party kernel/userspace artifacts are consumed as
+        // binaries/kernel.wasm and binaries/userspace.wasm, not as
+        // regular programs under binaries/programs/<arch>/.
+        let root = tempdir("resolve-bdir-kernel-reg");
+        let cache = tempdir("resolve-bdir-kernel-cache");
+        let bin_dir = tempdir("resolve-bdir-kernel-bin");
+        write_program(
+            &root,
+            "kernel",
+            "0.1.0",
+            &[],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/wasm_posix_kernel.wasm""#,
+            &[("kernel", "wasm_posix_kernel.wasm")],
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let m = reg.load("kernel").unwrap();
+
+        cmd_resolve_with_test_cache(&m, &reg, &root, TargetArch::Wasm64, &cache, Some(&bin_dir))
+            .unwrap();
+
+        let link = bin_dir.join("kernel.wasm");
+        assert!(
+            link.symlink_metadata().is_ok(),
+            "symlink missing: {}",
+            link.display()
+        );
+        assert!(
+            !bin_dir.join("programs/wasm64/kernel.wasm").exists(),
+            "kernel should not be placed under programs/"
         );
     }
 

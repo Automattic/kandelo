@@ -40,11 +40,6 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181) but browser demos still use plain `<div>` with `appendStdinData`. Connecting PTY pairs to xterm.js would give proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 
-### Browser bundle missing key exports
-`host/src/browser.ts` doesn't export `CentralizedKernelWorker`, `CentralizedKernelCallbacks`, `patchWasmForThread`, or `centralizedThreadWorkerMain`. External consumers can't build their own `BrowserKernel`-like wrapper from the published package.
-
-**Files:** `host/src/browser.ts`
-
 ## Performance
 
 ### Revisit an optional wasm32 kernel build for IPC-heavy workloads

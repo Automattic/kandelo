@@ -102,13 +102,18 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 
+function currentModuleUrl(): string {
+  if (typeof __filename !== "undefined") return pathToFileURL(__filename).href;
+  return import.meta.url;
+}
+
 export class NodeWorkerAdapter implements WorkerAdapter {
   private entryUrl: URL;
   private _compiledEntry: URL | false | undefined;
 
   constructor(entryUrl?: URL) {
     this.entryUrl =
-      entryUrl ?? new URL("./worker-entry.ts", import.meta.url);
+      entryUrl ?? new URL("./worker-entry.ts", currentModuleUrl());
   }
 
   /**
@@ -153,7 +158,7 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     }
 
     // Fallback: tsx eval bootstrap for running from TypeScript source.
-    const require = createRequire(import.meta.url);
+    const require = createRequire(currentModuleUrl());
     const tsxApiPath = require.resolve("tsx/esm/api");
     const tsxApiUrl = pathToFileURL(tsxApiPath).href;
     const entryUrl = this.entryUrl.href;

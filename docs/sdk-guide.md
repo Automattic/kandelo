@@ -12,7 +12,9 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
    - Or use the Nix dev shell (`nix develop` from the repo root) — provides
      LLVM 21 plus the rest of the toolchain, no per-tool install needed.
      See the README's "Using Nix" section.
-2. **musl sysroot** built from this repo:
+2. **musl sysroot**. If you installed `wasm-posix-sdk` from npm, the
+   package already contains the published sysroot and glue files. If
+   you are working from a source checkout, build them locally:
    ```bash
    git submodule update --init musl
    bash scripts/build-musl.sh
@@ -25,6 +27,9 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
 ### Install the SDK
 
 ```bash
+npm install -D wasm-posix-sdk
+
+# or, from a source checkout:
 cd sdk
 npm link
 ```
