@@ -4,25 +4,35 @@
   "license": "GPL-2.0-or-later",
   "type": "module",
   "bin": {
-    "wasm32posix-cc": "./src/bin/cc.ts",
-    "wasm32posix-c++": "./src/bin/c++.ts",
-    "wasm32posix-ar": "./src/bin/ar.ts",
-    "wasm32posix-ranlib": "./src/bin/ranlib.ts",
-    "wasm32posix-nm": "./src/bin/nm.ts",
-    "wasm32posix-strip": "./src/bin/strip.ts",
-    "wasm32posix-pkg-config": "./src/bin/pkg-config.ts",
-    "wasm32posix-configure": "./src/bin/configure.ts",
-    "wasm64posix-cc": "./src/bin/cc.ts",
-    "wasm64posix-c++": "./src/bin/c++.ts",
-    "wasm64posix-ar": "./src/bin/ar.ts",
-    "wasm64posix-ranlib": "./src/bin/ranlib.ts",
-    "wasm64posix-nm": "./src/bin/nm.ts",
-    "wasm64posix-strip": "./src/bin/strip.ts",
-    "wasm64posix-pkg-config": "./src/bin/pkg-config.ts",
-    "wasm64posix-configure": "./src/bin/configure.ts"
+    "wasm32posix-cc": "./bin/wasm32posix-cc",
+    "wasm32posix-c++": "./bin/wasm32posix-c++",
+    "wasm32posix-ar": "./bin/wasm32posix-ar",
+    "wasm32posix-ranlib": "./bin/wasm32posix-ranlib",
+    "wasm32posix-nm": "./bin/wasm32posix-nm",
+    "wasm32posix-strip": "./bin/wasm32posix-strip",
+    "wasm32posix-pkg-config": "./bin/wasm32posix-pkg-config",
+    "wasm32posix-configure": "./bin/wasm32posix-configure",
+    "wasm64posix-cc": "./bin/wasm64posix-cc",
+    "wasm64posix-c++": "./bin/wasm64posix-c++",
+    "wasm64posix-ar": "./bin/wasm64posix-ar",
+    "wasm64posix-ranlib": "./bin/wasm64posix-ranlib",
+    "wasm64posix-nm": "./bin/wasm64posix-nm",
+    "wasm64posix-strip": "./bin/wasm64posix-strip",
+    "wasm64posix-pkg-config": "./bin/wasm64posix-pkg-config",
+    "wasm64posix-configure": "./bin/wasm64posix-configure"
   },
+  "files": [
+    "activate.sh",
+    "bin",
+    "config.site",
+    "glue",
+    "src",
+    "sysroot",
+    "sysroot64"
+  ],
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "bash ../scripts/prepare-sdk-package.sh"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

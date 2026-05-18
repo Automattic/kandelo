@@ -15,11 +15,11 @@
 # places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
 # into the cache. Browser demos hardcode these paths.
 #
-# Packages without `build.toml` (kernel, userspace, examples,
-# kind=source, libraries that ship only as link-time inputs) are
-# skipped here. Local builds populate kernel/userspace/etc directly;
-# libraries are consumed at link time via the cache and have no
-# binaries/ symlink.
+# Packages without `build.toml` (examples, kind=source, libraries
+# that ship only as link-time inputs) are skipped here. Kernel and
+# userspace now have build.toml entries, so published release indexes
+# can populate `binaries/kernel.wasm` and `binaries/userspace.wasm`
+# for fresh checkouts and npm package preparation.
 #
 # Per-arch handling: read the optional `arches = ["wasm32", ...]`
 # field from each package.toml. Default is `["wasm32"]`. For each

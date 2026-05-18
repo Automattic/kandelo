@@ -30,6 +30,11 @@ import { fileURLToPath } from "node:url";
  */
 let cachedRepoRoot: string | null = null;
 
+function currentModuleDir(): string {
+  if (typeof __dirname !== "undefined") return __dirname;
+  return import.meta.url ? dirname(fileURLToPath(import.meta.url)) : process.cwd();
+}
+
 function isRepoRoot(dir: string): boolean {
   // Workspace Cargo.toml has a [workspace] table; nested crate
   // Cargo.tomls do not. Cheap check that disambiguates without
@@ -47,9 +52,7 @@ function isRepoRoot(dir: string): boolean {
 
 export function findRepoRoot(startFrom?: string): string {
   if (cachedRepoRoot && !startFrom) return cachedRepoRoot;
-  const here =
-    startFrom ??
-    (import.meta.url ? dirname(fileURLToPath(import.meta.url)) : process.cwd());
+  const here = startFrom ?? currentModuleDir();
   let dir = resolve(here);
   for (let i = 0; i < 20; i++) {
     if (isRepoRoot(dir)) {
@@ -63,6 +66,10 @@ export function findRepoRoot(startFrom?: string): string {
   throw new Error(
     "Could not find repo root (expected workspace Cargo.toml + package.json)"
   );
+}
+
+function packageRoot(): string {
+  return resolve(currentModuleDir(), "..");
 }
 
 /**
@@ -94,18 +101,43 @@ function applyDefaultArch(relPath: string): string {
   return `programs/wasm32/${tail}`;
 }
 
-export function resolveBinary(relPath: string): string {
-  const repo = findRepoRoot();
+function packagedBinaryCandidates(relPath: string): string[] {
+  const root = packageRoot();
   const adjusted = applyDefaultArch(relPath);
-  const local = join(repo, "local-binaries", adjusted);
-  if (existsSync(local)) return local;
-  const fetched = join(repo, "binaries", adjusted);
-  if (existsSync(fetched)) return fetched;
+  const candidates = [join(root, "wasm", adjusted)];
+  if (relPath === "kernel.wasm") {
+    candidates.push(join(root, "wasm", "wasm_posix_kernel.wasm"));
+  } else if (relPath === "userspace.wasm") {
+    candidates.push(join(root, "wasm", "wasm_posix_userspace.wasm"));
+  } else if (relPath === "rootfs.vfs") {
+    candidates.push(join(root, "wasm", "rootfs.vfs"));
+  }
+  return candidates;
+}
+
+export function resolveBinary(relPath: string): string {
+  const adjusted = applyDefaultArch(relPath);
+  const checked: string[] = [];
+  try {
+    const repo = findRepoRoot();
+    const local = join(repo, "local-binaries", adjusted);
+    checked.push(local);
+    if (existsSync(local)) return local;
+    const fetched = join(repo, "binaries", adjusted);
+    checked.push(fetched);
+    if (existsSync(fetched)) return fetched;
+  } catch {
+    // Installed npm consumers do not have a source repo root. Fall
+    // through to packaged assets below.
+  }
+  for (const candidate of packagedBinaryCandidates(relPath)) {
+    checked.push(candidate);
+    if (existsSync(candidate)) return candidate;
+  }
   throw new Error(
     `Binary not found: ${relPath}\n` +
-      `  checked: ${local}\n` +
-      `  checked: ${fetched}\n` +
-      `  Run scripts/fetch-binaries.sh or place a file at local-binaries/${adjusted}.`
+      checked.map((p) => `  checked: ${p}`).join("\n") +
+      `\n  Run scripts/fetch-binaries.sh, place a file at local-binaries/${adjusted}, or install a package that includes wasm/${relPath}.`
   );
 }
 

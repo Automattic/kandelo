@@ -1,7 +1,9 @@
 kind = "program"
 name = "kernel"
 version = "0.1.0"
+kernel_abi = 11
 depends_on = []
+arches = ["wasm64"]
 
 [source]
 url = "https://github.com/brandonpayton/wasm-posix-kernel"
@@ -10,6 +12,9 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 [license]
 spdx = "GPL-2.0-or-later"
 url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script_path = "examples/libs/kernel/build-kernel.sh"
 
 [[outputs]]
 name = "kernel"

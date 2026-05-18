@@ -11,33 +11,6 @@ None is on a committed schedule — pick up when the use case arrives.
 
 ## Schema / artifact
 
-### Ship kernel.wasm + userspace.wasm in the release
-
-Today's release excludes the kernel + userspace because their
-manifests at `examples/libs/{kernel,userspace}/` lack build scripts —
-`archive-stage` skips manifests without a build script as composite
-metadata. The browser demos import `binaries/kernel.wasm` and
-`binaries/userspace.wasm` (≈23 sites) at Vite build time; without
-those files Vite errors out unless the user has run `bash build.sh`
-locally to populate `local-binaries/`.
-
-Fix options:
-1. **Add build wrappers** at `examples/libs/{kernel,userspace}/build-*.sh`
-   that delegate to the `cargo build --release -p wasm-posix-{kernel,userspace}`
-   pipeline already in `build.sh`. Manifest output names already match
-   the cargo artifact paths. Once added, they ship as regular
-   archives. Caveat: kernel.wasm changes with every kernel commit, so
-   the cache_key_sha churns; users who want a stable kernel should
-   pin to a specific commit / release tag. The local-binaries/
-   override path remains the developer's escape hatch.
-2. **Update demo imports** to use `local-binaries/...` paths and add
-   a doc step ("run `bash build.sh` first"). Diverges from the
-   priority-1/priority-2 resolver convention; doesn't help users
-   without a Rust toolchain.
-
-Option 1 is the cleaner long-term fix. Triggers when a fresh-clone
-without-toolchain workflow becomes a real use case.
-
 ### Lazy-archive VFS support for `.tar.zst`
 
 The system ships archives as `.tar.zst` uniformly.  That works for the

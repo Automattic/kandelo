@@ -124,6 +124,26 @@ entries are near-instant.
 
 ## Quick Start
 
+### Install published packages
+
+For consumers that do not need to rebuild Kandelo itself, the npm
+packages are the easiest entry point:
+
+```bash
+npm install wasm-posix-host wasm-posix-sdk
+```
+
+`wasm-posix-host` ships the compiled host runtime JS, worker entry
+points, `kernel.wasm`, and `rootfs.vfs`. `wasm-posix-sdk` ships the
+compiler wrappers, musl sysroot, and host glue files used when linking
+your own C/C++ programs. You still need LLVM 21+ on `PATH` (or
+`WASM_POSIX_LLVM_DIR`) because the SDK wraps clang rather than
+bundling a native compiler.
+
+From a source checkout, `npm run pack:packages` builds npm tarballs
+after `bash scripts/build-musl.sh` and `bash build.sh` have produced
+the sysroot, kernel, and rootfs artifacts.
+
 ### 1. Build the kernel
 
 ```bash
