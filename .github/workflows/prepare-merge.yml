@@ -415,9 +415,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Fetch musl submodule
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
@@ -837,9 +837,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Fetch submodules (musl, libc-test, os-test)
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl libc-test os-test
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl libc-test os-test
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
