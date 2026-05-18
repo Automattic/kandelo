@@ -81,6 +81,11 @@ interface LiveProfile {
   framebuffer?: "doom" | "test";
 }
 
+interface WebReadinessState {
+  ready: boolean;
+  probing: boolean;
+}
+
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
@@ -281,6 +286,7 @@ async function bootProfile(
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
+  const webReadiness: WebReadinessState = { ready: false, probing: false };
   const kernel = new BrowserKernel({
     memfs,
     maxWorkers: profile.init?.maxWorkers ?? 4,
@@ -291,7 +297,7 @@ async function bootProfile(
     onListenTcp: (_pid, _fd, port) => {
       seenPorts.add(port);
       tick(`service listening on :${port}`);
-      maybeMarkWebReady(host, profile, seenPorts, bridgeSent);
+      maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
     },
   });
   await kernel.init(kernelBytes);
@@ -350,7 +356,7 @@ async function bootProfile(
   if (seq >= 0) {
     host.setStatus("running");
   }
-  maybeMarkWebReady(host, profile, seenPorts, bridgeSent);
+  maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
 
   if (profile.framebuffer === "test") {
     void spawnLazy(kernel, "/usr/local/bin/fbtest", ["fbtest"], tick);
@@ -498,17 +504,92 @@ function maybeMarkWebReady(
   profile: LiveProfile,
   seenPorts: Set<number>,
   bridgeSent: boolean,
+  readiness: WebReadinessState,
+  tick: (msg: string) => void,
 ): void {
   const web = profile.init?.web;
   if (!web) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
   if (!portsReady || !bridgeSent) return;
+  if (readiness.ready) {
+    host.setWebPreview({
+      label: web.label,
+      url: APP_PREFIX,
+      status: "running",
+      message: "HTTP bridge ready",
+    });
+    return;
+  }
+  if (readiness.probing) return;
+  readiness.probing = true;
   host.setWebPreview({
     label: web.label,
     url: APP_PREFIX,
-    status: "running",
-    message: "HTTP bridge ready",
+    status: "starting",
+    message: "Waiting for HTTP response",
   });
+  void waitForHttpPreview(APP_PREFIX).then(
+    () => {
+      readiness.ready = true;
+      host.setWebPreview({
+        label: web.label,
+        url: APP_PREFIX,
+        status: "running",
+        message: "HTTP bridge ready",
+      });
+      tick("HTTP preview ready");
+    },
+    (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      host.setWebPreview({
+        label: web.label,
+        url: APP_PREFIX,
+        status: "error",
+        message: "HTTP preview did not become ready",
+      });
+      tick(`HTTP preview readiness failed: ${message}`);
+    },
+  ).finally(() => {
+    readiness.probing = false;
+  });
+}
+
+async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void> {
+  const started = performance.now();
+  let delayMs = 250;
+  let lastError = "";
+
+  while (performance.now() - started < timeoutMs) {
+    try {
+      const response = await fetchWithTimeout(url, 5_000);
+      if (response.status < 500) return;
+      lastError = `HTTP ${response.status}`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+    await sleep(delayMs);
+    delayMs = Math.min(1_500, Math.floor(delayMs * 1.4));
+  }
+
+  throw new Error(lastError || "timed out");
+}
+
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      cache: "no-store",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function setupBridgeRestoreListener(
