@@ -103,9 +103,9 @@ make CC=wasm32posix-cc \
 
 cp fbdoom "$HERE/fbdoom.wasm"
 
-# fbDOOM doesn't fork — no asyncify / wasm-fork-instrument step needed.
+# fbDOOM doesn't fork — no wasm-fork-instrument step needed.
 # (vs other ports here: dash forks via popen/system, so its build-dash.sh
-# runs `wasm-opt --asyncify` for the fork path.)
+# runs `wasm-fork-instrument` for the fork path.)
 
 ls -la "$HERE/fbdoom.wasm"
 echo "==> fbdoom.wasm built."

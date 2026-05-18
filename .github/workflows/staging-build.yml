@@ -108,6 +108,20 @@ jobs:
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
 
+            BASE_REF="${{ github.event.pull_request.base.ref }}"
+            git fetch origin "$BASE_REF" --depth=1
+            changed_files=$(git diff --name-only "origin/$BASE_REF"..HEAD || true)
+            force_package_rebuild=0
+            if echo "$changed_files" | grep -E \
+              -e "^crates/fork-instrument/" \
+              -e "^scripts/build-fork-instrument-tool\\.sh$" \
+              -e "^scripts/dev-shell\\.sh$" \
+              -e "^(Cargo\\.(lock|toml)|flake\\.(nix|lock)|rust-toolchain\\.toml)$" \
+              >/dev/null; then
+              force_package_rebuild=1
+              echo "preflight: forcing package matrix because fork-instrument/toolchain inputs changed"
+            fi
+
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
@@ -212,7 +226,7 @@ jobs:
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
                 existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
                     "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
-                if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
+                if [ "$force_package_rebuild" != "1" ] && [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
                   echo "preflight: skip $pkg/$arch (sha $short already indexed)"
                   continue
                 fi
@@ -348,14 +362,17 @@ jobs:
             done
           '
 
-      - name: Pack toolchain sysroots
+      - name: Build fork-instrument host tool
+        run: bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
+
+      - name: Pack toolchain sysroots + host tools
         # Matrix jobs fan out from this per-run artifact instead of
         # each restoring the same large sysroot cache. That keeps
         # Actions Cache traffic to one restore/save per workflow run
         # and shifts matrix fanout onto workflow artifacts.
         run: |
           tar --zstd -cf "$RUNNER_TEMP/toolchain-sysroots.tar.zst" \
-            sysroot sysroot64
+            sysroot sysroot64 tools/bin/wasm-fork-instrument
 
       - name: Upload toolchain sysroots artifact
         uses: actions/upload-artifact@v4

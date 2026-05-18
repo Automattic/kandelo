@@ -32,14 +32,13 @@ const CH_PENDING = 1;
 const CH_COMPLETE = 2;
 
 /**
- * Size of the asyncify save buffer. Each channel reserves
- * `[channelOffset - ASYNCIFY_BUF_SIZE, channelOffset)` for the unwind
- * frames + saved __tls_base / __stack_pointer that the host writes
- * during fork(). Must match the constant in `worker-main.ts` and the
- * onFork handlers in node-kernel-worker-entry.ts /
- * browser-kernel-worker-entry.ts.
+ * Size of the wpk_fork save buffer. Each channel reserves
+ * `[channelOffset - FORK_BUF_SIZE, channelOffset)` for the unwind frames and
+ * saved globals that the instrumented module writes during fork(). Must match
+ * the constant in `worker-main.ts` and the onFork handlers in
+ * node-kernel-worker-entry.ts / browser-kernel-worker-entry.ts.
  */
-const ASYNCIFY_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = 16384;
 
 /** Errno values */
 const EAGAIN = 11;
@@ -773,11 +772,10 @@ interface ProcessRegistration {
  *   the kernel-worker stored when the thread was registered through
  *   `addChannel`. The child Worker uses these to enter the thread
  *   function directly (skipping `_start`).
- * - `forkBufAddr`: the asyncify buffer address corresponding to the
- *   *thread's* channel — i.e. `thread_channelOffset - ASYNCIFY_BUF_SIZE`.
- *   In the child's memory copy this offset holds the saved frames +
- *   __tls_base + __stack_pointer the parent thread wrote during its
- *   asyncify unwind.
+ * - `forkBufAddr`: the wpk_fork buffer address corresponding to the
+ *   *thread's* channel — i.e. `thread_channelOffset - FORK_BUF_SIZE`.
+ *   In the child's memory copy this offset holds the saved frames and globals
+ *   the parent thread wrote during its wpk_fork unwind.
  */
 export interface ForkFromThreadContext {
   fnPtr: number;
@@ -5643,18 +5641,18 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // Clear fork_child flag immediately. With asyncify fork, the child resumes
-    // from the fork point and never checks this flag. Without clearing it, a
-    // nested fork() from the child would hit the isForkChild check above and
-    // return 0 instead of creating a grandchild.
+    // Clear fork_child flag immediately. With wpk_fork instrumentation, the
+    // child resumes from the fork point and never checks this flag. Without
+    // clearing it, a nested fork() from the child would hit the isForkChild
+    // check above and return 0 instead of creating a grandchild.
     const clearForkChild = this.kernelInstance!.exports.kernel_clear_fork_child as
       ((pid: number) => number) | undefined;
     if (clearForkChild) clearForkChild(childPid);
 
-    // Clear the child's blocked signal mask. With asyncify fork, musl's
-    // __restore_sigs after fork() runs in the child, but we clear it here
-    // too for safety. Without asyncify, the child re-executes _start and
-    // never gets __restore_sigs.
+    // Clear the child's blocked signal mask. With wpk_fork instrumentation,
+    // musl's __restore_sigs after fork() runs in the child, but we clear it
+    // here too for safety. Without fork instrumentation, the child re-executes
+    // _start and never gets __restore_sigs.
     const resetSignalMask = this.kernelInstance!.exports.kernel_reset_signal_mask as
       ((pid: number) => number) | undefined;
     if (resetSignalMask) resetSignalMask(childPid);
@@ -5669,17 +5667,17 @@ export class CentralizedKernelWorker {
     children.add(childPid);
 
     // If the syscall arrived on a thread channel (registered via clone()
-    // with tid > 0), the asyncify save buffer is at THIS channel's offset
-    // — not the main channel's — and the unwind frames are rooted in the
-    // pthread entry function, not _start. Pass that context to onFork so
-    // the child Worker can rewind correctly.
+    // with tid > 0), the wpk_fork save buffer is at THIS channel's offset
+    // and the unwind frames are rooted in the pthread entry function, not
+    // _start. Pass that context to onFork so the child Worker can rewind
+    // correctly.
     const threadKey = `${parentPid}:${channel.channelOffset}`;
     const threadCtx = this.threadForkContexts.get(threadKey);
     const threadFork: ForkFromThreadContext | undefined = threadCtx
       ? {
           fnPtr: threadCtx.fnPtr,
           argPtr: threadCtx.argPtr,
-          forkBufAddr: channel.channelOffset - ASYNCIFY_BUF_SIZE,
+          forkBufAddr: channel.channelOffset - FORK_BUF_SIZE,
         }
       : undefined;
 
@@ -5761,6 +5759,7 @@ export class CentralizedKernelWorker {
       // Strip trailing NUL if the user copied a C string with the terminator.
       if (path.endsWith("\0")) path = path.slice(0, -1);
     }
+    const rawPath = path;
     if (path && !path.startsWith("/")) {
       path = this.resolveExecPathAgainstCwd(parentPid, path);
     }
@@ -5795,7 +5794,21 @@ export class CentralizedKernelWorker {
     // its own state from the first. Resolve bytes via the host's
     // side-effect-free preflight first; only call the kernel if the
     // program actually exists.
-    this.callbacks.onResolveSpawn(path, argv).then((resolved) => {
+    const resolveSpawnProgram = async (): Promise<SpawnProgramResolution | null> => {
+      const resolved = await this.callbacks.onResolveSpawn!(path, argv);
+      if (resolved || rawPath === path || !rawPath || rawPath.startsWith("/")) {
+        return resolved;
+      }
+
+      // SYS_SPAWN is also used by posix_spawnp-style PATH probes. Those
+      // callers may hand us a relative executable name that exists only in
+      // the host execPrograms map, not in the kernel VFS at CWD/name.
+      // Keep the CWD-resolved path as the primary POSIX exec target, but
+      // fall back to the original token for host-side program maps.
+      return this.callbacks.onResolveSpawn!(rawPath, argv);
+    };
+
+    resolveSpawnProgram().then((resolved) => {
       if (!resolved) {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
         return;
@@ -6169,6 +6182,7 @@ export class CentralizedKernelWorker {
       const tid = this.channelTids.get(tidKey) ?? 0;
       if (tid > 0) {
         this.channelTids.delete(tidKey);
+        this.threadForkContexts.delete(tidKey);
       }
 
       // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it.
