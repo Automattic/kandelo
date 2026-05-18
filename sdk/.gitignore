@@ -1,2 +1,5 @@
 node_modules/
 .test-tmp/
+glue/
+sysroot/
+sysroot64/

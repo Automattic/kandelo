@@ -22,7 +22,10 @@ function findProjectRoot(): string | null {
 }
 
 function projectRootOrSdk(): string {
-  return findProjectRoot() ?? SDK_REPO_ROOT;
+  const projectRoot = findProjectRoot();
+  if (projectRoot) return projectRoot;
+  if (existsSync(join(SDK_ROOT, 'glue', 'abi_constants.h'))) return SDK_ROOT;
+  return SDK_REPO_ROOT;
 }
 
 export interface Toolchain {
