@@ -62,6 +62,13 @@ const SYS_EPOLL_CTL = 240;
 const SYS_EPOLL_WAIT = 379;
 const SYS_RT_SIGTIMEDWAIT = 207;
 
+/**
+ * Grace period for signal-mask-swapping ppoll/pselect wakeups after a pipe
+ * event. This gives the writer's immediately-following signal syscall a
+ * chance to reach the centralized kernel before ppoll restores its mask.
+ */
+const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
+
 /** Syscall numbers for signals */
 const SYS_KILL = 35;
 
@@ -986,6 +993,8 @@ export class CentralizedKernelWorker {
      *  restores its mask. See scheduleWakeBlockedRetriesDeferred and
      *  tests/sortix/os-test/signal/ppoll-block-sleep-write-raise. */
     needsSignalSafeWake?: boolean;
+    /** Date.now() deadline for finite-timeout poll/ppoll retries, or -1. */
+    deadline?: number;
   }>();
   /** Pending pselect6/select retries — used for signal-driven wakeup and timeout tracking */
   private pendingSelectRetries = new Map<number, {
@@ -3155,13 +3164,35 @@ export class CentralizedKernelWorker {
   /** Same as scheduleWakeBlockedRetries but delays by a few ms to allow
    *  follow-up cross-process syscalls from the event source to land. */
   private scheduleWakeBlockedRetriesDeferred(): void {
-    if (this.wakeScheduled) return;
     if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0 && this.pendingPipeWriters.size === 0) return;
+    this.postponeSignalSafePollRetries(SIGNAL_SAFE_POLL_WAKE_DELAY_MS);
+    if (this.wakeScheduled) return;
     this.wakeScheduled = true;
     setTimeout(() => {
       this.wakeScheduled = false;
       this.wakeAllBlockedRetries();
-    }, 10);
+    }, SIGNAL_SAFE_POLL_WAKE_DELAY_MS);
+  }
+
+  private postponeSignalSafePollRetries(delayMs: number): void {
+    const now = Date.now();
+    for (const [key, entry] of this.pendingPollRetries) {
+      if (!entry.needsSignalSafeWake) continue;
+      if (entry.timer !== null) {
+        clearTimeout(entry.timer);
+      }
+
+      const remainingMs = entry.deadline && entry.deadline > 0
+        ? Math.max(1, entry.deadline - now)
+        : delayMs;
+      const retryMs = Math.max(1, Math.min(delayMs, remainingMs));
+      entry.timer = setTimeout(() => {
+        this.pendingPollRetries.delete(key);
+        if (this.processes.has(entry.channel.pid)) {
+          this.retrySyscall(entry.channel);
+        }
+      }, retryMs);
+    }
   }
 
   /**
@@ -3589,7 +3620,13 @@ export class CentralizedKernelWorker {
             this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
           }
         }, timeoutMs);
-        this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });
+        this.pendingPollRetries.set(channel.channelOffset, {
+          timer,
+          channel,
+          pipeIndices,
+          needsSignalSafeWake,
+          deadline: Date.now() + timeoutMs,
+        });
         return;
       }
 
@@ -3625,7 +3662,7 @@ export class CentralizedKernelWorker {
         ? (deadline > 0 ? Math.min(deadline - Date.now(), 10) : 10)
         : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
       const timer = setTimeout(retryFn, Math.max(retryMs, 1));
-      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });
+      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake, deadline });
       return;
     }
 
