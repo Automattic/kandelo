@@ -670,7 +670,7 @@ Binary resolution does not look at either of those files for archive URLs. Inste
    - Anything else → fall through to source build.
 5. Every installed archive's internal `manifest.toml`'s `[compatibility]` block is verified against the request (target_arch, abi_versions, cache_key_sha). Any mismatch falls through to source build.
 
-**Per-package updates land atomically.** CI's per-matrix-build job runs `scripts/index-update.sh` after producing each archive: it acquires a workflow-level state-lock (`.github/scripts/state-lock.sh`), downloads the current `index.toml`, mutates this package's entry via `xtask index-update`, and uploads the archive + new `index.toml` together. Different release tags (e.g. `binaries-abi-v8` vs `pr-<N>-staging`) use different state-lock subjects, so independent rebuilds don't block each other.
+**Per-package updates land atomically.** CI's per-matrix-build job runs `scripts/index-update.sh` after producing each archive: it acquires a workflow-level state-lock (`.github/scripts/state-lock.sh`), downloads the current `index.toml`, mutates this package's entry via `xtask index-update`, and uploads the archive + new `index.toml` together. Different release tags (e.g. `binaries-abi-v11` vs `pr-<N>-staging`) use different state-lock subjects, so independent rebuilds don't block each other.
 
 **Last-green fallback.** When a per-package rebuild for `(name, version, arch)` fails, its prior successful `archive_url` is preserved in the entry's `fallback_archive_url` field — consumers keep fetching the last working archive while CI iterates on the rebuild. A subsequent success clears the fallback.
 
