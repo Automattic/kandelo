@@ -41,6 +41,11 @@ runs:
       run: |
         set -eo pipefail
         git config --global url."https://github.com/".insteadOf "git@github.com:"
+        if [[ " $SUBMODULES " == *" musl "* ]]; then
+          # git.musl-libc.org often hangs from GitHub-hosted runners.
+          # This mirror carries the same musl release tags used by the submodule.
+          git config submodule.musl.url "https://github.com/ifduyue/musl.git"
+        fi
 
         for i in $(seq 1 "$ATTEMPTS"); do
           if timeout "${ATTEMPT_TIMEOUT}s" git submodule update --init --depth 1 $SUBMODULES; then
