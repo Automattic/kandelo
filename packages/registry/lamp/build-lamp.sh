@@ -17,6 +17,15 @@ bash "$REPO_ROOT/packages/registry/wordpress/setup.sh"
 bash "$REPO_ROOT/images/vfs/scripts/build-vim-zip.sh"
 bash "$REPO_ROOT/images/vfs/scripts/build-nethack-zip.sh"
 
+# Build-time opcache prewarming boots NodeKernelHost against the half-built VFS,
+# so package builds need a host kernel even though lamp itself is a wasm32
+# package. Build the local kernel artifact on demand; do not let the nested
+# kernel build install into lamp's package output directory.
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1; then
+    echo "==> Building kernel.wasm for LAMP opcache prewarm..."
+    env -u WASM_POSIX_DEP_OUT_DIR bash "$REPO_ROOT/packages/registry/kernel/build-kernel.sh"
+fi
+
 # build-lamp-vfs-image.ts reads mariadbd.wasm + bootstrap SQL files from
 # packages/registry/mariadb/mariadb-install/ — paths that build-mariadb.sh
 # populates locally. Under the resolver chain on a clean cache (xtask
