@@ -119,7 +119,7 @@ examples/fp128*.c
 examples/strtod_debug*.c
 examples/div_trace.c
 examples/mul_*.c
-tests/packages/mariadb/test-data/
+packages/registry/mariadb/test/test-data/
 
 # Benchmark results and built wasm
 benchmarks/results/

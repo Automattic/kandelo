@@ -5,8 +5,7 @@ export default defineConfig({
     include: [
       "test/**/*.test.ts",
       "../web-libs/**/*.test.ts",
-      "../packages/registry/php/test/**/*.test.ts",
-      "../tests/packages/**/*.test.ts",
+      "../packages/registry/*/test/**/*.test.ts",
       "../tests/package-system/**/*.test.ts",
       "../examples/dlopen/**/*.test.ts",
     ],

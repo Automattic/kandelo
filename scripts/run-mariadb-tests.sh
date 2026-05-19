@@ -19,7 +19,7 @@ MARIADB_LIB="$REPO_ROOT/packages/registry/mariadb"
 INSTALL_DIR="$MARIADB_LIB/mariadb-install"
 MYSQL_TEST_DIR="$INSTALL_DIR/mysql-test"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
-HARNESS="$REPO_ROOT/tests/packages/mariadb/run-tests.ts"
+HARNESS="$REPO_ROOT/packages/registry/mariadb/test/run-tests.ts"
 
 # ── Curated test list ─────────────────────────────────────
 # All tests are now run by default (threaded server).

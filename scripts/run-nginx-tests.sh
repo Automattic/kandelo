@@ -9,7 +9,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-NGINX_WRAPPER="$REPO_ROOT/tests/packages/nginx/nginx-wrapper.sh"
+NGINX_WRAPPER="$REPO_ROOT/packages/registry/nginx/test/nginx-wrapper.sh"
 TESTS_DIR="/tmp/nginx-tests"
 
 # Per-test timeout in seconds

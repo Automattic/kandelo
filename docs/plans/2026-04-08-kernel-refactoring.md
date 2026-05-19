@@ -162,7 +162,7 @@ feat: add ThreadPageAllocator for onClone deduplication
 6. `packages/registry/lamp/demo/serve.ts`
 7. `apps/browser-demos/lib/kernel-worker-entry.ts`
 8. `host/test/centralized-test-helper.ts`
-9. `tests/packages/wordpress/wordpress-server.test.ts`
+9. `packages/registry/wordpress/test/wordpress-server.test.ts`
 
 For each file, the migration follows this pattern:
 

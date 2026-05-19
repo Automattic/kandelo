@@ -5,7 +5,7 @@ compiled with the SDK and run on the TypeScript host.
 
 Package-specific demo launchers live under each package's
 `packages/registry/<name>/demo/` directory. Package integration test harnesses
-live under [`tests/packages/`](../tests/packages/). Browser-facing demos live under
+live under `packages/registry/<name>/test/`. Browser-facing demos live under
 [`apps/browser-demos/`](../apps/browser-demos/).
 
 ## Building and Running
@@ -84,7 +84,7 @@ See [docs/porting-guide.md](../docs/porting-guide.md) for how to create new demo
 
 Build scripts for real-world software are in `packages/registry/`. Runnable
 package demos live in `packages/registry/<name>/demo/`, and package integration
-test harnesses live in `tests/packages/`.
+test harnesses live in `packages/registry/<name>/test/`.
 
 | Software | Build script | Binary output |
 |----------|-------------|---------------|

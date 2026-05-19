@@ -123,7 +123,7 @@ A change is incomplete unless ALL of these hold:
 
 1. **Symmetry check first.** Before writing any host-side change, run `grep -rn "<symbol>" host/ apps/browser-demos/` for every callsite of the affected function. Both trees should show parallel structure; if one is missing handlers the other has, that's the change.
 2. **Both PRs of the wiring land in the same commit.** Don't merge a host-side change with a TODO/follow-up note for the other side. The follow-up will be lost — see PR #388/#397 above.
-3. **Tests cover both paths.** A vitest test (Node) does not protect the browser path. Add a browser test under `tests/packages/<pkg>/*.spec.ts` (Playwright) or `apps/browser-demos/test/`, OR — at minimum — manually verify the affected demo via `./run.sh browser` per the [Test Verification](#test-verification) checklist (item 6: browser demo verification).
+3. **Tests cover both paths.** A vitest test (Node) does not protect the browser path. Add a browser test under `packages/registry/<pkg>/test/**/*.spec.ts` (Playwright) or `apps/browser-demos/test/`, OR — at minimum — manually verify the affected demo via `./run.sh browser` per the [Test Verification](#test-verification) checklist (item 6: browser demo verification).
 4. **PR description names both hosts.** The reviewer should not have to ask "what about the browser?" — the answer should be in the PR body, with the diff to prove it. If the answer is "browser doesn't need this," the PR must explain *why* (e.g., "browser uses a different mechanism that already handles this case, see X").
 
 ### Where the parallel implementations live
@@ -333,7 +333,7 @@ Do not skip documentation. If a feature is worth implementing, it is worth docum
 - `crates/kernel/` — Rust kernel (no_std on wasm32)
 - `host/src/` — TypeScript host runtime
 - `host/test/` — Host and kernel runtime tests
-- `tests/packages/` — Ported package integration tests
+- `packages/registry/<name>/test/` — Ported package integration tests and fixtures
 - `tests/package-system/` — Package registry and binary-fetching automation tests
 - `libc/glue/channel_syscall.c` — Syscall glue compiled into every user program
 - `scripts/` — Build and test scripts

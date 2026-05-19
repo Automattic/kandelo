@@ -1,0 +1,225 @@
+/**
+ * Regression test — nginx serving static HTML via wasm-posix-kernel.
+ *
+ * Starts nginx.wasm in centralized mode with master_process on + 2 workers,
+ * sends HTTP requests through the TCP bridge, verifies responses, and tears down.
+ */
+import { describe, it, expect } from "vitest";
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { createConnection, createServer } from "node:net";
+import { CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
+import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { NodePlatformIO } from "../../../../host/src/platform/node";
+import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
+import type {
+  CentralizedWorkerInitMessage,
+  WorkerToHostMessage,
+} from "../../../../host/src/worker-protocol";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(__dirname, "../../../..");
+
+const MAX_PAGES = 16384;
+const CH_TOTAL_SIZE = 72 + 65536;
+const ASYNCIFY_BUF_SIZE = 16384;
+
+const nginxWasmPath = tryResolveBinary("programs/nginx.wasm");
+const nginxPrefix = join(repoRoot, "packages/registry/nginx/demo");
+
+/** Find a free TCP port by briefly binding to port 0. */
+function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+}
+
+function loadWasm(path: string): ArrayBuffer {
+  const buf = readFileSync(path);
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+/** Send a raw HTTP request and return the full response. */
+function httpGet(
+  port: number,
+  path: string,
+  timeoutMs = 5000,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("HTTP request timed out")),
+      timeoutMs,
+    );
+    const sock = createConnection({ host: "127.0.0.1", port }, () => {
+      sock.write(`GET ${path} HTTP/1.0\r\nHost: localhost\r\n\r\n`);
+    });
+    let data = "";
+    sock.on("data", (chunk) => (data += chunk.toString()));
+    sock.on("end", () => {
+      clearTimeout(timer);
+      resolve(data);
+    });
+    sock.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+describe.skipIf(!nginxWasmPath)(
+  "nginx static file serving",
+  () => {
+    it("serves index.html via HTTP", async () => {
+      const testPort = await getFreePort();
+
+      // Write a temporary nginx.conf with the allocated port
+      const tmpDir = mkdtempSync(join(tmpdir(), "nginx-test-"));
+      const testConf = join(tmpDir, "nginx.conf");
+      const confTemplate = readFileSync(join(nginxPrefix, "nginx.conf"), "utf8");
+      writeFileSync(testConf, confTemplate.replace("listen 8080", `listen ${testPort}`));
+
+      const kernelBytes = loadWasm(resolveBinary("kernel.wasm"));
+      const programBytes = loadWasm(nginxWasmPath!);
+      const workerAdapter = new NodeWorkerAdapter();
+      const io = new NodePlatformIO();
+
+      const workers = new Map<number, ReturnType<NodeWorkerAdapter["createWorker"]>>();
+      let resolveExit: (status: number) => void;
+      const exitPromise = new Promise<number>((r) => (resolveExit = r));
+
+      const kw = new CentralizedKernelWorker(
+        { maxWorkers: 8, dataBufferSize: 65536, useSharedMemory: true },
+        io,
+        {
+          onFork: async (parentPid, childPid, parentMemory) => {
+            const parentBuf = new Uint8Array(parentMemory.buffer);
+            const parentPages = Math.ceil(parentBuf.byteLength / 65536);
+            const childMemory = new WebAssembly.Memory({
+              initial: parentPages,
+              maximum: MAX_PAGES,
+              shared: true,
+            });
+            if (parentPages < MAX_PAGES) {
+              childMemory.grow(MAX_PAGES - parentPages);
+            }
+            new Uint8Array(childMemory.buffer).set(parentBuf);
+
+            const childChannelOffset = (MAX_PAGES - 2) * 65536;
+            new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
+
+            kw.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
+
+            const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+            const childInitData: CentralizedWorkerInitMessage = {
+              type: "centralized_init",
+              pid: childPid,
+              ppid: parentPid,
+              programBytes,
+              memory: childMemory,
+              channelOffset: childChannelOffset,
+              isForkChild: true,
+              asyncifyBufAddr,
+            };
+
+            const childWorker = workerAdapter.createWorker(childInitData);
+            workers.set(childPid, childWorker);
+            childWorker.on("error", () => {
+              kw.unregisterProcess(childPid);
+              workers.delete(childPid);
+            });
+
+            return [childChannelOffset];
+          },
+          onExec: async () => -38,
+          onExit: (pid, status) => {
+            if (pid === 100) {
+              kw.unregisterProcess(pid);
+              resolveExit!(status);
+            } else {
+              kw.deactivateProcess(pid);
+            }
+            workers.delete(pid);
+          },
+        },
+      );
+
+      await kw.init(kernelBytes);
+
+      // Create process memory for master
+      const memory = new WebAssembly.Memory({
+        initial: 17,
+        maximum: MAX_PAGES,
+        shared: true,
+      });
+      const channelOffset = (MAX_PAGES - 2) * 65536;
+      memory.grow(MAX_PAGES - 17);
+      new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
+
+      // The kernel reserves PID 1 for a virtual init process (used by
+      // `kill(1, ...)` / EPERM semantics), so the test runs nginx at
+      // PID 100 with workers spawned at 101+. The actual PID nginx
+      // sees doesn't matter to its operation.
+      kw.registerProcess(100, memory, [channelOffset]);
+      kw.setCwd(100, nginxPrefix);
+      kw.setNextChildPid(101);
+
+      const initData: CentralizedWorkerInitMessage = {
+        type: "centralized_init",
+        pid: 100,
+        ppid: 0,
+        programBytes,
+        memory,
+        channelOffset,
+        env: ["HOME=/tmp", "PATH=/usr/bin"],
+        argv: ["nginx", "-p", nginxPrefix + "/", "-c", testConf],
+      };
+
+      const masterWorker = workerAdapter.createWorker(initData);
+      workers.set(100, masterWorker);
+      masterWorker.on("error", () => {});
+
+      // Wait for the TCP listener to be ready (poll until port accepts)
+      let ready = false;
+      for (let i = 0; i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 250));
+        try {
+          await httpGet(testPort, "/", 3000);
+          ready = true;
+          break;
+        } catch {
+          // not ready yet
+        }
+      }
+
+      try {
+        expect(ready).toBe(true);
+
+        // Actual test: request the static page
+        const resp = await httpGet(testPort, "/");
+        expect(resp).toContain("HTTP/1.1 200 OK");
+        expect(resp).toContain("Server: nginx");
+        expect(resp).toContain("Hello from nginx on WebAssembly!");
+
+        // Request a non-existent path → 404
+        const resp404 = await httpGet(testPort, "/nonexistent");
+        expect(resp404).toContain("404");
+      } finally {
+        // Tear down all workers
+        for (const [pid, w] of workers) {
+          await w.terminate().catch(() => {});
+          kw.unregisterProcess(pid);
+        }
+        workers.clear();
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }, 60_000);
+  },
+);
