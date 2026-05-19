@@ -228,6 +228,7 @@ export interface SyscallTraceEvent {
 export interface ProcessSnapshot {
   pid: number;
   ppid: number;
+  /** Effective user/group IDs for ps-style USER display. */
   uid: number;
   gid: number;
   /** Sum of mmap-region sizes for this process, in bytes. */
