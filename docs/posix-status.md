@@ -56,8 +56,8 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
-| `fchmod()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
-| `fchown()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
+| `fchmod()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native mode changes after creation. |
+| `fchown()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native ownership changes. |
 | `preadv()` | Full | Scatter-gather read at offset. Iterates iovec entries calling pread for each. Stops on short read or EOF. |
 | `pwritev()` | Full | Scatter-gather write at offset. Iterates iovec entries calling pwrite for each. Stops on short write. |
 | `preadv2()` / `pwritev2()` | Partial | Delegates to preadv/pwritev. Extra flags parameter ignored. |
@@ -192,7 +192,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `link()` / `unlink()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
 | `rename()` | Partial | Host-delegated. Both paths resolved via kernel cwd. |
 | `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. |
-| `chmod()` / `chown()` | Partial | Host-delegated. May be no-op in browser environments. |
+| `chmod()` / `chown()` | Partial | VFS metadata updates. Node host-backed files receive native mode only at file/directory creation; later mode changes and all ownership changes stay virtual. Browser memory-backed mounts store metadata in the VFS. |
 | `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
 | `realpath()` | Full | Resolves path against cwd, normalizes `.`/`..`, resolves symlinks via iterative lstat/readlink (ELOOP after 40 resolutions), verifies existence. |
 | `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |
@@ -453,7 +453,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 
 | Feature | Node.js | Browser |
 |---------|---------|---------|
-| File I/O | Native `fs` module — full POSIX | OPFS (limited), fetch (read-only), or virtual FS |
+| File I/O | Native `fs` module for data and creation modes; VFS-only post-creation mode/ownership metadata | OPFS (limited), fetch (read-only), or virtual FS |
 | `fork()` | `worker_threads` — feasible | Web Workers — feasible but different API |
 | `Atomics.wait()` on main thread | Works | Throws — must use workers |
 | Network sockets | `net`/`dgram` modules | WebSocket/WebRTC only (no raw sockets) |
