@@ -6022,7 +6022,7 @@ pub fn sys_getaddrinfo(
 /// bound DGRAM socket and pushes the datagram to its queue.
 pub fn sys_sendto(
     proc: &mut Process,
-    _host: &mut dyn HostIO,
+    host: &mut dyn HostIO,
     fd: i32,
     buf: &[u8],
     _flags: u32,
@@ -6048,7 +6048,7 @@ pub fn sys_sendto(
 
     // sendto with null/empty addr on a connected socket → delegate to send (POSIX)
     if addr.is_empty() && sock.state == SocketState::Connected {
-        return sys_send(proc, _host, fd, buf, _flags);
+        return sys_send(proc, host, fd, buf, _flags);
     }
 
     if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
@@ -6062,14 +6062,17 @@ pub fn sys_sendto(
     let dst_port = u16::from_be_bytes([addr[2], addr[3]]);
     let dst_ip = [addr[4], addr[5], addr[6], addr[7]];
 
-    // Only support loopback
-    if dst_ip != [127, 0, 0, 1] {
-        return Err(Errno::ENETUNREACH);
-    }
-
-    // Get sender info
+    // Read sender info before any host call; needed for both the non-loopback
+    // hand-off (the host wire envelope carries src_port) and the loopback FIFO
+    // push below.
     let src_addr = sock.bind_addr;
     let src_port = sock.bind_port;
+
+    // Non-loopback: hand off to the host transport. The host (in v1, the
+    // browser's WebRTC relay) owns the wire; fire-and-forget.
+    if dst_ip != [127, 0, 0, 1] {
+        return host.send_dgram(src_port, dst_ip, dst_port, buf);
+    }
 
     // Find target DGRAM socket bound to dst_port
     let mut target_idx = None;
@@ -9485,6 +9488,8 @@ mod tests {
         /// Per-handle owner mapping captured at host_open time so host_fstat
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
+        /// UDP datagrams captured by `send_dgram` (src_port, dst_ip, dst_port, data).
+        sent_dgrams: Vec<(u16, [u8; 4], u16, Vec<u8>)>,
     }
 
     impl MockHostIO {
@@ -9499,6 +9504,7 @@ mod tests {
                 clock_time: (1234567890, 123456789),
                 file_owners: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
+                sent_dgrams: Vec::new(),
             }
         }
 
@@ -9884,6 +9890,17 @@ mod tests {
         }
         fn unbind_framebuffer(&mut self, _pid: i32) {}
         fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
+        fn send_dgram(
+            &mut self,
+            src_port: u16,
+            dst_ip: [u8; 4],
+            dst_port: u16,
+            data: &[u8],
+        ) -> Result<usize, Errno> {
+            self.sent_dgrams
+                .push((src_port, dst_ip, dst_port, data.to_vec()));
+            Ok(data.len())
+        }
     }
 
     #[test]
@@ -15482,6 +15499,50 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+
+        // Loopback path must not have leaked into the host's UDP relay.
+        assert!(host.sent_dgrams.is_empty());
+    }
+
+    #[test]
+    fn test_udp_non_loopback_routes_to_host() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        // Bind a sender DGRAM socket to a known port.
+        let send_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_addr = [0u8; 16];
+        bind_addr[0] = 2; // AF_INET
+        let bind_port: u16 = 5029;
+        let bind_port_be = bind_port.to_be_bytes();
+        bind_addr[2] = bind_port_be[0];
+        bind_addr[3] = bind_port_be[1];
+        sys_bind(&mut proc, &mut host, send_fd, &bind_addr).unwrap();
+
+        // Send to a non-loopback destination (10.99.0.2:5029).
+        let mut dest_addr = [0u8; 16];
+        dest_addr[0] = 2;
+        let dst_port: u16 = 5029;
+        let dst_port_be = dst_port.to_be_bytes();
+        dest_addr[2] = dst_port_be[0];
+        dest_addr[3] = dst_port_be[1];
+        dest_addr[4] = 10;
+        dest_addr[5] = 99;
+        dest_addr[6] = 0;
+        dest_addr[7] = 2;
+        let payload = b"doom packet";
+        let n = sys_sendto(&mut proc, &mut host, send_fd, payload, 0, &dest_addr).unwrap();
+        assert_eq!(n, payload.len());
+
+        // Exactly one datagram should have crossed into the host's relay,
+        // carrying the bound src_port and the on-the-wire dst tuple.
+        assert_eq!(host.sent_dgrams.len(), 1);
+        let (src_port, dst_ip, dst_port_out, data) = &host.sent_dgrams[0];
+        assert_eq!(*src_port, bind_port);
+        assert_eq!(*dst_ip, [10, 99, 0, 2]);
+        assert_eq!(*dst_port_out, dst_port);
+        assert_eq!(data.as_slice(), payload);
     }
 
     // ── Threading tests ──────────────────────────────────────────────
