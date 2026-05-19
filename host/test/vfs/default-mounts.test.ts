@@ -15,6 +15,7 @@ const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
 const O_CREAT = 0x0040;
 const O_TRUNC = 0x0200;
+const PERMISSION_MASK = 0o777;
 
 async function buildFixtureImage(): Promise<Uint8Array> {
   const sab = new SharedArrayBuffer(2 * 1024 * 1024);
@@ -45,6 +46,15 @@ function readMountFile(backend: any, path: string): Uint8Array {
   const n = backend.read(fd, buf, null, buf.length);
   backend.close(fd);
   return buf.subarray(0, n);
+}
+
+function withUmask<T>(mask: number, fn: () => T): T {
+  const previous = process.umask(mask);
+  try {
+    return fn();
+  } finally {
+    process.umask(previous);
+  }
 }
 
 describe("DEFAULT_MOUNT_SPEC", () => {
@@ -131,11 +141,23 @@ describe("resolveForNode", () => {
     }
   });
 
-  it("applies declared scratch directory modes", () => {
-    resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir);
-    expect(statSync(join(sessionDir, "tmp")).mode & 0o7777).toBe(0o1777);
-    expect(statSync(join(sessionDir, "var", "tmp")).mode & 0o7777).toBe(0o1777);
-    expect(statSync(join(sessionDir, "root")).mode & 0o7777).toBe(0o700);
+  it("applies declared scratch directory modes natively on creation and virtually", () => {
+    const modeSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-default-mount-modes-"));
+    const mounts = withUmask(0, () => resolveForNode(DEFAULT_MOUNT_SPEC, image, modeSessionDir));
+    const tmp = mounts.find((m) => m.mountPoint === "/tmp")!;
+    const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!;
+    const root = mounts.find((m) => m.mountPoint === "/root")!;
+
+    try {
+      expect(tmp.backend.stat("/").mode & 0o7777).toBe(0o1777);
+      expect(varTmp.backend.stat("/").mode & 0o7777).toBe(0o1777);
+      expect(root.backend.stat("/").mode & 0o7777).toBe(0o700);
+      expect(statSync(join(modeSessionDir, "tmp")).mode & PERMISSION_MASK).toBe(0o777);
+      expect(statSync(join(modeSessionDir, "var", "tmp")).mode & PERMISSION_MASK).toBe(0o777);
+      expect(statSync(join(modeSessionDir, "root")).mode & 0o7777).toBe(0o700);
+    } finally {
+      rmSync(modeSessionDir, { recursive: true, force: true });
+    }
   });
 
   it("adds the nobody group to legacy dinit images", async () => {
