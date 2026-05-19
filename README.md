@@ -21,7 +21,7 @@ Real, unmodified software compiled to WebAssembly:
 | Git | 2.47 | Core version control operations |
 | Vim | 9.1 | Full editor with ncurses terminal UI |
 | NetHack | 3.6.7 | Classic roguelike with curses UI |
-| fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
+| fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface — single-player and **2-peer deathmatch over a WebRTC `RTCDataChannel`** (chocolate-doom 3.1.0 net stack + a POSIX-sockets transport; see the `doom-mp` browser demo) |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |
 | SpiderMonkey | 140 ESR | JavaScript engine backing the Node.js-compatible runtime with Intl, SharedArrayBuffer, worker_threads, and npm package installs. |
