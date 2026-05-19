@@ -1,0 +1,671 @@
+diff --git a/fbdoom/Makefile b/fbdoom/Makefile
+index 73be25e..0db3ac8 100644
+--- a/fbdoom/Makefile
++++ b/fbdoom/Makefile
+@@ -44,6 +44,12 @@ OBJDIR=build
+ OUTPUT=fbdoom
+ 
+ SRC_DOOM = i_main.o dummy.o am_map.o doomdef.o doomstat.o dstrings.o d_event.o d_items.o d_iwad.o d_loop.o d_main.o d_mode.o d_net.o f_finale.o f_wipe.o g_game.o hu_lib.o hu_stuff.o info.o i_cdmus.o i_endoom.o i_joystick.o i_scale.o i_sound.o i_system.o i_timer.o memio.o m_argv.o m_bbox.o m_cheat.o m_config.o m_controls.o m_fixed.o m_menu.o m_misc.o m_random.o p_ceilng.o p_doors.o p_enemy.o p_floor.o p_inter.o p_lights.o p_map.o p_maputl.o p_mobj.o p_plats.o p_pspr.o p_saveg.o p_setup.o p_sight.o p_spec.o p_switch.o p_telept.o p_tick.o p_user.o r_bsp.o r_data.o r_draw.o r_main.o r_plane.o r_segs.o r_sky.o r_things.o sha1.o sounds.o statdump.o st_lib.o st_stuff.o s_sound.o tables.o v_video.o wi_stuff.o w_checksum.o w_file.o w_file_stdc_unbuffered.o w_main.o w_wad.o z_zone.o
++
++# Multiplayer DOOM over WebRTC (design doc 2026-05-19). Vendored
++# chocolate-doom net stack + our POSIX-sockets transport. See
++# patches/0007-i_net-posix.patch.
++SRC_DOOM += aes_prng.o net_client.o net_common.o net_io.o net_loop.o net_packet.o net_petname.o net_posix.o net_query.o net_server.o net_structrw.o
++
+ OBJS += $(addprefix $(OBJDIR)/, $(SRC_DOOM))
+ 
+ all:	 $(OUTPUT)
+diff --git a/fbdoom/aes_prng.c b/fbdoom/aes_prng.c
+index aad0a38..dd52c9c 100644
+--- a/fbdoom/aes_prng.c
++++ b/fbdoom/aes_prng.c
+@@ -642,8 +642,11 @@ static uint32_t aes_ror32(uint32_t word, unsigned int shift)
+     return (word >> shift) | (word << (32 - shift));
+ }
+ 
+-#define cpu_to_le32(x) SDL_SwapLE32(x)
+-#define le32_to_cpu(x) SDL_SwapLE32(x)
++// wasm32 is little-endian and fbDOOM doesn't link SDL; the SDL byte-swap
++// macros are unavailable here. Identity is correct on little-endian
++// targets. (Multiplayer DOOM over WebRTC — patches/0007-i_net-posix.patch.)
++#define cpu_to_le32(x) (x)
++#define le32_to_cpu(x) (x)
+ 
+ #define star_x(x) (((x) & 0x7f7f7f7f) << 1) ^ ((((x) & 0x80808080) >> 7) * 0x1b)
+ 
+diff --git a/fbdoom/d_loop.c b/fbdoom/d_loop.c
+index 1939dbd..2a44010 100644
+--- a/fbdoom/d_loop.c
++++ b/fbdoom/d_loop.c
+@@ -40,6 +40,13 @@
+ #include "net_sdl.h"
+ #include "net_loop.h"
+ 
++// Multiplayer DOOM over WebRTC: net_posix.c provides a POSIX-sockets
++// net_module_t implementation that replaces SDL_net (which fbDOOM
++// doesn't ship). The transport ultimately rides the wasm-posix-kernel's
++// host_send_dgram / kernel_inject_datagram hooks — see the
++// multiplayer-doom-webrtc design doc §5.2.
++extern net_module_t net_posix_module;
++
+ // The complete set of data for a particular tic.
+ 
+ typedef struct
+@@ -476,7 +483,7 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
+     {
+         NET_SV_Init();
+         NET_SV_AddModule(&net_loop_server_module);
+-        NET_SV_AddModule(&net_sdl_module);
++        NET_SV_AddModule(&net_posix_module);
+         NET_SV_RegisterWithMaster();
+ 
+         net_loop_client_module.InitClient();
+@@ -515,8 +522,8 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
+ 
+         if (i > 0)
+         {
+-            net_sdl_module.InitClient();
+-            addr = net_sdl_module.ResolveAddress(myargv[i+1]);
++            net_posix_module.InitClient();
++            addr = net_posix_module.ResolveAddress(myargv[i+1]);
+ 
+             if (addr == NULL)
+             {
+diff --git a/fbdoom/d_mode.c b/fbdoom/d_mode.c
+index afd84ac..c1969fd 100644
+--- a/fbdoom/d_mode.c
++++ b/fbdoom/d_mode.c
+@@ -207,3 +207,25 @@ char *D_GameMissionString(GameMission_t mission)
+     }
+ }
+ 
++// chocolate-doom 3.1.0 added this small helper used by net_server.c's
++// "Game mismatch" reject string. fbDOOM dropped multiplayer at compile
++// time and along with it lost this; backfilled by the WebRTC-relay
++// patch so the vendored net_server.c can link.
++const char *D_GameModeString(GameMode_t mode)
++{
++    switch (mode)
++    {
++        case shareware:
++            return "shareware";
++        case registered:
++            return "registered";
++        case commercial:
++            return "commercial";
++        case retail:
++            return "retail";
++        case indetermined:
++        default:
++            return "unknown";
++    }
++}
++
+diff --git a/fbdoom/d_mode.h b/fbdoom/d_mode.h
+index ebbd0e8..7ec1a72 100644
+--- a/fbdoom/d_mode.h
++++ b/fbdoom/d_mode.h
+@@ -93,6 +93,7 @@ boolean D_ValidEpisodeMap(GameMission_t mission, GameMode_t mode,
+ int D_GetNumEpisodes(GameMission_t mission, GameMode_t mode);
+ boolean D_IsEpisodeMap(GameMission_t mission);
+ char *D_GameMissionString(GameMission_t mission);
++const char *D_GameModeString(GameMode_t mode);
+ 
+ #endif /* #ifndef __D_MODE__ */
+ 
+diff --git a/fbdoom/d_net.c b/fbdoom/d_net.c
+index b8962cc..104c5f8 100644
+--- a/fbdoom/d_net.c
++++ b/fbdoom/d_net.c
+@@ -210,6 +210,13 @@ static void InitConnectData(net_connect_data_t *connect_data)
+     // Are we playing with the Freedoom IWAD?
+ 
+     connect_data->is_freedoom = W_CheckNumForName("FREEDOOM") >= 0;
++
++    // chocolate-doom 3.1.0's net_connect_data_t carries a player_class
++    // field used by Heretic/Hexen. Doom only has the marine, so pin it
++    // here. fbDOOM's older d_net.c didn't set this field, leaving it
++    // garbage on the stack — explicit assignment matches chocolate-doom
++    // semantics and avoids any future drift surprises.
++    connect_data->player_class = 0;  // pc_marine
+ }
+ 
+ void D_ConnectNetGame(void)
+diff --git a/fbdoom/doomfeatures.h b/fbdoom/doomfeatures.h
+index f7b15f7..2df837e 100644
+--- a/fbdoom/doomfeatures.h
++++ b/fbdoom/doomfeatures.h
+@@ -28,8 +28,14 @@
+ #undef FEATURE_DEHACKED
+ 
+ // Enables multiplayer support (network games)
++//
++// Re-enabled by patches/0007-i_net-posix.patch for the WebRTC UDP relay
++// build. The vendored chocolate-doom net stack (net_client/server/io/
++// loop/packet/petname/query/structrw + our net_posix.c) lights up the
++// FEATURE_MULTIPLAYER branches in d_loop.c and d_net.c. See the
++// multiplayer-doom-webrtc design doc for the relay-side wiring.
+ 
+-#undef FEATURE_MULTIPLAYER
++#define FEATURE_MULTIPLAYER
+ 
+ // Enables sound output
+ 
+diff --git a/fbdoom/doomtype.h b/fbdoom/doomtype.h
+index b5298eb..091a1af 100644
+--- a/fbdoom/doomtype.h
++++ b/fbdoom/doomtype.h
+@@ -99,5 +99,16 @@ typedef uint8_t byte;
+ 
+ #define arrlen(array) (sizeof(array) / sizeof(*array))
+ 
++// chocolate-doom 3.1.0's doomtype.h defines this format-string attribute
++// macro and the vendored net stack (net_query.c, net_server.c) uses it.
++// fbDOOM's older doomtype.h lacked it. Mirroring the chocolate-doom
++// definition keeps -Wformat-security and -Wformat-nonliteral catching
++// real bugs in the vendored printf-style helpers.
++#if defined(__GNUC__) || defined(__clang__)
++#define PRINTF_ATTR(fmt, first) __attribute__((format(printf, fmt, first)))
++#else
++#define PRINTF_ATTR(fmt, first)
++#endif
++
+ #endif
+ 
+diff --git a/fbdoom/dummy.c b/fbdoom/dummy.c
+index 0068d03..b662a88 100644
+--- a/fbdoom/dummy.c
++++ b/fbdoom/dummy.c
+@@ -24,9 +24,11 @@
+  *  public data                                                        *
+  *---------------------------------------------------------------------*/
+ 
+-boolean net_client_connected = false;
+-
+-boolean drone = false;
++// net_client_connected and drone moved to the vendored chocolate-doom
++// net_client.c by patches/0007-i_net-posix.patch (multiplayer over the
++// WebRTC UDP relay). dummy.c provided stub definitions when fbDOOM had
++// FEATURE_MULTIPLAYER #undef'd; with the real net stack now linked the
++// stubs would duplicate-define the symbols.
+ 
+ /*---------------------------------------------------------------------*
+  *  private data                                                       *
+diff --git a/fbdoom/net_client.c b/fbdoom/net_client.c
+index 19b720f..715c52a 100644
+--- a/fbdoom/net_client.c
++++ b/fbdoom/net_client.c
+@@ -1225,5 +1225,11 @@ void NET_Init(void)
+ 
+ void NET_BindVariables(void)
+ {
+-    M_BindStringVariable("player_name", &net_player_name);
++    // fbDOOM's older m_config.c only exposes the type-erased
++    // M_BindVariable; the per-type variants (M_BindStringVariable,
++    // M_BindIntVariable, …) chocolate-doom 3.1.0 added are not
++    // present. The storage shape is the same — a void* into the
++    // caller's variable — so M_BindVariable is a 1:1 substitute for
++    // M_BindStringVariable here.
++    M_BindVariable("player_name", &net_player_name);
+ }
+diff --git a/fbdoom/net_common.c b/fbdoom/net_common.c
+index 99b32c2..080314c 100644
+--- a/fbdoom/net_common.c
++++ b/fbdoom/net_common.c
+@@ -470,7 +470,11 @@ void NET_OpenLog(void)
+     p = M_CheckParmWithArgs("-netlog", 1);
+     if (p > 0)
+     {
+-        net_debug = M_fopen(myargv[p + 1], "w");
++        // fbDOOM's older m_misc.c doesn't ship the M_fopen portability
++        // wrapper chocolate-doom 3.1.0 added (Windows-UTF8 path support
++        // we don't need on wasm32-musl). Direct fopen has the same
++        // semantics here.
++        net_debug = fopen(myargv[p + 1], "w");
+         if (net_debug == NULL)
+         {
+             I_Error("Failed to open %s to write debug log.", myargv[p + 1]);
+diff --git a/fbdoom/net_posix.c b/fbdoom/net_posix.c
+new file mode 100644
+index 0000000..19480ba
+--- /dev/null
++++ b/fbdoom/net_posix.c
+@@ -0,0 +1,419 @@
++//
++// Copyright(C) 2005-2014 Simon Howard (chocolate-doom net_sdl.c — basis)
++// Copyright(C) 2026 wasm-posix-kernel contributors (POSIX adaptation)
++//
++// This program is free software; you can redistribute it and/or
++// modify it under the terms of the GNU General Public License
++// as published by the Free Software Foundation; either version 2
++// of the License, or (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++// GNU General Public License for more details.
++//
++// DESCRIPTION:
++//     POSIX BSD-sockets transport for chocolate-doom's net_module_t.
++//     A drop-in replacement for net_sdl.c in environments that don't
++//     ship SDL_net. Structure deliberately mirrors net_sdl.c so a
++//     reader who already knows that file can map function-by-function.
++//
++//     Wasm-posix-kernel context: socket(AF_INET, SOCK_DGRAM, 0) routes
++//     through the kernel's HostIO::send_dgram trait (and the inbound
++//     side through kernel_inject_datagram). The browser host fans
++//     those out over a WebRTC RTCDataChannel via the RelayChannel /
++//     RelayHostShim pair — see the multiplayer-doom-webrtc design doc
++//     §5 and the host-side wiring at host/src/browser-kernel-worker-
++//     entry.ts (RelayHostShim, handleInjectDatagram).
++//
++//     Also provides a textscreen-free NET_WaitForLaunch replacement.
++//     chocolate-doom's net_gui.c draws a "waiting for launch" UI via
++//     TXT_*; fbDOOM doesn't link textscreen, so we spin on the net
++//     state until the server flips net_waiting_for_launch off. The
++//     browser-side page surfaces user-visible "waiting for player N..."
++//     status via its own RTT probe (design §7).
++//
++
++#include <stdlib.h>
++#include <string.h>
++#include <stdio.h>
++#include <errno.h>
++#include <unistd.h>
++#include <fcntl.h>
++
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++
++#include "doomtype.h"
++#include "i_system.h"
++#include "i_timer.h"
++#include "m_argv.h"
++#include "m_misc.h"
++#include "net_defs.h"
++#include "net_io.h"
++#include "net_packet.h"
++#include "net_client.h"
++#include "net_server.h"
++#include "z_zone.h"
++
++// Default UDP port. Matches the synthetic /24 used by the
++// browser-side RelayChannel (10.99.0.0/24:5029). See design §3.
++#define DEFAULT_PORT 5029
++
++typedef struct
++{
++    net_addr_t        net_addr;
++    struct sockaddr_in sin;
++} addrpair_t;
++
++static boolean      initted        = false;
++static int          port           = DEFAULT_PORT;
++static int          udpsock        = -1;
++static addrpair_t **addr_table     = NULL;
++static int          addr_table_size = -1;
++
++net_module_t net_posix_module;
++
++// ---------------------------------------------------------------------
++// Address bookkeeping (1:1 with net_sdl.c's NET_SDL_FindAddress).
++// ---------------------------------------------------------------------
++
++static void InitAddrTable(void)
++{
++    addr_table_size = 16;
++    addr_table = Z_Malloc(sizeof(addrpair_t *) * addr_table_size,
++                          PU_STATIC, 0);
++    memset(addr_table, 0, sizeof(addrpair_t *) * addr_table_size);
++}
++
++static boolean AddressesEqual(const struct sockaddr_in *a,
++                              const struct sockaddr_in *b)
++{
++    return a->sin_addr.s_addr == b->sin_addr.s_addr
++        && a->sin_port        == b->sin_port;
++}
++
++static net_addr_t *FindAddress(const struct sockaddr_in *addr)
++{
++    addrpair_t *new_entry;
++    int empty_entry = -1;
++    int i;
++
++    if (addr_table_size < 0)
++    {
++        InitAddrTable();
++    }
++
++    for (i = 0; i < addr_table_size; ++i)
++    {
++        if (addr_table[i] != NULL
++         && AddressesEqual(addr, &addr_table[i]->sin))
++        {
++            return &addr_table[i]->net_addr;
++        }
++
++        if (empty_entry < 0 && addr_table[i] == NULL)
++            empty_entry = i;
++    }
++
++    // No slot free — double the table, copy in, swap.
++    if (empty_entry < 0)
++    {
++        addrpair_t **new_table;
++        int new_size;
++
++        empty_entry = addr_table_size;
++        new_size    = addr_table_size * 2;
++
++        new_table = Z_Malloc(sizeof(addrpair_t *) * new_size,
++                             PU_STATIC, 0);
++        memset(new_table, 0, sizeof(addrpair_t *) * new_size);
++        memcpy(new_table, addr_table,
++               sizeof(addrpair_t *) * addr_table_size);
++        Z_Free(addr_table);
++        addr_table      = new_table;
++        addr_table_size = new_size;
++    }
++
++    new_entry = Z_Malloc(sizeof(addrpair_t), PU_STATIC, 0);
++    new_entry->sin              = *addr;
++    new_entry->net_addr.refcount = 0;
++    new_entry->net_addr.handle  = &new_entry->sin;
++    new_entry->net_addr.module  = &net_posix_module;
++
++    addr_table[empty_entry] = new_entry;
++    return &new_entry->net_addr;
++}
++
++static void NET_POSIX_FreeAddress(net_addr_t *addr)
++{
++    int i;
++
++    for (i = 0; i < addr_table_size; ++i)
++    {
++        if (addr_table[i] != NULL && addr == &addr_table[i]->net_addr)
++        {
++            Z_Free(addr_table[i]);
++            addr_table[i] = NULL;
++            return;
++        }
++    }
++
++    I_Error("NET_POSIX_FreeAddress: Attempted to remove an unused address!");
++}
++
++// ---------------------------------------------------------------------
++// Socket open / bind.
++// ---------------------------------------------------------------------
++
++static boolean OpenSocket(int bind_port)
++{
++    struct sockaddr_in sa;
++    int flags;
++
++    udpsock = socket(AF_INET, SOCK_DGRAM, 0);
++    if (udpsock < 0) return false;
++
++    // Non-blocking is the contract net_io.c's per-tic poll expects from
++    // a module: RecvPacket must return false on an empty queue rather
++    // than block. The wasm-posix-kernel's sys_recvfrom returns EAGAIN
++    // unconditionally on empty (see crates/kernel/src/syscalls.rs
++    // around 6133-6134 — a documented follow-up), so the O_NONBLOCK
++    // flag here is belt-and-braces / portability with other hosts.
++    flags = fcntl(udpsock, F_GETFL, 0);
++    if (flags >= 0)
++    {
++        (void)fcntl(udpsock, F_SETFL, flags | O_NONBLOCK);
++    }
++
++    if (bind_port > 0)
++    {
++        memset(&sa, 0, sizeof(sa));
++        sa.sin_family      = AF_INET;
++        sa.sin_port        = htons((uint16_t)bind_port);
++        sa.sin_addr.s_addr = htonl(INADDR_ANY);
++        if (bind(udpsock, (struct sockaddr *)&sa, sizeof(sa)) < 0)
++        {
++            close(udpsock);
++            udpsock = -1;
++            return false;
++        }
++    }
++    return true;
++}
++
++// ---------------------------------------------------------------------
++// net_module_t entry points.
++// ---------------------------------------------------------------------
++
++static boolean NET_POSIX_InitClient(void)
++{
++    int p;
++
++    if (initted) return true;
++
++    //!
++    // @category net
++    // @arg <n>
++    //
++    // Use the specified UDP port for communications, instead of
++    // the default (5029).
++    //
++    p = M_CheckParmWithArgs("-port", 1);
++    if (p > 0) port = atoi(myargv[p + 1]);
++
++    // Client side binds to an ephemeral port; the kernel picks one.
++    if (!OpenSocket(0))
++    {
++        I_Error("NET_POSIX_InitClient: Unable to open socket: %s",
++                strerror(errno));
++    }
++
++    initted = true;
++    return true;
++}
++
++static boolean NET_POSIX_InitServer(void)
++{
++    int p;
++
++    if (initted) return true;
++
++    p = M_CheckParmWithArgs("-port", 1);
++    if (p > 0) port = atoi(myargv[p + 1]);
++
++    if (!OpenSocket(port))
++    {
++        I_Error("NET_POSIX_InitServer: Unable to bind to port %i: %s",
++                port, strerror(errno));
++    }
++
++    initted = true;
++    return true;
++}
++
++static void NET_POSIX_SendPacket(net_addr_t *addr, net_packet_t *packet)
++{
++    struct sockaddr_in sa;
++
++    if (udpsock < 0) return;
++
++    if (addr == &net_broadcast_addr)
++    {
++        memset(&sa, 0, sizeof(sa));
++        sa.sin_family      = AF_INET;
++        sa.sin_port        = htons((uint16_t)port);
++        sa.sin_addr.s_addr = htonl(INADDR_BROADCAST);
++    }
++    else
++    {
++        sa = *((struct sockaddr_in *)addr->handle);
++    }
++
++    // UDP is best-effort. The host's RelayChannel may be torn down
++    // (page navigation, peer disconnect); a transient sendto failure
++    // is indistinguishable from wire-level loss and must NOT escalate
++    // to I_Error here. chocolate-doom's net_sdl.c does call I_Error on
++    // failure; we relax that for the relay's looser delivery model.
++    (void)sendto(udpsock, packet->data, packet->len, 0,
++                 (struct sockaddr *)&sa, sizeof(sa));
++}
++
++static boolean NET_POSIX_RecvPacket(net_addr_t **addr, net_packet_t **packet)
++{
++    byte               buf[1500];
++    struct sockaddr_in sa;
++    socklen_t          slen = sizeof(sa);
++    ssize_t            n;
++
++    if (udpsock < 0) return false;
++
++    n = recvfrom(udpsock, buf, sizeof(buf), 0,
++                 (struct sockaddr *)&sa, &slen);
++
++    if (n < 0)
++    {
++        // EAGAIN / EWOULDBLOCK is the empty-queue case. Other errors
++        // (EINTR, …) we also treat as "no packet this tic" — the next
++        // poll will retry. Errors that mean "socket is dead" would
++        // legitimately surface as sustained zero-recv, which DOOM's
++        // higher-level netcode times out on (NET_CL_Run).
++        return false;
++    }
++    if (n == 0)
++        return false;
++
++    *packet = NET_NewPacket((int)n);
++    memcpy((*packet)->data, buf, (size_t)n);
++    (*packet)->len = (size_t)n;
++    *addr = FindAddress(&sa);
++    return true;
++}
++
++void NET_POSIX_AddrToString(net_addr_t *addr, char *buffer, int buffer_len)
++{
++    struct sockaddr_in *sa = (struct sockaddr_in *)addr->handle;
++    uint32_t            host = ntohl(sa->sin_addr.s_addr);
++    uint16_t            pt   = ntohs(sa->sin_port);
++
++    M_snprintf(buffer, buffer_len, "%u.%u.%u.%u",
++               (unsigned)((host >> 24) & 0xff),
++               (unsigned)((host >> 16) & 0xff),
++               (unsigned)((host >>  8) & 0xff),
++               (unsigned)( host        & 0xff));
++
++    // Match net_sdl.c's behaviour: only include :port when non-default,
++    // so default-port strings stay clean for the setup tool / UI.
++    if (pt != DEFAULT_PORT)
++    {
++        char portbuf[10];
++        M_snprintf(portbuf, sizeof(portbuf), ":%u", (unsigned)pt);
++        M_StringConcat(buffer, portbuf, buffer_len);
++    }
++}
++
++net_addr_t *NET_POSIX_ResolveAddress(const char *address)
++{
++    char              *hostname;
++    char              *colon;
++    int                addr_port = port;
++    struct sockaddr_in sa;
++
++    hostname = M_StringDuplicate(address);
++
++    colon = strchr(hostname, ':');
++    if (colon != NULL)
++    {
++        *colon    = '\0';
++        addr_port = atoi(colon + 1);
++    }
++
++    memset(&sa, 0, sizeof(sa));
++    sa.sin_family = AF_INET;
++    sa.sin_port   = htons((uint16_t)addr_port);
++
++    // Numeric-only resolution. The browser-side page passes our
++    // synthetic /24 addresses verbatim (`-connect 10.99.0.1`), so we
++    // never need DNS — and the wasm-posix-kernel's resolver path
++    // (host_getaddrinfo) goes through the page's NetworkBackend,
++    // which doesn't reach the WebRTC relay. Refusing to resolve names
++    // here is the right behaviour: it would either fail loudly
++    // (preferred) or worse, succeed against the wrong network.
++    if (inet_pton(AF_INET, hostname, &sa.sin_addr) != 1)
++    {
++        free(hostname);
++        return NULL;
++    }
++
++    free(hostname);
++    return FindAddress(&sa);
++}
++
++net_module_t net_posix_module =
++{
++    NET_POSIX_InitClient,
++    NET_POSIX_InitServer,
++    NET_POSIX_SendPacket,
++    NET_POSIX_RecvPacket,
++    NET_POSIX_AddrToString,
++    NET_POSIX_FreeAddress,
++    NET_POSIX_ResolveAddress,
++};
++
++// ---------------------------------------------------------------------
++// NET_WaitForLaunch — textscreen-free stub.
++// ---------------------------------------------------------------------
++//
++// chocolate-doom's net_gui.c provides this with a TXT_* desktop drawn
++// onto the screen while the server waits for clients. fbDOOM doesn't
++// link textscreen, so we substitute a headless poll loop that keeps
++// the client and server state machines running until the server
++// flips net_waiting_for_launch off.
++//
++// User-visible behaviour: fbDOOM's pre-game framebuffer freezes for a
++// few netcode round-trips while the handshake completes, then the
++// level loads normally. The doom-mp page surfaces "waiting for player
++// N..." status of its own via the RTT probe (design §7), so the user
++// isn't staring at a blank screen.
++//
++// I_Sleep(1) yields once per spin: this is a cooperatively-scheduled
++// wait, not a busy loop. The wasm-posix-kernel's syscall pressure
++// would already throttle a tight spin, but the explicit sleep keeps
++// the worker thread polite.
++
++extern boolean net_waiting_for_launch;
++
++void NET_WaitForLaunch(void)
++{
++    printf("NET_WaitForLaunch: waiting for server to start the game...\n");
++
++    while (net_waiting_for_launch)
++    {
++        NET_CL_Run();
++        NET_SV_Run();
++        I_Sleep(1);
++    }
++
++    printf("NET_WaitForLaunch: game starting.\n");
++}
+diff --git a/fbdoom/net_query.c b/fbdoom/net_query.c
+index d9c8b2d..706e109 100644
+--- a/fbdoom/net_query.c
++++ b/fbdoom/net_query.c
+@@ -24,6 +24,14 @@
+ #include "i_timer.h"
+ #include "m_misc.h"
+ 
++// chocolate-doom-3.1.0 introduced I_Realloc (realloc + abort on NULL)
++// in i_system.c. fbDOOM ships an older i_system.c without it. The one
++// call site here is in a server-discovery accumulator where running
++// out of memory is a fatal condition anyway, so plain realloc is
++// behaviourally close enough — and matches the same #define trick used
++// by patches/0005-add-music-support.patch's midifile.c vendoring.
++#define I_Realloc realloc
++
+ #include "net_common.h"
+ #include "net_defs.h"
+ #include "net_io.h"
