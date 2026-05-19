@@ -4,6 +4,25 @@ Date: 2026-05-19 (same day as sessions 1–3)
 Branch: `explore-webrtc-doom-xl7dh` (clean tree, no new commits this session)
 User: mho22 / yannick@capsules.codes — Brandon Payton style.
 
+> **POST-REBASE NOTE (added 2026-05-19, session 5):** The "Verified citations"
+> section below was authored against the pre-rebase tree. After the branch
+> was rebased onto `origin/main`:
+> - `examples/browser/*` was reorganized to `apps/browser-demos/*` (PR #492).
+> - `examples/libs/fbdoom/*` was reorganized to `packages/registry/fbdoom/*`.
+> - `host/src/networking/tls-network-backend.ts` now exists in `host/src/`
+>   (was `examples/browser/lib/tls-network-backend.ts`).
+> - Most kernel-source line numbers shifted by hundreds of lines.
+> - `ABI_VERSION` is **11** on main (was 7 pre-rebase). The "bump 7→8" plan
+>   is doubly stale: the value is wrong AND the additive-snapshot policy
+>   landed via PR #490 means adding a single new kernel-wasm export is
+>   backward-compatible and requires **no** `ABI_VERSION` bump at all.
+>
+> The refreshed citations live in `2026-05-19-multiplayer-doom-webrtc-plan.md`
+> and `2026-05-19-multiplayer-doom-webrtc-design.md`, both updated in the
+> same commit as this note. The "Findings — defects fixed in design.md"
+> section below remains accurate (those §D1–D5 fixes were applied to
+> design.md before this rebase and survive the rebase intact).
+
 > Per the user: **nothing committed yet**. The two planning docs
 > (`design`, `plan`) remain untracked. Do not push. Do not commit until
 > the user has explicitly approved.
