@@ -86,7 +86,7 @@ before mutating `index.toml`. The lock ref is per-subject:
 refs/heads/github-actions/state-lock/<subject>
 ```
 
-Where `<subject>` is the target release tag (`binaries-abi-v8`,
+Where `<subject>` is the target release tag (`binaries-abi-v11`,
 `pr-447-staging`, etc.). Different tags → different subjects →
 independent locks, so concurrent rebuilds for the durable release
 don't block per-PR staging publishes and vice versa.
@@ -110,8 +110,8 @@ PR-staging releases use `pr-<NNN>-staging` (also mutable, but
 ephemeral — closed PRs leave them as historical curios).
 
 The ABI version appears in the tag because a release is tied to a
-specific kernel ABI. Programs from `binaries-abi-v7` cannot run
-against a kernel on ABI 8 — the resolver's compatibility check
+specific kernel ABI. Programs from `binaries-abi-v10` cannot run
+against a kernel on ABI 11 — the resolver's compatibility check
 rejects them.
 
 ## Layout of a release
@@ -120,14 +120,12 @@ Flat asset namespace. Per-package archive filenames + one
 `index.toml` ledger.
 
 ```
-binaries-abi-v8 (release)
+binaries-abi-v11 (release)
 ├── index.toml                                              ← LEDGER (the contract)
-├── kernel-0.1.0-rev1-abi8-wasm64-0a51ff38.tar.zst          ← kernel.wasm
-├── userspace-0.1.0-rev1-abi8-wasm64-6fbf3622.tar.zst       ← userspace.wasm
-├── zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst            ← library
-├── zlib-1.3.1-rev1-abi8-wasm64-e6c7a02b.tar.zst            ← library
-├── ncurses-6.5-rev1-abi8-wasm32-3ef36fae.tar.zst           ← library
-├── vim-9.1.0900-rev2-abi8-wasm32-0e8b5c34.tar.zst          ← program
+├── zlib-1.3.1-rev1-abi11-wasm32-e33c5e9a.tar.zst           ← library
+├── zlib-1.3.1-rev1-abi11-wasm64-e6c7a02b.tar.zst           ← library
+├── ncurses-6.5-rev1-abi11-wasm32-3ef36fae.tar.zst          ← library
+├── vim-9.1.0900-rev2-abi11-wasm32-0e8b5c34.tar.zst         ← program
 └── …
 ```
 
@@ -169,7 +167,7 @@ on the entry's `status`.
 Schema (see [design §3.4](plans/2026-05-13-binary-resolution-via-index-ledger-design.md#34-indextoml--ledger-of-build-state)):
 
 ```toml
-abi_version = 8
+abi_version = 11
 generated_at = "2026-05-13T..."
 generator = "wasm-posix-kernel CI @ <sha>"
 
@@ -180,7 +178,7 @@ revision = 1
 
 [packages.binary.wasm32]
 status         = "success"
-archive_url    = "zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst"
+archive_url    = "zlib-1.3.1-rev1-abi11-wasm32-e33c5e9a.tar.zst"
 archive_sha256 = "<64-hex>"
 cache_key_sha  = "<64-hex>"
 built_at       = "2026-05-13T..."
@@ -193,7 +191,7 @@ last_attempt        = "2026-05-13T..."
 last_attempt_by     = "https://github.com/.../actions/runs/<id>"
 # Last-green fallback: the previous successful build, preserved across
 # the failed rebuild.
-fallback_archive_url    = "zlib-1.3.1-rev1-abi8-wasm64-87766332.tar.zst"
+fallback_archive_url    = "zlib-1.3.1-rev1-abi11-wasm64-87766332.tar.zst"
 fallback_archive_sha256 = "<64-hex>"
 fallback_cache_key_sha  = "<64-hex>"
 fallback_built_at       = "2026-05-12T..."

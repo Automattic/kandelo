@@ -654,6 +654,18 @@ export class LiveKernelHost implements KernelHost {
     this.refreshFramebufferAvailability();
   }
 
+  /** Clear the wrapped kernel after a failed boot without changing status. */
+  detachKernel(): void {
+    this.offFramebufferAvailability?.();
+    this.offFramebufferAvailability = null;
+    this.kernel = undefined;
+    this.ptySession = null;
+    this.shellPid = null;
+    this.refreshTerminalAvailability();
+    this.refreshFramebufferAvailability();
+    this.setSurfaceAvailability({ web: false });
+  }
+
   /** Configure the program attachPty spawns by default. */
   setDefaultShell(shell: NonNullable<LiveKernelHostOptions["shell"]>): void {
     this.shell = shell;

@@ -146,6 +146,94 @@ body {
   overflow: hidden;
 }
 
+.simple-programs-preview {
+  flex-direction: column;
+}
+
+.software-gallery {
+  flex-shrink: 0;
+  padding: 0.85rem 1.5rem 0;
+}
+
+.software-gallery-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.6rem;
+}
+
+.software-gallery h2 {
+  margin: 0 0 0.2rem;
+  font-size: 1rem;
+}
+
+.software-gallery-status {
+  margin: 0;
+  color: #666;
+  font-size: 0.82rem;
+}
+
+.software-gallery-source,
+.software-gallery-actions a {
+  color: #2f5fb8;
+  font-size: 0.82rem;
+  text-decoration: none;
+}
+
+.software-gallery-source:hover,
+.software-gallery-actions a:hover {
+  text-decoration: underline;
+}
+
+.software-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.6rem;
+}
+
+.software-gallery-card {
+  min-width: 0;
+  border: 1px solid #d9dee8;
+  border-radius: 6px;
+  padding: 0.7rem;
+  background: #fff;
+}
+
+.software-gallery-card h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.92rem;
+}
+
+.software-gallery-card p {
+  margin: 0 0 0.55rem;
+  color: #555;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.software-gallery-packages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+}
+
+.software-gallery-package {
+  border-radius: 999px;
+  background: #eef2f8;
+  color: #334155;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.7rem;
+  padding: 0.18rem 0.42rem;
+}
+
+.software-gallery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
 /* ── Split panels (log + iframe or log + result) */
 
 .split-panels {
