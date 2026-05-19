@@ -1579,8 +1579,8 @@ pub extern "C" fn kernel_get_fd_path(pid: u32, fd: i32, buf_ptr: *mut u8, buf_le
 ///   for each process:
 ///     u32  pid
 ///     u32  ppid
-///     u32  uid
-///     u32  gid
+///     u32  uid             -- effective uid for ps-style USER display
+///     u32  gid             -- effective gid
 ///     u64  vsize_bytes    -- sum of mmap-region sizes
 ///     u32  state          -- 'R' (running) or 'Z' (zombie) as ASCII
 ///     u32  comm_len
@@ -1646,8 +1646,8 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
 
         write_u32(buf, &mut off, proc.pid);
         write_u32(buf, &mut off, proc.ppid);
-        write_u32(buf, &mut off, proc.uid);
-        write_u32(buf, &mut off, proc.gid);
+        write_u32(buf, &mut off, proc.euid);
+        write_u32(buf, &mut off, proc.egid);
         write_u64(buf, &mut off, vsize);
         write_u32(buf, &mut off, state);
         write_u32(buf, &mut off, comm.len() as u32);

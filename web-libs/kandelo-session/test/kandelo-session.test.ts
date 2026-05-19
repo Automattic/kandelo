@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   LiveKernelHost,
   type BootDescriptor,
+  type FileSystemLike,
   type KernelHost,
   type MachineStatus,
   type ProcessEvent,
@@ -43,6 +44,57 @@ const DUMMY_DESCRIPTOR: BootDescriptor = {
   ],
   boot: { argv: ["/bin/sh"], cwd: "/", env: { HOME: "/" } },
 };
+
+function makeFs(files: Record<string, string>): FileSystemLike {
+  const encoder = new TextEncoder();
+  const entries = new Map(
+    Object.entries(files).map(([path, text]) => [path, encoder.encode(text)]),
+  );
+  const handles = new Map<number, { data: Uint8Array; offset: number }>();
+  let nextHandle = 1;
+
+  const fs: FileSystemLike = {
+    stat(path: string) {
+      const data = entries.get(path);
+      if (!data) throw new Error(`ENOENT: ${path}`);
+      return { mode: 0o100644, size: data.byteLength, mtimeMs: 0, uid: 0, gid: 0 };
+    },
+    open(path: string) {
+      const data = entries.get(path);
+      if (!data) throw new Error(`ENOENT: ${path}`);
+      const handle = nextHandle++;
+      handles.set(handle, { data, offset: 0 });
+      return handle;
+    },
+    read(handle: number, buffer: Uint8Array, offset: number | null, length: number) {
+      const entry = handles.get(handle);
+      if (!entry) throw new Error(`EBADF: ${handle}`);
+      const start = offset ?? 0;
+      const available = entry.data.byteLength - entry.offset;
+      const n = Math.max(0, Math.min(length, available, buffer.byteLength - start));
+      if (n > 0) {
+        buffer.set(entry.data.subarray(entry.offset, entry.offset + n), start);
+        entry.offset += n;
+      }
+      return n;
+    },
+    close(handle: number) {
+      handles.delete(handle);
+      return 0;
+    },
+    readlink(path: string) {
+      throw new Error(`EINVAL: ${path}`);
+    },
+    opendir(path: string) {
+      throw new Error(`ENOTDIR: ${path}`);
+    },
+    readdir() {
+      return null;
+    },
+    closedir() {},
+  };
+  return fs;
+}
 
 // ── LiveKernelHost ─────────────────────────────────────────────────────
 
@@ -134,6 +186,33 @@ describe("LiveKernelHost: process events", () => {
     host.emitProcessEvent({ kind: "spawn", pid: 1 });
     expect(a).not.toHaveBeenCalled();
     expect(b).toHaveBeenCalledOnce();
+  });
+});
+
+describe("LiveKernelHost: process listing", () => {
+  it("resolves process snapshot UIDs through /etc/passwd", async () => {
+    const fs = makeFs({
+      "/etc/passwd": [
+        "root:x:0:0:root:/root:/bin/sh",
+        "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
+        "mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin",
+        "",
+      ].join("\n"),
+    });
+    const host = new LiveKernelHost({
+      kernel: {
+        fs,
+        nextPid: 1,
+        enumProcs: async () => [
+          { pid: 1, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "/sbin/dinit" },
+          { pid: 2, ppid: 1, uid: 33, gid: 33, vsizeBytes: 2048, state: "S", comm: "php-fpm", cmdline: "php-fpm: pool www" },
+          { pid: 3, ppid: 1, uid: 4242, gid: 4242, vsizeBytes: 4096, state: "S", comm: "worker", cmdline: "worker" },
+        ],
+      } as any,
+    });
+
+    const procs = await host.enumProcs();
+    expect(procs.map((p) => p.user)).toEqual(["root", "www-data", "4242"]);
   });
 });
 

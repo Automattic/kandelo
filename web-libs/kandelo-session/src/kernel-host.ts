@@ -890,6 +890,7 @@ export class LiveKernelHost implements KernelHost {
 
   async readDir(path: string): Promise<VfsDirent[]> {
     const fs = this.requireFs();
+    const names = loadIdNameMaps(fs);
     const handle = fs.opendir(path);
     try {
       const out: VfsDirent[] = [];
@@ -924,8 +925,8 @@ export class LiveKernelHost implements KernelHost {
           name: entry.name,
           kind,
           mode: formatMode(mode, kind),
-          owner: numericIdToLabel(uid),
-          group: numericIdToLabel(gid),
+          owner: idToLabel(uid, names.users),
+          group: idToLabel(gid, names.groups),
           size: kind === "d" ? "—" : humanSize(size),
           target,
         });
@@ -938,6 +939,7 @@ export class LiveKernelHost implements KernelHost {
 
   async stat(path: string): Promise<VfsDirent | null> {
     const fs = this.requireFs();
+    const names = loadIdNameMaps(fs);
     try {
       const st = fs.stat(path);
       const kind = direntKind(0, st.mode);
@@ -945,8 +947,8 @@ export class LiveKernelHost implements KernelHost {
         name: path.split("/").pop() || "/",
         kind,
         mode: formatMode(st.mode, kind),
-        owner: numericIdToLabel(st.uid),
-        group: numericIdToLabel(st.gid),
+        owner: idToLabel(st.uid, names.users),
+        group: idToLabel(st.gid, names.groups),
         size: kind === "d" ? "—" : humanSize(st.size),
       };
     } catch {
@@ -974,16 +976,18 @@ export class LiveKernelHost implements KernelHost {
     // version and the kernel ship together (ABI ≥ 9).
     if (this.kernel?.enumProcs) {
       const snaps = await this.kernel.enumProcs();
-      return snaps.map(toProcessInfo);
+      const names = loadIdNameMaps(this.kernel.fs);
+      return snaps.map((s) => toProcessInfo(s, names.users));
     }
     const fs = this.requireFs();
+    const names = loadIdNameMaps(fs);
     const entries = await this.readDir("/proc").catch(() => [] as VfsDirent[]);
     const out: ProcessInfo[] = [];
     for (const e of entries) {
       const pid = Number(e.name);
       if (!Number.isInteger(pid) || pid <= 0) continue;
       try {
-        out.push(parseProcEntry(fs, pid));
+        out.push(parseProcEntry(fs, pid, names.users));
       } catch {
         // Process may have exited between readdir and read.
       }
@@ -1428,11 +1432,11 @@ const SYSCALL_NAMES_LOCAL: Record<number, string> = {
 
 // ── KernelProcessSnapshot → ProcessInfo ───────────────────────────────────
 
-function toProcessInfo(s: KernelProcessSnapshot): ProcessInfo {
+function toProcessInfo(s: KernelProcessSnapshot, users: IdNameMap): ProcessInfo {
   return {
     pid: s.pid,
     ppid: s.ppid,
-    user: s.uid === 0 ? "root" : String(s.uid),
+    user: idToLabel(s.uid, users),
     cmdline: s.cmdline,
     state: s.state,
     memory: humanSize(s.memoryBytes ?? s.vsizeBytes),
@@ -1441,7 +1445,7 @@ function toProcessInfo(s: KernelProcessSnapshot): ProcessInfo {
 
 // ── /proc parsers ──────────────────────────────────────────────────────────
 
-function parseProcEntry(fs: FileSystemLike, pid: number): ProcessInfo {
+function parseProcEntry(fs: FileSystemLike, pid: number, users: IdNameMap): ProcessInfo {
   // Linux /proc/[pid]/stat format: pid (comm) state ppid ... — the comm
   // field is parenthesized and may contain spaces. We scan from the last
   // ')' to skip the executable name field, then split the rest.
@@ -1458,7 +1462,7 @@ function parseProcEntry(fs: FileSystemLike, pid: number): ProcessInfo {
     if (idx === -1) continue;
     statusMap[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
   }
-  const user = statusMap.Uid?.split(/\s+/)[0] ?? "0";
+  const user = statusMap.Uid?.split(/\s+/)[1] ?? statusMap.Uid?.split(/\s+/)[0] ?? "0";
   const memory = parseStatusBytes(statusMap.VmSize);
 
   let cmdline = "";
@@ -1471,7 +1475,7 @@ function parseProcEntry(fs: FileSystemLike, pid: number): ProcessInfo {
   return {
     pid,
     ppid: Number(statusMap.PPid ?? 0) || 0,
-    user: numericUidToLabel(user),
+    user: numericIdStringToLabel(user, users),
     cmdline,
     state,
     memory,
@@ -1488,13 +1492,58 @@ function parseStatusBytes(raw: string | undefined): string {
   return `${(kb / 1024 / 1024).toFixed(1)}G`;
 }
 
-function numericUidToLabel(uid: string): string {
-  if (uid === "0") return "root";
-  return uid;
+type IdNameMap = Map<number, string>;
+
+interface IdNameMaps {
+  users: IdNameMap;
+  groups: IdNameMap;
 }
 
-function numericIdToLabel(id: number): string {
-  return id === 0 ? "root" : String(id);
+function loadIdNameMaps(fs: FileSystemLike): IdNameMaps {
+  return {
+    users: loadColonIdMap(fs, "/etc/passwd", 2, new Map([[0, "root"]])),
+    groups: loadColonIdMap(fs, "/etc/group", 2, new Map([[0, "root"]])),
+  };
+}
+
+function loadColonIdMap(
+  fs: FileSystemLike,
+  path: string,
+  idField: number,
+  fallback: IdNameMap,
+): IdNameMap {
+  const out: IdNameMap = new Map();
+  let text: string;
+  try {
+    text = decodeBytes(readFileSync(fs, path));
+  } catch {
+    return new Map(fallback);
+  }
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const fields = line.split(":");
+    const name = fields[0];
+    const rawId = fields[idField];
+    if (!name || rawId === undefined) continue;
+    const id = Number(rawId);
+    if (!Number.isInteger(id) || id < 0) continue;
+    if (!out.has(id)) out.set(id, name);
+  }
+  for (const [id, name] of fallback) {
+    if (!out.has(id)) out.set(id, name);
+  }
+  return out;
+}
+
+function numericIdStringToLabel(rawId: string, names: IdNameMap): string {
+  const id = Number(rawId);
+  if (!Number.isInteger(id) || id < 0) return rawId;
+  return idToLabel(id, names);
+}
+
+function idToLabel(id: number, names: IdNameMap): string {
+  return names.get(id) ?? String(id);
 }
 
 function decodeBytes(b: Uint8Array): string {
