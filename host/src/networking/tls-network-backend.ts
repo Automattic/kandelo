@@ -13,8 +13,8 @@
  * EAGAIN/retry pattern — no separate worker thread needed.
  */
 
-import type { NetworkIO } from "../../../host/src/types";
-import { EagainError } from "../../../host/src/networking/fetch-backend";
+import type { NetworkIO } from "../types";
+import { EagainError } from "./fetch-backend";
 import { TLS_1_2_Connection } from "../../../packages/registry/openssl/src/tls/1_2/connection";
 import {
   generateCertificate,

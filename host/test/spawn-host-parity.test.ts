@@ -34,7 +34,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "..", "..");
 
 const nodeEntry = join(repoRoot, "host", "src", "node-kernel-worker-entry.ts");
-const browserEntry = join(repoRoot, "apps", "browser-demos", "lib", "kernel-worker-entry.ts");
+const browserEntry = join(repoRoot, "host", "src", "browser-kernel-worker-entry.ts");
 
 describe("spawn host parity", () => {
   it("Node kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {

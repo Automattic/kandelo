@@ -1,7 +1,7 @@
 // Builds a LiveKernelHost over a real BrowserKernel. Used by default when the
 // kandelo page is loaded (use `?mock=1` for MockKernelHost).
 
-import { BrowserKernel } from "../../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import { initServiceWorkerBridge } from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
 import {

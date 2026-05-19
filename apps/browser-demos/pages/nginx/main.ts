@@ -9,7 +9,7 @@
  * the image at build time) declares the service; dinit handles the
  * rest.
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
 import kernelWasmUrl from "@kernel-wasm?url";

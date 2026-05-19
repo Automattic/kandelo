@@ -4,7 +4,7 @@
  * Loads git.wasm and git-remote-http.wasm, writes them to the VFS,
  * and exposes window.__runGitClone(url) for Playwright to call.
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import kernelWasmUrl from "@kernel-wasm?url";
 import gitWasmUrl from "../../../../binaries/programs/wasm32/git/git.wasm?url";
 import gitRemoteHttpWasmUrl from "../../../../binaries/programs/wasm32/git/git-remote-http.wasm?url";

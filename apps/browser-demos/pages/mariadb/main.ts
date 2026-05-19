@@ -16,7 +16,7 @@
  *   pid 100+: <engine>-bootstrap (scripted, exits cleanly)
  *   pid 100+: <engine>-mariadb (process, daemon + 5 worker threads)
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import { MySqlBrowserClient } from "../../lib/mysql-client";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";

@@ -8,7 +8,7 @@
  * dash, symlinks, magic database, vim runtime, and system configs. At runtime
  * we restore the image, register lazy binaries, and spawn dash.
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import {

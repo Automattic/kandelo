@@ -1,4 +1,4 @@
-import { BrowserKernel } from "./lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const output = document.getElementById("output") as HTMLPreElement;

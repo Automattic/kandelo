@@ -7,17 +7,17 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
-import { MemoryFileSystem, type LazyFileEntry } from "../../../host/src/vfs/memory-fs";
-import { FramebufferRegistry } from "../../../host/src/framebuffer/registry";
-import type { ProcessSnapshot, SyscallTraceEvent } from "../../../host/src/kernel-worker";
+import { MemoryFileSystem, type LazyFileEntry } from "./vfs/memory-fs";
+import { FramebufferRegistry } from "./framebuffer/registry";
+import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
-} from "./kernel-worker-protocol";
+} from "./browser-kernel-protocol";
 import kernelWasmUrl from "@kernel-wasm?url";
 import rootfsVfsUrl from "@rootfs-vfs?url";
-import workerEntryUrl from "../../../host/src/worker-entry-browser.ts?worker&url";
-import kernelWorkerEntryUrl from "./kernel-worker-entry.ts?worker&url";
+import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
+import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 
 const DEFAULT_MAX_PAGES = 16384;
 

@@ -9,7 +9,7 @@
  * Operates entirely over kernel pipe pairs (no real TCP).
  * All pipe operations are async (message round-trip to kernel worker).
  */
-import type { BrowserKernel } from "./browser-kernel";
+import type { BrowserKernel } from "@host/browser-kernel-host";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -20,7 +20,7 @@ const decoder = new TextDecoder();
 // points use `pid == 0` as the global-table sentinel; passing the
 // listener's pid would look in the wrong table and silently return
 // EBADF — handshake reads time out and the demo retries forever.
-// Mirror the host bridge in `kernel-worker-entry.ts handleHttpRequest`,
+// Mirror the host bridge in `browser-kernel-worker-entry.ts handleHttpRequest`,
 // which already passes `pid=0` for the same reason.
 const GLOBAL_PIPE_PID = 0;
 

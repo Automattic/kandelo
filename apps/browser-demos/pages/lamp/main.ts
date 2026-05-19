@@ -11,7 +11,7 @@
  * The page passes WP_APP_PATH and WP_PROTO via env so wp-config-init
  * can finalize wp-config.php's runtime values (WP_HOME / WP_SITEURL).
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
 import { TerminalPanel } from "../../lib/init";

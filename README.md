@@ -271,21 +271,28 @@ crates/
   kernel/            Kernel implementation (syscalls, fd table, signals, pipes, sockets, PTY)
   userspace/         User-space stub library
 host/
-  src/               TypeScript host runtime (kernel loader, VFS, networking, workers)
-  test/              Host and kernel runtime tests
+  src/               TypeScript host runtime shared by Node.js and browser hosts
+    node-kernel-host.ts / node-kernel-worker-entry.ts
+                      Node.js host main-thread proxy and kernel worker entry
+    browser-kernel-host.ts / browser-kernel-worker-entry.ts
+                      Browser host main-thread proxy and kernel worker entry
+    worker-main.ts   Shared process-worker runtime used by both hosts
+    vfs/ networking/ framebuffer/
+                      Shared host services used by Node.js, browser, and tests
+  test/              Host/kernel runtime behavior tests
   wasm/              Compiled Wasm binaries
 sdk/
   src/bin/           CLI tool wrappers for LLVM cross-compilation
   src/lib/           Toolchain discovery, compiler flags, arg parsing
 apps/
-  browser-demos/     Browser demo app (Vite + demo pages)
+  browser-demos/     Vite demo/UI app that consumes the browser host runtime
 web-libs/
   kandelo-session/   Reusable Kandelo session/UI integration contracts
 packages/
   registry/          Kandelo package manifests and build scripts
+    <name>/test/     Package-owned tests and fixtures
   sets/              Named package sets for CI and product scenarios
 tests/
-  packages/          Ported package integration harnesses and fixtures
   package-system/    Package registry and binary-fetching automation tests
   libc/              musl libc-test suite and overlays
   posix/             Open POSIX test suite
@@ -322,6 +329,7 @@ docs/
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | Kernel design, syscall flow, multi-process model, memory layout |
+| [Repository Organization](docs/repository-organization.md) | Top-level ownership boundaries and CI-oriented path categories |
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
 | [Porting Guide](docs/porting-guide.md) | How to port software, create Node.js and browser demos |
 | [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |

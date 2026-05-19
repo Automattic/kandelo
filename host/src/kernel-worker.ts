@@ -37,7 +37,7 @@ const CH_COMPLETE = 2;
  * frames + saved __tls_base / __stack_pointer that the host writes
  * during fork(). Must match the constant in `worker-main.ts` and the
  * onFork handlers in node-kernel-worker-entry.ts /
- * apps/browser-demos/lib/kernel-worker-entry.ts.
+ * browser-kernel-worker-entry.ts.
  */
 const ASYNCIFY_BUF_SIZE = 16384;
 

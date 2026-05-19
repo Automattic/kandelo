@@ -2,7 +2,7 @@
 
 Applications that exercise Kandelo as a product surface live here.
 
-- `browser-demos/` is the Vite app for browser demos and the current Kandelo web UI.
+- `browser-demos/` is the Vite app for browser demos and the current Kandelo web UI. It consumes the browser host runtime from `host/src/browser-kernel-host.ts`; host/runtime code should not live under the app tree.
 
 Reusable session contracts and browser-independent integration code belong in
 `web-libs/`, not inside an app directory.

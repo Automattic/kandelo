@@ -5,7 +5,7 @@
  * Runs multiple PHP invocations and reports results as JSON in #results.
  */
 
-import { BrowserKernel } from "../../../../../apps/browser-demos/lib/browser-kernel";
+import { BrowserKernel } from "../../../../../host/src/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDir,

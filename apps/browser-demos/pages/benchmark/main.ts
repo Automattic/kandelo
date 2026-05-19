@@ -11,7 +11,7 @@
  *   - "mariadb-aria": MariaDB with Aria engine
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { writeVfsFile } from "../../lib/init/vfs-utils";
 import { MySqlBrowserClient } from "../../lib/mysql-client";

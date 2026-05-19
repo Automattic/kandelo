@@ -40,12 +40,12 @@ Service Worker ──MessagePort──> Kernel Worker       │
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `BrowserKernel` | Main thread | Thin proxy — sends messages to kernel worker |
-| `kernel-worker-entry.ts` | Kernel worker | Hosts CentralizedKernelWorker, process lifecycle |
+| `BrowserKernel` | `host/src/browser-kernel-host.ts` | Main-thread proxy that sends messages to the browser kernel worker |
+| Browser kernel worker entry | `host/src/browser-kernel-worker-entry.ts` | Hosts CentralizedKernelWorker and owns process lifecycle |
 | `CentralizedKernelWorker` | Kernel worker | Kernel instance, handles all syscalls |
 | Process Workers | Sub-workers of kernel worker | One per process, communicates via SharedArrayBuffer + Atomics |
-| Service Worker | Separate | Intercepts HTTP for nginx/WordPress demos |
-| Connection pump | Kernel worker | Bridges HTTP requests to kernel TCP pipes |
+| Service Worker | `apps/browser-demos/public/service-worker.js` | Intercepts HTTP for nginx/WordPress demos |
+| Connection pump | `host/src/browser-kernel-worker-entry.ts` | Bridges HTTP requests to kernel TCP pipes |
 
 ### Key Design Decisions
 

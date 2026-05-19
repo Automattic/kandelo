@@ -3,7 +3,7 @@
  * and the kernel's pipe-backed sockets. This is the browser equivalent of
  * handleIncomingTcpConnection in kernel-worker.ts.
  */
-import type { BrowserKernel } from "./browser-kernel";
+import type { BrowserKernel } from "@host/browser-kernel-host";
 import type { HttpRequest, HttpResponse, HttpBridgeHost } from "./http-bridge";
 
 const encoder = new TextEncoder();

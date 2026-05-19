@@ -309,6 +309,11 @@ function injectCorsProxyUrl(): Plugin {
 
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
+  resolve: {
+    alias: {
+      "@host": path.resolve(repoRoot, "host/src"),
+    },
+  },
   plugins: [
     react(),
     resolveKernelArtifactsAlias(),

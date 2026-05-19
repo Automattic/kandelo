@@ -61,16 +61,6 @@
         "default": "./dist/framebuffer/index.cjs"
       }
     },
-    "./kandelo-ui": {
-      "import": {
-        "types": "./dist/kandelo-ui/index.d.ts",
-        "default": "./dist/kandelo-ui/index.js"
-      },
-      "require": {
-        "types": "./dist/kandelo-ui/index.d.cts",
-        "default": "./dist/kandelo-ui/index.cjs"
-      }
-    },
     "./worker-entry": {
       "browser": {
         "types": "./dist/worker-entry-browser.d.ts",

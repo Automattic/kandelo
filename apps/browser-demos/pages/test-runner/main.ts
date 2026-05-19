@@ -5,7 +5,7 @@
  * Each call creates a fresh BrowserKernel, runs the program, cleans up,
  * and returns { exitCode, stdout, stderr }.
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import kernelWasmUrl from "@kernel-wasm?url";
 import dashWasmUrl from "../../../../binaries/programs/wasm32/dash.wasm?url";
 import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
@@ -62,7 +62,7 @@ const COREUTILS_NAMES = [
 ];
 
 /** Write a binary file to the virtual filesystem. */
-function writeFileToFs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"], path: string, data: ArrayBuffer): void {
+function writeFileToFs(fs: import("@host/browser-kernel-host").BrowserKernel["fs"], path: string, data: ArrayBuffer): void {
   const bytes = new Uint8Array(data);
   const fd = fs.open(path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
   fs.write(fd, bytes, null, bytes.length);
@@ -70,7 +70,7 @@ function writeFileToFs(fs: import("../../lib/browser-kernel").BrowserKernel["fs"
 }
 
 /** Populate VFS with actual executable binaries and symlinks for exec. */
-function populateExecBinaries(fs: import("../../lib/browser-kernel").BrowserKernel["fs"]): void {
+function populateExecBinaries(fs: import("@host/browser-kernel-host").BrowserKernel["fs"]): void {
   for (const dir of ["/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin"]) {
     try { fs.mkdir(dir, 0o755); } catch { /* exists */ }
   }

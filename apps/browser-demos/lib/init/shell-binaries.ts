@@ -5,7 +5,7 @@
  * Extracted from pages/shell/main.ts for reuse by any demo that needs a
  * working shell environment.
  */
-import type { BrowserKernel } from "../browser-kernel";
+import type { BrowserKernel } from "@host/browser-kernel-host";
 import {
   writeVfsFile,
   writeVfsBinary,

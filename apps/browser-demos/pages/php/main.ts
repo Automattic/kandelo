@@ -2,7 +2,7 @@
  * PHP CLI browser demo — runs PHP inside the POSIX kernel,
  * with a textarea for entering code and output display.
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import {
   ensureDir,

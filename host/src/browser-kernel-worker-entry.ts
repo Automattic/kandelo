@@ -60,34 +60,34 @@ if (typeof globalThis.setImmediate === "undefined") {
   };
 }
 
-import { CentralizedKernelWorker } from "../../../host/src/kernel-worker";
+import { CentralizedKernelWorker } from "./kernel-worker";
 import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
-} from "../../../host/src/kernel-worker";
-import { BrowserWorkerAdapter } from "../../../host/src/worker-adapter-browser";
-import { VirtualPlatformIO } from "../../../host/src/vfs/vfs";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import { DeviceFileSystem } from "../../../host/src/vfs/device-fs";
-import { BrowserTimeProvider } from "../../../host/src/vfs/time";
+} from "./kernel-worker";
+import { BrowserWorkerAdapter } from "./worker-adapter-browser";
+import { VirtualPlatformIO } from "./vfs/vfs";
+import { MemoryFileSystem } from "./vfs/memory-fs";
+import { DeviceFileSystem } from "./vfs/device-fs";
+import { BrowserTimeProvider } from "./vfs/time";
 import {
   DEFAULT_MOUNT_SPEC,
   resolveForBrowser,
-} from "../../../host/src/vfs/default-mounts";
-import type { MountConfig } from "../../../host/src/vfs/types";
-import { TlsNetworkBackend } from "./tls-network-backend";
-import { patchWasmForThread } from "../../../host/src/worker-main";
-import { detectPtrWidth, extractHeapBase } from "../../../host/src/constants";
+} from "./vfs/default-mounts";
+import type { MountConfig } from "./vfs/types";
+import { TlsNetworkBackend } from "./networking/tls-network-backend";
+import { patchWasmForThread } from "./worker-main";
+import { detectPtrWidth, extractHeapBase } from "./constants";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
-} from "../../../host/src/worker-protocol";
-import { ThreadPageAllocator } from "../../../host/src/thread-allocator";
+} from "./worker-protocol";
+import { ThreadPageAllocator } from "./thread-allocator";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
-} from "./kernel-worker-protocol";
+} from "./browser-kernel-protocol";
 
 const DEFAULT_MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;

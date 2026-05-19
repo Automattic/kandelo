@@ -86,7 +86,7 @@ nginx's worker not seeing the accepted connection in its event loop
 because the wakeup is delivered to the master.
 
 **Files:** `crates/kernel/src/socket.rs` (TCP listener accept queue),
-`apps/browser-demos/lib/kernel-worker-entry.ts` (`handleHttpRequest` —
+`host/src/browser-kernel-worker-entry.ts` (`handleHttpRequest` —
 how it picks a target listening pid).
 
 ### wasm64 musl: missing `__NR_pselect6_time64` alias forces select() through SYS_select
@@ -95,7 +95,7 @@ how it picks a target listening pid).
 **Files:** `libc/musl-overlay/arch/wasm64posix/bits/syscall.h.in`
 
 ### Audit other PR #383 callers that may have missed the `GLOBAL_PIPE_PID` migration
-PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-worker`, May 2026) moved injected-connection pipes to the kernel's GLOBAL pipe table. `kernel_pipe_{read,write,close_*,is_*_open}` now treat `pid == 0` as a sentinel meaning "use the global pipe table". The HTTP bridge in `kernel-worker-entry.ts` and `NodeKernelHost` were updated; `apps/browser-demos/lib/mysql-client.ts` and `apps/browser-demos/lib/redis-client.ts` were missed and have since been fixed. **Audit any other call site that does `kernel.injectConnection(...)` and then `kernel.pipeRead/pipeWrite` with a non-zero pid** — they're broken in the same way (silent EBADF; greeting bytes never reach the browser-side reader). Currently visible: only the two demo clients that have already been fixed, but a future demo that reuses the inject-and-read pattern needs to know about the convention.
+PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-worker`, May 2026) moved injected-connection pipes to the kernel's GLOBAL pipe table. `kernel_pipe_{read,write,close_*,is_*_open}` now treat `pid == 0` as a sentinel meaning "use the global pipe table". The HTTP bridge in `host/src/browser-kernel-worker-entry.ts` and `NodeKernelHost` were updated; `apps/browser-demos/lib/mysql-client.ts` and `apps/browser-demos/lib/redis-client.ts` were missed and have since been fixed. **Audit any other call site that does `kernel.injectConnection(...)` and then `kernel.pipeRead/pipeWrite` with a non-zero pid** — they're broken in the same way (silent EBADF; greeting bytes never reach the browser-side reader). Currently visible: only the two demo clients that have already been fixed, but a future demo that reuses the inject-and-read pattern needs to know about the convention.
 
 **Files:** `apps/browser-demos/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
 

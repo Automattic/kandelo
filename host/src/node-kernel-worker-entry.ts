@@ -1016,8 +1016,7 @@ port.on("message", (msg: MainToKernelMessage) => {
     }
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.
-      // Mirrors the Browser-side handler in
-      // apps/browser-demos/lib/kernel-worker-entry.ts.
+      // Mirrors the Browser-side handler in browser-kernel-worker-entry.ts.
       try {
         post({ type: "response", requestId: msg.requestId, result: kernelWorker.enumProcs() });
       } catch (err) {

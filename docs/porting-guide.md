@@ -210,7 +210,7 @@ kernelWorker.deactivateProcess(pid)
 
 ## Creating Browser Demos
 
-Browser demos use `BrowserKernel` which handles the kernel worker, process lifecycle, and filesystem in a browser-friendly API.
+Browser demos use `BrowserKernel` from `host/src/browser-kernel-host.ts`, which handles the browser kernel worker, process lifecycle, and filesystem in a browser-friendly API. Demo pages live under `apps/browser-demos/`, but the host runtime itself is maintained under `host/src/` beside the Node.js host.
 
 ### Project setup
 
@@ -266,7 +266,7 @@ Add a nav link in each `index.html` (or use the existing nav bar pattern).
 
 **main.ts**:
 ```typescript
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import myProgramUrl from "../../../../path/to/program.wasm?url";
 
 const output = document.getElementById("output") as HTMLPreElement;
@@ -361,7 +361,7 @@ The kernel reads files from the shared `MemoryFileSystem`. For demos with many f
 
 ```typescript
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 
 // Fetch kernel wasm and VFS image in parallel
 const [kernelBuf, vfsImageBuf] = await Promise.all([

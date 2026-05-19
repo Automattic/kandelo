@@ -130,8 +130,8 @@ A change is incomplete unless ALL of these hold:
 
 | Concern | Node.js | Browser |
 |---|---|---|
-| Host entry | `host/src/node-kernel-host.ts` | `apps/browser-demos/lib/browser-kernel.ts` |
-| Worker entry / spawn / fork / exec / clone / exit / terminate | `host/src/node-kernel-worker-entry.ts` | `apps/browser-demos/lib/kernel-worker-entry.ts` |
+| Host entry | `host/src/node-kernel-host.ts` | `host/src/browser-kernel-host.ts` |
+| Worker entry / spawn / fork / exec / clone / exit / terminate | `host/src/node-kernel-worker-entry.ts` | `host/src/browser-kernel-worker-entry.ts` |
 | Worker adapter | `host/src/worker-adapter.ts` | `host/src/worker-adapter-browser.ts` |
 | Process-worker entry | shared: `host/src/worker-main.ts` |
 | Kernel | shared: `host/src/kernel-worker.ts` (`CentralizedKernelWorker`) |

@@ -10,7 +10,7 @@
  *   4. Keyboard events on the canvas become AT-set-1 scancodes (the
  *      Linux MEDIUMRAW protocol); fbDOOM's i_input_tty decodes them.
  */
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import { attachCanvas } from "../../../../host/src/framebuffer/canvas-renderer";
 // `@binaries/` resolves to local-binaries/ first, then binaries/ — so
 // a fresh `bash build-fbdoom.sh` shadows the cached release without
@@ -57,7 +57,7 @@ async function loadSharewareWad(
   // Dev: route through the vite /cors-proxy middleware (the mirror
   // does not send Access-Control-Allow-Origin).
   // Prod: hit the bare URL — the service worker rewrites cross-origin
-  // requests transparently. See apps/browser-demos/lib/kernel-worker-entry.ts.
+  // requests transparently. See host/src/browser-kernel-worker-entry.ts.
   const fetchUrl = import.meta.env.DEV
     ? `/cors-proxy?url=${encodeURIComponent(SHAREWARE_WAD_URL)}`
     : SHAREWARE_WAD_URL;
