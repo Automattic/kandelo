@@ -308,6 +308,14 @@ jobs:
             echo "existing-assets:"
             echo "$existing_assets" | jq -r ".[0:20][]"
             echo "..."
+            existing_index_dir=$(mktemp -d)
+            existing_index="$existing_index_dir/index.toml"
+            if gh release download "$TARGET_TAG" --repo "${{ github.repository }}" --pattern index.toml --dir "$existing_index_dir" --clobber >/dev/null 2>&1; then
+              echo "existing-index: downloaded $TARGET_TAG/index.toml"
+            else
+              echo "existing-index: none"
+              : > "$existing_index"
+            fi
             staging_assets=$(gh release view "$STAGING_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
             echo "staging-assets:"
             echo "$staging_assets" | jq -r ".[0:20][]"
@@ -364,9 +372,10 @@ jobs:
                 short=${sha:0:8}
                 prefix="${pkg}-"
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
-                if echo "$existing_assets" | jq -e --arg pre "$prefix" --arg suf "$suffix" \
-                    "any(.[]; startswith(\$pre) and endswith(\$suf))" >/dev/null; then
-                  echo "preflight: skip $pkg/$arch (sha $short already published)"
+                existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
+                    "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
+                if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
+                  echo "preflight: skip $pkg/$arch (sha $short already indexed)"
                   continue
                 fi
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
@@ -406,9 +415,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Fetch musl submodule
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
@@ -828,9 +837,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Fetch submodules (musl, libc-test, os-test)
-        run: |
-          git config --global url."https://github.com/".insteadOf "git@github.com:"
-          git submodule update --init --depth 1 musl libc-test os-test
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: musl libc-test os-test
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18

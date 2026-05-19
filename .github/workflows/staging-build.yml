@@ -132,6 +132,14 @@ jobs:
             echo "existing-assets:"
             echo "$existing_assets" | jq -r ".[0:20][]"
             echo "..."
+            existing_index_dir=$(mktemp -d)
+            existing_index="$existing_index_dir/index.toml"
+            if gh release download "$TARGET_TAG" --repo "${{ github.repository }}" --pattern index.toml --dir "$existing_index_dir" --clobber >/dev/null 2>&1; then
+              echo "existing-index: downloaded $TARGET_TAG/index.toml"
+            else
+              echo "existing-index: none"
+              : > "$existing_index"
+            fi
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             library_matrix="[]"
@@ -202,9 +210,10 @@ jobs:
                 short=${sha:0:8}
                 prefix="${pkg}-"
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
-                if echo "$existing_assets" | jq -e --arg pre "$prefix" --arg suf "$suffix" \
-                    "any(.[]; startswith(\$pre) and endswith(\$suf))" >/dev/null; then
-                  echo "preflight: skip $pkg/$arch (sha $short already published)"
+                existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
+                    "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
+                if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
+                  echo "preflight: skip $pkg/$arch (sha $short already indexed)"
                   continue
                 fi
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \

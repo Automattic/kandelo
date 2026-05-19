@@ -35,8 +35,27 @@ fi
 # iterating on patches), `rm -rf examples/libs/fbdoom/fbdoom-src`.
 SENTINEL="$SRC/fbdoom/opl/opl_kernel.c"
 
+apply_patches() {
+    local mode="${1:-strict}"
+    echo "==> Applying patches..."
+    for p in "$HERE/patches/"*.patch; do
+        [ -f "$p" ] || continue
+        name="$(basename "$p")"
+        if (cd "$SRC" && git apply --check "$p") >/dev/null 2>&1; then
+            echo "    $name"
+            (cd "$SRC" && git apply "$p")
+        elif [ "$mode" = "lenient" ]; then
+            echo "    $name (already applied or superseded)"
+        else
+            echo "ERROR: patch $name does not apply cleanly" >&2
+            exit 1
+        fi
+    done
+}
+
 if [ -e "$SENTINEL" ]; then
-    echo "==> Source tree already vendored + patched (sentinel present); skipping."
+    echo "==> Source tree already vendored (sentinel present); checking patches."
+    apply_patches lenient
 else
     if [ ! -d "$CDOOM_SRC" ]; then
         echo "==> Cloning chocolate-doom @ $CDOOM_COMMIT for music sources..."
@@ -59,18 +78,7 @@ else
         cp "$CDOOM_SRC/src/$f" "$SRC/fbdoom/$f"
     done
 
-    echo "==> Applying patches..."
-    for p in "$HERE/patches/"*.patch; do
-        [ -f "$p" ] || continue
-        name="$(basename "$p")"
-        if (cd "$SRC" && git apply --check "$p") >/dev/null 2>&1; then
-            echo "    $name"
-            (cd "$SRC" && git apply "$p")
-        else
-            echo "ERROR: patch $name does not apply cleanly" >&2
-            exit 1
-        fi
-    done
+    apply_patches strict
 fi
 
 cd "$SRC/fbdoom"
