@@ -4,11 +4,10 @@ description: |
   bash blocks across staging-build.yml, prepare-merge.yml,
   force-rebuild.yml.
 
-  Why this exists: musl's submodule URL points at the upstream
-  `git.musl-libc.org`, which is occasionally unreachable
-  ("Connection reset by peer" / "Couldn't connect to server"). A
-  one-shot fetch fails the whole job. We retry up to 3 times with a
-  10s backoff, which is enough to ride out the typical transient.
+  Why this exists: submodule hosts occasionally fail or stall during
+  CI. A one-shot fetch fails the whole job. We retry up to 3 times
+  with a 10s backoff, which is enough to ride out the typical
+  transient.
 
   The libc-test submodule is on git@github.com: in `.gitmodules`
   (SSH); rewrite to HTTPS for runner-side anonymous fetch.
