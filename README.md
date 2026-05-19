@@ -250,7 +250,7 @@ See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own soft
 # Kernel unit tests (700 tests)
 cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
 
-# Host integration tests (276 tests)
+# Host, package, and browser-adjacent integration tests
 cd host && npx vitest run
 
 # musl libc-test suite (0 unexpected failures)
@@ -272,7 +272,7 @@ crates/
   userspace/         User-space stub library
 host/
   src/               TypeScript host runtime (kernel loader, VFS, networking, workers)
-  test/              Vitest integration tests
+  test/              Host and kernel runtime tests
   wasm/              Compiled Wasm binaries
 sdk/
   src/bin/           CLI tool wrappers for LLVM cross-compilation
@@ -284,6 +284,12 @@ web-libs/
 packages/
   registry/          Kandelo package manifests and build scripts
   sets/              Named package sets for CI and product scenarios
+tests/
+  packages/          Ported package integration harnesses and fixtures
+  package-system/    Package registry and binary-fetching automation tests
+  libc/              musl libc-test suite and overlays
+  posix/             Open POSIX test suite
+  sortix/            Sortix os-test suite and overlays
 images/
   rootfs/            Source tree for the base VFS image
   vfs/scripts/       VFS image and archive builders

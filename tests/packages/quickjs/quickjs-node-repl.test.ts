@@ -6,10 +6,10 @@ import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "./centralized-test-helper";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const NODE = join(__dirname, "../../packages/registry/quickjs/bin/node.wasm");
+const NODE = join(__dirname, "../../../packages/registry/quickjs/bin/node.wasm");
 
 describe.skipIf(!existsSync(NODE))("node REPL", () => {
   it("prints banner, evaluates input, exits on \\q", async () => {

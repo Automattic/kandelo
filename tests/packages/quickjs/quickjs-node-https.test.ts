@@ -9,10 +9,10 @@ import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "./centralized-test-helper";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const NODE = join(__dirname, "../../packages/registry/quickjs/bin/node.wasm");
+const NODE = join(__dirname, "../../../packages/registry/quickjs/bin/node.wasm");
 const HAS_NODE = existsSync(NODE);
 
 const TEST_HOSTNAME = "wasm-https-test.local";

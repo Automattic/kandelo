@@ -2,8 +2,8 @@
  * Tests for GNU grep running on the wasm-posix-kernel.
  */
 import { describe, it, expect } from "vitest";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const grepBinary = tryResolveBinary("programs/grep.wasm");
 

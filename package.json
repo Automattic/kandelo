@@ -1,4 +1,5 @@
 {
+  "name": "wasm-posix-kernel",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,6 +14,7 @@
     "pack:packages": "npm run pack:host && npm run pack:sdk"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "playwright": "^1.59.1",
     "tsx": "^4.21.0"
   },

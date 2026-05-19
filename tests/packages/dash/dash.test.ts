@@ -2,9 +2,9 @@
  * Tests for dash shell running on the wasm-posix-kernel.
  */
 import { describe, it, expect } from "vitest";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
-import { NodePlatformIO } from "../src/platform/node";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
+import { NodePlatformIO } from "../../../host/src/platform/node";
 
 const dashBinary = tryResolveBinary("programs/dash.wasm");
 

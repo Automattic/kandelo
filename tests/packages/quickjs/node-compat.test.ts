@@ -6,12 +6,12 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NodeKernelHost } from "../src/node-kernel-host";
+import { NodeKernelHost } from "../../../host/src/node-kernel-host";
 
 const nodeWasm = tryResolveBinary("programs/quickjs/node.wasm");
 const hasNode = !!nodeWasm;

@@ -10,17 +10,17 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
-import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
-import { NodePlatformIO } from "../src/platform/node";
-import { NodeWorkerAdapter } from "../src/worker-adapter";
+import { CentralizedKernelWorker } from "../../../host/src/kernel-worker";
+import { resolveBinary, tryResolveBinary } from "../../../host/src/binary-resolver";
+import { NodePlatformIO } from "../../../host/src/platform/node";
+import { NodeWorkerAdapter } from "../../../host/src/worker-adapter";
 import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
-} from "../src/worker-protocol";
+} from "../../../host/src/worker-protocol";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(__dirname, "../..");
+const repoRoot = join(__dirname, "../../..");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;

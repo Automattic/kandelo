@@ -13,10 +13,10 @@ import { existsSync, rmSync, mkdirSync, writeFileSync, statSync } from "node:fs"
 import { createServer, type Server } from "node:http";
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { NodePlatformIO } from "../src/platform/node";
-import { FetchNetworkBackend } from "../src/networking/fetch-backend";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { NodePlatformIO } from "../../../host/src/platform/node";
+import { FetchNetworkBackend } from "../../../host/src/networking/fetch-backend";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const gitBinary = tryResolveBinary("programs/git/git.wasm");
 const gitRemoteHttpBinary = tryResolveBinary("programs/git/git-remote-http.wasm");

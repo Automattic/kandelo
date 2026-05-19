@@ -10,7 +10,7 @@ import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { tryResolveBinary, findRepoRoot } from "../src/binary-resolver";
+import { tryResolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = findRepoRoot();

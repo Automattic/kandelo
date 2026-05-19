@@ -1,17 +1,19 @@
 /**
  * Browser test harness — runs PHP CLI via wasm-posix-kernel using
- * VirtualPlatformIO + MemoryFileSystem (the browser code path).
+ * BrowserKernel + kernel-owned MemoryFileSystem image (the browser code path).
  *
  * Runs multiple PHP invocations and reports results as JSON in #results.
  */
 
-import { WasmPosixKernel, type KernelCallbacks } from "../../../../../host/src/kernel";
-import { ProgramRunner } from "../../../../../host/src/program-runner";
-import { VirtualPlatformIO } from "../../../../../host/src/vfs/vfs";
+import { BrowserKernel } from "../../../../../apps/browser-demos/lib/browser-kernel";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
-import { DeviceFileSystem } from "../../../../../host/src/vfs/device-fs";
-import { BrowserTimeProvider } from "../../../../../host/src/vfs/time";
-import kernelWasmUrl from "../../../../../binaries/kernel.wasm?url";
+import {
+  ensureDir,
+  ensureDirRecursive,
+  writeVfsBinary,
+  writeVfsFile,
+} from "../../../../../host/src/vfs/image-helpers";
+import kernelWasmUrl from "@kernel-wasm?url";
 
 const stdoutEl = document.getElementById("stdout")!;
 const stderrEl = document.getElementById("stderr")!;
@@ -19,8 +21,7 @@ const exitCodeEl = document.getElementById("exit-code")!;
 const statusEl = document.getElementById("status")!;
 const resultsEl = document.getElementById("results")!;
 
-const O_WRONLY = 1;
-const O_CREAT = 0x40;
+const PHP_PATH = "/usr/local/bin/php";
 
 interface TestResult {
   stdout: string;
@@ -31,44 +32,45 @@ interface TestResult {
 async function runPhp(
   phpBytes: ArrayBuffer,
   kernelBytes: ArrayBuffer,
-  memfs: MemoryFileSystem,
-  devfs: DeviceFileSystem,
+  files: Record<string, string>,
   argv: string[],
 ): Promise<TestResult> {
   let stdout = "";
   let stderr = "";
   const decoder = new TextDecoder();
 
-  const io = new VirtualPlatformIO(
-    [
-      { mountPoint: "/dev", backend: devfs },
-      { mountPoint: "/", backend: memfs },
-    ],
-    new BrowserTimeProvider(),
+  const memfs = MemoryFileSystem.create(
+    new SharedArrayBuffer(16 * 1024 * 1024, { maxByteLength: 64 * 1024 * 1024 }),
+    64 * 1024 * 1024,
   );
+  for (const dir of ["/tmp", "/home", "/dev"]) ensureDir(memfs, dir);
+  memfs.chmod("/tmp", 0o777);
+  ensureDirRecursive(memfs, "/usr/local/bin");
+  writeVfsBinary(memfs, PHP_PATH, new Uint8Array(phpBytes));
+  for (const [path, content] of Object.entries(files)) {
+    writeVfsFile(memfs, path, content);
+  }
+  const vfsImage = await memfs.saveImage();
 
-  const callbacks: KernelCallbacks = {
+  const kernel = new BrowserKernel({
+    kernelOwnedFs: true,
+    maxWorkers: 1,
     onStdout: (data) => { stdout += decoder.decode(data); },
     onStderr: (data) => { stderr += decoder.decode(data); },
-  };
-
-  const kernel = new WasmPosixKernel(
-    { maxWorkers: 1, dataBufferSize: 65536, useSharedMemory: true },
-    io,
-    callbacks,
-  );
-
-  await kernel.init(kernelBytes);
-
-  const runner = new ProgramRunner(kernel);
-  const exitCode = await runner.run(phpBytes, {
-    argv,
+  });
+  const { exit } = await kernel.boot({
+    kernelWasm: kernelBytes,
+    vfsImage,
+    argv: [PHP_PATH, ...argv.slice(1)],
     env: [
       "HOME=/home",
       "TMPDIR=/tmp",
       "TERM=xterm-256color",
+      "PATH=/usr/local/bin:/usr/bin:/bin",
     ],
+    cwd: "/home",
   });
+  const exitCode = await exit;
 
   return { stdout, stderr, exitCode };
 }
@@ -80,53 +82,38 @@ async function main() {
       fetch("/php.wasm").then((r) => r.arrayBuffer()),
     ]);
 
-    // Set up virtual filesystem (browser path — no Node.js fs)
-    const memfs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
-    const devfs = new DeviceFileSystem();
-    memfs.mkdir("/tmp", 0o777);
-    memfs.mkdir("/home", 0o755);
-    memfs.mkdir("/dev", 0o755);
-
-    // Write a PHP script to the virtual filesystem for file-based test
-    const scriptContent = new TextEncoder().encode('<?php echo "Browser File OK\\n"; ?>');
-    const fd = memfs.open("/home/script.php", O_WRONLY | O_CREAT, 0o644);
-    memfs.write(fd, scriptContent, null, scriptContent.length);
-    memfs.close(fd);
-
-    // Write an extensions test script (mbstring + ctype)
-    const extScript = new TextEncoder().encode(
-      '<?php echo json_encode(["mb" => mb_strlen("hello"), "ctype" => ctype_alpha("hello") ? "yes" : "no"]); ?>'
-    );
-    const fd2 = memfs.open("/home/ext_test.php", O_WRONLY | O_CREAT, 0o644);
-    memfs.write(fd2, extScript, null, extScript.length);
-    memfs.close(fd2);
+    const files = {
+      "/home/script.php": '<?php echo "Browser File OK\\n"; ?>',
+      "/home/ext_test.php":
+        '<?php echo json_encode(["mb" => mb_strlen("hello"), "ctype" => ctype_alpha("hello") ? "yes" : "no"]); ?>',
+    };
 
     // Test 1: Hello World (inline)
-    const r1 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    const r1 = await runPhp(phpBytes, kernelBytes, files,
       ["php", "-r", 'echo "Hello World\n";']);
 
     // Test 2: File-based execution
-    const r2 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    const r2 = await runPhp(phpBytes, kernelBytes, files,
       ["php", "/home/script.php"]);
 
     // Test 3: Extensions (mbstring + ctype)
-    const r3 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    const r3 = await runPhp(phpBytes, kernelBytes, files,
       ["php", "/home/ext_test.php"]);
 
     // Test 4: Session
-    const r4 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    const r4 = await runPhp(phpBytes, kernelBytes, files,
       ["php", "-r", 'session_start(); echo strlen(session_id()) > 0 ? "session-ok" : "fail";']);
 
     // Test 5: SQLite3 in-memory
-    const r5 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    const r5 = await runPhp(phpBytes, kernelBytes, files,
       ["php", "-r", '$db=new SQLite3(":memory:");$db->exec("CREATE TABLE t(v TEXT)");$db->exec("INSERT INTO t VALUES(\'sqlite-ok\')");echo $db->querySingle("SELECT v FROM t");']);
 
     // Test 6: fileinfo
-    const r6 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    const r6 = await runPhp(phpBytes, kernelBytes, files,
       ["php", "-r", '$f=new finfo(FILEINFO_MIME_TYPE);echo $f->buffer("GIF89a");']);
 
     // Test 7: SimpleXML
-    const r7 = await runPhp(phpBytes, kernelBytes, memfs, devfs,
+    const r7 = await runPhp(phpBytes, kernelBytes, files,
       ["php", "-r", '$x=new SimpleXMLElement("<r><i>xml-ok</i></r>");echo $x->i;']);
 
     const results = {

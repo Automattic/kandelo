@@ -3,8 +3,8 @@
  * Each tool is tested for basic compress/decompress or version output.
  */
 import { describe, it, expect } from "vitest";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const gzipBinary = tryResolveBinary("programs/gzip.wasm");
 const bzip2Binary = tryResolveBinary("programs/bzip2.wasm");

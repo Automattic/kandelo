@@ -6,6 +6,8 @@ External and generated conformance test trees live here.
   outputs.
 - `packages/` contains package integration harnesses and fixtures that exercise
   kernel behavior through real ported software.
+- `package-system/` contains tests for package registry and binary-fetching
+  automation.
 - `posix/` contains the Open POSIX test suite.
 - `sortix/` contains the Sortix os-test submodule and build outputs.
 - `results/` stores local test-run metadata.

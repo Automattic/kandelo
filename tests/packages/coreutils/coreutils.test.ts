@@ -5,8 +5,8 @@
  * We pass the utility name as argv[0] (e.g., ["echo", "hello"]).
  */
 import { describe, it, expect } from "vitest";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const coreutilsBinary = tryResolveBinary("programs/coreutils.wasm");
 

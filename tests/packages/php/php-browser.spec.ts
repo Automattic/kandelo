@@ -8,10 +8,28 @@
  * The browser harness runs multiple PHP tests (inline, file-based, extensions)
  * and reports all results as JSON in the #results element.
  *
- * Run: cd host && npx playwright test
+ * Run: npx playwright test --config tests/packages/php/playwright.config.ts
  */
 
 import { test, expect } from "@playwright/test";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(__dirname, "../../..");
+const hasKernelWasm = [
+  join(repoRoot, "local-binaries/kernel.wasm"),
+  join(repoRoot, "binaries/kernel.wasm"),
+].some((candidate) => existsSync(candidate));
+const hasPhpWasm = [
+  join(repoRoot, "local-binaries/programs/wasm32/php/php.wasm"),
+  join(repoRoot, "binaries/programs/wasm32/php/php.wasm"),
+  join(repoRoot, "packages/registry/php/php-src/sapi/cli/php"),
+].some((candidate) => existsSync(candidate));
+
+test.skip(!hasKernelWasm, "kernel.wasm is not built or fetched");
+test.skip(!hasPhpWasm, "php.wasm is not built or fetched");
 
 test("PHP CLI runs in the browser (inline, file, session, SQLite, fileinfo, XML, extensions)", async ({ page }) => {
   await page.goto("/");

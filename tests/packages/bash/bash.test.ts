@@ -9,13 +9,13 @@ import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const bashBinary =
   tryResolveBinary("programs/bash.wasm") ??
-  join(__dirname, "../../packages/registry/bash/bin/bash.wasm");
+  join(__dirname, "../../../packages/registry/bash/bin/bash.wasm");
 
 const hasBash = existsSync(bashBinary);
 

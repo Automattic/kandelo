@@ -2,11 +2,11 @@ import { describe, it, expect } from "vitest";
 import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "./centralized-test-helper";
+import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const QJS = join(__dirname, "../../packages/registry/quickjs/bin/qjs.wasm");
-const NODE = join(__dirname, "../../packages/registry/quickjs/bin/node.wasm");
+const QJS = join(__dirname, "../../../packages/registry/quickjs/bin/qjs.wasm");
+const NODE = join(__dirname, "../../../packages/registry/quickjs/bin/node.wasm");
 const HAS_QJS = existsSync(QJS);
 const HAS_NODE = existsSync(NODE);
 
