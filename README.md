@@ -335,8 +335,9 @@ docs/
 | [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |
 | [Shareable Computer URLs](docs/plans/2026-05-11-shareable-computer-url-design.md) | Boot descriptor design for sharing computer topology, signed bases/packages, mounts, and overlays |
 | [Package Management](docs/package-management.md) | `packages/registry/<name>/package.toml` schema, resolver, release archives |
+| [Package Sources](docs/package-sources.md) | Reusable workflows and scripts for third-party Kandelo package repositories |
 | [Package Management — Future Work](docs/package-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
-| [Binary Releases](docs/binary-releases.md) | `manifest.json` schema, package-system `.tar.zst` archive layout, fetch + verify flow |
+| [Binary Releases](docs/binary-releases.md) | `index.toml` ledger, package-system `.tar.zst` archive layout, fetch + verify flow |
 | [Profiling & Benchmarking](docs/profiling.md) | Syscall profiler, benchmark suite, cross-host comparison |
 | [POSIX Status](docs/posix-status.md) | Syscall-by-syscall implementation status |
 | [Wasm Limitations](docs/wasm-limitations.md) | Fundamental platform constraints |

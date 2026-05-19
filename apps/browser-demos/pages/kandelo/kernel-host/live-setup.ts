@@ -57,10 +57,9 @@ import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
 import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 
-const KANDELO_SOFTWARE_MANIFEST_URL =
-  "https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v11/gallery.json";
-const DEFAULT_KANDELO_SOFTWARE_INDEX_URL =
-  "https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v11/index.toml";
+const DEFAULT_SOFTWARE_MANIFEST_URLS = [
+  "https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v11/gallery.json",
+];
 
 type GalleryPackageRequirement = {
   name: string;
@@ -76,6 +75,8 @@ type SoftwareGalleryEntry = {
 };
 
 type SoftwareGalleryManifest = {
+  source_id?: string;
+  repository?: string;
   index_url?: string;
   entries: SoftwareGalleryEntry[];
 };
@@ -256,7 +257,7 @@ function showBootError(
     facility: "kandelo",
     msg: message,
   });
-  if (descriptor.id.startsWith("kandelo-software-")) {
+  if (SOFTWARE_PROFILES.has(descriptor.id)) {
     host.pushDmesg({
       t: 150,
       level: "warn",
@@ -880,25 +881,69 @@ async function loadLiveGalleryItems(): Promise<GalleryItem[]> {
 }
 
 async function loadKandeloSoftwareGalleryItems(): Promise<GalleryItem[]> {
-  const manifestText = await fetchTextWithDevProxy(KANDELO_SOFTWARE_MANIFEST_URL);
+  const groups = await Promise.all(softwareManifestUrls().map(async (manifestUrl) => {
+    try {
+      return await loadSoftwareGalleryItemsFromManifest(manifestUrl);
+    } catch (err) {
+      console.warn(`Could not load Kandelo software gallery manifest ${manifestUrl}:`, err);
+      return [];
+    }
+  }));
+  return groups.flat();
+}
+
+async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promise<GalleryItem[]> {
+  const manifestText = await fetchTextWithDevProxy(manifestUrl);
   const manifest = JSON.parse(manifestText) as SoftwareGalleryManifest;
+  const sourceId = sourceIdForManifest(manifest, manifestUrl);
   const indexUrl = manifest.index_url
-    ? new URL(manifest.index_url, KANDELO_SOFTWARE_MANIFEST_URL).href
-    : DEFAULT_KANDELO_SOFTWARE_INDEX_URL;
+    ? new URL(manifest.index_url, manifestUrl).href
+    : new URL("index.toml", manifestUrl).href;
   const index = parseIndexToml(await fetchTextWithDevProxy(indexUrl));
   return manifest.entries
     .filter((entry) => entry.packages.every((pkg) => packageAvailable(index, pkg)))
-    .map((entry) => softwareEntryToGalleryItem(entry, index, indexUrl));
+    .map((entry) => softwareEntryToGalleryItem(entry, sourceId, index, indexUrl));
+}
+
+function softwareManifestUrls(): string[] {
+  const params = new URLSearchParams(location.search);
+  const queryUrls = params.getAll("softwareManifest").flatMap(splitManifestUrls);
+  const envUrls = splitManifestUrls(
+    (import.meta.env.VITE_KANDELO_SOFTWARE_MANIFEST_URLS as string | undefined) ?? "",
+  );
+  const urls = queryUrls.length > 0
+    ? queryUrls
+    : envUrls.length > 0
+      ? envUrls
+      : DEFAULT_SOFTWARE_MANIFEST_URLS;
+  return [...new Set(urls)];
+}
+
+function splitManifestUrls(value: string): string[] {
+  return value
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function sourceIdForManifest(manifest: SoftwareGalleryManifest, manifestUrl: string): string {
+  const raw = manifest.source_id
+    ?? manifest.repository?.split("/").pop()
+    ?? new URL(manifestUrl, location.href).pathname.split("/").filter(Boolean)[0]
+    ?? "software";
+  const normalized = raw.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "software";
 }
 
 function softwareEntryToGalleryItem(
   entry: SoftwareGalleryEntry,
+  sourceId: string,
   index: Map<string, IndexPackageEntry>,
   indexUrl: string,
 ): GalleryItem {
   const primaryPackage = entry.packages[entry.packages.length - 1];
   const archiveUrl = archiveUrlFor(index, indexUrl, primaryPackage);
-  const id = `kandelo-software-${entry.id}`;
+  const id = `${sourceId}-${entry.id}`;
   if (archiveUrl) {
     SOFTWARE_PROFILES.set(id, softwareProfileForEntry(id, entry, index, indexUrl, archiveUrl));
   }
@@ -914,7 +959,7 @@ function softwareEntryToGalleryItem(
     accent: accentForSoftwareEntry(entry.id),
     glyph: glyphForSoftwareEntry(entry),
     estimatedUrlBytes: JSON.stringify(entry).length,
-    author: "kandelo-software",
+    author: sourceId,
   };
 }
 
