@@ -441,7 +441,7 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 
   // Prewarm opcache: see build-wp-vfs-image.ts for context.
   await prewarmOpcache(fs, {
-    sourceRoots: ["/var/www/html"],
+    sourceRoots: ["/var/www"],
     label: "lamp",
   });
 

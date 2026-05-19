@@ -427,12 +427,12 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
   // chain ensures wp-config.php is finalized before any FastCGI request.
   addDinitInit(fs, buildServices());
 
-  // Prewarm opcache: compile every .php under /var/www/html into the
-  // file cache at /var/cache/opcache so the first FPM request doesn't
-  // pay the parse cost. Issue #493: this collapses the cold-page-render
-  // spike from ~900ms to ~450ms in benchmarking.
+  // Prewarm opcache: compile the FPM router and every .php under the
+  // document root into the file cache at /var/cache/opcache so the first
+  // FPM request doesn't pay the parse cost. Issue #493: this collapses
+  // the cold-page-render spike from ~900ms to ~450ms in benchmarking.
   await prewarmOpcache(fs, {
-    sourceRoots: ["/var/www/html"],
+    sourceRoots: ["/var/www"],
     label: "wp",
   });
 

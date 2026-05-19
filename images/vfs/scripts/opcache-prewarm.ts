@@ -9,30 +9,25 @@
  * VFS path the kernel saw, so when the demo boots its FPM workers pick
  * up the cache without paying the first-request compile cost.
  *
- * Compilation is batched across multiple PHP CLI spawns sharing the
- * same kernel-managed memfs. Empirically the wasm PHP CLI traps
- * around ~950 cumulative opcache_compile_file() calls in a single
- * process (issue #493 — root cause unknown; opcache_reset() does
- * not help, so it is not the per-process script table). Splitting
- * into batches of 500 stays well below that ceiling. A final
- * "dump" spawn walks the cache directory and base64-encodes each
- * .bin back over stdout for the host to ingest.
+ * Compilation starts in one PHP CLI process and adaptively splits into
+ * smaller fresh processes if application-level duplicate declarations
+ * make a group un-compilable. A final "dump" spawn walks the cache
+ * directory and base64-encodes each .bin back over stdout for the host
+ * to ingest.
  *
  * Why the stdout round-trip:
  *   The kernel boots from a *snapshot* of the build's memfs — anything
  *   PHP writes lands in the kernel's private copy, not the build's. We
  *   either snapshot the kernel's memfs back out (no API for that today)
  *   or stream the new files over a channel we already have. stdout is
- *   that channel. The protocol is base64-line-framed because raw
- *   binary writes to STDOUT trap the wasm PHP CLI (a `pack('J', …)`
- *   word kills the process the moment it hits php://stdout — likely
- *   an internal text-mode assertion):
+ *   that channel. The protocol is base64-line-framed so the host can
+ *   parse the stream as simple newline-delimited text:
  *     ===OCDUMP_BEGIN===\n
  *     <count>\n
  *     <base64(path)>\n
  *     <base64(content)>\n  ×count
  *     ===OCDUMP_END===\n
- *   ~33% overhead, irrelevant at build time, fully binary-safe.
+ *   ~33% overhead, irrelevant at build time, and fully binary-safe.
  *
  * Set `KANDELO_NO_OPCACHE_PREWARM=1` to skip; the build still produces a
  * working image, just without the first-request hit.
@@ -59,13 +54,6 @@ const CACHE_DIR = "/var/cache/opcache";
 const DUMP_BEGIN = "===OCDUMP_BEGIN===\n";
 const LIST_BEGIN = "===PHPLIST_BEGIN===\n";
 const LIST_END = "===PHPLIST_END===\n";
-
-// Per-spawn compilation cap. The wasm PHP CLI traps around ~950
-// cumulative opcache_compile_file() calls in a single process (issue
-// #493 — exit -1 with no diagnostic; opcache_reset() doesn't help so it
-// isn't the per-process script table, and the offending file compiles
-// fine in isolation). 500 leaves plenty of headroom.
-const COMPILE_BATCH_SIZE = 500;
 
 const PHP_INI_ARGS = [
   "-d", "extension_dir=/usr/lib/php/extensions",
@@ -133,14 +121,20 @@ export async function prewarmOpcache(
       const chunks: Uint8Array[] = [];
       activeStdoutSink = (data) => chunks.push(data);
       try {
+        const stdin = buildJobStdin(job);
         const exitCode = await host.spawn(
           programBytes,
           ["php", ...PHP_INI_ARGS, "-r", buildJobScript(job)],
-          { env: PHP_ENV },
+          { env: PHP_ENV, stdin },
         );
         if (exitCode !== 0) {
+          const stdoutText = new TextDecoder("utf-8", { fatal: false }).decode(
+            concatChunks(chunks),
+          );
+          const stdoutTail = stdoutText.slice(-4096);
           throw new Error(
-            `[opcache-prewarm:${label}] ${phase} php exited with code ${exitCode}`,
+            `[opcache-prewarm:${label}] ${phase} php exited with code ${exitCode}` +
+            (stdoutTail ? `\n--- php stdout tail ---\n${stdoutTail}` : ""),
           );
         }
       } finally {
@@ -155,16 +149,13 @@ export async function prewarmOpcache(
     const phpPaths = parseList(listBytes);
     console.log(`[opcache-prewarm:${label}] ${phpPaths.length} php files to compile`);
 
-    // Phase 2: compile in batches; each spawn resets process memory but
-    // writes through to the shared kernel memfs cache dir.
-    const batches = Math.ceil(phpPaths.length / COMPILE_BATCH_SIZE);
-    for (let i = 0; i < batches; i++) {
-      const slice = phpPaths.slice(i * COMPILE_BATCH_SIZE, (i + 1) * COMPILE_BATCH_SIZE);
-      console.log(
-        `[opcache-prewarm:${label}] batch ${i + 1}/${batches} (${slice.length} files)`,
-      );
-      await runPhase(`compile-${i + 1}`, { kind: "compile", files: slice });
-    }
+    // Phase 2: compile every listed PHP file into the shared kernel memfs
+    // cache dir. Some applications contain mutually exclusive fallback
+    // files that redeclare the same functions/classes; if a batch trips
+    // over one of those pairs, split it and continue in fresh PHP
+    // processes so each side can still populate the shared file cache.
+    console.log(`[opcache-prewarm:${label}] compiling ${phpPaths.length} files...`);
+    await compileFiles(label, phpPaths, runPhase);
 
     // Phase 3: dump the populated /var/cache/opcache back over stdout.
     console.log(`[opcache-prewarm:${label}] dumping cache files...`);
@@ -183,10 +174,42 @@ type PhpJob =
   | { kind: "compile"; files: string[] }
   | { kind: "dump" };
 
+type RunPhpPhase = (phase: string, job: PhpJob) => Promise<Uint8Array>;
+
+async function compileFiles(
+  label: string,
+  files: string[],
+  runPhase: RunPhpPhase,
+): Promise<void> {
+  if (files.length === 0) return;
+  try {
+    await runPhase(`compile (${files.length} files)`, { kind: "compile", files });
+    return;
+  } catch (err) {
+    if (files.length === 1) throw err;
+
+    const mid = Math.ceil(files.length / 2);
+    console.warn(
+      `[opcache-prewarm:${label}] compile batch of ${files.length} failed; ` +
+      `splitting into ${mid} + ${files.length - mid} (${summarizeError(err)})`,
+    );
+    await compileFiles(label, files.slice(0, mid), runPhase);
+    await compileFiles(label, files.slice(mid), runPhase);
+  }
+}
+
+function summarizeError(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  const phpLine = text
+    .split("\n")
+    .find((line) => /(?:Fatal error|Parse error|WebAssembly\.Exception|exited with code)/.test(line));
+  return (phpLine ?? text.split("\n")[0] ?? "unknown error").trim();
+}
+
 function buildJobScript(job: PhpJob): string {
   // Each job script:
   //   - list:    walk roots, emit ===PHPLIST_BEGIN===\n<path>\n…<path>\n===PHPLIST_END===
-  //   - compile: opcache_compile_file() each path in the embedded list
+  //   - compile: opcache_compile_file() each base64 path read from stdin
   //   - dump:    walk cacheDir, emit ===OCDUMP_BEGIN=== framing
   // STDERR carries human-readable progress; STDOUT is the structured channel.
   if (job.kind === "list") {
@@ -218,13 +241,16 @@ if (!extension_loaded('Zend OPcache')) {
     fwrite(STDERR, "[prewarm] FATAL: opcache extension not loaded\\n");
     exit(1);
 }
-$files = json_decode(${JSON.stringify(JSON.stringify(job.files))}, true);
 $compiled = 0; $failed = 0;
-foreach ($files as $path) {
+$input = stream_get_contents(STDIN);
+$files = preg_split('/\\r?\\n/', $input, -1, PREG_SPLIT_NO_EMPTY);
+foreach ($files as $encodedPath) {
+    $path = base64_decode($encodedPath, true);
+    if ($path === false) { $failed++; continue; }
     $ok = @opcache_compile_file($path);
     if ($ok) { $compiled++; } else { $failed++; }
 }
-fwrite(STDERR, "[prewarm] batch compiled=$compiled failed=$failed\\n");
+fwrite(STDERR, "[prewarm] compiled=$compiled failed=$failed\\n");
 `.trim();
   }
 
@@ -241,10 +267,8 @@ if (is_dir($cacheDir)) {
         if ($f->isFile()) { $entries[] = $f->getPathname(); }
     }
 }
-// base64-encoded line records — raw binary writes to php://stdout
-// trap the wasm PHP CLI (any pack('J', ...) kills the process with
-// exit 255 the moment binary hits stdout; likely a CLI output-buffer
-// assertion). ~33% overhead, irrelevant at build time.
+// base64-encoded line records keep the host-side parser simple while
+// preserving arbitrary cache-file bytes.
 echo "===OCDUMP_BEGIN===\\n";
 echo count($entries) . "\\n";
 $bytes = 0;
@@ -261,6 +285,14 @@ foreach ($entries as $path) {
 echo "===OCDUMP_END===\\n";
 fwrite(STDERR, "[prewarm] dumped " . count($entries) . " cache files, $bytes bytes\\n");
 `.trim();
+}
+
+function buildJobStdin(job: PhpJob): Uint8Array | undefined {
+  if (job.kind !== "compile") return undefined;
+  const body = job.files
+    .map((path) => Buffer.from(new TextEncoder().encode(path)).toString("base64"))
+    .join("\n");
+  return new TextEncoder().encode(`${body}\n`);
 }
 
 function parseList(buf: Uint8Array): string[] {
@@ -317,6 +349,7 @@ function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
   }
 
   let cursor = 1;
+  let written = 0;
   for (let i = 0; i < recordCount; i++) {
     const pathB64 = lines[cursor++];
     const contentB64 = lines[cursor++];
@@ -325,9 +358,9 @@ function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
     }
     const path = new TextDecoder().decode(base64DecodeToBytes(pathB64));
     const content = base64DecodeToBytes(contentB64);
-    if (content.byteLength === 0) continue;
     ensureDirRecursive(fs, dirname(path));
     writeVfsBinary(fs, path, content, 0o644);
+    written++;
   }
 
   const trailer = lines[cursor];
@@ -336,7 +369,7 @@ function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
       `[opcache-prewarm] missing OCDUMP_END trailer (got: ${JSON.stringify(trailer)})`,
     );
   }
-  return recordCount;
+  return written;
 }
 
 function base64DecodeToBytes(b64: string): Uint8Array {

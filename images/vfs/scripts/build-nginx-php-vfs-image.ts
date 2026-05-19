@@ -236,11 +236,11 @@ async function main() {
   writeVfsFile(fs, "/var/www/fpm-router.php", FPM_ROUTER_PHP);
   writeVfsFile(fs, "/var/www/html/index.php", INDEX_PHP);
 
-  // Prewarm opcache: compile the demo's .php files into the file
-  // cache so the first request doesn't pay the parse cost. See
-  // build-wp-vfs-image.ts for the full rationale.
+  // Prewarm opcache: compile the demo's router and document-root PHP
+  // files into the file cache so the first request doesn't pay the parse
+  // cost. See build-wp-vfs-image.ts for the full rationale.
   await prewarmOpcache(fs, {
-    sourceRoots: ["/var/www/html"],
+    sourceRoots: ["/var/www"],
     label: "nginx-php",
   });
 
