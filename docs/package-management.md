@@ -905,6 +905,12 @@ consumers can either prepend that repository's `packages/` directory
 to `WASM_POSIX_DEPS_REGISTRY` or copy the same workflow/action shape
 for their own package source.
 
+`kandelo-software` also publishes `gallery.json` beside the release
+index. The browser gallery treats that file as presentation metadata
+and the release `index.toml` as the source of truth: a third-party VFS
+entry is shown only when all packages listed for that entry have
+successful wasm32 records in the ABI-matching index.
+
 ## Source-kind manifests
 
 The system supports `kind = "source"` for declaring source trees that
