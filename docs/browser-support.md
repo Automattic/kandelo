@@ -91,6 +91,7 @@ Browser fetch → Service Worker intercepts
 - TCP via kernel pipe-backed connections
 - Service worker cookie jar for session persistence (WordPress)
 - nginx serves static files and proxies to PHP-FPM via loopback TCP
+- **UDP via WebRTC `RTCDataChannel` relay** — non-loopback `SOCK_DGRAM` traffic between two pages rides a peer-to-peer DataChannel (unordered, `maxRetransmits:0`). Page-side `RelayChannel` calls `kernel.injectDatagram(...)` inbound; kernel's `host_send_dgram` import forwards outbound via `postMessage`. Used by the multiplayer DOOM demo (`pages/doom-mp/`). See [`docs/architecture.md`](architecture.md#networking) §Networking → Browser → WebRTC UDP relay.
 
 ### Filesystem
 - `MemoryFileSystem` — SharedArrayBuffer-based VFS shared between main thread and kernel worker
@@ -145,6 +146,7 @@ Located in `apps/browser-demos/pages/`:
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a Linux-distro mirror (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
+| doom-mp | fbDOOM (multiplayer) | legacy spawn | Same fbDOOM build as the single-player demo, plus the WebRTC UDP relay. Two browsers do a manual-SDP handshake (lifted from the `webrtc` demo), open a binary game `RTCDataChannel` (id 1, unordered, `maxRetransmits:0`) and a JSON probe channel (id 0, default reliable) for 1 Hz RTT, then spawn fbDOOM with role-dependent flags (`-server` / `-connect 10.99.0.1`, both with `-privateserver -deathmatch -warp 1 1`). The page-side `RelayChannel` bridges the binary channel to the kernel's UDP socket via `kernel.injectDatagram` + `kernel.onHostSendDgram`. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.

@@ -477,6 +477,8 @@ Browsers cannot create raw TCP connections. Two strategies:
 
 2. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
 
+3. **WebRTC UDP relay**: Non-loopback `SOCK_DGRAM` traffic in the browser rides an `RTCDataChannel` between two pages. Inbound: a page-side `RelayChannel` parses envelopes off `channel.onmessage` and calls `kernel.injectDatagram(pid, dstPort, srcIp, srcPort, payload)`, which the kernel-wasm `kernel_inject_datagram` export pushes onto the matching bound socket's `dgram_queue`. Outbound: the kernel's `HostIO::send_dgram` trait dispatches to a `host_send_dgram` wasm import; the kernel-worker-side `RelayHostShim` forwards the datagram via `postMessage` to the main thread, where `RelayChannel` frames it onto the channel. The 7-byte envelope carries srcPort + dstPort; the peer's synthetic IP is implicit (one DataChannel terminates at exactly one peer). Used by the multiplayer DOOM demo (`pages/doom-mp/`). Backend lives at `apps/browser-demos/lib/relay-network-backend.ts` (sibling of `connection-pump.ts`, NOT a `NetworkIO` impl — `RTCDataChannel` cannot live on the kernel-worker thread).
+
 ## Framebuffer (`/dev/fb0`)
 
 The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, mplayer-fbdev, etc.) runs without source-level changes.
