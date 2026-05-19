@@ -35,7 +35,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Find where an output lands | `cargo xtask build-deps output-path <name> <wasm-basename>` — single source of truth for the layout convention (flat for 1-output packages, nested under `<pkg>/` for ≥2-output packages). |
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern. |
 | Override a published archive locally | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these. |
-| Override an archive in a PR for testing | The matrix-build flow handles this automatically: per-PR builds publish to `pr-<N>-staging` tags (separate state-lock subject from the durable release), and the resolver picks up the staging index via the same `build.toml.index_url` template. For a local override write `examples/libs/<pkg>/package.pr.toml` with `[binary.<arch>]` — the legacy overlay path still injects into the in-memory `DepsManifest`. |
+| Override an archive in a PR for testing | The matrix-build flow handles this automatically: per-PR builds publish to `pr-<N>-staging` tags (separate state-lock subject from the durable release), and the resolver picks up the staging index via the same `build.toml.index_url` template. For a local override write `packages/registry/<pkg>/package.pr.toml` with `[binary.<arch>]` — the legacy overlay path still injects into the in-memory `DepsManifest`. |
 | Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
 | Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
 | Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
@@ -67,10 +67,10 @@ programs, we need:
 
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
 
-Every package ships TWO TOML files in `examples/libs/<name>/`:
+Every package ships TWO TOML files in `packages/registry/<name>/`:
 
 ```
-examples/libs/zlib/
+packages/registry/zlib/
     package.toml              ← the recipe (project-agnostic)
     build.toml                ← project's build + publish state
     build-zlib.sh             ← builds it (invoked by the resolver)
@@ -114,7 +114,7 @@ kernel_abi = 8             # required when a [build] block is present
 arches = ["wasm32"]        # opt-in target arches; default: ["wasm32"]
 
 [build]
-script_path = "examples/libs/zlib/build-zlib.sh"
+script_path = "packages/registry/zlib/build-zlib.sh"
 
 [outputs]
 libs = ["lib/libz.a"]                            # must exist post-build
@@ -136,7 +136,7 @@ Required (unless the package is `kind = "source"` with no `[build]`
 block — those packages don't publish a binary):
 
 ```toml
-script_path = "examples/libs/zlib/build-zlib.sh"   # mirrors package.toml
+script_path = "packages/registry/zlib/build-zlib.sh"   # mirrors package.toml
 repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
 commit      = "<commit at last successful build>"
 revision    = 1
@@ -429,7 +429,7 @@ D.5): MariaDB's CMake expects to compile PCRE2 against its own
 internal headers and link the result statically into `mariadbd`,
 so a generic `libpcre2.a` would not satisfy it.
 
-The pcre2-source manifest (`examples/libs/pcre2-source/package.toml`):
+The pcre2-source manifest (`packages/registry/pcre2-source/package.toml`):
 
 ```toml
 kind = "source"
@@ -450,13 +450,13 @@ extracts in-place into
 `<cache_root>/sources/pcre2-source-10.44-rev1-<sha>/`. No
 `<arch>` segment because source trees are arch-agnostic.
 
-The MariaDB manifest (`examples/libs/mariadb/package.toml`):
+The MariaDB manifest (`packages/registry/mariadb/package.toml`):
 
 ```toml
 depends_on = ["pcre2-source@10.44"]
 ```
 
-The MariaDB build script (`examples/libs/mariadb/build-mariadb.sh`,
+The MariaDB build script (`packages/registry/mariadb/build-mariadb.sh`,
 abridged):
 
 ```bash
@@ -554,7 +554,7 @@ porting their build script:
   initialization of structs that hold shadow-stack pointers,
   breaking ESTACK iodata traversal. Adding `fprintf` inside the
   function changes code layout enough to mask the bug, hence the
-  Heisenbug character. See `examples/libs/erlang/build-erlang.sh`
+  Heisenbug character. See `packages/registry/erlang/build-erlang.sh`
   comments.
 - **Redis `tls.c`** — at `-O1` and above, LLVM 21.1.8 crashes
   inside `llvm::AsmPrinter::emitGlobalVariable`. Currently the
@@ -584,7 +584,7 @@ canonical cache path with no source build.
 The pipeline is **per-package + index-ledger**. There is no central
 manifest in-tree; instead, every release tag carries a single
 `index.toml` ledger that records every published archive's URL +
-sha + cache-key. Each `examples/libs/<pkg>/build.toml` points its
+sha + cache-key. Each `packages/registry/<pkg>/build.toml` points its
 `[binary]` entry at that ledger (typically via `index_url` with a
 `{abi}` placeholder). The matrix flow uploads one `.tar.zst` per
 `(package, arch)` entry AND atomically updates that package's
@@ -600,7 +600,7 @@ for the design rationale.
 
 ```bash
 cargo xtask archive-stage \
-    --package examples/libs/zlib \
+    --package packages/registry/zlib \
     --arch wasm32 \
     --out /tmp/archives \
     --build-timestamp 2026-04-26T10:00:00Z \
@@ -646,8 +646,8 @@ cargo run -p xtask -- build-deps --arch wasm32 \
 
 The resolver:
 
-1. Reads `examples/libs/zlib/package.toml` (recipe) +
-   `examples/libs/zlib/build.toml` (project view); overlays
+1. Reads `packages/registry/zlib/package.toml` (recipe) +
+   `packages/registry/zlib/build.toml` (project view); overlays
    `revision` from build.toml onto the parsed manifest. If
    `package.pr.toml` exists alongside, applies it as an overlay
    (injects `[binary.<arch>]` entries into the in-memory manifest;
@@ -733,7 +733,7 @@ hash to exactly what this checkout would produce.
 
 ### Iterating on a package locally
 
-When you edit an `examples/libs/<name>/package.toml` (or any input
+When you edit an `packages/registry/<name>/package.toml` (or any input
 that changes the package's `cache_key_sha` — `revision`,
 `source.url`, `source.sha256`, transitive deps), the published
 archive goes stale relative to your local state. The resolver
@@ -762,7 +762,7 @@ the touched package. Outputs land under
 
 ### Worked example: zlib
 
-Source manifest at `examples/libs/zlib/package.toml` (recipe):
+Source manifest at `packages/registry/zlib/package.toml` (recipe):
 
 ```toml
 kind = "library"
@@ -780,7 +780,7 @@ sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
 spdx = "Zlib"
 
 [build]
-script_path = "examples/libs/zlib/build-zlib.sh"
+script_path = "packages/registry/zlib/build-zlib.sh"
 
 [outputs]
 libs = ["lib/libz.a"]
@@ -788,10 +788,10 @@ headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
 ```
 
-And the sibling `examples/libs/zlib/build.toml` (project view):
+And the sibling `packages/registry/zlib/build.toml` (project view):
 
 ```toml
-script_path = "examples/libs/zlib/build-zlib.sh"
+script_path = "packages/registry/zlib/build-zlib.sh"
 repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
 commit      = "<commit>"
 revision    = 1
@@ -800,7 +800,7 @@ revision    = 1
 index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
-After `xtask archive-stage --package examples/libs/zlib --arch wasm32`,
+After `xtask archive-stage --package packages/registry/zlib --arch wasm32`,
 one archive lands as
 
 ```
@@ -852,7 +852,7 @@ canonical path populated and returns it without re-running
 ### Shell-script wrapper
 
 `scripts/fetch-binaries.sh` walks every
-`examples/libs/<pkg>/package.toml` with a `[binary]` block and
+`packages/registry/<pkg>/package.toml` with a `[binary]` block and
 calls `xtask build-deps --binaries-dir <repo>/binaries resolve
 <pkg>` once per declared arch. Packages without a `[binary]`
 block (kernel, userspace, source-only) are skipped silently —
@@ -884,10 +884,10 @@ pruned. A future `xtask clean-deps` subcommand can sweep them.
 
 ## Registry search path
 
-By default the resolver looks in `<repo>/examples/libs/`. Override:
+By default the resolver looks in `<repo>/packages/registry/`. Override:
 
 ```bash
-WASM_POSIX_DEPS_REGISTRY="./examples/libs:~/my-wasm-packages" \
+WASM_POSIX_DEPS_REGISTRY="./packages/registry:~/my-wasm-packages" \
     cargo xtask build-deps sha vim
 ```
 

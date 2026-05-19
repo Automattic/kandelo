@@ -10,12 +10,12 @@ import { fileURLToPath } from "url";
 import { createServer } from "net";
 import { NodeKernelHost } from "../../host/src/node-kernel-host.js";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
-import { ensureSourceExtract } from "../../examples/browser/scripts/source-extract-helper.js";
+import { ensureSourceExtract } from "../../images/vfs/scripts/source-extract-helper.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
 
-const mariadbLibDir = resolve(repoRoot, "examples/libs/mariadb");
+const mariadbLibDir = resolve(repoRoot, "packages/registry/mariadb");
 
 export type WasmArch = "wasm32" | "wasm64";
 
@@ -236,7 +236,7 @@ export async function runMariaDBBenchmark(engine: string, arch: WasmArch = "wasm
     const flag = arch === "wasm64" ? " --wasm64" : "";
     throw new Error(
       `MariaDB ${arch} benchmark prerequisites are missing. ` +
-      `Run: bash examples/libs/mariadb/build-mariadb.sh${flag}`,
+      `Run: bash packages/registry/mariadb/build-mariadb.sh${flag}`,
     );
   }
 

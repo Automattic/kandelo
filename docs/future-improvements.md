@@ -33,7 +33,7 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 ### Git binary uses full asyncify (~6MB overhead)
 `git.wasm` requires full `wasm-opt --asyncify` instrumentation (7MB → 13MB) because git's HTTP transport dispatches through `call_indirect` via a vtable (`transport->vtable->get_refs_list()`). Asyncify's `--asyncify-onlylist` mode, which instruments only listed functions, fails for `call_indirect` paths — the fork import is never reached even though all functions in the chain are listed and correctly instrumented. Direct call paths (e.g., `cmd_commit` → `start_command` → `fork`) work fine with onlylist. Possible approaches: upstream binaryen fix for onlylist + call_indirect, `--asyncify-removelist` to selectively exclude large safe functions, or restructuring the fork mechanism to avoid asyncify entirely.
 
-**Files:** `examples/libs/git/build-git.sh`, `examples/libs/git/asyncify-onlylist.txt`
+**Files:** `packages/registry/git/build-git.sh`, `packages/registry/git/asyncify-onlylist.txt`
 
 ## Browser
 
@@ -86,18 +86,18 @@ nginx's worker not seeing the accepted connection in its event loop
 because the wakeup is delivered to the master.
 
 **Files:** `crates/kernel/src/socket.rs` (TCP listener accept queue),
-`examples/browser/lib/kernel-worker-entry.ts` (`handleHttpRequest` —
+`host/src/browser-kernel-worker-entry.ts` (`handleHttpRequest` —
 how it picks a target listening pid).
 
 ### wasm64 musl: missing `__NR_pselect6_time64` alias forces select() through SYS_select
-`musl-overlay/arch/wasm32posix/bits/syscall.h.in:109` defines `__NR_pselect6_time64 = __NR_pselect6`, so musl's `select.c` routes wasm32 through SYS_pselect6 (252). The wasm64 overlay omits that alias; musl falls through to `#ifdef SYS_select` and uses **SYS_select (103)** instead. The host gained a SYS_SELECT timeout-aware handler (kernel-worker.ts `handleSelect`) so this works correctly today, but as defense-in-depth the wasm64 overlay should mirror wasm32 — fewer code paths, single canonical entry point. Doing this requires rebuilding the cached wasm64 binaries (the libc.a baked into them changes), so it's a coordinated rebuild task.
+`libc/musl-overlay/arch/wasm32posix/bits/syscall.h.in:109` defines `__NR_pselect6_time64 = __NR_pselect6`, so musl's `select.c` routes wasm32 through SYS_pselect6 (252). The wasm64 overlay omits that alias; musl falls through to `#ifdef SYS_select` and uses **SYS_select (103)** instead. The host gained a SYS_SELECT timeout-aware handler (kernel-worker.ts `handleSelect`) so this works correctly today, but as defense-in-depth the wasm64 overlay should mirror wasm32 — fewer code paths, single canonical entry point. Doing this requires rebuilding the cached wasm64 binaries (the libc.a baked into them changes), so it's a coordinated rebuild task.
 
-**Files:** `musl-overlay/arch/wasm64posix/bits/syscall.h.in`
+**Files:** `libc/musl-overlay/arch/wasm64posix/bits/syscall.h.in`
 
 ### Audit other PR #383 callers that may have missed the `GLOBAL_PIPE_PID` migration
-PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-worker`, May 2026) moved injected-connection pipes to the kernel's GLOBAL pipe table. `kernel_pipe_{read,write,close_*,is_*_open}` now treat `pid == 0` as a sentinel meaning "use the global pipe table". The HTTP bridge in `kernel-worker-entry.ts` and `NodeKernelHost` were updated; `examples/browser/lib/mysql-client.ts` and `examples/browser/lib/redis-client.ts` were missed and have since been fixed. **Audit any other call site that does `kernel.injectConnection(...)` and then `kernel.pipeRead/pipeWrite` with a non-zero pid** — they're broken in the same way (silent EBADF; greeting bytes never reach the browser-side reader). Currently visible: only the two demo clients that have already been fixed, but a future demo that reuses the inject-and-read pattern needs to know about the convention.
+PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-worker`, May 2026) moved injected-connection pipes to the kernel's GLOBAL pipe table. `kernel_pipe_{read,write,close_*,is_*_open}` now treat `pid == 0` as a sentinel meaning "use the global pipe table". The HTTP bridge in `host/src/browser-kernel-worker-entry.ts` and `NodeKernelHost` were updated; `apps/browser-demos/lib/mysql-client.ts` and `apps/browser-demos/lib/redis-client.ts` were missed and have since been fixed. **Audit any other call site that does `kernel.injectConnection(...)` and then `kernel.pipeRead/pipeWrite` with a non-zero pid** — they're broken in the same way (silent EBADF; greeting bytes never reach the browser-side reader). Currently visible: only the two demo clients that have already been fixed, but a future demo that reuses the inject-and-read pattern needs to know about the convention.
 
-**Files:** `examples/browser/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
+**Files:** `apps/browser-demos/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
 
 ## Host runtime
 
@@ -120,7 +120,7 @@ a clearer place to reclaim or recycle side-module data later.
 `host/src/dylink.ts` exposes the lower-level `DynamicLinker` machinery used
 to parse `dylink.0`, lay out side-module data, apply relocations, and resolve
 symbols. The real process path is broader: guest C `dlopen()` enters
-`glue/dlopen.c`, calls the worker import in `host/src/worker-main.ts`, and
+`libc/glue/dlopen.c`, calls the worker import in `host/src/worker-main.ts`, and
 then reaches `DynamicLinker` with a runtime-provided allocator.
 
 That split is useful, but it should be harder for tests and production to
@@ -192,7 +192,7 @@ segment, silently corrupting `AG(mm_heap)`. The next `_efree` call dereferenced
 the now-bogus heap pointer and trapped — surfacing as "memory access out of
 bounds" inside the optimizer, with no indication that the actual cause was
 stack overflow ~thousands of frames earlier. The PR's workaround is
-`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB) in `examples/libs/php/build-php.sh`.
+`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB) in `packages/registry/php/build-php.sh`.
 That sidesteps the underflow for PHP's observed workload but doesn't *prevent*
 the failure mode — a deeper recursion or a larger `alloca` will silently
 corrupt data again, and every other large port we ship today (vim, nginx,
@@ -203,7 +203,7 @@ crash, not silent corruption. Possible approaches:
 
 - **Stack-pointer bounds check on syscall entry**: the channel-syscall glue
   already reads `__stack_pointer` for other reasons (`worker-main.ts`,
-  `glue/channel_syscall.c`). Adding `__stack_pointer < __stack_low` →
+  `libc/glue/channel_syscall.c`). Adding `__stack_pointer < __stack_low` →
   `kill(SIGSEGV)` at each syscall entry would catch overflow at the next
   kernel crossing. Cheap to implement, low overhead, but only catches
   overflow when the program eventually calls into the kernel — silent
@@ -229,8 +229,8 @@ stack (PHP optimizer, deep parser stacks) keep the explicit override and
 document why; everything else can drop the flag and rely on the default
 + guard.
 
-**Files:** `examples/libs/php/build-php.sh` (current 4 MiB workaround),
-`glue/channel_syscall.c` (likely site for a syscall-entry bounds check),
+**Files:** `packages/registry/php/build-php.sh` (current 4 MiB workaround),
+`libc/glue/channel_syscall.c` (likely site for a syscall-entry bounds check),
 `host/src/worker-main.ts` (instantiation-time wiring for stack bounds),
 plus any other `build-*.sh` that hits the same wall in the meantime.
 

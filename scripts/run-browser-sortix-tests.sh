@@ -14,9 +14,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
-OS_TEST="$REPO_ROOT/os-test"
-BUILD_DIR="$REPO_ROOT/os-test/build"
+GLUE_DIR="$REPO_ROOT/libc/glue"
+OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures (same as Node.js version) ──────────────────────
@@ -641,7 +641,7 @@ if [ ! -f "$KERNEL_WASM" ]; then
     exit 1
 fi
 if [ ! -d "$OS_TEST" ]; then
-    echo "Error: os-test not found. Run: git submodule update --init os-test" >&2
+    echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
     exit 1
 fi
 

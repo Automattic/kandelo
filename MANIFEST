@@ -4,9 +4,9 @@
 # Types:   d dir, f file, l symlink, c char-device, b block-device
 # Archive: archive  url=<path>  base=<prefix>  [fmode=] [dmode=] [uid=] [gid=]
 #
-# Files with type f and no src= pull content from rootfs/<path>.
+# Files with type f and no src= pull content from images/rootfs/<path>.
 # The mkrootfs builder refuses to silently drop on-disk files that
-# aren't declared here, so every rootfs/* addition needs a line below.
+# aren't declared here, so every images/rootfs/* addition needs a line below.
 #
 # Ownership defaults to 0:0 (root). uid/gid are honest once the
 # kernel's synthetic /etc interception is removed in PR 4/5 — user
@@ -34,7 +34,7 @@
 # ── User home ──────────────────────────────────────────────────────
 /home/user       d  0755  1000  1000
 
-# ── /etc content (source: rootfs/etc/*) ────────────────────────────
+# ── /etc content (source: images/rootfs/etc/*) ────────────────────────────
 # passwd/group/hosts live in rootfs.vfs, which is the source of truth
 # for NSS-style files mounted at /.
 /etc/passwd        f  0644  0  0
@@ -50,7 +50,7 @@
 /etc/profile       f  0644  0  0
 /etc/motd          f  0644  0  0
 # services matches the ad-hoc table in
-# examples/browser/lib/browser-kernel.ts byte-for-byte so the cutover
+# apps/browser-demos/lib/browser-kernel.ts byte-for-byte so the cutover
 # is invisible to getservbyname/getservbyport callers.
 /etc/services      f  0644  0  0
 

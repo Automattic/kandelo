@@ -4,7 +4,7 @@
 
 **Goal:** Cut the resolver over to `package.toml` as the source of truth for binary URLs, retire `binaries.lock` + `manifest.json`, and restructure `prepare-merge.yml` + `force-rebuild.yml` to use the per-package matrix flow with bot PRs that amend individual `package.toml` files.
 
-**Architecture:** Single atomic PR. After this PR, the legacy stage-release / install-release / manifest.json producer pipeline is gone; the resolver reads each `examples/libs/<name>/package.toml`'s `[binary]` (single) or `[binary.<arch>]` (per-arch) block directly to fetch archives. The Phase B-1 matrix flow is the producer; the new fetch-binaries logic is the consumer. PR-staging archives are referenced via gitignored `package.pr.toml` overlays (per-package) instead of a central `binaries.lock.pr`.
+**Architecture:** Single atomic PR. After this PR, the legacy stage-release / install-release / manifest.json producer pipeline is gone; the resolver reads each `packages/registry/<name>/package.toml`'s `[binary]` (single) or `[binary.<arch>]` (per-arch) block directly to fetch archives. The Phase B-1 matrix flow is the producer; the new fetch-binaries logic is the consumer. PR-staging archives are referenced via gitignored `package.pr.toml` overlays (per-package) instead of a central `binaries.lock.pr`.
 
 **Tech Stack:** Rust (xtask), Bash (release scripts), GitHub Actions YAML, TypeScript (`host/src/binary-resolver.ts`, browser demos).
 
@@ -15,7 +15,7 @@
 ## Scope
 
 - **Resolver** (`xtask::build_deps::ensure_built` chain + `scripts/fetch-binaries.sh`): reads each `package.toml`'s `[binary.<arch>]` URL+sha directly. No central manifest lookup.
-- **PR overlay**: gitignored `examples/libs/<name>/package.pr.toml` (per-package) overlays the in-tree `package.toml`'s `[binary]` block. Replaces `binaries.lock.pr`.
+- **PR overlay**: gitignored `packages/registry/<name>/package.pr.toml` (per-package) overlays the in-tree `package.toml`'s `[binary]` block. Replaces `binaries.lock.pr`.
 - **Producer cutover**: `xtask stage-release` (and the legacy `build:` job in `staging-build.yml`) retired. The Phase B-1 matrix flow is the only producer.
 - **`prepare-merge.yml` + `force-rebuild.yml`**: drive the matrix flow. Bot PR amends per-package `package.toml` files (one change per package: `[binary.<arch>].archive_url` + `archive_sha256`).
 - **Delete**: `binaries.lock`, `binaries.lock.pr` references, `manifest.json` generation, `xtask install-release`, `xtask build-manifest`, `xtask stage-release`, `xtask stage-pr-overlay`, `scripts/{stage-release,publish-release,publish-pr-staging,stage-pr-staging,backfill-binary-blocks}.sh`, `abi/binaries-lock.schema.json`.
@@ -79,7 +79,7 @@ Read 2-3 of each category to ground your understanding. **Don't modify yet.**
 **Step 4: Recon — every consumer of `xtask install-release` / `manifest.json`.**
 
 ```bash
-grep -rnE 'install-release|manifest\.json' xtask/src/ scripts/ .github/workflows/ host/src/ host/test/ 2>/dev/null \
+grep -rnE 'install-release|manifest\.json' tools/xtask/src/ scripts/ .github/workflows/ host/src/ host/test/ 2>/dev/null \
   | grep -v '\.cache' \
   | head -30
 ```
@@ -89,7 +89,7 @@ Note these as the ones to cut over (replace with per-package walk) or delete.
 **Step 5: Recon — the resolver code path.**
 
 ```bash
-grep -nE 'fn ensure_built|fn cmd_resolve|fn resolve_binary' xtask/src/build_deps.rs | head
+grep -nE 'fn ensure_built|fn cmd_resolve|fn resolve_binary' tools/xtask/src/build_deps.rs | head
 ```
 
 Find `ensure_built`'s implementation; trace what it does today. The current chain (per memory): local-libs/ → cache → remote-fetch → source build. The "remote-fetch" step is what currently uses the URL from `[binary]`. So per-package URL consumption is ALREADY there — Phase C just removes the alternative paths that used `manifest.json`.
@@ -107,8 +107,8 @@ Expected: only unrelated submodule pointer dirt.
 ## Task 1: Add `package.pr.toml` overlay support in xtask parser
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs` (add overlay-merge function)
-- Modify: `.gitignore` (add `examples/libs/*/package.pr.toml`)
+- Modify: `tools/xtask/src/pkg_manifest.rs` (add overlay-merge function)
+- Modify: `.gitignore` (add `packages/registry/*/package.pr.toml`)
 
 **Goal:** New `pkg_manifest::load_with_overlay(dir)` reads `package.toml` and, if `package.pr.toml` is present in the same dir, merges its `[binary]` / `[binary.<arch>]` block over the base. Other top-level fields in the overlay are an error (overlay is binary-block-only by design).
 
@@ -117,18 +117,18 @@ Expected: only unrelated submodule pointer dirt.
 ```bash
 echo '' >> .gitignore
 echo '# Phase C: per-package PR overlay (CI-generated; merged over package.toml at parse time).' >> .gitignore
-echo 'examples/libs/*/package.pr.toml' >> .gitignore
+echo 'packages/registry/*/package.pr.toml' >> .gitignore
 ```
 
 **Step 2: Read the existing parser.**
 
 ```bash
-grep -nE 'pub fn parse|pub fn load|fn parse_binary' xtask/src/pkg_manifest.rs | head
+grep -nE 'pub fn parse|pub fn load|fn parse_binary' tools/xtask/src/pkg_manifest.rs | head
 ```
 
 **Step 3: Write the failing tests.**
 
-In `xtask/src/pkg_manifest.rs`'s test module, add:
+In `tools/xtask/src/pkg_manifest.rs`'s test module, add:
 
 ```rust
 #[test]
@@ -233,7 +233,7 @@ Expected: existing 225 + new 3 = 228 pass.
 **Step 8: Commit.**
 
 ```bash
-git add .gitignore xtask/src/pkg_manifest.rs
+git add .gitignore tools/xtask/src/pkg_manifest.rs
 git commit -m "feat(xtask): package.pr.toml overlay merges over base [binary] block
 
 Phase C Task 1. The PR overlay file lives next to each package.toml,
@@ -255,11 +255,11 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 2: Resolver consumes per-package URLs (replace `xtask install-release`)
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (resolver chain — `ensure_built` already supports remote-fetch from `[binary]`; remove any branch that consults `manifest.json`)
+- Modify: `tools/xtask/src/build_deps.rs` (resolver chain — `ensure_built` already supports remote-fetch from `[binary]`; remove any branch that consults `manifest.json`)
 - Modify: `scripts/fetch-binaries.sh` (walk per-package)
 - Possibly create: `scripts/fetch-binaries-v2.sh` if a clean rewrite is easier than editing in place
 
-**Goal:** `scripts/fetch-binaries.sh` walks every `examples/libs/<name>/package.toml`, calls `xtask build-deps resolve <name> --arch <arch>` for each (consumes `package.toml` directly via the resolver), and places `binaries/programs/<arch>/<name>/...` symlinks. No `manifest.json` lookup.
+**Goal:** `scripts/fetch-binaries.sh` walks every `packages/registry/<name>/package.toml`, calls `xtask build-deps resolve <name> --arch <arch>` for each (consumes `package.toml` directly via the resolver), and places `binaries/programs/<arch>/<name>/...` symlinks. No `manifest.json` lookup.
 
 **Step 1: Read the existing fetch-binaries.sh.**
 
@@ -272,7 +272,7 @@ Note the `--allow-stale` flag, the binaries.lock parsing, and the install-releas
 **Step 2: Read xtask's `build-deps resolve` and confirm it's a sufficient replacement.**
 
 ```bash
-grep -nE 'fn cmd_resolve|"resolve"' xtask/src/build_deps.rs | head
+grep -nE 'fn cmd_resolve|"resolve"' tools/xtask/src/build_deps.rs | head
 ```
 
 `xtask build-deps resolve <name> --arch <arch>` should:
@@ -303,7 +303,7 @@ cd "$REPO_ROOT"
 cargo build --release -p xtask --target "$HOST_TARGET"
 
 # Walk each package.toml.
-for pkg_dir in examples/libs/*/; do
+for pkg_dir in packages/registry/*/; do
   pkg=$(basename "$pkg_dir")
   # Skip metadata-only packages (no [build] block; nothing to install).
   if ! grep -q '^\[build\]' "$pkg_dir/package.toml"; then
@@ -341,11 +341,11 @@ Read the test; replace any `binaries.lock` references with the per-package equiv
 **Step 6: Commit.**
 
 ```bash
-git add scripts/fetch-binaries.sh xtask/src/build_deps.rs host/test/fetch-binaries-allow-stale.test.ts
+git add scripts/fetch-binaries.sh tools/xtask/src/build_deps.rs host/test/fetch-binaries-allow-stale.test.ts
 git commit -m "feat(scripts,xtask): fetch-binaries walks per-package package.toml (Phase C Task 2)
 
 Replaces the binaries.lock + manifest.json pinfile flow with a
-per-package walk: for each examples/libs/<name>/package.toml with
+per-package walk: for each packages/registry/<name>/package.toml with
 a [build] block, resolve each declared arch via xtask build-deps
 resolve, which consults [binary.<arch>].archive_url + archive_sha256
 via DepsManifest::load_with_overlay (Task 1).
@@ -372,7 +372,7 @@ Identify what role `binaries.lock` plays today. Likely it's used to validate the
 
 **Step 2: Replace `binaries.lock` parsing with per-package check.**
 
-The new shape: walk `examples/libs/*/package.toml`, check that each declared archive's symlink exists under `binaries/`. Or just trust `fetch-binaries.sh` to have done the right thing (no Vite-time validation).
+The new shape: walk `packages/registry/*/package.toml`, check that each declared archive's symlink exists under `binaries/`. Or just trust `fetch-binaries.sh` to have done the right thing (no Vite-time validation).
 
 **Step 3: Run vitest to confirm.**
 
@@ -399,7 +399,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `.github/workflows/prepare-merge.yml`
 
-**Goal:** prepare-merge no longer cuts a dated `binaries-abi-v<N>-YYYY-MM-DD` release with `manifest.json` + bumps `binaries.lock`. It triggers the matrix flow (re-running against tip-of-main if needed), waits for it to publish per-file archives + `index.toml` to the undated `binaries-abi-v<N>` tag, then opens a bot PR that amends each affected `examples/libs/<name>/package.toml`'s `[binary.<arch>]` block.
+**Goal:** prepare-merge no longer cuts a dated `binaries-abi-v<N>-YYYY-MM-DD` release with `manifest.json` + bumps `binaries.lock`. It triggers the matrix flow (re-running against tip-of-main if needed), waits for it to publish per-file archives + `index.toml` to the undated `binaries-abi-v<N>` tag, then opens a bot PR that amends each affected `packages/registry/<name>/package.toml`'s `[binary.<arch>]` block.
 
 **Step 1: Read the existing prepare-merge.yml.**
 
@@ -475,8 +475,8 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 - Delete: `binaries.lock`
 - Delete: `abi/binaries-lock.schema.json`
 - Delete: `scripts/{stage-release,publish-release,publish-pr-staging,stage-pr-staging,backfill-binary-blocks}.sh`
-- Modify or delete: `xtask/src/{install_release,build_manifest,stage_release,stage_pr_overlay}.rs` (these are unused after Tasks 2 + 4 + 5)
-- Modify: `xtask/src/main.rs` (remove deleted subcommand dispatches)
+- Modify or delete: `tools/xtask/src/{install_release,build_manifest,stage_release,stage_pr_overlay}.rs` (these are unused after Tasks 2 + 4 + 5)
+- Modify: `tools/xtask/src/main.rs` (remove deleted subcommand dispatches)
 - Update: docs (`docs/binary-releases.md`, `docs/package-management.md`, `docs/abi-versioning.md`, `README.md`, `run.sh` if it references)
 
 **Goal:** Remove all the legacy pinfile + monolithic-publish code. After this commit, the producer is solely the matrix flow; the consumer is solely per-package `package.toml` walk.
@@ -496,7 +496,7 @@ For each of `install_release`, `build_manifest`, `stage_release`, `stage_pr_over
 
 `build_manifest.rs` is complicated because the matrix's `generate-index` job uses `xtask build-index` (Phase B-1). If `build-manifest` is unused everywhere else, delete it. If something still depends on it, leave the module alone but remove the subcommand dispatch.
 
-**Step 3: Update `xtask/src/main.rs` doc comment and usage line.**
+**Step 3: Update `tools/xtask/src/main.rs` doc comment and usage line.**
 
 Remove `install-release`, `stage-release`, `stage-pr-overlay`, `build-manifest` from the subcommand list. Keep `compute-cache-key-sha`, `archive-stage`, `build-index`, `set-build-commit`, `build-deps`, `dump-abi`, `bundle-program`.
 

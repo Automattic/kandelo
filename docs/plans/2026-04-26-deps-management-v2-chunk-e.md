@@ -91,7 +91,7 @@ the user is holding all V2 PRs until V2 is fully done.
 
 ### archive_stage (E.2)
 
-- New module `xtask/src/archive_stage.rs` packages a resolved cache
+- New module `tools/xtask/src/archive_stage.rs` packages a resolved cache
   entry into a `.tar.zst` archive at a caller-specified output path.
 - Tar layout matches what `remote_fetch::flatten_archive_layout`
   expects: top-level `manifest.toml` plus `artifacts/...` subtree.
@@ -249,10 +249,10 @@ These already burned us; they shape every subagent prompt.
 
 - **xtask requires `--target aarch64-apple-darwin`** (or matching
   host triple) due to ureq TLS deps on macOS. Documented in
-  `xtask/README.md`.
+  `tools/xtask/README.md`.
 - **libc-test has one pre-existing FAIL** (regression/daemon-failure)
   on the chunk-D.8 base; do not flag it as a new regression.
-- **Pre-existing dirty `examples/libs/{curl,libcurl,wget,git,file,bc,
+- **Pre-existing dirty `packages/registry/{curl,libcurl,wget,git,file,bc,
   nano,cpython,php,redis,mariadb}-src/*` files** in the worktree are
   build byproducts; never `git add` them.
 - **`package-lock.json` may show a worktree-name diff**; not yours
@@ -302,7 +302,7 @@ module's surface. Within a task, multiple commits are fine.
 
 **Files:**
 - Modify: `abi/manifest.schema.json`
-- Test: `xtask/src/build_manifest.rs` (add a JSON-Schema conformance
+- Test: `tools/xtask/src/build_manifest.rs` (add a JSON-Schema conformance
   test using `jsonschema` or hand-written checks)
 
 **Background:** The current schema has a four-value `kind` enum and
@@ -316,7 +316,7 @@ entries (filename ending in `.tar.zst`). V1 zip entries keep working.
 
 **Step 1: Write the failing test**
 
-Add to `xtask/src/build_manifest.rs`'s `#[cfg(test)] mod tests`:
+Add to `tools/xtask/src/build_manifest.rs`'s `#[cfg(test)] mod tests`:
 
 ```rust
 #[test]
@@ -453,7 +453,7 @@ cargo test -p xtask --target aarch64-apple-darwin --lib build_manifest::tests
 **Step 5: Commit**
 
 ```bash
-git add abi/manifest.schema.json xtask/src/build_manifest.rs xtask/Cargo.toml
+git add abi/manifest.schema.json tools/xtask/src/build_manifest.rs tools/xtask/Cargo.toml
 git commit -m "feat: extend manifest.schema.json for V2 library + program entries
 
 Adds 'library' to the kind enum, plus archive_name / archive_sha256 /
@@ -467,9 +467,9 @@ validate with these fields absent."
 ### Task E.2: Add `xtask::archive_stage` module
 
 **Files:**
-- Create: `xtask/src/archive_stage.rs`
-- Modify: `xtask/src/main.rs` (declare module)
-- Modify: `xtask/src/build_deps.rs` (expose any internal helpers
+- Create: `tools/xtask/src/archive_stage.rs`
+- Modify: `tools/xtask/src/main.rs` (declare module)
+- Modify: `tools/xtask/src/build_deps.rs` (expose any internal helpers
   needed: `default_cache_root`, `canonical_path`, `compute_sha`,
   `current_abi_version` — most are already pub, the latter is
   module-private and needs `pub(crate)` exposure)
@@ -493,7 +493,7 @@ so we MUST NOT include the cache's `*.wasm`-at-root layout directly
 
 **Step 1: Write failing tests**
 
-Create `xtask/src/archive_stage.rs` with a `#[cfg(test)] mod tests`
+Create `tools/xtask/src/archive_stage.rs` with a `#[cfg(test)] mod tests`
 section. Use `tempfile`-style helpers (mirror the pattern in
 `source_extract.rs` and `remote_fetch.rs`).
 
@@ -748,7 +748,7 @@ fn build_archive_manifest_text(
 }
 ```
 
-**Step 4: Wire into `xtask/src/main.rs`**
+**Step 4: Wire into `tools/xtask/src/main.rs`**
 
 ```rust
 mod archive_stage;
@@ -766,7 +766,7 @@ cargo test -p xtask --target aarch64-apple-darwin --lib archive_stage::tests
 **Step 6: Commit**
 
 ```bash
-git add xtask/src/archive_stage.rs xtask/src/main.rs xtask/src/build_deps.rs
+git add tools/xtask/src/archive_stage.rs tools/xtask/src/main.rs tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): archive_stage module — pack cache entry to .tar.zst with [compatibility]
 
 Producer side of decision 14. Reads a resolved <cache>/<kind>/<entry>
@@ -782,8 +782,8 @@ remote_fetch::fetch_and_install."
 ### Task E.3: Extend `build_manifest` to walk the registry × arches
 
 **Files:**
-- Modify: `xtask/src/build_manifest.rs`
-- Modify: `xtask/src/build_deps.rs` (export any cache-key-sha helper
+- Modify: `tools/xtask/src/build_manifest.rs`
+- Modify: `tools/xtask/src/build_deps.rs` (export any cache-key-sha helper
   not yet `pub(crate)`)
 
 **Background:** Today `build_manifest::run` walks a flat staging dir
@@ -910,7 +910,7 @@ cargo test -p xtask --target aarch64-apple-darwin --lib build_manifest::tests
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/build_manifest.rs xtask/src/build_deps.rs
+git add tools/xtask/src/build_manifest.rs tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): build-manifest walks registry × arches for V2 lib/program entries
 
 Adds --abi / --registry / --arch flags. Walks Registry::walk_all(),
@@ -926,8 +926,8 @@ staging-dir walk is unchanged."
 ### Task E.4: New `cargo xtask stage-release` subcommand
 
 **Files:**
-- Create: `xtask/src/stage_release.rs`
-- Modify: `xtask/src/main.rs` (add subcommand dispatch)
+- Create: `tools/xtask/src/stage_release.rs`
+- Modify: `tools/xtask/src/main.rs` (add subcommand dispatch)
 
 **Background:** This is the orchestration layer: walk
 `Registry::walk_all()`, filter to `Library`/`Program`, fan out across
@@ -1079,7 +1079,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 }
 ```
 
-**Step 3: Wire into `xtask/src/main.rs`**
+**Step 3: Wire into `tools/xtask/src/main.rs`**
 
 ```rust
 mod stage_release;
@@ -1114,7 +1114,7 @@ holds; warnings for any that don't yet build cleanly on this branch.
 **Step 6: Commit**
 
 ```bash
-git add xtask/src/stage_release.rs xtask/src/main.rs
+git add tools/xtask/src/stage_release.rs tools/xtask/src/main.rs
 git commit -m "feat(xtask): stage-release subcommand — orchestrate V2 archive staging
 
 Walks the registry, filters to Library/Program, fans out across
@@ -1129,8 +1129,8 @@ when every requested arch fails for a manifest."
 ### Task E.5: New `cargo xtask install-release` subcommand
 
 **Files:**
-- Create: `xtask/src/install_release.rs`
-- Modify: `xtask/src/main.rs` (declare module + dispatch)
+- Create: `tools/xtask/src/install_release.rs`
+- Modify: `tools/xtask/src/main.rs` (declare module + dispatch)
 
 **Background:** This is the consumer side. Reads
 `<staging>/manifest.json`, loops over entries, and routes by
@@ -1257,7 +1257,7 @@ fn mirror_outputs_to_local_binaries(
 }
 ```
 
-**Step 3: Wire into `xtask/src/main.rs`**
+**Step 3: Wire into `tools/xtask/src/main.rs`**
 
 ```rust
 mod install_release;
@@ -1274,7 +1274,7 @@ cargo test -p xtask --target aarch64-apple-darwin --lib install_release::tests
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/install_release.rs xtask/src/main.rs
+git add tools/xtask/src/install_release.rs tools/xtask/src/main.rs
 git commit -m "feat(xtask): install-release subcommand — fetch + verify archives, mirror programs
 
 Reads manifest.json, dispatches lib entries to remote_fetch::fetch_and_install

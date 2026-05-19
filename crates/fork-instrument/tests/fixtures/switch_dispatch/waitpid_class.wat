@@ -1,6 +1,6 @@
 ;; waitpid-class regression fixture for the switch-dispatch redesign.
 ;;
-;; Mimics the compiled shape of os-test/basic/sys_wait/waitpid.c at the
+;; Mimics the compiled shape of tests/sortix/os-test/basic/sys_wait/waitpid.c at the
 ;; instrumented-call-site level: a fork-path function that also makes a
 ;; non-fork-path direct call (here, `kernel.setpgid`) before reaching
 ;; `kernel.kernel_fork`.

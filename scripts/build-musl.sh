@@ -8,14 +8,14 @@ set -euo pipefail
 #   scripts/build-musl.sh --arch wasm64posix   # build wasm64posix
 #
 # Approach:
-#   1. Copy overlay files from musl-overlay/ into musl/arch/<ARCH>/
+#   1. Copy overlay files from libc/musl-overlay/ into libc/musl/arch/<ARCH>/
 #   2. Write config.mak directly (bypassing configure which doesn't know our arch)
 #   3. Run make to build libc.a and CRT objects
 #   4. Install headers + libs into sysroot/
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MUSL_DIR="$REPO_ROOT/musl"
-OVERLAY_DIR="$REPO_ROOT/musl-overlay"
+MUSL_DIR="$REPO_ROOT/libc/musl"
+OVERLAY_DIR="$REPO_ROOT/libc/musl-overlay"
 
 # Parse arguments
 ARCH="wasm32posix"

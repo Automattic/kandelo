@@ -27,8 +27,8 @@ The bridge is **one** new QuickJS C native module exposing four namespaces (`has
 
 **Tech Stack:**
 - C (QuickJS native module, against our `wasm32posix-cc` SDK)
-- OpenSSL 3.x (already builds, `examples/libs/openssl/build-openssl.sh`)
-- zlib (already builds, `examples/libs/zlib/build-zlib.sh`)
+- OpenSSL 3.x (already builds, `packages/registry/openssl/build-openssl.sh`)
+- zlib (already builds, `packages/registry/zlib/build-zlib.sh`)
 - TypeScript host runtime (vitest integration tests)
 - QuickJS-NG v0.12.1 (cloned by `build-quickjs.sh`, no upstream patches — native-module API only)
 
@@ -223,7 +223,7 @@ Procedure, before staging any wasm change:
    ```bash
    cp host/wasm/wasm_posix_kernel.wasm /tmp/wasm_posix_kernel.committed.wasm
    ```
-2. With `host/wasm/wasm_posix_kernel.wasm` = the **committed** binary, run the §0c repro (the same command Phase 0c.1 uses; if 0c hasn't authored the test yet, the manual repro `qjs -e '1+1'` against the existing `examples/libs/quickjs/bin/qjs.wasm` is sufficient for this step). Record: pass / "Maximum call stack size exceeded" / other.
+2. With `host/wasm/wasm_posix_kernel.wasm` = the **committed** binary, run the §0c repro (the same command Phase 0c.1 uses; if 0c hasn't authored the test yet, the manual repro `qjs -e '1+1'` against the existing `packages/registry/quickjs/bin/qjs.wasm` is sufficient for this step). Record: pass / "Maximum call stack size exceeded" / other.
 3. Replace with the freshly-built binary:
    ```bash
    cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
@@ -299,10 +299,10 @@ Verified codegen-only via three independent checks:
 
 ### Phase 0b — `fix(quickjs): drop nonexistent cutils.c refs from build-quickjs.sh`
 
-**Symptom:** On a fresh clone, `bash examples/libs/quickjs/build-quickjs.sh` fails compiling host `qjsc`:
+**Symptom:** On a fresh clone, `bash packages/registry/quickjs/build-quickjs.sh` fails compiling host `qjsc`:
 ```
 clang: error: no such file or directory:
-  '.../examples/libs/quickjs/quickjs-src/cutils.c'
+  '.../packages/registry/quickjs/quickjs-src/cutils.c'
 ```
 
 In quickjs-ng v0.12.1, `cutils.h` is header-only (`static inline`); `cutils.c` was removed upstream.
@@ -310,7 +310,7 @@ In quickjs-ng v0.12.1, `cutils.h` is header-only (`static inline`); `cutils.c` w
 #### Task 0b.1 — Edit `build-quickjs.sh`
 
 **Files:**
-- Modify: `examples/libs/quickjs/build-quickjs.sh`
+- Modify: `packages/registry/quickjs/build-quickjs.sh`
 
 **Step 1: Remove the host compile (current line 96).**
 
@@ -341,7 +341,7 @@ $HOST_CC \
 
 **Step 3: Confirm wasm-side build does not reference `cutils.c`.**
 ```bash
-grep -n cutils examples/libs/quickjs/build-quickjs.sh
+grep -n cutils packages/registry/quickjs/build-quickjs.sh
 ```
 Expected: no remaining matches (the script does not reference `cutils.h` either; clang resolves it via `-I$SRC_DIR`).
 
@@ -349,17 +349,17 @@ Expected: no remaining matches (the script does not reference `cutils.h` either;
 
 The script clones quickjs-ng on first run. To exercise the cold path:
 ```bash
-rm -rf examples/libs/quickjs/quickjs-src examples/libs/quickjs/bin
-bash examples/libs/quickjs/build-quickjs.sh
+rm -rf packages/registry/quickjs/quickjs-src packages/registry/quickjs/bin
+bash packages/registry/quickjs/build-quickjs.sh
 ```
 
-Expected: clones quickjs-ng v0.12.1, builds `qjsc` natively, compiles bootstrap to bytecode, builds `qjs.wasm` and `node.wasm` in `examples/libs/quickjs/bin/`, applies asyncify. Exit 0.
+Expected: clones quickjs-ng v0.12.1, builds `qjsc` natively, compiles bootstrap to bytecode, builds `qjs.wasm` and `node.wasm` in `packages/registry/quickjs/bin/`, applies asyncify. Exit 0.
 
 #### Task 0b.3 — Commit & PR
 
 ```bash
 git checkout -b explore-node-wasm-fix-quickjs-cutils-c explore-node-wasm-fix-build-toolchain
-git add examples/libs/quickjs/build-quickjs.sh
+git add packages/registry/quickjs/build-quickjs.sh
 git commit -m "fix(quickjs): drop nonexistent cutils.c refs from build-quickjs.sh"
 git push -u origin explore-node-wasm-fix-quickjs-cutils-c
 gh pr create --base explore-node-wasm-fix-build-toolchain \
@@ -380,7 +380,7 @@ trees — only fixes cold-start.
 
 ## Test plan
 
-- [ ] `rm -rf examples/libs/quickjs/quickjs-src examples/libs/quickjs/bin && bash examples/libs/quickjs/build-quickjs.sh` exits 0
+- [ ] `rm -rf packages/registry/quickjs/quickjs-src packages/registry/quickjs/bin && bash packages/registry/quickjs/build-quickjs.sh` exits 0
 - [ ] `qjs.wasm` + `node.wasm` produced
 ```
 
@@ -397,7 +397,7 @@ $ qjs --help                  → ✓ (no eval)
 $ node --version              → ✓ (short-circuits before bootstrap)
 ```
 
-`qjs.wasm` and `node.wasm` are the same crash. This is **not** a bootstrap.js bug (qjs.wasm has no bootstrap). It is **not** a QuickJS code-path change (no commits touch `examples/libs/quickjs/` since PR #226 / `18bfe4b6`).
+`qjs.wasm` and `node.wasm` are the same crash. This is **not** a bootstrap.js bug (qjs.wasm has no bootstrap). It is **not** a QuickJS code-path change (no commits touch `packages/registry/quickjs/` since PR #226 / `18bfe4b6`).
 
 The kernel between `18bfe4b6` and `37814ab5` is 106 commits — pthread, signals, AIO, AF_UNIX, framebuffer, and toolchain work. Some commit broke a syscall semantic that QuickJS's exception path depends on. Hypotheses (none verified — bisect confirms which):
 
@@ -419,7 +419,7 @@ import { runCentralizedProgram } from './centralized-test-helper.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 
-const QJS = join(__dirname, '../../examples/libs/quickjs/bin/qjs.wasm');
+const QJS = join(__dirname, '../../packages/registry/quickjs/bin/qjs.wasm');
 const HAS_QJS = existsSync(QJS);
 
 describe.skipIf(!HAS_QJS)('qjs-eval-repro', () => {
@@ -463,10 +463,10 @@ In the "both crash" case, continue:
 2. Apply the Phase 0a workaround inline to **both** `build.sh` and `run.sh` in the worktree (sed-replace the old `-Z build-std-features=panic_immediate_abort` block with the new `RUSTFLAGS` form). At `18bfe4b6`, `scripts/check-abi-version.sh` does not yet exist, so only those two files need patching. Do **not** commit the patches — they only need to live in the bisect worktree.
 3. Build sysroot + kernel + qjs.wasm:
    ```bash
-   git submodule update --init musl
+   git submodule update --init libc/musl
    bash scripts/build-musl.sh
    bash build.sh
-   bash examples/libs/quickjs/build-quickjs.sh   # apply Phase 0b cutils.c fix locally
+   bash packages/registry/quickjs/build-quickjs.sh   # apply Phase 0b cutils.c fix locally
    ```
 4. Run the repro:
    ```bash
@@ -499,7 +499,7 @@ RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" \
 cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
 
 # Rebuild qjs.wasm (cheap — quickjs-src is already cloned & not modified)
-bash examples/libs/quickjs/build-quickjs.sh >/dev/null 2>&1 || exit 125
+bash packages/registry/quickjs/build-quickjs.sh >/dev/null 2>&1 || exit 125
 
 cd host
 if npx vitest run test/_repro-qjs-eval.test.ts >/dev/null 2>&1; then
@@ -541,7 +541,7 @@ The fix depends entirely on what 0c.3 found. Likely shapes:
 
 - **Asyncify import widening.** Add the offending syscall to `--pass-arg=asyncify-imports@…` in `build-quickjs.sh`. Document the new import in a comment.
 - **Syscall semantic restoration.** A kernel commit changed e.g. `read` to return `EAGAIN` where it formerly returned data. Either revert the semantic for the affected fd type, or add a path-specific override. **Bumps `ABI_VERSION`** if the restored semantic is part of the marshalled struct surface.
-- **setjmp/longjmp regression.** Probably a change in `wasm_setjmp_rt.o` or in how the kernel handles the corresponding call. Fix in `crates/kernel/src/…` plus possibly `glue/`.
+- **setjmp/longjmp regression.** Probably a change in `wasm_setjmp_rt.o` or in how the kernel handles the corresponding call. Fix in `crates/kernel/src/…` plus possibly `libc/glue/`.
 
 The fix's PR is its own thing — title `fix(kernel): <specific cause> — restore JS_Eval`. Do **not** roll into Phase 1.
 
@@ -565,8 +565,8 @@ import { runCentralizedProgram } from './centralized-test-helper.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 
-const QJS  = join(__dirname, '../../examples/libs/quickjs/bin/qjs.wasm');
-const NODE = join(__dirname, '../../examples/libs/quickjs/bin/node.wasm');
+const QJS  = join(__dirname, '../../packages/registry/quickjs/bin/qjs.wasm');
+const NODE = join(__dirname, '../../packages/registry/quickjs/bin/node.wasm');
 const HAS_QJS  = existsSync(QJS);
 const HAS_NODE = existsSync(NODE);
 
@@ -652,10 +652,10 @@ Promotes the failing repro to a permanent regression test
 git submodule update --init --recursive
 bash scripts/build-musl.sh                              # → sysroot/lib/libc.a
 bash build.sh                                           # → host/wasm/wasm_posix_kernel.wasm
-bash examples/libs/openssl/build-openssl.sh             # → libcrypto.a + libssl.a
-bash examples/libs/zlib/build-zlib.sh                   # → libz.a
+bash packages/registry/openssl/build-openssl.sh             # → libcrypto.a + libssl.a
+bash packages/registry/zlib/build-zlib.sh                   # → libz.a
 cd sdk && npm install && npm link && cd ..              # wasm32posix-cc on PATH
-bash examples/libs/quickjs/build-quickjs.sh             # → qjs.wasm + node.wasm
+bash packages/registry/quickjs/build-quickjs.sh             # → qjs.wasm + node.wasm
 ```
 
 Each step exits 0. Record artifact sizes (KB) into the doc.
@@ -671,8 +671,8 @@ Expected: 12/12 pass. (Pre-fix this was 1/12 — the only passing case was `--ve
 #### Task 0d.3 — OpenSSL sysroot audit
 
 ```bash
-ls -lh examples/libs/openssl/openssl-install/lib/{libcrypto.a,libssl.a}
-strings examples/libs/openssl/openssl-install/lib/libcrypto.a \
+ls -lh packages/registry/openssl/openssl-install/lib/{libcrypto.a,libssl.a}
+strings packages/registry/openssl/openssl-install/lib/libcrypto.a \
   | grep -E "^OPENSSLDIR|^/etc/ssl"
 ```
 
@@ -684,7 +684,7 @@ Confirm:
 #### Task 0d.4 — zlib sysroot audit
 
 ```bash
-ls -lh examples/libs/zlib/zlib-install/lib/libz.a
+ls -lh packages/registry/zlib/zlib-install/lib/libz.a
 ```
 
 Confirm `libz.a` ~100 KB.
@@ -794,9 +794,9 @@ require('crypto').createHash('sha256').update('').digest('hex')
 ### Task 1.1 — Scaffold `node-compat-native/` directory
 
 **Files:**
-- Create: `examples/libs/quickjs/node-compat-native/` (directory)
-- Create: `examples/libs/quickjs/node-compat-native/node-native.h`
-- Create: `examples/libs/quickjs/node-compat-native/node-native.c`
+- Create: `packages/registry/quickjs/node-compat-native/` (directory)
+- Create: `packages/registry/quickjs/node-compat-native/node-native.h`
+- Create: `packages/registry/quickjs/node-compat-native/node-native.c`
 
 **Step 1: header — module-init declaration.**
 
@@ -806,7 +806,7 @@ require('crypto').createHash('sha256').update('').digest('hex')
  * qjs:node — Node.js-compat native bindings for QuickJS-NG.
  *
  * Provides typed JS bindings to libcrypto, libssl, libz, and AF_INET sockets.
- * Used by examples/libs/quickjs/node-compat/bootstrap.js to back its
+ * Used by packages/registry/quickjs/node-compat/bootstrap.js to back its
  * crypto / net / http / https / zlib stubs with real implementations.
  */
 #ifndef QJS_NODE_NATIVE_H
@@ -847,7 +847,7 @@ The double-call pattern (declare in `init_module_node`, populate in `js_node_ini
 ### Task 1.2 — `hash.c`: SHA-1 / SHA-256 / SHA-512 / MD5 bindings
 
 **Files:**
-- Create: `examples/libs/quickjs/node-compat-native/hash.c`
+- Create: `packages/registry/quickjs/node-compat-native/hash.c`
 
 **Design:**
 - Each algorithm exposed as a JS class: `Sha1`, `Sha256`, `Sha512`, `Md5`.
@@ -1057,7 +1057,7 @@ int js_node_hash_register(JSContext *ctx, JSModuleDef *m) {
 ### Task 1.3 — Wire `qjs:node` into `node-main.c`
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-main.c`
+- Modify: `packages/registry/quickjs/node-main.c`
 
 **Step 1: Include the new header (top of file, after `quickjs-libc.h`).**
 ```c
@@ -1081,7 +1081,7 @@ Append:
 ### Task 1.4 — Bootstrap-side wiring: stitch `globalThis._nodeNative` from `qjs:node`
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-compat/bootstrap.js`
+- Modify: `packages/registry/quickjs/node-compat/bootstrap.js`
 
 **Step 1: Top of the bootstrap (after the existing `qjs:os` / `qjs:std` imports), add:**
 
@@ -1163,12 +1163,12 @@ Same pattern: prefer `_nodeNative.hash.Hmac`, fall back to current stub.
 ### Task 1.5 — Update `build-quickjs.sh` to compile + link `node-compat-native`
 
 **Files:**
-- Modify: `examples/libs/quickjs/build-quickjs.sh`
+- Modify: `packages/registry/quickjs/build-quickjs.sh`
 
 **Step 1: Path constants** (near `SRC_DIR`):
 ```bash
 NATIVE_DIR="$SCRIPT_DIR/node-compat-native"
-OPENSSL_INSTALL="$REPO_ROOT/examples/libs/openssl/openssl-install"
+OPENSSL_INSTALL="$REPO_ROOT/packages/registry/openssl/openssl-install"
 OPENSSL_INCLUDE="$OPENSSL_INSTALL/include"
 OPENSSL_LIB="$OPENSSL_INSTALL/lib"
 ```
@@ -1196,7 +1196,7 @@ $CC "${NODE_OBJS[@]}" "${NATIVE_OBJS[@]}" "${OBJS[@]}" \
 **Step 4: Guard the OpenSSL dependency.**
 ```bash
 if [ ! -f "$OPENSSL_LIB/libcrypto.a" ]; then
-    echo "ERROR: libcrypto.a not found. Run examples/libs/openssl/build-openssl.sh first."
+    echo "ERROR: libcrypto.a not found. Run packages/registry/openssl/build-openssl.sh first."
     exit 1
 fi
 ```
@@ -1261,10 +1261,10 @@ bash scripts/check-abi-version.sh
 
 ```bash
 git checkout -b explore-node-wasm-feat-quickjs-node-hashing explore-node-wasm-docs-quickjs-phase0
-git add examples/libs/quickjs/node-compat-native/
-git add examples/libs/quickjs/build-quickjs.sh
-git add examples/libs/quickjs/node-main.c
-git add examples/libs/quickjs/node-compat/bootstrap.js
+git add packages/registry/quickjs/node-compat-native/
+git add packages/registry/quickjs/build-quickjs.sh
+git add packages/registry/quickjs/node-main.c
+git add packages/registry/quickjs/node-compat/bootstrap.js
 git add host/test/node-compat.test.ts
 git commit -m "feat(quickjs-node): real SHA-256/512 via libcrypto"
 git push -u origin explore-node-wasm-feat-quickjs-node-hashing
@@ -1306,7 +1306,7 @@ zlib.gunzipSync(fs.readFileSync('lodash-4.17.21.tgz'))
 ### Task 2.1 — `zlib.c`: Inflate / Deflate / Gzip / Gunzip classes + sync helpers
 
 **Files:**
-- Create: `examples/libs/quickjs/node-compat-native/zlib.c`
+- Create: `packages/registry/quickjs/node-compat-native/zlib.c`
 
 **Design:**
 - One opaque class `ZlibStream` with `mode` (deflate vs inflate) and `format` (raw / zlib / gzip).
@@ -1355,7 +1355,7 @@ Plus `gzipSync`, `inflateSync`, `deflateSync` (mirrored).
 ### Task 2.2 — Wire `js_node_zlib_register` into `node-native.c`
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-compat-native/node-native.c`
+- Modify: `packages/registry/quickjs/node-compat-native/node-native.c`
 
 ```c
 extern int js_node_zlib_register(JSContext *ctx, JSModuleDef *m);
@@ -1380,7 +1380,7 @@ JSModuleDef *js_init_module_node(JSContext *ctx, const char *module_name) {
 ### Task 2.3 — Patch bootstrap.js zlib stubs (L2284–2293)
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-compat/bootstrap.js`
+- Modify: `packages/registry/quickjs/node-compat/bootstrap.js`
 
 **Step 1: Extend the early `_nodeNative` import to include zlib.**
 
@@ -1434,11 +1434,11 @@ _nodeNative.zlib = {
 ### Task 2.4 — Update `build-quickjs.sh` for libz
 
 **Files:**
-- Modify: `examples/libs/quickjs/build-quickjs.sh`
+- Modify: `packages/registry/quickjs/build-quickjs.sh`
 
 **Step 1: Path constants.**
 ```bash
-ZLIB_INSTALL="$REPO_ROOT/examples/libs/zlib/zlib-install"
+ZLIB_INSTALL="$REPO_ROOT/packages/registry/zlib/zlib-install"
 ZLIB_INCLUDE="$ZLIB_INSTALL/include"
 ZLIB_LIB="$ZLIB_INSTALL/lib"
 ```
@@ -1520,7 +1520,7 @@ require('net').connect(80, 'example.com').on('connect', () => {
 ### Task 3.1 — `socket.c`: low-level fd bindings
 
 **Files:**
-- Create: `examples/libs/quickjs/node-compat-native/socket.c`
+- Create: `packages/registry/quickjs/node-compat-native/socket.c`
 
 **API surface** (raw fd-shaped, intentionally not Node-shaped — Node API lives in bootstrap.js):
 
@@ -1586,7 +1586,7 @@ int js_node_socket_dispatch(JSContext *ctx, int timeout_ms) {
 ### Task 3.2 — Patch `js_std_loop` (or fork it)
 
 **Files:**
-- Modify (or create): `examples/libs/quickjs/node-main.c` — call `js_node_socket_dispatch` in the main loop
+- Modify (or create): `packages/registry/quickjs/node-main.c` — call `js_node_socket_dispatch` in the main loop
 
 **Approach (preferred — fork the loop):**
 
@@ -1622,7 +1622,7 @@ Replace the `js_std_loop(ctx)` call near the end of `node-main.c`'s `main()` wit
 ### Task 3.3 — Bootstrap-side: real `net.Socket`
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-compat/bootstrap.js`
+- Modify: `packages/registry/quickjs/node-compat/bootstrap.js`
 
 Replace the entire `net` IIFE (L2152–2222). New `Socket` extends `stream.Duplex`, holds `_fd`, drives reads and writes via `_nodeNative.socket.read` / `.write` / `.close`.
 
@@ -1679,7 +1679,7 @@ class Socket extends stream.Duplex {
 ### Task 3.4 — Wire `socket` into the build
 
 **Files:**
-- Modify: `examples/libs/quickjs/build-quickjs.sh`
+- Modify: `packages/registry/quickjs/build-quickjs.sh`
 
 Add `socket.c` to native sources. No new linker flags — sockets are syscalls, our musl provides them.
 
@@ -1727,13 +1727,13 @@ require('https').get('https://registry.npmjs.org/lodash/4.17.21', r => {
 
 Confirm OpenSSL probes `/etc/ssl/cert.pem`:
 ```bash
-strings examples/libs/openssl/openssl-install/lib/libcrypto.a | grep -E "/etc/ssl"
+strings packages/registry/openssl/openssl-install/lib/libcrypto.a | grep -E "/etc/ssl"
 ```
 
 ### Task 4.2 — `tls.c`: TlsSocket wrapper
 
 **Files:**
-- Create: `examples/libs/quickjs/node-compat-native/tls.c`
+- Create: `packages/registry/quickjs/node-compat-native/tls.c`
 
 **Design:** Takes an existing fd (from socket.c) + hostname for SNI. Runs `SSL_set_fd`, `SSL_connect`. Then exposes `read` / `write` over `SSL_read` / `SSL_write` on the same fd.
 
@@ -1756,7 +1756,7 @@ typedef struct {
 ### Task 4.3 — Bootstrap-side: split `https` from `http`
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-compat/bootstrap.js`
+- Modify: `packages/registry/quickjs/node-compat/bootstrap.js`
 
 Currently `https = http` (alias at L2283). Split:
 
@@ -1774,7 +1774,7 @@ The `http` work isn't trivial — it's its own ~200-line block. Plan:
 ### Task 4.4 — Update build for libssl
 
 **Files:**
-- Modify: `examples/libs/quickjs/build-quickjs.sh`
+- Modify: `packages/registry/quickjs/build-quickjs.sh`
 
 Append `tls.c` to native sources. Link `-lssl` (already have `-lcrypto`).
 
@@ -1823,7 +1823,7 @@ Split into two halves: CommonJS `require()` (5.2a) and ESM dynamic `import()` (5
 #### Task 5.2a — CommonJS side
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-compat/bootstrap.js` — `_resolveFile`
+- Modify: `packages/registry/quickjs/node-compat/bootstrap.js` — `_resolveFile`
 
 Implement `package.json#exports` lookup in `_resolveFile`:
 1. If `exports` is a string → use it.
@@ -1837,9 +1837,9 @@ Spec at <https://nodejs.org/api/packages.html#exports>.
 #### Task 5.2b — ESM dynamic-import side (live blocker for `npm --version`)
 
 **Files:**
-- Modify: `examples/libs/quickjs/node-main.c` — install a `JSModuleNormalizeFunc`/`JSModuleLoaderFunc2` pair via `JS_SetModuleLoaderFunc2`.
-- Modify: `examples/libs/quickjs/node-compat-native/node-native.c` — expose `evalWithFilename(source, filename)` so the bootstrap's CJS loader can pass the resolved path through to QuickJS's `JS_GetScriptOrModuleName`. Without this, dynamic `import()` from `new Function` bodies has an empty base and bare-specifier resolution can't tell which `node_modules/` tree to walk.
-- Modify: `examples/libs/quickjs/node-compat/bootstrap.js` — switch `_makeRequire` from `new Function(...)` to the new native eval so module bodies have a real script identity.
+- Modify: `packages/registry/quickjs/node-main.c` — install a `JSModuleNormalizeFunc`/`JSModuleLoaderFunc2` pair via `JS_SetModuleLoaderFunc2`.
+- Modify: `packages/registry/quickjs/node-compat-native/node-native.c` — expose `evalWithFilename(source, filename)` so the bootstrap's CJS loader can pass the resolved path through to QuickJS's `JS_GetScriptOrModuleName`. Without this, dynamic `import()` from `new Function` bodies has an empty base and bare-specifier resolution can't tell which `node_modules/` tree to walk.
+- Modify: `packages/registry/quickjs/node-compat/bootstrap.js` — switch `_makeRequire` from `new Function(...)` to the new native eval so module bodies have a real script identity.
 
 Algorithm in the C normalizer:
 1. `qjs:`, `node:` → pass through.
@@ -1992,7 +1992,7 @@ bootstrap.js is mostly Node-API shim and is engine-agnostic at the JS level, exc
 
 ### Tasks (only if we switch)
 
-- Task 8.1: SpiderMonkey jitless build script (`examples/libs/spidermonkey/`)
+- Task 8.1: SpiderMonkey jitless build script (`packages/registry/spidermonkey/`)
 - Task 8.2: Port `node-main.c` to SpiderMonkey JSAPI
 - Task 8.3: Re-bind the four native namespaces in JSAPI
 - Task 8.4: Re-run all phase tests on the new binary

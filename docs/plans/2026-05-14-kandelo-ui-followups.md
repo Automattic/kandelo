@@ -38,7 +38,7 @@ url-design.md`.
 
 ## Deferred vitest coverage
 
-`host/test/kandelo-ui.test.ts` covers LiveKernelHost stubs + MockKernelHost
+`web-libs/kandelo-session/test/kandelo-session.test.ts` covers LiveKernelHost stubs + MockKernelHost
 contract (27 specs). Still missing:
 
 ### boot-descriptor round-trip + validation (~12 specs)
@@ -181,10 +181,10 @@ is blank, args are raw integers, polling is 250 ms.
 
 ## Workspace / repo hygiene
 
-- The `musl/` submodule's working tree is dirty (we populated it via
+- The `libc/musl/` submodule's working tree is dirty (we populated it via
   cp from a sibling worktree to bootstrap the build). The gitlink
   itself is unchanged so commits won't carry the dirtiness, but a
-  clean `git submodule update --init musl` in a fresh checkout
+  clean `git submodule update --init libc/musl` in a fresh checkout
   reconstitutes the same state from upstream.
 - Screenshots accumulated under `/tmp/kandelo-screenshots/` during
   development. Not in the repo; nothing to clean.

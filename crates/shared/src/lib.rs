@@ -1015,7 +1015,7 @@ pub mod abi {
         pub const SYS_SPAWN: u32 = 500;
 
         /// Documented for completeness — also defined in
-        /// `glue/channel_syscall.c` and `host/src/kernel-worker.ts`.
+        /// `libc/glue/channel_syscall.c` and `host/src/kernel-worker.ts`.
         pub const SYS_EXECVE: u32 = 211;
         pub const SYS_FORK: u32 = 212;
         pub const SYS_VFORK: u32 = 213;

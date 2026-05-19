@@ -7,7 +7,7 @@ fetch once, use everywhere.
 
 The flow is **per-package + index-ledger**: every release tag carries
 a single `index.toml` ledger that records every published archive's
-URL + sha + cache-key. Each `examples/libs/<name>/build.toml` points
+URL + sha + cache-key. Each `packages/registry/<name>/build.toml` points
 its `[binary]` entry at that ledger (typically via `index_url` with a
 `{abi}` placeholder so one `build.toml` survives ABI bumps).
 
@@ -220,11 +220,11 @@ preserved across multiple consecutive failures).
 
 ## Per-package binary source: `build.toml`
 
-`examples/libs/<pkg>/build.toml` declares where the resolver fetches
+`packages/registry/<pkg>/build.toml` declares where the resolver fetches
 this package's binaries from. Typical shape:
 
 ```toml
-script_path = "examples/libs/zlib/build-zlib.sh"
+script_path = "packages/registry/zlib/build-zlib.sh"
 repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
 commit      = "<commit at last successful build>"
 revision    = 1
@@ -250,9 +250,9 @@ metadata packages) — the resolver source-builds via
 ## PR overlays: `package.pr.toml`
 
 The legacy PR-overlay mechanism still exists for one-off local
-swaps: a sibling `examples/libs/<pkg>/package.pr.toml` injects
+swaps: a sibling `packages/registry/<pkg>/package.pr.toml` injects
 `[binary.<arch>]` entries into the parsed `DepsManifest` at load
-time (see `apply_pr_overlay` in `xtask/src/pkg_manifest.rs`).
+time (see `apply_pr_overlay` in `tools/xtask/src/pkg_manifest.rs`).
 Gitignored.
 
 For CI-driven PR testing, the matrix flow uses a dedicated
@@ -268,7 +268,7 @@ via the overlay path.
 bash scripts/fetch-binaries.sh
 ```
 
-Walks every `examples/libs/<pkg>/` that has a `build.toml` and runs:
+Walks every `packages/registry/<pkg>/` that has a `build.toml` and runs:
 
 ```
 cargo run -p xtask -- build-deps --arch <arch> \
@@ -279,7 +279,7 @@ For each declared arch in the package's `arches = [...]` (default
 `["wasm32"]`). The resolver:
 
 1. Reads `package.toml` (recipe) + `build.toml` (project view) from
-   `examples/libs/<pkg>/`. `revision` from `build.toml` overrides
+   `packages/registry/<pkg>/`. `revision` from `build.toml` overrides
    the `DepsManifest`'s default revision before cache-key
    computation.
 2. Resolves `build.toml`'s `[binary]`:

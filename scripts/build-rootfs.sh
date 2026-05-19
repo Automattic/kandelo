@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Build the canonical rootfs.vfs image from the top-level MANIFEST +
-# rootfs/ source tree, using the mkrootfs CLI under tools/mkrootfs/.
+# images/rootfs/ source tree, using the mkrootfs CLI under tools/mkrootfs/.
 # Output: host/wasm/rootfs.vfs (gitignored — built artifact).
 #
 # This is a Node.js/TypeScript invocation, not a wasm cross-compile,
@@ -26,8 +26,8 @@ fi
 OUT="host/wasm/rootfs.vfs"
 mkdir -p "$(dirname "$OUT")"
 
-echo "==> Building rootfs.vfs from MANIFEST + rootfs/..."
-node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST rootfs \
+echo "==> Building rootfs.vfs from MANIFEST + images/rootfs/..."
+node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
     -o "$OUT" \
     --repo-root "$REPO_ROOT"
 

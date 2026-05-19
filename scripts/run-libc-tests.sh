@@ -13,9 +13,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
-LIBC_TEST="$REPO_ROOT/libc-test"
-BUILD_DIR="$REPO_ROOT/libc-test/build"
+GLUE_DIR="$REPO_ROOT/libc/glue"
+LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
+BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
@@ -231,7 +231,7 @@ build_math-relaxed() {
 
     # Use CFLAGS_BASE (without -I common) so overlay's mtest.h shadows the original
     "$CC" "${CFLAGS_BASE[@]}" \
-        -I"$REPO_ROOT/libc-test-overlay" \
+        -I"$REPO_ROOT/tests/libc/libc-test-overlay" \
         -I"$LIBC_TEST/src/common" \
         -I"$LIBC_TEST/src/math" \
         "$src" \

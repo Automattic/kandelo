@@ -12,7 +12,6 @@ export default defineConfig({
     "src/vfs/opfs-worker.ts",
     "src/networking/index.ts",
     "src/framebuffer/index.ts",
-    "src/kandelo-ui/index.ts",
   ],
   format: ["esm", "cjs"],
   dts: true,

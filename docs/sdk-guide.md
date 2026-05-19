@@ -16,7 +16,7 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
    package already contains the published sysroot and glue files. If
    you are working from a source checkout, build them locally:
    ```bash
-   git submodule update --init musl
+   git submodule update --init libc/musl
    bash scripts/build-musl.sh
    ```
 3. **Kernel built**:
@@ -59,13 +59,13 @@ The SDK finds LLVM in this order:
 
 ### Glue and Sysroot Discovery
 
-The SDK locates `glue/` and `sysroot/` in this order:
+The SDK locates `libc/glue/` and `sysroot/` in this order:
 
 1. `$WASM_POSIX_GLUE_DIR` / `$WASM_POSIX_SYSROOT` env vars (explicit overrides)
-2. Walk up from `process.cwd()` looking for `glue/abi_constants.h` — anchors to the project root the user is building from
+2. Walk up from `process.cwd()` looking for `libc/glue/abi_constants.h` — anchors to the project root the user is building from
 3. Fall back to the SDK's sibling-repository directory (the `..` of the npm-linked package)
 
-The cwd-walk-up step matters when the SDK is `npm link`-ed: the global `wasm32posix-cc` symlink points at whichever worktree last ran `npm link`, but glue/sysroot must come from the worktree the user is actively building in (otherwise programs link against a different `ABI_VERSION` than the kernel they will run on). If you keep multiple worktrees, you do not need to re-`npm link` when switching between them — the SDK resolves glue/sysroot from your shell's cwd.
+The cwd-walk-up step matters when the SDK is `npm link`-ed: the global `wasm32posix-cc` symlink points at whichever worktree last ran `npm link`, but libc/glue/sysroot must come from the worktree the user is actively building in (otherwise programs link against a different `ABI_VERSION` than the kernel they will run on). If you keep multiple worktrees, you do not need to re-`npm link` when switching between them — the SDK resolves libc/glue/sysroot from your shell's cwd.
 
 ## Compiling Programs
 
@@ -102,7 +102,7 @@ wasm32posix-c++ program.cpp -o program.wasm
 ### Linking C++ programs (with exceptions)
 
 C++ programs link against libc++ + libc++abi. Both are produced by
-the libcxx package (`examples/libs/libcxx/`) and resolved automatically
+the libcxx package (`packages/registry/libcxx/`) and resolved automatically
 by `cargo xtask build-deps resolve libcxx`. LLVM libunwind is statically
 bundled into `libc++abi.a`, so:
 
@@ -171,8 +171,8 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 ### Files linked automatically
 
 When linking an executable (not compile-only), the SDK adds:
-- `glue/channel_syscall.c` — syscall dispatcher
-- `glue/compiler_rt.c` — soft-float and 64-bit builtins
+- `libc/glue/channel_syscall.c` — syscall dispatcher
+- `libc/glue/compiler_rt.c` — soft-float and 64-bit builtins
 - `sysroot/lib/crt1.o` — C runtime startup
 - `sysroot/lib/libc.a` — musl libc
 
@@ -257,7 +257,7 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib \
      LDFLAGS="-Wl,--export=__asyncify_data,--export=asyncify_start_unwind,..."
 ```
 
-See `examples/libs/redis/build-redis.sh` for the complete build script.
+See `packages/registry/redis/build-redis.sh` for the complete build script.
 
 ## Asyncify (fork support)
 
@@ -294,7 +294,7 @@ wasm-opt --asyncify \
 |----------|---------|
 | `WASM_POSIX_LLVM_DIR` | Path to LLVM bin directory |
 | `WASM_POSIX_SYSROOT` | Override sysroot path (default: `<repo>/sysroot`) |
-| `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/glue`) |
+| `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/libc/glue`) |
 
 ## Running Programs
 
@@ -316,6 +316,6 @@ See the [Porting Guide](porting-guide.md) for creating browser demos.
 
 - **Don't add `-pthread`**: Thread creation is host-managed via `clone()`. The SDK silently ignores `-pthread`.
 - **Use `-O2` or `-Os`**: Unoptimized Wasm is significantly slower and larger.
-- **Check build script examples**: `examples/libs/` contains complete build scripts for 12 real-world libraries including autoconf, CMake, and plain Makefile projects.
+- **Check build script examples**: `packages/registry/` contains complete build scripts for 12 real-world libraries including autoconf, CMake, and plain Makefile projects.
 - **For fork support**: Always apply Asyncify post-processing. Without it, `fork()` will fail.
 - **Memory limit**: Default max memory is 1GB (16384 pages). For multi-process demos, consider reducing `maxMemoryPages` to avoid exhausting browser memory.

@@ -97,5 +97,5 @@ In sys_fstat: for CharDevice with negative host_handle, return synthetic stat.
 |------|---------|
 | `crates/kernel/src/syscalls.rs` | Add `VirtualDevice` enum, `match_virtual_device()`, intercept in sys_open, sys_read, sys_write, sys_lseek, sys_stat, sys_lstat, sys_fstat, sys_fstatat, sys_access + tests |
 | `crates/kernel/src/wasm_api.rs` | No changes needed (existing kernel_open/read/write exports call the modified sys_* functions) |
-| `glue/syscall_glue.c` | No changes needed (existing SYS_OPEN/READ/WRITE dispatch is sufficient) |
+| `libc/glue/syscall_glue.c` | No changes needed (existing SYS_OPEN/READ/WRITE dispatch is sufficient) |
 | `docs/posix-status.md` | Add virtual device file support entry |

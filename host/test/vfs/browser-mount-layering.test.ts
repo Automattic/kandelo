@@ -1,6 +1,6 @@
 /**
  * Browser host mount layering — verifies that the wiring in
- * `examples/browser/lib/kernel-worker-entry.ts` (Task 4.4) layers
+ * `host/src/browser-kernel-worker-entry.ts` (Task 4.4) layers
  * the browser-platform internals (`/dev/shm`, `/dev`) on top of
  * `resolveForBrowser(DEFAULT_MOUNT_SPEC, vfsImage)` and that the
  * resulting `VirtualPlatformIO` resolves rootfs paths to the image

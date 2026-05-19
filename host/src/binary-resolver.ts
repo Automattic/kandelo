@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
  * top of the tree and together are unambiguous — they distinguish
  * the repo root from any nested cargo crate or npm subpackage.
  *
- * Per-package `examples/libs/<name>/package.toml` files carry the
+ * Per-package `packages/registry/<name>/package.toml` files carry the
  * release-archive metadata directly (URL + sha256 in `[binary]` /
  * `[binary.<arch>]`); there is no central pinfile for the resolver
  * to read.

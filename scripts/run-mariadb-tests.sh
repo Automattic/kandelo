@@ -4,7 +4,7 @@ set -euo pipefail
 # Run MariaDB mysql-test suite against wasm-posix-kernel.
 #
 # Prerequisites:
-#   bash examples/libs/mariadb/build-mariadb.sh   # builds mariadbd + mysqltest
+#   bash packages/registry/mariadb/build-mariadb.sh   # builds mariadbd + mysqltest
 #   bash build.sh                                  # builds kernel wasm
 #
 # Usage:
@@ -15,11 +15,11 @@ set -euo pipefail
 #   scripts/run-mariadb-tests.sh --list            # list available tests
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MARIADB_LIB="$REPO_ROOT/examples/libs/mariadb"
+MARIADB_LIB="$REPO_ROOT/packages/registry/mariadb"
 INSTALL_DIR="$MARIADB_LIB/mariadb-install"
 MYSQL_TEST_DIR="$INSTALL_DIR/mysql-test"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
-HARNESS="$REPO_ROOT/examples/mariadb-test/run-tests.ts"
+HARNESS="$REPO_ROOT/packages/registry/mariadb/test/run-tests.ts"
 
 # ── Curated test list ─────────────────────────────────────
 # All tests are now run by default (threaded server).
@@ -315,12 +315,12 @@ check_prereqs() {
     local missing=0
 
     if [ ! -f "$INSTALL_DIR/bin/mariadbd" ]; then
-        echo "ERROR: mariadbd not found. Run: bash examples/libs/mariadb/build-mariadb.sh" >&2
+        echo "ERROR: mariadbd not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
         missing=1
     fi
 
     if [ ! -f "$INSTALL_DIR/bin/mysqltest.wasm" ]; then
-        echo "ERROR: mysqltest.wasm not found. Run: bash examples/libs/mariadb/build-mariadb.sh" >&2
+        echo "ERROR: mysqltest.wasm not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
         missing=1
     fi
 
@@ -330,7 +330,7 @@ check_prereqs() {
     fi
 
     if [ ! -d "$MYSQL_TEST_DIR" ]; then
-        echo "ERROR: mysql-test directory not found. Run: bash examples/libs/mariadb/build-mariadb.sh" >&2
+        echo "ERROR: mysql-test directory not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
         missing=1
     fi
 

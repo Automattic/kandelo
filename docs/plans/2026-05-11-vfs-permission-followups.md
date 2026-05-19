@@ -116,7 +116,7 @@ pub egid: u32,
 
 ## Group C — Browser legacy-SAB demo cutover
 
-**Today.** PR 4/5's Task 4.5 left a bridge in `examples/browser/lib/kernel-worker-entry.ts`: when the legacy `fsSab` path is used (no `vfsImage` passed), the worker overlays `/etc/{passwd, group, hosts, services}` from rootfs.vfs at boot via the `overlayEtcFromRootfs` helper. This kept `erlang`, `git-test`, `doom`, `benchmark`, `test-runner`, `texlive` demos working through the synthetic-removal cutover.
+**Today.** PR 4/5's Task 4.5 left a bridge in `apps/browser-demos/lib/kernel-worker-entry.ts`: when the legacy `fsSab` path is used (no `vfsImage` passed), the worker overlays `/etc/{passwd, group, hosts, services}` from rootfs.vfs at boot via the `overlayEtcFromRootfs` helper. This kept `erlang`, `git-test`, `doom`, `benchmark`, `test-runner`, `texlive` demos working through the synthetic-removal cutover.
 
 **Why it matters.** The bridge is dead code as soon as those 6 demos migrate to `boot({vfsImage:"default"})`. Removing it shrinks the browser kernel-worker by ~60 lines and eliminates the maintenance burden of "two browser boot paths."
 
@@ -144,8 +144,8 @@ pub egid: u32,
 **Today.** PR 4/5 + 5/5 introduced 5 tests that opt out of the mount router via `io: new NodePlatformIO()`:
 - `host/test/dash.test.ts` (PATH lookup of `/bin/cat` etc. via host fs)
 - `host/test/git.test.ts` (cross-boot persistence via host `/tmp`)
-- `examples/libs/php/test/php-hello.test.ts`
-- `examples/libs/php/test/php-concurrent-sqlite.test.ts`
+- `packages/registry/php/test/php-hello.test.ts`
+- `packages/registry/php/test/php-concurrent-sqlite.test.ts`
 - `host/test/dlopen-e2e.test.ts` (writes `.so` under `os.tmpdir()` and passes the absolute path to the wasm program)
 
 Plus PR 5/5 Task 5.6 added an "ancestor-of-registered-path" inference to `MockHostIO`: when `host_stat` is called on a path that's an ancestor of a path registered with `set_file_with_owner`, it returns `S_IFDIR | 0o755` instead of ENOENT. This is a test-fixture convenience.
@@ -182,7 +182,7 @@ Plus PR 5/5 Task 5.6 added an "ancestor-of-registered-path" inference to `MockHo
 
 **Tasks.**
 - **E1.** Decide on a source for the CA bundle. Options:
-  - Bundle a copy in the repo (`rootfs/etc/ssl/certs/ca-certificates.crt`); update procedure is a periodic refresh (cron PR).
+  - Bundle a copy in the repo (`images/rootfs/etc/ssl/certs/ca-certificates.crt`); update procedure is a periodic refresh (cron PR).
   - Download from Mozilla's cacert.org or curl's bundle at build time. Adds a network dep to `scripts/build-rootfs.sh`; risk of build flakes.
   - **Recommended:** bundle a copy. Add a `scripts/refresh-ca-certs.sh` for manual periodic updates. Cron job is a follow-up.
 - **E2.** Add the path to `MANIFEST` with mode `0o644`, uid=0, gid=0.
@@ -190,7 +190,7 @@ Plus PR 5/5 Task 5.6 added an "ancestor-of-registered-path" inference to `MockHo
 - **E4.** Delete the `/etc/ssl/certs` scratch overlay in `kernel-worker-entry.ts`.
 - **E5.** Delete the CA-cert injection logic in the same file.
 - **E6.** Verify TLS still works in MariaDB/WordPress browser demos (they exercise the cert path).
-- **E7. (separate small task)** Fix `examples/browser/scripts/dinit-image-helpers.ts`'s inline `ETC_GROUP` — PR 3/5 audit flagged it's missing `nobody:x:65534:` vs the canonical rootfs version. Either fix in place OR delete the inline constants entirely (since the kernel now mounts rootfs.vfs at `/`, demos don't need to inject their own copies).
+- **E7. (separate small task)** Fix `images/vfs/scripts/dinit-image-helpers.ts`'s inline `ETC_GROUP` — PR 3/5 audit flagged it's missing `nobody:x:65534:` vs the canonical rootfs version. Either fix in place OR delete the inline constants entirely (since the kernel now mounts rootfs.vfs at `/`, demos don't need to inject their own copies).
 - **E8.** Decision on E7: delete the inline constants. Migrate any caller that depended on them to either include rootfs.vfs in their image build, or rely on the kernel's default mount.
 
 **Effort.** Small-medium. ~2–3 days. Most of the time is in vendoring/refreshing the cert bundle and confirming TLS demos still work.
@@ -203,11 +203,11 @@ Plus PR 5/5 Task 5.6 added an "ancestor-of-registered-path" inference to `MockHo
 
 **Demos** (Task 4.1 audit list):
 - `examples/run-hello.ts`
-- `examples/nginx-test/nginx-wrapper.ts`
-- `examples/mariadb-test/run-tests.ts`
-- `examples/wordpress/test/wordpress-server.test.ts`
-- `examples/libs/openssl/test/ssl-basic.test.ts`
-- `examples/cpython/debug-test.ts`
+- `packages/registry/nginx/test/nginx-wrapper.ts`
+- `packages/registry/mariadb/test/run-tests.ts`
+- `packages/registry/wordpress/test/wordpress-server.test.ts`
+- `packages/registry/openssl/test/ssl-basic.test.ts`
+- `packages/registry/cpython/test/debug-test.ts`
 
 **Tests** (the remainder; need re-audit before this group starts):
 - 10 more tests scattered across `host/test/` that the Task 4.1 audit found but didn't enumerate by name.

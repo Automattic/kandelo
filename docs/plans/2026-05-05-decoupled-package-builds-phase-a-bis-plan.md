@@ -4,7 +4,7 @@
 
 **Goal:** Land the schema additions decided in `docs/plans/2026-05-05-decoupled-package-builds-design.md` §3.1 — extended `[build]` block (`script_path` rename, `repo_url`, `commit`) + optional top-level `kernel_abi` — and backfill 55 first-party `package.toml` files. Update parser, resolver, and CI publish flow to consume.
 
-**Architecture:** Schema-shaped but mechanical. Parser changes localized to `xtask/src/pkg_manifest.rs`; resolver script-path resolution updated in `xtask/src/build_deps.rs`; backfill is a scripted edit across 55 files; CI patch updates the publish flow to fill `[build].commit`.
+**Architecture:** Schema-shaped but mechanical. Parser changes localized to `tools/xtask/src/pkg_manifest.rs`; resolver script-path resolution updated in `tools/xtask/src/build_deps.rs`; backfill is a scripted edit across 55 files; CI patch updates the publish flow to fill `[build].commit`.
 
 **Tech Stack:** Rust (xtask), TOML (manifests), Bash (build/release scripts), GitHub Actions YAML.
 
@@ -35,13 +35,13 @@ The worktree at `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-a-bi
 
 ```bash
 # Counts that the plan assumes — re-verify before starting.
-find examples/libs -name 'package.toml' | wc -l          # 61
+find packages/registry -name 'package.toml' | wc -l          # 61
 
 # Packages with [build] today: 10
-grep -l '^\[build\]' examples/libs/*/package.toml | wc -l
+grep -l '^\[build\]' packages/registry/*/package.toml | wc -l
 
 # Packages with build-*.sh script but NO [build] block: ~45
-for f in examples/libs/*/package.toml; do
+for f in packages/registry/*/package.toml; do
   d=$(dirname "$f")
   if ! grep -q '^\[build\]' "$f" && ls "$d"/build-*.sh >/dev/null 2>&1; then
     echo "$f"
@@ -64,7 +64,7 @@ Expected: clean build. Failures here mean the worktree state is off; pause and r
 ## Task 1: Parser update — rename `script` → `script_path`, add new fields
 
 **Files:**
-- Modify: `xtask/src/pkg_manifest.rs` (parser)
+- Modify: `tools/xtask/src/pkg_manifest.rs` (parser)
 - Modify: any inline test fixtures within that file (TOML strings used for parser tests)
 
 **Goal:** The parser accepts the new schema. The old `[build].script` field name is rejected with a "use script_path" error so stale data surfaces immediately. New fields (`script_path`, `repo_url`, `commit`, top-level `kernel_abi`) are all `Option`; nothing is required yet.
@@ -73,7 +73,7 @@ Expected: clean build. Failures here mean the worktree state is off; pause and r
 
 Locate the relevant code:
 ```bash
-grep -n 'pub struct Build\|pub struct Raw\|Build::default\|impl Default for Build' xtask/src/pkg_manifest.rs
+grep -n 'pub struct Build\|pub struct Raw\|Build::default\|impl Default for Build' tools/xtask/src/pkg_manifest.rs
 ```
 
 The current shape (post-rename PR #413):
@@ -125,10 +125,10 @@ The corresponding field on the public `DepsManifest` type also gets `kernel_abi:
 
 Search the file for inline TOML fixtures used by parser tests:
 ```bash
-grep -n '\[build\]' xtask/src/pkg_manifest.rs
+grep -n '\[build\]' tools/xtask/src/pkg_manifest.rs
 ```
 
-Any test fixture using `script = "..."` updates to `script_path = "examples/libs/<name>/build-<name>.sh"` (or whatever path the fixture is simulating). Add at least one new test that:
+Any test fixture using `script = "..."` updates to `script_path = "packages/registry/<name>/build-<name>.sh"` (or whatever path the fixture is simulating). Add at least one new test that:
 - Verifies a fixture with the new `[build]` shape parses correctly.
 - Verifies a fixture with the old `[build].script` field is rejected with a clear error message.
 - Verifies a fixture with `kernel_abi = 6` parses.
@@ -157,7 +157,7 @@ Expected: all parser tests pass.
 **Step 7: Commit.**
 
 ```bash
-git add xtask/src/pkg_manifest.rs
+git add tools/xtask/src/pkg_manifest.rs
 git commit -m "feat(xtask): extend [build] schema + add optional kernel_abi
 
 Adds the schema fields decided in docs/plans/2026-05-05-decoupled-
@@ -184,15 +184,15 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 2: Resolver update — script_path resolves against repo root
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (the resolver / `ensure_built` path)
-- Possibly: `xtask/src/install_release.rs`, `xtask/src/stage_release.rs` (any other consumer of the build script path)
+- Modify: `tools/xtask/src/build_deps.rs` (the resolver / `ensure_built` path)
+- Possibly: `tools/xtask/src/install_release.rs`, `tools/xtask/src/stage_release.rs` (any other consumer of the build script path)
 
 **Goal:** When the resolver invokes the build script (cache miss → source build), it computes the script's local path as `<repo_root>/<script_path>`. Today it joins `<package_dir>/<script>`.
 
 **Step 1: Find consumers of the build script path.**
 
 ```bash
-grep -n 'build\.script\|\.script_path\|build-.*\.sh' xtask/src/build_deps.rs
+grep -n 'build\.script\|\.script_path\|build-.*\.sh' tools/xtask/src/build_deps.rs
 ```
 
 The relevant call site is where the resolver invokes `bash <path>` for a source rebuild. Today that path is `<package_dir>/<script>`; it needs to become `<repo_root>/<script_path>`.
@@ -205,12 +205,12 @@ The resolver must know the repo root to resolve `script_path`. Look at how the r
 
 Replace the existing `<package_dir>/<script>` join with `<repo_root>/<script_path>`. Handle the fallback:
 
-- If `[build]` is absent (third-party packages might omit it), fall back to the existing convention `examples/libs/<name>/build-<name>.sh` — but compute the path against repo root, not package dir.
+- If `[build]` is absent (third-party packages might omit it), fall back to the existing convention `packages/registry/<name>/build-<name>.sh` — but compute the path against repo root, not package dir.
 
 **Step 4: Update tests that exercise the resolver's source-build path.**
 
 ```bash
-grep -n 'fn test.*build\|fn test.*resolve\|registry_find_returns_first_hit\|build_into_cache' xtask/src/build_deps.rs
+grep -n 'fn test.*build\|fn test.*resolve\|registry_find_returns_first_hit\|build_into_cache' tools/xtask/src/build_deps.rs
 ```
 
 Test fixtures that write `package.toml` files with the old `[build].script = ...` need updating to new `script_path` semantics. Where fixtures invoke the resolver and expect it to find a script, the fixture must produce a path that the resolver finds against the test's repo-root analog.
@@ -231,7 +231,7 @@ If a test fails for an unexpected reason (not directly traceable to the rename),
 **Step 6: Commit.**
 
 ```bash
-git add xtask/src/
+git add tools/xtask/src/
 git commit -m "feat(xtask): resolver consumes [build].script_path against repo root
 
 The resolver previously joined <package_dir>/<script> to find the
@@ -259,7 +259,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Step 1: List the 10 files.**
 
 ```bash
-grep -l '^\[build\]' examples/libs/*/package.toml
+grep -l '^\[build\]' packages/registry/*/package.toml
 ```
 
 Confirm the list matches the 10 expected. If different, the survey was off — re-check before continuing.
@@ -275,13 +275,13 @@ script = "build-nginx.sh"
 Becomes:
 ```toml
 [build]
-script_path = "examples/libs/nginx/build-nginx.sh"
+script_path = "packages/registry/nginx/build-nginx.sh"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 ```
 
 A scripted approach:
 ```bash
-for f in $(grep -l '^\[build\]' examples/libs/*/package.toml); do
+for f in $(grep -l '^\[build\]' packages/registry/*/package.toml); do
   pkg=$(basename "$(dirname "$f")")
   # Capture current script value
   script=$(awk '/^\[build\]/,/^$/' "$f" | grep '^script[[:space:]]*=' | sed 's/.*= *"//; s/".*//')
@@ -291,7 +291,7 @@ import sys, re
 path, pkg, script = sys.argv[1:4]
 text = open(path).read()
 new_block = f'''[build]
-script_path = "examples/libs/{pkg}/{script}"
+script_path = "packages/registry/{pkg}/{script}"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 '''
 text = re.sub(r'^\[build\]\nscript = "[^"]+"\n', new_block, text, flags=re.MULTILINE)
@@ -306,7 +306,7 @@ Or perform 10 manual edits if the scripted approach is too brittle for your tast
 
 ```bash
 # Every package that had [build] should now have script_path + repo_url.
-for f in $(grep -l '^\[build\]' examples/libs/*/package.toml); do
+for f in $(grep -l '^\[build\]' packages/registry/*/package.toml); do
   echo "=== $f ==="
   awk '/^\[build\]/,/^$/' "$f"
 done | head -60
@@ -317,7 +317,7 @@ Spot-check 2-3 manually.
 **Step 4: Verify each modified `package.toml` parses.**
 
 ```bash
-cargo run --release -p xtask --target aarch64-apple-darwin -- build-deps parse examples/libs/nginx 2>&1 | tail -3
+cargo run --release -p xtask --target aarch64-apple-darwin -- build-deps parse packages/registry/nginx 2>&1 | tail -3
 ```
 
 (Use whatever the relevant `xtask build-deps` subcommand is for parse-validation. Check `cargo xtask --help`.)
@@ -327,7 +327,7 @@ If parsing fails, the most likely cause is a script field that didn't have the c
 **Step 5: Commit.**
 
 ```bash
-git add examples/libs/
+git add packages/registry/
 git commit -m "refactor(packages): migrate 10 existing [build] blocks to new schema
 
 For each of the 10 packages that already declared [build].script
@@ -347,12 +347,12 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 **Files:** 45 `package.toml` files for first-party packages that have a `build-<name>.sh` script but no `[build]` block.
 
-**Goal:** Each gets a `[build]` block with `script_path = "examples/libs/<name>/build-<name>.sh"` and `repo_url`. The resolver previously found these scripts via the convention; this commit makes the path explicit so the schema is consistent.
+**Goal:** Each gets a `[build]` block with `script_path = "packages/registry/<name>/build-<name>.sh"` and `repo_url`. The resolver previously found these scripts via the convention; this commit makes the path explicit so the schema is consistent.
 
 **Step 1: Compute the target list.**
 
 ```bash
-for f in examples/libs/*/package.toml; do
+for f in packages/registry/*/package.toml; do
   d=$(dirname "$f")
   pkg=$(basename "$d")
   if ! grep -q '^\[build\]' "$f" && ls "$d"/build-*.sh >/dev/null 2>&1; then
@@ -388,7 +388,7 @@ path, pkg, script = sys.argv[1:4]
 text = open(path).read()
 new_block = f'''
 [build]
-script_path = "examples/libs/{pkg}/{script}"
+script_path = "packages/registry/{pkg}/{script}"
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 '''
 # Insert after the [license] block. The [license] block ends at a blank
@@ -420,19 +420,19 @@ done < /tmp/phase-a-bis-targets.txt
 
 ```bash
 # Should now have 55 (10 from Task 3 + 45 from Task 4) packages with [build].
-grep -l '^\[build\]' examples/libs/*/package.toml | wc -l    # expected 55
+grep -l '^\[build\]' packages/registry/*/package.toml | wc -l    # expected 55
 
 # Spot-check 3 random packages.
 for pkg in mariadb cpython libcurl; do
   echo "=== $pkg ==="
-  awk '/^\[build\]/,/^$/' "examples/libs/$pkg/package.toml"
+  awk '/^\[build\]/,/^$/' "packages/registry/$pkg/package.toml"
 done
 ```
 
 **Step 5: Parse-validate each modified file.**
 
 ```bash
-for f in examples/libs/*/package.toml; do
+for f in packages/registry/*/package.toml; do
   cargo run --release -p xtask --target aarch64-apple-darwin --quiet -- build-deps parse "$(dirname "$f")" 2>&1 | grep -i error && echo "FAILED: $f"
 done
 ```
@@ -442,7 +442,7 @@ Any failures: fix manually (most likely a layout that broke the python script). 
 **Step 6: Commit.**
 
 ```bash
-git add examples/libs/
+git add packages/registry/
 git commit -m "feat(packages): backfill [build] block on 45 first-party packages
 
 Adds [build] to every first-party package that has a build-<name>.sh
@@ -450,7 +450,7 @@ script but lacked an explicit block. The path that the resolver
 previously found via convention is now declared directly:
 
   [build]
-  script_path = \"examples/libs/<name>/build-<name>.sh\"
+  script_path = \"packages/registry/<name>/build-<name>.sh\"
   repo_url    = \"https://github.com/wasm-posix-kernel/wasm-posix-kernel.git\"
 
 The 6 first-party packages without [build] are intentionally left as-is:
@@ -469,7 +469,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 5: CI publish flow — fill `[build].commit` at publish time
 
 **Files:**
-- Modify: `xtask/src/stage_release.rs` (or wherever `[binary].archive_url` + `archive_sha256` are filled in)
+- Modify: `tools/xtask/src/stage_release.rs` (or wherever `[binary].archive_url` + `archive_sha256` are filled in)
 - Possibly: `.github/workflows/force-rebuild.yml`, `.github/workflows/prepare-merge.yml` (where the bot PR is opened to bump pinned URLs)
 
 **Goal:** When the publish flow updates a `package.toml` with new `[binary].archive_url` and `archive_sha256`, it also updates `[build].commit` with the building commit's SHA. Same lifecycle as the binary fields.
@@ -477,7 +477,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Step 1: Find the existing `archive_url` / `archive_sha256` writeback site.**
 
 ```bash
-grep -rn 'archive_url\|archive_sha256\|\[binary\.wasm32\]\|\[binary\.wasm64\]' xtask/src/stage_release.rs xtask/src/build_manifest.rs xtask/src/install_release.rs | head -20
+grep -rn 'archive_url\|archive_sha256\|\[binary\.wasm32\]\|\[binary\.wasm64\]' tools/xtask/src/stage_release.rs tools/xtask/src/build_manifest.rs tools/xtask/src/install_release.rs | head -20
 ```
 
 The relevant code is the function that rewrites a `package.toml` after staging archives. (Not just builds the published `manifest.json` — the in-tree `package.toml` itself gets URLs+shas back-edited via the bot PR flow.)
@@ -511,7 +511,7 @@ Expected: clean build, all tests pass.
 **Step 6: Commit.**
 
 ```bash
-git add xtask/src/ .github/workflows/
+git add tools/xtask/src/ .github/workflows/
 git commit -m "feat(xtask,ci): fill [build].commit at publish time
 
 When the publish flow back-edits a package.toml with new
@@ -571,8 +571,8 @@ gh pr create \
 
 Phase A-bis of the decoupled-package-builds initiative. Schema-shaped follow-up to PR #413's rename.
 
-- Parser (`xtask/src/pkg_manifest.rs`): rename `[build].script` → `[build].script_path` (semantics: repo-relative path, not package-dir-relative). Add `[build].repo_url` and `[build].commit`. Add optional top-level `kernel_abi`. Old field name rejected with a clear error.
-- Resolver (`xtask/src/build_deps.rs`): consume `script_path` against repo root.
+- Parser (`tools/xtask/src/pkg_manifest.rs`): rename `[build].script` → `[build].script_path` (semantics: repo-relative path, not package-dir-relative). Add `[build].repo_url` and `[build].commit`. Add optional top-level `kernel_abi`. Old field name rejected with a clear error.
+- Resolver (`tools/xtask/src/build_deps.rs`): consume `script_path` against repo root.
 - Backfill: 10 existing `[build]` blocks migrated to new field name + repo_url; 45 packages get a fresh `[build]` block; 6 packages intentionally left as-is (5 program-kind without build script + 1 source-kind).
 - CI publish flow: `[build].commit` filled at publish time alongside `[binary].archive_url` + `archive_sha256`.
 

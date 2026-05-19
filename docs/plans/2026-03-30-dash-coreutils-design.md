@@ -56,7 +56,7 @@ Shell (fork child)                   Kernel Worker                Host (onExec)
 - Minimal dependencies (libc only)
 - Key POSIX features: fork, exec, pipe, dup2, signal, wait, setpgid
 - Build: `wasm32posix-configure && make`
-- Output: `examples/libs/dash/dash.wasm`
+- Output: `packages/registry/dash/dash.wasm`
 
 ### GNU coreutils 9.5
 
@@ -66,7 +66,7 @@ Shell (fork child)                   Kernel Worker                Host (onExec)
   cat, ls, echo, mkdir, rm, cp, mv, head, tail, wc, sort, uniq,
   grep, sed, tr, test, printf, env, basename, dirname, true, false,
   chmod, touch, date
-- Each utility → separate .wasm binary in `examples/libs/coreutils/bin/`
+- Each utility → separate .wasm binary in `packages/registry/coreutils/bin/`
 
 ### grep and sed
 
@@ -93,7 +93,7 @@ via a path→bytes map.
 
 ## Interactive shell (serve.ts)
 
-`examples/shell/serve.ts`:
+`packages/registry/shell/demo/serve.ts`:
 - Boots kernel with dash as pid 1
 - Bridges host stdin/stdout for interactive terminal
 - Pre-loads all utility .wasm binaries

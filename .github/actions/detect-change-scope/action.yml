@@ -21,7 +21,7 @@ description: |
   vitest gates on `!docs_only` rather than on `kernel` — its 51 test
   files exercise built packages (dash, bash, nginx, erlang, php,
   quickjs, ...) on top of the kernel, so a PR that only touches
-  examples/libs/php/ must re-validate the PHP test against the new
+  packages/registry/php/ must re-validate the PHP test against the new
   binary.
 
   Filters fail safe: an unknown path outside the docs allowlist
@@ -85,7 +85,7 @@ runs:
         # logic re-run the full suite for self-validation, mirroring
         # the way the workflow files themselves are kernel-gated.
         if echo "$files" | grep -E \
-          -e '^(crates|glue|musl-overlay|musl|libc-test|libc-test-overlay|os-test|host|programs|abi)/' \
+          -e '^(crates|libc|tests/libc|tests/posix|tests/sortix|host|programs|abi)/' \
           -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
           -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
           -e '^examples/run-example\.ts$' \

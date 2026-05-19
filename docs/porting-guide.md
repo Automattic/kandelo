@@ -45,11 +45,11 @@ wasm-opt --asyncify \
   -O2 program.wasm -o program.wasm
 ```
 
-For large programs, use `--asyncify-onlylist` to limit instrumentation to functions reachable from `fork()`. See `examples/libs/php/build-php.sh` for an example.
+For large programs, use `--asyncify-onlylist` to limit instrumentation to functions reachable from `fork()`. See `packages/registry/php/build-php.sh` for an example.
 
 **Thread support**: Programs that create threads (MariaDB, Redis) work via the kernel's `clone()` syscall. No special compilation flags needed, but the host runner must implement the `onClone` callback.
 
-**C++ and libc++**: For C++ programs, include libc++ headers from your LLVM installation. Set `_LIBCPP_HAS_MUSL_LIBC=1` and `_LIBCPP_HAS_THREAD_API_PTHREAD=1` in a `__config_site` header. See `examples/libs/mariadb/build-mariadb.sh` for a complete example.
+**C++ and libc++**: For C++ programs, include libc++ headers from your LLVM installation. Set `_LIBCPP_HAS_MUSL_LIBC=1` and `_LIBCPP_HAS_THREAD_API_PTHREAD=1` in a `__config_site` header. See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
 
 ### Step 3: Test it
 
@@ -80,21 +80,21 @@ At runtime the URL stored in the group is bare — a plain filename like `vim.zi
 
 A porter producing a lazy-archive-backed program creates three things:
 
-1. **`examples/libs/<program>/build-<program>.sh`** — cross-compiles the wasm binary into `examples/libs/<program>/bin/<program>.wasm`.
-2. **`examples/libs/<program>/bundle-runtime.sh`** (only if the source tree already has runtime files that need trimming) — copies the minimal runtime tree into `examples/libs/<program>/runtime/`.
-3. **`examples/browser/scripts/build-<program>-zip.sh`** — stages `bin/<program>` and `share/<program>/…` into `examples/browser/public/<program>.zip`. Paths inside the archive are relative (e.g. `bin/vim`, `share/vim/vim91/syntax/c.vim`), and the mount prefix chosen at registration time (usually `/usr/`) turns them into absolute VFS paths.
+1. **`packages/registry/<program>/build-<program>.sh`** — cross-compiles the wasm binary into `packages/registry/<program>/bin/<program>.wasm`.
+2. **`packages/registry/<program>/bundle-runtime.sh`** (only if the source tree already has runtime files that need trimming) — copies the minimal runtime tree into `packages/registry/<program>/runtime/`.
+3. **`images/vfs/scripts/build-<program>-zip.sh`** — stages `bin/<program>` and `share/<program>/…` into `apps/browser-demos/public/<program>.zip`. Paths inside the archive are relative (e.g. `bin/vim`, `share/vim/vim91/syntax/c.vim`), and the mount prefix chosen at registration time (usually `/usr/`) turns them into absolute VFS paths.
 
 Programs whose runtime files are small enough to version in-tree (NetHack's `nhdat` after DLB packing, for instance) can skip step 2 and have the zip script pull directly from the build's `out/` directory.
 
 ### Registration
 
-`examples/browser/scripts/build-shell-vfs-image.ts` is the reference example:
+`images/vfs/scripts/build-shell-vfs-image.ts` is the reference example:
 
 ```typescript
 import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 
 function populateVimArchive(fs: MemoryFileSystem): number {
-  const zipBytes = readFileSync("examples/browser/public/vim.zip");
+  const zipBytes = readFileSync("apps/browser-demos/public/vim.zip");
   const entries = parseZipCentralDirectory(new Uint8Array(zipBytes));
   const group = fs.registerLazyArchiveFromEntries("vim.zip", entries, "/usr/");
   return group.entries.size;
@@ -111,11 +111,11 @@ Create them in the VFS image builder (see `populateExtendedSymlinks` in `build-s
 
 Vim:
 
-- `examples/libs/vim/build-vim.sh` — cross build.
-- `examples/libs/vim/bundle-runtime.sh` — minimal runtime tree.
-- `examples/browser/scripts/build-vim-zip.sh` — stage + zip.
-- `examples/browser/scripts/build-shell-vfs-image.ts` — `populateVimArchive()`.
-- `examples/browser/pages/shell/main.ts` — `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)`.
+- `packages/registry/vim/build-vim.sh` — cross build.
+- `packages/registry/vim/bundle-runtime.sh` — minimal runtime tree.
+- `images/vfs/scripts/build-vim-zip.sh` — stage + zip.
+- `images/vfs/scripts/build-shell-vfs-image.ts` — `populateVimArchive()`.
+- `apps/browser-demos/pages/shell/main.ts` — `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)`.
 
 Follow the same layout for new ports; reviewers will expect it.
 
@@ -210,11 +210,11 @@ kernelWorker.deactivateProcess(pid)
 
 ## Creating Browser Demos
 
-Browser demos use `BrowserKernel` which handles the kernel worker, process lifecycle, and filesystem in a browser-friendly API.
+Browser demos use `BrowserKernel` from `host/src/browser-kernel-host.ts`, which handles the browser kernel worker, process lifecycle, and filesystem in a browser-friendly API. Demo pages live under `apps/browser-demos/`, but the host runtime itself is maintained under `host/src/` beside the Node.js host.
 
 ### Project setup
 
-Browser demos live in `examples/browser/pages/<name>/`. Each page has:
+Browser demos live in `apps/browser-demos/pages/<name>/`. Each page has:
 
 ```
 pages/<name>/
@@ -222,7 +222,7 @@ pages/<name>/
   main.ts       # Page logic (TypeScript, bundled by Vite)
 ```
 
-Register the page in `examples/browser/vite.config.ts`:
+Register the page in `apps/browser-demos/vite.config.ts`:
 
 ```typescript
 build: {
@@ -266,7 +266,7 @@ Add a nav link in each `index.html` (or use the existing nav bar pattern).
 
 **main.ts**:
 ```typescript
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 import myProgramUrl from "../../../../path/to/program.wasm?url";
 
 const output = document.getElementById("output") as HTMLPreElement;
@@ -361,7 +361,7 @@ The kernel reads files from the shared `MemoryFileSystem`. For demos with many f
 
 ```typescript
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { BrowserKernel } from "../../lib/browser-kernel";
+import { BrowserKernel } from "@host/browser-kernel-host";
 
 // Fetch kernel wasm and VFS image in parallel
 const [kernelBuf, vfsImageBuf] = await Promise.all([
@@ -480,27 +480,27 @@ const exitCode = await kernel.spawn(programBytes, ["sh"], { pty: true });
 
 ### Pattern: Simple program runner
 
-Fetch wasm, spawn, display output. See `examples/browser/main.ts`.
+Fetch wasm, spawn, display output. See `apps/browser-demos/main.ts`.
 
 ### Pattern: Server with HTTP bridge
 
-nginx, PHP-FPM, WordPress. Service worker intercepts requests, connection pump bridges to kernel. See `examples/browser/pages/nginx/main.ts`.
+nginx, PHP-FPM, WordPress. Service worker intercepts requests, connection pump bridges to kernel. See `apps/browser-demos/pages/nginx/main.ts`.
 
 ### Pattern: Database with wire protocol client
 
-MariaDB, Redis. Kernel spawns server process, main-thread client connects via pipe operations. See `examples/browser/pages/redis/main.ts`, `lib/redis-client.ts`, `lib/mysql-client.ts`.
+MariaDB, Redis. Kernel spawns server process, main-thread client connects via pipe operations. See `apps/browser-demos/pages/redis/main.ts`, `lib/redis-client.ts`, `lib/mysql-client.ts`.
 
 ### Pattern: Interactive shell/REPL
 
-PTY allocation, xterm.js terminal, incremental stdin. See `examples/browser/pages/shell/main.ts`, `examples/browser/pages/python/main.ts`.
+PTY allocation, xterm.js terminal, incremental stdin. See `apps/browser-demos/pages/shell/main.ts`, `apps/browser-demos/pages/python/main.ts`.
 
 ### Pattern: Full stack (LAMP)
 
-Multiple processes (MariaDB + nginx + PHP-FPM + WordPress), database bootstrap, filesystem pre-population, HTTP bridge. See `examples/browser/pages/lamp/main.ts`.
+Multiple processes (MariaDB + nginx + PHP-FPM + WordPress), database bootstrap, filesystem pre-population, HTTP bridge. See `apps/browser-demos/pages/lamp/main.ts`.
 
 ## Adding a new package to the registry
 
-A "package" is anything under `examples/libs/<name>/` with a
+A "package" is anything under `packages/registry/<name>/` with a
 `package.toml`. The same shape covers static libraries (zlib,
 ncurses, openssl, ...), ported programs (vim, php, redis, ...),
 composite VFS images (mariadb-vfs, wordpress, shell), and source-only
@@ -513,7 +513,7 @@ the cached-build + URL-addressable archive flow described in
 ### 1. Scaffold the directory
 
 ```
-examples/libs/<name>/
+packages/registry/<name>/
     package.toml        # required — recipe (project-agnostic)
     build.toml          # required (unless source-only) — project view + binary source
     build-<name>.sh     # required — produces the outputs
@@ -523,8 +523,8 @@ examples/libs/<name>/
 ### 2. Write `package.toml`
 
 The **recipe** — project-agnostic identity, source pin, deps,
-outputs. See `examples/libs/zlib/package.toml` (single library) and
-`examples/libs/dinit/package.toml` (multi-output program with a
+outputs. See `packages/registry/zlib/package.toml` (single library) and
+`packages/registry/dinit/package.toml` (multi-output program with a
 library dep) for canonical references; the schema reference is in
 [docs/package-management.md §Schema](package-management.md#schema-packagetoml).
 
@@ -544,7 +544,7 @@ spdx = "GPL-2.0-or-later"
 url = "https://example.test/LICENSE"
 
 [build]
-script_path = "examples/libs/myprog/build-myprog.sh"
+script_path = "packages/registry/myprog/build-myprog.sh"
 
 # One [[outputs]] per produced file. Programs typically have 1 wasm;
 # multi-output packages (dinit, mariadb, php) declare each separately.
@@ -575,7 +575,7 @@ project's script path + repo + commit + revision + where the binary
 is published. Source-only packages don't need one.
 
 ```toml
-script_path = "examples/libs/myprog/build-myprog.sh"
+script_path = "packages/registry/myprog/build-myprog.sh"
 repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
 commit      = "<commit at which the recipe was last touched>"
 revision    = 1
@@ -685,30 +685,30 @@ hardcoding it.
   legitimately change (compiler flag tweaks, fork-instrument output,
   asyncify pass, etc.).
 - **Source-tree reads instead of declared deps.** If your build
-  script reads `examples/libs/<other>/<x>-src/...`, declare `<other>`
+  script reads `packages/registry/<other>/<x>-src/...`, declare `<other>`
   in `depends_on`. The resolver builds deps before you and exports
   their paths via `WASM_POSIX_DEP_<NAME>_DIR` / `_SRC_DIR`. Hidden
   source-tree reads break on clean force-rebuild runs.
 
 ## Existing Build Scripts
 
-All build scripts are in `examples/libs/`. They serve as reference implementations:
+All build scripts are in `packages/registry/`. They serve as reference implementations:
 
 | Software | Script | Build system | Notes |
 |----------|--------|-------------|-------|
-| dash | `libs/dash/build-dash.sh` | autoconf | Minimal POSIX shell |
-| coreutils | `libs/coreutils/build-coreutils.sh` | autoconf | 50+ utilities as multicall binary |
-| grep | `libs/grep/build-grep.sh` | autoconf | PCRE not included |
-| sed | `libs/sed/build-sed.sh` | autoconf | Straightforward |
-| PHP | `libs/php/build-php.sh` | autoconf | CLI + FPM, depends on zlib/libxml2/sqlite/openssl |
-| MariaDB | `libs/mariadb/build-mariadb.sh` | CMake | Host build + cross build, Aria storage engine only |
-| Redis | `libs/redis/build-redis.sh` | Makefile | Custom make invocation |
-| CPython | `libs/cpython/build-cpython.sh` | autoconf | Host build for `_freeze_module`, then cross build |
-| nginx | `examples/nginx/` | custom configure | Shell-based configure script |
-| SQLite | `libs/sqlite/build-sqlite.sh` | custom | Single-file amalgamation |
-| zlib | `libs/zlib/build-zlib.sh` | custom configure | Dependency for PHP |
-| libxml2 | `libs/libxml2/build-libxml2.sh` | CMake | Dependency for PHP |
-| OpenSSL | `libs/openssl/build-openssl.sh` | custom Configure | Dependency for PHP |
+| dash | `packages/registry/dash/build-dash.sh` | autoconf | Minimal POSIX shell |
+| coreutils | `packages/registry/coreutils/build-coreutils.sh` | autoconf | 50+ utilities as multicall binary |
+| grep | `packages/registry/grep/build-grep.sh` | autoconf | PCRE not included |
+| sed | `packages/registry/sed/build-sed.sh` | autoconf | Straightforward |
+| PHP | `packages/registry/php/build-php.sh` | autoconf | CLI + FPM, depends on zlib/libxml2/sqlite/openssl |
+| MariaDB | `packages/registry/mariadb/build-mariadb.sh` | CMake | Host build + cross build, Aria storage engine only |
+| Redis | `packages/registry/redis/build-redis.sh` | Makefile | Custom make invocation |
+| CPython | `packages/registry/cpython/build-cpython.sh` | autoconf | Host build for `_freeze_module`, then cross build |
+| nginx | `packages/registry/nginx/build-nginx-local.sh` | custom configure | Shell-based configure script |
+| SQLite | `packages/registry/sqlite/build-sqlite.sh` | custom | Single-file amalgamation |
+| zlib | `packages/registry/zlib/build-zlib.sh` | custom configure | Dependency for PHP |
+| libxml2 | `packages/registry/libxml2/build-libxml2.sh` | CMake | Dependency for PHP |
+| OpenSSL | `packages/registry/openssl/build-openssl.sh` | custom Configure | Dependency for PHP |
 
 ## Troubleshooting
 

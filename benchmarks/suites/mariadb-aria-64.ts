@@ -2,7 +2,7 @@
  * Suite: MariaDB (Aria engine) — wasm64 build.
  *
  * Same workload as mariadb-aria but targets the memory64 MariaDB binary
- * in examples/libs/mariadb/mariadb-install-64/.
+ * in packages/registry/mariadb/mariadb-install-64/.
  */
 import type { BenchmarkSuite } from "../types.js";
 import { runMariaDBBenchmark } from "./mariadb.js";

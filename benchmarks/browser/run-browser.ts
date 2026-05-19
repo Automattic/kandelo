@@ -14,7 +14,7 @@ import { fileURLToPath } from "url";
 import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const browserDir = resolve(__dirname, "../../examples/browser");
+const browserDir = resolve(__dirname, "../../apps/browser-demos");
 
 /** Suites available in the browser benchmark page. */
 const BROWSER_SUITES = [

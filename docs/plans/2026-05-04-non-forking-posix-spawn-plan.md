@@ -76,7 +76,7 @@ pub mod host_intercepted {
     pub const SYS_SPAWN: u32 = 214;
 
     /// Documented for completeness — also defined in
-    /// `glue/channel_syscall.c` and `host/src/kernel-worker.ts`.
+    /// `libc/glue/channel_syscall.c` and `host/src/kernel-worker.ts`.
     pub const SYS_EXECVE: u32 = 211;
     pub const SYS_FORK: u32 = 212;
     pub const SYS_VFORK: u32 = 213;
@@ -120,9 +120,9 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 2: Add SYS_SPAWN define to glue
 
 **Files:**
-- Modify: `glue/channel_syscall.c` (near the existing `#define SYS_FORK 212` at line 134)
+- Modify: `libc/glue/channel_syscall.c` (near the existing `#define SYS_FORK 212` at line 134)
 
-**Step 1: Edit `glue/channel_syscall.c`**
+**Step 1: Edit `libc/glue/channel_syscall.c`**
 
 Find the block:
 ```c
@@ -146,7 +146,7 @@ Expected: build completes; sysroot regenerated; no errors.
 **Step 3: Commit**
 
 ```bash
-git add glue/channel_syscall.c
+git add libc/glue/channel_syscall.c
 git commit -m "glue: define SYS_SPAWN=214 for non-forking posix_spawn
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
@@ -1163,7 +1163,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 13: Wire `onSpawn` in Browser host
 
 **Files:**
-- Modify: `examples/browser/lib/browser-kernel.ts`
+- Modify: `apps/browser-demos/lib/browser-kernel.ts`
 - Possibly: `host/src/browser.ts`, `host/src/worker-adapter-browser.ts`, `host/src/worker-entry-browser.ts`
 
 **Why this is its own task:** Per CLAUDE.md "Two hosts" section, browser and Node have parallel implementations. A Node-only fix leaves the browser broken — the brk-base PR #388 hit this exact regression.
@@ -1171,7 +1171,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Step 1: Find the browser-side parallel**
 
 ```bash
-grep -n "onExec\|onClone\|onFork" examples/browser/lib/browser-kernel.ts host/src/browser.ts host/src/worker-*-browser.ts host/src/worker-entry-browser.ts 2>/dev/null
+grep -n "onExec\|onClone\|onFork" apps/browser-demos/lib/browser-kernel.ts host/src/browser.ts host/src/worker-*-browser.ts host/src/worker-entry-browser.ts 2>/dev/null
 ```
 Identify where exec / clone / fork callbacks are wired and how the browser launches process workers.
 
@@ -1195,7 +1195,7 @@ Expected: clean.
 **Step 4: Commit**
 
 ```bash
-git add examples/browser/lib/browser-kernel.ts host/src/browser.ts host/src/worker-*-browser.ts host/src/worker-entry-browser.ts
+git add apps/browser-demos/lib/browser-kernel.ts host/src/browser.ts host/src/worker-*-browser.ts host/src/worker-entry-browser.ts
 git commit -m "host(browser): wire onSpawn parallel to Node host
 
 Per CLAUDE.md two-hosts policy: spawn/fork/exec/clone all need parallel
@@ -1243,7 +1243,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 15: Rewrite `posix_spawn.c` to call SYS_SPAWN
 
 **Files:**
-- Modify: `musl-overlay/src/process/wasm32posix/posix_spawn.c` (full rewrite)
+- Modify: `libc/musl-overlay/src/process/wasm32posix/posix_spawn.c` (full rewrite)
 
 **Step 1: Replace the file**
 
@@ -1269,7 +1269,7 @@ Expected: clean build.
 **Step 3: Commit**
 
 ```bash
-git add musl-overlay/src/process/wasm32posix/posix_spawn.c
+git add libc/musl-overlay/src/process/wasm32posix/posix_spawn.c
 git commit -m "musl-overlay: rewrite posix_spawn to call SYS_SPAWN directly
 
 No fork / no exec. Marshals argv + envp + file actions + attrs into a
@@ -1283,7 +1283,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 16: Add `posix_spawnp.c` (PATH search in libc)
 
 **Files:**
-- Create: `musl-overlay/src/process/wasm32posix/posix_spawnp.c`
+- Create: `libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`
 
 **Step 1: Create the file**
 
@@ -1361,7 +1361,7 @@ The sysroot rebuild should compile the new file.
 **Step 3: Commit**
 
 ```bash
-git add musl-overlay/src/process/wasm32posix/posix_spawnp.c
+git add libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c
 git commit -m "musl-overlay: posix_spawnp does PATH search in libc
 
 Walks PATH and calls posix_spawn with the resolved absolute path. Keeps
@@ -1530,14 +1530,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ## Task 20: Browser-host test parity
 
 **Files:**
-- Modify: `host/test/browser-worker-adapter.test.ts` or `examples/browser/test/`
+- Modify: `host/test/browser-worker-adapter.test.ts` or `apps/browser-demos/test/`
 
 **Why:** CLAUDE.md two-hosts policy. A Node-only test does not protect the browser path.
 
 **Step 1: Find the closest existing browser test**
 
 ```bash
-ls host/test/browser-* examples/browser/test/ 2>/dev/null
+ls host/test/browser-* apps/browser-demos/test/ 2>/dev/null
 ```
 
 **Step 2: Add a single browser test for spawn-smoke**
@@ -1555,7 +1555,7 @@ Expected: PASS.
 
 ```bash
 cd ..
-git add host/test/browser-worker-adapter.test.ts examples/browser/test/
+git add host/test/browser-worker-adapter.test.ts apps/browser-demos/test/
 git commit -m "test(browser): spawn parity test on the browser host
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"

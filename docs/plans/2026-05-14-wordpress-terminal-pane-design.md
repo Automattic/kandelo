@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-14
 **Status:** Design accepted, ready to implement
-**Scope:** `examples/browser/pages/wordpress/`, `examples/browser/pages/lamp/`,
+**Scope:** `apps/browser-demos/pages/wordpress/`, `apps/browser-demos/pages/lamp/`,
 shared VFS build helpers, BrowserKernel + PtyTerminal API extension
 
 ## Goal
@@ -33,7 +33,7 @@ WordPress-specific layers (nginx/php-fpm/MariaDB/WP core).
 
 ### 1. Shared shell-environment VFS builder
 
-New file `examples/browser/scripts/shell-vfs-build.ts` exports
+New file `images/vfs/scripts/shell-vfs-build.ts` exports
 `populateShellEnvironment(fs, opts)`. It encapsulates everything the
 Shell VFS does today:
 
@@ -187,20 +187,20 @@ Per page (`pages/wordpress/main.ts`, `pages/lamp/main.ts`):
 
 ## File-level change list
 
-- **New:** `examples/browser/scripts/shell-vfs-build.ts`
-- **Refactor:** `examples/browser/scripts/build-shell-vfs-image.ts` — delete
+- **New:** `images/vfs/scripts/shell-vfs-build.ts`
+- **Refactor:** `images/vfs/scripts/build-shell-vfs-image.ts` — delete
   the now-shared populate\* functions, call `populateShellEnvironment(fs, {eagerBinaries: false})`.
-- **Refactor:** `examples/browser/scripts/build-wp-vfs-image.ts` — replace
+- **Refactor:** `images/vfs/scripts/build-wp-vfs-image.ts` — replace
   `populateSystem/populateDash/populateShellSymlinks` with
   `populateShellEnvironment(fs, {eagerBinaries: true})`; keep the
   nginx/php-fpm/WP/SQLite/dinit-service-tree layers.
-- **Refactor:** `examples/browser/scripts/build-lamp-vfs-image.ts` — same
+- **Refactor:** `images/vfs/scripts/build-lamp-vfs-image.ts` — same
   treatment as wp; preserve the MariaDB layer.
-- **Edit:** `examples/browser/lib/browser-kernel.ts` — add `spawnFromVfs`.
-- **Edit:** `examples/browser/lib/pty-terminal.ts` — add `spawnFromVfs`.
-- **Edit:** `examples/browser/pages/wordpress/main.ts` — VFS patch step,
+- **Edit:** `apps/browser-demos/lib/browser-kernel.ts` — add `spawnFromVfs`.
+- **Edit:** `apps/browser-demos/lib/pty-terminal.ts` — add `spawnFromVfs`.
+- **Edit:** `apps/browser-demos/pages/wordpress/main.ts` — VFS patch step,
   TerminalPanel + PtyTerminal wiring.
-- **Edit:** `examples/browser/pages/lamp/main.ts` — TerminalPanel +
+- **Edit:** `apps/browser-demos/pages/lamp/main.ts` — TerminalPanel +
   PtyTerminal wiring (VFS patching already in place; just add
   `rewriteLazyArchiveUrls`).
 
@@ -235,11 +235,11 @@ they're lazy archives, fetched on first exec.
 Per CLAUDE.md "browser demo verification":
 
 1. `bash build.sh` (rebuild kernel + host TS).
-2. `bash examples/browser/scripts/build-shell-vfs-image.sh` — verify the
+2. `bash images/vfs/scripts/build-shell-vfs-image.sh` — verify the
    refactor didn't regress the Shell demo image (image bytes should be
    ~identical; any drift means a structural bug in the helper).
-3. `bash examples/browser/scripts/build-wp-vfs-image.sh` and
-   `bash examples/browser/scripts/build-lamp-vfs-image.sh`.
+3. `bash images/vfs/scripts/build-wp-vfs-image.sh` and
+   `bash images/vfs/scripts/build-lamp-vfs-image.sh`.
 4. `./run.sh browser`, navigate to each demo:
    - WordPress (SQLite): start, wait for iframe to load, click the
      terminal bar, verify bash prompt + `ls /var/www/html` shows WP

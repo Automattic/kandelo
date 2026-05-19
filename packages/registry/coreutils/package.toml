@@ -1,0 +1,20 @@
+kind = "program"
+name = "coreutils"
+version = "9.6"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/coreutils/coreutils-9.6.tar.xz"
+sha256 = "7a0124327b398fd9eb1a6abde583389821422c744ffa10734b24f557610d3283"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/coreutils.git/tree/COPYING?h=v9.6"
+
+[build]
+script_path = "packages/registry/coreutils/build-coreutils.sh"
+
+[[outputs]]
+name = "coreutils"
+wasm = "coreutils.wasm"

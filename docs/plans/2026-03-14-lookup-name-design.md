@@ -13,7 +13,7 @@ musl's `__lookup_name()` calls `name_from_dns_search()` → `__res_msend_rc()`, 
 
 ## Approach
 
-Create `musl-overlay/src/network/lookup_name.c` to replace the original. The build script already copies overlay source files into the musl tree. No other files need to change.
+Create `libc/musl-overlay/src/network/lookup_name.c` to replace the original. The build script already copies overlay source files into the musl tree. No other files need to change.
 
 ## Resolution Pipeline
 
@@ -61,7 +61,7 @@ buf[0].sortkey = 0;
 
 ## Files Changed
 
-- Create: `musl-overlay/src/network/lookup_name.c`
+- Create: `libc/musl-overlay/src/network/lookup_name.c`
 
 ## Testing
 

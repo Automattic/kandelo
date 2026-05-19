@@ -1,7 +1,7 @@
 /**
  * Message protocol for Node.js main thread ↔ kernel worker_thread communication.
  *
- * Mirrors the browser's kernel-worker-protocol.ts but adapted for Node.js:
+ * Mirrors browser-kernel-protocol.ts but adapted for Node.js:
  * - No SharedArrayBuffer VFS (Node uses real filesystem via NodePlatformIO)
  * - No worker entry URLs (Node uses NodeWorkerAdapter)
  * - No pipe/inject/bridge operations (TCP bridging is automatic via NodePlatformIO)
@@ -105,7 +105,7 @@ export interface ResolveExecResponseMessage {
 }
 
 /** Snapshot the kernel's process table. Mirrors the browser host's
- * enum_procs request in examples/browser/lib/kernel-worker-protocol.ts.
+ * enum_procs request in browser-kernel-protocol.ts.
  * Response carries `ProcessSnapshot[]`. */
 export interface EnumProcsRequestMessage {
   type: "enum_procs";

@@ -5,7 +5,7 @@ Branch: `design/binary-resolution-via-index-ledger`
 
 ## §1. Context & goals
 
-The package management system stores archive URLs in two places that aren't transactionally linked: per-package `examples/libs/<name>/package.toml`'s `[binary.<arch>]` block, and the GitHub release that physically hosts the `.tar.zst` archives. The CI job `amend-package-toml` keeps the first in sync with the second. When that wiring fails, `main` ships in a broken state.
+The package management system stores archive URLs in two places that aren't transactionally linked: per-package `packages/registry/<name>/package.toml`'s `[binary.<arch>]` block, and the GitHub release that physically hosts the `.tar.zst` archives. The CI job `amend-package-toml` keeps the first in sync with the second. When that wiring fails, `main` ships in a broken state.
 
 Four bugs in two weeks were variations on this theme:
 
@@ -24,7 +24,7 @@ The 2026-05-05 decoupled-package-builds design (§3.1) explicitly considered mov
 2. **Make `package.toml` a pure package manifest.** What the package IS — name, version, recipe, license, dependencies, upstream source pin. Nothing about how a particular project happens to build or publish it.
 3. **Make `index.toml` the source of truth for binary resolution state.** Per-package, per-arch, with explicit `status` instead of inferred-from-archive-presence.
 4. **Support gradual rebuilds of large package repositories.** Bumping ABI on a third-party repo with hundreds of packages should be observable as it progresses, with per-package state visible in the index.
-5. **Treat first-party and third-party packages symmetrically.** A third-party `package.toml` + `build.toml` drops into `examples/libs/<their-pkg>/` with zero special-casing in the resolver.
+5. **Treat first-party and third-party packages symmetrically.** A third-party `package.toml` + `build.toml` drops into `packages/registry/<their-pkg>/` with zero special-casing in the resolver.
 6. **Support partial publish + last-green fallback.** When a package fails its current rebuild, its index entry keeps the previous good archive's URL so consumers degrade gracefully.
 
 ### Non-goals
@@ -41,7 +41,7 @@ The 2026-05-05 decoupled-package-builds design (§3.1) explicitly considered mov
 │ Repo source tree (committed to git)                              │
 │                                                                  │
 │   .wasm-posix-pkg.toml                ← named source definitions │
-│   examples/libs/<pkg>/                                           │
+│   packages/registry/<pkg>/                                           │
 │     package.toml                      ← recipe (what the pkg IS) │
 │     build.toml                        ← project's build + binary │
 │                                         source declaration       │
@@ -116,7 +116,7 @@ spdx = "GPL-2.0-or-later"
 url  = "https://mariadb.com/kb/library-license/"
 
 [build]                                  # recipe-level: how the package thinks it should be built
-script_path = "examples/libs/mariadb/build-mariadb.sh"
+script_path = "packages/registry/mariadb/build-mariadb.sh"
 ```
 
 **Removed fields vs. today's `package.toml`:**
@@ -134,10 +134,10 @@ script_path = "examples/libs/mariadb/build-mariadb.sh"
 ### §3.2 `build.toml` — project's build + binary source declaration
 
 ```toml
-# examples/libs/mariadb/build.toml — committed in THIS project
+# packages/registry/mariadb/build.toml — committed in THIS project
 # Records what THIS project built and where it publishes.
 
-script_path = "examples/libs/mariadb/build-mariadb.sh"   # what this project actually ran
+script_path = "packages/registry/mariadb/build-mariadb.sh"   # what this project actually ran
 repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
 commit      = "691b02ef9..."                              # commit at last successful build
 
@@ -253,8 +253,8 @@ Pseudocode for resolving one `(package, arch)`:
 
 ```
 resolve(package_name, version, arch):
-    pkg = read_package_toml(examples/libs/<package_name>/package.toml)
-    build = read_build_toml(examples/libs/<package_name>/build.toml)
+    pkg = read_package_toml(packages/registry/<package_name>/package.toml)
+    build = read_build_toml(packages/registry/<package_name>/build.toml)
 
     index = load_index(build.binary)         # See "Loading an index" below
     if index is None:
@@ -330,7 +330,7 @@ Job steps per matrix entry `(package, arch)`:
 - name: Build archive
   run: bash scripts/dev-shell.sh bash -c '
     cargo run -p xtask -- archive-stage \
-      --package "examples/libs/${{ matrix.package }}" \
+      --package "packages/registry/${{ matrix.package }}" \
       --arch "${{ matrix.arch }}" \
       --out "$RUNNER_TEMP/staged" \
       --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}"
@@ -424,11 +424,11 @@ One PR, end-to-end. The atomicity matters because every component — resolver c
 
 4. **Add `.wasm-posix-pkg.toml`** at repo root with one named source: `first-party` pointing at `https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml`.
 
-5. **Migrate every `examples/libs/<pkg>/package.toml`:**
+5. **Migrate every `packages/registry/<pkg>/package.toml`:**
    - Strip `revision`, `[binary.<arch>]` blocks, `[build].repo_url`, `[build].commit`.
    - Keep everything else verbatim.
 
-6. **Create `examples/libs/<pkg>/build.toml` for every package:**
+6. **Create `packages/registry/<pkg>/build.toml` for every package:**
    - Copy `[build].script_path` from the old `package.toml`.
    - Set `repo_url` = upstream.
    - Set `commit` = current main HEAD at PR creation.

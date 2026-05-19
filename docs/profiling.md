@@ -155,9 +155,9 @@ Runs the Erlang/OTP BEAM VM, spawning 1000 lightweight processes in a ring topol
 
 | Component | Path | Build command |
 |-----------|------|---------------|
-| BEAM VM | `examples/libs/erlang/bin/beam.wasm` | `bash examples/libs/erlang/build-erlang.sh` |
-| OTP libraries | `examples/libs/erlang/erlang-install/` | (built by same script) |
-| Ring program | `examples/erlang/ring.beam` | (included in repo) |
+| BEAM VM | `packages/registry/erlang/bin/beam.wasm` | `bash packages/registry/erlang/build-erlang.sh` |
+| OTP libraries | `packages/registry/erlang/erlang-install/` | (built by same script) |
+| Ring program | `packages/registry/erlang/demo/ring.beam` | (included in repo) |
 
 Build requirements: host Erlang/OTP 28 (`brew install erlang`), `wasm32posix-cc` SDK (`cd sdk && npm link`).
 
@@ -174,11 +174,11 @@ Runs PHP 8.4 with a full WordPress 6.7 installation. Two measurements: cold CLI 
 
 | Component | Path | Build command |
 |-----------|------|---------------|
-| PHP CLI | `examples/libs/php/php-src/sapi/cli/php` | `bash examples/libs/php/build-php.sh` |
-| WordPress | `examples/wordpress/wordpress/wp-settings.php` | See below |
-| Router script | `examples/wordpress/router.php` | (included in repo) |
+| PHP CLI | `packages/registry/php/php-src/sapi/cli/php` | `bash packages/registry/php/build-php.sh` |
+| WordPress | `packages/registry/wordpress/wordpress/wp-settings.php` | See below |
+| Router script | `packages/registry/wordpress/demo/router.php` | (included in repo) |
 
-Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically builds dependencies (SQLite, zlib, OpenSSL, libxml2). WordPress must be downloaded separately into `examples/wordpress/wordpress/`.
+Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically builds dependencies (SQLite, zlib, OpenSSL, libxml2). WordPress must be downloaded separately into `packages/registry/wordpress/wordpress/`.
 
 #### mariadb
 
@@ -207,8 +207,8 @@ Set `MARIADB_BENCH_VERBOSE=1` to forward mariadbd stdout/stderr to the shell (us
 
 | Component | Path | Build command |
 |-----------|------|---------------|
-| MariaDB server (wasm32) | `examples/libs/mariadb/mariadb-install/bin/mariadbd`    | `bash examples/libs/mariadb/build-mariadb.sh` |
-| MariaDB server (wasm64) | `examples/libs/mariadb/mariadb-install-64/bin/mariadbd` | `bash examples/libs/mariadb/build-mariadb.sh --wasm64` |
+| MariaDB server (wasm32) | `packages/registry/mariadb/mariadb-install/bin/mariadbd`    | `bash packages/registry/mariadb/build-mariadb.sh` |
+| MariaDB server (wasm64) | `packages/registry/mariadb/mariadb-install-64/bin/mariadbd` | `bash packages/registry/mariadb/build-mariadb.sh --wasm64` |
 | mysqltest client        | `<install-dir>/bin/mysqltest.wasm` | (built by same script) |
 | System table SQL        | `<install-dir>/share/mysql/mysql_system_tables*.sql` | (built by same script) |
 
@@ -226,15 +226,15 @@ cd sdk && npm link && cd ..
 scripts/build-programs.sh
 
 # 3. Erlang/OTP (requires: brew install erlang)
-bash examples/libs/erlang/build-erlang.sh
+bash packages/registry/erlang/build-erlang.sh
 
 # 4. PHP + WordPress (PHP build includes SQLite, zlib, OpenSSL, libxml2)
-bash examples/libs/php/build-php.sh
-# Download WordPress into examples/wordpress/wordpress/
+bash packages/registry/php/build-php.sh
+# Download WordPress into packages/registry/wordpress/wordpress/
 
 # 5. MariaDB (requires: brew install cmake)
-bash examples/libs/mariadb/build-mariadb.sh          # wasm32
-bash examples/libs/mariadb/build-mariadb.sh --wasm64 # wasm64 (optional, for dual-arch comparison)
+bash packages/registry/mariadb/build-mariadb.sh          # wasm32
+bash packages/registry/mariadb/build-mariadb.sh --wasm64 # wasm64 (optional, for dual-arch comparison)
 ```
 
 ### Running the Complete Suite for Performance Work

@@ -2,7 +2,7 @@
  * abort_test.c — verify abort() actually terminates the process.
  *
  * Regression test for the wasm-port `a_crash` bug fixed in
- * musl-overlay/arch/wasm32posix/atomic_arch.h. Background:
+ * libc/musl-overlay/arch/wasm32posix/atomic_arch.h. Background:
  *
  *   musl's abort() calls `raise(SIGABRT)` and then loops on
  *   `for(;;) a_crash()` as a backstop in case the signal didn't

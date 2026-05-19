@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
-const BROWSER_DIR = resolve(REPO_ROOT, "examples/browser");
+const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
 const VITE_PORT = 5198; // Different from test-runner's 5199
 const DEFAULT_TIMEOUT = 60_000;
 const BOOT_TIMEOUT = 180_000; // MariaDB boot can take a while in browser

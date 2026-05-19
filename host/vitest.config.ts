@@ -2,7 +2,13 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["test/**/*.test.ts", "../examples/libs/php/test/**/*.test.ts", "../examples/wordpress/test/**/*.test.ts", "../examples/dlopen/**/*.test.ts"],
+    include: [
+      "test/**/*.test.ts",
+      "../web-libs/**/*.test.ts",
+      "../packages/registry/*/test/**/*.test.ts",
+      "../tests/package-system/**/*.test.ts",
+      "../examples/dlopen/**/*.test.ts",
+    ],
     globalSetup: ["test/global-setup.ts"],
     // `pool: 'forks'` avoids the worker_threads RPC that vitest 3.2.4
     // uses for inter-thread task-update messaging. Under the GHA

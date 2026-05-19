@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
+GLUE_DIR="$REPO_ROOT/libc/glue"
 POSIX_TEST="$REPO_ROOT/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"

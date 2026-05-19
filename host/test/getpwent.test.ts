@@ -7,7 +7,7 @@
  *
  * This test runs `examples/getpwent_smoke.wasm` (which calls the libc
  * NSS-style readers — getpwent/getpwnam/getpwuid/getgrent/getservbyname)
- * and asserts the bytes it sees match `rootfs/etc/passwd`, `…/group`
+ * and asserts the bytes it sees match `images/rootfs/etc/passwd`, `…/group`
  * and `…/services` from PR 3/5.
  *
  * If the mount router silently dropped these reads, getpwent() would
@@ -38,7 +38,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
 
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
 
-    // Iteration: must see all 7 entries from rootfs/etc/passwd, in order.
+    // Iteration: must see all 7 entries from images/rootfs/etc/passwd, in order.
     expect(result.stdout).toContain("PWENT 0 name=root uid=0 gid=0 home=/root shell=/bin/sh");
     expect(result.stdout).toContain(
       "PWENT 1 name=daemon uid=1 gid=1 home=/usr/sbin shell=/usr/sbin/nologin",

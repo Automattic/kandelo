@@ -80,7 +80,7 @@ Backends are responsible for their own path normalization (`.` and `..` handling
 ## 4. Default/Root Mount on Current Main
 
 **Files:**
-- Browser: `examples/browser/lib/kernel-worker-entry.ts:189–194`
+- Browser: `apps/browser-demos/lib/kernel-worker-entry.ts:189–194`
 - Node (current main): Not found — `run-example.ts` and `NodeKernelHost` do NOT explicitly set up mounts.
 
 **Browser kernelOwnedFs setup (line 189–194):**
@@ -144,7 +144,7 @@ if (r1.backend !== r2.backend) {
 
 ### Browser (kernel-owned mode)
 
-**File:** `examples/browser/lib/kernel-worker-entry.ts:170–206`
+**File:** `apps/browser-demos/lib/kernel-worker-entry.ts:170–206`
 
 In `kernelOwnedFs: true` mode:
 1. Main thread does NOT allocate `fsSab` or `memfs` (line 147–150 in `browser-kernel.ts`).
@@ -187,11 +187,11 @@ Grep shows: `host/test/centralized-test-helper.ts:213` defaults to `new NodePlat
 
 **Demos/examples (6):**
 1. `examples/run-hello.ts:32`
-2. `examples/nginx-test/nginx-wrapper.ts:173`
-3. `examples/wordpress/test/wordpress-server.test.ts:74`
-4. `examples/mariadb-test/run-tests.ts:190`
-5. `examples/libs/openssl/test/ssl-basic.test.ts:39`
-6. `examples/cpython/debug-test.ts:37`
+2. `packages/registry/nginx/test/nginx-wrapper.ts:173`
+3. `packages/registry/wordpress/test/wordpress-server.test.ts:74`
+4. `packages/registry/mariadb/test/run-tests.ts:190`
+5. `packages/registry/openssl/test/ssl-basic.test.ts:39`
+6. `packages/registry/cpython/test/debug-test.ts:37`
 
 **Tests (15):**
 1. `host/test/nginx.test.ts:92`
@@ -250,7 +250,7 @@ The `synthetic_file_content(path: &[u8]) -> Option<&'static [u8]>` function (lin
    - The browser already does this. The Node host must follow the same pattern.
    - The kernel worker (not the main thread) should construct the mount table and `VirtualPlatformIO` instance.
    - This requires the worker to have a way to load the rootfs.vfs image — either:
-     - Hardcoded path on disk (e.g., `node_modules/@wasm-posix/rootfs/rootfs.vfs` or env var)
+     - Hardcoded path on disk (e.g., `node_modules/@wasm-posix/images/rootfs/rootfs.vfs` or env var)
      - Passed via the init message from the Node host main thread
      - Built as part of the demo's VFS setup
 
@@ -356,8 +356,8 @@ After all 5 PRs in this phase:
 - **HostFileSystem:** `host/src/vfs/host-fs.ts:54–273`
 - **MemoryFileSystem:** `host/src/vfs/memory-fs.ts:73–...`
 - **DeviceFileSystem:** `host/src/vfs/device-fs.ts:78–...`
-- **Browser kernel-owned setup:** `examples/browser/lib/kernel-worker-entry.ts:170–206`
-- **Browser kernel interface:** `examples/browser/lib/browser-kernel.ts:50–55, 145–195`
+- **Browser kernel-owned setup:** `apps/browser-demos/lib/kernel-worker-entry.ts:170–206`
+- **Browser kernel interface:** `apps/browser-demos/lib/browser-kernel.ts:50–55, 145–195`
 - **synthetic_file_content:** `crates/kernel/src/syscalls.rs:110–144, 403, 631, 1064, 1524, 2108, 2451, 2501, 2624, 5793, 5880, 7729, 15011, 15023`
 - **NodePlatformIO direct callers:** 21 instances identified via grep (listed in section 7).
 

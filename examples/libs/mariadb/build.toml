@@ -1,7 +1,0 @@
-script_path = "examples/libs/mariadb/build-mariadb.sh"
-repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
-commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 1
-
-[binary]
-index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"

@@ -172,7 +172,7 @@ export interface DlopenSupport {
 
 /**
  * Build dlopen host imports for a process. These are called directly from
- * the user program's dlopen/dlsym/dlclose C stubs (glue/dlopen.c).
+ * the user program's dlopen/dlsym/dlclose C stubs (libc/glue/dlopen.c).
  *
  * The DynamicLinker is lazily created on first use since most programs
  * don't use dlopen.

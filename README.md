@@ -147,7 +147,7 @@ the sysroot, kernel, and rootfs artifacts.
 ### 1. Build the kernel
 
 ```bash
-git submodule update --init musl
+git submodule update --init libc/musl
 
 # Build musl sysroot (first time only)
 bash scripts/build-musl.sh
@@ -167,7 +167,7 @@ full schema, resolution order, and release-archive contract.
 
 If you prefer to skip cargo-driven dep resolution and pull every
 pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
-`bash build.sh`. It walks every `examples/libs/<pkg>/package.toml`
+`bash build.sh`. It walks every `packages/registry/<pkg>/package.toml`
 with a `[binary.<arch>]` block and resolves the archives into the
 content-addressed cache plus `binaries/programs/<arch>/` symlinks.
 
@@ -212,7 +212,7 @@ npx tsx examples/run-example.ts hello
 ./run.sh browser
 
 # Or manually:
-cd examples/browser
+cd apps/browser-demos
 npm install
 npx vite --port 5198
 ```
@@ -223,23 +223,23 @@ Browser demos use pre-built **VFS images** — binary filesystem snapshots that 
 
 ## Porting Software
 
-Build scripts for all ported software are in `examples/libs/`:
+Build scripts for all ported software are in `packages/registry/`:
 
 ```bash
-bash examples/libs/dash/build-dash.sh          # dash shell
-bash examples/libs/coreutils/build-coreutils.sh # GNU coreutils
-bash examples/libs/php/build-php.sh             # PHP 8.4
-bash examples/libs/redis/build-redis.sh         # Redis 7.2
-bash examples/libs/mariadb/build-mariadb.sh     # MariaDB 10.5
-bash examples/libs/cpython/build-cpython.sh     # CPython 3.13
-bash examples/libs/git/build-git.sh             # Git 2.47
-bash examples/libs/vim/build-vim.sh             # Vim 9.1
-bash examples/libs/perl/build-perl.sh           # Perl 5.40
-bash examples/libs/ruby/build-ruby.sh           # Ruby 3.3
-bash examples/libs/quickjs/build-quickjs.sh     # QuickJS-NG + Node.js compat
-bash examples/libs/nano/build-nano.sh           # GNU nano 8.3
-bash examples/libs/curl/build-curl.sh           # curl
-bash examples/libs/make/build-make.sh           # GNU make
+bash packages/registry/dash/build-dash.sh          # dash shell
+bash packages/registry/coreutils/build-coreutils.sh # GNU coreutils
+bash packages/registry/php/build-php.sh             # PHP 8.4
+bash packages/registry/redis/build-redis.sh         # Redis 7.2
+bash packages/registry/mariadb/build-mariadb.sh     # MariaDB 10.5
+bash packages/registry/cpython/build-cpython.sh     # CPython 3.13
+bash packages/registry/git/build-git.sh             # Git 2.47
+bash packages/registry/vim/build-vim.sh             # Vim 9.1
+bash packages/registry/perl/build-perl.sh           # Perl 5.40
+bash packages/registry/ruby/build-ruby.sh           # Ruby 3.3
+bash packages/registry/quickjs/build-quickjs.sh     # QuickJS-NG + Node.js compat
+bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
+bash packages/registry/curl/build-curl.sh           # curl
+bash packages/registry/make/build-make.sh           # GNU make
 ```
 
 See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own software.
@@ -250,7 +250,7 @@ See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own soft
 # Kernel unit tests (700 tests)
 cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
 
-# Host integration tests (276 tests)
+# Host, package, and browser-adjacent integration tests
 cd host && npx vitest run
 
 # musl libc-test suite (0 unexpected failures)
@@ -271,22 +271,50 @@ crates/
   kernel/            Kernel implementation (syscalls, fd table, signals, pipes, sockets, PTY)
   userspace/         User-space stub library
 host/
-  src/               TypeScript host runtime (kernel loader, VFS, networking, workers)
-  test/              Vitest integration tests
+  src/               TypeScript host runtime shared by Node.js and browser hosts
+    node-kernel-host.ts / node-kernel-worker-entry.ts
+                      Node.js host main-thread proxy and kernel worker entry
+    browser-kernel-host.ts / browser-kernel-worker-entry.ts
+                      Browser host main-thread proxy and kernel worker entry
+    worker-main.ts   Shared process-worker runtime used by both hosts
+    vfs/ networking/ framebuffer/
+                      Shared host services used by Node.js, browser, and tests
+  test/              Host/kernel runtime behavior tests
   wasm/              Compiled Wasm binaries
 sdk/
   src/bin/           CLI tool wrappers for LLVM cross-compilation
   src/lib/           Toolchain discovery, compiler flags, arg parsing
-glue/
+apps/
+  browser-demos/     Vite demo/UI app that consumes the browser host runtime
+web-libs/
+  kandelo-session/   Reusable Kandelo session/UI integration contracts
+packages/
+  registry/          Kandelo package manifests and build scripts
+    <name>/test/     Package-owned tests and fixtures
+  sets/              Named package sets for CI and product scenarios
+tests/
+  package-system/    Package registry and binary-fetching automation tests
+  libc/              musl libc-test suite and overlays
+  posix/             Open POSIX test suite
+  sortix/            Sortix os-test suite and overlays
+images/
+  rootfs/            Source tree for the base VFS image
+  vfs/scripts/       VFS image and archive builders
+tools/
+  mkrootfs/          Root filesystem image builder
+  xtask/             Rust package/release automation CLI
+libc/glue/
   channel_syscall.c  Channel-based syscall dispatcher (compiled into every user program)
   compiler_rt.c      Soft-float and 64-bit compiler runtime builtins
-musl/                musl libc (git submodule)
-musl-overlay/        Wasm32-specific architecture patches for musl
-scripts/             Build scripts, test runners (libc-test, POSIX, Sortix)
+libc/musl/                musl libc (git submodule)
+libc/musl-overlay/        Wasm32-specific architecture patches for musl
+tests/
+  libc/              musl libc-test submodule, overlays, and build output
+  posix/             Open POSIX test suite
+  sortix/            Sortix os-test submodule and build output
+scripts/             Build scripts and test runners
 examples/
   *.c / *.wasm       Simple C example programs
-  browser/           Browser demo app (Vite + 15 demo pages)
-  libs/              Build scripts for ported software (36 packages)
 docs/
   architecture.md    Architecture reference
   sdk-guide.md       SDK usage guide
@@ -301,11 +329,12 @@ docs/
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | Kernel design, syscall flow, multi-process model, memory layout |
+| [Repository Organization](docs/repository-organization.md) | Top-level ownership boundaries and CI-oriented path categories |
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
 | [Porting Guide](docs/porting-guide.md) | How to port software, create Node.js and browser demos |
 | [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |
 | [Shareable Computer URLs](docs/plans/2026-05-11-shareable-computer-url-design.md) | Boot descriptor design for sharing computer topology, signed bases/packages, mounts, and overlays |
-| [Package Management](docs/package-management.md) | `examples/libs/<name>/package.toml` schema, resolver, release archives |
+| [Package Management](docs/package-management.md) | `packages/registry/<name>/package.toml` schema, resolver, release archives |
 | [Package Management — Future Work](docs/package-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
 | [Binary Releases](docs/binary-releases.md) | `manifest.json` schema, package-system `.tar.zst` archive layout, fetch + verify flow |
 | [Profiling & Benchmarking](docs/profiling.md) | Syscall profiler, benchmark suite, cross-host comparison |
@@ -331,7 +360,7 @@ docs/
 This project uses a split license model:
 
 - **GPL-2.0-or-later** — The platform (kernel, host runtime, SDK, build scripts, examples)
-- **MIT** — Runtime library components linked into user programs (musl-overlay/ and glue/)
+- **MIT** — Runtime library components linked into user programs (libc/musl-overlay/ and libc/glue/)
 
 You can compile and run your own programs — including proprietary ones — without the GPL applying to your code. The runtime code linked into your program is MIT-licensed, and the kernel communicates via IPC, not linking.
 

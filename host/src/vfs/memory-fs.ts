@@ -735,7 +735,7 @@ export class MemoryFileSystem implements FileSystemBackend {
 // before the worker's async load completes; the message was being
 // dropped before the worker's onmessage handler became reachable. A
 // static import is bundled by Vite for browser pages and resolved by
-// Node for tests + build scripts (host/package.json + examples/browser/
+// Node for tests + build scripts (host/package.json + apps/browser-demos/
 // package.json both declare fzstd, so it's always installed).
 function decompressZstd(image: Uint8Array): Uint8Array {
   return zstdDecompress(image);

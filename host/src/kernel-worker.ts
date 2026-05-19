@@ -37,7 +37,7 @@ const CH_COMPLETE = 2;
  * frames + saved __tls_base / __stack_pointer that the host writes
  * during fork(). Must match the constant in `worker-main.ts` and the
  * onFork handlers in node-kernel-worker-entry.ts /
- * examples/browser/lib/kernel-worker-entry.ts.
+ * browser-kernel-worker-entry.ts.
  */
 const ASYNCIFY_BUF_SIZE = 16384;
 
@@ -62,6 +62,13 @@ const SYS_EPOLL_CTL = 240;
 const SYS_EPOLL_WAIT = 379;
 const SYS_RT_SIGTIMEDWAIT = 207;
 
+/**
+ * Grace period for signal-mask-swapping ppoll/pselect wakeups after a pipe
+ * event. This gives the writer's immediately-following signal syscall a
+ * chance to reach the centralized kernel before ppoll restores its mask.
+ */
+const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
+
 /** Syscall numbers for signals */
 const SYS_KILL = 35;
 
@@ -79,7 +86,7 @@ const SYS_SETSID = 92;
 const SYS_WAIT4 = 139;
 const SYS_WAITID = 288;
 /** SYS_THREAD_CANCEL: host-side wake-up for deferred pthread cancellation.
- * See musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
+ * See libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
 const SYS_THREAD_CANCEL = 415;
 
 /** waitpid options */
@@ -984,8 +991,10 @@ export class CentralizedKernelWorker {
      *  a few ms for these retries so follow-up cross-process signals have
      *  time to land before ppoll observes "pipe ready, no signal" and
      *  restores its mask. See scheduleWakeBlockedRetriesDeferred and
-     *  os-test/signal/ppoll-block-sleep-write-raise. */
+     *  tests/sortix/os-test/signal/ppoll-block-sleep-write-raise. */
     needsSignalSafeWake?: boolean;
+    /** Date.now() deadline for finite-timeout poll/ppoll retries, or -1. */
+    deadline?: number;
   }>();
   /** Pending pselect6/select retries — used for signal-driven wakeup and timeout tracking */
   private pendingSelectRetries = new Map<number, {
@@ -3123,7 +3132,7 @@ export class CentralizedKernelWorker {
     // uv_async round-trip takes 1–5ms). If the retry fires first, ppoll
     // returns POLLIN and restores its sigmask; the late signal is then
     // blocked and the handler never fires. See
-    // os-test/signal/ppoll-block-sleep-write-raise.
+    // tests/sortix/os-test/signal/ppoll-block-sleep-write-raise.
     //
     // Deferring the broad wake a few ms gives X's follow-up syscalls
     // time to land. Kill-triggered wakes (line ~2050) always use the
@@ -3155,13 +3164,35 @@ export class CentralizedKernelWorker {
   /** Same as scheduleWakeBlockedRetries but delays by a few ms to allow
    *  follow-up cross-process syscalls from the event source to land. */
   private scheduleWakeBlockedRetriesDeferred(): void {
-    if (this.wakeScheduled) return;
     if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0 && this.pendingPipeWriters.size === 0) return;
+    this.postponeSignalSafePollRetries(SIGNAL_SAFE_POLL_WAKE_DELAY_MS);
+    if (this.wakeScheduled) return;
     this.wakeScheduled = true;
     setTimeout(() => {
       this.wakeScheduled = false;
       this.wakeAllBlockedRetries();
-    }, 10);
+    }, SIGNAL_SAFE_POLL_WAKE_DELAY_MS);
+  }
+
+  private postponeSignalSafePollRetries(delayMs: number): void {
+    const now = Date.now();
+    for (const [key, entry] of this.pendingPollRetries) {
+      if (!entry.needsSignalSafeWake) continue;
+      if (entry.timer !== null) {
+        clearTimeout(entry.timer);
+      }
+
+      const remainingMs = entry.deadline && entry.deadline > 0
+        ? Math.max(1, entry.deadline - now)
+        : delayMs;
+      const retryMs = Math.max(1, Math.min(delayMs, remainingMs));
+      entry.timer = setTimeout(() => {
+        this.pendingPollRetries.delete(key);
+        if (this.processes.has(entry.channel.pid)) {
+          this.retrySyscall(entry.channel);
+        }
+      }, retryMs);
+    }
   }
 
   /**
@@ -3321,7 +3352,7 @@ export class CentralizedKernelWorker {
    *
    * The guest pthread_cancel() overlay has already atomically set
    * target->cancel = 1 in shared memory before calling this syscall — see
-   * musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the full flow.
+   * libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the full flow.
    *
    * This handler's sole job is to force the target out of its Atomics.wait32
    * on CH_STATUS (if blocked). Strategy depends on what the target is
@@ -3589,7 +3620,13 @@ export class CentralizedKernelWorker {
             this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
           }
         }, timeoutMs);
-        this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });
+        this.pendingPollRetries.set(channel.channelOffset, {
+          timer,
+          channel,
+          pipeIndices,
+          needsSignalSafeWake,
+          deadline: Date.now() + timeoutMs,
+        });
         return;
       }
 
@@ -3625,7 +3662,7 @@ export class CentralizedKernelWorker {
         ? (deadline > 0 ? Math.min(deadline - Date.now(), 10) : 10)
         : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
       const timer = setTimeout(retryFn, Math.max(retryMs, 1));
-      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake });
+      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake, deadline });
       return;
     }
 
@@ -3692,7 +3729,7 @@ export class CentralizedKernelWorker {
     // has no way to actually block). For non-blocking descriptors we must
     // return EAGAIN to the caller; otherwise the default retry loop spins
     // forever waiting for state that will never change (e.g., the final
-    // mq_receive in os-test/basic/mqueue/mq_receive.c after mq_setattr sets
+    // mq_receive in tests/sortix/os-test/basic/mqueue/mq_receive.c after mq_setattr sets
     // O_NONBLOCK on an empty queue).
     if (syscallNr === SYS_MQ_TIMEDSEND || syscallNr === SYS_MQ_TIMEDRECEIVE) {
       const mqd = origArgs[0];

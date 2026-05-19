@@ -77,7 +77,7 @@ export async function setup() {
     });
   }
 
-  // examples/wordpress/test/wordpress-site-editor.test.ts calls
+  // packages/registry/wordpress/test/wordpress-site-editor.test.ts calls
   // chromium.launch() directly (not via the `playwright test` runner),
   // so the browser binary must be present before vitest runs. `npm
   // install` only fetches the @playwright/test JS package, not the

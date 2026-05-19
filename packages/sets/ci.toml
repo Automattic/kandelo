@@ -1,0 +1,17 @@
+name = "ci"
+description = "Packages and images that CI should treat as first-class build coverage."
+
+packages = [
+  "kernel",
+  "userspace",
+  "shell",
+  "nginx",
+  "php",
+  "sqlite",
+  "mariadb",
+  "mariadb-vfs",
+  "wordpress",
+  "lamp",
+  "node",
+  "node-vfs",
+]

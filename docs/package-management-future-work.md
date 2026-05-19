@@ -11,6 +11,33 @@ None is on a committed schedule — pick up when the use case arrives.
 
 ## Schema / artifact
 
+### Ship kernel.wasm + userspace.wasm in the release
+
+Today's release excludes the kernel + userspace because their
+manifests at `packages/registry/{kernel,userspace}/` lack build scripts —
+`archive-stage` skips manifests without a build script as composite
+metadata. The browser demos import `binaries/kernel.wasm` and
+`binaries/userspace.wasm` (≈23 sites) at Vite build time; without
+those files Vite errors out unless the user has run `bash build.sh`
+locally to populate `local-binaries/`.
+
+Fix options:
+1. **Add build wrappers** at `packages/registry/{kernel,userspace}/build-*.sh`
+   that delegate to the `cargo build --release -p wasm-posix-{kernel,userspace}`
+   pipeline already in `build.sh`. Manifest output names already match
+   the cargo artifact paths. Once added, they ship as regular
+   archives. Caveat: kernel.wasm changes with every kernel commit, so
+   the cache_key_sha churns; users who want a stable kernel should
+   pin to a specific commit / release tag. The local-binaries/
+   override path remains the developer's escape hatch.
+2. **Update demo imports** to use `local-binaries/...` paths and add
+   a doc step ("run `bash build.sh` first"). Diverges from the
+   priority-1/priority-2 resolver convention; doesn't help users
+   without a Rust toolchain.
+
+Option 1 is the cleaner long-term fix. Triggers when a fresh-clone
+without-toolchain workflow becomes a real use case.
+
 ### Lazy-archive VFS support for `.tar.zst`
 
 The system ships archives as `.tar.zst` uniformly.  That works for the
@@ -26,7 +53,7 @@ random access; `.tar.zst` is a monolithic compressed stream with no
 per-entry seek.
 
 **Today's workaround** (acceptable for now): the browser demo repacks
-a separate `vim.zip` via `examples/browser/scripts/build-vim-zip.sh`
+a separate `vim.zip` via `images/vfs/scripts/build-vim-zip.sh`
 that includes vim.wasm + the runtime tree. The release ships
 `vim-9.1.0900-...tar.zst` containing only `vim.wasm`. Two parallel
 formats coexist; nothing in the release is consumed directly by
@@ -59,21 +86,21 @@ Three browser VFS-image scripts read from a sibling package's local
 source-build tree rather than via the resolver
 (`cargo xtask build-deps resolve <name>` → cache canonical dir):
 
-- `examples/browser/scripts/build-mariadb-vfs-image.ts` (consumed
+- `images/vfs/scripts/build-mariadb-vfs-image.ts` (consumed
   by `mariadb-vfs`) reads
-  `examples/libs/mariadb/mariadb-install{,-64}/{bin/mariadbd.wasm,
+  `packages/registry/mariadb/mariadb-install{,-64}/{bin/mariadbd.wasm,
   share/mysql/mysql_system_tables{,_data}.sql}`.
-- `examples/browser/scripts/build-mariadb-test-vfs-image.ts`
+- `images/vfs/scripts/build-mariadb-test-vfs-image.ts`
   (consumed by `mariadb-test`) additionally reads
-  `examples/libs/mariadb/mariadb-install/mysql-test/`.
-- `examples/browser/scripts/build-lamp-vfs-image.ts` (consumed by
+  `packages/registry/mariadb/mariadb-install/mysql-test/`.
+- `images/vfs/scripts/build-lamp-vfs-image.ts` (consumed by
   `lamp`) reads the same SQL files as mariadb-vfs.
 
 The mariadb v6/v7 release archive only ships
 `{mariadbd,mysqltest}.wasm` at the artifact root. The SQL files
 (~2 MB) and `mysql-test/` (~217 MB uncompressed) aren't bundled.
 So when mariadb is *cache-hit* (archive installed without
-source-build), `examples/libs/mariadb/mariadb-install/` is empty
+source-build), `packages/registry/mariadb/mariadb-install/` is empty
 and any of these three downstream scripts fails on its first
 `readFileSync` / `existsSync`.
 
@@ -88,10 +115,10 @@ of bug, just on a different consumer).
 
 PR #410's shell fix is the symmetric template:
 
-1. `examples/libs/mariadb/build-mariadb.sh` — stage
+1. `packages/registry/mariadb/build-mariadb.sh` — stage
    `share/mysql/` into `$WASM_POSIX_DEP_OUT_DIR/share/mysql/`
    (same pattern build-vim.sh uses for `runtime/`).
-2. `examples/libs/mariadb/package.toml` — add `[[outputs]]` entries
+2. `packages/registry/mariadb/package.toml` — add `[[outputs]]` entries
    for `share/mysql/mysql_system_tables.sql` +
    `mysql_system_tables_data.sql` so the v7 archive is treated
    as stale (`compatibility.cache_key_sha` mismatch) and the
@@ -102,7 +129,7 @@ PR #410's shell fix is the symmetric template:
 3. `build-{mariadb-vfs,mariadb-test,lamp}-vfs-image.ts` — call
    `cargo xtask build-deps resolve mariadb` and read
    `<cache-dir>/{bin,share}/...`, falling back to
-   `examples/libs/mariadb/mariadb-install/` for direct
+   `packages/registry/mariadb/mariadb-install/` for direct
    invocations (mirroring build-{vim,nethack}-zip.sh).
 
 `mysql-test/` (~217 MB) is the awkward part — 50–80 MB zstd'd
@@ -125,7 +152,7 @@ Trigger: a PR ends up source-rebuilding mariadb-vfs /
 mariadb-test / lamp (e.g. a kernel-ABI bump invalidates
 everything, a mariadb revision bump, or a transitive cascade
 similar to PR #410), and staging-build / prepare-merge fails on
-"mariadbd.wasm not found at examples/libs/mariadb/mariadb-install/
+"mariadbd.wasm not found at packages/registry/mariadb/mariadb-install/
 bin/mariadbd.wasm".
 
 ### Multi-arch `[binary]` blocks

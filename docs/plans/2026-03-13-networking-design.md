@@ -180,9 +180,9 @@ musl's `getaddrinfo()` normally creates UDP sockets to query nameservers — not
 - `crates/kernel/src/wasm_api.rs` — New host imports + kernel exports
 
 ### Glue (C)
-- `glue/syscall_glue.c` — Getaddrinfo dispatch
-- `glue/syscall_imports.h` — New kernel import declarations
-- `musl-overlay/arch/wasm32posix/bits/syscall.h.in` — __NR_getaddrinfo
+- `libc/glue/syscall_glue.c` — Getaddrinfo dispatch
+- `libc/glue/syscall_imports.h` — New kernel import declarations
+- `libc/musl-overlay/arch/wasm32posix/bits/syscall.h.in` — __NR_getaddrinfo
 
 ### Host (TypeScript)
 - `host/src/types.ts` — NetworkBackend interface, PlatformIO network methods
@@ -192,4 +192,4 @@ musl's `getaddrinfo()` normally creates UDP sockets to query nameservers — not
 - `host/src/networking/http-parser.ts` — Raw HTTP byte parsing (new file)
 
 ### musl overlay
-- `musl-overlay/src/network/lookup_name.c` — Override __lookup_name to use syscall (new file)
+- `libc/musl-overlay/src/network/lookup_name.c` — Override __lookup_name to use syscall (new file)

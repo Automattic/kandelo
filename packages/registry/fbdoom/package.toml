@@ -1,0 +1,29 @@
+kind = "program"
+name = "fbdoom"
+version = "0.1.0"
+# rev4: fix fbDOOM's wasm exit path by avoiding an invalid
+# G_CheckDemoStatus -> atexit_func_t cast. rev3 dropped the bundled
+# IWAD; the browser demo fetches the DOOM shareware `doom1.wad`
+# (id Software, freely redistributable) at page load from a Linux-distro
+# mirror and caches it via the Cache API. The archive carries only
+# `fbdoom.wasm`.
+kernel_abi = 7
+depends_on = []
+
+# Upstream is a depth-1 git clone of maximevince/fbDOOM at HEAD; no
+# release-tag tarball exists. Source SHA is placeholder until either
+# the upstream pins a release or we mirror a frozen tarball.
+[source]
+url = "https://github.com/maximevince/fbDOOM"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/maximevince/fbDOOM/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/fbdoom/build-fbdoom.sh"
+
+[[outputs]]
+name = "fbdoom"
+wasm = "fbdoom.wasm"

@@ -70,7 +70,7 @@ jobs:
         # into the sysroot recipe.
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl
+          submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -89,7 +89,7 @@ jobs:
           path: |
             ~/.cargo/registry
             target
-          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'xtask/**') }}
+          key: preflight-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/xtask/**') }}
           restore-keys: |
             preflight-${{ runner.os }}-
 
@@ -153,7 +153,7 @@ jobs:
             # mirror in prepare-merge.yml) to re-enable rebuilds.
             disabled_pkgs=" cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive "
 
-            for pkg_dir in examples/libs/*/; do
+            for pkg_dir in packages/registry/*/; do
               pkg=$(basename "$pkg_dir")
               # Filter: package must have a [build] block. Today this
               # selects the recipes that own a build script and
@@ -281,12 +281,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Fetch musl submodule
-        # build-musl.sh + build-libcxx.sh consume musl/ directly. The
+        # build-musl.sh + build-libcxx.sh consume libc/musl/ directly. The
         # other submodules (libc-test, os-test) are test inputs and not
         # needed here.
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl
+          submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -299,15 +299,15 @@ jobs:
         # exactly so all three caches alias. hashFiles() over the inputs
         # that affect the produced sysroot:
         #   - scripts/build-musl.sh: the musl build recipe
-        #   - examples/libs/libcxx/**: the libcxx package (build script,
+        #   - packages/registry/libcxx/**: the libcxx package (build script,
         #     manifest, and any helpers — replaces the deleted
         #     scripts/build-libcxx.sh)
-        #   - musl-overlay/**: source patches/overrides applied on top of
+        #   - libc/musl-overlay/**: source patches/overrides applied on top of
         #     the musl submodule
-        #   - glue/**: channel_syscall.c + headers compiled into libc.a
+        #   - libc/glue/**: channel_syscall.c + headers compiled into libc.a
         id: key
         run: |
-          KEY="musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'examples/libs/libcxx/**', 'musl-overlay/**', 'glue/**') }}"
+          KEY="musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**') }}"
           echo "value=$KEY" >> "$GITHUB_OUTPUT"
           echo "toolchain-cache key: $KEY"
 
@@ -325,7 +325,7 @@ jobs:
         # Mirrors the legacy `build` job's "Build musl sysroot + resolve
         # libcxx" step so a cache populated here is interchangeable with
         # what the legacy path produces. libcxx is resolved via the
-        # package system (examples/libs/libcxx/) and symlinked into the
+        # package system (packages/registry/libcxx/) and symlinked into the
         # sysroot; its build script handles the Nix-vs-Homebrew libc++
         # header path difference internally.
         run: |
@@ -398,7 +398,7 @@ jobs:
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl
+          submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -419,8 +419,8 @@ jobs:
       - name: Install host npm deps (build prereq)
         run: |
           bash scripts/dev-shell.sh bash -c '
-            npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
       - name: Resolve target package's transitive deps
@@ -445,7 +445,7 @@ jobs:
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
               archive-stage \
-                --package "examples/libs/${{ matrix.package }}" \
+                --package "packages/registry/${{ matrix.package }}" \
                 --arch "${{ matrix.arch }}" \
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
@@ -543,12 +543,12 @@ jobs:
 
       - name: Fetch musl submodule
         # Even though sysroot/ + sysroot64/ are restored from cache,
-        # downstream package builds (Task 4) reach into musl/ for
+        # downstream package builds (Task 4) reach into libc/musl/ for
         # headers/sources during their configure steps. Initialize it
         # here so the cache restore that follows can layer on top.
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl
+          submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -569,8 +569,8 @@ jobs:
       - name: Install host npm deps (build prereq)
         run: |
           bash scripts/dev-shell.sh bash -c '
-            npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
       - name: Download library archives from lib-matrix-build
@@ -590,7 +590,7 @@ jobs:
 
       - name: Materialize library overlays
         if: needs.preflight.outputs.library_matrix != '[]'
-        # Write examples/libs/<lib>/package.pr.toml file:// pointers
+        # Write packages/registry/<lib>/package.pr.toml file:// pointers
         # for every downloaded library archive. The next step's
         # resolver finds each library via overlay → file:// → cache
         # without source-building. Each library was built exactly
@@ -634,7 +634,7 @@ jobs:
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
               archive-stage \
-                --package "examples/libs/${{ matrix.package }}" \
+                --package "packages/registry/${{ matrix.package }}" \
                 --arch "${{ matrix.arch }}" \
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
@@ -729,12 +729,12 @@ jobs:
       - name: Fetch submodules (musl, libc-test, os-test)
         # musl       — sysroot rebuild fallback (cache restore should
         #               succeed; this is defense-in-depth for any
-        #               build-script that reaches into musl/ for headers).
+        #               build-script that reaches into libc/musl/ for headers).
         # libc-test  — scripts/run-libc-tests.sh
         # os-test    — scripts/run-sortix-tests.sh
         uses: ./.github/actions/fetch-submodules
         with:
-          submodules: musl libc-test os-test
+          submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
@@ -770,15 +770,15 @@ jobs:
         # fetch-binaries gets a confusing fzstd module-not-found.
         run: |
           bash scripts/dev-shell.sh bash -c '
-            npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
       - name: Materialize binaries (per-package package.pr.toml overlay)
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
         # Walk the downloaded matrix artifacts (lib + prog) and write
-        # examples/libs/<pkg>/package.pr.toml file:// pointers via the
+        # packages/registry/<pkg>/package.pr.toml file:// pointers via the
         # shared scripts/materialize-pr-overlays.sh. Then run
         # fetch-binaries to populate binaries/ symlinks for every
         # package (matrix-built via overlay; durable release via
@@ -810,8 +810,8 @@ jobs:
             cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
-            npm install --no-audit --no-fund
-            cd host && npm install --no-audit --no-fund && cd ..
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
           '
 

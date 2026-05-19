@@ -654,12 +654,12 @@ item #1: WordPress browser demo with opcache enabled."
 ### Task 4: Re-enable opcache in browser demos
 
 **Files:**
-- Modify: `examples/browser/scripts/build-wp-vfs-image.ts`
-- Modify: `examples/browser/scripts/build-lamp-vfs-image.ts`
+- Modify: `images/vfs/scripts/build-wp-vfs-image.ts`
+- Modify: `images/vfs/scripts/build-lamp-vfs-image.ts`
 
 **Step 1: Revert the opcache-disabled hunks**
 
-Use `git show e1a00a9e8 -- examples/browser/scripts/build-wp-vfs-image.ts examples/browser/scripts/build-lamp-vfs-image.ts` to see what was disabled. Restore the active `zend_extension=` line and `opcache.enable=1` setting in both files.
+Use `git show e1a00a9e8 -- images/vfs/scripts/build-wp-vfs-image.ts images/vfs/scripts/build-lamp-vfs-image.ts` to see what was disabled. Restore the active `zend_extension=` line and `opcache.enable=1` setting in both files.
 
 Inspect each file's "[opcache]" section and remove any temporary `# disabled pending fork-replay-dlopen fix` comments.
 
@@ -681,7 +681,7 @@ If anything breaks, debug; do NOT proceed.
 **Step 3: Commit**
 
 ```bash
-git add examples/browser/scripts/build-wp-vfs-image.ts examples/browser/scripts/build-lamp-vfs-image.ts
+git add images/vfs/scripts/build-wp-vfs-image.ts images/vfs/scripts/build-lamp-vfs-image.ts
 git commit -m "demo(wp+lamp): re-enable opcache after fork-replay-dlopen ships
 
 Reverts e1a00a9e8. The fork-child now replays parent dlopens
@@ -766,7 +766,7 @@ Body (use `gh pr create --body` with a HEREDOC):
 WebAssembly tables are per-Instance objects. Fork instantiates a fresh program module for the child, so its table is back at module-initial length. Pointers baked into the parent's data section by `__wasm_apply_data_relocs` reference table slots only the parent's table had grown to cover. Documented in `docs/plans/2026-05-14-binary-resolution-followups.md` item #1.
 
 ## Dual-host parity
-The replay logic lives in `host/src/worker-main.ts`, which is shared by both the Node host (`host/src/node-kernel-worker-entry.ts`) and the browser host (`examples/browser/lib/kernel-worker-entry.ts`). No changes to either kernel-worker-entry tree were needed.
+The replay logic lives in `host/src/worker-main.ts`, which is shared by both the Node host (`host/src/node-kernel-worker-entry.ts`) and the browser host (`apps/browser-demos/lib/kernel-worker-entry.ts`). No changes to either kernel-worker-entry tree were needed.
 
 ## Test plan
 - [x] New vitest fixture `host/test/fork-dlopen-replay-e2e.test.ts` — fails before, passes after.
@@ -787,4 +787,4 @@ Report the PR URL.
 
 ## Reviewer prompt (CLAUDE.md "Two hosts")
 
-For anyone reviewing: the diff touches only `host/src/worker-main.ts` and `host/src/dylink.ts`, both of which are shared by Node and Browser hosts. There are NO changes to `host/src/node-kernel-worker-entry.ts` or `examples/browser/lib/kernel-worker-entry.ts`. This is by design: the replay state lives in shared linear memory which fork already memcpys for both hosts. Verify by grepping for `dlopen` / `replay` in both kernel-worker-entry trees — both should be empty.
+For anyone reviewing: the diff touches only `host/src/worker-main.ts` and `host/src/dylink.ts`, both of which are shared by Node and Browser hosts. There are NO changes to `host/src/node-kernel-worker-entry.ts` or `apps/browser-demos/lib/kernel-worker-entry.ts`. This is by design: the replay state lives in shared linear memory which fork already memcpys for both hosts. Verify by grepping for `dlopen` / `replay` in both kernel-worker-entry trees — both should be empty.

@@ -232,7 +232,7 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
 
 /**
  * Extract the constant value returned by a program's `__abi_version`
- * export, if present. The glue (`glue/channel_syscall.c`) defines this
+ * export, if present. The glue (`libc/glue/channel_syscall.c`) defines this
  * function as a single `i32.const N; end` (with the standard
  * export-wrapper `call __wasm_call_ctors` prefix), so we can read N
  * directly from the function body without instantiating.

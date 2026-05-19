@@ -9,7 +9,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
+GLUE_DIR="$REPO_ROOT/libc/glue"
 # Per-arch output dirs match the layout the resolver's
 # `place_binaries_symlinks` writes:
 # binaries/programs/<arch>/ and local-binaries/programs/<arch>/.

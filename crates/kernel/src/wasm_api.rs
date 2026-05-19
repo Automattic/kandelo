@@ -2134,7 +2134,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
     let a5 = args[4] as i32;
     let a6 = args[5] as i32;
 
-    // Syscall number constants (must match glue/syscall_glue.c)
+    // Syscall number constants (must match libc/glue/syscall_glue.c)
     match nr {
         // Process info (0-arg)
         28 => kernel_getpid(),         // SYS_GETPID

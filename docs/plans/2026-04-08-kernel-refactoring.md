@@ -155,14 +155,14 @@ feat: add ThreadPageAllocator for onClone deduplication
 
 **Files to modify (9 files):**
 1. `examples/run-example.ts`
-2. `examples/mariadb/serve.ts`
-3. `examples/redis/serve.ts`
-4. `examples/shell/serve.ts`
-5. `examples/wordpress/serve.ts`
-6. `examples/lamp/serve.ts`
-7. `examples/browser/lib/kernel-worker-entry.ts`
+2. `packages/registry/mariadb/demo/serve.ts`
+3. `packages/registry/redis/demo/serve.ts`
+4. `packages/registry/shell/demo/serve.ts`
+5. `packages/registry/wordpress/demo/serve.ts`
+6. `packages/registry/lamp/demo/serve.ts`
+7. `apps/browser-demos/lib/kernel-worker-entry.ts`
 8. `host/test/centralized-test-helper.ts`
-9. `examples/wordpress/test/wordpress-server.test.ts`
+9. `packages/registry/wordpress/test/wordpress-server.test.ts`
 
 For each file, the migration follows this pattern:
 

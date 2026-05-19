@@ -19,6 +19,6 @@ describe('findSysroot', () => {
 describe('findGlueDir', () => {
   it('resolves glue dir relative to SDK root', () => {
     const glueDir = findGlueDir();
-    expect(glueDir).toContain('glue');
+    expect(glueDir).toContain('libc/glue');
   });
 });

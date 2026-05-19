@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 
 /// Bit flags from `posix_spawnattr_t::__flags`. Values match POSIX / musl
-/// (`musl/include/spawn.h`):
+/// (`libc/musl/include/spawn.h`):
 ///
 /// ```text
 ///   POSIX_SPAWN_RESETIDS      = 1
@@ -105,7 +105,7 @@ pub enum FileAction {
 // This is the trust boundary between user code and the kernel — every read
 // is range-checked and any malformed offset/length yields `Errno::EINVAL`.
 
-/// File-action `op` codes shared with `glue/posix_spawn.c`.
+/// File-action `op` codes shared with `libc/glue/posix_spawn.c`.
 pub mod fdop {
     pub const OPEN: u32 = 0;
     pub const CLOSE: u32 = 1;

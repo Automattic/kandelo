@@ -136,11 +136,11 @@ on. Do NOT run the full 5-gate gauntlet between tasks; gauntlet is
 once at the end (C.13).
 
 **Pre-existing dirty state to ignore in commits:**
-- `examples/libs/{curl,libcurl,wget,git,file,bc,nano}-src/*` —
+- `packages/registry/{curl,libcurl,wget,git,file,bc,nano}-src/*` —
   rebuild byproducts on the worktree.
 - `package-lock.json` worktree-name diff (`"name": "deps-cache-v1"`).
 - The kernel `.deps/*.Po`/Makefile churn under
-  `examples/libs/{bc,curl,file,...}-src/`.
+  `packages/registry/{bc,curl,file,...}-src/`.
 - Various `host` / browser dist artifacts that appeared since the
   last clean checkout.
 
@@ -164,7 +164,7 @@ probe into `ensure_built`) needing the probe runner from C.9.
 ### Task C.1: Add `kind = "source"` parser + validator
 
 **Files:**
-- Modify: `xtask/src/deps_manifest.rs` (extend `validate_common`
+- Modify: `tools/xtask/src/deps_manifest.rs` (extend `validate_common`
   + add new tests in the `tests` module).
 
 **Goal:** Source-kind manifests already parse via the tagged-enum
@@ -187,7 +187,7 @@ The `[[host_tools]]`-on-source acceptance lands in C.7.
 
 **Step 1: Write the failing test**
 
-Add to `xtask/src/deps_manifest.rs` test module:
+Add to `tools/xtask/src/deps_manifest.rs` test module:
 
 ```rust
 #[test]
@@ -284,7 +284,7 @@ Run; expect PASS.
 **Step 6: Commit**
 
 ```bash
-git add xtask/src/deps_manifest.rs
+git add tools/xtask/src/deps_manifest.rs
 git commit -m "feat(xtask): reject [binary] on kind=\"source\" manifests
 
 Sources are arch-agnostic and ABI-agnostic per design decision 9; they
@@ -298,7 +298,7 @@ on them. Add the parse-time rejection alongside the existing
 ### Task C.2: Source-kind cache layout (no arch segment)
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (`canonical_path`).
+- Modify: `tools/xtask/src/build_deps.rs` (`canonical_path`).
 - Tests in the same file's `mod tests`.
 
 **Goal:** For `ManifestKind::Source`, drop the `<arch>` segment
@@ -309,7 +309,7 @@ arch). Other kinds unchanged: `libs/<name>-<v>-rev<N>-<arch>-<sha>/`,
 
 **Step 1: Write the failing test**
 
-Add to the `mod tests` block in `xtask/src/build_deps.rs`:
+Add to the `mod tests` block in `tools/xtask/src/build_deps.rs`:
 
 ```rust
 #[test]
@@ -387,7 +387,7 @@ existing `canonical_path_layout` test (library kind) still PASSES.
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): source-kind canonical path omits arch segment
 
 Sources are arch-agnostic per design 6 — a single cache entry serves
@@ -401,7 +401,7 @@ keeping libs/programs at <name>-<v>-rev<N>-<arch>-<sha>/."
 ### Task C.3: Source-kind cache-key sha (separate domain, no arch/abi inputs)
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (`compute_sha`).
+- Modify: `tools/xtask/src/build_deps.rs` (`compute_sha`).
 - Tests.
 
 **Goal:** Source-kind manifests get a separate sha domain so a
@@ -533,7 +533,7 @@ manifests are kind=library).
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): source-kind cache-key sha domain + arch/abi-free inputs
 
 compute_sha branches on ManifestKind. Source manifests use domain
@@ -549,13 +549,13 @@ ABI bumps (sources have neither attribute)."
 ### Task C.4: Resolver default fetch+extract path for source-kind (no [build].script)
 
 **Files:**
-- Create: `xtask/src/source_extract.rs` (new module — extract
+- Create: `tools/xtask/src/source_extract.rs` (new module — extract
   routines per archive format).
-- Modify: `xtask/src/main.rs` (declare module).
-- Modify: `xtask/Cargo.toml` (add `flate2`, `bzip2`, `xz2`).
-- Modify: `xtask/src/build_deps.rs` (route source-kind through
+- Modify: `tools/xtask/src/main.rs` (declare module).
+- Modify: `tools/xtask/Cargo.toml` (add `flate2`, `bzip2`, `xz2`).
+- Modify: `tools/xtask/src/build_deps.rs` (route source-kind through
   default extract when `[build].script` is absent).
-- Modify: `xtask/src/remote_fetch.rs` — extract `fetch_url` +
+- Modify: `tools/xtask/src/remote_fetch.rs` — extract `fetch_url` +
   `verify_sha` into `pub(crate)` so source-extract can reuse them
   (or re-implement; trivial helpers).
 
@@ -574,14 +574,14 @@ by:
 
 **Step 1: Promote `fetch_url` and `verify_sha` to crate-public**
 
-In `xtask/src/remote_fetch.rs`, change `fn fetch_url` and `fn
+In `tools/xtask/src/remote_fetch.rs`, change `fn fetch_url` and `fn
 verify_sha` from private to `pub(crate) fn`. Use the existing
 `FetchError` enum unchanged. (No test for this trivial visibility
 change; downstream tests in C.4 cover it.)
 
 **Step 2: Add archive-format crates**
 
-In `xtask/Cargo.toml`, add:
+In `tools/xtask/Cargo.toml`, add:
 
 ```toml
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
@@ -767,7 +767,7 @@ fn flatten_single_top_level(dest: &Path) -> Result<(), String> {
 }
 ```
 
-Add module declaration in `xtask/src/main.rs`:
+Add module declaration in `tools/xtask/src/main.rs`:
 
 ```rust
 mod source_extract;
@@ -775,7 +775,7 @@ mod source_extract;
 
 Also add `tempfile = "3"` to `[dev-dependencies]` if not already
 present (existing tests already use `tempfile`, so it should be —
-verify via `grep tempfile xtask/Cargo.toml`). For the zip path
+verify via `grep tempfile tools/xtask/Cargo.toml`). For the zip path
 we need it as a *runtime* dep, not just dev — move/promote
 accordingly.
 
@@ -905,7 +905,7 @@ Run all tests; verify PASS.
 
 **Step 5: Wire into `ensure_built_inner` for source-kind**
 
-In `xtask/src/build_deps.rs`, where the cache-miss path computes
+In `tools/xtask/src/build_deps.rs`, where the cache-miss path computes
 `canonical` and decides between remote-fetch / build-from-source,
 add a source-kind branch BEFORE the `[binary]` block (since
 sources never have `[binary]`):
@@ -954,7 +954,7 @@ if matches!(target.kind, ManifestKind::Source) && target.build.script.is_none() 
 
 **Step 6: Integration test**
 
-Add to `xtask/src/build_deps.rs` `mod tests`:
+Add to `tools/xtask/src/build_deps.rs` `mod tests`:
 
 ```rust
 #[test]
@@ -1026,8 +1026,8 @@ Run; verify PASS.
 **Step 7: Commit**
 
 ```bash
-git add xtask/Cargo.toml xtask/Cargo.lock xtask/src/source_extract.rs \
-        xtask/src/main.rs xtask/src/build_deps.rs xtask/src/remote_fetch.rs
+git add tools/xtask/Cargo.toml tools/xtask/Cargo.lock tools/xtask/src/source_extract.rs \
+        tools/xtask/src/main.rs tools/xtask/src/build_deps.rs tools/xtask/src/remote_fetch.rs
 git commit -m "feat(xtask): source-kind default fetch+extract path
 
 When a kind=\"source\" manifest declares no [build].script, the
@@ -1055,7 +1055,7 @@ path-traversal potential. Spec reviewer should confirm:
 ### Task C.5: Source-kind override [build].script path
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs`.
+- Modify: `tools/xtask/src/build_deps.rs`.
 - Tests.
 
 **Goal:** When a source-kind manifest declares `[build].script`,
@@ -1222,7 +1222,7 @@ fn validate_source_dir_nonempty(out_dir: &Path) -> Result<(), String> {
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): source-kind override [build].script path
 
 When a kind=\"source\" manifest declares [build].script, the resolver
@@ -1239,7 +1239,7 @@ outputs; non-emptiness is the only success indicator)."
 ### Task C.6: WASM_POSIX_DEP_<NAME>_SRC_DIR env var for source-kind direct deps
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (`ensure_built_inner` —
+- Modify: `tools/xtask/src/build_deps.rs` (`ensure_built_inner` —
   classify dep paths by kind; `build_into_cache` — emit
   `_SRC_DIR` for source-kind deps, `_DIR` for lib/program deps).
 - Tests.
@@ -1368,7 +1368,7 @@ for (name, dep) in dep_dirs {
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): export WASM_POSIX_DEP_<NAME>_SRC_DIR for source-kind deps
 
 A direct depends_on of a kind=\"source\" manifest now exports the
@@ -1384,7 +1384,7 @@ self-documenting indicator of what shape they're consuming."
 ### Task C.7: `[[host_tools]]` array-of-tables parser + validation
 
 **Files:**
-- Modify: `xtask/src/deps_manifest.rs`.
+- Modify: `tools/xtask/src/deps_manifest.rs`.
 - Tests.
 
 **Goal:** Parse an optional `host_tools = [...]` /
@@ -1412,7 +1412,7 @@ Defaults the parser fills in:
 
 **Step 1: Add types**
 
-In `xtask/src/deps_manifest.rs`:
+In `tools/xtask/src/deps_manifest.rs`:
 
 ```rust
 /// One entry in a manifest's `[[host_tools]]` array. Inline
@@ -1639,7 +1639,7 @@ Run; verify PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/deps_manifest.rs
+git add tools/xtask/src/deps_manifest.rs
 git commit -m "feat(xtask): parse [[host_tools]] array-of-tables on every manifest kind
 
 Per design 10, host-tool requirements declare inline on the
@@ -1657,7 +1657,7 @@ Reviewer cycle: yes — schema change.
 ### Task C.8: `version_constraint` parser (`>=X.Y[.Z]` only)
 
 **Files:**
-- Modify: `xtask/src/deps_manifest.rs` (or new submodule
+- Modify: `tools/xtask/src/deps_manifest.rs` (or new submodule
   `host_tools.rs` if convenient — pick what reviewer prefers; the
   plan assumes inline for brevity).
 - Tests.
@@ -1856,7 +1856,7 @@ Run; verify PASS.
 **Step 3: Commit**
 
 ```bash
-git add xtask/src/deps_manifest.rs
+git add tools/xtask/src/deps_manifest.rs
 git commit -m "feat(xtask): version_constraint parser — >=X.Y[.Z] only
 
 Per design 11, version constraints accept exactly two operators:
@@ -1877,9 +1877,9 @@ Reviewer cycle: yes — schema parser, easy to introduce subtle bugs.
 ### Task C.9: Probe runner
 
 **Files:**
-- Create: `xtask/src/host_tool_probe.rs`.
-- Modify: `xtask/src/main.rs` (declare module).
-- Modify: `xtask/Cargo.toml` (add `regex = "1"`).
+- Create: `tools/xtask/src/host_tool_probe.rs`.
+- Modify: `tools/xtask/src/main.rs` (declare module).
+- Modify: `tools/xtask/Cargo.toml` (add `regex = "1"`).
 - Tests in `host_tool_probe.rs`.
 
 **Goal:** Given a `HostToolDecl`, run its probe and return one of:
@@ -1906,7 +1906,7 @@ the matching `install_hints` entry on failure.
 
 **Step 1: Add regex dep**
 
-`xtask/Cargo.toml`:
+`tools/xtask/Cargo.toml`:
 ```toml
 regex = "1"
 ```
@@ -2007,7 +2007,7 @@ pub fn probe(decl: &HostToolDecl) -> Result<(), ProbeFailure> {
 }
 ```
 
-Add `pub mod host_tool_probe;` in `xtask/src/main.rs`.
+Add `pub mod host_tool_probe;` in `tools/xtask/src/main.rs`.
 
 **Step 3: Tests using a synthetic tool**
 
@@ -2135,7 +2135,7 @@ Run; verify PASS.
 **Step 5: Commit**
 
 ```bash
-git add xtask/Cargo.toml xtask/Cargo.lock xtask/src/host_tool_probe.rs xtask/src/main.rs
+git add tools/xtask/Cargo.toml tools/xtask/Cargo.lock tools/xtask/src/host_tool_probe.rs tools/xtask/src/main.rs
 git commit -m "feat(xtask): host-tool probe runner
 
 Probes a single HostToolDecl by spawning <name> with probe.args,
@@ -2154,7 +2154,7 @@ Reviewer cycle: yes — runs subprocesses, parses untrusted output.
 ### Task C.10: Integrate probe into `ensure_built`
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (`ensure_built_inner`).
+- Modify: `tools/xtask/src/build_deps.rs` (`ensure_built_inner`).
 - Tests.
 
 **Goal:** Before running ANY build script (whether
@@ -2340,7 +2340,7 @@ Run; verify PASS.
 **Step 4: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): integrate host-tool probe into ensure_built
 
 Probes run AFTER the cache-hit check (cached entries skip the
@@ -2362,7 +2362,7 @@ Reviewer cycle: yes — failure-rendering UX matters.
 ### Task C.11: `xtask build-deps check` subcommand
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` (`run`, new `cmd_check`).
+- Modify: `tools/xtask/src/build_deps.rs` (`run`, new `cmd_check`).
 - Tests.
 
 **Goal:** Walk the registry. For every host-tool name appearing
@@ -2632,7 +2632,7 @@ Run; verify PASS.
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat(xtask): build-deps check — host-tool consistency lint
 
 Walks the registry, groups [[host_tools]] declarations by name
@@ -2658,7 +2658,7 @@ defaults vs explicit overrides matter.
 - Modify: `docs/dependency-management.md` — add a "kind = source"
   section + "host_tools" section. Keep V1 prose as-is for now;
   Chunk F's capstone will rewrite the doc to V2 throughout.
-- Modify: `xtask/README.md` if it exists; otherwise create with a
+- Modify: `tools/xtask/README.md` if it exists; otherwise create with a
   one-paragraph note about the host-target requirement.
 
 **Goal:** New schema features documented at the level Chunk A and
@@ -2726,7 +2726,7 @@ git status -uno --short
 git log --oneline de11c0866..HEAD
 ```
 
-Pre-existing dirty files (the *-src directories under examples/libs)
+Pre-existing dirty files (the *-src directories under packages/registry)
 are NOT staged; only the C.1–C.12 commits should appear in the
 log range.
 

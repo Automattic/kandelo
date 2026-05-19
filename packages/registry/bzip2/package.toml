@@ -1,0 +1,20 @@
+kind = "program"
+name = "bzip2"
+version = "1.0.8"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+
+[license]
+spdx = "bzip2-1.0.6"
+url = "https://gitlab.com/bzip2/bzip2/-/blob/master/LICENSE"
+
+[build]
+script_path = "packages/registry/bzip2/build-bzip2.sh"
+
+[[outputs]]
+name = "bzip2"
+wasm = "bzip2.wasm"

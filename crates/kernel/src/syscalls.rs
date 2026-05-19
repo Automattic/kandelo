@@ -134,8 +134,8 @@ const SYNTHETIC_FILE_HANDLE: i64 = -100;
 /// Served at `/etc/ssl/cert.pem` so OpenSSL's `SSL_CTX_set_default_verify_paths`
 /// (which the wasm sysroot was built with `--openssldir=/etc/ssl`) finds a
 /// trust store without depending on the host filesystem. ~220 KB, refreshed
-/// manually via `examples/libs/openssl/fetch-cacert.sh`.
-const CACERT_PEM: &[u8] = include_bytes!("../../../examples/libs/openssl/cacert.pem");
+/// manually via `packages/registry/openssl/fetch-cacert.sh`.
+const CACERT_PEM: &[u8] = include_bytes!("../../../packages/registry/openssl/cacert.pem");
 
 /// Return static content for synthetic files that are not owned by rootfs.vfs.
 ///
@@ -5384,7 +5384,7 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
     }
 }
 
-/// Size of `struct tcp_info` (musl/linux, wasm32).
+/// Size of `struct tcp_info` (libc/musl/linux, wasm32).
 pub const TCP_INFO_SIZE: usize = 232;
 
 /// Build a virtual `struct tcp_info` for a socket.
@@ -10221,7 +10221,7 @@ mod tests {
     /// sys_fchownat with AT_FDCWD shares its propagation path with sys_chown
     /// (resolves path then calls host.host_chown). Round-trip via sys_stat to
     /// confirm the *at variant also reaches the host VFS — the syscall is
-    /// dispatched separately by libc-test/util-linux chown -h paths.
+    /// dispatched separately by tests/libc/libc-test/util-linux chown -h paths.
     #[test]
     fn test_sys_fchownat_round_trip_through_host() {
         use wasm_posix_shared::flags::AT_FDCWD;

@@ -37,7 +37,7 @@ RuntimeError: table index is out of bounds
    the master's table (e.g. 10721 + 34 = 10755).
 3. Master forks workers (`pm = static, pm.max_children = 2`).
    `handleFork` in
-   `examples/browser/lib/kernel-worker-entry.ts` (and the Node
+   `apps/browser-demos/lib/kernel-worker-entry.ts` (and the Node
    equivalent `host/src/node-kernel-worker-entry.ts`) memcpy's
    the master's linear memory into the child, but the child gets
    a *freshly instantiated* program module. Its
