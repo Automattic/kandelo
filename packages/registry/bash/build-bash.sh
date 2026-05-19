@@ -432,4 +432,4 @@ install_local_binary bash "$BIN_DIR/bash.wasm"
 
 echo ""
 echo "Run with:"
-echo "  npx tsx packages/examples/shell/serve.ts -c 'echo hello from bash'"
+echo "  npx tsx packages/registry/shell/demo/serve.ts -c 'echo hello from bash'"

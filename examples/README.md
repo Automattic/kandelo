@@ -3,8 +3,9 @@
 C programs demonstrating Kandelo kernel and SDK capabilities. Each can be
 compiled with the SDK and run on the TypeScript host.
 
-Package-specific demos, service harnesses, and package test drivers live under
-[`packages/examples/`](../packages/examples/). Browser-facing demos live under
+Package-specific demo launchers live under each package's
+`packages/registry/<name>/demo/` directory. Package integration test harnesses
+live under [`tests/packages/`](../tests/packages/). Browser-facing demos live under
 [`apps/browser-demos/`](../apps/browser-demos/).
 
 ## Building and Running
@@ -82,7 +83,8 @@ See [docs/porting-guide.md](../docs/porting-guide.md) for how to create new demo
 ### Ported Software
 
 Build scripts for real-world software are in `packages/registry/`. Runnable
-package examples and integration harnesses are in `packages/examples/`.
+package demos live in `packages/registry/<name>/demo/`, and package integration
+test harnesses live in `tests/packages/`.
 
 | Software | Build script | Binary output |
 |----------|-------------|---------------|

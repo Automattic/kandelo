@@ -46,7 +46,7 @@ const OPTIONAL_URLS = {
   ...import.meta.glob("../../../../packages/registry/erlang/beam.wasm", {
     query: "?url", import: "default",
   }),
-  ...import.meta.glob("../../../../packages/examples/nginx/nginx.wasm", {
+  ...import.meta.glob("../../../../packages/registry/nginx/nginx.wasm", {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../local-binaries/programs/wasm32/nginx.wasm", {

@@ -6,7 +6,7 @@ export default defineConfig({
       "test/**/*.test.ts",
       "../web-libs/**/*.test.ts",
       "../packages/registry/php/test/**/*.test.ts",
-      "../packages/examples/wordpress/test/**/*.test.ts",
+      "../tests/packages/wordpress/**/*.test.ts",
       "../examples/dlopen/**/*.test.ts",
     ],
     globalSetup: ["test/global-setup.ts"],

@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SQLITE3="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/sqlite.wasm 2>/dev/null || true)"
-TESTS_DIR="$REPO_ROOT/packages/examples/sqlite-test/tests"
+TESTS_DIR="$REPO_ROOT/tests/packages/sqlite/fixtures"
 
 # Per-test timeout
 TIMEOUT=30

@@ -203,11 +203,11 @@ Plus PR 5/5 Task 5.6 added an "ancestor-of-registered-path" inference to `MockHo
 
 **Demos** (Task 4.1 audit list):
 - `examples/run-hello.ts`
-- `packages/examples/nginx-test/nginx-wrapper.ts`
-- `packages/examples/mariadb-test/run-tests.ts`
-- `packages/examples/wordpress/test/wordpress-server.test.ts`
+- `tests/packages/nginx/nginx-wrapper.ts`
+- `tests/packages/mariadb/run-tests.ts`
+- `tests/packages/wordpress/wordpress-server.test.ts`
 - `packages/registry/openssl/test/ssl-basic.test.ts`
-- `packages/examples/cpython/debug-test.ts`
+- `tests/packages/cpython/debug-test.ts`
 
 **Tests** (the remainder; need re-audit before this group starts):
 - 10 more tests scattered across `host/test/` that the Task 4.1 audit found but didn't enumerate by name.

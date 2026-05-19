@@ -93,7 +93,7 @@ via a path→bytes map.
 
 ## Interactive shell (serve.ts)
 
-`packages/examples/shell/serve.ts`:
+`packages/registry/shell/demo/serve.ts`:
 - Boots kernel with dash as pid 1
 - Bridges host stdin/stdout for interactive terminal
 - Pre-loads all utility .wasm binaries

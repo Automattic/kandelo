@@ -157,7 +157,7 @@ Runs the Erlang/OTP BEAM VM, spawning 1000 lightweight processes in a ring topol
 |-----------|------|---------------|
 | BEAM VM | `packages/registry/erlang/bin/beam.wasm` | `bash packages/registry/erlang/build-erlang.sh` |
 | OTP libraries | `packages/registry/erlang/erlang-install/` | (built by same script) |
-| Ring program | `packages/examples/erlang/ring.beam` | (included in repo) |
+| Ring program | `packages/registry/erlang/demo/ring.beam` | (included in repo) |
 
 Build requirements: host Erlang/OTP 28 (`brew install erlang`), `wasm32posix-cc` SDK (`cd sdk && npm link`).
 
@@ -175,10 +175,10 @@ Runs PHP 8.4 with a full WordPress 6.7 installation. Two measurements: cold CLI 
 | Component | Path | Build command |
 |-----------|------|---------------|
 | PHP CLI | `packages/registry/php/php-src/sapi/cli/php` | `bash packages/registry/php/build-php.sh` |
-| WordPress | `packages/examples/wordpress/wordpress/wp-settings.php` | See below |
-| Router script | `packages/examples/wordpress/router.php` | (included in repo) |
+| WordPress | `packages/registry/wordpress/wordpress/wp-settings.php` | See below |
+| Router script | `packages/registry/wordpress/demo/router.php` | (included in repo) |
 
-Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically builds dependencies (SQLite, zlib, OpenSSL, libxml2). WordPress must be downloaded separately into `packages/examples/wordpress/wordpress/`.
+Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically builds dependencies (SQLite, zlib, OpenSSL, libxml2). WordPress must be downloaded separately into `packages/registry/wordpress/wordpress/`.
 
 #### mariadb
 
@@ -230,7 +230,7 @@ bash packages/registry/erlang/build-erlang.sh
 
 # 4. PHP + WordPress (PHP build includes SQLite, zlib, OpenSSL, libxml2)
 bash packages/registry/php/build-php.sh
-# Download WordPress into packages/examples/wordpress/wordpress/
+# Download WordPress into packages/registry/wordpress/wordpress/
 
 # 5. MariaDB (requires: brew install cmake)
 bash packages/registry/mariadb/build-mariadb.sh          # wasm32

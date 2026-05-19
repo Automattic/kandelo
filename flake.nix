@@ -153,7 +153,7 @@
             # doesn't help — the lib has to come from nixpkgs.
             pkgs.ncurses
             # sqlite3 CLI — host-side test helper. The WordPress
-            # site-editor test (`packages/examples/wordpress/test/wordpress-
+            # site-editor test (`tests/packages/wordpress/wordpress-
             # site-editor.test.ts`) polls the WP install's SQLite DB
             # via `execSync("sqlite3 ...")` to detect when WP is
             # ready; without this every poll prints "/bin/sh: 1:

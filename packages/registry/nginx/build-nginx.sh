@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# package-system build wrapper. The actual nginx build lives at
-# packages/examples/nginx/build.sh (predates the package-system package.toml registry); this
-# wrapper exists so the package-system resolver finds a build script in the
-# registry dir.
+# package-system build wrapper. The local nginx source build predates
+# package.toml, so it still lives in a separate helper in this registry package.
 #
 # The upstream script already installs into local-binaries/ via
 # scripts/install-local-binary.sh. Under the package-system resolver,
@@ -18,4 +16,4 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Force the upstream script to use the version this manifest pins.
 export NGINX_VERSION="${WASM_POSIX_DEP_VERSION:-1.24.0}"
 
-bash "$REPO_ROOT/packages/examples/nginx/build.sh"
+bash "$REPO_ROOT/packages/registry/nginx/build-nginx-local.sh"

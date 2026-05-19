@@ -596,15 +596,15 @@ kind-agnostic."
 
 ---
 
-### Task B.3: Migrate the test-program bundle to one `examples` manifest
+### Task B.3: Migrate the test-program bundle to one `kernel-test-programs` manifest
 
 **Files:**
-- Create: `packages/registry/examples/deps.toml`
+- Create: `packages/registry/kernel-test-programs/deps.toml`
 
 **What:**
 
 Per design decision 8 (multi-output) + decision 7 (no aliases): the V1
-`[examples]` canonical entry plus its 7 aliases (`exec-caller`,
+`[kernel-test-programs]` canonical entry plus its 7 aliases (`exec-caller`,
 `exec-child`, `fork-exec`, `ifhwaddr`, `mmap_shared_test`, `hello`,
 `hello64`) collapse into a single program manifest with multiple
 `[[outputs]]`. The "source" is the repo itself; the build script doesn't
@@ -633,7 +633,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 ```
 
 This passes parse (64-char lowercase hex). The cache-key sha will
-include this 0-string but no caching is invoked for `examples` outputs
+include this 0-string but no caching is invoked for `kernel-test-programs` outputs
 (stage-release.sh feeds binaries directly to bundle-program). When
 Chunk E switches to resolver-driven staging, the sha gets a real value.
 
@@ -641,7 +641,7 @@ Chunk E switches to resolver-driven staging, the sha gets a real value.
 
 ```toml
 kind = "program"
-name = "examples"
+name = "kernel-test-programs"
 version = "0.1.0"
 revision = 1
 
@@ -685,7 +685,7 @@ wasm = "hello64.wasm"
 **Step 3: Verify parse**
 
 ```bash
-cargo run -p xtask --target aarch64-apple-darwin -- build-deps parse examples
+cargo run -p xtask --target aarch64-apple-darwin -- build-deps parse kernel-test-programs
 ```
 
 Expected: prints normalised manifest with 7 outputs.
@@ -693,10 +693,10 @@ Expected: prints normalised manifest with 7 outputs.
 **Step 4: Commit**
 
 ```bash
-git add packages/registry/examples/deps.toml
-git commit -m "feat: add examples program manifest (7 outputs)
+git add packages/registry/kernel-test-programs/deps.toml
+git commit -m "feat: add kernel test program manifest (7 outputs)
 
-Replaces the V1 [examples] canonical entry plus its alias entries
+Replaces the V1 [kernel-test-programs] canonical entry plus its alias entries
 (exec-caller, exec-child, fork-exec, ifhwaddr, mmap_shared_test,
 hello, hello64) with a single multi-output manifest. Per design
 decision 8 (multi-output) + 7 (no aliases)."
@@ -1599,7 +1599,7 @@ See:
 
 - ~30 programs migrated; multi-output: git, php, diffutils,
   findutils, redis, mariadb. Composite VFS / in-repo: kernel,
-  userspace, examples, shell, lamp, node, wordpress.
+  userspace, kernel-test-programs, shell, lamp, node, wordpress.
 - Aliases retired: `sh`, `python`, `tclsh`. VFS demos already
   install the real binary at the desired path.
 - `curl` (program) and `libcurl` (library) are now distinct
@@ -1657,7 +1657,7 @@ gains a Chunk-B-shipped entry.
 | B.0  | 30 min — compute shas | none |
 | B.1  | 1.5–2 h — schema + tests | spec + quality |
 | B.2  | 1 h — resolver dispatch | spec + quality |
-| B.3  | 15 min — examples manifest | none |
+| B.3  | 15 min — kernel test program manifest | none |
 | B.4  | 1 h — 15 manifests + sha lookups | none |
 | B.5  | 1 h — 15 manifests | none |
 | B.6  | 30 min — 6 multi-output manifests | none |

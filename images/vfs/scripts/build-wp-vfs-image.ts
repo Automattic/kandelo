@@ -28,24 +28,23 @@ import { populateShellEnvironment } from "./shell-vfs-build";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
-const WP_EXAMPLE_DIR = join(REPO_ROOT, "examples", "wordpress");
+const WP_SOURCE_DIR = join(REPO_ROOT, "packages", "registry", "wordpress");
 // WordPress + SQLite-Database-Integration plugin trees: prefer the local
-// `packages/examples/wordpress/setup.sh` outputs if present (back-compat with
-// existing local workflows), otherwise download both via
-// source-extract-helper. The WP version + sha live in the wordpress
-// package's package.toml; the SQLite plugin is a wp.org-hosted zip with
-// no package.toml of its own, so its URL+sha are pinned here.
+// `packages/registry/wordpress/setup.sh` outputs if present, otherwise
+// download both via source-extract-helper. The WP version + sha live in the
+// wordpress package's package.toml; the SQLite plugin is a wp.org-hosted zip
+// with no package.toml of its own, so its URL+sha are pinned here.
 const SQLITE_PLUGIN_VERSION = "2.1.16";
 const SQLITE_PLUGIN_URL =
   `https://downloads.wordpress.org/plugin/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip`;
 const SQLITE_PLUGIN_SHA256 =
   "ccc69cada05983e6c2dac8c0962b548c437b4c96c00ea41b0e130fc128671391";
-const WP_DIR = ensureSourceExtract("wordpress", REPO_ROOT, join(WP_EXAMPLE_DIR, "wordpress"));
+const WP_DIR = ensureSourceExtract("wordpress", REPO_ROOT, join(WP_SOURCE_DIR, "wordpress"));
 const SQLITE_DIR = ensureExtract({
   url: SQLITE_PLUGIN_URL,
   sha256: SQLITE_PLUGIN_SHA256,
   cacheKey: `sqlite-database-integration-${SQLITE_PLUGIN_VERSION}`,
-  legacyPath: join(WP_EXAMPLE_DIR, "sqlite-database-integration"),
+  legacyPath: join(WP_SOURCE_DIR, "sqlite-database-integration"),
 });
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");

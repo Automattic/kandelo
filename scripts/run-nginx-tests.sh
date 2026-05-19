@@ -9,7 +9,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-NGINX_WRAPPER="$REPO_ROOT/packages/examples/nginx-test/nginx-wrapper.sh"
+NGINX_WRAPPER="$REPO_ROOT/tests/packages/nginx/nginx-wrapper.sh"
 TESTS_DIR="/tmp/nginx-tests"
 
 # Per-test timeout in seconds
@@ -122,7 +122,7 @@ if [ ! -x "$NGINX_WRAPPER" ]; then
   exit 1
 fi
 if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/nginx.wasm >/dev/null 2>&1; then
-  echo "FAIL: nginx.wasm not available. Run: scripts/fetch-binaries.sh (or bash packages/examples/nginx/build.sh)"
+  echo "FAIL: nginx.wasm not available. Run: scripts/fetch-binaries.sh (or bash packages/registry/nginx/build-nginx-local.sh)"
   exit 1
 fi
 if ! "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1; then

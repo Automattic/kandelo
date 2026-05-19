@@ -12,7 +12,7 @@ sha256 = "77a2541637b92a621e3ee76776c8b7b40cf6d707e69ba53a940283e30ff2f55d"
 spdx = "BSD-2-Clause"
 url = "https://nginx.org/LICENSE"
 
-# The actual build lives at packages/examples/nginx/build.sh (it's been there since
+# The actual build lives at packages/registry/nginx/build-nginx-local.sh (it's been there since
 # pre-package-system and does the configure-from-tarball + asyncify dance). Point the
 # resolver at it via [build].script_path.
 [build]

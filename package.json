@@ -2,9 +2,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "wordpress:build": "bash packages/examples/wordpress/build.sh",
-    "wordpress:serve": "npx tsx packages/examples/wordpress/serve.ts",
-    "wordpress:benchmark": "npx tsx packages/examples/wordpress/perf/benchmark.ts",
+    "wordpress:build": "bash packages/registry/wordpress/demo/build.sh",
+    "wordpress:serve": "npx tsx packages/registry/wordpress/demo/serve.ts",
+    "wordpress:benchmark": "npx tsx packages/registry/wordpress/demo/perf/benchmark.ts",
     "bench": "npx tsx benchmarks/run.ts",
     "bench:browser": "npx tsx benchmarks/run.ts --host browser",
     "bench:compare": "npx tsx benchmarks/compare.ts",

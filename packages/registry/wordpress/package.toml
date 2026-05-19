@@ -5,8 +5,8 @@ kernel_abi = 7
 # build-wp-vfs-image.ts:
 #   - uses `resolveBinary("programs/<x>.wasm")` (strict) for
 #     the eager shell toolset plus nginx/php-fpm
-#   - reads `packages/examples/wordpress/wordpress/` (the WordPress PHP source,
-#     downloaded by packages/examples/wordpress/setup.sh — invoked from
+#   - reads `packages/registry/wordpress/wordpress/` (the WordPress PHP source,
+#     downloaded by packages/registry/wordpress/setup.sh — invoked from
 #     build-wordpress.sh; not a registry package)
 #   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()`
 #     (strict — throws if neither tryResolveBinary nor the source-tree

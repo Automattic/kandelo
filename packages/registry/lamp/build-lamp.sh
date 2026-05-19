@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # Same WordPress-source bootstrap as build-wordpress.sh — see that file
 # for rationale. Idempotent.
-bash "$REPO_ROOT/packages/examples/wordpress/setup.sh"
+bash "$REPO_ROOT/packages/registry/wordpress/setup.sh"
 
 # Build the lazy-archive zips consumed by populateShellEnvironment().
 # lamp.vfs.zst bakes the eager shell environment, but vim/nethack are

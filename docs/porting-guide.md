@@ -704,7 +704,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | MariaDB | `packages/registry/mariadb/build-mariadb.sh` | CMake | Host build + cross build, Aria storage engine only |
 | Redis | `packages/registry/redis/build-redis.sh` | Makefile | Custom make invocation |
 | CPython | `packages/registry/cpython/build-cpython.sh` | autoconf | Host build for `_freeze_module`, then cross build |
-| nginx | `packages/examples/nginx/` | custom configure | Shell-based configure script |
+| nginx | `packages/registry/nginx/build-nginx-local.sh` | custom configure | Shell-based configure script |
 | SQLite | `packages/registry/sqlite/build-sqlite.sh` | custom | Single-file amalgamation |
 | zlib | `packages/registry/zlib/build-zlib.sh` | custom configure | Dependency for PHP |
 | libxml2 | `packages/registry/libxml2/build-libxml2.sh` | CMake | Dependency for PHP |

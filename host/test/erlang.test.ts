@@ -15,7 +15,7 @@ import { tryResolveBinary, findRepoRoot } from "../src/binary-resolver";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = findRepoRoot();
 const beamBinary = tryResolveBinary("programs/erlang/erlang.wasm");
-const serveScript = join(repoRoot, "packages/examples/erlang/serve.ts");
+const serveScript = join(repoRoot, "packages/registry/erlang/demo/serve.ts");
 
 // serve.ts passes -root/-bindir/-boot pointing at
 // `packages/registry/erlang/erlang-install/` on the host; NodeKernelHost
