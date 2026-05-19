@@ -1,0 +1,91 @@
+/* Page-specific styling for the multiplayer-DOOM-over-WebRTC demo.
+ * Layered on top of pages/webrtc/webrtc.css (which provides .handshake,
+ * .sdp-pane, .webrtc-controls, .webrtc-status). */
+
+.doom-mp-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.doom-mp-signaling {
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.role-selector {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+  color: #333;
+}
+
+.role-selector label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
+.role-selector .role-hint {
+  color: #777;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.doom-frame {
+  background: #000;
+  padding: 8px;
+  border: 1px solid #333;
+  border-radius: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+canvas#fb {
+  image-rendering: pixelated;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 8 / 5;
+  width: auto;
+  height: auto;
+  display: block;
+  outline: none;
+  background: #000;
+}
+
+.doom-controls {
+  color: #333;
+  font-size: 0.9em;
+  max-width: 800px;
+}
+
+.doom-controls dl {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+}
+
+.doom-controls dt {
+  font-family: monospace;
+  color: #06c;
+}
+
+.doom-mp-notes {
+  margin-top: 8px;
+  color: #555;
+  line-height: 1.5;
+}

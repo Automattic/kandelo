@@ -429,6 +429,7 @@ export default defineConfig({
         benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
         webrtc: path.resolve(__dirname, "pages/webrtc/index.html"),
         doom: path.resolve(__dirname, "pages/doom/index.html"),
+        "doom-mp": path.resolve(__dirname, "pages/doom-mp/index.html"),
         kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
         // The perl, python, ruby, erlang, texlive, and redis pages
         // are not part of this static build while their slow builds
