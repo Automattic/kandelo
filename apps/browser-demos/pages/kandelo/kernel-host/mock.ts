@@ -273,6 +273,8 @@ export class MockKernelHost implements KernelHost {
     // mode.
     return {
       sendInput: () => { /* no-op */ },
+      sendMouseEvent: () => { /* no-op */ },
+      startAudio: async () => null,
       getBoundPid: () => null,
       onBoundPidChange: () => () => { /* no-op */ },
       close: () => { /* no-op */ },

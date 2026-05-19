@@ -130,6 +130,7 @@ has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
 has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
+has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
 has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
 
 # Package-system entries: layout derived from package.toml's
@@ -278,6 +279,16 @@ need_host() {
     fi
 }
 
+need_rootfs() {
+    if ! has_rootfs; then
+        step "Building rootfs.vfs"
+        bash "$REPO_ROOT/scripts/build-rootfs.sh"
+        info "rootfs.vfs built"
+    else
+        info "rootfs.vfs"
+    fi
+}
+
 need_node_modules() {
     if [ ! -d "$REPO_ROOT/node_modules" ]; then
         warn "Installing root npm dependencies"
@@ -305,6 +316,10 @@ build_sdk() {
 
 build_host() {
     need_host
+}
+
+build_rootfs() {
+    need_rootfs
 }
 
 build_programs() {
@@ -1285,6 +1300,7 @@ build_target() {
         sysroot64)  build_sysroot64 ;;
         sdk)        build_sdk ;;
         host)       build_host ;;
+        rootfs)     build_rootfs ;;
         programs)   build_programs ;;
         nginx)      build_nginx ;;
         php)        build_php ;;
@@ -1364,7 +1380,7 @@ BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1384,6 +1400,7 @@ build_all() {
     build_sysroot
     build_sdk
     build_host
+    build_rootfs
     build_programs
     build_dash
     build_bash
@@ -1455,6 +1472,9 @@ clean_target() {
         host)
             rm -rf "$REPO_ROOT/host/dist"
             warn "Cleaned host" ;;
+        rootfs)
+            rm -f "$REPO_ROOT/host/wasm/rootfs.vfs"
+            warn "Cleaned rootfs.vfs" ;;
         programs)
             rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
@@ -1723,7 +1743,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -1995,6 +2015,7 @@ cmd_list() {
     echo "  sysroot64   musl libc sysroot (wasm64)           $(has_sysroot64 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sdk         SDK cross-compilation tools           $(has_sdk && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  host        TypeScript host (tsup)                $(has_host && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  rootfs      Canonical host rootfs.vfs             $(has_rootfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dash        dash 0.5.12 shell                      $(has_dash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  bash        bash 5.2 shell                         $(has_bash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

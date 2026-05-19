@@ -107,6 +107,20 @@ export interface KernelLike {
    */
   appendStdinData?(pid: number, data: Uint8Array): void;
   /**
+   * Inject one PS/2 mouse event into `/dev/input/mice`. Deltas use the
+   * device convention: positive X is right, positive Y is up; buttons are
+   * bit0=left, bit1=right, bit2=middle.
+   */
+  injectMouseEvent?(dx: number, dy: number, buttons: number): void;
+  /**
+   * Drain PCM bytes buffered in `/dev/dsp` for browser playback.
+   */
+  drainAudio?(maxBytes: number): Promise<{
+    bytes: Uint8Array;
+    sampleRate: number;
+    channels: number;
+  }>;
+  /**
    * Subscribe to the kernel-worker's live syscall trace. Each event
    * carries the raw syscall number + args + firing pid. The underlying
    * ring buffer is enabled lazily; nothing runs on the syscall hot path
@@ -219,23 +233,38 @@ export interface PtyHandle {
 
 /**
  * Handle returned by `attachFramebuffer`. The canvas is wired up to paint
- * frames; this handle lets the embedder send keyboard input to whichever
+ * frames; this handle lets the embedder bridge input/audio for whichever
  * process is currently bound to `/dev/fb0` (fbDOOM, fbtest, etc.).
  *
- * Input is delivered as raw bytes to the bound process's stdin — the same
- * channel fbDOOM reads scancodes from. Callers responsible for translating
- * DOM key events into the wire format the receiver expects (typically
- * Linux MEDIUMRAW scancodes; see `apps/browser-demos/pages/doom/main.ts`).
+ * Keyboard input is delivered as raw bytes to the bound process's stdin —
+ * the same channel fbDOOM reads scancodes from. Mouse input goes through
+ * `/dev/input/mice`; audio drains from `/dev/dsp`.
  */
 export interface FramebufferHandle {
   /** Send raw bytes to the fb-bound process's stdin. No-op if nothing is bound. */
   sendInput(bytes: Uint8Array): void;
+  /**
+   * Send one mouse event to `/dev/input/mice`. No-op if no framebuffer
+   * process is bound or the wrapped kernel lacks mouse injection support.
+   */
+  sendMouseEvent(dx: number, dy: number, buttons: number): void;
+  /**
+   * Start draining `/dev/dsp` into Web Audio. Returns null when the wrapped
+   * kernel does not expose audio draining.
+   */
+  startAudio(): Promise<AudioOutputHandle | null>;
   /** Pid currently bound to /dev/fb0, or null if no binding is live. */
   getBoundPid(): number | null;
   /** Subscribe to bound-pid changes. Fires with the new pid or null on unbind. */
   onBoundPidChange(cb: (pid: number | null) => void): () => void;
   /** Detach the canvas and stop forwarding events. */
   close(): void;
+}
+
+export interface AudioOutputHandle {
+  resume(): Promise<void>;
+  close(): void;
+  getState(): AudioContextState | "unavailable";
 }
 
 export type WebPreviewStatus = "starting" | "running" | "error";
@@ -431,8 +460,8 @@ export interface KernelHost {
   syscallHistory(filter?: SyscallFilter): SyscallEvent[];
 
   // framebuffer — mirrors /dev/fb0 into a 2D canvas and returns a handle
-  // that the embedder uses to forward keyboard / mouse input into the
-  // bound process's stdin.
+  // that the embedder uses to forward keyboard, mouse, and audio device
+  // traffic for the bound process.
   attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
@@ -1229,17 +1258,23 @@ export class LiveKernelHost implements KernelHost {
       setBoundPid(null);
     });
 
+    const ensureStillBound = (): number | null => {
+      if (attachedPid === null) return null;
+      const stillBound = registry.list().some((entry) => entry.pid === attachedPid);
+      if (!stillBound) {
+        stop?.();
+        stop = null;
+        clearCanvas();
+        setBoundPid(null);
+        return null;
+      }
+      return attachedPid;
+    };
+
     return {
       sendInput: (bytes) => {
-        if (attachedPid === null) return;
-        const stillBound = registry.list().some((entry) => entry.pid === attachedPid);
-        if (!stillBound) {
-          stop?.();
-          stop = null;
-          clearCanvas();
-          setBoundPid(null);
-          return;
-        }
+        const pid = ensureStillBound();
+        if (pid === null) return;
         // Route input to the source the bound process actually reads from.
         // Sending to both would leak unread bytes into bash's PTY buffer
         // when a standalone fb process exits, polluting the next bash
@@ -1247,8 +1282,19 @@ export class LiveKernelHost implements KernelHost {
         if (attachedUsesPty && this.shellPid !== null) {
           kernel.ptyWrite(this.shellPid, bytes);
         } else if (kernel.appendStdinData) {
-          kernel.appendStdinData(attachedPid, bytes);
+          kernel.appendStdinData(pid, bytes);
         }
+      },
+      sendMouseEvent: (dx, dy, buttons) => {
+        if (ensureStillBound() === null) return;
+        kernel.injectMouseEvent?.(dx, dy, buttons);
+      },
+      startAudio: async () => {
+        if (!kernel.drainAudio) return null;
+        const { createPcmAudioScheduler } = await import("../../../host/src/framebuffer/browser-controls.js");
+        return createPcmAudioScheduler({
+          drainAudio: kernel.drainAudio.bind(kernel),
+        });
       },
       getBoundPid: () => attachedPid,
       onBoundPidChange: (cb) => boundPidListeners.add(cb),
