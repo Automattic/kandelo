@@ -1060,6 +1060,7 @@ export async function centralizedWorkerMain(
       } catch (e) {
         if (e instanceof Error && e.message.includes("unreachable")) {
           console.error(`[worker] pid=${pid} _start() hit unreachable trap: ${e.message}`);
+          console.error(e.stack || e.message);
           exitCode = 0;
         } else {
           throw e;

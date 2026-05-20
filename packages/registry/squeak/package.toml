@@ -1,0 +1,20 @@
+kind = "program"
+name = "squeak"
+version = "5.0-20260518"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/OpenSmalltalk/opensmalltalk-vm"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/OpenSmalltalk/opensmalltalk-vm/blob/Cog/LICENSE"
+
+[build]
+script_path = "packages/registry/squeak/build-squeak.sh"
+
+[[outputs]]
+name = "squeak"
+wasm = "squeak.wasm"

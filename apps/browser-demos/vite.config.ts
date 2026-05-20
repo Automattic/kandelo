@@ -343,6 +343,40 @@ function injectCorsProxyUrl(): Plugin {
   };
 }
 
+const pageInputs = {
+  main: path.resolve(__dirname, "index.html"),
+  nginx: path.resolve(__dirname, "pages/nginx/index.html"),
+  php: path.resolve(__dirname, "pages/php/index.html"),
+  "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
+  mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
+  wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
+  lamp: path.resolve(__dirname, "pages/lamp/index.html"),
+  shell: path.resolve(__dirname, "pages/shell/index.html"),
+  node: path.resolve(__dirname, "pages/node/index.html"),
+  "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
+  "git-test": path.resolve(__dirname, "pages/git-test/index.html"),
+  "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
+  benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
+  doom: path.resolve(__dirname, "pages/doom/index.html"),
+  squeak: path.resolve(__dirname, "pages/squeak/index.html"),
+  kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
+  // The perl, python, ruby, erlang, texlive, and redis pages
+  // are not part of this static build while their slow builds
+  // live in kandelo-software. The root gallery fetches that
+  // repo's gallery.json and index.toml at runtime to expose
+  // available third-party VFS builds without adding page inputs.
+};
+
+function selectedPageInputs(): Partial<typeof pageInputs> {
+  const only = process.env.VITE_ONLY_PAGE;
+  if (!only) return pageInputs;
+  const input = pageInputs[only as keyof typeof pageInputs];
+  if (!input) {
+    throw new Error(`Unknown VITE_ONLY_PAGE=${only}`);
+  }
+  return { [only]: input };
+}
+
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
   resolve: {
@@ -370,6 +404,11 @@ export default defineConfig({
       allow: [repoRoot],
     },
   },
+  optimizeDeps: {
+    entries: Object.values(selectedPageInputs()).map((input) =>
+      path.relative(__dirname, input)
+    ),
+  },
   build: {
     // Use terser instead of esbuild for minification. esbuild's minifier
     // drops variable declarations from TypeScript const-enum IIFEs in
@@ -378,28 +417,7 @@ export default defineConfig({
     // (Firefox).
     minify: "terser",
     rollupOptions: {
-      input: {
-        main: path.resolve(__dirname, "index.html"),
-        nginx: path.resolve(__dirname, "pages/nginx/index.html"),
-        php: path.resolve(__dirname, "pages/php/index.html"),
-        "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
-        mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
-        wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
-        lamp: path.resolve(__dirname, "pages/lamp/index.html"),
-        shell: path.resolve(__dirname, "pages/shell/index.html"),
-        node: path.resolve(__dirname, "pages/node/index.html"),
-        "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
-        "git-test": path.resolve(__dirname, "pages/git-test/index.html"),
-        "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
-        benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
-        doom: path.resolve(__dirname, "pages/doom/index.html"),
-        kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
-        // The perl, python, ruby, erlang, texlive, and redis pages
-        // are not part of this static build while their slow builds
-        // live in kandelo-software. The root gallery fetches that
-        // repo's gallery.json and index.toml at runtime to expose
-        // available third-party VFS builds without adding page inputs.
-      },
+      input: selectedPageInputs(),
     },
   },
   worker: {

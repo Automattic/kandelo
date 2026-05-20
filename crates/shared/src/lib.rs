@@ -1192,10 +1192,25 @@ pub mod oss {
     pub const SNDCTL_DSP_SETFMT: u32 = 0xc0045005;
     /// `SNDCTL_DSP_CHANNELS` — get/set explicit channel count. inout: i32.
     pub const SNDCTL_DSP_CHANNELS: u32 = 0xc0045006;
+    /// `SNDCTL_DSP_GETOSPACE` — output buffer status. out: audio_buf_info.
+    pub const SNDCTL_DSP_GETOSPACE: u32 = 0x8010500c;
+    /// `SNDCTL_DSP_GETISPACE` — input buffer status. out: audio_buf_info.
+    pub const SNDCTL_DSP_GETISPACE: u32 = 0x8010500d;
     /// `SNDCTL_DSP_GETFMTS` — bitmask of supported formats. out: i32 AFMT_* mask.
     pub const SNDCTL_DSP_GETFMTS: u32 = 0x8004500b;
     /// `SNDCTL_DSP_SETFRAGMENT` — fragment-size hint. inout: i32.
     pub const SNDCTL_DSP_SETFRAGMENT: u32 = 0xc004500a;
+    /// `SNDCTL_DSP_GETCAPS` — device capability bitmask. out: i32.
+    pub const SNDCTL_DSP_GETCAPS: u32 = 0x8004500f;
+    /// `SNDCTL_DSP_GETTRIGGER` — playback/record trigger mask. out: i32.
+    pub const SNDCTL_DSP_GETTRIGGER: u32 = 0x80045010;
+    /// `SNDCTL_DSP_SETTRIGGER` — playback/record trigger mask. in: i32.
+    pub const SNDCTL_DSP_SETTRIGGER: u32 = 0x40045010;
+    /// `SNDCTL_DSP_SETDUPLEX` — request full-duplex mode. No argument.
+    pub const SNDCTL_DSP_SETDUPLEX: u32 = 0x00005016;
+
+    /// OSS output trigger bit.
+    pub const PCM_ENABLE_OUTPUT: u32 = 0x00000002;
 
     /// `AFMT_S16_LE` — signed 16-bit little-endian. The only format we accept.
     pub const AFMT_S16_LE: u32 = 0x10;

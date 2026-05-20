@@ -369,12 +369,37 @@ fn proc_has_dsp_fd(proc: &Process) -> bool {
 /// Anything else returns `ENOTTY`.
 fn handle_dsp_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::oss::*;
+    const DSP_FRAGMENT_BYTES: i32 = 4096;
+    const DSP_OUTPUT_BYTES: i32 = 64 * 1024;
+
+    fn write_i32(buf: &mut [u8], value: i32) -> Result<(), Errno> {
+        if buf.len() < 4 {
+            return Err(Errno::EINVAL);
+        }
+        buf[0..4].copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn write_audio_buf_info(buf: &mut [u8], bytes: i32) -> Result<(), Errno> {
+        if buf.len() < 16 {
+            return Err(Errno::EINVAL);
+        }
+        let fragments = (bytes / DSP_FRAGMENT_BYTES).max(1);
+        let fields = [fragments, fragments, DSP_FRAGMENT_BYTES, bytes];
+        for (idx, field) in fields.iter().enumerate() {
+            let at = idx * 4;
+            buf[at..at + 4].copy_from_slice(&field.to_le_bytes());
+        }
+        Ok(())
+    }
+
     match request {
         SNDCTL_DSP_RESET => {
             crate::audio::reset();
             Ok(())
         }
         SNDCTL_DSP_SYNC => Ok(()),
+        SNDCTL_DSP_SETDUPLEX => Ok(()),
         SNDCTL_DSP_SPEED => {
             if buf.len() < 4 {
                 return Err(Errno::EINVAL);
@@ -425,6 +450,12 @@ fn handle_dsp_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
             buf[0..4].copy_from_slice(&crate::audio::AFMT_S16_LE.to_le_bytes());
             Ok(())
         }
+        SNDCTL_DSP_GETBLKSIZE => write_i32(buf, DSP_FRAGMENT_BYTES),
+        SNDCTL_DSP_GETCAPS => write_i32(buf, 0),
+        SNDCTL_DSP_GETTRIGGER => write_i32(buf, PCM_ENABLE_OUTPUT as i32),
+        SNDCTL_DSP_SETTRIGGER => Ok(()),
+        SNDCTL_DSP_GETOSPACE => write_audio_buf_info(buf, DSP_OUTPUT_BYTES),
+        SNDCTL_DSP_GETISPACE => write_audio_buf_info(buf, 0),
         SNDCTL_DSP_SETFRAGMENT => {
             // Accept silently — fragment hints don't apply to the
             // host-side AudioContext path. Echo the value the caller

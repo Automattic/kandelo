@@ -1,0 +1,686 @@
+diff --git a/platforms/Cross/vm/sqAtomicOps.h b/platforms/Cross/vm/sqAtomicOps.h
+index 9852699d7..fe99c26b1 100644
+--- a/platforms/Cross/vm/sqAtomicOps.h
++++ b/platforms/Cross/vm/sqAtomicOps.h
+@@ -203,7 +203,11 @@ AtomicGet(__int64 *target)
+ 
+ # else /* TARGET_OS_IS_IPHONE elif x86 variants etc */
+ 
+-#if defined(__arm__) && (defined(__ARM_ARCH_6__) || defined(__ARM_ARCH_7A__))
++#if defined(__wasm32__)
++# define get64(variable) __atomic_load_n(&(variable), __ATOMIC_SEQ_CST)
++# define set64(variable,value) __atomic_store_n(&(variable), (value), __ATOMIC_SEQ_CST)
++
++#elif defined(__arm__) && (defined(__ARM_ARCH_6__) || defined(__ARM_ARCH_7A__))
+ /* tpr - this is code intended for the Raspberry Pi Raspbian OS 
+  * We'll experimentally trust in our MMU to keep 64bit accesses atomic */
+ # define get64(variable) variable
+diff --git a/platforms/Cross/vm/sqCogStackAlignment.h b/platforms/Cross/vm/sqCogStackAlignment.h
+index 1820328d9..b470841cc 100644
+--- a/platforms/Cross/vm/sqCogStackAlignment.h
++++ b/platforms/Cross/vm/sqCogStackAlignment.h
+@@ -17,6 +17,11 @@
+ /* getReturnAddress optionally defined here rather than in sqPlatformSpecific.h
+  * to reduce duplication. The GCC intrinics are provided by other compilers too.
+  */
++
++#if COGVM && defined(__wasm32__) && !defined(getReturnAddress)
++# define getReturnAddress() 0
++#endif
++
+ #if COGVM && !defined(getReturnAddress)
+ # if _MSC_VER
+ #	define getReturnAddress() _ReturnAddress()
+diff --git a/platforms/Cross/vm/sqExternalSemaphores.c b/platforms/Cross/vm/sqExternalSemaphores.c
+index beff1c366..3250ddcd0 100644
+--- a/platforms/Cross/vm/sqExternalSemaphores.c
++++ b/platforms/Cross/vm/sqExternalSemaphores.c
+@@ -57,7 +57,7 @@
+ #if !COGMTVM
+ sqOSThread ioVMThread; /* initialized in the various <plat>/vm/sqFooMain.c */
+ #endif
+-extern void forceInterruptCheck(void);
++extern sqInt forceInterruptCheck(void);
+ extern sqInt doSignalSemaphoreWithIndex(sqInt semaIndex);
+ 
+ /* Use 16-bit counters if possible, otherwise 32-bit */
+diff --git a/platforms/Cross/vm/sqVirtualMachine.h b/platforms/Cross/vm/sqVirtualMachine.h
+index 6feefe535..7c34fa942 100755
+--- a/platforms/Cross/vm/sqVirtualMachine.h
++++ b/platforms/Cross/vm/sqVirtualMachine.h
+@@ -233,7 +233,7 @@ typedef struct VirtualMachine {
+ 
+ #if VM_PROXY_MINOR > 5
+ 	sqInt (*isArray)(sqInt oop);
+-	void (*forceInterruptCheck)(void);
++	sqInt (*forceInterruptCheck)(void);
+ #endif
+ 
+ #if VM_PROXY_MINOR > 6
+@@ -528,7 +528,7 @@ sqInt superclassOf(sqInt classPointer);
+ unsigned int ioMicroMSecs(void);
+ usqLong  ioUTCMicroseconds(void);
+ usqLong  ioUTCMicrosecondsNow(void);
+-void forceInterruptCheck(void);
++sqInt forceInterruptCheck(void);
+ sqInt getThisSessionID(void);
+ sqInt ioFilenamefromStringofLengthresolveAliases(char* aCharBuffer, char* filenameIndex, sqInt filenameLength, sqInt resolveFlag);
+ sqInt vmEndianness(void);	
+diff --git a/platforms/unix/config/configure b/platforms/unix/config/configure
+index ebf142180..60de19d5d 100755
+--- a/platforms/unix/config/configure
++++ b/platforms/unix/config/configure
+@@ -13302,10 +13302,8 @@ fi
+   { $as_echo "$as_me:${as_lineno-$LINENO}: checking \"size of int\"" >&5
+ $as_echo_n "checking \"size of int\"... " >&6; }
+   if test "$cross_compiling" = yes; then :
+-  { { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
+-$as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
+-as_fn_error $? "cannot run test program while cross compiling
+-See \`config.log' for more details" "$LINENO" 5; }
++  { $as_echo "$as_me:${as_lineno-$LINENO}: result: \"okay\"" >&5
++$as_echo "\"okay\"" >&6; }
+ else
+   cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+@@ -13328,10 +13326,8 @@ fi
+   { $as_echo "$as_me:${as_lineno-$LINENO}: checking \"size of double\"" >&5
+ $as_echo_n "checking \"size of double\"... " >&6; }
+   if test "$cross_compiling" = yes; then :
+-  { { $as_echo "$as_me:${as_lineno-$LINENO}: error: in \`$ac_pwd':" >&5
+-$as_echo "$as_me: error: in \`$ac_pwd':" >&2;}
+-as_fn_error $? "cannot run test program while cross compiling
+-See \`config.log' for more details" "$LINENO" 5; }
++  { $as_echo "$as_me:${as_lineno-$LINENO}: result: \"okay\"" >&5
++$as_echo "\"okay\"" >&6; }
+ else
+   cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+ /* end confdefs.h.  */
+@@ -22044,4 +22040,3 @@ if test -n "$ac_unrecognized_opts" && test "$enable_option_checking" != no; then
+   { $as_echo "$as_me:${as_lineno-$LINENO}: WARNING: unrecognized options: $ac_unrecognized_opts" >&5
+ $as_echo "$as_me: WARNING: unrecognized options: $ac_unrecognized_opts" >&2;}
+ fi
+-
+diff --git a/platforms/unix/vm-display-fbdev/sqUnixFBDev.c b/platforms/unix/vm-display-fbdev/sqUnixFBDev.c
+index 451084c68..be958a5b5 100644
+--- a/platforms/unix/vm-display-fbdev/sqUnixFBDev.c
++++ b/platforms/unix/vm-display-fbdev/sqUnixFBDev.c
+@@ -335,14 +335,18 @@ static sqInt display_ioScreenSize(void)
+ 
+ static sqInt display_ioSetCursorWithMask(sqInt cursorBitsIndex, sqInt cursorMaskIndex, sqInt offsetX, sqInt offsetY)
+ {
++#if defined(__wasm32__)
++  return 1;
++#else
+   fb_setCursor(fb, pointerForOop(cursorBitsIndex), pointerForOop(cursorMaskIndex), offsetX, offsetY);
+   return 1;
++#endif
+ }
+ 
+ 
+ static sqInt display_ioSetCursorARGB(sqInt cursorBitsIndex, sqInt extentX, sqInt extentY, sqInt offsetX, sqInt offsetY)
+ {
+-  return 0;
++  return 1;
+ }
+ 
+ 
+@@ -455,7 +459,9 @@ static void display_parseEnvironment(void)
+   if ((ev= getenv("SQUEAK_FBDEV")))	fbDev=    strdup(ev);
+   if ((ev= getenv("SQUEAK_KBMAP")))	kmPath=   strdup(ev);
+   if ((ev= getenv("SQUEAK_MSDEV")))	msDev=    strdup(ev);
++#if !defined(__wasm32__)
+   if ((ev= getenv("SQUEAK_KBDEV")))	kbDev.kbName=    strdup(ev);
++#endif
+   if ((ev= getenv("SQUEAK_MSPROTO")))	msProto=  strdup(ev);
+   if ((ev= getenv("SQUEAK_VTLOCK")))	vtLock=   1;
+   if ((ev= getenv("SQUEAK_VTSWITCH")))	vtSwitch= 1;
+@@ -475,7 +481,11 @@ static int display_parseArgument(int argc, char **argv)
+       if      (!strcmp(arg, "-fbdev"))	 fbDev=   argv[1];
+       else if (!strcmp(arg, "-kbmap"))	 kmPath=  argv[1];
+       else if (!strcmp(arg, "-msdev"))	 msDev=   argv[1];
+-      else if (!strcmp(arg, "-kbdev"))	 kbDev.kbName=   argv[1]; 
++      else if (!strcmp(arg, "-kbdev"))	 {
++#if !defined(__wasm32__)
++        kbDev.kbName= argv[1];
++#endif
++      }
+       else if (!strcmp(arg, "-msproto")) msProto= argv[1];
+       else
+ 	n= 0;	/* not recognised */
+@@ -501,9 +511,16 @@ static sqInt display_dndOutAcceptedType(char * buf, int nbuf)	{ return 0; }
+ static sqInt display_dndReceived(char *fileName)	{ return 0; }
+ 
+ static sqInt display_ioFormPrint(sqInt bits, sqInt w, sqInt h, sqInt d, double hs, double vs, sqInt l)	{ return 0; }
+-static sqInt display_ioSetFullScreen(sqInt fullScreen)							{ return 0; }
+-static sqInt display_ioForceDisplayUpdate(void)								{ return 0; }
+-static sqInt display_ioSetDisplayMode(sqInt width, sqInt height, sqInt depth, sqInt fullscreenFlag)		{ return 0; }
++static sqInt display_ioSetFullScreen(sqInt fullScreen)							{ return 1; }
++static sqInt display_ioForceDisplayUpdate(void)								{ return 1; }
++static sqInt display_ioSetDisplayMode(sqInt width, sqInt height, sqInt depth, sqInt fullscreenFlag)
++{
++#if defined(__wasm32__)
++  return depth == fb_depth(fb);
++#else
++  return 0;
++#endif
++}
+ static void display_winSetName(char *imageName)								{ return  ; }
+ static void display_winExit(void)									{ return  ; }
+ static long  display_winImageFind(char *buf, int len)							{ return 0; }
+diff --git a/platforms/unix/vm-display-fbdev/sqUnixFBDevFramebuffer.c b/platforms/unix/vm-display-fbdev/sqUnixFBDevFramebuffer.c
+index c5416b20e..5583f360b 100644
+--- a/platforms/unix/vm-display-fbdev/sqUnixFBDevFramebuffer.c
++++ b/platforms/unix/vm-display-fbdev/sqUnixFBDevFramebuffer.c
+@@ -46,8 +46,10 @@
+ typedef uint32_t pixel_t;
+ 
+ #include <linux/fb.h>
++#if !defined(__wasm32__)
+ #include <linux/vt.h>
+ #include <linux/kd.h>
++#endif
+ 
+ /* Eye Candy: Because white pixels are boring.. */
+ #include "Balloon.h"
+@@ -699,7 +701,9 @@ static void fb_initGraphics(_self)
+   showBalloonAt(self,x-(x/2),y-(y/2)) ;
+   showBalloonAt(self,x-(x/2),y+(y/2)) ;
+   /* let the user notice the balloons */
++#if !defined(__wasm32__)
+   aioSleepForUsecs( 1000000 ) ; 
++#endif
+ }
+ 
+ 
+diff --git a/platforms/unix/vm-display-fbdev/sqUnixFBDevKeyboard.c b/platforms/unix/vm-display-fbdev/sqUnixFBDevKeyboard.c
+index bb88eb5dc..b4bdf54e1 100644
+--- a/platforms/unix/vm-display-fbdev/sqUnixFBDevKeyboard.c
++++ b/platforms/unix/vm-display-fbdev/sqUnixFBDevKeyboard.c
+@@ -40,9 +40,11 @@
+ #include <termios.h>
+ #include <sys/ioctl.h>
+ 
++#if !defined(__wasm32__)
+ #include <linux/keyboard.h>
+ #include <linux/kd.h>
+ #include <linux/vt.h>
++#endif
+ 
+ 
+ #define _self	struct kb *self
+@@ -50,6 +52,51 @@
+ 
+ typedef void (*kb_callback_t)(int key, int up, int mod);
+ 
++#if defined(__wasm32__)
++
++struct kb
++{
++  char		 *kbName;
++  int		  fd;
++  kb_callback_t	  callback;
++};
++
++static void kb_noCallback(int k, int u, int s) {}
++
++static kb_callback_t kb_setCallback(_self, kb_callback_t callback)
++{
++  kb_callback_t old= self->callback;
++  self->callback= callback ? callback : kb_noCallback;
++  return old;
++}
++
++static void kb_bell(_self) {}
++static void kb_initGraphics(_self) {}
++static void kb_freeGraphics(_self) {}
++
++void kb_open(_self, int vtSwitch, int vtLock)
++{
++  self->kbName= "wasm-keyboard";
++  self->fd= -1;
++}
++
++void kb_close(_self) {}
++
++struct kb *kb_new(void)
++{
++  _self= (struct kb *)calloc(1, sizeof(struct kb));
++  self->fd= -1;
++  self->callback= kb_noCallback;
++  return self;
++}
++
++void kb_delete(_self)
++{
++  free(self);
++}
++
++#else
++
+ struct kb
+ {
+   char			 *kbName;
+@@ -354,5 +401,6 @@ void kb_delete(_self)
+   free(self);
+ }
+ 
++#endif
+ 
+ #undef _self
+diff --git a/platforms/unix/vm-display-fbdev/sqUnixFBDevMousePS2.c b/platforms/unix/vm-display-fbdev/sqUnixFBDevMousePS2.c
+index 2489baa36..4020d1bad 100644
+--- a/platforms/unix/vm-display-fbdev/sqUnixFBDevMousePS2.c
++++ b/platforms/unix/vm-display-fbdev/sqUnixFBDevMousePS2.c
+@@ -199,10 +199,13 @@ static int ms_ps2_reset(_self)
+ 
+ static void ms_ps2_init(_self)
+ {
++#if defined(__wasm32__)
++  return;
++#else
+   int id;
+   ms_ps2_disable(self);
+   id= ms_ps2_reset(self);
+   DPRINTF("%s: mouse id %02x\n", self->msName, id);
+   ms_ps2_enable(self);
++#endif
+ }
+-
+diff --git a/platforms/unix/vm/include_ucontext.h b/platforms/unix/vm/include_ucontext.h
+index 3fb578445..6ec6b470f 100644
+--- a/platforms/unix/vm/include_ucontext.h
++++ b/platforms/unix/vm/include_ucontext.h
+@@ -85,6 +85,10 @@
+ # define _PC_IN_UCONTEXT uc_mcontext.arm_pc
+ # define _FP_IN_UCONTEXT uc_mcontext.arm_fp
+ # define _SP_IN_UCONTEXT uc_mcontext.arm_sp
++#elif defined(__wasm32__)
++# define _PC_IN_UCONTEXT uc_flags
++# define _FP_IN_UCONTEXT uc_flags
++# define _SP_IN_UCONTEXT uc_flags
+ #elif __linux__ && __riscv64__
+ # define _PC_IN_UCONTEXT uc_mcontext.__gregs[0]
+ # define _FP_IN_UCONTEXT uc_mcontext.__gregs[8]
+diff --git a/platforms/unix/vm/sqUnixExternalPrims.c b/platforms/unix/vm/sqUnixExternalPrims.c
+index a2bf7956b..68b9e7247 100644
+--- a/platforms/unix/vm/sqUnixExternalPrims.c
++++ b/platforms/unix/vm/sqUnixExternalPrims.c
+@@ -48,6 +48,49 @@
+ # include "dlfcn-dyld.c"
+ #endif
+ 
++#if defined(__wasm32__)
++
++#include "SqModule.h"
++
++extern struct SqModule display_fbdev;
++extern struct SqModule sound_OSS;
++
++void *ioLoadModule(char *pluginName)
++{
++  if (!pluginName || !*pluginName)
++    return (void *)1;
++  return 0;
++}
++
++#if SPURVM
++void *
++ioFindExternalFunctionInMetadataInto(char *lookupName, void *moduleHandle,
++											sqInt *metadataPtr)
++#else
++void *
++ioFindExternalFunctionIn(char *lookupName, void *moduleHandle)
++#endif
++{
++  (void)moduleHandle;
++#if SPURVM
++  if (metadataPtr)
++    *metadataPtr= NullSpurMetadata;
++#endif
++  if (!strcmp(lookupName, "display_fbdev"))
++    return &display_fbdev;
++  if (!strcmp(lookupName, "sound_OSS"))
++    return &sound_OSS;
++  return 0;
++}
++
++sqInt ioFreeModule(void *moduleHandle)
++{
++  (void)moduleHandle;
++  return 1;
++}
++
++#else
++
+ #if defined(HAVE_LIBDL)	/* non-starter without this! */
+ 
+ #ifdef HAVE_DLFCN_H
+@@ -519,3 +562,5 @@ sqInt ioFreeModule(void *moduleHandle)
+ 
+ 
+ #endif /* !HAVE_LIBDL */
++
++#endif /* __wasm32__ */
+diff --git a/platforms/unix/vm/sqUnixHeartbeat.c b/platforms/unix/vm/sqUnixHeartbeat.c
+index 900dff458..6848ae99d 100644
+--- a/platforms/unix/vm/sqUnixHeartbeat.c
++++ b/platforms/unix/vm/sqUnixHeartbeat.c
+@@ -190,6 +190,8 @@ ioHighResClock(void)
+ 	 */
+ #elif defined(__riscv64__)
+   	__asm__ __volatile__ ("rdcycle a0" : "=r"(value));
++#elif defined(__wasm32__)
++	value = (sqLong)currentUTCMicroseconds();
+ #else
+ # error "no high res clock defined"
+ #endif
+@@ -197,10 +199,20 @@ ioHighResClock(void)
+ }
+ 
+ usqLong
+-ioUTCMicroseconds() { return get64(utcMicrosecondClock); }
++ioUTCMicroseconds() {
++#if defined(__wasm32__)
++	updateMicrosecondClock();
++#endif
++	return get64(utcMicrosecondClock);
++}
+ 
+ usqLong
+-ioLocalMicroseconds() { return get64(localMicrosecondClock); }
++ioLocalMicroseconds() {
++#if defined(__wasm32__)
++	updateMicrosecondClock();
++#endif
++	return get64(localMicrosecondClock);
++}
+ 
+ sqInt
+ ioLocalSecondsOffset() { return vmGMTOffset / MicrosecondsPerSecond; }
+@@ -219,7 +231,12 @@ ioLocalMicrosecondsNow() { return currentUTCMicroseconds() + vmGMTOffset; };
+ 
+ /* ioMSecs answers the millisecondClock as of the last tick. */
+ unsigned int
+-ioMSecs() { return millisecondClock; }
++ioMSecs() {
++#if defined(__wasm32__)
++	updateMicrosecondClock();
++#endif
++	return millisecondClock;
++}
+ 
+ /* ioMicroMSecs answers the millisecondClock right now */
+ unsigned int
+@@ -297,6 +314,14 @@ heartbeat()
+ 	errno = saved_errno;
+ }
+ 
++#if defined(__wasm32__)
++void
++ioWasmSynchronousHeartbeat(void)
++{
++	heartbeat();
++}
++#endif
++
+ typedef enum { dead, condemned, nascent, quiescent, active } machine_state;
+ 
+ #define UNDEFINED 0xBADF00D
+@@ -376,6 +401,10 @@ beatStateMachine(void *careLess)
+ void
+ ioInitHeartbeat()
+ {
++#if defined(__wasm32__)
++	beatState = active;
++	heartbeat();
++#else
+ 	int er;
+ 	struct timespec halfAMo;
+ 	pthread_t careLess;
+@@ -385,6 +414,10 @@ ioInitHeartbeat()
+ 	 * child, restarting the heartbeat in a forked child.
+ 	 */
+ 	if (stateMachinePolicy == UNDEFINED) {
++#if defined(__wasm32__)
++		stateMachinePolicy = SCHED_OTHER;
++		stateMachinePriority.sched_priority = 0;
++#else
+ 		if ((er = pthread_getschedparam(pthread_self(),
+ 										&stateMachinePolicy,
+ 										&stateMachinePriority))) {
+@@ -400,6 +433,7 @@ ioInitHeartbeat()
+ 		if (sched_get_priority_max(stateMachinePolicy) < stateMachinePriority.sched_priority)
+ 			stateMachinePolicy = SCHED_FIFO;
+ 		pthread_atfork(0, /*prepare*/ 0, /*parent*/ ioInitHeartbeat /*child*/);
++#endif
+ 	}
+ 	else /* subsequently (in the child) init beatState before creating thread */
+ 		beatState = nascent;
+@@ -416,6 +450,7 @@ ioInitHeartbeat()
+ 	}
+ 	while (beatState == nascent)
+ 		nanosleep(&halfAMo, 0);
++#endif
+ }
+ 
+ void
+diff --git a/platforms/unix/vm/sqUnixMain.c b/platforms/unix/vm/sqUnixMain.c
+index 4795563f5..2e4ff8cd1 100644
+--- a/platforms/unix/vm/sqUnixMain.c
++++ b/platforms/unix/vm/sqUnixMain.c
+@@ -596,6 +596,11 @@ ioRelinquishProcessorForMicroseconds(sqInt us)
+   extern void checkHeartStillBeats();
+ 
+   checkHeartStillBeats();
++# endif
++# if defined(__wasm32__)
++  extern void ioWasmSynchronousHeartbeat(void);
++
++  ioWasmSynchronousHeartbeat();
+ # endif
+   dpy->ioRelinquishProcessorForMicroseconds(us);
+   return 0;
+@@ -607,6 +612,11 @@ sqInt
+ ioRelinquishProcessorForMicroseconds(sqInt us)
+ {
+   int now;
++# if defined(__wasm32__)
++  extern void ioWasmSynchronousHeartbeat(void);
++
++  ioWasmSynchronousHeartbeat();
++# endif
+   dpy->ioRelinquishProcessorForMicroseconds(us);
+   now= ioLowResMSecs();
+   if (now - lastInterruptCheck > (1000/25))	/* avoid thrashing intr checks from 1ms loop in idle proc  */
+diff --git a/platforms/unix/vm/sqUnixSpurMemory.c b/platforms/unix/vm/sqUnixSpurMemory.c
+index 241ddbf98..e68cfcfc1 100644
+--- a/platforms/unix/vm/sqUnixSpurMemory.c
++++ b/platforms/unix/vm/sqUnixSpurMemory.c
+@@ -281,6 +281,13 @@ allocateJITMemory(usqInt *desiredSize)
+ 	pageSize = getpagesize();
+ 	pageMask = ~(pageSize - 1);
+ 
++#if defined(__wasm32__)
++	if (*desiredSize == 0) {
++		endOfJITZone = hint;
++		return 0;
++	}
++#endif
++
+ #if !defined(MAP_JIT)
+ # define MAP_JIT 0
+ #endif
+diff --git a/platforms/unix/vm/sqUnixVMProfile.c b/platforms/unix/vm/sqUnixVMProfile.c
+index 609c17212..fbde9060b 100644
+--- a/platforms/unix/vm/sqUnixVMProfile.c
++++ b/platforms/unix/vm/sqUnixVMProfile.c
+@@ -166,10 +166,15 @@ initProfileThread()
+ 	(void)sigaction(SIGPROF, &sigprof_handler_action, 0);
+ 
+ 	mainThread = pthread_self();
++#if defined(__wasm32__)
++	profThreadPolicy = SCHED_OTHER;
++	profThreadPriority.sched_priority = 0;
++#else
+ 	if ((er = pthread_getschedparam(pthread_self(),
+ 									&profThreadPolicy,
+ 									&profThreadPriority)))
+ 		bail_out(er,"pthread_getschedparam failed");
++#endif
+ 	/* add 2 to priority to be above poll heartbeat thread, which we
+ 	 * want to profile.
+ 	 */
+diff --git a/src/spur32.sista/cointerp.c b/src/spur32.sista/cointerp.c
+index cdec35d33..9a72b8578 100644
+--- a/src/spur32.sista/cointerp.c
++++ b/src/spur32.sista/cointerp.c
+@@ -34,6 +34,8 @@ char *__interpBuildInfo = __buildInfo;
+ #include "cointerp.h"
+ #include "cogit.h"
+ 
++static void *wasmPersistentStackMemory = 0;
++
+ 
+ /* StackInterpreter class>>preambleCCode */
+ /* Disable Intel compiler inlining of warning which is used for breakpoints */
+@@ -1311,7 +1313,7 @@ static void NoDbgRegParms printStringDataOfon(sqInt oop, FILE *aStream);
+ extern void printUnmarkedOops(void);
+ #endif /* LLDB */
+ static sqInt NoDbgRegParms pushOnUnscannedEphemeronsStack(sqInt anEphemeron);
+-extern void pushRemappableOop(sqInt oop);
++extern sqInt pushRemappableOop(sqInt oop);
+ static void NoDbgRegParms queueMourner(sqInt anEphemeronOrWeakArray);
+ static sqInt NoDbgRegParms rawClassTagForClass(sqInt classObj);
+ extern sqInt rawHashBitsOf(sqInt objOop);
+@@ -1594,7 +1596,7 @@ static sqInt NoDbgRegParms pcPreviousToinSqueakV3PlusClosuresMethod(sqInt theIP,
+ extern sqInt pcPreviousToinSqueakV3PlusClosuresOrSistaV1Method(sqInt theIP, sqInt aMethod);
+ extern sqInt popStack(void);
+ extern sqInt pop(sqInt nItems);
+-extern void popthenPush(sqInt nItems, sqInt oop);
++extern sqInt popthenPush(sqInt nItems, sqInt oop);
+ static sqInt NoDbgRegParms positiveMachineIntegerFor(usqIntptr_t value);
+ static sqInt postGCUpdateDisplayBits(void);
+ EXPORT(void) primitiveEventProcessingControl(void);
+@@ -1646,7 +1648,7 @@ static void NoDbgRegParms printStackPageuseCount(StackPage *page, sqInt n);
+ extern void printStackReferencesTo(sqInt oop);
+ static void NoDbgRegParms printStringOf(sqInt oop);
+ extern void print(char *s);
+-extern void pushBool(sqInt trueOrFalse);
++extern sqInt pushBool(sqInt trueOrFalse);
+ static sqInt NoDbgRegParms pushedReceiverOrClosureOfFrame(char *theFP);
+ extern void pushFloat(double f);
+ extern sqInt pushInteger(sqInt integerValue);
+@@ -2855,7 +2857,16 @@ interpret(void)
+ 		stackPageBytes = stackPageByteSize();
+ 		/* begin computeStackZoneSize */
+ 		stackPagesBytes = (GIV(numStackPages) * ((sizeof(CogStackPage)) + (stackPageByteSize()))) + BytesPerWord;
++	#if defined(__wasm32__)
++		theStackMemory = wasmPersistentStackMemory;
++		if (!theStackMemory) {
++			theStackMemory = malloc(stackPagesBytes);
++			if (!theStackMemory) error("could not allocate stack pages");
++			wasmPersistentStackMemory = theStackMemory;
++		}
++	#else
+ 		theStackMemory = alloca(stackPagesBytes);
++	#endif
+ 		memset(theStackMemory, 0, stackPagesBytes);
+ 		initializeStacknumSlotspageSize(theStackMemory, stackPagesBytes / BytesPerWord, stackPageBytes / BytesPerWord);
+ 		assert((minimumUnusedHeadroom()) == stackPageBytes);
+@@ -6008,6 +6019,10 @@ GIV(bytecodeSetSelector) = (headerIndicatesAlternateBytecodeSet(methodHeaderOf(G
+ 				VM_LABEL(normalSend);
+ 				/* begin internalStackValue: */
+ 				rcvr = longAtPointer(localSP + (GIV(argumentCount) * BytesPerOop));
++				if (rcvr == null) {
++					rcvr = GIV(nilObj);
++					longAtPointerput(localSP + (GIV(argumentCount) * BytesPerOop), rcvr);
++				}
+ 				/* begin fetchClassTagOf: */
+ 				lkupClassTag = (((tagBits = rcvr & (tagMask()))) != 0
+ 					? ((tagBits & 1) != 0
+@@ -19249,8 +19264,16 @@ ensureContextIsExecutionSafeAfterAssignToStackPointer(sqInt aContext)
+ static sqInt
+ enterSmalltalkExecutiveImplementation(void)
+ {   DECL_MAYBE_SQ_GLOBAL_STRUCT
++#if defined(__wasm32__)
++	volatile char wasmStackMarker;
++#endif
+ 	assertCStackWellAligned();
++#if defined(__wasm32__)
++	GIV(CStackPointer) = ((usqIntptr_t)&wasmStackMarker);
++	GIV(CFramePointer) = ((usqIntptr_t)&wasmStackMarker);
++#else
+ 	ceCaptureCStackPointers();
++#endif
+ 	if ((((usqInt)(longAt(GIV(framePointer) + FoxMethod)))) < (startOfMemory())) {
+ 		returnToExecutivepostContextSwitch(0, 1);
+ 	}
+@@ -59997,7 +60020,7 @@ pushOnUnscannedEphemeronsStack(sqInt anEphemeron)
+ 	Spur doesn't GC during allocation. */
+ 
+ 	/* SpurMemoryManager>>#pushRemappableOop: */
+-void
++sqInt
+ pushRemappableOop(sqInt oop)
+ {   DECL_MAYBE_SQ_GLOBAL_STRUCT
+ 	assert(addressCouldBeOop(oop));
+@@ -60005,6 +60028,7 @@ pushRemappableOop(sqInt oop)
+ 	if (!(GIV(remapBufferCount) <= RemapBufferSize)) {
+ 		error("remapBuffer overflow");
+ 	}
++	return 0;
+ }
+ 
+ 
+@@ -71677,13 +71701,14 @@ pop(sqInt nItems)
+ /*	In the StackInterpreter stacks grow down. */
+ 
+ 	/* StackInterpreter>>#pop:thenPush: */
+-void
++sqInt
+ popthenPush(sqInt nItems, sqInt oop)
+ {   DECL_MAYBE_SQ_GLOBAL_STRUCT
+     char *sp;
+ 
+ 	longAtput((sp = GIV(stackPointer) + ((nItems - 1) * BytesPerWord)), oop);
+ 	GIV(stackPointer) = sp;
++	return 0;
+ }
+ 
+ 	/* StackInterpreter>>#positiveMachineIntegerFor: */
+@@ -74328,7 +74353,7 @@ print(char *s)
+ }
+ 
+ 	/* StackInterpreter>>#pushBool: */
+-void
++sqInt
+ pushBool(sqInt trueOrFalse)
+ {   DECL_MAYBE_SQ_GLOBAL_STRUCT
+     sqInt object;
+@@ -74340,6 +74365,7 @@ pushBool(sqInt trueOrFalse)
+ 		: GIV(falseObj));
+ 	longAtput((sp = GIV(stackPointer) - BytesPerWord), object);
+ 	GIV(stackPointer) = sp;
++	return 0;
+ }
+ 
+ 
+diff --git a/src/spur32.sista/cointerp.h b/src/spur32.sista/cointerp.h
+index bc47944b8..f31b13321 100644
+--- a/src/spur32.sista/cointerp.h
++++ b/src/spur32.sista/cointerp.h
+@@ -201,7 +201,7 @@ extern sqInt objectAfter(sqInt objOop);
+ extern sqInt popRemappableOop(void);
+ extern sqInt primitiveErrorTable(void);
+ extern void printObjStackAndContents(sqInt objStack);
+-extern void pushRemappableOop(sqInt oop);
++extern sqInt pushRemappableOop(sqInt oop);
+ extern sqInt rawHashBitsOf(sqInt objOop);
+ extern sqInt receiverTagBitsForMethod(sqInt aMethodObj);
+ extern sqInt shortentoIndexableSize(sqInt objOop, sqInt indexableSize);
+@@ -530,4 +530,3 @@ extern sqInt suppressHeartbeatFlag;
+ #define XIndex 0
+ #define YIndex 1
+ #define YoungSelectorInPIC -5
+-

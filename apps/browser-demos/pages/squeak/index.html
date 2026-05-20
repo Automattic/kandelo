@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Squeak — wasm-posix-kernel</title>
+  <link rel="stylesheet" href="../../lib/layout.css">
+  <style>
+    .squeak-page {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+      flex: 1 1 auto;
+    }
+    .squeak-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .squeak-status {
+      color: #888;
+      font-family: monospace;
+    }
+    .squeak-frame {
+      background: #000;
+      border: 1px solid #333;
+      border-radius: 4px;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    canvas#fb {
+      image-rendering: auto;
+      max-width: 100%;
+      max-height: 100%;
+      aspect-ratio: 8 / 5;
+      width: auto;
+      height: auto;
+      display: block;
+      outline: none;
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="sidebar-title">Demos</div>
+    <a href="/">Simple Programs</a>
+    <a href="/pages/nginx/">nginx</a>
+    <a href="/pages/php/">PHP CLI</a>
+    <a href="/pages/nginx-php/">nginx + PHP-FPM</a>
+    <a href="/pages/mariadb/">MariaDB</a>
+    <a href="/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
+    <a href="/pages/lamp/">WordPress (LEMP)</a>
+    <a href="/pages/shell/">Shell</a>
+    <a href="/pages/doom/">DOOM</a>
+    <a href="/pages/squeak/" aria-current="page">Squeak</a>
+  </nav>
+  <div class="main squeak-page">
+    <div class="main-header">
+      <h1>Squeak</h1>
+      <p class="subtitle">Squeak 6.0 release image on the wasm POSIX kernel framebuffer.</p>
+    </div>
+    <div class="squeak-toolbar">
+      <button id="start" class="primary">Start</button>
+      <span class="squeak-status" id="status">Click Start to boot Squeak.</span>
+    </div>
+    <div class="squeak-frame">
+      <canvas id="fb" tabindex="0" width="640" height="400"></canvas>
+    </div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

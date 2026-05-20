@@ -16,7 +16,7 @@ pub struct MemoryManager {
     mappings: Vec<MappedRegion>,
     /// Current program break (for brk).
     program_break: usize,
-    /// Upper bound for mmap allocation (default 1GB = Wasm max-memory).
+    /// Upper bound for mmap allocation.
     max_addr: usize,
     /// RLIMIT_DATA soft limit (updated by setrlimit). u64::MAX = unlimited.
     data_limit: u64,
@@ -38,8 +38,9 @@ impl MemoryManager {
     /// net for non-standard binaries that lack `__heap_base`.
     const INITIAL_BRK: usize = 0x01000000;
 
-    /// Default address space limit (1GB, matching --max-memory).
-    const DEFAULT_MAX_ADDR: usize = 0x40000000;
+    /// Default address space limit for wasm32. The host lowers this to the
+    /// process channel/TLS boundary after creating each process.
+    const DEFAULT_MAX_ADDR: usize = 0xFFFF0000;
 
     pub fn new() -> Self {
         MemoryManager {
@@ -91,6 +92,14 @@ impl MemoryManager {
                 m_end <= hint || m.addr >= end
             });
             hint
+        } else if hint != 0 {
+            // POSIX treats non-fixed addr as a hint. Some runtimes, including
+            // Squeak Spur, expect mmap to return a nearby mapping at or above
+            // the hint if possible.
+            match self.find_gap_from(hint, aligned_len) {
+                Some(a) => a,
+                None => return wasm_posix_shared::mmap::MAP_FAILED,
+            }
         } else {
             // Find first gap in [MMAP_BASE, max_addr) that fits aligned_len.
             // Mappings are kept sorted by address.
@@ -117,9 +126,14 @@ impl MemoryManager {
 
     /// Find the first gap in [MMAP_BASE, max_addr) that can fit `needed` bytes.
     fn find_gap(&self, needed: usize) -> Option<usize> {
-        let mut cursor = Self::MMAP_BASE;
+        self.find_gap_from(Self::MMAP_BASE, needed)
+    }
+
+    fn find_gap_from(&self, start: usize, needed: usize) -> Option<usize> {
+        let mut cursor = (start.max(Self::MMAP_BASE).saturating_add(0xFFFF)) & !0xFFFF;
         for m in &self.mappings {
-            if m.addr < Self::MMAP_BASE {
+            let end = m.addr.saturating_add(m.len);
+            if end <= cursor {
                 continue;
             }
             if m.addr >= cursor {
@@ -128,7 +142,6 @@ impl MemoryManager {
                     return Some(cursor);
                 }
             }
-            let end = m.addr.saturating_add(m.len);
             if end > cursor {
                 cursor = end;
             }
@@ -314,6 +327,21 @@ mod tests {
         let addr2 = mm.mmap_anonymous(0, 1, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
         // Each allocation should be at least 64KB apart (Wasm page size)
         assert_eq!(addr2 - addr1, 0x10000);
+    }
+
+    #[test]
+    fn test_mmap_honors_non_fixed_hint_as_lower_bound() {
+        let mut mm = MemoryManager::new();
+        let low = mm.mmap_anonymous(0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        assert_eq!(low, 0x04000000);
+
+        let hinted = mm.mmap_anonymous(
+            0x08012345,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(hinted, 0x08020000);
     }
 
     #[test]

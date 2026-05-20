@@ -17,22 +17,41 @@
 
 #include <stdint.h>
 
+typedef uint32_t __u32;
+
 /* Variable-screen-info ioctl numbers (subset; the kernel returns ENOTTY
  * for anything not on this list). */
 #define FBIOGET_VSCREENINFO 0x4600
 #define FBIOPUT_VSCREENINFO 0x4601
 #define FBIOGET_FSCREENINFO 0x4602
+#define FBIOPUTCMAP          0x4605
 #define FBIOPAN_DISPLAY     0x4606
+
+#define FB_ACTIVATE_NOW      0
 
 /* fb_fix_screeninfo.type */
 #define FB_TYPE_PACKED_PIXELS 0
 /* fb_fix_screeninfo.visual */
+#define FB_VISUAL_MONO01              0
+#define FB_VISUAL_MONO10              1
 #define FB_VISUAL_TRUECOLOR   2
+#define FB_VISUAL_PSEUDOCOLOR         3
+#define FB_VISUAL_DIRECTCOLOR         4
+#define FB_VISUAL_STATIC_PSEUDOCOLOR  5
 
 struct fb_bitfield {
     uint32_t offset;
     uint32_t length;
     uint32_t msb_right;
+};
+
+struct fb_cmap {
+    uint32_t start;
+    uint32_t len;
+    uint16_t *red;
+    uint16_t *green;
+    uint16_t *blue;
+    uint16_t *transp;
 };
 
 struct fb_var_screeninfo {
