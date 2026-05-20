@@ -136,7 +136,7 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
+    -mllvm -wasm-use-legacy-eh=false
     -D__sortix__
 )
 
@@ -163,15 +163,13 @@ LINK_FLAGS=(
     -Wl,--export=__wasm_thread_init
 )
 
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
-asyncify_wasm() {
+instrument_wasm() {
     local wasm="$1"
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
+            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
     fi
 }
 
@@ -275,7 +273,7 @@ build_runtime_test() {
     "$CC" "${cflags[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/dev/null || return 1
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 # ── Include suite (compile-only, no browser needed) ──────────────

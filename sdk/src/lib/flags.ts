@@ -8,7 +8,14 @@ export function compileFlags(arch: WasmArch): string[] {
     '-mbulk-memory',
     '-mexception-handling',
     '-mllvm', '-wasm-enable-sjlj',
-    '-mllvm', '-wasm-use-legacy-eh=true',
+    // Modern wasm-EH lowering. Empirical finding 2026-05-14: LLVM 21's
+    // default for `-wasm-use-legacy-eh` is `true` — just dropping the
+    // earlier `=true` override (commit 9 of the fork-instrument
+    // mega-PR) leaves the toolchain on legacy `try`/`catch` lowering.
+    // To actually get modern `try_table`/`catch_ref` we must pass
+    // `=false` explicitly. Verified by inspecting the disassembly of
+    // a C-02 build with this flag flipped.
+    '-mllvm', '-wasm-use-legacy-eh=false',
     '-fno-trapping-math',
   ];
 }

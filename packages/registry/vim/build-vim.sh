@@ -7,7 +7,9 @@ set -euo pipefail
 # Resolves ncurses via `cargo xtask build-deps resolve ncurses` — the
 # shared library cache (or builds it on miss). See
 # docs/package-management.md.
-# Applies asyncify with an onlylist so fork+exec works (:!command, filters).
+# Applies fork instrumentation so fork+exec works (:!command, filters).
+# wasm-fork-instrument auto-discovers fork paths via call-graph
+# analysis — no onlylist is needed.
 #
 # Output: packages/registry/vim/bin/vim.wasm
 
@@ -20,7 +22,6 @@ BIN_DIR="$SCRIPT_DIR/bin"
 # invocations viable (WASM_POSIX_SYSROOT=<other>/sysroot). Same shape as
 # build-curl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-ONLYLIST="$SCRIPT_DIR/asyncify-onlylist.txt"
 
 # Pin the glue to this repo's copy — otherwise the globally-linked SDK
 # resolves glue from its own (potentially stale) checkout, which can
@@ -39,10 +40,21 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-# Check for wasm-opt (required for asyncify)
+# ncurses is resolved via cargo xtask build-deps below — no
+# pre-flight check needed (the resolve step builds-on-miss if absent).
+
+# Check for wasm-opt (used for -O2 optimization after build).
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then
     echo "ERROR: wasm-opt not found. Install binaryen." >&2
+    exit 1
+fi
+
+# Check for fork-instrument tool (required for fork support).
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+if [ ! -x "$FORK_INSTRUMENT" ]; then
+    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
+    echo "  Run 'bash build.sh' to build it." >&2
     exit 1
 fi
 
@@ -124,8 +136,10 @@ if [ ! -f src/auto/config.mk ]; then
     export ac_cv_func_getpwuid=yes
     export ac_cv_func_getpwnam=yes
 
-    # -gline-tables-only for asyncify-onlylist function name matching
-    # --no-wasm-opt to preserve name section
+    # -gline-tables-only retained for symbolication / debug stack traces.
+    # The asyncify-onlylist function-name matching requirement is obsolete
+    # (replaced by wasm-fork-instrument, which uses call-graph analysis).
+    # --no-wasm-opt preserves the name section for later tooling.
     # -I<ncurses>/include pulls in the top-level termcap.h and
     # curses.h symlinks the ncurses build emits.
     export CFLAGS="-O2 -gline-tables-only -I$NCURSES_PREFIX/include"
@@ -207,27 +221,18 @@ cp "$SRC_DIR/src/vim" "$BIN_DIR/vim.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')
 echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Asyncify transform with onlylist ---
-if [ -f "$ONLYLIST" ]; then
-    echo "==> Applying asyncify with onlylist..."
+# --- Size optimization + fork instrumentation ---
+# wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must
+# run LAST because it hardcodes mutable-global offsets at instrument time —
+# any later pass that reorders globals would corrupt the fork buffer.
+# wasm-fork-instrument auto-discovers fork paths via call-graph analysis,
+# so no onlylist file is needed.
+echo "==> Optimizing vim.wasm with wasm-opt -O2..."
+"$WASM_OPT" -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
 
-    # Build comma-separated function list from onlylist file (skip comments and blanks)
-    ONLY_FUNCS=$(grep -v '^#' "$ONLYLIST" | grep -v '^\s*$' | tr -d ' ' | tr '\n' ',' | sed 's/,$//')
-
-    # -g tells wasm-opt to read the name section from the binary
-    "$WASM_OPT" -g --asyncify \
-        --pass-arg="asyncify-imports@kernel.kernel_fork" \
-        --pass-arg="asyncify-onlylist@${ONLY_FUNCS}" \
-        "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
-
-    # Optimize after asyncify to clean up.
-    # -g preserves the name section AND export entries; without it
-    # wasm-opt drops unused-looking exports like __abi_version that
-    # have no internal callers. (Matches git/build-git.sh.)
-    "$WASM_OPT" -g -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
-else
-    echo "==> No asyncify-onlylist.txt found, skipping asyncify."
-fi
+echo "==> Applying fork instrumentation..."
+"$FORK_INSTRUMENT" "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm.instr"
+mv "$BIN_DIR/vim.wasm.instr" "$BIN_DIR/vim.wasm"
 
 SIZE_AFTER=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')
 echo "==> Final size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"

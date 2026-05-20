@@ -146,8 +146,9 @@ wasm32posix-cc -shared -fPIC plugin.c -o plugin.so
 -mbulk-memory                      # Enable bulk memory operations
 -mexception-handling               # Enable Wasm exception handling
 -mllvm -wasm-enable-sjlj           # Enable setjmp/longjmp
--mllvm -wasm-use-legacy-eh=true    # Use legacy exception handling (Asyncify-compatible)
--fno-exceptions                    # No C++ exceptions
+# Modern wasm-EH lowering (try_table/catch_ref) is LLVM's default
+# since version ≥17; we no longer override with `-wasm-use-legacy-eh=true`
+# (removed in commit 9 of the fork-instrument mega-PR, 2026-05-14).
 -fno-trapping-math                 # Non-trapping FP (Wasm requirement)
 --sysroot=<path>                   # musl sysroot
 ```
@@ -253,40 +254,43 @@ cd redis-7.2.7
 
 # Redis uses plain Makefile, not CMake
 make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib \
-     MALLOC=libc SERVER_CFLAGS= \
-     LDFLAGS="-Wl,--export=__asyncify_data,--export=asyncify_start_unwind,..."
+     MALLOC=libc SERVER_CFLAGS=
+# Then run `wasm-fork-instrument` on the linked output (see "Fork
+# instrumentation" below). No special LDFLAGS are needed — the tool
+# auto-discovers fork-path functions; there's no onlylist to pass.
 ```
 
 See `packages/registry/redis/build-redis.sh` for the complete build script.
 
-## Asyncify (fork support)
+## Fork instrumentation (`wasm-fork-instrument`)
 
-Programs that call `fork()`, `posix_spawn()`, or `system()` need Binaryen's Asyncify post-processing to save/restore the Wasm call stack:
+Programs that call `fork()`, `posix_spawn()`, or `system()` need the in-tree
+`wasm-fork-instrument` tool to save/restore the Wasm call stack across fork.
+This tool replaced Binaryen's `wasm-opt --asyncify` in the Phase 7 rollout —
+do **not** use `--asyncify` in new build scripts.
 
 ```bash
 # Compile normally
 wasm32posix-cc program.c -o program.wasm
 
-# Post-process with wasm-opt
-wasm-opt --asyncify \
-  --asyncify-imports "env.channel_syscall" \
-  --pass-arg=asyncify-ignore-indirect \
-  -O2 \
-  program.wasm -o program.wasm
+# (Optional) shrink with wasm-opt -O2 first; must run BEFORE the instrument
+# step since fork-instrument hardcodes mutable-global offsets.
+wasm-opt -O2 program.wasm -o program.wasm
+
+# Apply fork instrumentation. Auto-discovers fork-path functions via
+# call-graph analysis from the kernel.kernel_fork import — no onlylist
+# file needed.
+"$REPO_ROOT/tools/bin/wasm-fork-instrument" program.wasm -o program.wasm.instr
+mv program.wasm.instr program.wasm
 ```
 
-The `--asyncify-imports` flag tells Asyncify which import triggers the unwind (the channel syscall function). Programs that don't use fork don't need this step.
+`wasm-fork-instrument` is built by `bash build.sh` (compiled from
+`crates/fork-instrument/`) and installed to `tools/bin/`. The tool emits five
+`wpk_fork_*` exports that the host runtime drives during fork. Programs that
+don't use fork can skip this step entirely.
 
-For large programs, use `--asyncify-onlylist` to restrict instrumentation to only the functions on the fork call path. This dramatically reduces binary size and stack depth:
-
-```bash
-wasm-opt --asyncify \
-  --asyncify-imports "env.channel_syscall" \
-  --asyncify-onlylist @onlylist.txt \
-  --pass-arg=asyncify-ignore-indirect \
-  -O2 \
-  program.wasm -o program.wasm
-```
+See [`docs/fork-instrumentation.md`](fork-instrumentation.md) for the
+exported ABI, save-buffer format, and the dispatch-scheme decisions.
 
 ## Environment Variables
 
@@ -317,5 +321,6 @@ See the [Porting Guide](porting-guide.md) for creating browser demos.
 - **Don't add `-pthread`**: Thread creation is host-managed via `clone()`. The SDK silently ignores `-pthread`.
 - **Use `-O2` or `-Os`**: Unoptimized Wasm is significantly slower and larger.
 - **Check build script examples**: `packages/registry/` contains complete build scripts for 12 real-world libraries including autoconf, CMake, and plain Makefile projects.
-- **For fork support**: Always apply Asyncify post-processing. Without it, `fork()` will fail.
+- **For fork support**: Run `tools/bin/wasm-fork-instrument` as the final
+  post-link step. Without it, `fork()` will fail.
 - **Memory limit**: Default max memory is 1GB (16384 pages). For multi-process demos, consider reducing `maxMemoryPages` to avoid exhausting browser memory.
