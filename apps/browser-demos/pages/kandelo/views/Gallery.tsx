@@ -1,34 +1,14 @@
 // Gallery — browse and launch Kandelo computers.
 //
-// Tabs: Presets · Recent · Saved · Shared with you · Public. Each tab is
-// fetched via host.galleryQuery(); the host decides what each tab means
-// (presets = signed registry, recent = IndexedDB, etc.).
-//
 // Click a card → host.applyBootDescriptor(descriptorFromPreset(item)).
 
 import * as React from "react";
 import { useKernelHost } from "../kernel-host/react";
 import { classifyTier } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
-  GalleryItem, GalleryTab,
+  GalleryItem,
   BootDescriptor,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-
-const TABS: { id: GalleryTab; label: string }[] = [
-  { id: "presets", label: "Presets" },
-  { id: "recent", label: "Recent" },
-  { id: "saved", label: "Saved" },
-  { id: "shared", label: "Shared with you" },
-  { id: "public", label: "Public" },
-];
-
-const SUBTITLE: Record<GalleryTab, string> = {
-  presets: "Official Kandelo computers — signed, reproducible, ready to boot.",
-  recent: "Machines you've booted in this browser.",
-  saved: "Machines you've given a name.",
-  shared: "Computers other people have sent you.",
-  public: "Recently popular, browsable public computers.",
-};
 
 export interface GalleryProps {
   onLaunch: (item: GalleryItem) => void;
@@ -37,7 +17,6 @@ export interface GalleryProps {
 
 export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare }) => {
   const host = useKernelHost();
-  const [tab, setTab] = React.useState<GalleryTab>("presets");
   const [q, setQ] = React.useState("");
   const [items, setItems] = React.useState<GalleryItem[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -45,7 +24,7 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare }) => {
   React.useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void host.galleryQuery({ tab }).then(
+    void host.galleryQuery({ tab: "presets" }).then(
       (result) => {
         if (cancelled) return;
         setItems(result);
@@ -58,46 +37,32 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare }) => {
       },
     );
     return () => { cancelled = true; };
-  }, [host, tab]);
+  }, [host]);
 
   const filtered = q
     ? items.filter((i) => (i.title + " " + i.summary).toLowerCase().includes(q.toLowerCase()))
     : items;
 
-  const title = tab === "presets" ? "Gallery" : TABS.find((t) => t.id === tab)?.label ?? "Gallery";
-
   return (
     <div className="kgallery">
       <div className="kgal-hdr">
-        <div>
-          <h1 className="kgal-title">{title}</h1>
-          <div className="kgal-sub">{SUBTITLE[tab]}</div>
-        </div>
-        <div className="kgal-tabs">
-          {TABS.map((t) => (
-            <button key={t.id} className="kgal-tab" aria-current={t.id === tab} onClick={() => setTab(t.id)}>
-              {t.label}
-              <span className="kgal-tab-count">{tab === t.id ? items.length : ""}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div className="kgal-search">
-          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: "var(--k-text-faint)" }}>
-            <circle cx="5.5" cy="5.5" r="3.2" />
-            <path d="M8 8l3 3" />
-          </svg>
-          <input
-            type="search"
-            placeholder="Filter…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </div>
-        <div style={{ fontFamily: "var(--k-font-mono)", fontSize: 11, color: "var(--k-text-faint)" }}>
-          {filtered.length} of {items.length}
+        <h1 className="kgal-title">Gallery</h1>
+        <div className="kgal-tools">
+          <div className="kgal-search">
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ color: "var(--k-text-faint)" }}>
+              <circle cx="5.5" cy="5.5" r="3.2" />
+              <path d="M8 8l3 3" />
+            </svg>
+            <input
+              type="search"
+              placeholder="Filter..."
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
+          <div className="kgal-count">
+            {filtered.length} of {items.length}
+          </div>
         </div>
       </div>
 
@@ -105,7 +70,7 @@ export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare }) => {
         <div className="kgal-empty">Loading…</div>
       ) : filtered.length === 0 ? (
         <div className="kgal-empty">
-          {q ? `No machines match "${q}".` : `Nothing in ${tab} yet.`}
+          {q ? `No machines match "${q}".` : "Nothing in the gallery yet."}
         </div>
       ) : (
         <div className="kgal-grid">

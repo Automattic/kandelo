@@ -1,6 +1,6 @@
 // Top-level Kandelo app. View router (sidebar item → main panel content);
-// holds the per-session UI state (sidebar collapsed flag, current view,
-// inspector tab, share dialog open).
+// holds the per-session UI state (current view, inspector tab, share dialog
+// open).
 //
 // Today only the 'machine' surface is wired. Other views show a placeholder
 // while their components are built.
@@ -8,7 +8,6 @@
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import { Sidebar, type ViewId, type InternalsTab } from "./Sidebar";
-import { LiveUrlBar } from "./LiveUrlBar";
 import { MachineView } from "../views/MachineView";
 import { Gallery, descriptorFromGalleryItem } from "../views/Gallery";
 import { Config } from "../views/Config";
@@ -21,7 +20,6 @@ export const App: React.FC = () => {
   const host = useKernelHost();
   const status = useStatus();
 
-  const [collapsed, setCollapsed] = React.useState(false);
   const [view, setView] = React.useState<ViewId>("machine");
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
@@ -75,18 +73,8 @@ export const App: React.FC = () => {
   return (
     <div className="kapp">
       <Sidebar
-        collapsed={collapsed}
-        onToggleCollapsed={() => setCollapsed((c) => !c)}
         view={view}
         onNav={onNav}
-        internalsTab={internalsTab}
-        onInternalsTab={(t) => {
-          setView("internals");
-          setInternalsTab(t);
-        }}
-        status={status}
-        descriptorTitle={desc.title}
-        descriptorId={desc.id}
       />
 
       <main className={"kmain" + (flushMain ? " kmain-flush" : "")}>
@@ -97,18 +85,15 @@ export const App: React.FC = () => {
             onApplyDescriptor={onApplyPastedDescriptor}
           />
         ) : isMachineView ? (
-          <>
-            <LiveUrlBar onOpenShare={() => onNav("share")} />
-            <MachineView
-              focusInternals={view === "internals"}
-              internalsTab={internalsTab}
-              onInternalsTab={(t) => setInternalsTab(t as InternalsTab)}
-              terminals={terminals}
-              activeTerminalId={activeTerminalId}
-              onActiveTerminalId={setActiveTerminalId}
-              onAddTerminal={onAddTerminal}
-            />
-          </>
+          <MachineView
+            focusInternals={view === "internals"}
+            internalsTab={internalsTab}
+            onInternalsTab={(t) => setInternalsTab(t as InternalsTab)}
+            terminals={terminals}
+            activeTerminalId={activeTerminalId}
+            onActiveTerminalId={setActiveTerminalId}
+            onAddTerminal={onAddTerminal}
+          />
         ) : view === "gallery" ? (
           <Gallery onLaunch={onLaunchGalleryItem} onShare={onShareGalleryItem} />
         ) : view === "config" ? (
