@@ -43,6 +43,7 @@ const Opcode = {
   OPENDIR: 16,
   READDIR: 17,
   CLOSEDIR: 18,
+  STATFS: 19,
 } as const;
 
 // Errno values (negative, matching Linux)
@@ -76,6 +77,10 @@ const SEEK_END = 2;
 // DirEntry type constants
 const DT_REG = 8;
 const DT_DIR = 4;
+
+const OPFS_SUPER_MAGIC = 0x4f504653; // "OPFS"
+const STATFS_BLOCK_SIZE = 4096;
+const STATFS_NAME_MAX = 255;
 
 // --- Channel accessor helpers (offsets matching opfs-channel.ts) ---
 
@@ -155,6 +160,24 @@ class WorkerChannel {
     f64[9] = stat.ctimeMs;
   }
 
+  writeStatfsResult(statfs: {
+    type: number; bsize: number; blocks: number; bfree: number; bavail: number;
+    files: number; ffree: number; fsid: number; namelen: number; frsize: number; flags: number;
+  }): void {
+    const f64 = new Float64Array(this.buffer, DATA_OFFSET, 11);
+    f64[0] = statfs.type;
+    f64[1] = statfs.bsize;
+    f64[2] = statfs.blocks;
+    f64[3] = statfs.bfree;
+    f64[4] = statfs.bavail;
+    f64[5] = statfs.files;
+    f64[6] = statfs.ffree;
+    f64[7] = statfs.fsid;
+    f64[8] = statfs.namelen;
+    f64[9] = statfs.frsize;
+    f64[10] = statfs.flags;
+  }
+
   notifyComplete(): void {
     Atomics.store(this.i32, STATUS_OFFSET_I32, Status.Complete);
     Atomics.notify(this.i32, STATUS_OFFSET_I32);
@@ -229,6 +252,19 @@ async function resolveDir(path: string): Promise<FileSystemDirectoryHandle> {
     dir = await dir.getDirectoryHandle(part);
   }
   return dir;
+}
+
+async function ensurePathExists(path: string): Promise<void> {
+  const normalized = path.replace(/^\/+|\/+$/g, "").replace(/\/+/g, "/");
+  if (!normalized) return;
+
+  const { dir, name } = await resolvePath(path);
+  try {
+    await dir.getDirectoryHandle(name);
+    return;
+  } catch {
+    await dir.getFileHandle(name);
+  }
 }
 
 // --- DOMException → errno mapping ---
@@ -573,6 +609,39 @@ async function handleStat(isLstat: boolean): Promise<void> {
   }
 }
 
+async function handleStatfs(): Promise<void> {
+  const pathLen = channel.getArg(0);
+  const path = channel.readString(pathLen);
+
+  try {
+    await ensurePathExists(path);
+    const estimate = await navigator.storage?.estimate?.();
+    const quota = Math.max(0, Math.floor(estimate?.quota ?? 0));
+    const usage = Math.max(0, Math.floor(estimate?.usage ?? 0));
+    const totalBytes = Math.max(quota, usage);
+    const freeBytes = Math.max(0, totalBytes - usage);
+    const blocks = Math.ceil(totalBytes / STATFS_BLOCK_SIZE);
+    const freeBlocks = Math.floor(freeBytes / STATFS_BLOCK_SIZE);
+    channel.writeStatfsResult({
+      type: OPFS_SUPER_MAGIC,
+      bsize: STATFS_BLOCK_SIZE,
+      blocks,
+      bfree: freeBlocks,
+      bavail: freeBlocks,
+      files: 0,
+      ffree: 0,
+      fsid: 0,
+      namelen: STATFS_NAME_MAX,
+      frsize: STATFS_BLOCK_SIZE,
+      flags: 0,
+    });
+    channel.result = 0;
+    channel.notifyComplete();
+  } catch (err) {
+    channel.notifyError(mapError(err));
+  }
+}
+
 async function handleMkdir(): Promise<void> {
   const _mode = channel.getArg(0);
   const pathLen = channel.getArg(1);
@@ -784,6 +853,7 @@ async function dispatch(): Promise<void> {
     case Opcode.OPENDIR: return handleOpendir();
     case Opcode.READDIR: return handleReaddir();
     case Opcode.CLOSEDIR: return handleClosedir();
+    case Opcode.STATFS: return handleStatfs();
     default:
       channel.notifyError(ENOTSUP);
   }

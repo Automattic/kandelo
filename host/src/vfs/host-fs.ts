@@ -7,9 +7,10 @@
 
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
-import type { StatResult } from "../types";
+import type { StatResult, StatfsResult } from "../types";
 import { NativeMetadataOverlay } from "../platform/native-metadata";
 import type { FileSystemBackend, DirEntry } from "./types";
+import { DEFAULT_STATFS_BLOCK_SIZE, DEFAULT_STATFS_NAMELEN } from "../statfs";
 
 /**
  * Translate Linux/POSIX open flags (as used by musl libc) to the
@@ -50,6 +51,34 @@ export function translateOpenFlags(linuxFlags: number): number {
   // O_LARGEFILE and O_CLOEXEC have no Node.js equivalent; ignored.
 
   return native;
+}
+
+function asSafeInteger(value: number | bigint | undefined): number {
+  if (typeof value === "bigint") {
+    if (value <= 0n) return 0;
+    const max = BigInt(Number.MAX_SAFE_INTEGER);
+    return Number(value > max ? max : value);
+  }
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER);
+}
+
+export function nativeStatfs(path: string): StatfsResult {
+  const statfs = fs.statfsSync(path, { bigint: false });
+  const bsize = asSafeInteger(statfs.bsize) || DEFAULT_STATFS_BLOCK_SIZE;
+  return {
+    type: statfs.type >>> 0,
+    bsize,
+    blocks: asSafeInteger(statfs.blocks),
+    bfree: asSafeInteger(statfs.bfree),
+    bavail: asSafeInteger(statfs.bavail),
+    files: asSafeInteger(statfs.files),
+    ffree: asSafeInteger(statfs.ffree),
+    fsid: 0,
+    namelen: DEFAULT_STATFS_NAMELEN,
+    frsize: bsize,
+    flags: 0,
+  };
 }
 
 export class HostFileSystem implements FileSystemBackend {
@@ -181,6 +210,10 @@ export class HostFileSystem implements FileSystemBackend {
 
   lstat(path: string): StatResult {
     return this.toStatResult(fs.lstatSync(this.safePath(path)));
+  }
+
+  statfs(path: string): StatfsResult {
+    return nativeStatfs(this.safePath(path));
   }
 
   mkdir(path: string, mode: number): void {
