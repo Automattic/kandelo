@@ -532,7 +532,7 @@ library dep) for canonical references; the schema reference is in
 kind = "program"           # or "library" or "source"
 name = "myprog"
 version = "1.2.3"
-kernel_abi = 8             # current ABI_VERSION; required for packages with a [build] block
+kernel_abi = 11            # current ABI_VERSION; required for packages with a [build] block
 depends_on = ["zlib@1.3.1"]   # transitive deps the resolver will pull first
 
 [source]

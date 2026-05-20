@@ -39,7 +39,22 @@
         <button id="run">Run</button>
       </div>
     </div>
-    <div class="preview-area">
+    <div class="preview-area simple-programs-preview">
+      <section class="software-gallery" aria-labelledby="software-gallery-title">
+        <div class="software-gallery-heading">
+          <div>
+            <h2 id="software-gallery-title">Third-party VFS Builds</h2>
+            <p id="third-party-gallery-status" class="software-gallery-status">Checking kandelo-software...</p>
+          </div>
+          <a
+            class="software-gallery-source"
+            href="https://github.com/brandonpayton/kandelo-software"
+            target="_blank"
+            rel="noopener"
+          >kandelo-software</a>
+        </div>
+        <div id="third-party-gallery" class="software-gallery-grid hidden"></div>
+      </section>
       <div class="output-area">
         <pre id="output"></pre>
         <!-- Surfaced for the non-forking-spawn regression test. After spawn-smoke

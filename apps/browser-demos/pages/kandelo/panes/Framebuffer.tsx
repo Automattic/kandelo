@@ -1,6 +1,6 @@
-// Framebuffer pane — paints whatever process is bound to /dev/fb0 and
-// (when the canvas is focused) forwards keyboard input as AT-set-1 / Linux
-// MEDIUMRAW scancodes to that process's stdin.
+// Framebuffer pane — paints whatever process is bound to /dev/fb0, forwards
+// focused keyboard input as AT-set-1 / Linux MEDIUMRAW scancodes, forwards
+// pointer-lock mouse input to /dev/input/mice, and drains /dev/dsp audio.
 //
 // Painting: host.attachFramebuffer(canvas) returns a FramebufferHandle; the
 // host owns the requestAnimationFrame loop and BGRA→RGBA swizzle (see
@@ -16,7 +16,14 @@
 
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
-import type { FramebufferHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  attachPointerLockMouse,
+  type PointerLockMouseHandle,
+} from "../../../../../host/src/framebuffer/browser-controls";
+import type {
+  AudioOutputHandle,
+  FramebufferHandle,
+} from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { PaneHead } from "./PaneHead";
 
 const ICON = (
@@ -75,10 +82,13 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
   const status = useStatus();
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const handleRef = React.useRef<FramebufferHandle | null>(null);
+  const mouseRef = React.useRef<PointerLockMouseHandle | null>(null);
+  const audioRef = React.useRef<AudioOutputHandle | null>(null);
   const releaseTimersRef = React.useRef<number[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
+  const [mouseCaptured, setMouseCaptured] = React.useState(false);
 
   React.useEffect(() => {
     if (status !== "running") return;
@@ -86,21 +96,58 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
 
     let handle: FramebufferHandle | null = null;
     let offBound: (() => void) | null = null;
+    let cancelled = false;
     try {
       handle = host.attachFramebuffer(canvasRef.current);
       handleRef.current = handle;
       setBoundPid(handle.getBoundPid());
       offBound = handle.onBoundPidChange(setBoundPid);
       setError(null);
+      void handle.startAudio().then((audio) => {
+        if (cancelled) {
+          audio?.close();
+          return;
+        }
+        audioRef.current = audio;
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
     return () => {
+      cancelled = true;
+      try { audioRef.current?.close(); } catch { /* noop */ }
+      audioRef.current = null;
       try { offBound?.(); } catch { /* noop */ }
       try { handle?.close(); } catch { /* noop */ }
       handleRef.current = null;
     };
   }, [host, status]);
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (status !== "running") return;
+
+    const mouse = attachPointerLockMouse(
+      canvas,
+      {
+        injectMouseEvent: (dx, dy, buttons) => {
+          handleRef.current?.sendMouseEvent(dx, dy, buttons);
+        },
+      },
+      {
+        requestPointerLockOnClick: false,
+        getEnabled: () => handleRef.current?.getBoundPid() !== null,
+        onCaptureChange: setMouseCaptured,
+      },
+    );
+    mouseRef.current = mouse;
+    return () => {
+      mouse.close();
+      mouseRef.current = null;
+      setMouseCaptured(false);
+    };
+  }, [status]);
 
   // Keyboard input → scancode bytes via the framebuffer handle. We dedup
   // autorepeat client-side because fbDOOM treats every press as a fresh
@@ -167,6 +214,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
         if (codes) sendScancodes(codes, false);
       }
       held.clear();
+      mouseRef.current?.releaseCapture();
       setFocused(false);
     };
     const onFocus = () => setFocused(true);
@@ -195,12 +243,16 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
 
   const onCanvasClick = () => {
     canvasRef.current?.focus();
+    void audioRef.current?.resume();
+    mouseRef.current?.requestCapture();
   };
 
   const showCanvas = status === "running" && !error;
   const showHint = showCanvas && boundPid === null;
-  const captureLabel = focused
-    ? "captured · Ctrl+Shift+Esc to release"
+  const captureLabel = mouseCaptured
+    ? "mouse locked · Esc to release"
+    : focused
+    ? "captured · click locks mouse"
     : boundPid !== null ? "click to play" : "waiting for /dev/fb0";
 
   return (
@@ -216,13 +268,13 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
           <span style={{
             fontFamily: "var(--k-font-mono)",
             fontSize: 10,
-            color: focused ? "var(--k-accent)" : "var(--k-text-faint)",
+            color: focused || mouseCaptured ? "var(--k-accent)" : "var(--k-text-faint)",
             padding: "2px 6px",
             borderRadius: 3,
-            background: focused
+            background: focused || mouseCaptured
               ? "color-mix(in oklch, var(--k-accent) 14%, transparent)"
               : "transparent",
-            border: focused
+            border: focused || mouseCaptured
               ? "1px solid color-mix(in oklch, var(--k-accent) 30%, transparent)"
               : "1px solid var(--k-border)",
             textTransform: "uppercase",
@@ -252,8 +304,8 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
             imageRendering: "pixelated",
             background: "var(--k-fb-bg)",
             display: showCanvas ? "block" : "none",
-            cursor: focused ? "default" : "pointer",
-            outline: focused
+            cursor: mouseCaptured ? "none" : focused ? "default" : "pointer",
+            outline: focused || mouseCaptured
               ? "2px solid color-mix(in oklch, var(--k-accent) 60%, transparent)"
               : "none",
             outlineOffset: "-2px",

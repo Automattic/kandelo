@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
 import type { StatResult } from "../types";
+import { NativeMetadataOverlay } from "../platform/native-metadata";
 import type { FileSystemBackend, DirEntry } from "./types";
 
 /**
@@ -56,6 +57,7 @@ export class HostFileSystem implements FileSystemBackend {
   private fdPositions = new Map<number, number>();
   private dirHandles = new Map<number, fs.Dir>();
   private nextDirHandle = 1;
+  private metadata = new NativeMetadataOverlay();
 
   constructor(rootPath: string) {
     this.rootPath = nodePath.resolve(rootPath);
@@ -85,28 +87,18 @@ export class HostFileSystem implements FileSystemBackend {
     // exposed to guest programs — guest sees the sandbox as
     // self-owned, so tools that compare ownership against their own
     // euid (e.g. git's "dubious ownership" check) see a match.
-    return {
-      dev: s.dev,
-      ino: s.ino,
-      mode: s.mode,
-      nlink: s.nlink,
-      uid: 0,
-      gid: 0,
-      size: s.size,
-      atimeMs: s.atimeMs,
-      mtimeMs: s.mtimeMs,
-      ctimeMs: s.ctimeMs,
-    };
+    // chmod/chown are virtualized through the same overlay so host-backed
+    // mounts never mutate native permission or ownership bits.
+    return this.metadata.toStatResult(s);
   }
 
   // ── File handle operations ───────────────────────────────────
 
   open(path: string, flags: number, mode: number): number {
-    const fd = fs.openSync(
-      this.safePath(path),
-      translateOpenFlags(flags),
-      mode,
-    );
+    const nativePath = this.safePath(path);
+    const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
+    const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
+    if (created) this.metadata.chmod(fs.fstatSync(fd), mode);
     this.fdPositions.set(fd, 0);
     return fd;
   }
@@ -177,11 +169,11 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   fchmod(handle: number, mode: number): void {
-    fs.fchmodSync(handle, mode);
+    this.metadata.chmod(fs.fstatSync(handle), mode);
   }
 
   fchown(handle: number, uid: number, gid: number): void {
-    fs.fchownSync(handle, uid, gid);
+    this.metadata.chown(fs.fstatSync(handle), uid, gid);
   }
 
   // ── Path-based operations ───────────────────────────────────
@@ -195,19 +187,33 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   mkdir(path: string, mode: number): void {
-    fs.mkdirSync(this.safePath(path), { mode });
+    const nativePath = this.safePath(path);
+    fs.mkdirSync(nativePath, { mode });
+    this.metadata.chmod(fs.statSync(nativePath), mode);
   }
 
   rmdir(path: string): void {
-    fs.rmdirSync(this.safePath(path));
+    const nativePath = this.safePath(path);
+    const stat = fs.lstatSync(nativePath);
+    fs.rmdirSync(nativePath);
+    this.metadata.forget(stat);
   }
 
   unlink(path: string): void {
-    fs.unlinkSync(this.safePath(path));
+    const nativePath = this.safePath(path);
+    const stat = fs.lstatSync(nativePath);
+    fs.unlinkSync(nativePath);
+    if (stat.nlink <= 1) this.metadata.forget(stat);
   }
 
   rename(oldPath: string, newPath: string): void {
-    fs.renameSync(this.safePath(oldPath), this.safePath(newPath));
+    const nativeNewPath = this.safePath(newPath);
+    let replaced: fs.Stats | undefined;
+    try {
+      replaced = fs.lstatSync(nativeNewPath);
+    } catch {}
+    fs.renameSync(this.safePath(oldPath), nativeNewPath);
+    if (replaced !== undefined && replaced.nlink <= 1) this.metadata.forget(replaced);
   }
 
   link(existingPath: string, newPath: string): void {
@@ -223,15 +229,15 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   chmod(path: string, mode: number): void {
-    fs.chmodSync(this.safePath(path), mode);
+    this.metadata.chmod(fs.statSync(this.safePath(path)), mode);
   }
 
   chown(path: string, uid: number, gid: number): void {
-    fs.chownSync(this.safePath(path), uid, gid);
+    this.metadata.chown(fs.statSync(this.safePath(path)), uid, gid);
   }
 
   access(path: string, mode: number): void {
-    fs.accessSync(this.safePath(path), mode);
+    this.metadata.access(fs.statSync(this.safePath(path)), mode);
   }
 
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
