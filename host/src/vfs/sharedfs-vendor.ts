@@ -53,7 +53,6 @@ export const SEEK_END = 2;
 
 // Dirent
 const DIRENT_HEADER_SIZE = 8;
-const DIRENT_ALIGN = 4;
 
 // Error codes
 export const EPERM = -1;
@@ -106,7 +105,6 @@ const INO_GID = 100; // u32
 // 104-127 reserved for future fields (flags, xattrs, etc.)
 
 // FD entry layout
-const FD_IN_USE = 0;
 const FD_INO = 4;
 const FD_OFFSET = 8; // uint64
 const FD_FLAGS = 16;

@@ -64,11 +64,11 @@ export interface NodeKernelHostOptions {
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
-   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs` and apply
+   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs`, falling back
+   *     to the resolver-managed `programs/rootfs.vfs` artifact, and apply
    *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The worker constructs
    *     a `VirtualPlatformIO` (rootfs at `/`, host-fs scratch dirs at
-   *     `/tmp` etc.). Throws if the file is missing — callers wanting
-   *     graceful degradation should pre-check or pass explicit bytes.
+   *     `/tmp` etc.).
    *   - `ArrayBuffer | Uint8Array` — use the supplied image bytes
    *     instead of reading from disk. Same mount spec applied.
    *   - `undefined` (default) — use raw `NodePlatformIO` (every host
@@ -427,13 +427,7 @@ function resolveRootfsImage(
 ): ArrayBuffer | null {
   if (override === undefined) return null;
   if (override === "default") {
-    const path = resolveBinary("rootfs.vfs");
-    if (!existsSync(path)) {
-      throw new Error(
-        `rootfsImage:"default" requested but ${path} is missing — ` +
-          `run scripts/build-rootfs.sh, or pass explicit bytes / omit the option.`,
-      );
-    }
+    const path = resolveRootfsArtifact();
     const buf = readFileSync(path);
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   }
@@ -445,6 +439,25 @@ function resolveRootfsImage(
     return out;
   }
   return override;
+}
+
+function resolveRootfsArtifact(): string {
+  try {
+    return resolveBinary("rootfs.vfs");
+  } catch (rootfsError) {
+    try {
+      return resolveBinary("programs/rootfs.vfs");
+    } catch (programsError) {
+      const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
+      const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
+      throw new Error(
+        `rootfsImage:"default" requested but no rootfs image was available.\n` +
+          `Tried rootfs.vfs:\n${rootfsMessage}\n` +
+          `Tried programs/rootfs.vfs:\n${programsMessage}\n` +
+          `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
+      );
+    }
+  }
 }
 
 /** Spawn a worker_thread running node-kernel-worker-entry.ts */

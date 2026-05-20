@@ -8,6 +8,7 @@ import {
   existsSync,
   readFileSync,
   writeFileSync,
+  mkdirSync,
   lstatSync,
   readdirSync,
   readlinkSync,
@@ -89,6 +90,89 @@ describe("mkrootfs build — happy paths", () => {
       );
       expect(r.status).toBe(0);
       expect(existsSync(out)).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts repeated --manifest-fragment entries after the main MANIFEST", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    const sourceTree = join(tmp, "rootfs");
+    const out = join(tmp, "image.vfs");
+    try {
+      mkdirSync(join(sourceTree, "etc"), { recursive: true });
+      writeFileSync(join(sourceTree, "etc", "passwd"), "root:x:0:0:root:/root:/bin/sh\n");
+      writeFileSync(
+        join(tmp, "MANIFEST"),
+        [
+          "/etc d 0755 0 0",
+          "/etc/passwd f 0644 0 0",
+          "/usr d 0755 0 0",
+          "/usr/bin d 0755 0 0",
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(join(tmp, "env-bin"), "#!/bin/sh\n");
+      writeFileSync(join(tmp, "printf-bin"), "#!/bin/sh\n");
+      writeFileSync(
+        join(tmp, "coreutils.MANIFEST"),
+        [
+          "/usr/bin/env f 0755 0 0 src=env-bin",
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(tmp, "more-utils.MANIFEST"),
+        [
+          "/usr/bin/printf f 0755 0 0 src=printf-bin",
+          "",
+        ].join("\n"),
+      );
+
+      const r = run(
+        "build",
+        join(tmp, "MANIFEST"),
+        sourceTree,
+        "-o", out,
+        "--repo-root", tmp,
+        "--manifest-fragment", join(tmp, "coreutils.MANIFEST"),
+        `--manifest-fragment=${join(tmp, "more-utils.MANIFEST")}`,
+      );
+      expect(r.status).toBe(0);
+
+      const bytes = new Uint8Array(readFileSync(out));
+      const mfs = MemoryFileSystem.fromImage(bytes);
+      expect(mfs.stat("/usr/bin/env").mode & 0o777).toBe(0o755);
+      expect(mfs.stat("/usr/bin/printf").mode & 0o777).toBe(0o755);
+      const fd = mfs.open("/usr/bin/env", 0, 0);
+      try {
+        const buf = new Uint8Array(16);
+        const n = mfs.read(fd, buf, null, buf.byteLength);
+        expect(new TextDecoder().decode(buf.subarray(0, n))).toBe("#!/bin/sh\n");
+      } finally {
+        mfs.close(fd);
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts --sab-size to control the image backing store size", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    const out = join(tmp, "small.vfs");
+    try {
+      const r = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", out,
+        "--repo-root", fixture,
+        "--sab-size", "1048576",
+      );
+      expect(r.status).toBe(0);
+      expect(readFileSync(out).byteLength).toBeLessThan(2 * 1024 * 1024);
+      expect(() => MemoryFileSystem.fromImage(new Uint8Array(readFileSync(out)))).not.toThrow();
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -186,6 +270,66 @@ describe("mkrootfs build — error handling", () => {
       );
       expect(r.status).not.toBe(0);
       expect(r.stderr).toContain("--bogus");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits non-zero when --manifest-fragment is missing its value", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    try {
+      const r = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", join(tmp, "x.vfs"),
+        "--manifest-fragment",
+      );
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain("requires a value");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits non-zero when --sab-size is not a positive integer", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    try {
+      const r = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", join(tmp, "x.vfs"),
+        "--sab-size=0",
+      );
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain("--sab-size must be a positive integer");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("reports duplicate paths across MANIFEST and manifest fragments", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    const sourceTree = join(tmp, "rootfs");
+    try {
+      mkdirSync(join(sourceTree, "etc"), { recursive: true });
+      writeFileSync(join(tmp, "MANIFEST"), "/etc d 0755 0 0\n");
+      writeFileSync(join(tmp, "fragment.MANIFEST"), "/etc d 0755 0 0\n");
+
+      const r = run(
+        "build",
+        join(tmp, "MANIFEST"),
+        sourceTree,
+        "-o", join(tmp, "image.vfs"),
+        "--manifest-fragment", join(tmp, "fragment.MANIFEST"),
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("duplicate manifest path");
+      expect(r.stderr).toContain("/etc");
+      expect(existsSync(join(tmp, "image.vfs"))).toBe(false);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -596,7 +740,6 @@ describe("mkrootfs extract — error handling", () => {
   it("exits 1 when out-dir already exists without --force", () => {
     const { tmp, image } = buildBasicImage();
     try {
-      const outDir = join(tmp, "pre-existing");
       // Pre-create the dir so extract sees it.
       writeFileSync(join(tmp, "sentinel"), "x");
       // Use the tmp dir itself (already exists). Verify error.

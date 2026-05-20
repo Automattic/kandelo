@@ -4,28 +4,33 @@
  *   - Interactive: xterm.js terminal with PTY-backed I/O (real terminal)
  *   - Batch (Script): textarea for entering a full script, click Run
  *
- * The shell environment is pre-built into a VFS image (shell.vfs) containing
- * dash, symlinks, magic database, vim runtime, and system configs. At runtime
- * we restore the image, register lazy binaries, and spawn dash.
+ * The shell environment is pre-built into a VFS image (shell.vfs) layered on
+ * the canonical base rootfs. At runtime we restore the image, rewrite lazy
+ * URLs to Vite-emitted assets, register demo-only lazy binaries, and spawn
+ * bash from the VFS.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { PtyTerminal } from "../../lib/pty-terminal";
-import {
-  COREUTILS_NAMES,
-  type BinaryDef,
-} from "../../lib/init/shell-binaries";
+import type { BinaryDef } from "../../lib/init/shell-binaries";
 import kernelWasmUrl from "@kernel-wasm?url";
 import dashWasmUrl from "../../../../binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "../../../../binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "../../../../binaries/programs/wasm32/coreutils.wasm?url";
+import gawkWasmUrl from "../../../../binaries/programs/wasm32/gawk.wasm?url";
 import grepWasmUrl from "../../../../binaries/programs/wasm32/grep.wasm?url";
 import sedWasmUrl from "../../../../binaries/programs/wasm32/sed.wasm?url";
 import bcWasmUrl from "../../../../binaries/programs/wasm32/bc.wasm?url";
 import fileWasmUrl from "../../../../binaries/programs/wasm32/file/file.wasm?url";
-import lessWasmUrl from "../../../../binaries/programs/wasm32/less.wasm?url";
 import m4WasmUrl from "../../../../binaries/programs/wasm32/m4.wasm?url";
 import makeWasmUrl from "../../../../binaries/programs/wasm32/make.wasm?url";
+import findWasmUrl from "../../../../binaries/programs/wasm32/findutils/find.wasm?url";
+import xargsWasmUrl from "../../../../binaries/programs/wasm32/findutils/xargs.wasm?url";
+import diffWasmUrl from "../../../../binaries/programs/wasm32/diffutils/diff.wasm?url";
+import cmpWasmUrl from "../../../../binaries/programs/wasm32/diffutils/cmp.wasm?url";
+import diff3WasmUrl from "../../../../binaries/programs/wasm32/diffutils/diff3.wasm?url";
+import sdiffWasmUrl from "../../../../binaries/programs/wasm32/diffutils/sdiff.wasm?url";
+import lessWasmUrl from "../../../../binaries/programs/wasm32/less.wasm?url";
 import tarWasmUrl from "../../../../binaries/programs/wasm32/tar.wasm?url";
 import curlWasmUrl from "../../../../binaries/programs/wasm32/curl.wasm?url";
 import wgetWasmUrl from "../../../../binaries/programs/wasm32/wget.wasm?url";
@@ -93,9 +98,30 @@ function hideStatus() {
 
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
-let dashBytes: ArrayBuffer | null = null;
-let bashBytes: ArrayBuffer | null = null;
 let lazyBinaries: BinaryDef[] = [];
+
+const baseLazyUrlMap: Record<string, string> = {
+  "binaries/programs/wasm32/dash.wasm": dashWasmUrl,
+  "binaries/programs/wasm32/bash.wasm": bashWasmUrl,
+  "binaries/programs/wasm32/coreutils.wasm": coreutilsWasmUrl,
+  "binaries/programs/wasm32/gawk.wasm": gawkWasmUrl,
+  "binaries/programs/wasm32/grep.wasm": grepWasmUrl,
+  "binaries/programs/wasm32/sed.wasm": sedWasmUrl,
+  "binaries/programs/wasm32/bc.wasm": bcWasmUrl,
+  "binaries/programs/wasm32/file/file.wasm": fileWasmUrl,
+  "binaries/programs/wasm32/m4.wasm": m4WasmUrl,
+  "binaries/programs/wasm32/make.wasm": makeWasmUrl,
+  "binaries/programs/wasm32/findutils/find.wasm": findWasmUrl,
+  "binaries/programs/wasm32/findutils/xargs.wasm": xargsWasmUrl,
+  "binaries/programs/wasm32/diffutils/diff.wasm": diffWasmUrl,
+  "binaries/programs/wasm32/diffutils/cmp.wasm": cmpWasmUrl,
+  "binaries/programs/wasm32/diffutils/diff3.wasm": diff3WasmUrl,
+  "binaries/programs/wasm32/diffutils/sdiff.wasm": sdiffWasmUrl,
+};
+
+function resolveImageLazyUrl(url: string): string {
+  return baseLazyUrlMap[url] ?? import.meta.env.BASE_URL + url;
+}
 
 /** Fetch file size via HEAD request. Returns 0 on failure. */
 async function fetchSize(url: string): Promise<number> {
@@ -109,16 +135,12 @@ async function fetchSize(url: string): Promise<number> {
 }
 
 async function loadBinaries(): Promise<string> {
-  if (kernelBytes && dashBytes && bashBytes && vfsImageBuf) return "";
+  if (kernelBytes && vfsImageBuf) return "";
 
-  setStatus("Loading kernel, shells, and VFS image...", "loading");
+  setStatus("Loading kernel and VFS image...", "loading");
 
-  // Eagerly fetch the kernel, dash + bash (needed for spawning), and VFS image.
-  // bash is the default interactive shell; dash is kept for /bin/sh and scripts.
-  const [kernelResult, dashResult, bashResult, vfsResult] = await Promise.all([
+  const [kernelResult, vfsResult] = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(dashWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(bashWasmUrl).then((r) => r.arrayBuffer()),
     fetch(VFS_IMAGE_URL).then((r) => {
       if (!r.ok) {
         throw new Error(
@@ -130,22 +152,13 @@ async function loadBinaries(): Promise<string> {
     }),
   ]);
   kernelBytes = kernelResult;
-  dashBytes = dashResult;
-  bashBytes = bashResult;
   vfsImageBuf = vfsResult;
 
   // Fetch sizes for lazy-loaded utilities (HEAD requests, ~200 bytes each).
   // All these are required dependencies of the shell demo; their binaries
   // are built by `./run.sh build shell-vfs` (or `./run.sh build browser`).
   const lazyDefs = [
-    { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap(n => [`/bin/${n}`, `/usr/bin/${n}`]) },
-    { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
-    { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
-    { url: bcWasmUrl, path: "/usr/bin/bc", symlinks: ["/bin/bc"] },
-    { url: fileWasmUrl, path: "/usr/bin/file", symlinks: ["/bin/file"] },
     { url: lessWasmUrl, path: "/usr/bin/less", symlinks: ["/bin/less"] },
-    { url: m4WasmUrl, path: "/usr/bin/m4", symlinks: ["/bin/m4"] },
-    { url: makeWasmUrl, path: "/usr/bin/make", symlinks: ["/bin/make"] },
     { url: tarWasmUrl, path: "/usr/bin/tar", symlinks: ["/bin/tar"] },
     { url: curlWasmUrl, path: "/usr/bin/curl", symlinks: ["/bin/curl"] },
     { url: wgetWasmUrl, path: "/usr/bin/wget", symlinks: ["/bin/wget"] },
@@ -173,8 +186,6 @@ async function loadBinaries(): Promise<string> {
 
   const parts = [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
-    `bash: ${(bashBytes.byteLength / 1024).toFixed(0)}KB`,
-    `dash: ${(dashBytes.byteLength / 1024).toFixed(0)}KB`,
     `VFS image: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB`,
   ];
   for (const lb of lazyBinaries) {
@@ -208,6 +219,7 @@ async function startInteractiveShell() {
     });
     // Archive URLs were stored as bare filenames at build time; prepend the
     // deployed base URL so fetch() resolves correctly regardless of routing.
+    memfs.rewriteLazyFileUrls(resolveImageLazyUrl);
     memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
 
     const kernel = new BrowserKernel({ memfs });
@@ -233,7 +245,7 @@ async function startInteractiveShell() {
     // (xterm, gnome-terminal, ssh, etc.) typically spawn bash as a login
     // shell too, so this matches what users expect: /etc/profile is
     // sourced, aliases and environment set up there are applied.
-    const exitCode = await ptyTerminal.spawn(bashBytes!, ["bash", "-l", "-i"], {
+    const exitCode = await ptyTerminal.spawnFromVfs("/usr/bin/bash", ["bash", "-l", "-i"], {
       env: [
         "HOME=/home",
         "TMPDIR=/tmp",
@@ -467,6 +479,8 @@ async function runBatch() {
     const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
       maxByteLength: 256 * 1024 * 1024,
     });
+    memfs.rewriteLazyFileUrls(resolveImageLazyUrl);
+    memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
 
     const kernel = new BrowserKernel({
       memfs,
@@ -479,7 +493,7 @@ async function runBatch() {
       lazyBinaries.map(lb => ({ path: lb.path, url: lb.url, size: lb.size, mode: 0o755 })),
     );
 
-    const exitCode = await kernel.spawn(bashBytes!, ["bash"], {
+    const { exit } = await kernel.spawnFromVfs("/usr/bin/bash", ["bash"], {
       env: [
         "HOME=/home",
         "TMPDIR=/tmp",
@@ -489,6 +503,7 @@ async function runBatch() {
       ],
       stdin: encoder.encode(commands),
     });
+    const exitCode = await exit;
 
     appendBatchOutput(`\nExited with code ${exitCode}\n`, "info");
     hideStatus();

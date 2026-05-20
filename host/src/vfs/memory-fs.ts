@@ -137,6 +137,17 @@ export class MemoryFileSystem implements FileSystemBackend {
     return entries;
   }
 
+  /** Return lazy metadata for `path`, following symlinks through stat(). */
+  getLazyEntry(path: string): LazyFileEntry | null {
+    try {
+      const st = this.fs.stat(path);
+      const entry = this.lazyFiles.get(st.ino);
+      return entry ? { ino: st.ino, path: entry.path, url: entry.url, size: entry.size } : null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Register a lazy archive group: creates stubs in SharedFS for every file
    * entry and records metadata so that accessing any one of them triggers a
@@ -221,6 +232,13 @@ export class MemoryFileSystem implements FileSystemBackend {
           }
         }
       }
+    }
+  }
+
+  /** Rewrite the URL of every registered lazy file. */
+  rewriteLazyFileUrls(transform: (url: string) => string): void {
+    for (const entry of this.lazyFiles.values()) {
+      entry.url = transform(entry.url);
     }
   }
 
@@ -439,12 +457,17 @@ export class MemoryFileSystem implements FileSystemBackend {
       throw new Error("VFS image truncated");
     }
 
-    // Restore SharedArrayBuffer (optionally growable). The 2-arg form is
-    // typed via the ES2024.SharedMemory lib (see host/tsconfig.json).
+    // Restore SharedArrayBuffer (optionally growable). Some TypeScript lib
+    // versions still expose only the 1-arg constructor even on runtimes that
+    // support the options object.
     const sabOptions = options?.maxByteLength
       ? { maxByteLength: options.maxByteLength }
       : undefined;
-    const sab = new SharedArrayBuffer(sabLen, sabOptions);
+    const SharedArrayBufferCtor = SharedArrayBuffer as new (
+      byteLength: number,
+      options?: { maxByteLength?: number },
+    ) => SharedArrayBuffer;
+    const sab = new SharedArrayBufferCtor(sabLen, sabOptions);
     const sabView = new Uint8Array(sab);
     sabView.set(image.subarray(VFS_IMAGE_HEADER_SIZE, VFS_IMAGE_HEADER_SIZE + sabLen));
 

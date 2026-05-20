@@ -85,6 +85,8 @@ export interface BrowserKernelBootOptions {
    * thread no longer has FS access.
    */
   vfsImage: Uint8Array | "default";
+  /** Base URL used to resolve relative lazy file/archive URLs in `vfsImage`. */
+  lazyUrlBase?: string;
   /** Argv for the first (and currently only "init") process. argv[0] should
    *  be a path inside the VFS image. */
   argv: string[];
@@ -269,6 +271,7 @@ export class BrowserKernel {
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       vfsImage,
+      lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
     });
 
     // Spawn the first process — kernel worker assigns the pid and returns
@@ -284,6 +287,7 @@ export class BrowserKernel {
     kernelWasmBytes: ArrayBuffer;
     fsSab?: SharedArrayBuffer;
     vfsImage?: Uint8Array;
+    lazyUrlBase?: string;
     rootfsImage?: Uint8Array;
   }): Promise<void> {
     // Create the kernel worker
@@ -317,6 +321,7 @@ export class BrowserKernel {
         kernelWasmBytes: transferBuf,
         fsSab: opts.fsSab,
         vfsImage: opts.vfsImage,
+        lazyUrlBase: opts.lazyUrlBase,
         rootfsImage: opts.rootfsImage,
         shmSab: this.shmSab,
         workerEntryUrl,

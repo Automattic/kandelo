@@ -44,11 +44,19 @@ function resolveKernelArtifactsAlias(): Plugin {
         );
       }
       if (pathPart === ROOTFS) {
-        const file = path.resolve(repoRoot, "host/wasm/rootfs.vfs");
-        if (fs.existsSync(file)) return file + query;
+        const candidates = [
+          path.resolve(repoRoot, "host/wasm/rootfs.vfs"),
+          path.resolve(repoRoot, "local-binaries/rootfs.vfs"),
+          path.resolve(repoRoot, "binaries/rootfs.vfs"),
+          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs"),
+          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs"),
+        ];
+        for (const file of candidates) {
+          if (fs.existsSync(file)) return file + query;
+        }
         this.error(
-          "rootfs.vfs not found. Run `bash build.sh` from the repo root.\n" +
-          `  Looked at: ${file}`
+          "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
+          candidates.map((file) => `  Looked at: ${file}`).join("\n")
         );
       }
       return null;

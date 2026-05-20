@@ -5,12 +5,10 @@ kernel_abi = 7
 # Implicit deps consumed by build-shell-vfs-image.ts and the
 # build-{vim,nethack}-zip.sh helpers it drives:
 #
-#   - dash.wasm via `resolveBinary("programs/dash.wasm")`.
-#   - magic.lite via `cargo xtask build-deps resolve file` →
-#     `<file-cache-canonical>/magic.lite`. file's package.toml declares
-#     `magic.lite` as an output and build-file.sh stages it into
-#     OUT_DIR. Falls back to `packages/registry/file/bin/magic.lite`
-#     for direct invocations.
+#   - rootfs.vfs via `resolveBinary("rootfs.vfs")`, falling back to
+#     `resolveBinary("programs/rootfs.vfs")`; that image
+#     carries the base shell, coreutils, grep/sed, file/magic, make/m4,
+#     findutils, and diffutils entries.
 #   - vim.wasm + runtime/ via `cargo xtask build-deps resolve vim`
 #     (build-vim-zip.sh) — vim's package archive ships both.
 #   - nethack.wasm + runtime/ via `cargo xtask build-deps resolve
@@ -23,14 +21,13 @@ kernel_abi = 7
 # on-the-fly during shell's source build using the resolver-provided
 # cache paths; those zips aren't published as part of vim/nethack's
 # release archives.
-depends_on = ["dash@0.5.12", "file@5.45", "vim@9.1.0900", "nethack@3.6.7"]
+depends_on = ["rootfs@0.1.0", "vim@9.1.0900", "nethack@3.6.7"]
 
-# Composite VFS image for the browser shell demo: dash binary,
-# coreutils/grep/sed symlinks, /etc system configs, magic database,
-# lazy-archive reference for vim. Built by
-# images/vfs/scripts/build-shell-vfs-image.ts. The .vfs file is
-# wrapped (not double-compressed) inside the package-system .tar.zst
-# archive at archive-stage time.
+# Composite VFS image for the browser shell demo: canonical rootfs plus
+# shell-specific config and lazy-archive references for vim/nethack. Built by
+# images/vfs/scripts/build-shell-vfs-image.ts. The .vfs file is wrapped
+# (not double-compressed) inside the package-system .tar.zst archive at
+# archive-stage time.
 [source]
 url = "https://github.com/brandonpayton/wasm-posix-kernel"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

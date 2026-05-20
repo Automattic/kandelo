@@ -72,6 +72,28 @@ describe("Lazy VFS files", () => {
     expect(entries.find(e => e.path === "/bin/b")!.size).toBe(200);
   });
 
+  it("getLazyEntry returns lazy metadata and follows symlinks", () => {
+    const mfs = createMemfs();
+    mfs.registerLazyFile("/usr/bin/tool", "programs/tool.wasm", 100);
+    mfs.mkdir("/bin", 0o755);
+    mfs.symlink("/usr/bin/tool", "/bin/tool");
+
+    expect(mfs.getLazyEntry("/bin/tool")).toMatchObject({
+      path: "/usr/bin/tool",
+      url: "programs/tool.wasm",
+      size: 100,
+    });
+  });
+
+  it("rewriteLazyFileUrls updates registered lazy file URLs", () => {
+    const mfs = createMemfs();
+    mfs.registerLazyFile("/bin/a", "programs/a.wasm", 100);
+
+    mfs.rewriteLazyFileUrls((url) => `/assets/${url}`);
+
+    expect(mfs.exportLazyEntries()[0].url).toBe("/assets/programs/a.wasm");
+  });
+
   it("importLazyEntries restores lazy metadata on another instance", () => {
     // Create first instance and register lazy files
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);

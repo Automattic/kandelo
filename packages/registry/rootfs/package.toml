@@ -1,0 +1,35 @@
+kind = "program"
+name = "rootfs"
+version = "0.1.0"
+kernel_abi = 7
+depends_on = [
+  "dash@0.5.12",
+  "bash@5.2.37",
+  "coreutils@9.6",
+  "gawk@5.3.0",
+  "grep@3.11",
+  "sed@4.9",
+  "bc@1.07.1",
+  "file@5.45",
+  "m4@1.4.19",
+  "make@4.4.1",
+  "findutils@4.10.0",
+  "diffutils@3.10",
+]
+
+# Canonical base VFS image. The source is the repository's MANIFEST,
+# images/rootfs/ tree, and images/rootfs/PACKAGES.toml package mapping.
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/rootfs/build-rootfs-package.sh"
+
+[[outputs]]
+name = "rootfs"
+wasm = "rootfs.vfs"
