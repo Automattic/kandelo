@@ -11,6 +11,20 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
+import {
+  ABI_SYSCALLS,
+  CHANNEL_STATUS_IDLE,
+  CHANNEL_STATUS_PENDING,
+  CH_ARG_SIZE,
+  CH_ARGS,
+  CH_DATA,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_STATUS,
+  CH_SYSCALL,
+  CH_TOTAL_SIZE,
+  HOST_INTERCEPTED_SYSCALLS,
+} from "./generated/abi";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -27,10 +41,7 @@ function alignUp(value: number, align: number): number {
   return Math.ceil(value / align) * align;
 }
 
-const SYS_MMAP_NR = 46;
-const CH_ARG_SIZE = 8;
-const CH_RETURN = 56;
-const CH_ERRNO = 64;
+const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
 const PROT_READ_WRITE = 3;
 const MAP_PRIVATE_ANONYMOUS = 0x22;
 
@@ -91,45 +102,41 @@ function buildKernelImports(
     kernel_exit: (status: number): void => {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
-      view.setBigInt64(base + 8, BigInt(status), true); // arg0 as i64
+      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+      view.setBigInt64(base + CH_ARGS, BigInt(status), true);
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for complete, then trap
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
-      Atomics.store(i32, base / 4, 0);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
     },
 
     // Clone dispatches through channel (SYS_CLONE)
     kernel_clone: (fnPtr: number | bigint, stackPtr: number | bigint, flags: number,
       arg: number | bigint, ptidPtr: number | bigint, tlsPtr: number | bigint, ctidPtr: number | bigint): number => {
       const SYS_CLONE_NR = 201;
-      const CH_ARG_SIZE = 8;
-      const CH_RETURN = 56;
-      const CH_ERRNO = 64;
-      const CH_DATA = 72;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, SYS_CLONE_NR, true);
-      view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, BigInt(flags), true);
-      view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(stackPtr), true);
-      view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
-      view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
-      view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
-      view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
+      view.setInt32(base + CH_SYSCALL, SYS_CLONE_NR, true);
+      view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(flags), true);
+      view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(stackPtr), true);
+      view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
+      view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
+      view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
+      view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
       // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
       view.setUint32(base + CH_DATA, n(fnPtr), true);
       view.setUint32(base + CH_DATA + 4, n(arg), true);
 
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
-      Atomics.store(i32, base / 4, 0);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
       if (err) return -err;
       return result;
@@ -137,23 +144,19 @@ function buildKernelImports(
 
     // Fork dispatches through channel (SYS_FORK)
     kernel_fork: (): number => {
-      const SYS_FORK_NR = 212;
-      const CH_ARG_SIZE = 8;
-      const CH_RETURN = 56;
-      const CH_ERRNO = 64;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, SYS_FORK_NR, true);
-      for (let i = 0; i < 6; i++) view.setBigInt64(base + 8 + i * CH_ARG_SIZE, 0n, true);
+      view.setInt32(base + CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_FORK, true);
+      for (let i = 0; i < 6; i++) view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
 
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
-      Atomics.store(i32, base / 4, 0);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
       if (err) return -err;
       return result;
@@ -213,22 +216,22 @@ function buildDlopenImports(
     const requested = size + Math.max(align, 1) - 1;
     const view = new DataView(memory.buffer);
     const base = channelOffset;
-    view.setInt32(base + 4, SYS_MMAP_NR, true);
-    view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, 0n, true);
-    view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(requested), true);
-    view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
-    view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
-    view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, -1n, true);
-    view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
+    view.setInt32(base + CH_SYSCALL, SYS_MMAP_NR, true);
+    view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, 0n, true);
+    view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(requested), true);
+    view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
+    view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
+    view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, -1n, true);
+    view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
     const i32 = new Int32Array(memory.buffer);
-    Atomics.store(i32, base / 4, 1);
-    Atomics.notify(i32, base / 4, 1);
-    while (Atomics.wait(i32, base / 4, 1) === "ok") { /* wait for mmap */ }
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+    while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* wait for mmap */ }
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const err = view.getUint32(base + CH_ERRNO, true);
-    Atomics.store(i32, base / 4, 0);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
     if (err || result < 0) {
       throw new Error(`dlopen: mmap(${requested}) failed errno=${err || -result}`);
@@ -1257,27 +1260,20 @@ function setupChannelBase(
  * Returns child pid on success, or -errno on failure.
  */
 function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): number {
-  const SYS_FORK_NR = 212;
-  const CH_SYSCALL = 4;
-  const CH_ARGS = 8;
-  const CH_ARG_SIZE = 8; // each arg is i64 (8 bytes)
-  const CH_RETURN = 56;
-  const CH_ERRNO = 64;
-
   const view = new DataView(memory.buffer);
-  view.setInt32(channelOffset + CH_SYSCALL, SYS_FORK_NR, true);
+  view.setInt32(channelOffset + CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_FORK, true);
   for (let i = 0; i < 6; i++) {
     view.setBigInt64(channelOffset + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
   }
 
   const i32 = new Int32Array(memory.buffer);
-  Atomics.store(i32, channelOffset / 4, 1); // CH_PENDING
-  Atomics.notify(i32, channelOffset / 4, 1);
-  while (Atomics.wait(i32, channelOffset / 4, 1) === "ok") { /* */ }
+  Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+  Atomics.notify(i32, (channelOffset + CH_STATUS) / 4, 1);
+  while (Atomics.wait(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
   const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
   const err = view.getUint32(channelOffset + CH_ERRNO, true);
-  Atomics.store(i32, channelOffset / 4, 0);
+  Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
   if (err) return -err;
   return result;
@@ -1572,8 +1568,7 @@ export async function centralizedThreadWorkerMain(
     // page-aligned addresses in the thread region, overwriting __channel_base.
     // The channel spill page has 65464 bytes free after the header; we only need 8.
     const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number | bigint) => void) | undefined;
-    const CH_TOTAL = 65608; // CH_HEADER_SIZE (72) + CH_DATA_SIZE (65536)
-    const safeTlsAddr = channelOffset + CH_TOTAL; // inside channel spill page, 4-byte aligned
+    const safeTlsAddr = channelOffset + CH_TOTAL_SIZE; // inside channel spill page, 4-byte aligned
     const tlsBlock = safeTlsAddr;
 
     if (wasmInitTls && tlsBlock > 0) {
@@ -1702,14 +1697,14 @@ export async function centralizedThreadWorkerMain(
     {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
-      view.setInt32(base + 8, result ?? 0, true);
+      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+      view.setInt32(base + CH_ARGS, result ?? 0, true);
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for kernel to process the exit
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
-      Atomics.store(i32, base / 4, 0);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
     }
 
     port.postMessage({
