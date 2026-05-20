@@ -71,29 +71,6 @@
     <div class="doom-frame">
       <canvas id="fb" tabindex="0" width="640" height="400"></canvas>
     </div>
-
-    <div class="doom-controls">
-      <strong>Controls</strong>
-      <dl>
-        <dt>WASD / arrows</dt><dd>Move forward / back / strafe</dd>
-        <dt>Mouse</dt><dd>Aim (turn left / right)</dd>
-        <dt>Left click</dt><dd>Fire</dd>
-        <dt>Space</dt><dd>Use / open door</dd>
-        <dt>Ctrl</dt><dd>Fire (keyboard)</dd>
-        <dt>Enter</dt><dd>Confirm menu</dd>
-        <dt>Esc</dt><dd>Menu (also releases pointer lock)</dd>
-      </dl>
-      <p class="doom-mp-notes">
-        Both peers must reach <code>connected</code>, then both click
-        <strong>Start DOOM</strong> within a few seconds of each other.
-        fbDOOM's <code>NET_WaitForLaunch</code> handshake is self-healing —
-        if one side starts first, the other has a few seconds of retry budget
-        to catch up. The synthetic LAN is <code>10.99.0.0/24:5029</code>; the
-        peer's UDP datagrams ride the open <code>RTCDataChannel</code> via the
-        relay. RTT (1 Hz JSON probe over a separate ordered channel) is shown
-        in the status panel; tic-level loss/latency telemetry is a follow-up.
-      </p>
-    </div>
   </div>
   <script type="module" src="./main.ts"></script>
 </body>

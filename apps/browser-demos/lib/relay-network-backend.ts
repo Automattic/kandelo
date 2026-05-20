@@ -61,8 +61,6 @@ export const ENVELOPE_MAX_TOTAL = 1024;
 export interface RelayChannelOptions {
   kernel: RelayKernel;
   channel: RelayDataChannel;
-  /** This peer's synthetic IPv4 — unused on the wire today; reserved for routing. */
-  localAddr: [number, number, number, number];
   /** The remote peer's synthetic IPv4 — used as `from_addr` for inbound datagrams. */
   peerAddr: [number, number, number, number];
 }
@@ -80,7 +78,6 @@ export class RelayChannel {
     this.kernel = opts.kernel;
     this.channel = opts.channel;
     this.peerAddr = opts.peerAddr;
-    void opts.localAddr; // reserved for future per-iface routing
 
     this.inboundListener = (e: Event) => this.handleInbound(e as MessageEvent);
     this.channel.addEventListener("message", this.inboundListener);
@@ -123,9 +120,19 @@ export class RelayChannel {
 
   private handleOutbound(ev: RelayOutboundDatagram): void {
     if (this.closed) return;
-    // `dstIp` is implicit in v1: the channel terminates at peerAddr. Future
-    // mesh routing will dispatch on dstIp; for now we just forward.
-    void ev.dstIp;
+    // This channel terminates at exactly one peer. Drop any datagram the
+    // kernel asks us to deliver to a different IP — silently, because UDP
+    // is best-effort. Without this guard, a `sendto(8.8.8.8, …)` from any
+    // pid would be redirected onto the WebRTC peer, leaking traffic across
+    // the synthetic /24 boundary.
+    if (
+      ev.dstIp[0] !== this.peerAddr[0] ||
+      ev.dstIp[1] !== this.peerAddr[1] ||
+      ev.dstIp[2] !== this.peerAddr[2] ||
+      ev.dstIp[3] !== this.peerAddr[3]
+    ) {
+      return;
+    }
 
     const total = ENVELOPE_HEADER_LEN + ev.data.length;
     if (total > ENVELOPE_MAX_TOTAL) {
