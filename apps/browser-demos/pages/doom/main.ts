@@ -12,6 +12,10 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { attachCanvas } from "../../../../host/src/framebuffer/canvas-renderer";
+import {
+  attachPointerLockMouse,
+  createPcmAudioScheduler,
+} from "../../../../host/src/framebuffer/browser-controls";
 // `@binaries/` resolves to local-binaries/ first, then binaries/ — so
 // a fresh `bash build-fbdoom.sh` shadows the cached release without
 // needing to mirror the symlinks under binaries/.
@@ -177,8 +181,10 @@ startBtn.addEventListener("click", async () => {
     startBtn.disabled = false;
     return;
   }
+  const wadBlobBytes = new ArrayBuffer(wadBytes.byteLength);
+  new Uint8Array(wadBlobBytes).set(wadBytes);
   const wadBlobUrl = URL.createObjectURL(
-    new Blob([wadBytes], { type: "application/x-doom" }),
+    new Blob([wadBlobBytes], { type: "application/x-doom" }),
   );
   kernel.registerLazyFiles([
     {
@@ -212,81 +218,13 @@ startBtn.addEventListener("click", async () => {
     getProcessMemory: (p) => kernel.getProcessMemory(p),
   });
 
-  // Audio output → AudioContext. fbDOOM's i_kernel_sound module mixes
-  // 8-bit mono SFX plus OPL2-synthesized music (MUS → MIDI → OPL via
-  // i_oplmusic) into a 16-bit stereo @ 44.1 kHz buffer and writes it to
-  // /dev/dsp every game tic (~28 ms). We poll the kernel ring every
-  // ~50 ms, decode S16 → Float32, and chain the chunks onto the
-  // AudioContext clock so playback is gapless. The first user-gesture
-  // boot button click already happened (it's how we got here), so
-  // resume() succeeds without a separate prompt.
-  const audioCtx = new AudioContext();
-  if (audioCtx.state === "suspended") {
-    void audioCtx.resume();
-  }
-  let audioCursor = audioCtx.currentTime;
-  let audioSampleRate = 44100;
-  let audioChannels = 2;
-  let audioStopped = false;
-
-  // Pull audio every 50 ms. The kernel ring is 256 KiB ≈ 1.5 s of
-  // stereo S16 @ 44.1 kHz, so a missed tick or two is harmless. The
-  // ring drops oldest frames on overflow rather than blocking, which
-  // matches what real OSS hardware does — DOOM never stalls on audio.
-  const AUDIO_POLL_MS = 50;
-  const AUDIO_DRAIN_BYTES = 32 * 1024; // ~190 ms at 44.1 kHz stereo S16.
-
-  const audioTimer = window.setInterval(async () => {
-    if (audioStopped || audioCtx.state !== "running") return;
-    let drain;
-    try {
-      drain = await kernel.drainAudio(AUDIO_DRAIN_BYTES);
-    } catch {
-      return; // worker torn down, etc. — let the exit promise handle it.
-    }
-    const { bytes, sampleRate, channels } = drain;
-    if (bytes.byteLength === 0) return;
-    if (sampleRate > 0) audioSampleRate = sampleRate;
-    if (channels > 0) audioChannels = channels;
-
-    // Decode interleaved S16_LE → planar Float32 for AudioBuffer.
-    const bytesPerFrame = 2 * audioChannels;
-    const frames = Math.floor(bytes.byteLength / bytesPerFrame);
-    if (frames === 0) return;
-    const buffer = audioCtx.createBuffer(audioChannels, frames, audioSampleRate);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    for (let ch = 0; ch < audioChannels; ch++) {
-      const dst = buffer.getChannelData(ch);
-      for (let i = 0; i < frames; i++) {
-        const sample = view.getInt16((i * audioChannels + ch) * 2, true);
-        dst[i] = sample / 32768;
-      }
-    }
-
-    // Schedule on the AudioContext clock, holding a tiny lookahead so
-    // brief drain hiccups don't underrun. We *also* cap the lookahead:
-    // if the producer ever drifts ahead of real time (e.g. game tics
-    // briefly run faster than wall-clock), the AudioContext queue
-    // would otherwise grow without bound, making SFX play hundreds of
-    // ms after their visual trigger and eventually getting dropped on
-    // ring overflow. When we're more than maxLookahead ahead, we drop
-    // the freshly drained chunk and resync — a brief silence is far
-    // less perceptible than permanent latency.
-    const now = audioCtx.currentTime;
-    const lookahead = 0.04; // 40 ms — > 1 poll interval.
-    const maxLookahead = 0.15; // 150 ms — drop & resync past this.
-    if (audioCursor < now + lookahead) {
-      audioCursor = now + lookahead;
-    } else if (audioCursor > now + maxLookahead) {
-      audioCursor = now + lookahead;
-      return; // skip this chunk to let real time catch up
-    }
-    const node = audioCtx.createBufferSource();
-    node.buffer = buffer;
-    node.connect(audioCtx.destination);
-    node.start(audioCursor);
-    audioCursor += frames / audioSampleRate;
-  }, AUDIO_POLL_MS);
+  // Audio output → AudioContext. fbDOOM mixes SFX + OPL2 music into
+  // `/dev/dsp`; the shared scheduler drains that PCM ring and feeds Web
+  // Audio. The boot button click is a user gesture, so resume usually
+  // succeeds here; clicking the canvas tries again if the browser still
+  // has the context suspended.
+  const audio = createPcmAudioScheduler(kernel);
+  void audio.resume();
 
   // Keyboard input → AT-set-1 scancode bytes on stdin. fbDOOM's
   // `kbd_read` reads the high bit as the *press* flag (inverse of
@@ -316,57 +254,31 @@ startBtn.addEventListener("click", async () => {
     heldKeys.delete(e.code);
     sendScancode(code, false);
   });
+
+  // Mouse input → /dev/input/mice PS/2 packets. Pointer Lock gives
+  // unbounded relative motion; the shared helper scales browser CSS-pixel
+  // deltas into mouse mickeys and splits large deltas into legal PS/2
+  // packets so fast turns are not clipped by the signed-byte device.
+  const pointerMouse = attachPointerLockMouse(canvas, kernel, {
+    requestPointerLockOnClick: false,
+  });
+  canvas.addEventListener("click", () => {
+    canvas.focus();
+    void audio.resume();
+    pointerMouse.requestCapture();
+  });
+
   // Releasing focus (e.g. Cmd-tab while moving) leaves the held set
-  // out of sync; flush it on blur so the player doesn't keep walking.
+  // out of sync; flush it on blur so the player doesn't keep walking
+  // or firing.
   canvas.addEventListener("blur", () => {
     for (const k of heldKeys) {
       const code = SCANCODE[k];
       if (code !== undefined) sendScancode(code, false);
     }
     heldKeys.clear();
-    if (mouseButtons !== 0) {
-      mouseButtons = 0;
-      kernel.injectMouseEvent(0, 0, 0);
-    }
+    pointerMouse.releaseCapture();
   });
-
-  // Mouse input → /dev/input/mice PS/2 packets. We use Pointer Lock so the
-  // browser delivers unbounded relative motion (movementX/Y) instead of
-  // clamped clientX/Y, matching what a real mouse delivers over PS/2.
-  // Browser MouseEvent.button: 0=L, 1=M, 2=R. PS/2 byte0 button bits:
-  // bit0=L, bit1=R, bit2=M. Browser deltaY is positive-down — invert
-  // before sending so the kernel queue holds PS/2 (positive-up) deltas.
-  let mouseButtons = 0;
-  const buttonBit = (b: number) => (b === 0 ? 1 : b === 2 ? 2 : b === 1 ? 4 : 0);
-  canvas.addEventListener("click", () => {
-    canvas.focus();
-    if (document.pointerLockElement !== canvas) {
-      canvas.requestPointerLock();
-    }
-  });
-  canvas.addEventListener("mousemove", (e) => {
-    if (document.pointerLockElement !== canvas) return;
-    const dx = e.movementX | 0;
-    const dy = -(e.movementY | 0);
-    if (dx === 0 && dy === 0) return;
-    kernel.injectMouseEvent(dx, dy, mouseButtons);
-  });
-  canvas.addEventListener("mousedown", (e) => {
-    if (document.pointerLockElement !== canvas) return;
-    const bit = buttonBit(e.button);
-    if (bit === 0) return;
-    e.preventDefault();
-    mouseButtons |= bit;
-    kernel.injectMouseEvent(0, 0, mouseButtons);
-  });
-  canvas.addEventListener("mouseup", (e) => {
-    const bit = buttonBit(e.button);
-    if (bit === 0) return;
-    e.preventDefault();
-    mouseButtons &= ~bit;
-    kernel.injectMouseEvent(0, 0, mouseButtons);
-  });
-  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
   statusEl.textContent =
     "Running. Click the canvas to capture keyboard + mouse. Esc to release pointer.";
@@ -379,8 +291,7 @@ startBtn.addEventListener("click", async () => {
       statusEl.textContent = `fbdoom error: ${err.message ?? err}`;
     })
     .finally(() => {
-      audioStopped = true;
-      window.clearInterval(audioTimer);
-      void audioCtx.close().catch(() => {});
+      pointerMouse.close();
+      audio.close();
     });
 });

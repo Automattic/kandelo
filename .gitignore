@@ -23,6 +23,7 @@ binaries.lock.pr
 
 # Dependencies
 node_modules/
+/.direnv/
 
 # Worktrees
 .worktrees/
