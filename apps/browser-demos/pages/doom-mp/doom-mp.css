@@ -66,26 +66,3 @@ canvas#fb {
   background: #000;
 }
 
-.doom-controls {
-  color: #333;
-  font-size: 0.9em;
-  max-width: 800px;
-}
-
-.doom-controls dl {
-  display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 4px 16px;
-  margin: 8px 0 0;
-}
-
-.doom-controls dt {
-  font-family: monospace;
-  color: #06c;
-}
-
-.doom-mp-notes {
-  margin-top: 8px;
-  color: #555;
-  line-height: 1.5;
-}
