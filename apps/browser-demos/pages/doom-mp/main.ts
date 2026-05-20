@@ -62,6 +62,19 @@ let pingTimer: number | null = null;
 let lastRtt: number | null = null;
 let candidatePair: { local: string; remote: string } | null = null;
 
+/**
+ * Per-game-session resources allocated by startDoom() — kernel worker,
+ * AudioContext + its polling timer, and the keyboard/mouse listeners
+ * attached to the canvas. All of them outlive a Reset unless we tear
+ * them down explicitly; without this struct, each Reset+Start cycle
+ * stacks another kernel worker + AudioContext + listener fanout, and
+ * the page becomes unusable after a few iterations.
+ */
+interface GameSession {
+  cleanup: () => Promise<void>;
+}
+let gameSession: GameSession | null = null;
+
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
   if (!el) throw new Error(`#${id} not found`);
@@ -341,6 +354,16 @@ function resetSession(): void {
   pc = null;
   candidatePair = null;
   lastRtt = null;
+  // Tear down a running/exited/failed game session — kernel worker,
+  // AudioContext, canvas listeners. Idle/awaiting/connecting/connected
+  // never allocated a session in the first place, so there's nothing
+  // to clean up. Fire-and-forget: the user clicked Reset and we don't
+  // want to await async teardown before they can start a new offer.
+  if (gameSession) {
+    const session = gameSession;
+    gameSession = null;
+    void session.cleanup();
+  }
 }
 
 function doReset(): void {
@@ -440,8 +463,6 @@ async function startDoom(): Promise<void> {
 
   const role = currentRole();
   // Synthetic /24 — design §2 / §5.1. Host is .1, joiner is .2.
-  const localAddr: [number, number, number, number] =
-    role === "host" ? [10, 99, 0, 1] : [10, 99, 0, 2];
   const peerAddr: [number, number, number, number] =
     role === "host" ? [10, 99, 0, 2] : [10, 99, 0, 1];
 
@@ -495,18 +516,18 @@ async function startDoom(): Promise<void> {
   relay = new RelayChannel({
     kernel,
     channel: doomChan,
-    localAddr,
     peerAddr,
   });
   const pid = kernel.nextPid;
   relay.setTargetPid(pid);
 
   // CLI flags (design §6):
-  //   -server / -connect select role.
-  //   -privateserver short-circuits NET_SV_RegisterWithMaster's lookup
-  //     of master.chocolate-doom.org — without it the first sync hangs
-  //     on DNS through host_getaddrinfo, which the relay does not handle
-  //     (session-9 handoff §risks #3). Both peers pass it.
+  //   -server / -connect select role. -privateserver is HOST-ONLY: it
+  //   triggers the server-startup branch in d_loop.c (same as -server)
+  //   AND gates out NET_SV_RegisterWithMaster's master.chocolate-doom.org
+  //   lookup. Passing it on the joiner would route the joiner into the
+  //   server branch too, making it connect to its own in-process loopback
+  //   instead of dialing 10.99.0.1.
   //   -deathmatch + -warp 1 1 drops both players into E1M1 deathmatch.
   const args: string[] = role === "host"
     ? [
@@ -516,7 +537,7 @@ async function startDoom(): Promise<void> {
       ]
     : [
         "fbdoom", "-iwad", WAD_VFS_PATH,
-        "-connect", "10.99.0.1", "-privateserver",
+        "-connect", "10.99.0.1",
         "-deathmatch", "-warp", "1", "1",
       ];
 
@@ -582,29 +603,34 @@ async function startDoom(): Promise<void> {
     audioCursor += frames / audioSampleRate;
   }, AUDIO_POLL_MS);
 
-  // Keyboard + mouse — identical to pages/doom/.
+  // Keyboard + mouse — identical to pages/doom/. Listener references
+  // are hoisted so resetSession() can detach them; without this the
+  // canvas keeps fanning out keystrokes to a now-dead kernel after
+  // each Reset+Start cycle.
   els.canvas.focus();
   const heldKeys = new Set<string>();
+  let mouseButtons = 0;
   const sendScancode = (code: number, pressed: boolean) => {
     const byte = pressed ? code & 0x7f : code | 0x80;
     kernel.appendStdinData(pid, new Uint8Array([byte]));
   };
-  els.canvas.addEventListener("keydown", (e) => {
+  const buttonBit = (b: number) => (b === 0 ? 1 : b === 2 ? 2 : b === 1 ? 4 : 0);
+  const onKeyDown = (e: KeyboardEvent) => {
     const code = SCANCODE[e.code];
     if (code === undefined) return;
     e.preventDefault();
     if (heldKeys.has(e.code)) return;
     heldKeys.add(e.code);
     sendScancode(code, true);
-  });
-  els.canvas.addEventListener("keyup", (e) => {
+  };
+  const onKeyUp = (e: KeyboardEvent) => {
     const code = SCANCODE[e.code];
     if (code === undefined) return;
     e.preventDefault();
     heldKeys.delete(e.code);
     sendScancode(code, false);
-  });
-  els.canvas.addEventListener("blur", () => {
+  };
+  const onBlur = () => {
     for (const k of heldKeys) {
       const code = SCANCODE[k];
       if (code !== undefined) sendScancode(code, false);
@@ -614,39 +640,79 @@ async function startDoom(): Promise<void> {
       mouseButtons = 0;
       kernel.injectMouseEvent(0, 0, 0);
     }
-  });
-
-  let mouseButtons = 0;
-  const buttonBit = (b: number) => (b === 0 ? 1 : b === 2 ? 2 : b === 1 ? 4 : 0);
-  els.canvas.addEventListener("click", () => {
+  };
+  const onClick = () => {
     els.canvas.focus();
     if (document.pointerLockElement !== els.canvas) {
       els.canvas.requestPointerLock();
     }
-  });
-  els.canvas.addEventListener("mousemove", (e) => {
+  };
+  const onMouseMove = (e: MouseEvent) => {
     if (document.pointerLockElement !== els.canvas) return;
     const dx = e.movementX | 0;
     const dy = -(e.movementY | 0);
     if (dx === 0 && dy === 0) return;
     kernel.injectMouseEvent(dx, dy, mouseButtons);
-  });
-  els.canvas.addEventListener("mousedown", (e) => {
+  };
+  const onMouseDown = (e: MouseEvent) => {
     if (document.pointerLockElement !== els.canvas) return;
     const bit = buttonBit(e.button);
     if (bit === 0) return;
     e.preventDefault();
     mouseButtons |= bit;
     kernel.injectMouseEvent(0, 0, mouseButtons);
-  });
-  els.canvas.addEventListener("mouseup", (e) => {
+  };
+  const onMouseUp = (e: MouseEvent) => {
     const bit = buttonBit(e.button);
     if (bit === 0) return;
     e.preventDefault();
     mouseButtons &= ~bit;
     kernel.injectMouseEvent(0, 0, mouseButtons);
-  });
-  els.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  };
+  const onContextMenu = (e: Event) => e.preventDefault();
+  els.canvas.addEventListener("keydown", onKeyDown);
+  els.canvas.addEventListener("keyup", onKeyUp);
+  els.canvas.addEventListener("blur", onBlur);
+  els.canvas.addEventListener("click", onClick);
+  els.canvas.addEventListener("mousemove", onMouseMove);
+  els.canvas.addEventListener("mousedown", onMouseDown);
+  els.canvas.addEventListener("mouseup", onMouseUp);
+  els.canvas.addEventListener("contextmenu", onContextMenu);
+
+  const detachCanvasListeners = (): void => {
+    els.canvas.removeEventListener("keydown", onKeyDown);
+    els.canvas.removeEventListener("keyup", onKeyUp);
+    els.canvas.removeEventListener("blur", onBlur);
+    els.canvas.removeEventListener("click", onClick);
+    els.canvas.removeEventListener("mousemove", onMouseMove);
+    els.canvas.removeEventListener("mousedown", onMouseDown);
+    els.canvas.removeEventListener("mouseup", onMouseUp);
+    els.canvas.removeEventListener("contextmenu", onContextMenu);
+  };
+
+  const stopAudio = (): void => {
+    if (audioStopped) return;
+    audioStopped = true;
+    window.clearInterval(audioTimer);
+    void audioCtx.close().catch(() => {});
+  };
+
+  // Register this session so resetSession() can tear it down. The
+  // teardown order matters: stop audio first (kills the polling timer
+  // before the kernel goes away), then detach listeners (no more
+  // appendStdinData / injectMouseEvent calls), then destroy the
+  // kernel (terminates the worker thread).
+  gameSession = {
+    cleanup: async () => {
+      stopAudio();
+      detachCanvasListeners();
+      try {
+        await kernel.destroy();
+      } catch (err) {
+        console.warn("[doom-mp] kernel destroy failed:", err);
+      }
+    },
+  };
 
   exitPromise
     .then((status) => {
@@ -657,11 +723,7 @@ async function startDoom(): Promise<void> {
       console.error("[doom-mp] fbdoom error:", err);
       setState("failed");
     })
-    .finally(() => {
-      audioStopped = true;
-      window.clearInterval(audioTimer);
-      void audioCtx.close().catch(() => {});
-    });
+    .finally(stopAudio);
 }
 
 els.createOffer.addEventListener("click",  doCreateOffer);
