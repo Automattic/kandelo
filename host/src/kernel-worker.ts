@@ -938,6 +938,9 @@ export class CentralizedKernelWorker {
     // since nextChildPid is monotonic, but defensive), the new process
     // hasn't been reaped yet.
     this.hostReaped.delete(pid);
+    if (pid >= this.nextChildPid) {
+      this.nextChildPid = pid + 1;
+    }
 
     // Create process in kernel's process table (skip if already created, e.g. by fork)
     if (!options?.skipKernelCreate) {
@@ -6003,6 +6006,33 @@ export class CentralizedKernelWorker {
     if (markSignaled && markSignaled(pid, signum) < 0) return;
     this.hostReaped.add(pid);
     this.notifyParentOfExitedProcess(pid);
+    this.sharedMappings.delete(pid);
+  }
+
+  /**
+   * Notify the host waitpid/waitid machinery that a worker exited cleanly
+   * without reaching the kernel SYS_exit path. Some browser-hosted runtimes
+   * return from `_start` and let worker-main post `{type:"exit"}`; record
+   * that as WIFEXITED so the parent shell can reap the child normally.
+   */
+  notifyHostProcessExited(pid: number, exitStatus: number): void {
+    if (this.hostReaped.has(pid)) return;
+    this.hostReaped.add(pid);
+    const waitStatus = (exitStatus & 0xff) << 8;
+    const parentPid = this.childToParent.get(pid);
+    if (parentPid !== undefined) {
+      const hasNoCldWait = this.kernelInstance!.exports
+        .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
+      const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
+
+      if (!autoReap) {
+        this.exitedChildren.set(pid, waitStatus);
+        this.sendSignalToProcess(parentPid, SIGCHLD);
+        this.wakeWaitingParent(parentPid, pid, waitStatus);
+      } else {
+        this.childToParent.delete(pid);
+      }
+    }
     this.sharedMappings.delete(pid);
   }
 

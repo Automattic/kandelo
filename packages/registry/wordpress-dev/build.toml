@@ -1,0 +1,7 @@
+script_path = "packages/registry/wordpress-dev/build-wordpress-dev.sh"
+repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+commit      = "44e39ae6ac30e65c1fd244e9fcf8223164c70e22"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
