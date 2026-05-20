@@ -22,6 +22,7 @@ import { addDinitInit } from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
 
 const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php.vfs.zst");
+const PHP_FPM_WORKERS = 6;
 
 const NGINX_CONF = `user root;
 daemon off;
@@ -101,7 +102,7 @@ user = nobody
 group = nobody
 listen = 127.0.0.1:9000
 pm = static
-pm.max_children = 2
+pm.max_children = ${PHP_FPM_WORKERS}
 clear_env = no
 slowlog = /dev/null
 request_slowlog_trace_depth = 0

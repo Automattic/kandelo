@@ -13,6 +13,7 @@ import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
   writeVfsBinary,
+  writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
 import { decompress as decompressZstd } from "fzstd";
 import {
@@ -151,6 +152,22 @@ const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
 const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
+const PHP_FPM_WORKERS = 6;
+const PATCHED_PHP_FPM_CONF = `[global]
+daemonize = no
+error_log = /dev/stderr
+log_level = notice
+
+[www]
+user = nobody
+group = nobody
+listen = 127.0.0.1:9000
+pm = static
+pm.max_children = ${PHP_FPM_WORKERS}
+clear_env = no
+slowlog = /dev/null
+request_slowlog_trace_depth = 0
+`;
 
 const SHELL_ENV: string[] = [
   "HOME=/home",
@@ -322,7 +339,8 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         init: {
           argv: dinit,
           env: SERVICE_ENV,
-          maxWorkers: 8,
+          maxWorkers: 12,
+          maxMemoryPages: 4096,
           web: { label: "nginx + PHP", requiredPorts: [HTTP_PORT] },
         },
       };
@@ -335,7 +353,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         init: {
           argv: dinit,
           env: [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
-          maxWorkers: 8,
+          maxWorkers: 12,
           maxMemoryPages: 4096,
           web: { label: "WordPress SQLite", requiredPorts: [HTTP_PORT] },
         },
@@ -349,7 +367,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
         init: {
           argv: dinit,
           env: [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
-          maxWorkers: 10,
+          maxWorkers: 16,
           maxMemoryPages: 4096,
           web: { label: "WordPress MariaDB", requiredPorts: [HTTP_PORT, 3306] },
         },
@@ -405,6 +423,13 @@ async function bootProfile(
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
     maxByteLength: profile.id === "wordpress-mariadb" ? 512 * 1024 * 1024 : 256 * 1024 * 1024,
   });
+  if (
+    profile.id === "nginx-php" ||
+    profile.id === "wordpress-sqlite" ||
+    profile.id === "wordpress-mariadb"
+  ) {
+    writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+  }
   memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
 
   tick("instantiating kernel...");

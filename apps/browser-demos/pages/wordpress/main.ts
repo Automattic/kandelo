@@ -23,6 +23,7 @@ import { HttpBridgeHost } from "../../lib/http-bridge";
 import { TerminalPanel } from "../../lib/init";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import "../../lib/terminal-panel.css";
@@ -33,6 +34,22 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
+const PHP_FPM_WORKERS = 6;
+const PATCHED_PHP_FPM_CONF = `[global]
+daemonize = no
+error_log = /dev/stderr
+log_level = notice
+
+[www]
+user = nobody
+group = nobody
+listen = 127.0.0.1:9000
+pm = static
+pm.max_children = ${PHP_FPM_WORKERS}
+clear_env = no
+slowlog = /dev/null
+request_slowlog_trace_depth = 0
+`;
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -148,6 +165,7 @@ async function start() {
     const memfs = MemoryFileSystem.fromImage(rawVfsImage, {
       maxByteLength: 512 * 1024 * 1024,
     });
+    writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
     memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
     const vfsImage = await memfs.saveImage();
 
@@ -171,7 +189,7 @@ async function start() {
 
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      maxWorkers: 8,
+      maxWorkers: 12,
       maxMemoryPages: 4096,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
