@@ -280,7 +280,13 @@ export class MockKernelHost implements KernelHost {
   }
 
   getWebPreview(): WebPreviewState | null {
-    const servicePresets = new Set(["nginx", "nginx-php", "wordpress-sqlite", "wordpress-mariadb"]);
+    const servicePresets = new Set([
+      "nginx",
+      "nginx-php",
+      "wordpress-sqlite",
+      "wordpress-mariadb",
+      "wordpress-development",
+    ]);
     if (!servicePresets.has(this.descriptor.id)) return null;
     return {
       label: this.descriptor.title,
@@ -308,6 +314,7 @@ export class MockKernelHost implements KernelHost {
       case "nginx-php":
       case "wordpress-sqlite":
       case "wordpress-mariadb":
+      case "wordpress-development":
         return {
           bootPrimary: "syslog",
           runningPrimary: ["web", "terminal", "syslog"],

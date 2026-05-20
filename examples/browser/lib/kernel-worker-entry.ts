@@ -649,7 +649,12 @@ function installProcessWorkerListeners(
       post({ type: "stderr", pid, data: errBytes });
       finalize(-1, "worker-main error message");
     } else if (m.type === "exit") {
-      finalize(m.status ?? 0, "worker-main exit message");
+      const status = m.status ?? 0;
+      if (exited) return;
+      exited = true;
+      if (processes.get(pid)?.worker !== worker) return;
+      kernelWorker.notifyHostProcessExited(pid, status);
+      handleExit(pid, status, { hostNotified: true });
     }
   });
 }
@@ -910,9 +915,6 @@ async function handlePosixSpawn(
   };
 
   const newWorker = workerAdapter.createWorker(initData);
-  newWorker.on("error", (err: Error) => {
-    console.error(`[kernel-worker] spawn worker error pid=${childPid}:`, err.message);
-  });
 
   processes.set(childPid, {
     memory: newMemory,
@@ -921,6 +923,8 @@ async function handlePosixSpawn(
     channelOffset: newChannelOffset,
     ptrWidth,
   });
+
+  installProcessWorkerListeners(newWorker, childPid);
 
   return 0;
 }
@@ -1018,7 +1022,11 @@ async function handleClone(
   return tid;
 }
 
-function handleExit(pid: number, exitStatus: number): void {
+function handleExit(
+  pid: number,
+  exitStatus: number,
+  options: { hostNotified?: boolean } = {},
+): void {
   const info = processes.get(pid);
 
   // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
@@ -1030,7 +1038,9 @@ function handleExit(pid: number, exitStatus: number): void {
   // `hostReaped`: when the kernel already processed a clean
   // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
   // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
-  try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
+  if (!options.hostNotified) {
+    try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
+  }
   // Check if this is a "top-level" process or a fork child
   // For now, always deactivate — the main thread tracks exit promises
   kernelWorker.deactivateProcess(pid);

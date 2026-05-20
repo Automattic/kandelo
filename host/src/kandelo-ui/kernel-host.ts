@@ -89,7 +89,7 @@ export interface KernelSyscallEvent {
 }
 
 export interface KernelLike {
-  /** Sequential pid counter exposed by BrowserKernel. */
+  /** Legacy pid watermark exposed by BrowserKernel. */
   readonly nextPid: number;
   /** Synchronous VFS the kernel-worker sees. */
   readonly fs: FileSystemLike;
@@ -116,7 +116,15 @@ export interface KernelLike {
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; pty?: boolean; stdin?: Uint8Array },
+    options?: {
+      env?: string[];
+      cwd?: string;
+      pty?: boolean;
+      stdin?: Uint8Array;
+      onStarted?: (pid: number) => void | Promise<void>;
+      ptyCols?: number;
+      ptyRows?: number;
+    },
   ): Promise<number>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
@@ -815,15 +823,21 @@ export class LiveKernelHost implements KernelHost {
     const shell = this.shell;
 
     if (!this.ptySession || this.ptySession.closed) {
-      // Spawn the shell with PTY; PTY pid is `nextPid - 1` per the
-      // existing PtyTerminal pattern (KernelLike assigns pids sequentially
-      // and exposes `nextPid`).
+      let pid = -1;
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
       const exitPromise = kernel.spawn(shell.programBytes, shell.argv, {
         pty: true,
         env: shell.env,
         cwd: shell.cwd,
+        onStarted: (startedPid) => {
+          pid = startedPid;
+          markStarted();
+        },
       });
-      const pid = kernel.nextPid - 1;
+      await started;
       this.shellPid = pid;
 
       const dataListeners = new ListenerSet<Uint8Array>();

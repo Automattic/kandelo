@@ -1262,6 +1262,12 @@ pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
             // Tear down host-side AF_INET handles whose cross-process
             // refcount hit zero during teardown. process_table.rs can't
             // call host externs directly; we drain its close-list here.
+            for file_handle in result.host_file_closes {
+                unsafe { host_close(file_handle) };
+            }
+            for dir_handle in result.host_dir_closes {
+                unsafe { host_closedir(dir_handle) };
+            }
             for net_handle in result.host_net_closes {
                 unsafe { host_net_close(net_handle) };
             }

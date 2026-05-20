@@ -30,6 +30,7 @@ import nginxPhpVfsUrl from "@binaries/programs/wasm32/nginx-php-vfs.vfs.zst?url"
 import wordpressVfsUrl from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
+import wordpressDevVfsUrl from "@binaries/programs/wasm32/wordpress-dev.vfs.zst?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
@@ -53,7 +54,6 @@ import zipWasmUrl from "@binaries/programs/wasm32/zip.wasm?url";
 import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
-import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
 import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 
 type LiveDemoId =
@@ -63,6 +63,7 @@ type LiveDemoId =
   | "nginx-php"
   | "wordpress-sqlite"
   | "wordpress-mariadb"
+  | "wordpress-development"
   | "doom";
 
 interface LiveProfile {
@@ -76,7 +77,11 @@ interface LiveProfile {
     cwd?: string;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    web?: { label: string; requiredPorts: number[] };
+    web?: { label: string; requiredPorts: number[]; allowHttpErrors?: boolean };
+  };
+  shell?: {
+    env?: string[];
+    cwd?: string;
   };
   framebuffer?: "doom" | "test";
 }
@@ -92,6 +97,22 @@ const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
 const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
+const WORDPRESS_MARIADB_MEMORY_PAGES = 16_384;
+const WORDPRESS_DEV_FS_MAX_BYTES = 3 * 1024 * 1024 * 1024;
+const fbtestWasmUrl = "";
+
+function bootAssetUrl(url: string): string {
+  if (!import.meta.env.DEV) {
+    return url;
+  }
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}kandeloBoot=${Date.now()}`;
+}
+
+async function fetchBootAsset(url: string, label: string): Promise<ArrayBuffer> {
+  const response = await fetch(bootAssetUrl(url), import.meta.env.DEV ? { cache: "no-store" } : undefined);
+  return failOn(label)(response).arrayBuffer();
+}
 
 const SHELL_ENV: string[] = [
   "HOME=/home",
@@ -134,6 +155,38 @@ const SERVICE_ENV: string[] = [
 
 const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
 
+const WORDPRESS_DEV_SHELL_ENV: string[] = [
+  "HOME=/work/wordpress-develop",
+  "PWD=/work/wordpress-develop",
+  "TMPDIR=/tmp",
+  "TERM=xterm-256color",
+  "LANG=en_US.UTF-8",
+  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+  "PS1=wp-dev$ ",
+  "HISTFILE=/work/wordpress-develop/.bash_history",
+  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+  "SSL_CERT_DIR=/etc/ssl/certs",
+  "npm_config_cache=/tmp/.npm-cache",
+  "npm_config_fund=false",
+  "npm_config_audit=false",
+  "npm_config_progress=false",
+  "npm_config_registry=http://proxy.local/",
+  "npm_config_include=dev",
+  "npm_config_maxsockets=1",
+  "npm_config_omit=optional",
+];
+
+function shellDefaultsFor(id: LiveDemoId): { env: string[]; cwd: string } {
+  switch (id) {
+    case "node":
+      return { env: NODE_SHELL_ENV, cwd: "/work" };
+    case "wordpress-development":
+      return { env: WORDPRESS_DEV_SHELL_ENV, cwd: "/work/wordpress-develop" };
+    default:
+      return { env: SHELL_ENV, cwd: "/home" };
+  }
+}
+
 export type FbDemo = "none" | "test" | "doom";
 
 export interface CreateLiveHostOptions {
@@ -144,10 +197,11 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<LiveKernelHost> {
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
+  const initialId = normalizeDemoId(opts.demo) ?? (opts.fb === "doom" ? "doom" : "shell");
 
   const host = new LiveKernelHost({
     status: "booting",
-    descriptor: descriptorFor("shell"),
+    descriptor: descriptorFor(initialId),
     galleryItems: liveGalleryItems(),
     applyBootDescriptor: async (desc, h) => {
       const seq = ++bootSeq;
@@ -159,8 +213,26 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     },
   });
 
-  const initialId = normalizeDemoId(opts.demo) ?? (opts.fb === "doom" ? "doom" : "shell");
-  currentKernel = await bootProfile(host, profileFor(initialId, opts.fb), descriptorFor(initialId), ++bootSeq);
+  const initialSeq = ++bootSeq;
+  void bootProfile(host, profileFor(initialId, opts.fb), descriptorFor(initialId), initialSeq).then(
+    (kernel) => {
+      if (initialSeq === bootSeq) {
+        currentKernel = kernel;
+      } else {
+        void kernel.destroy().catch(() => {});
+      }
+    },
+    (err) => {
+      if (initialSeq !== bootSeq) return;
+      host.pushDmesg({
+        t: 0,
+        level: "err",
+        facility: "kandelo",
+        msg: `boot failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      host.setStatus("error");
+    },
+  );
   return host;
 }
 
@@ -227,8 +299,26 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
           argv: dinit,
           env: [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
           maxWorkers: 10,
-          maxMemoryPages: 4096,
+          maxMemoryPages: WORDPRESS_MARIADB_MEMORY_PAGES,
           web: { label: "WordPress MariaDB", requiredPorts: [HTTP_PORT, 3306] },
+        },
+      };
+    case "wordpress-development":
+      return {
+        id: "wordpress-development",
+        vfsUrl: wordpressDevVfsUrl,
+        descriptor: desc,
+        presentation,
+        init: {
+          argv: dinit,
+          env: [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
+          maxWorkers: 64,
+          maxMemoryPages: WORDPRESS_MARIADB_MEMORY_PAGES,
+          web: { label: "WordPress Development", requiredPorts: [HTTP_PORT, 3306], allowHttpErrors: true },
+        },
+        shell: {
+          env: WORDPRESS_DEV_SHELL_ENV,
+          cwd: "/work/wordpress-develop",
         },
       };
     case "doom":
@@ -270,16 +360,18 @@ async function bootProfile(
 
   tick(`loading ${profile.id} profile...`);
   const [kernelBytes, vfsBytes, bashBytes, dashBytes, lazyBinaries] = await Promise.all([
-    fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((r) => r.arrayBuffer()),
-    fetch(profile.vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer()),
-    fetch(bashWasmUrl).then(failOn("bash.wasm")).then((r) => r.arrayBuffer()),
-    fetch(dashWasmUrl).then(failOn("dash.wasm")).then((r) => r.arrayBuffer()),
+    fetchBootAsset(kernelWasmUrl, "kernel.wasm"),
+    fetchBootAsset(profile.vfsUrl, `${profile.id}.vfs.zst`),
+    fetchBootAsset(bashWasmUrl, "bash.wasm"),
+    fetchBootAsset(dashWasmUrl, "dash.wasm"),
     loadShellUtilityDefs(profile.id === "node"),
   ]);
 
   tick(`kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`);
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
-    maxByteLength: profile.id === "wordpress-mariadb" ? 512 * 1024 * 1024 : 256 * 1024 * 1024,
+    maxByteLength: profile.id === "wordpress-development" ? WORDPRESS_DEV_FS_MAX_BYTES
+      : profile.id === "wordpress-mariadb" ? 512 * 1024 * 1024
+      : 256 * 1024 * 1024,
   });
   memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
 
@@ -287,6 +379,16 @@ async function bootProfile(
   const seenPorts = new Set<number>();
   let bridgeSent = false;
   const webReadiness: WebReadinessState = { ready: false, probing: false };
+  const finishBoot = () => {
+    if (seq >= 0 && host.getStatus() === "booting") {
+      host.setStatus("running");
+    }
+  };
+  const failBoot = () => {
+    if (seq >= 0 && host.getStatus() === "booting") {
+      host.setStatus("error");
+    }
+  };
   const kernel = new BrowserKernel({
     memfs,
     maxWorkers: profile.init?.maxWorkers ?? 4,
@@ -297,7 +399,7 @@ async function bootProfile(
     onListenTcp: (_pid, _fd, port) => {
       seenPorts.add(port);
       tick(`service listening on :${port}`);
-      maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+      maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, finishBoot, failBoot);
     },
   });
   await kernel.init(kernelBytes);
@@ -306,12 +408,12 @@ async function bootProfile(
   stageShellUtilities(kernel, dashBytes, bashBytes, lazyBinaries);
   await registerFbPrograms(kernel);
   host.attachKernel(kernel);
-  const shellEnv = profile.id === "node" ? NODE_SHELL_ENV : SHELL_ENV;
+  const shellDefaults = shellDefaultsFor(profile.id);
   host.setDefaultShell({
     programBytes: bashBytes,
     argv: ["bash", "-l", "-i"],
-    env: shellEnv,
-    cwd: profile.id === "node" ? "/work" : "/home",
+    env: profile.shell?.env ?? shellDefaults.env,
+    cwd: profile.shell?.cwd ?? shellDefaults.cwd,
   });
 
   if (profile.init?.web) {
@@ -330,6 +432,7 @@ async function bootProfile(
         status: "error",
         message: "Service workers unavailable",
       });
+      failBoot();
     } else {
       kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
       bridgeSent = true;
@@ -353,10 +456,10 @@ async function bootProfile(
     await stageDoomWad(kernel, tick);
   }
 
-  if (seq >= 0) {
-    host.setStatus("running");
+  if (!profile.init?.web) {
+    finishBoot();
   }
-  maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+  maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, finishBoot, failBoot);
 
   if (profile.framebuffer === "test") {
     void spawnLazy(kernel, "/usr/local/bin/fbtest", ["fbtest"], tick);
@@ -385,6 +488,7 @@ function presentationFor(id: LiveDemoId): DemoPresentation {
     case "nginx-php":
     case "wordpress-sqlite":
     case "wordpress-mariadb":
+    case "wordpress-development":
       return {
         bootPrimary: "syslog",
         runningPrimary: ["web", "terminal", "syslog"],
@@ -506,6 +610,8 @@ function maybeMarkWebReady(
   bridgeSent: boolean,
   readiness: WebReadinessState,
   tick: (msg: string) => void,
+  onReady?: () => void,
+  onError?: () => void,
 ): void {
   const web = profile.init?.web;
   if (!web) return;
@@ -518,6 +624,7 @@ function maybeMarkWebReady(
       status: "running",
       message: "HTTP bridge ready",
     });
+    onReady?.();
     return;
   }
   if (readiness.probing) return;
@@ -528,7 +635,7 @@ function maybeMarkWebReady(
     status: "starting",
     message: "Waiting for HTTP response",
   });
-  void waitForHttpPreview(APP_PREFIX).then(
+  void waitForHttpPreview(APP_PREFIX, { allowHttpErrors: web.allowHttpErrors }).then(
     () => {
       readiness.ready = true;
       host.setWebPreview({
@@ -538,6 +645,7 @@ function maybeMarkWebReady(
         message: "HTTP bridge ready",
       });
       tick("HTTP preview ready");
+      onReady?.();
     },
     (err) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -548,13 +656,18 @@ function maybeMarkWebReady(
         message: "HTTP preview did not become ready",
       });
       tick(`HTTP preview readiness failed: ${message}`);
+      onError?.();
     },
   ).finally(() => {
     readiness.probing = false;
   });
 }
 
-async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void> {
+async function waitForHttpPreview(
+  url: string,
+  opts: { allowHttpErrors?: boolean; timeoutMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 90_000;
   const started = performance.now();
   let delayMs = 250;
   let lastError = "";
@@ -562,7 +675,7 @@ async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void
   while (performance.now() - started < timeoutMs) {
     try {
       const response = await fetchWithTimeout(url, 5_000);
-      if (response.status < 500) return;
+      if (response.status < 500 || opts.allowHttpErrors) return;
       lastError = `HTTP ${response.status}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -622,7 +735,11 @@ function descriptorFor(id: LiveDemoId): BootDescriptor {
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
-      memoryPages: id === "wordpress-mariadb" || id === "node" ? 4096 : 2048,
+      memoryPages: id === "wordpress-mariadb" || id === "wordpress-development"
+        ? WORDPRESS_MARIADB_MEMORY_PAGES
+        : id === "node"
+          ? 4096
+        : 2048,
       features: ["shared-array-buffer", "pty", ...(item.id === "doom" ? ["framebuffer"] : []), ...(item.id === "shell" || item.id === "doom" ? [] : ["tcp-bridge"])],
       time: "real",
     },
@@ -633,8 +750,8 @@ function descriptorFor(id: LiveDemoId): BootDescriptor {
     ],
     boot: {
       argv: item.bootCommand,
-      cwd: item.id === "node" ? "/work" : "/home",
-      env: Object.fromEntries((item.id === "node" ? NODE_SHELL_ENV : SHELL_ENV).map((kv) => {
+      cwd: shellDefaultsFor(id).cwd,
+      env: Object.fromEntries(shellDefaultsFor(id).env.map((kv) => {
         const idx = kv.indexOf("=");
         return [kv.slice(0, idx), kv.slice(idx + 1)];
       })),
@@ -665,12 +782,16 @@ function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
     case "nginx-php":
     case "wordpress-sqlite":
     case "wordpress-mariadb":
+    case "wordpress-development":
     case "doom":
       return id;
     case "wordpress":
       return "wordpress-sqlite";
     case "lamp":
       return "wordpress-mariadb";
+    case "wp-dev":
+    case "wordpress-dev":
+      return "wordpress-development";
     default:
       return null;
   }

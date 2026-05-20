@@ -156,6 +156,7 @@ has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_RO
 has_shell_vfs()     { pkg_has_output shell shell.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/shell.vfs.zst" ]; }
 has_node()          { pkg_has_output node node.wasm || [ -f "$REPO_ROOT/examples/libs/quickjs/bin/node.wasm" ]; }
 has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/node-vfs.vfs.zst" ]; }
+has_wordpress_dev_vfs() { pkg_has_output wordpress-dev wordpress-dev.vfs.zst; }
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/examples/libs/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/examples/browser/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
@@ -756,6 +757,18 @@ build_lamp_vfs() {
     info "LAMP VFS image built"
 }
 
+build_wordpress_dev_vfs() {
+    if has_wordpress_dev_vfs; then
+        info "WordPress development VFS image"
+        return
+    fi
+    step "Building WordPress development VFS image"
+    # Delegate to the package-system wrapper so install_local_binary
+    # populates local-binaries/programs/wasm32/wordpress-dev.vfs.zst.
+    bash "$REPO_ROOT/examples/libs/wordpress-dev/build-wordpress-dev.sh"
+    info "WordPress development VFS image built"
+}
+
 build_nginx_vfs() {
     build_dinit
     build_nginx
@@ -1307,6 +1320,7 @@ build_target() {
         node-vfs)   build_node_vfs ;;
         wordpress)  build_wordpress ;;
         wp-vfs)     build_wp_vfs ;;
+        wordpress-dev-vfs) build_wordpress_dev_vfs ;;
         erlang)     build_erlang ;;
         erlang-vfs) build_erlang_vfs ;;
         lamp-vfs)   build_lamp_vfs ;;
@@ -1363,7 +1377,7 @@ BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-
 # (less: ncurses libtermcap duplicate tputs; wget: requires automake
 # aclocal). They aren't in the release either, so the associated demo
 # features skip gracefully at runtime.
-BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs wordpress-dev-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1424,6 +1438,7 @@ build_all() {
     build_wordpress
     build_wp_vfs
     build_lamp_vfs
+    build_wordpress_dev_vfs
     build_erlang
     build_erlang_vfs
     build_texlive
@@ -1560,6 +1575,10 @@ clean_target() {
             rm -f "$REPO_ROOT/examples/browser/public/lamp.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/lamp.vfs.zst"
             warn "Cleaned LAMP VFS image" ;;
+        wordpress-dev-vfs)
+            rm -f "$REPO_ROOT/examples/browser/public/wordpress-dev.vfs.zst" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/wordpress-dev.vfs.zst"
+            warn "Cleaned WordPress development VFS image" ;;
         nginx-vfs)
             rm -f "$REPO_ROOT/examples/browser/public/nginx.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/nginx-vfs.vfs.zst"
@@ -1721,7 +1740,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs wordpress-dev-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -2034,6 +2053,7 @@ cmd_list() {
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  wordpress-dev-vfs WordPress development VFS image $(has_wordpress_dev_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl        Perl 5.40                              $(has_perl && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  ruby        Ruby                                   $(has_ruby && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  erlang      Erlang/OTP 28 BEAM VM                   $(has_erlang && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
