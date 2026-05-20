@@ -14,6 +14,7 @@ import { Gallery, descriptorFromGalleryItem } from "../views/Gallery";
 import { Config } from "../views/Config";
 import { EmptyState } from "../views/EmptyState";
 import { ShareDialog } from "../dialogs/ShareDialog";
+import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import type { BootDescriptor, GalleryItem } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export const App: React.FC = () => {
@@ -23,6 +24,9 @@ export const App: React.FC = () => {
   const [collapsed, setCollapsed] = React.useState(false);
   const [view, setView] = React.useState<ViewId>("machine");
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
+  const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
+  const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
+  const nextTerminalIndex = React.useRef(2);
   /**
    * Share dialog state. `null` = closed; `true` = sharing the running
    * machine; a BootDescriptor = sharing a gallery preset that hasn't been
@@ -51,6 +55,12 @@ export const App: React.FC = () => {
   const onShareGalleryItem = React.useCallback((item: GalleryItem) => {
     setShareTarget(descriptorFromGalleryItem(item, host.getBootDescriptor()));
   }, [host]);
+
+  const onAddTerminal = React.useCallback(() => {
+    const terminal = createShellTerminal(nextTerminalIndex.current++);
+    setTerminals((prev) => [...prev, terminal]);
+    setActiveTerminalId(terminal.id);
+  }, []);
 
   const isMachineView = view === "machine" || view === "internals";
   const isEmpty = isMachineView && status === "idle";
@@ -93,6 +103,10 @@ export const App: React.FC = () => {
               focusInternals={view === "internals"}
               internalsTab={internalsTab}
               onInternalsTab={(t) => setInternalsTab(t as InternalsTab)}
+              terminals={terminals}
+              activeTerminalId={activeTerminalId}
+              onActiveTerminalId={setActiveTerminalId}
+              onAddTerminal={onAddTerminal}
             />
           </>
         ) : view === "gallery" ? (

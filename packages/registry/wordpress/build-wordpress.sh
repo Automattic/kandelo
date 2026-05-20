@@ -18,6 +18,15 @@ bash "$REPO_ROOT/packages/registry/wordpress/setup.sh"
 bash "$REPO_ROOT/images/vfs/scripts/build-vim-zip.sh"
 bash "$REPO_ROOT/images/vfs/scripts/build-nethack-zip.sh"
 
+# Build-time opcache prewarming boots NodeKernelHost against the half-built VFS,
+# so package builds need a host kernel even though wordpress itself is a
+# wasm32 package. Build the local kernel artifact on demand; do not let the
+# nested kernel build install into wordpress's package output directory.
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1; then
+    echo "==> Building kernel.wasm for WordPress opcache prewarm..."
+    env -u WASM_POSIX_DEP_OUT_DIR bash "$REPO_ROOT/packages/registry/kernel/build-kernel.sh"
+fi
+
 bash "$REPO_ROOT/images/vfs/scripts/build-wp-vfs-image.sh"
 
 VFS="$REPO_ROOT/apps/browser-demos/public/wordpress.vfs.zst"

@@ -1070,7 +1070,18 @@ export async function centralizedWorkerMain(
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {
-    const errMsg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
+    let errMsg: string;
+    if (err instanceof Error) {
+      errMsg = `${err.message}\n${err.stack}`;
+    } else if ((WebAssembly as any).Exception && err instanceof (WebAssembly as any).Exception) {
+      // WebAssembly.Exception isn't an Error subclass in V8, so String(err)
+      // produces the useless "[object WebAssembly.Exception]". Surface
+      // anything we can read off it for build-time debugging.
+      const wex = err as { message?: string; stack?: string };
+      errMsg = `WebAssembly.Exception: ${wex.message ?? "<no message>"}\n${wex.stack ?? "<no stack>"}`;
+    } else {
+      errMsg = String(err);
+    }
     port.postMessage({
       type: "error",
       pid: initData.pid,

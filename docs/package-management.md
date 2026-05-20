@@ -39,6 +39,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
 | Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
 | Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
+| Publish packages from another repository | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract. |
 | Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
 | See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |
 
@@ -110,7 +111,7 @@ url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"  # optional
 Optional sections:
 
 ```toml
-kernel_abi = 8             # required when a [build] block is present
+kernel_abi = 11            # required when a [build] block is present
 arches = ["wasm32"]        # opt-in target arches; default: ["wasm32"]
 
 [build]
@@ -152,7 +153,7 @@ index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/downloa
   the cache-key. Bump when output bytes legitimately change (build
   flag tweaks, asyncify pass, etc.). Don't bump for doc-only
   changes — it triggers a needless rebuild across the matrix.
-- `[binary]` declares where binaries are published. Three forms,
+- `[binary]` declares where binaries are published. Two forms,
   exactly one of which must be present:
 
 | Form | Example | Resolver behavior |
@@ -265,7 +266,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_OUT_DIR` | Temp dir the script must install into. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` relative paths. |
 | `WASM_POSIX_DEP_NAME` | `name` from package.toml. |
 | `WASM_POSIX_DEP_VERSION` | `version` from package.toml. |
-| `WASM_POSIX_DEP_REVISION` | `revision` from package.toml. |
+| `WASM_POSIX_DEP_REVISION` | Effective package revision after `build.toml` is overlaid. |
 | `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from package.toml). |
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
@@ -435,7 +436,6 @@ The pcre2-source manifest (`packages/registry/pcre2-source/package.toml`):
 kind = "source"
 name = "pcre2-source"
 version = "10.44"
-revision = 1
 
 [source]
 url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"
@@ -445,7 +445,7 @@ sha256 = "86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b"
 spdx = "BSD-3-Clause"
 ```
 
-No `[outputs]`, no `[build].script` — the resolver fetches and
+No `[outputs]`, no `[build].script_path` — the resolver fetches and
 extracts in-place into
 `<cache_root>/sources/pcre2-source-10.44-rev1-<sha>/`. No
 `<arch>` segment because source trees are arch-agnostic.
@@ -619,11 +619,11 @@ Each matrix entry then publishes via `scripts/index-update.sh`:
 
 ```bash
 bash scripts/index-update.sh \
-    --target-tag binaries-abi-v8 \
+    --target-tag binaries-abi-v11 \
     --package zlib --version 1.3.1 --revision 1 --arch wasm32 \
     --status success \
     --archive-path /tmp/archives/zlib-...-wasm32-e33c5e9a.tar.zst \
-    --archive-name zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst \
+    --archive-name zlib-1.3.1-rev1-abi11-wasm32-e33c5e9a.tar.zst \
     --cache-key-sha e33c5e9a...
 ```
 
@@ -680,7 +680,7 @@ carries five fields:
 ```toml
 [compatibility]
 target_arch = "wasm32"        # required: wasm32 | wasm64
-abi_versions = [4]            # required: list of integers ≥ 1
+abi_versions = [11]           # required: list of integers ≥ 1
 cache_key_sha = "9acb9405…"   # required: 64-char lowercase hex
 build_timestamp = "2026-04-26T10:00:00Z"   # optional, informational
 build_host = "darwin-arm64"                # optional, informational
@@ -768,7 +768,7 @@ Source manifest at `packages/registry/zlib/package.toml` (recipe):
 kind = "library"
 name = "zlib"
 version = "1.3.1"
-kernel_abi = 8
+kernel_abi = 11
 arches = ["wasm32", "wasm64"]
 depends_on = []
 
@@ -804,7 +804,7 @@ After `xtask archive-stage --package packages/registry/zlib --arch wasm32`,
 one archive lands as
 
 ```
-<out>/zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst
+<out>/zlib-1.3.1-rev1-abi11-wasm32-e33c5e9a.tar.zst
 ```
 
 (short sha `e33c5e9a` is the first 8 chars of the cache-key sha
@@ -823,7 +823,7 @@ revision = 1
 
 [packages.binary.wasm32]
 status         = "success"
-archive_url    = "zlib-1.3.1-rev1-abi8-wasm32-e33c5e9a.tar.zst"
+archive_url    = "zlib-1.3.1-rev1-abi11-wasm32-e33c5e9a.tar.zst"
 archive_sha256 = "<64-hex>"
 cache_key_sha  = "e33c5e9a..."
 built_at       = "2026-05-13T..."
@@ -842,7 +842,7 @@ fetches the entry's `archive_url`, verifies bytes against
 and `artifacts/lib/pkgconfig/zlib.pc` into
 
 ```
-<cache_root>/libs/zlib-1.3.1-rev1-9acb9405/
+<cache_root>/libs/zlib-1.3.1-rev1-wasm32-9acb9405/
 ```
 
 A subsequent `cargo xtask build-deps resolve zlib` finds the
@@ -852,18 +852,19 @@ canonical path populated and returns it without re-running
 ### Shell-script wrapper
 
 `scripts/fetch-binaries.sh` walks every
-`packages/registry/<pkg>/package.toml` with a `[binary]` block and
+`packages/registry/<pkg>/package.toml` that has a sibling `build.toml`
+with a `[binary]` block and
 calls `xtask build-deps --binaries-dir <repo>/binaries resolve
 <pkg>` once per declared arch. Packages without a `[binary]`
-block (kernel, userspace, source-only) are skipped silently —
-those are local-build-only and the resolver's fall-through to
-source build covers them on demand.
+block (kernel, userspace, source-only, and metadata-only entries)
+are skipped silently — those are local-build-only and the resolver's
+fall-through to source build covers them on demand.
 
 The matrix flow's CI workflows (staging-build, prepare-merge,
 force-rebuild) all use the same per-package shape: one matrix
-entry produces one `archive-stage` archive, the publish job
-uploads that one archive to the release tag, and the amend job
-rewrites that one `package.toml`'s `[binary.<arch>]` block.
+entry produces one `archive-stage` archive and atomically uploads
+that archive plus the mutated release `index.toml`. There is no
+bot rewrite of `package.toml` or `build.toml`.
 
 ## Atomic cache install
 
@@ -896,6 +897,20 @@ like `$PATH`. This is how third parties bring their own packages
 without patching the repo: they drop a `<lib>/package.toml` into their
 own directory tree and prepend it to the registry path.
 
+The first external package source using this pattern is
+[`brandonpayton/kandelo-software`](https://github.com/brandonpayton/kandelo-software):
+it keeps package recipes under `packages/<name>/`, overlays them into a
+Kandelo checkout for source builds, and publishes an ABI-scoped
+`binaries-abi-v<N>/index.toml` from GitHub Actions. See
+[docs/package-sources.md](package-sources.md) for the reusable workflow
+and script contract.
+
+`kandelo-software` also publishes `gallery.json` beside the release
+index. The browser gallery treats that file as presentation metadata
+and the release `index.toml` as the source of truth: a third-party VFS
+entry is shown only when all packages listed for that entry have
+successful wasm32 records in the ABI-matching index.
+
 ## Source-kind manifests
 
 The system supports `kind = "source"` for declaring source trees that
@@ -919,13 +934,13 @@ unpacked source trees, not built artifacts.
 
 Required:
 - `kind = "source"`
-- `name`, `version`, `revision`
+- `name`, `version`
 - `[source].url`, `[source].sha256`
 - `[license].spdx`
 
 Optional:
 - `depends_on` — same syntax as library/program manifests.
-- `[build].script` — see "Override" below.
+- `[build].script_path` — see "Override" below.
 - `[[host_tools]]` — see the Host-tool requirements section below.
 
 Rejected at parse time (the parser surfaces a clear error):
@@ -936,7 +951,7 @@ Rejected at parse time (the parser surfaces a clear error):
 
 **Default fetch+extract behavior**
 
-When `[build].script` is absent, the resolver fetches `source.url`,
+When `[build].script_path` is absent, the resolver fetches `source.url`,
 verifies `source.sha256`, and extracts in-place. Format detection
 is by URL extension: `.tar.gz` / `.tgz`, `.tar.xz` / `.txz`,
 `.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.zip`, and
@@ -948,7 +963,7 @@ If the archive contains a single top-level directory (the
 directory's contents are the contents of that single top-level
 directory. Multi-top-level archives are kept as-is.
 
-**Override `[build].script`**
+**Override `[build].script_path`**
 
 When the default extract is not enough (patches, code generation,
 in-tree configure), declare a script. The contract is the same as
