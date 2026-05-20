@@ -174,6 +174,7 @@ has_bzip2()         { pkg_has_output bzip2 bzip2.wasm || [ -f "$REPO_ROOT/packag
 has_xz()            { pkg_has_output xz xz.wasm || [ -f "$REPO_ROOT/packages/registry/xz/bin/xz.wasm" ]; }
 has_zstd()          { pkg_has_output zstd zstd.wasm || [ -f "$REPO_ROOT/packages/registry/zstd/bin/zstd.wasm" ]; }
 has_zip()           { pkg_has_output zip zip.wasm || [ -f "$REPO_ROOT/packages/registry/zip/bin/zip.wasm" ]; }
+has_lsof()          { pkg_has_output lsof lsof.wasm || [ -f "$REPO_ROOT/packages/registry/lsof/lsof.wasm" ]; }
 has_unzip()         { pkg_has_output unzip unzip.wasm || [ -f "$REPO_ROOT/packages/registry/unzip/bin/unzip.wasm" ]; }
 has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/packages/registry/nano/bin/nano.wasm" ]; }
 has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/packages/registry/nethack/bin/nethack.wasm" ]; }
@@ -686,7 +687,7 @@ build_vim_zip() {
     mkdir -p "$stage/bin" "$stage/share/vim/vim91" "$(dirname "$out")"
     cp "$vim_dir/vim.wasm" "$stage/bin/vim"
     chmod 755 "$stage/bin/vim"
-    rsync -a "$vim_dir/runtime/" "$stage/share/vim/vim91/"
+    cp -R "$vim_dir/runtime/." "$stage/share/vim/vim91/"
     rm -f "$out"
     (cd "$stage" && zip -r -q "$out" .)
     rm -rf "$stage"
@@ -892,6 +893,22 @@ build_less() {
         info "less built"
     else
         info "less"
+    fi
+}
+
+build_lsof() {
+    if has_lsof; then
+        info "lsof"
+        return
+    fi
+    need_kernel
+    need_sdk
+    if ! has_lsof; then
+        step "Building lsof"
+        bash "$REPO_ROOT/packages/registry/lsof/build-lsof.sh"
+        info "lsof built"
+    else
+        info "lsof"
     fi
 }
 
@@ -1333,6 +1350,7 @@ build_target() {
         bc)         build_bc ;;
         file)       build_file ;;
         less)       build_less ;;
+        lsof)       build_lsof ;;
         m4)         build_m4 ;;
         make)       build_make ;;
         tar)        build_tar ;;
@@ -1376,11 +1394,7 @@ BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-
 # a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
 # listed: they're toolchain prerequisites for source builds, and any
 # `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
-# `less` and `wget` are omitted — both have known local-build failures
-# (less: ncurses libtermcap duplicate tputs; wget: requires automake
-# aclocal). They aren't in the release either, so the associated demo
-# features skip gracefully at runtime.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do

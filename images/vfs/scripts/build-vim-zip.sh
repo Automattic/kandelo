@@ -64,7 +64,7 @@ chmod 755 "$STAGING/bin/vim"
 
 # Runtime files — staged under share/vim/vim91/
 mkdir -p "$STAGING/share/vim/vim91"
-rsync -a "$RUNTIME_DIR/" "$STAGING/share/vim/vim91/"
+cp -R "$RUNTIME_DIR/." "$STAGING/share/vim/vim91/"
 
 (cd "$STAGING" && zip -r -q "$OUTPUT_FILE" .)
 
