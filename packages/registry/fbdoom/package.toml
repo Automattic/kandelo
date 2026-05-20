@@ -1,12 +1,12 @@
 kind = "program"
 name = "fbdoom"
 version = "0.1.0"
-# rev4: fix fbDOOM's wasm exit path by avoiding an invalid
-# G_CheckDemoStatus -> atexit_func_t cast. rev3 dropped the bundled
-# IWAD; the browser demo fetches the DOOM shareware `doom1.wad`
-# (id Software, freely redistributable) at page load from a Linux-distro
-# mirror and caches it via the Cache API. The archive carries only
-# `fbdoom.wasm`.
+# rev5: coalesce queued PS/2 mouse packets into one Doom mouse event per
+# input poll so pointer-lock motion is not lost inside a game tic. rev4 fixed
+# fbDOOM's wasm exit path by avoiding an invalid G_CheckDemoStatus ->
+# atexit_func_t cast. rev3 dropped the bundled IWAD; the browser demo fetches
+# the DOOM shareware `doom1.wad` at page load from a Linux-distro mirror and
+# caches it via the Cache API. The archive carries only `fbdoom.wasm`.
 kernel_abi = 7
 depends_on = []
 

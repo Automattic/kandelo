@@ -215,11 +215,18 @@ function corsProxyPlugin(): Plugin {
           return;
         }
         try {
-          // Use Node.js http/https modules for more reliable proxying
+          const body = await new Promise<Buffer>((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            req.on("data", (chunk) => {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            });
+            req.on("end", () => resolve(Buffer.concat(chunks)));
+            req.on("error", reject);
+          });
+
+          // Use Node.js http/https modules for more reliable proxying.
           const { default: https } = await import("https");
           const { default: http } = await import("http");
-          const parsedUrl = new URL(targetUrl);
-          const client = parsedUrl.protocol === "https:" ? https : http;
 
           // Forward all client headers except hop-by-hop ones, otherwise
           // upstream POSTs lose `content-type`, auth headers, etc. plus the
@@ -242,36 +249,56 @@ function corsProxyPlugin(): Plugin {
           // the client sees raw JSON/SSE instead of UTF-8 replacement chars.
           forwardHeaders["accept-encoding"] = "identity";
 
-          const proxyReq = client.request(targetUrl, {
-            method: req.method || "GET",
-            rejectUnauthorized: false, // Dev proxy — skip cert verification
-            headers: forwardHeaders,
-          }, (proxyRes) => {
-            const skipResHeader = new Set([
-              "connection", "keep-alive", "transfer-encoding",
-              "content-encoding", "content-length",
-            ]);
-            const headers: Record<string, string | string[]> = {
-              "access-control-allow-origin": "*",
-              "cross-origin-resource-policy": "cross-origin",
-            };
-            for (const [k, v] of Object.entries(proxyRes.headers)) {
-              if (v === undefined) continue;
-              if (skipResHeader.has(k.toLowerCase())) continue;
-              headers[k] = v as string | string[];
-            }
-            res.writeHead(proxyRes.statusCode || 502, headers);
-            proxyRes.pipe(res);
-          });
-          proxyReq.on("error", (err) => {
-            console.error("[cors-proxy] Request error:", err.message);
-            if (!res.headersSent) {
-              res.writeHead(502, { "Content-Type": "text/plain" });
-            }
-            res.end(`Proxy error: ${err.message}`);
-          });
-          // Pipe request body (POST/PUT/PATCH); no-op for GET.
-          req.pipe(proxyReq);
+          const proxyTo = (currentUrl: string, redirectsLeft: number): Promise<void> =>
+            new Promise((resolve, reject) => {
+              const parsedUrl = new URL(currentUrl);
+              const client = parsedUrl.protocol === "https:" ? https : http;
+              const proxyReq = client.request(currentUrl, {
+                method: req.method || "GET",
+                rejectUnauthorized: false, // Dev proxy — skip cert verification
+                headers: forwardHeaders,
+              }, (proxyRes) => {
+                const statusCode = proxyRes.statusCode || 502;
+                const location = Array.isArray(proxyRes.headers.location)
+                  ? proxyRes.headers.location[0]
+                  : proxyRes.headers.location;
+                if (
+                  location &&
+                  redirectsLeft > 0 &&
+                  [301, 302, 303, 307, 308].includes(statusCode)
+                ) {
+                  proxyRes.resume();
+                  proxyRes.on("end", () => {
+                    resolve(proxyTo(new URL(location, currentUrl).href, redirectsLeft - 1));
+                  });
+                  return;
+                }
+
+                const skipResHeader = new Set([
+                  "connection", "keep-alive", "transfer-encoding",
+                  "content-encoding", "content-length",
+                ]);
+                const headers: Record<string, string | string[]> = {
+                  "access-control-allow-origin": "*",
+                  "cross-origin-resource-policy": "cross-origin",
+                };
+                for (const [k, v] of Object.entries(proxyRes.headers)) {
+                  if (v === undefined) continue;
+                  if (skipResHeader.has(k.toLowerCase())) continue;
+                  headers[k] = v as string | string[];
+                }
+                res.writeHead(statusCode, headers);
+                proxyRes.pipe(res);
+                proxyRes.on("end", resolve);
+              });
+              proxyReq.on("error", reject);
+              if (body.length > 0) {
+                proxyReq.write(body);
+              }
+              proxyReq.end();
+            });
+
+          await proxyTo(targetUrl, 5);
         } catch (err: any) {
           console.error("[cors-proxy] Error:", err);
           res.writeHead(502, { "Content-Type": "text/plain" });
@@ -358,12 +385,11 @@ export default defineConfig({
         benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
         doom: path.resolve(__dirname, "pages/doom/index.html"),
         kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
-        // The perl, python, ruby, erlang, texlive, and redis demos
-        // were removed (along with their pages/ subdirectories) while
-        // their slow builds are disabled. Re-add an entry — and
-        // restore the corresponding pages/<name>/ directory from git
-        // history — once the builds move to a separate prebuilt-
-        // package repo.
+        // The perl, python, ruby, erlang, texlive, and redis pages
+        // are not part of this static build while their slow builds
+        // live in kandelo-software. The root gallery fetches that
+        // repo's gallery.json and index.toml at runtime to expose
+        // available third-party VFS builds without adding page inputs.
       },
     },
   },

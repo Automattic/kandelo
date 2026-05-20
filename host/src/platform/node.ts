@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { PlatformIO, StatResult } from "../types";
 import { translateOpenFlags } from "../vfs/host-fs";
+import { NativeMetadataOverlay } from "./native-metadata";
 
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
@@ -22,6 +23,7 @@ export class NodePlatformIO implements PlatformIO {
   private readonly _startNs: bigint;
   // /dev/shm replacement directory (macOS has no /dev/shm)
   private readonly _shmDir: string;
+  private readonly metadata = new NativeMetadataOverlay();
 
   constructor() {
     const hrt = process.hrtime.bigint();
@@ -59,7 +61,10 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   open(path: string, flags: number, mode: number): number {
-    const fd = fs.openSync(this.rewritePath(path), translateOpenFlags(flags), mode);
+    const nativePath = this.rewritePath(path);
+    const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
+    const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
+    if (created) this.metadata.chmod(fs.fstatSync(fd), mode);
     this.fdPositions.set(fd, 0);
     return fd;
   }
@@ -134,67 +139,45 @@ export class NodePlatformIO implements PlatformIO {
   // "dubious ownership" check, nginx config ownership, etc.) see a
   // match. Same policy as HostFileSystem.
   fstat(handle: number): StatResult {
-    const stat = fs.fstatSync(handle);
-    return {
-      dev: stat.dev,
-      ino: stat.ino,
-      mode: stat.mode,
-      nlink: stat.nlink,
-      uid: 0,
-      gid: 0,
-      size: stat.size,
-      atimeMs: stat.atimeMs,
-      mtimeMs: stat.mtimeMs,
-      ctimeMs: stat.ctimeMs,
-    };
+    return this.metadata.toStatResult(fs.fstatSync(handle));
   }
 
   stat(path: string): StatResult {
-    const s = fs.statSync(this.rewritePath(path));
-    return {
-      dev: s.dev,
-      ino: s.ino,
-      mode: s.mode,
-      nlink: s.nlink,
-      uid: 0,
-      gid: 0,
-      size: s.size,
-      atimeMs: s.atimeMs,
-      mtimeMs: s.mtimeMs,
-      ctimeMs: s.ctimeMs,
-    };
+    return this.metadata.toStatResult(fs.statSync(this.rewritePath(path)));
   }
 
   lstat(path: string): StatResult {
-    const s = fs.lstatSync(this.rewritePath(path));
-    return {
-      dev: s.dev,
-      ino: s.ino,
-      mode: s.mode,
-      nlink: s.nlink,
-      uid: 0,
-      gid: 0,
-      size: s.size,
-      atimeMs: s.atimeMs,
-      mtimeMs: s.mtimeMs,
-      ctimeMs: s.ctimeMs,
-    };
+    return this.metadata.toStatResult(fs.lstatSync(this.rewritePath(path)));
   }
 
   mkdir(path: string, mode: number): void {
-    fs.mkdirSync(this.rewritePath(path), { mode });
+    const nativePath = this.rewritePath(path);
+    fs.mkdirSync(nativePath, { mode });
+    this.metadata.chmod(fs.statSync(nativePath), mode);
   }
 
   rmdir(path: string): void {
-    fs.rmdirSync(this.rewritePath(path));
+    const nativePath = this.rewritePath(path);
+    const stat = fs.lstatSync(nativePath);
+    fs.rmdirSync(nativePath);
+    this.metadata.forget(stat);
   }
 
   unlink(path: string): void {
-    fs.unlinkSync(this.rewritePath(path));
+    const nativePath = this.rewritePath(path);
+    const stat = fs.lstatSync(nativePath);
+    fs.unlinkSync(nativePath);
+    if (stat.nlink <= 1) this.metadata.forget(stat);
   }
 
   rename(oldPath: string, newPath: string): void {
-    fs.renameSync(this.rewritePath(oldPath), this.rewritePath(newPath));
+    const nativeNewPath = this.rewritePath(newPath);
+    let replaced: fs.Stats | undefined;
+    try {
+      replaced = fs.lstatSync(nativeNewPath);
+    } catch {}
+    fs.renameSync(this.rewritePath(oldPath), nativeNewPath);
+    if (replaced !== undefined && replaced.nlink <= 1) this.metadata.forget(replaced);
   }
 
   link(existingPath: string, newPath: string): void {
@@ -210,15 +193,15 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   chmod(path: string, mode: number): void {
-    fs.chmodSync(this.rewritePath(path), mode);
+    this.metadata.chmod(fs.statSync(this.rewritePath(path)), mode);
   }
 
   chown(path: string, uid: number, gid: number): void {
-    fs.chownSync(this.rewritePath(path), uid, gid);
+    this.metadata.chown(fs.statSync(this.rewritePath(path)), uid, gid);
   }
 
   access(path: string, mode: number): void {
-    fs.accessSync(this.rewritePath(path), mode);
+    this.metadata.access(fs.statSync(this.rewritePath(path)), mode);
   }
 
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
@@ -269,11 +252,11 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   fchmod(handle: number, mode: number): void {
-    fs.fchmodSync(handle, mode);
+    this.metadata.chmod(fs.fstatSync(handle), mode);
   }
 
   fchown(handle: number, uid: number, gid: number): void {
-    fs.fchownSync(handle, uid, gid);
+    this.metadata.chown(fs.fstatSync(handle), uid, gid);
   }
 
   clockGettime(

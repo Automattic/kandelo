@@ -33,9 +33,131 @@ export interface ShellProps {
   onMaximize?: () => void;
   isMax?: boolean;
   autoFocus?: boolean;
+  terminals?: ShellTerminal[];
+  activeTerminalId?: string;
+  onActiveTerminalId?: (id: string) => void;
+  onAddTerminal?: () => void;
 }
 
-export const Shell: React.FC<ShellProps> = ({ dragProps, onCollapse, onMaximize, isMax, autoFocus = false }) => {
+export interface ShellTerminal {
+  id: string;
+  label: string;
+  path: string;
+}
+
+export function createShellTerminal(index: number): ShellTerminal {
+  return {
+    id: `tty-${index}`,
+    label: `TTY${index}`,
+    path: `/dev/pts/${index - 1}`,
+  };
+}
+
+export const Shell: React.FC<ShellProps> = ({
+  dragProps,
+  onCollapse,
+  onMaximize,
+  isMax,
+  autoFocus = false,
+  terminals: controlledTerminals,
+  activeTerminalId: controlledActiveTerminalId,
+  onActiveTerminalId,
+  onAddTerminal,
+}) => {
+  const [localTerminals, setLocalTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
+  const [localActiveTerminalId, setLocalActiveTerminalId] = React.useState("tty-1");
+  const nextLocalTerminalIndex = React.useRef(2);
+
+  const terminals = controlledTerminals ?? localTerminals;
+  const activeTerminalId = controlledActiveTerminalId ?? localActiveTerminalId;
+  const activeTerminal = terminals.find((terminal) => terminal.id === activeTerminalId) ?? terminals[0];
+
+  const setActiveTerminal = React.useCallback((id: string) => {
+    if (onActiveTerminalId) onActiveTerminalId(id);
+    else setLocalActiveTerminalId(id);
+  }, [onActiveTerminalId]);
+
+  const addTerminal = React.useCallback(() => {
+    if (onAddTerminal) {
+      onAddTerminal();
+      return;
+    }
+    const next = createShellTerminal(nextLocalTerminalIndex.current++);
+    setLocalTerminals((prev) => [...prev, next]);
+    setLocalActiveTerminalId(next.id);
+  }, [onAddTerminal]);
+
+  React.useEffect(() => {
+    if (!activeTerminal && terminals[0]) setActiveTerminal(terminals[0].id);
+  }, [activeTerminal, setActiveTerminal, terminals]);
+
+  const tabStrip = (
+    <div
+      className="kshell-tabs"
+      role="tablist"
+      aria-label="Terminals"
+      onDragStart={(event) => event.stopPropagation()}
+    >
+      {terminals.map((terminal) => (
+        <button
+          key={terminal.id}
+          type="button"
+          className="kshell-tab"
+          role="tab"
+          aria-selected={terminal.id === activeTerminal?.id}
+          onClick={(event) => {
+            event.stopPropagation();
+            setActiveTerminal(terminal.id);
+          }}
+        >
+          {terminal.label}
+        </button>
+      ))}
+      <button
+        type="button"
+        className="kshell-tab-add"
+        title="New terminal"
+        aria-label="New terminal"
+        onClick={(event) => {
+          event.stopPropagation();
+          addTerminal();
+        }}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M6 2v8M2 6h8" />
+        </svg>
+      </button>
+    </div>
+  );
+
+  return (
+    <div className="kpane">
+      <PaneHead
+        icon={ICON}
+        title={activeTerminal ? `${activeTerminal.label} · /BIN/SH` : "TERMINAL"}
+        right={tabStrip}
+        dragProps={dragProps}
+        onCollapse={onCollapse}
+        onMaximize={onMaximize}
+        isMax={isMax}
+      />
+      <div className="kpane-body kshell-body">
+        {activeTerminal && (
+          <ShellTerminalHost
+            key={activeTerminal.id}
+            terminal={activeTerminal}
+            autoFocus={autoFocus}
+          />
+        )}
+      </div>
+    </div>
+  );
+};
+
+const ShellTerminalHost: React.FC<{
+  terminal: ShellTerminal;
+  autoFocus: boolean;
+}> = ({ terminal, autoFocus }) => {
   const host = useKernelHost();
   const status = useStatus();
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -73,7 +195,7 @@ export const Shell: React.FC<ShellProps> = ({ dragProps, onCollapse, onMaximize,
 
     void (async () => {
       try {
-        const pty = await host.attachPty("/dev/pts/0", {
+        const pty = await host.attachPty(terminal.path, {
           cols: term.cols,
           rows: term.rows,
         });
@@ -115,34 +237,24 @@ export const Shell: React.FC<ShellProps> = ({ dragProps, onCollapse, onMaximize,
       term.dispose();
       setAttached(false);
     };
-  }, [autoFocus, host, status]);
+  }, [autoFocus, host, status, terminal.path]);
 
   return (
-    <div className="kpane">
-      <PaneHead
-        icon={ICON}
-        title="TTY1 · /BIN/SH"
-        dragProps={dragProps}
-        onCollapse={onCollapse}
-        onMaximize={onMaximize}
-        isMax={isMax}
-      />
-      <div className="kpane-body" style={{ background: "var(--k-shell-bg)" }}>
-        {status === "running" ? (
-          <div className="kshell-host" ref={containerRef} />
-        ) : (
-          <PreBoot status={status} />
-        )}
-        {attachError && (
-          <div style={{ color: "var(--k-err)", padding: "8px 12px", fontFamily: "var(--k-font-mono)", fontSize: 11 }}>
-            attachPty failed: {attachError}
-          </div>
-        )}
-        {/* attached is used purely to keep the effect's value in sync with
-            React's reconciler; intentionally not rendered. */}
-        <span style={{ display: "none" }}>{attached ? "attached" : "idle"}</span>
-      </div>
-    </div>
+    <>
+      {status === "running" ? (
+        <div className="kshell-host" ref={containerRef} />
+      ) : (
+        <PreBoot status={status} />
+      )}
+      {attachError && (
+        <div style={{ color: "var(--k-err)", padding: "8px 12px", fontFamily: "var(--k-font-mono)", fontSize: 11 }}>
+          attachPty failed: {attachError}
+        </div>
+      )}
+      {/* attached is used purely to keep the effect's value in sync with
+          React's reconciler; intentionally not rendered. */}
+      <span style={{ display: "none" }}>{attached ? "attached" : "idle"}</span>
+    </>
   );
 };
 

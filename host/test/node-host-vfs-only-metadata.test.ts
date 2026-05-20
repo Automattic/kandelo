@@ -1,0 +1,343 @@
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  chmodSync,
+  existsSync,
+  fstatSync,
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { NodePlatformIO } from "../src/platform/node";
+import { HostFileSystem } from "../src/vfs/host-fs";
+import { VirtualPlatformIO } from "../src/vfs/vfs";
+import { NodeTimeProvider } from "../src/vfs/time";
+import { DEFAULT_MOUNT_SPEC } from "../src/vfs/default-mounts";
+import { resolveForNode } from "../src/vfs/default-mounts-node";
+import { MemoryFileSystem } from "../src/vfs/memory-fs";
+
+const O_RDWR = 0o2;
+const O_CREAT = 0o100;
+const O_TRUNC = 0o1000;
+const MODE_MASK = 0o7777;
+const PERMISSION_MASK = 0o777;
+const UID_GID_UNCHANGED = 0xffffffff;
+
+interface MetadataBackend {
+  stat(path: string): { mode: number; uid: number; gid: number };
+  open(path: string, flags: number, mode: number): number;
+  close(handle: number): number;
+  fstat(handle: number): { mode: number; uid: number; gid: number };
+  chmod(path: string, mode: number): void;
+  chown(path: string, uid: number, gid: number): void;
+  fchmod(handle: number, mode: number): void;
+  fchown(handle: number, uid: number, gid: number): void;
+  mkdir(path: string, mode: number): void;
+  access(path: string, mode: number): void;
+  link(existingPath: string, newPath: string): void;
+  rename(oldPath: string, newPath: string): void;
+  unlink(path: string): void;
+}
+
+interface BackendCase {
+  root: string;
+  backend: MetadataBackend;
+  vfsPath(name: string): string;
+  nativePath(name: string): string;
+}
+
+const tempRoots: string[] = [];
+
+afterEach(() => {
+  while (tempRoots.length > 0) {
+    rmSync(tempRoots.pop()!, { recursive: true, force: true });
+  }
+});
+
+function makeTempRoot(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  tempRoots.push(root);
+  return root;
+}
+
+function nativeMode(path: string): number {
+  return statSync(path).mode & MODE_MASK;
+}
+
+function expectNativeMetadataUnchanged(path: string, before: ReturnType<typeof statSync>): void {
+  const after = statSync(path);
+  expect(after.mode & MODE_MASK).toBe(before.mode & MODE_MASK);
+  expect(after.uid).toBe(before.uid);
+  expect(after.gid).toBe(before.gid);
+}
+
+function withUmask<T>(mask: number, fn: () => T): T {
+  const previous = process.umask(mask);
+  try {
+    return fn();
+  } finally {
+    process.umask(previous);
+  }
+}
+
+const backendFactories: Array<[string, () => BackendCase]> = [
+  [
+    "HostFileSystem scratch backend",
+    () => {
+      const root = makeTempRoot("wasm-posix-host-fs-vfs-only-");
+      return {
+        root,
+        backend: new HostFileSystem(root),
+        vfsPath: (name) => `/${name}`,
+        nativePath: (name) => join(root, name),
+      };
+    },
+  ],
+  [
+    "NodePlatformIO direct host backend",
+    () => {
+      const root = makeTempRoot("wasm-posix-node-platform-vfs-only-");
+      return {
+        root,
+        backend: new NodePlatformIO() as MetadataBackend,
+        vfsPath: (name) => join(root, name),
+        nativePath: (name) => join(root, name),
+      };
+    },
+  ],
+];
+
+describe.each(backendFactories)("%s", (_name, makeCase) => {
+  it("keeps path chmod/chown changes in VFS metadata only", () => {
+    const c = makeCase();
+    const native = c.nativePath("path-file");
+    writeFileSync(native, "data");
+    chmodSync(native, 0o600);
+    const before = statSync(native);
+
+    c.backend.chmod(c.vfsPath("path-file"), 0o751);
+    c.backend.chown(c.vfsPath("path-file"), 1234, 5678);
+
+    const virtual = c.backend.stat(c.vfsPath("path-file"));
+    expect(virtual.mode & MODE_MASK).toBe(0o751);
+    expect(virtual.uid).toBe(1234);
+    expect(virtual.gid).toBe(5678);
+    expectNativeMetadataUnchanged(native, before);
+  });
+
+  it("keeps fd fchmod/fchown changes in VFS metadata only", () => {
+    const c = makeCase();
+    const native = c.nativePath("fd-file");
+    writeFileSync(native, "data");
+    chmodSync(native, 0o600);
+
+    const fd = c.backend.open(c.vfsPath("fd-file"), O_RDWR, 0);
+    try {
+      const before = fstatSync(fd);
+      c.backend.fchmod(fd, 0o700);
+      c.backend.fchown(fd, 2222, 3333);
+
+      const virtual = c.backend.fstat(fd);
+      const nativeAfter = fstatSync(fd);
+      expect(virtual.mode & MODE_MASK).toBe(0o700);
+      expect(virtual.uid).toBe(2222);
+      expect(virtual.gid).toBe(3333);
+      expect(nativeAfter.mode & MODE_MASK).toBe(before.mode & MODE_MASK);
+      expect(nativeAfter.uid).toBe(before.uid);
+      expect(nativeAfter.gid).toBe(before.gid);
+    } finally {
+      c.backend.close(fd);
+    }
+  });
+
+  it("relays open(O_CREAT) mode to native creation and records it virtually", () => {
+    const c = makeCase();
+    const fd = withUmask(0, () =>
+      c.backend.open(c.vfsPath("created-file"), O_RDWR | O_CREAT | O_TRUNC, 0o751),
+    );
+    try {
+      expect(c.backend.fstat(fd).mode & MODE_MASK).toBe(0o751);
+      expect(fstatSync(fd).mode & MODE_MASK).toBe(0o751);
+    } finally {
+      c.backend.close(fd);
+    }
+
+    expect(c.backend.stat(c.vfsPath("created-file")).mode & MODE_MASK).toBe(0o751);
+    expect(nativeMode(c.nativePath("created-file"))).toBe(0o751);
+  });
+
+  it("relays mkdir mode to native creation and records it virtually", () => {
+    const c = makeCase();
+    withUmask(0, () => c.backend.mkdir(c.vfsPath("created-dir"), 0o751));
+
+    expect(c.backend.stat(c.vfsPath("created-dir")).mode & MODE_MASK).toBe(0o751);
+    expect(nativeMode(c.nativePath("created-dir"))).toBe(0o751);
+  });
+
+  it("honors uid/gid -1 as unchanged in virtual metadata only", () => {
+    const c = makeCase();
+    const native = c.nativePath("partial-chown");
+    writeFileSync(native, "data");
+    const before = statSync(native);
+
+    c.backend.chown(c.vfsPath("partial-chown"), 1111, UID_GID_UNCHANGED);
+    let virtual = c.backend.stat(c.vfsPath("partial-chown"));
+    expect(virtual.uid).toBe(1111);
+    expect(virtual.gid).toBe(0);
+
+    c.backend.chown(c.vfsPath("partial-chown"), UID_GID_UNCHANGED, 2222);
+    virtual = c.backend.stat(c.vfsPath("partial-chown"));
+    expect(virtual.uid).toBe(1111);
+    expect(virtual.gid).toBe(2222);
+    expectNativeMetadataUnchanged(native, before);
+  });
+
+  it("answers access from VFS mode metadata instead of native mode", () => {
+    const c = makeCase();
+    const native = c.nativePath("access-file");
+    writeFileSync(native, "data");
+    chmodSync(native, 0o777);
+    const before = statSync(native);
+
+    c.backend.chmod(c.vfsPath("access-file"), 0o000);
+    expect(() => c.backend.access(c.vfsPath("access-file"), 0)).not.toThrow();
+    expect(() => c.backend.access(c.vfsPath("access-file"), 0o4)).toThrow(/EACCES/);
+    expect(() => c.backend.access(c.vfsPath("access-file"), 0o2)).toThrow(/EACCES/);
+    expect(() => c.backend.access(c.vfsPath("access-file"), 0o1)).toThrow(/EACCES/);
+    expectNativeMetadataUnchanged(native, before);
+
+    c.backend.chmod(c.vfsPath("access-file"), 0o400);
+    expect(() => c.backend.access(c.vfsPath("access-file"), 0o4)).not.toThrow();
+    expect(() => c.backend.access(c.vfsPath("access-file"), 0o2)).toThrow(/EACCES/);
+  });
+
+  it("shares virtual metadata across hard links without changing native metadata", () => {
+    const c = makeCase();
+    const source = c.nativePath("source");
+    const linked = c.nativePath("linked");
+    writeFileSync(source, "data");
+    chmodSync(source, 0o600);
+    c.backend.link(c.vfsPath("source"), c.vfsPath("linked"));
+    const sourceBefore = statSync(source);
+    const linkedBefore = statSync(linked);
+
+    c.backend.chmod(c.vfsPath("source"), 0o755);
+    c.backend.chown(c.vfsPath("source"), 4444, 5555);
+
+    const linkedVirtual = c.backend.stat(c.vfsPath("linked"));
+    expect(linkedVirtual.mode & MODE_MASK).toBe(0o755);
+    expect(linkedVirtual.uid).toBe(4444);
+    expect(linkedVirtual.gid).toBe(5555);
+    expectNativeMetadataUnchanged(source, sourceBefore);
+    expectNativeMetadataUnchanged(linked, linkedBefore);
+  });
+
+  it("carries virtual metadata across rename without changing native metadata", () => {
+    const c = makeCase();
+    const beforePath = c.nativePath("before-rename");
+    const afterPath = c.nativePath("after-rename");
+    writeFileSync(beforePath, "data");
+    chmodSync(beforePath, 0o600);
+    const before = statSync(beforePath);
+
+    c.backend.chmod(c.vfsPath("before-rename"), 0o711);
+    c.backend.chown(c.vfsPath("before-rename"), 7777, 8888);
+    c.backend.rename(c.vfsPath("before-rename"), c.vfsPath("after-rename"));
+
+    const virtual = c.backend.stat(c.vfsPath("after-rename"));
+    expect(existsSync(beforePath)).toBe(false);
+    expect(virtual.mode & MODE_MASK).toBe(0o711);
+    expect(virtual.uid).toBe(7777);
+    expect(virtual.gid).toBe(8888);
+    expectNativeMetadataUnchanged(afterPath, before);
+  });
+
+  it("does not leak virtual metadata after unlink and recreate", () => {
+    const c = makeCase();
+    const native = c.nativePath("recreated");
+    writeFileSync(native, "old");
+
+    c.backend.chmod(c.vfsPath("recreated"), 0o711);
+    c.backend.chown(c.vfsPath("recreated"), 1212, 3434);
+    c.backend.unlink(c.vfsPath("recreated"));
+    writeFileSync(native, "new");
+
+    const virtual = c.backend.stat(c.vfsPath("recreated"));
+    expect(virtual.mode & MODE_MASK).not.toBe(0o711);
+    expect(virtual.uid).toBe(0);
+    expect(virtual.gid).toBe(0);
+  });
+});
+
+describe("VirtualPlatformIO on Node host mounts", () => {
+  it("routes metadata operations to HostFileSystem as VFS-only changes", () => {
+    const root = makeTempRoot("wasm-posix-virtual-platform-vfs-only-");
+    const native = join(root, "file");
+    writeFileSync(native, "data");
+    chmodSync(native, 0o600);
+    const before = statSync(native);
+
+    const io = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: new HostFileSystem(root) }],
+      new NodeTimeProvider(),
+    );
+    io.chmod("/file", 0o751);
+    io.chown("/file", 2468, 1357);
+    const fd = io.open("/file", O_RDWR, 0);
+    try {
+      io.fchmod(fd, 0o700);
+      io.fchown(fd, 9753, 8642);
+      const virtual = io.fstat(fd);
+      expect(virtual.mode & MODE_MASK).toBe(0o700);
+      expect(virtual.uid).toBe(9753);
+      expect(virtual.gid).toBe(8642);
+    } finally {
+      io.close(fd);
+    }
+    expectNativeMetadataUnchanged(native, before);
+  });
+
+  it("routes access through VFS metadata", () => {
+    const root = makeTempRoot("wasm-posix-virtual-platform-access-");
+    const native = join(root, "access-file");
+    writeFileSync(native, "data");
+    chmodSync(native, 0o777);
+    const before = statSync(native);
+
+    const io = new VirtualPlatformIO(
+      [{ mountPoint: "/", backend: new HostFileSystem(root) }],
+      new NodeTimeProvider(),
+    );
+    io.chmod("/access-file", 0o000);
+
+    expect(() => io.access("/access-file", 0)).not.toThrow();
+    expect(() => io.access("/access-file", 0o4)).toThrow(/EACCES/);
+    expect(() => io.access("/access-file", 0o2)).toThrow(/EACCES/);
+    expect(() => io.access("/access-file", 0o1)).toThrow(/EACCES/);
+    expectNativeMetadataUnchanged(native, before);
+  });
+
+  it("applies every default Node scratch mount mode virtually", async () => {
+    const sessionDir = makeTempRoot("wasm-posix-default-node-vfs-only-");
+    const image = await buildEmptyImage();
+    const mounts = withUmask(0, () => resolveForNode(DEFAULT_MOUNT_SPEC, image, sessionDir));
+
+    for (const spec of DEFAULT_MOUNT_SPEC) {
+      if (spec.source !== "scratch" || spec.mode === undefined) continue;
+      const mount = mounts.find((m) => m.mountPoint === spec.path);
+      expect(mount, `missing mount ${spec.path}`).toBeDefined();
+      expect(mount!.backend.stat("/").mode & MODE_MASK).toBe(spec.mode);
+
+      const native = join(sessionDir, spec.path);
+      expect(nativeMode(native) & PERMISSION_MASK).toBe(spec.mode & PERMISSION_MASK);
+    }
+  });
+});
+
+async function buildEmptyImage(): Promise<Uint8Array> {
+  const sab = new SharedArrayBuffer(1024 * 1024);
+  return await MemoryFileSystem.create(sab).saveImage();
+}
