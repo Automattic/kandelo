@@ -6018,6 +6018,70 @@ pub fn sys_getaddrinfo(
 
 /// Send a message on a socket to a specific address.
 ///
+/// Soft cap on per-socket DGRAM backlog for host-injected datagrams. Sized
+/// to absorb a few seconds of fbDOOM net-tick bursts (~35 Hz × a handful
+/// of stalled accepters) while still hard-bounding the kernel-heap growth
+/// a stalled userspace reader can cause when a remote peer over an
+/// RTCDataChannel feeds the queue at line rate. Excess datagrams are
+/// silently dropped (UDP semantics).
+pub const MAX_INJECT_DGRAM_QUEUE_LEN: usize = 256;
+
+/// Helper for `kernel_inject_datagram` — the per-process side, factored
+/// out so it can be unit-tested with a local `Process` rather than the
+/// global `PROCESS_TABLE` the wasm export uses.
+///
+/// Scans `proc.sockets` for a `Bound`/`Connected` DGRAM socket on
+/// `dst_port`, pushes a `Datagram { data, src_addr, src_port }` onto its
+/// `dgram_queue` (the same FIFO `sys_sendto`'s loopback branch
+/// populates). Capped at `MAX_INJECT_DGRAM_QUEUE_LEN`; overflow returns
+/// 0 (UDP semantics — the host has no recourse for queue-full).
+///
+/// Returns 0 on success (or silent overflow), or `-ECONNREFUSED` if no
+/// bound DGRAM socket on `dst_port` exists, or `-EBADF` if the matched
+/// socket vanishes between lookup and push (shouldn't happen in
+/// practice; defensive against future refactors).
+pub fn inject_datagram_into(
+    proc: &mut Process,
+    dst_port: u16,
+    src_addr: [u8; 4],
+    src_port: u16,
+    data: &[u8],
+) -> i32 {
+    use crate::socket::{Datagram, SocketState, SocketType};
+
+    let mut target_idx = None;
+    let sock_count = proc.sockets.len();
+    for i in 0..sock_count {
+        if let Some(s) = proc.sockets.get(i) {
+            if s.sock_type == SocketType::Dgram
+                && (s.state == SocketState::Bound || s.state == SocketState::Connected)
+                && s.bind_port == dst_port
+            {
+                target_idx = Some(i);
+                break;
+            }
+        }
+    }
+    let target_idx = match target_idx {
+        Some(i) => i,
+        None => return -(Errno::ECONNREFUSED as i32),
+    };
+
+    let target = match proc.sockets.get_mut(target_idx) {
+        Some(s) => s,
+        None => return -(Errno::EBADF as i32),
+    };
+    if target.dgram_queue.len() >= MAX_INJECT_DGRAM_QUEUE_LEN {
+        return 0;
+    }
+    target.dgram_queue.push(Datagram {
+        data: data.to_vec(),
+        src_addr,
+        src_port,
+    });
+    0
+}
+
 /// For AF_INET DGRAM sockets with a loopback destination, finds the target
 /// bound DGRAM socket and pushes the datagram to its queue.
 pub fn sys_sendto(
@@ -15543,6 +15607,124 @@ mod tests {
         assert_eq!(*dst_ip, [10, 99, 0, 2]);
         assert_eq!(*dst_port_out, dst_port);
         assert_eq!(data.as_slice(), payload);
+    }
+
+    #[test]
+    fn test_inject_datagram_no_bound_socket() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        // A socket exists but is unbound — port 5029 has nothing listening.
+        let _fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+
+        let rc = super::inject_datagram_into(
+            &mut proc,
+            5029,
+            [10, 99, 0, 2],
+            6000,
+            b"orphan",
+        );
+        assert_eq!(rc, -(Errno::ECONNREFUSED as i32));
+    }
+
+    #[test]
+    fn test_inject_datagram_pushes_and_recvfrom_delivers() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_addr = [0u8; 16];
+        bind_addr[0] = 2; // AF_INET
+        let bind_port: u16 = 5029;
+        let bind_port_be = bind_port.to_be_bytes();
+        bind_addr[2] = bind_port_be[0];
+        bind_addr[3] = bind_port_be[1];
+        sys_bind(&mut proc, &mut host, recv_fd, &bind_addr).unwrap();
+
+        let payload = b"injected packet";
+        let rc = super::inject_datagram_into(
+            &mut proc,
+            bind_port,
+            [10, 99, 0, 2],
+            7777,
+            payload,
+        );
+        assert_eq!(rc, 0);
+
+        let mut buf = [0u8; 64];
+        let mut from_addr = [0u8; 16];
+        let (data_len, addr_len) =
+            sys_recvfrom(&mut proc, &mut host, recv_fd, &mut buf, 0, &mut from_addr).unwrap();
+        assert_eq!(&buf[..data_len], payload);
+        assert_eq!(addr_len, 16);
+        // AF_INET in sa_family at offset 0 (little-endian u16, AF_INET == 2).
+        assert_eq!(from_addr[0], 2);
+        // Source port restored big-endian at offset 2.
+        let got_src_port = u16::from_be_bytes([from_addr[2], from_addr[3]]);
+        assert_eq!(got_src_port, 7777);
+        // Source IPv4 at offset 4..8.
+        assert_eq!(&from_addr[4..8], &[10, 99, 0, 2]);
+    }
+
+    #[test]
+    fn test_inject_datagram_caps_queue_and_silently_drops_overflow() {
+        // A stalled userspace reader + a chatty remote peer can otherwise
+        // grow proc.sockets[*].dgram_queue without bound. Cap is at
+        // MAX_INJECT_DGRAM_QUEUE_LEN; overflow returns 0 (UDP-best-effort
+        // semantics) and the queue must not grow beyond the cap.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let recv_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut bind_addr = [0u8; 16];
+        bind_addr[0] = 2;
+        let bind_port: u16 = 5029;
+        let bind_port_be = bind_port.to_be_bytes();
+        bind_addr[2] = bind_port_be[0];
+        bind_addr[3] = bind_port_be[1];
+        sys_bind(&mut proc, &mut host, recv_fd, &bind_addr).unwrap();
+
+        let cap = super::MAX_INJECT_DGRAM_QUEUE_LEN;
+        for i in 0..cap {
+            let payload = [(i & 0xff) as u8];
+            let rc = super::inject_datagram_into(
+                &mut proc,
+                bind_port,
+                [10, 99, 0, 2],
+                7777,
+                &payload,
+            );
+            assert_eq!(rc, 0);
+        }
+
+        // Overflow attempts return 0 but do not enqueue.
+        for _ in 0..16 {
+            let rc = super::inject_datagram_into(
+                &mut proc,
+                bind_port,
+                [10, 99, 0, 2],
+                7777,
+                b"dropped",
+            );
+            assert_eq!(rc, 0);
+        }
+
+        // The first cap entries are still in order; nothing was overwritten.
+        let target_idx = (0..proc.sockets.len())
+            .find(|&i| {
+                proc.sockets
+                    .get(i)
+                    .map(|s| {
+                        s.sock_type == crate::socket::SocketType::Dgram && s.bind_port == bind_port
+                    })
+                    .unwrap_or(false)
+            })
+            .expect("bound DGRAM socket present");
+        let queue_len = proc.sockets.get(target_idx).unwrap().dgram_queue.len();
+        assert_eq!(queue_len, cap);
     }
 
     // ── Threading tests ──────────────────────────────────────────────
