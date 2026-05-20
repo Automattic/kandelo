@@ -20,6 +20,8 @@ clobbering each other.
 See [docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md](plans/2026-05-13-binary-resolution-via-index-ledger-design.md)
 for the design rationale and [docs/package-management.md](package-management.md)
 for the resolver behavior, schema, and build-script contract.
+For third-party repositories that publish their own package archives,
+see [docs/package-sources.md](package-sources.md).
 
 ## Producer side: the matrix flow
 

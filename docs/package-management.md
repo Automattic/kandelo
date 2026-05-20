@@ -39,6 +39,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
 | Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
 | Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
+| Publish packages from another repository | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract. |
 | Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
 | See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |
 
@@ -898,12 +899,11 @@ own directory tree and prepend it to the registry path.
 
 The first external package source using this pattern is
 [`brandonpayton/kandelo-software`](https://github.com/brandonpayton/kandelo-software):
-it keeps package recipes under `packages/<name>/`, overlays them into
-a Kandelo checkout for source builds, and publishes an ABI-scoped
-`binaries-abi-v<N>/index.toml` from GitHub Actions. Downstream
-consumers can either prepend that repository's `packages/` directory
-to `WASM_POSIX_DEPS_REGISTRY` or copy the same workflow/action shape
-for their own package source.
+it keeps package recipes under `packages/<name>/`, overlays them into a
+Kandelo checkout for source builds, and publishes an ABI-scoped
+`binaries-abi-v<N>/index.toml` from GitHub Actions. See
+[docs/package-sources.md](package-sources.md) for the reusable workflow
+and script contract.
 
 `kandelo-software` also publishes `gallery.json` beside the release
 index. The browser gallery treats that file as presentation metadata
