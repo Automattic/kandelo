@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, fstatSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostFileSystem } from "../../src/vfs/host-fs";
@@ -55,5 +55,59 @@ describe("HostFileSystem uid/gid normalization", () => {
     const st = hfs.stat("/sub");
     expect(st.uid).toBe(0);
     expect(st.gid).toBe(0);
+  });
+
+  it("chmod updates virtual mode without changing native mode", () => {
+    const nativePath = join(root, "chmod.txt");
+    writeFileSync(nativePath, "hi");
+    chmodSync(nativePath, 0o600);
+    const nativeBefore = statSync(nativePath).mode & 0o7777;
+
+    const hfs = new HostFileSystem(root);
+    hfs.chmod("/chmod.txt", 0o751);
+
+    expect(hfs.stat("/chmod.txt").mode & 0o7777).toBe(0o751);
+    expect(statSync(nativePath).mode & 0o7777).toBe(nativeBefore);
+  });
+
+  it("chown updates virtual owner without changing native owner", () => {
+    const nativePath = join(root, "chown.txt");
+    writeFileSync(nativePath, "hi");
+    const nativeBefore = statSync(nativePath);
+
+    const hfs = new HostFileSystem(root);
+    hfs.chown("/chown.txt", 1234, 5678);
+
+    const virtual = hfs.stat("/chown.txt");
+    const nativeAfter = statSync(nativePath);
+    expect(virtual.uid).toBe(1234);
+    expect(virtual.gid).toBe(5678);
+    expect(nativeAfter.uid).toBe(nativeBefore.uid);
+    expect(nativeAfter.gid).toBe(nativeBefore.gid);
+  });
+
+  it("fchmod and fchown update virtual metadata without native changes", () => {
+    const nativePath = join(root, "fd.txt");
+    writeFileSync(nativePath, "hi");
+    chmodSync(nativePath, 0o600);
+
+    const hfs = new HostFileSystem(root);
+    const fd = hfs.open("/fd.txt", 0, 0);
+    try {
+      const nativeBefore = fstatSync(fd);
+      hfs.fchmod(fd, 0o700);
+      hfs.fchown(fd, 2222, 3333);
+
+      const virtual = hfs.fstat(fd);
+      const nativeAfter = fstatSync(fd);
+      expect(virtual.mode & 0o7777).toBe(0o700);
+      expect(virtual.uid).toBe(2222);
+      expect(virtual.gid).toBe(3333);
+      expect(nativeAfter.mode & 0o7777).toBe(nativeBefore.mode & 0o7777);
+      expect(nativeAfter.uid).toBe(nativeBefore.uid);
+      expect(nativeAfter.gid).toBe(nativeBefore.gid);
+    } finally {
+      hfs.close(fd);
+    }
   });
 });

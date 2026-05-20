@@ -5,7 +5,7 @@
  */
 
 import { join } from "node:path";
-import { chmodSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import type { MountConfig } from "./types";
 import { MemoryFileSystem } from "./memory-fs";
 import { HostFileSystem } from "./host-fs";
@@ -46,10 +46,11 @@ export function resolveForNode(
     } else {
       const hostDir = join(sessionDir, m.path);
       mkdirSync(hostDir, { recursive: true, mode: m.mode });
-      if (m.mode !== undefined) chmodSync(hostDir, m.mode);
+      const backend = new HostFileSystem(hostDir);
+      if (m.mode !== undefined) backend.chmod("/", m.mode);
       out.push({
         mountPoint: m.path,
-        backend: new HostFileSystem(hostDir),
+        backend,
         readonly: m.readonly,
       });
     }
