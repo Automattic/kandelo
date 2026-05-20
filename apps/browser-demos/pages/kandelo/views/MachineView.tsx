@@ -9,23 +9,38 @@ import * as React from "react";
 import { usePresentation, useStatus, useSurfaceAvailability } from "../kernel-host/react";
 import { Inspector } from "../panes/Inspector";
 import { Display } from "../panes/Display";
-import { Shell } from "../panes/Shell";
+import { Shell, type ShellProps, type ShellTerminal } from "../panes/Shell";
 import type { PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface MachineViewProps {
   focusInternals?: boolean;
   internalsTab: string;
   onInternalsTab: (id: string) => void;
+  terminals: ShellTerminal[];
+  activeTerminalId: string;
+  onActiveTerminalId: (id: string) => void;
+  onAddTerminal: () => void;
 }
 
-export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false, internalsTab, onInternalsTab }) => {
+export const MachineView: React.FC<MachineViewProps> = ({
+  focusInternals = false,
+  internalsTab,
+  onInternalsTab,
+  terminals,
+  activeTerminalId,
+  onActiveTerminalId,
+  onAddTerminal,
+}) => {
   const status = useStatus();
   const presentation = usePresentation();
   const availability = useSurfaceAvailability();
+  const rootRef = React.useRef<HTMLDivElement>(null);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
   const [terminalOpen, setTerminalOpen] = React.useState(false);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
+  const [terminalDrawerHeight, setTerminalDrawerHeight] = React.useState(320);
+  const [internalsDrawerHeight, setInternalsDrawerHeight] = React.useState(320);
   const previousAvailability = React.useRef(availability);
 
   const defaultPrimary = React.useMemo<PrimarySurface>(() => {
@@ -70,14 +85,51 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
     setPrimaryMode(surface === defaultPrimary ? "following-demo" : "pinned");
   };
 
+  const shellProps = {
+    terminals,
+    activeTerminalId,
+    onActiveTerminalId,
+    onAddTerminal,
+  };
+
   const primaryLabel = surfaceLabel(activePrimary);
   const demoSurface = status === "running"
     ? resolvePrimary(presentation.runningPrimary, availability, presentation.bootPrimary)
     : presentation.runningPrimary[0] ?? "terminal";
   const canOpenDemo = status === "running" && isSurfaceAvailable(demoSurface, availability);
 
+  const beginDrawerResize = (
+    event: React.PointerEvent<HTMLDivElement>,
+    currentHeight: number,
+    setHeight: React.Dispatch<React.SetStateAction<number>>,
+  ) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = currentHeight;
+    const rootHeight = rootRef.current?.getBoundingClientRect().height ?? window.innerHeight;
+    const maxHeight = Math.max(180, rootHeight - 320);
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    target.classList.add("dragging");
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientY - startY;
+      setHeight(clamp(startHeight - delta, 180, maxHeight));
+    };
+    const onDone = () => {
+      target.classList.remove("dragging");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onDone);
+      window.removeEventListener("pointercancel", onDone);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onDone);
+    window.addEventListener("pointercancel", onDone);
+  };
+
   return (
-    <div className="kmachine">
+    <div className="kmachine" ref={rootRef}>
       <div className="kmachine-toolbar">
         <div className="kmachine-switch" role="tablist" aria-label="Machine surfaces">
           <SurfaceButton
@@ -102,18 +154,20 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
       </div>
 
       <div className="kmachine-primary">
-        {renderSurface(activePrimary, internalsTab, onInternalsTab)}
+        {renderSurface(activePrimary, internalsTab, onInternalsTab, shellProps)}
       </div>
 
       {activePrimary !== "terminal" && (
         <MachineDrawer
           title="Terminal"
           open={terminalOpen}
+          bodyHeight={terminalDrawerHeight}
+          onResizeStart={(event) => beginDrawerResize(event, terminalDrawerHeight, setTerminalDrawerHeight)}
           onToggle={() => {
             setTerminalOpen((v) => !v);
           }}
         >
-          <Shell autoFocus />
+          <Shell autoFocus {...shellProps} />
         </MachineDrawer>
       )}
 
@@ -121,6 +175,8 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
         <MachineDrawer
           title="Internals"
           open={internalsOpen}
+          bodyHeight={internalsDrawerHeight}
+          onResizeStart={(event) => beginDrawerResize(event, internalsDrawerHeight, setInternalsDrawerHeight)}
           onToggle={() => {
             setInternalsOpen((v) => !v);
           }}
@@ -152,10 +208,21 @@ const SurfaceButton: React.FC<{
 const MachineDrawer: React.FC<{
   title: string;
   open: boolean;
+  bodyHeight: number;
+  onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onToggle: () => void;
   children: React.ReactNode;
-}> = ({ title, open, onToggle, children }) => (
+}> = ({ title, open, bodyHeight, onResizeStart, onToggle, children }) => (
   <section className={`kmachine-drawer${open ? " open" : ""}`}>
+    {open && (
+      <div
+        className="kmachine-drawer-resizer"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label={`Resize ${title}`}
+        onPointerDown={onResizeStart}
+      />
+    )}
     <button
       type="button"
       className="kmachine-drawer-toggle"
@@ -168,7 +235,7 @@ const MachineDrawer: React.FC<{
         <path d={open ? "M3 7.5 6 4.5l3 3" : "M3 4.5 6 7.5l3-3"} />
       </svg>
     </button>
-    {open && <div className="kmachine-drawer-body">{children}</div>}
+    {open && <div className="kmachine-drawer-body" style={{ height: bodyHeight }}>{children}</div>}
   </section>
 );
 
@@ -176,10 +243,11 @@ function renderSurface(
   surface: PrimarySurface,
   internalsTab: string,
   onInternalsTab: (id: string) => void,
+  shellProps: Pick<ShellProps, "terminals" | "activeTerminalId" | "onActiveTerminalId" | "onAddTerminal">,
 ): React.ReactNode {
   switch (surface) {
     case "terminal":
-      return <Shell autoFocus />;
+      return <Shell autoFocus {...shellProps} />;
     case "framebuffer":
     case "web":
       return <Display autoFocus />;
@@ -208,4 +276,8 @@ function resolvePrimary(
 
 function isSurfaceAvailable(surface: PrimarySurface, availability: SurfaceAvailability): boolean {
   return availability[surface] === true;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }

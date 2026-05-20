@@ -436,6 +436,33 @@
   background: var(--k-surface);
   box-shadow: var(--k-shadow);
   overflow: hidden;
+  position: relative;
+}
+
+.kmachine-drawer-resizer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: row-resize;
+  touch-action: none;
+  z-index: 2;
+}
+.kmachine-drawer-resizer::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.kmachine-drawer-resizer:hover::after,
+.kmachine-drawer-resizer.dragging::after {
+  background: color-mix(in oklch, var(--k-accent) 36%, transparent);
 }
 
 .kmachine-drawer-toggle {
@@ -761,6 +788,65 @@
 
 /* ── Shell pane ─────────────────────────────────────────────────────────── */
 
+.kshell-body {
+  background: var(--k-shell-bg);
+}
+
+.kshell-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: min(44vw, 420px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.kshell-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.kshell-tab,
+.kshell-tab-add {
+  height: 22px;
+  border: 0;
+  border-radius: var(--k-radius-sm);
+  background: transparent;
+  color: var(--k-text-muted);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.kshell-tab {
+  padding: 0 8px;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kshell-tab-add {
+  width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.kshell-tab:hover,
+.kshell-tab-add:hover {
+  background: color-mix(in oklch, var(--k-text) 8%, transparent);
+  color: var(--k-text);
+}
+
+.kshell-tab[aria-selected="true"] {
+  background: color-mix(in oklch, var(--k-accent) 18%, transparent);
+  color: var(--k-accent);
+}
+
 .kshell-host {
   position: relative;
   background: var(--k-shell-bg);
@@ -914,64 +1000,38 @@
   display: flex;
   flex-direction: column;
   background: var(--k-bg);
-  padding: 24px 32px 32px;
-  gap: 18px;
+  padding: 18px 24px 24px;
+  gap: 14px;
   overflow: auto;
 }
 .kgal-hdr {
   display: flex;
-  align-items: flex-end;
-  gap: 18px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 .kgal-title {
   font-size: 28px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
+  line-height: 1.1;
   color: var(--k-text);
   margin: 0;
 }
-.kgal-sub {
-  color: var(--k-text-muted);
-  font-size: 14px;
-  margin-top: 4px;
-}
-.kgal-tabs {
+.kgal-tools {
   display: flex;
-  gap: 2px;
-  background: var(--k-surface);
-  padding: 3px;
-  border-radius: var(--k-radius);
-  border: 1px solid var(--k-border);
-  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
   margin-left: auto;
+  min-width: 260px;
 }
-.kgal-tab {
-  padding: 6px 12px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  border-radius: var(--k-radius-sm);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--k-text-muted);
-  transition: background 0.12s, color 0.12s;
-  white-space: nowrap;
-}
-.kgal-tab:hover {
-  color: var(--k-text);
-  background: color-mix(in oklch, var(--k-text) 6%, transparent);
-}
-.kgal-tab[aria-current="true"] {
-  color: var(--k-text);
-  background: var(--k-surface-alt);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-.kgal-tab .kgal-tab-count {
+.kgal-count {
+  flex-shrink: 0;
+  font-family: var(--k-font-mono);
+  font-size: 11px;
   color: var(--k-text-faint);
-  margin-left: 4px;
-  font-variant-numeric: tabular-nums;
 }
 .kgal-search {
   flex: 1;
@@ -982,8 +1042,8 @@
   border-radius: var(--k-radius);
   background: var(--k-surface);
   border: 1px solid var(--k-border);
-  max-width: 300px;
-  margin-left: auto;
+  min-width: 180px;
+  width: min(34vw, 320px);
 }
 .kgal-search input {
   flex: 1;
@@ -994,6 +1054,22 @@
   font-size: 13px;
   color: var(--k-text);
   min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .kgallery {
+    padding: 16px;
+  }
+  .kgal-hdr {
+    align-items: flex-start;
+  }
+  .kgal-tools {
+    width: 100%;
+    margin-left: 0;
+  }
+  .kgal-search {
+    width: auto;
+  }
 }
 .kgal-grid {
   display: grid;

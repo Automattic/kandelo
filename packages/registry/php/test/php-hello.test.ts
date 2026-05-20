@@ -26,6 +26,15 @@ describe.skipIf(!PHP_AVAILABLE)("PHP CLI on wasm-posix-kernel", () => {
         expect(exitCode).toBe(0);
     }, 60_000);
 
+    it("writes binary data to stdout", async () => {
+        const { stdoutBytes, exitCode } = await runCentralizedProgram({
+            programPath: phpBinaryPath,
+            argv: ["php", "-r", 'fwrite(STDOUT, "A" . chr(0) . "B" . chr(255));'],
+        });
+        expect(Array.from(stdoutBytes)).toEqual([0x41, 0x00, 0x42, 0xff]);
+        expect(exitCode).toBe(0);
+    }, 60_000);
+
     const tmpDir = join(__dirname, ".tmp");
 
     afterAll(() => {
