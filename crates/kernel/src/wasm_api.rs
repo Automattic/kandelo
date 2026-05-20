@@ -9489,7 +9489,13 @@ pub extern "C" fn kernel_inject_connection(
 /// CLI flags; the kernel scans for it. Mirrors `sys_sendto`'s own loopback
 /// scan rather than introducing a parallel lookup table.
 ///
-/// Returns 0 on success, negative errno on failure:
+/// Backpressure: capped at `MAX_INJECT_DGRAM_QUEUE_LEN` per matching socket.
+/// A remote peer over an RTCDataChannel can otherwise feed this queue at
+/// line rate while the userspace reader stalls, growing the kernel heap
+/// without bound. Overflow returns 0 (success) — UDP is best-effort, the
+/// peer has no recourse and an errno return would just propagate noise.
+///
+/// Returns 0 on success (or silent overflow drop), negative errno on failure:
 ///   -ESRCH        — no such pid
 ///   -ECONNREFUSED — no bound DGRAM socket on that port
 #[unsafe(no_mangle)]
@@ -9504,46 +9510,19 @@ pub extern "C" fn kernel_inject_datagram(
     data_ptr: *const u8,
     data_len: u32,
 ) -> i32 {
-    use crate::socket::{Datagram, SocketState, SocketType};
-
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let proc = match table.get_mut(pid) {
         Some(p) => p,
         None => return -(Errno::ESRCH as i32),
     };
-
-    let dst_port = dst_port as u16;
-    let mut target_idx = None;
-    let sock_count = proc.sockets.len();
-    for i in 0..sock_count {
-        if let Some(s) = proc.sockets.get(i) {
-            if s.sock_type == SocketType::Dgram
-                && (s.state == SocketState::Bound || s.state == SocketState::Connected)
-                && s.bind_port == dst_port
-            {
-                target_idx = Some(i);
-                break;
-            }
-        }
-    }
-    let target_idx = match target_idx {
-        Some(i) => i,
-        None => return -(Errno::ECONNREFUSED as i32),
-    };
-
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
-    let datagram = Datagram {
-        data: data.to_vec(),
-        src_addr: [src_a as u8, src_b as u8, src_c as u8, src_d as u8],
-        src_port: src_port as u16,
-    };
-
-    let target = match proc.sockets.get_mut(target_idx) {
-        Some(s) => s,
-        None => return -(Errno::EBADF as i32),
-    };
-    target.dgram_queue.push(datagram);
-    0
+    crate::syscalls::inject_datagram_into(
+        proc,
+        dst_port as u16,
+        [src_a as u8, src_b as u8, src_c as u8, src_d as u8],
+        src_port as u16,
+        data,
+    )
 }
 
 /// Read data from a pipe buffer into kernel memory.
