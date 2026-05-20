@@ -9,7 +9,7 @@ use wasm_posix_shared::flock_op::*;
 use wasm_posix_shared::lock_type::*;
 use wasm_posix_shared::mode::{S_IFCHR, S_IFIFO, S_IFREG};
 use wasm_posix_shared::seek::*;
-use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmTimespec};
+use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::fd::OpenFileDescRef;
 use crate::lock::FileLock;
@@ -145,6 +145,7 @@ const CACERT_PEM: &[u8] = include_bytes!("../../../packages/registry/openssl/cac
 /// even for minimal VFS images that do not carry a full `/etc` tree.
 fn synthetic_file_content(path: &[u8]) -> Option<&'static [u8]> {
     match path {
+        b"/etc/mtab" => Some(crate::procfs::MOUNTS_CONTENT),
         b"/etc/ssl/cert.pem" => Some(CACERT_PEM),
         _ => None,
     }
@@ -6660,6 +6661,27 @@ pub fn sys_openat(
         return crate::devfs::devfs_open_dir(proc, resolved, oflags);
     }
 
+    // Read-only synthetic files that should exist even when the mounted VFS
+    // image does not provide the specific file.
+    if synthetic_file_content(&resolved).is_some() {
+        if oflags & O_DIRECTORY != 0 {
+            return Err(Errno::ENOTDIR);
+        }
+        if oflags & O_ACCMODE != O_RDONLY {
+            return Err(Errno::EACCES);
+        }
+        let status_flags = oflags & !CREATION_FLAGS;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Regular,
+            status_flags,
+            SYNTHETIC_FILE_HANDLE,
+            resolved,
+        );
+        let fd_flags = oflags_to_fd_flags(oflags);
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        return Ok(fd);
+    }
+
     let effective_mode = if oflags & O_CREAT != 0 {
         mode & !proc.umask
     } else {
@@ -9277,9 +9299,8 @@ pub fn sys_realpath(
     Ok(len)
 }
 
-/// statfs — get filesystem statistics. Returns hardcoded values.
-pub fn sys_statfs(_proc: &mut Process) -> wasm_posix_shared::WasmStatfs {
-    wasm_posix_shared::WasmStatfs {
+fn default_statfs() -> WasmStatfs {
+    WasmStatfs {
         f_type: 0xEF53, // EXT2_SUPER_MAGIC
         f_bsize: 4096,
         f_blocks: 1048576, // 4GB
@@ -9295,11 +9316,108 @@ pub fn sys_statfs(_proc: &mut Process) -> wasm_posix_shared::WasmStatfs {
     }
 }
 
-/// fstatfs — get filesystem statistics for an open fd. Returns hardcoded values.
-pub fn sys_fstatfs(proc: &mut Process, fd: i32) -> Result<wasm_posix_shared::WasmStatfs, Errno> {
-    // Validate the fd exists
-    let _ = proc.fd_table.get(fd)?;
-    Ok(sys_statfs(proc))
+fn procfs_statfs() -> WasmStatfs {
+    WasmStatfs {
+        f_type: 0x9FA0, // PROC_SUPER_MAGIC
+        f_bsize: 4096,
+        f_blocks: 0,
+        f_bfree: 0,
+        f_bavail: 0,
+        f_files: 0,
+        f_ffree: 0,
+        f_fsid: 0,
+        f_namelen: 255,
+        f_frsize: 4096,
+        f_flags: 0,
+        _pad: 0,
+    }
+}
+
+fn devfs_statfs() -> WasmStatfs {
+    WasmStatfs {
+        f_type: 0x1373, // DEVFS_SUPER_MAGIC
+        f_bsize: 4096,
+        f_blocks: 0,
+        f_bfree: 0,
+        f_bavail: 0,
+        f_files: 0,
+        f_ffree: 0,
+        f_fsid: 5,
+        f_namelen: 255,
+        f_frsize: 4096,
+        f_flags: 0,
+        _pad: 0,
+    }
+}
+
+fn virtual_statfs_for_path(resolved: &[u8], pid: u32) -> Option<WasmStatfs> {
+    if crate::procfs::match_procfs(resolved, pid).is_some()
+        || resolved == b"/proc"
+        || resolved.starts_with(b"/proc/")
+    {
+        return Some(procfs_statfs());
+    }
+    if crate::devfs::match_devfs_dir(resolved).is_some()
+        || match_virtual_device(resolved).is_some()
+        || resolved == b"/dev/ptmx"
+        || resolved == b"/dev/tty"
+        || resolved.starts_with(b"/dev/pts/")
+        || resolved.starts_with(b"/dev/fd/")
+    {
+        return Some(devfs_statfs());
+    }
+    None
+}
+
+fn host_statfs_or_default(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStatfs, Errno> {
+    match host.host_statfs(path) {
+        Ok(statfs) => Ok(statfs),
+        Err(Errno::ENOSYS) => Ok(default_statfs()),
+        Err(err) => Err(err),
+    }
+}
+
+/// statfs — get filesystem statistics for an existing path.
+pub fn sys_statfs(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<WasmStatfs, Errno> {
+    let resolved = crate::path::resolve_path(path, &proc.cwd);
+    let _ = sys_stat(proc, host, path)?;
+
+    if let Some(statfs) = virtual_statfs_for_path(&resolved, proc.pid) {
+        return Ok(statfs);
+    }
+    if synthetic_file_content(&resolved).is_some() {
+        return host_statfs_or_default(host, b"/");
+    }
+
+    host_statfs_or_default(host, &resolved)
+}
+
+/// fstatfs — get filesystem statistics for an open fd.
+pub fn sys_fstatfs(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Result<WasmStatfs, Errno> {
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+
+    if let Some(statfs) = virtual_statfs_for_path(&ofd.path, proc.pid) {
+        return Ok(statfs);
+    }
+    if synthetic_file_content(&ofd.path).is_some() {
+        return host_statfs_or_default(host, b"/");
+    }
+
+    match ofd.file_type {
+        FileType::Regular | FileType::Directory | FileType::CharDevice => {
+            host_statfs_or_default(host, &ofd.path)
+        }
+        _ => Ok(default_statfs()),
+    }
 }
 
 /// setresuid — set real, effective, and saved user IDs (simulated).
@@ -9485,6 +9603,8 @@ mod tests {
         /// Per-handle owner mapping captured at host_open time so host_fstat
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
+        missing_paths: std::collections::HashSet<Vec<u8>>,
+        statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
     }
 
     impl MockHostIO {
@@ -9499,6 +9619,8 @@ mod tests {
                 clock_time: (1234567890, 123456789),
                 file_owners: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
+                missing_paths: std::collections::HashSet::new(),
+                statfs_by_path: std::collections::HashMap::new(),
             }
         }
 
@@ -9515,6 +9637,14 @@ mod tests {
             _content: &[u8],
         ) {
             self.file_owners.insert(path.to_vec(), (uid, gid));
+        }
+
+        fn set_missing_path(&mut self, path: &[u8]) {
+            self.missing_paths.insert(path.to_vec());
+        }
+
+        fn set_statfs(&mut self, path: &[u8], statfs: WasmStatfs) {
+            self.statfs_by_path.insert(path.to_vec(), statfs);
         }
     }
 
@@ -9570,6 +9700,9 @@ mod tests {
         }
 
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
             // Return S_IFDIR for paths that look like directories
             let is_dir = path.ends_with(b"dir")
                 || path.ends_with(b"tmp")
@@ -9628,6 +9761,17 @@ mod tests {
                 st_ctime_nsec: 0,
                 _pad: 0,
             })
+        }
+
+        fn host_statfs(&mut self, path: &[u8]) -> Result<WasmStatfs, Errno> {
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
+            Ok(self
+                .statfs_by_path
+                .get(path)
+                .copied()
+                .unwrap_or_else(default_statfs))
         }
 
         fn host_mkdir(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> {
@@ -17762,6 +17906,49 @@ mod tests {
 
         // close
         sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_synthetic_mtab_open_read() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(&mut proc, &mut host, b"/etc/mtab", O_RDONLY, 0).unwrap();
+        let mut buf = [0u8; 256];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        let content = core::str::from_utf8(&buf[..n]).unwrap();
+        assert!(content.contains("kandelo-root / kandelo-vfs rw 0 0"));
+        assert!(content.contains("proc /proc proc rw,nosuid,nodev,noexec 0 0"));
+        assert!(content.contains("devfs /dev devfs rw,nosuid 0 0"));
+
+        let st = sys_stat(&mut proc, &mut host, b"/etc/mtab").unwrap();
+        assert_eq!(st.st_mode & S_IFMT, S_IFREG);
+        assert_eq!(st.st_size as usize, crate::procfs::MOUNTS_CONTENT.len());
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_statfs_validates_path() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut real = default_statfs();
+        real.f_blocks = 2048;
+        real.f_bfree = 512;
+        real.f_bavail = 256;
+        host.set_statfs(b"/etc", real);
+
+        let st = sys_statfs(&mut proc, &mut host, b"/etc").unwrap();
+        assert_eq!(st.f_bsize, 4096);
+        assert_eq!(st.f_blocks, 2048);
+        assert_eq!(st.f_bfree, 512);
+        assert_eq!(st.f_bavail, 256);
+
+        host.set_missing_path(b"/missing");
+        assert_eq!(
+            sys_statfs(&mut proc, &mut host, b"/missing").unwrap_err(),
+            Errno::ENOENT,
+        );
     }
 
     #[test]

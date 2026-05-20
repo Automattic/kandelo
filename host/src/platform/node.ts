@@ -9,8 +9,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { PlatformIO, StatResult } from "../types";
-import { translateOpenFlags } from "../vfs/host-fs";
+import type { PlatformIO, StatResult, StatfsResult } from "../types";
+import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { NativeMetadataOverlay } from "./native-metadata";
 
 export class NodePlatformIO implements PlatformIO {
@@ -148,6 +148,10 @@ export class NodePlatformIO implements PlatformIO {
 
   lstat(path: string): StatResult {
     return this.metadata.toStatResult(fs.lstatSync(this.rewritePath(path)));
+  }
+
+  statfs(path: string): StatfsResult {
+    return nativeStatfs(this.rewritePath(path));
   }
 
   mkdir(path: string, mode: number): void {

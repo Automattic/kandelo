@@ -1,5 +1,6 @@
 import { decompress as zstdDecompress } from "fzstd";
-import type { StatResult } from "../types";
+import type { StatResult, StatfsResult } from "../types";
+import { SFFS_SUPER_MAGIC } from "../statfs";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
   SharedFS,
@@ -619,6 +620,24 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
     }
     return result;
+  }
+
+  statfs(path: string): StatfsResult {
+    this.fs.stat(path);
+    const stats = this.fs.statfs();
+    return {
+      type: SFFS_SUPER_MAGIC,
+      bsize: stats.blockSize,
+      blocks: stats.totalBlocks,
+      bfree: stats.freeBlocks,
+      bavail: stats.freeBlocks,
+      files: stats.totalInodes,
+      ffree: stats.freeInodes,
+      fsid: 0,
+      namelen: stats.maxName,
+      frsize: stats.blockSize,
+      flags: 0,
+    };
   }
 
   mkdir(path: string, mode: number): void {

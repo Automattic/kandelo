@@ -7,7 +7,7 @@ import { HostFileSystem } from "../src/vfs/host-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import type { FileSystemBackend, MountConfig } from "../src/vfs/types";
-import type { StatResult } from "../src/types";
+import type { StatResult, StatfsResult } from "../src/types";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,6 +26,19 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
     atimeMs: 0,
     mtimeMs: 0,
     ctimeMs: 0,
+  };
+  const dummyStatfs: StatfsResult = {
+    type: 0,
+    bsize: 4096,
+    blocks: 0,
+    bfree: 0,
+    bavail: 0,
+    files: 0,
+    ffree: 0,
+    fsid: 0,
+    namelen: 255,
+    frsize: 4096,
+    flags: 0,
   };
   return {
     calls,
@@ -73,6 +86,10 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
       calls.push(`lstat:${p}`);
       return { ...dummyStat };
     },
+    statfs: (p) => {
+      calls.push(`statfs:${p}`);
+      return { ...dummyStatfs };
+    },
     mkdir: (p, m) => {
       calls.push(`mkdir:${p}`);
     },
@@ -103,6 +120,9 @@ function createMockBackend(): FileSystemBackend & { calls: string[] } {
     },
     access: (p, m) => {
       calls.push(`access:${p}`);
+    },
+    utimensat: (p, aSec, aNsec, mSec, mNsec) => {
+      calls.push(`utimensat:${p}`);
     },
     opendir: (p) => {
       calls.push(`opendir:${p}`);
@@ -413,6 +433,20 @@ describe("MemoryFileSystem", () => {
     expect(mfs.fstat(fd).size).toBe(5);
     mfs.close(fd);
   });
+
+  it("statfs reports real SharedFS block usage", () => {
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const before = mfs.statfs("/");
+    const fd = mfs.open("/blocks.bin", 0x0040 | 0x0002 | 0x0200, 0o644);
+    const data = new Uint8Array(8192);
+    mfs.write(fd, data, null, data.length);
+    mfs.close(fd);
+    const after = mfs.statfs("/");
+    expect(after.blocks).toBe(before.blocks);
+    expect(after.bfree).toBeLessThan(before.bfree);
+    expect(after.bavail).toBe(after.bfree);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -490,6 +524,23 @@ describe("Mixed mounts: HostFileSystem root + MemoryFileSystem /tmp", () => {
 
     expect(names).toContain("a.txt");
     expect(names).toContain("b.txt");
+  });
+
+  it("routes statfs to the mounted backend", () => {
+    const root = createMockBackend();
+    const tmp = createMockBackend();
+    const vfs = new VirtualPlatformIO(
+      [
+        { mountPoint: "/", backend: root },
+        { mountPoint: "/tmp", backend: tmp },
+      ],
+      new NodeTimeProvider(),
+    );
+
+    vfs.statfs("/tmp/file.txt");
+
+    expect(root.calls).not.toContain("statfs:/tmp/file.txt");
+    expect(tmp.calls).toContain("statfs:/file.txt");
   });
 });
 

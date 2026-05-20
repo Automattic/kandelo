@@ -24,7 +24,7 @@ use alloc::vec::Vec;
 use core::slice;
 
 use wasm_posix_shared::fd_flags::FD_CLOEXEC;
-use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmTimespec};
+use wasm_posix_shared::{Errno, WasmDirent, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::ofd::FileType;
 use crate::process::{HostIO, Process};
@@ -45,6 +45,7 @@ unsafe extern "C" {
     fn host_fstat(handle: i64, stat_ptr: *mut u8) -> i32;
     fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
+    fn host_statfs(path_ptr: *const u8, path_len: u32, statfs_ptr: *mut u8) -> i32;
     fn host_mkdir(path_ptr: *const u8, path_len: u32, mode: u32) -> i32;
     fn host_rmdir(path_ptr: *const u8, path_len: u32) -> i32;
     fn host_unlink(path_ptr: *const u8, path_len: u32) -> i32;
@@ -289,6 +290,27 @@ impl HostIO for WasmHostIO {
         let result = unsafe { host_lstat(path.as_ptr(), path.len() as u32, stat_ptr) };
         i32_to_result(result)?;
         Ok(stat)
+    }
+
+    fn host_statfs(&mut self, path: &[u8]) -> Result<WasmStatfs, Errno> {
+        let mut statfs = WasmStatfs {
+            f_type: 0,
+            f_bsize: 0,
+            f_blocks: 0,
+            f_bfree: 0,
+            f_bavail: 0,
+            f_files: 0,
+            f_ffree: 0,
+            f_fsid: 0,
+            f_namelen: 0,
+            f_frsize: 0,
+            f_flags: 0,
+            _pad: 0,
+        };
+        let statfs_ptr = &mut statfs as *mut WasmStatfs as *mut u8;
+        let result = unsafe { host_statfs(path.as_ptr(), path.len() as u32, statfs_ptr) };
+        i32_to_result(result)?;
+        Ok(statfs)
     }
 
     fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
@@ -5743,24 +5765,29 @@ pub extern "C" fn kernel_madvise(addr: usize, len: usize, advice: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_statfs(path_ptr: *const u8, path_len: u32, buf_ptr: *mut u8) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
-    let _path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-    let statfs = syscalls::sys_statfs(proc);
-    let buf = unsafe {
-        slice::from_raw_parts_mut(
-            buf_ptr,
-            core::mem::size_of::<wasm_posix_shared::WasmStatfs>(),
-        )
-    };
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            &statfs as *const _ as *const u8,
-            core::mem::size_of::<wasm_posix_shared::WasmStatfs>(),
-        )
-    };
-    buf.copy_from_slice(bytes);
     let mut host = WasmHostIO;
+    let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
+    let result = match syscalls::sys_statfs(proc, &mut host, path) {
+        Ok(statfs) => {
+            let buf = unsafe {
+                slice::from_raw_parts_mut(
+                    buf_ptr,
+                    core::mem::size_of::<wasm_posix_shared::WasmStatfs>(),
+                )
+            };
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &statfs as *const _ as *const u8,
+                    core::mem::size_of::<wasm_posix_shared::WasmStatfs>(),
+                )
+            };
+            buf.copy_from_slice(bytes);
+            0
+        }
+        Err(e) => -(e as i32),
+    };
     deliver_pending_signals(proc, &mut host);
-    0
+    result
 }
 
 /// fstatfs — get filesystem statistics for an open fd.
@@ -5769,7 +5796,7 @@ pub extern "C" fn kernel_statfs(path_ptr: *const u8, path_len: u32, buf_ptr: *mu
 pub extern "C" fn kernel_fstatfs(fd: i32, buf_ptr: *mut u8) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_fstatfs(proc, fd) {
+    let result = match syscalls::sys_fstatfs(proc, &mut host, fd) {
         Ok(statfs) => {
             let buf = unsafe {
                 slice::from_raw_parts_mut(
