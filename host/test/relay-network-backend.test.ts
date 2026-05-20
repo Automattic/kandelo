@@ -66,7 +66,6 @@ class MockKernel implements RelayKernel {
 }
 
 const PEER_ADDR: [number, number, number, number] = [10, 99, 0, 2];
-const LOCAL_ADDR: [number, number, number, number] = [10, 99, 0, 1];
 const TARGET_PID = 7;
 
 function makeRelay(): { relay: RelayChannel; channel: MockChannel; kernel: MockKernel } {
@@ -75,7 +74,6 @@ function makeRelay(): { relay: RelayChannel; channel: MockChannel; kernel: MockK
   const relay = new RelayChannel({
     kernel,
     channel,
-    localAddr: LOCAL_ADDR,
     peerAddr: PEER_ADDR,
   });
   return { relay, channel, kernel };
@@ -129,6 +127,29 @@ describe("RelayChannel envelope encode (outbound)", () => {
     expect(env[2]).toBe(0xff);
     expect(env[5]).toBe(0xff);
     expect(env[6]).toBe(0xfe);
+  });
+
+  it("drops outbound datagrams whose dstIp doesn't match peerAddr", () => {
+    // The kernel may emit `sendto(other-ip, …)` for any process; the
+    // relay terminates at exactly one peer (peerAddr), so any other
+    // destination must be silently dropped. Without the guard, a
+    // sendto(8.8.8.8, …) would be redirected onto the WebRTC peer.
+    kernel.fireHostSendDgram({
+      srcPort: 5029,
+      dstIp: [8, 8, 8, 8],
+      dstPort: 53,
+      data: new Uint8Array([1, 2, 3]),
+    });
+    expect(channel.sent.length).toBe(0);
+
+    // Sanity: a matching dstIp still goes through.
+    kernel.fireHostSendDgram({
+      srcPort: 5029,
+      dstIp: PEER_ADDR,
+      dstPort: 6000,
+      data: new Uint8Array([4, 5, 6]),
+    });
+    expect(channel.sent.length).toBe(1);
   });
 
   it("emits zero outbound traffic after close()", () => {
@@ -248,7 +269,6 @@ describe("RelayHostShim → RelayChannel contract", () => {
     const relay = new RelayChannel({
       kernel,
       channel,
-      localAddr: LOCAL_ADDR,
       peerAddr: PEER_ADDR,
     });
     relay.setTargetPid(TARGET_PID);
@@ -336,13 +356,11 @@ describe("RelayChannel lifecycle", () => {
           channelBtoA.dispatchEvent(new MessageEvent("message", { data: new Uint8Array(buf) }));
         },
       },
-      localAddr: [10, 99, 0, 1],
       peerAddr: [10, 99, 0, 2],
     });
     const relayB = new RelayChannel({
       kernel: kernelB,
       channel: channelBtoA,
-      localAddr: [10, 99, 0, 2],
       peerAddr: [10, 99, 0, 1],
     });
     relayA.setTargetPid(11);

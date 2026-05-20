@@ -220,7 +220,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `accept()` / `accept4()` | Full | AF_INET: delegates to host_net_accept. Returns new connected socket fd. SOCK_NONBLOCK and SOCK_CLOEXEC flags on accept4. |
 | `connect()` | Full | AF_UNIX (kernel-internal bit-bucket for SOCK_DGRAM, or socketpair endpoint). AF_INET: host-delegated TCP connect. |
 | `send()` / `recv()` | Full | Unix domain sockets (kernel ring buffer) and AF_INET (host-delegated). MSG_PEEK, MSG_DONTWAIT, MSG_NOSIGNAL supported. |
-| `sendto()` / `recvfrom()` | Full | Delegates to send/recv for connected sockets. AF_INET address extraction for recvfrom. |
+| `sendto()` / `recvfrom()` | Full | Delegates to send/recv for connected sockets. AF_INET address extraction for recvfrom. AF_INET SOCK_DGRAM: loopback uses an in-kernel queue; non-loopback in the browser rides a WebRTC `RTCDataChannel` via the relay backend (see `docs/browser-support.md` §Networking + `docs/architecture.md` §Networking → Browser → WebRTC UDP relay). Non-loopback on Node returns `ENETUNREACH`. |
 | `setsockopt()` / `getsockopt()` | Partial | SOL_SOCKET: SO_TYPE, SO_DOMAIN, SO_ERROR, SO_ACCEPTCONN, SO_RCVBUF, SO_SNDBUF readable; SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, SO_RCVTIMEO, SO_SNDTIMEO, SO_BROADCAST accepted/stored. IPPROTO_TCP: TCP_NODELAY stored. |
 | `shutdown()` | Full | SHUT_RD, SHUT_WR, SHUT_RDWR. Properly closes buffer endpoints. |
 | `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. Timeout supported via polling loop. |
@@ -405,7 +405,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 |-----|-----------|--------|
 | **mprotect() is a no-op** | memory | Returns success but does not enforce. Wasm linear memory has no page-level protection. |
 | **No cross-process MAP_SHARED** | memory | MAP_SHARED works within a single process (file-backed, with msync writeback). Cross-process shared memory would require SharedArrayBuffer coordination. |
-| **UDP sockets** | socket | AF_INET SOCK_DGRAM not yet implemented. TCP (SOCK_STREAM) fully supported via host-delegated networking. |
+| **UDP sockets (Node host, non-loopback)** | socket | `sys_sendto` to non-127/8 returns `ENETUNREACH` on the Node host (no relay backend). Loopback DGRAM works on both hosts via an in-kernel queue; the browser host additionally supports non-loopback via the WebRTC `RTCDataChannel` relay (see Networking docs). |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
 | **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
