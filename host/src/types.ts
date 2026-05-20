@@ -24,6 +24,20 @@ export interface StatResult {
   ctimeMs: number;
 }
 
+export interface StatfsResult {
+  type: number;
+  bsize: number;
+  blocks: number;
+  bfree: number;
+  bavail: number;
+  files: number;
+  ffree: number;
+  fsid: number;
+  namelen: number;
+  frsize: number;
+  flags: number;
+}
+
 export interface PlatformIO {
   open(path: string, flags: number, mode: number): number;
   close(handle: number): number;
@@ -45,6 +59,7 @@ export interface PlatformIO {
   // Path-based operations
   stat(path: string): StatResult;
   lstat(path: string): StatResult;
+  statfs(path: string): StatfsResult;
   mkdir(path: string, mode: number): void;
   rmdir(path: string): void;
   unlink(path: string): void;

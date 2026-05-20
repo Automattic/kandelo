@@ -1,5 +1,6 @@
-import type { StatResult } from "../types";
+import type { StatResult, StatfsResult } from "../types";
 import type { FileSystemBackend, DirEntry } from "./types";
+import { DEVFS_SUPER_MAGIC, zeroCapacityStatfs } from "../statfs";
 
 const S_IFCHR = 0o020000;
 const S_IFDIR = 0o040000;
@@ -188,6 +189,13 @@ export class DeviceFileSystem implements FileSystemBackend {
 
   lstat(path: string): StatResult {
     return this.stat(path);
+  }
+
+  statfs(path: string): StatfsResult {
+    this.stat(path);
+    const stats = zeroCapacityStatfs(DEVFS_SUPER_MAGIC, 5);
+    stats.files = this.devices.size + SUBDIRS.length + EXTRA_ENTRIES.length;
+    return stats;
   }
 
   mkdir(_path: string, _mode: number): void {
