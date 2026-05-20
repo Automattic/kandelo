@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebRTC DataChannel — wasm-posix-kernel</title>
+  <link rel="stylesheet" href="../../lib/layout.css">
+  <link rel="stylesheet" href="./webrtc.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="sidebar-title">Demos</div>
+    <a href="/">Simple Programs</a>
+    <a href="/pages/nginx/">nginx</a>
+    <a href="/pages/php/">PHP CLI</a>
+    <a href="/pages/nginx-php/">nginx + PHP-FPM</a>
+    <a href="/pages/mariadb/">MariaDB</a>
+    <a href="/pages/redis/">Redis</a>
+    <a href="/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
+    <a href="/pages/lamp/">WordPress (LEMP)</a>
+    <a href="/pages/shell/">Shell</a>
+    <a href="/pages/python/">Python</a>
+    <a href="/pages/perl/">Perl</a>
+    <a href="/pages/ruby/">Ruby</a>
+    <a href="/pages/erlang/">Erlang</a>
+    <a href="/pages/texlive/">TeX Live</a>
+    <a href="/pages/doom/">DOOM</a>
+    <a href="/pages/webrtc/" aria-current="page">WebRTC</a>
+  </nav>
+  <div class="main">
+    <div class="main-header">
+      <h1>WebRTC DataChannel (manual SDP)</h1>
+      <p class="subtitle">Two browser instances on a LAN, peer-to-peer chat, no kernel.</p>
+    </div>
+    <div class="preview-area">
+      <div class="webrtc-layout">
+        <section class="instructions">
+          <h3>How to use</h3>
+          <ol>
+            <li>Both peers load this page on their respective machines.</li>
+            <li><strong>A</strong> clicks <em>Create offer</em>. After a few seconds, A's local SDP appears.</li>
+            <li>A copies their local SDP and sends it to B over any out-of-band channel (chat, email, Signal — it's plain text).</li>
+            <li><strong>B</strong> pastes A's SDP into <em>Remote SDP</em> and clicks <em>Accept offer</em>. After a few seconds, B's local SDP (the answer) appears.</li>
+            <li>B sends their SDP back to A.</li>
+            <li><strong>A</strong> pastes B's SDP into <em>Remote SDP</em> and clicks <em>Accept answer</em>.</li>
+            <li>The DataChannel opens on both sides. Type messages to chat peer-to-peer.</li>
+          </ol>
+        </section>
+
+        <section class="handshake">
+          <div class="sdp-pane">
+            <label for="local-sdp">
+              Local SDP
+              <button id="copy-local" type="button">Copy</button>
+            </label>
+            <textarea id="local-sdp" readonly placeholder="Click &quot;Create offer&quot; or &quot;Accept offer&quot; to generate&hellip;"></textarea>
+          </div>
+          <div class="sdp-pane">
+            <label for="remote-sdp">Remote SDP</label>
+            <textarea id="remote-sdp" placeholder="Paste the other peer's SDP here&hellip;"></textarea>
+          </div>
+        </section>
+
+        <section class="controls webrtc-controls">
+          <button id="create-offer" type="button">Create offer</button>
+          <button id="accept-offer" type="button" disabled>Accept offer</button>
+          <button id="accept-answer" type="button" disabled>Accept answer</button>
+          <button id="reset" type="button" disabled>Reset</button>
+        </section>
+
+        <section class="status webrtc-status">
+          <pre id="status">idle</pre>
+        </section>
+
+        <section class="chat">
+          <div id="log" class="webrtc-log"></div>
+          <form id="send-form" class="webrtc-send">
+            <input id="msg" type="text" placeholder="Connect first…" disabled autocomplete="off">
+            <button type="submit" disabled>Send</button>
+          </form>
+        </section>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
