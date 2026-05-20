@@ -4016,18 +4016,38 @@ const _builtinModules = {
     },
 };
 
-// 'module' self-reference
-const Module = {
-    builtinModules: Object.keys(_builtinModules),
-    createRequire(filename) {
-        return _makeRequire(filename);
-    },
-    _cache: {},
-    _extensions: {
-        '.js': null,
-        '.json': null,
-        '.node': null,
-    },
+// Node exposes `node:module` as the CJS Module class itself: a
+// constructor that doubles as the namespace for createRequire / _cache
+// / _nodeModulePaths / etc., with a self-ref `Module.Module === Module`.
+// jiti's CJS loader does `new Be.Module(filename)` and
+// `Be.Module._nodeModulePaths(dir)`, so the shim must be a callable
+// function with that static surface attached.
+function Module() {
+    this.exports = {};
+}
+Module.Module = Module;
+Module.builtinModules = Object.keys(_builtinModules);
+Module.createRequire = function (filename) {
+    return _makeRequire(filename);
+};
+Module._cache = {};
+Module._extensions = {
+    '.js': null,
+    '.json': null,
+    '.node': null,
+};
+Module._nodeModulePaths = function (from) {
+    const paths = [];
+    let dir = from;
+    while (true) {
+        if (path.basename(dir) !== 'node_modules') {
+            paths.push(path.join(dir, 'node_modules'));
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return paths;
 };
 _builtinModules['module'] = Module;
 
