@@ -34,13 +34,13 @@ index aad0a38..dd52c9c 100644
  #define star_x(x) (((x) & 0x7f7f7f7f) << 1) ^ ((((x) & 0x80808080) >> 7) * 0x1b)
  
 diff --git a/fbdoom/d_loop.c b/fbdoom/d_loop.c
-index 1939dbd..2a44010 100644
+index 1939dbd..f6aaede 100644
 --- a/fbdoom/d_loop.c
 +++ b/fbdoom/d_loop.c
 @@ -40,6 +40,13 @@
  #include "net_sdl.h"
  #include "net_loop.h"
- 
+
 +// Multiplayer DOOM over WebRTC: net_posix.c provides a POSIX-sockets
 +// net_module_t implementation that replaces SDL_net (which fbDOOM
 +// doesn't ship). The transport ultimately rides the wasm-posix-kernel's
@@ -49,26 +49,54 @@ index 1939dbd..2a44010 100644
 +extern net_module_t net_posix_module;
 +
  // The complete set of data for a particular tic.
- 
+
  typedef struct
-@@ -476,7 +483,7 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
+@@ -307,10 +314,17 @@ void D_StartGameLoop(void)
+     lasttime = GetAdjustedTime() / ticdup;
+ }
+
+-#if ORIGCODE
++#ifdef FEATURE_MULTIPLAYER
+ //
+ // Block until the game start message is received from the server.
+ //
++// fbDOOM originally gated this on #if ORIGCODE (undefined in config.h),
++// which silently disabled the GAMESTART handshake — D_StartNetGame
++// would return with num_players=1 even when two peers had connected.
++// Switching the gate to FEATURE_MULTIPLAYER (defined) restores the
++// chocolate-doom flow: server collects settings from the controller,
++// broadcasts NET_PACKET_TYPE_GAMESTART, both clients populate the real
++// num_players / consoleplayer before D_CheckNetGame prints "player N of M".
+
+ static void BlockUntilStart(net_gamesettings_t *settings,
+                             netgame_startup_callback_t callback)
+@@ -340,7 +354,7 @@ static void BlockUntilStart(net_gamesettings_t *settings,
+ void D_StartNetGame(net_gamesettings_t *settings,
+                     netgame_startup_callback_t callback)
+ {
+-#if ORIGCODE
++#ifdef FEATURE_MULTIPLAYER
+     int i;
+
+     offsetms = 0;
+@@ -476,7 +490,7 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
      {
          NET_SV_Init();
          NET_SV_AddModule(&net_loop_server_module);
 -        NET_SV_AddModule(&net_sdl_module);
 +        NET_SV_AddModule(&net_posix_module);
          NET_SV_RegisterWithMaster();
- 
+
          net_loop_client_module.InitClient();
-@@ -515,8 +522,8 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
- 
+@@ -515,8 +529,8 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
+
          if (i > 0)
          {
 -            net_sdl_module.InitClient();
 -            addr = net_sdl_module.ResolveAddress(myargv[i+1]);
 +            net_posix_module.InitClient();
 +            addr = net_posix_module.ResolveAddress(myargv[i+1]);
- 
+
              if (addr == NULL)
              {
 diff --git a/fbdoom/d_mode.c b/fbdoom/d_mode.c
@@ -230,7 +258,7 @@ new file mode 100644
 index 0000000..19480ba
 --- /dev/null
 +++ b/fbdoom/net_posix.c
-@@ -0,0 +1,419 @@
+@@ -0,0 +1,435 @@
 +//
 +// Copyright(C) 2005-2014 Simon Howard (chocolate-doom net_sdl.c — basis)
 +// Copyright(C) 2026 wasm-posix-kernel contributors (POSIX adaptation)
@@ -420,18 +448,18 @@ index 0000000..19480ba
 +        (void)fcntl(udpsock, F_SETFL, flags | O_NONBLOCK);
 +    }
 +
-+    if (bind_port > 0)
++    // bind(port=0) → kernel-assigned ephemeral. Required: kernel_inject_datagram
++    // only delivers to sockets in state Bound|Connected. Skipping bind() leaves
++    // the client unable to RECEIVE replies, stalling NET_WaitForLaunch.
++    memset(&sa, 0, sizeof(sa));
++    sa.sin_family      = AF_INET;
++    sa.sin_port        = htons((uint16_t)bind_port);
++    sa.sin_addr.s_addr = htonl(INADDR_ANY);
++    if (bind(udpsock, (struct sockaddr *)&sa, sizeof(sa)) < 0)
 +    {
-+        memset(&sa, 0, sizeof(sa));
-+        sa.sin_family      = AF_INET;
-+        sa.sin_port        = htons((uint16_t)bind_port);
-+        sa.sin_addr.s_addr = htonl(INADDR_ANY);
-+        if (bind(udpsock, (struct sockaddr *)&sa, sizeof(sa)) < 0)
-+        {
-+            close(udpsock);
-+            udpsock = -1;
-+            return false;
-+        }
++        close(udpsock);
++        udpsock = -1;
++        return false;
 +    }
 +    return true;
 +}
@@ -639,12 +667,28 @@ index 0000000..19480ba
 +
 +void NET_WaitForLaunch(void)
 +{
++    boolean launch_sent = false;
++
 +    printf("NET_WaitForLaunch: waiting for server to start the game...\n");
 +
 +    while (net_waiting_for_launch)
 +    {
 +        NET_CL_Run();
 +        NET_SV_Run();
++
++        // chocolate-doom-setup normally calls NET_CL_LaunchGame from its
++        // "start" button. fbDOOM doesn't link setup, so the server never
++        // sees a LAUNCH packet and net_waiting_for_launch never clears.
++        // Fire it from the controller (host) once the peer has joined.
++        if (!launch_sent
++         && net_client_received_wait_data
++         && net_client_wait_data.is_controller
++         && net_client_wait_data.num_players >= 2)
++        {
++            NET_CL_LaunchGame();
++            launch_sent = true;
++        }
++
 +        I_Sleep(1);
 +    }
 +
