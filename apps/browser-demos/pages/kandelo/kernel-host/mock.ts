@@ -338,7 +338,15 @@ export class MockKernelHost implements KernelHost {
   }
 
   getWebPreview(): WebPreviewState | null {
+    const servicePresets = new Set([
+      "nginx",
+      "nginx-php",
+      "wordpress-sqlite",
+      "wordpress-mariadb",
+      "wordpress-development",
+    ]);
     const hasWebService =
+      servicePresets.has(this.descriptor.id) ||
       (this.descriptor.runtime.features.includes("tcp-bridge") || hasPackage(this.descriptor, "nginx")) &&
       this.descriptor.boot.argv.some((arg) => arg.includes("dinit"));
     if (!hasWebService) return null;
@@ -355,6 +363,26 @@ export class MockKernelHost implements KernelHost {
   }
 
   getPresentation(): DemoPresentation {
+    switch (this.descriptor.id) {
+      case "nginx":
+      case "nginx-php":
+      case "wordpress-sqlite":
+      case "wordpress-mariadb":
+      case "wordpress-development":
+        return {
+          bootPrimary: "syslog",
+          runningPrimary: ["web", "terminal", "syslog"],
+          terminalAccess: "drawer",
+          internalsAccess: "drawer",
+        };
+      case "doom":
+        return {
+          bootPrimary: "framebuffer",
+          runningPrimary: ["framebuffer", "terminal", "syslog"],
+          terminalAccess: "drawer",
+          internalsAccess: "drawer",
+        };
+    }
     return {
       bootPrimary: "syslog",
       runningPrimary: ["terminal", "syslog"],

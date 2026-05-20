@@ -89,13 +89,33 @@ async function main() {
   writeVfsFile(
     fs,
     "/usr/bin/npm",
-    "#!/bin/sh\nexec node /usr/local/lib/npm/bin/npm-cli.js \"$@\"\n",
+    [
+      "#!/usr/bin/node",
+      'process.env.npm_config_cache ||= "/tmp/.npm-cache";',
+      'process.env.npm_config_fund ||= "false";',
+      'process.env.npm_config_audit ||= "false";',
+      'process.env.npm_config_progress ||= "false";',
+      'process.env.npm_config_include ||= "dev";',
+      'require("/usr/local/lib/npm/lib/cli.js")(process);',
+      "",
+    ].join("\n"),
     0o755,
   );
   writeVfsFile(
     fs,
     "/usr/bin/npx",
-    "#!/bin/sh\nexec node /usr/local/lib/npm/bin/npx-cli.js \"$@\"\n",
+    [
+      "#!/usr/bin/node",
+      'process.env.npm_config_cache ||= "/tmp/.npm-cache";',
+      'process.env.npm_config_fund ||= "false";',
+      'process.env.npm_config_audit ||= "false";',
+      'process.env.npm_config_progress ||= "false";',
+      'process.env.npm_config_include ||= "dev";',
+      'process.argv[1] = "/usr/local/lib/npm/bin/npm-cli.js";',
+      'process.argv.splice(2, 0, "exec");',
+      'require("/usr/local/lib/npm/lib/cli.js")(process);',
+      "",
+    ].join("\n"),
     0o755,
   );
   symlink(fs, "/usr/bin/npm", "/bin/npm");

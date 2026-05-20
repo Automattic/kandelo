@@ -424,7 +424,7 @@ impl Process {
         fd_table.preopen_stdio(); // fds 0,1,2 → OFD refs 0,1,2
 
         let mut rlimits = [[u64::MAX; 2]; 16]; // Default: infinity for all
-        rlimits[7] = [1024, 4096]; // RLIMIT_NOFILE: soft=1024, hard=4096
+        rlimits[7] = [4096, 4096]; // RLIMIT_NOFILE: soft=4096, hard=4096
         rlimits[3] = [8 * 1024 * 1024, u64::MAX]; // RLIMIT_STACK: soft=8MB, hard=infinity
 
         Process {
