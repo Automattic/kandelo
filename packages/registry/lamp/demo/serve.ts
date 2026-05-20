@@ -3,8 +3,8 @@
  *
  * Runs MariaDB + PHP-FPM + nginx as separate Wasm processes in one kernel:
  *   - MariaDB   (pid 1, threads for signal handler + timer)
- *   - PHP-FPM   (pid 3, forks 1 worker → pid 4)
- *   - nginx     (pid 5, forks 2 workers → pid 6, 7)
+ *   - PHP-FPM   (master + 6 worker processes)
+ *   - nginx     (master + 2 worker processes)
  *
  * All inter-process communication (FastCGI, MySQL protocol) flows through
  * the kernel's cross-process loopback TCP.
@@ -160,13 +160,13 @@ async function main() {
   // =========================================================================
 
   const host = new NodeKernelHost({
-    maxWorkers: 12,
+    maxWorkers: 16,
     onStdout: (_pid, data) => process.stdout.write(new TextDecoder().decode(data)),
     onStderr: (_pid, data) => process.stderr.write(new TextDecoder().decode(data)),
   });
   await host.init();
 
-  // Phase 1: MariaDB (pid 1)
+  // Phase 1: MariaDB
   console.log("Starting MariaDB on 127.0.0.1:3306...");
   host.spawn(mysqldBytes, [
     "mariadbd", "--no-defaults",
@@ -187,9 +187,9 @@ async function main() {
   await new Promise((r) => setTimeout(r, 5000));
 
   // Phase 2: PHP-FPM
-  console.log("Starting PHP-FPM (pid 3) on 127.0.0.1:9000...");
+  console.log("Starting PHP-FPM on 127.0.0.1:9000...");
   host.spawn(phpFpmBytes, [
-    "php-fpm", "-y", phpFpmConf, "-c", "/dev/null", "--nodaemonize",
+    "php-fpm", "-R", "-y", phpFpmConf, "-c", "/dev/null", "--nodaemonize",
   ], {
     env: ["HOME=/tmp", "PATH=/usr/local/bin:/usr/bin:/bin"],
     cwd: wpDir,
@@ -201,7 +201,7 @@ async function main() {
 
   // Phase 3: nginx
   const confPath = generateNginxConf();
-  console.log(`Starting nginx (pid 5) on http://localhost:${port}/...`);
+  console.log(`Starting nginx on http://localhost:${port}/...`);
   console.log("  nginx will fork 2 worker processes\n");
   host.spawn(nginxBytes, [
     "nginx", "-p", scriptDir + "/", "-c", confPath,
@@ -212,9 +212,9 @@ async function main() {
 
   // Ready
   console.log("=== LAMP stack running on wasm-posix-kernel ===");
-  console.log(`  MariaDB:   127.0.0.1:3306 (pid 1)`);
-  console.log(`  PHP-FPM:   127.0.0.1:9000 (pid 3 + worker)`);
-  console.log(`  nginx:     http://localhost:${port}/ (pid 5 + 2 workers)`);
+  console.log(`  MariaDB:   127.0.0.1:3306`);
+  console.log(`  PHP-FPM:   127.0.0.1:9000 (master + 6 workers)`);
+  console.log(`  nginx:     http://localhost:${port}/ (master + 2 workers)`);
   console.log(`  WordPress: http://localhost:${port}/`);
   console.log("\nPress Ctrl+C to stop.");
 

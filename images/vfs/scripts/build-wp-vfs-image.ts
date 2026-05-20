@@ -51,6 +51,7 @@ const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
+const PHP_FPM_WORKERS = 6;
 
 // --- Service configs (reuse logic from init modules) ---
 
@@ -167,7 +168,7 @@ user = nobody
 group = nobody
 listen = 127.0.0.1:9000
 pm = static
-pm.max_children = 2
+pm.max_children = ${PHP_FPM_WORKERS}
 clear_env = no
 slowlog = /dev/null
 request_slowlog_trace_depth = 0

@@ -7,6 +7,8 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
+import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
+import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/nginx-php-vfs.vfs.zst?url";
 import "../../lib/terminal-panel.css";
@@ -14,6 +16,22 @@ import "../../lib/terminal-panel.css";
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
+const PHP_FPM_WORKERS = 6;
+const PATCHED_PHP_FPM_CONF = `[global]
+daemonize = no
+error_log = /dev/stderr
+log_level = notice
+
+[www]
+user = nobody
+group = nobody
+listen = 127.0.0.1:9000
+pm = static
+pm.max_children = ${PHP_FPM_WORKERS}
+clear_env = no
+slowlog = /dev/null
+request_slowlog_trace_depth = 0
+`;
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -77,12 +95,17 @@ async function start() {
       fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
       fetch(VFS_IMAGE_URL).then((r) => r.arrayBuffer()),
     ]);
-    const vfsImage = new Uint8Array(vfsImageBuf);
+    const rawVfsImage = new Uint8Array(vfsImageBuf);
     appendLog(
       `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-      `VFS: ${(vfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+      `VFS: ${(rawVfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
       "info",
     );
+    const fs = MemoryFileSystem.fromImage(rawVfsImage, {
+      maxByteLength: 256 * 1024 * 1024,
+    });
+    writeVfsFile(fs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+    const vfsImage = await fs.saveImage();
 
     appendLog("Initializing service worker bridge...\n", "info");
     const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
@@ -104,7 +127,8 @@ async function start() {
 
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      maxWorkers: 8,
+      maxWorkers: 12,
+      maxMemoryPages: 4096,
       onStdout: (data) => appendLog(decoder.decode(data)),
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
       onListenTcp: (_pid, _fd, port) => {

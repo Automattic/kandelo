@@ -149,6 +149,22 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
+const PHP_FPM_WORKERS = 6;
+const PATCHED_PHP_FPM_CONF = `[global]
+daemonize = no
+error_log = /dev/stderr
+log_level = notice
+
+[www]
+user = nobody
+group = nobody
+listen = 127.0.0.1:9000
+pm = static
+pm.max_children = ${PHP_FPM_WORKERS}
+clear_env = no
+slowlog = /dev/null
+request_slowlog_trace_depth = 0
+`;
 
 const log = document.getElementById("log") as HTMLPreElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
@@ -259,18 +275,20 @@ async function start() {
     );
 
     // Patch the released VFS so existing binaries-abi-v7 lamp.vfs gets
-    // both fixes without a new release:
+    // these fixes without a new release:
     //   - bootstrap.sh: marker-based wait, ~60s shaved off boot.
     //   - nginx.conf:   relaxed fastcgi_read_timeout, fixes the 504
     //                   Gateway Time-out during WordPress install.
+    //   - php-fpm.conf: static pool uses the current demo worker count.
     // The next published lamp.vfs (built from the updated
-    // build-lamp-vfs-image.ts) already contains both fixes, in which
+    // build-lamp-vfs-image.ts) already contains these fixes, in which
     // case these writes just re-write the same bytes.
     const fs = MemoryFileSystem.fromImage(rawVfsImage, {
       maxByteLength: 512 * 1024 * 1024,
     });
     writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", PATCHED_BOOTSTRAP_SH);
     writeVfsFile(fs, "/etc/nginx/nginx.conf", PATCHED_NGINX_CONF);
+    writeVfsFile(fs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
     // vim.zip + nethack.zip lazy archives store bare filenames as URLs;
     // prepend the deployed base URL so fetch() resolves them on hosted
     // builds (and at the dev server's base).
