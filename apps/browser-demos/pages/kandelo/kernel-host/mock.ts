@@ -45,6 +45,12 @@ class ListenerSet<T> {
   }
 }
 
+interface MockPtySession {
+  listeners: ListenerSet<Uint8Array>;
+  history: Uint8Array[];
+  started: boolean;
+}
+
 export interface MockKernelHostOptions {
   status?: MachineStatus;
   bootSpeed?: number;
@@ -60,6 +66,7 @@ export class MockKernelHost implements KernelHost {
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
+  private ptySessions = new Map<string, MockPtySession>();
   private bootSpeed: number;
   private bootStarted = false;
   private bootTimers: number[] = [];
@@ -153,13 +160,28 @@ export class MockKernelHost implements KernelHost {
   // ── PTY ──────────────────────────────────────────────────────────────────
 
   async attachPty(
-    _path: string = "/dev/pts/0",
+    path: string = "/dev/pts/0",
     _opts: { cols: number; rows: number } = { cols: 80, rows: 24 },
   ): Promise<PtyHandle> {
     await delay(20);
-    const listeners = new ListenerSet<Uint8Array>();
+    const sessionKey = path || "/dev/pts/0";
+    let session = this.ptySessions.get(sessionKey);
+    if (!session) {
+      session = {
+        listeners: new ListenerSet<Uint8Array>(),
+        history: [],
+        started: false,
+      };
+      this.ptySessions.set(sessionKey, session);
+    }
+
     const enc = new TextEncoder();
-    const send = (s: string) => listeners.emit(enc.encode(s));
+    const send = (s: string) => {
+      const bytes = enc.encode(s);
+      session.history.push(bytes);
+      if (session.history.length > 2048) session.history.shift();
+      session.listeners.emit(bytes);
+    };
 
     let idx = 0;
     const drive = (): void => {
@@ -204,12 +226,18 @@ export class MockKernelHost implements KernelHost {
       idx++;
     };
 
-    if (this._status === "running") setTimeout(drive, 60);
-    else this.subscribeStatus((s) => { if (s === "running") setTimeout(drive, 60); });
+    if (!session.started) {
+      session.started = true;
+      if (this._status === "running") setTimeout(drive, 60);
+      else this.subscribeStatus((s) => { if (s === "running") setTimeout(drive, 60); });
+    }
 
     return {
       write: () => { /* mock ignores input */ },
-      onData: (cb) => listeners.add(cb),
+      onData: (cb) => {
+        for (const chunk of session.history) cb(chunk);
+        return session.listeners.add(cb);
+      },
       resize: () => { /* no-op */ },
       close: () => { /* listeners gc with the closure */ },
     };
