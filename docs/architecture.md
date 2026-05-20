@@ -362,6 +362,8 @@ The browser host layers two additional, host-specific mounts on top: `/dev/shm` 
 
 `/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/resolv.conf`, etc. are real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. There is no in-kernel synthetic-file shim: any program that calls `getpwnam`, `gethostbyname`, `getservbyname`, etc. reads the same bytes a `cat /etc/passwd` would.
 
+VFS images can also carry image-level metadata outside the guest file tree. The first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for images that carry ABI-bound Wasm programs. `MemoryFileSystem.readImageMetadata(image)` reads this declaration without materialising the filesystem, and `MemoryFileSystem.assertImageKernelAbi(image, abi)` validates it for callers that already know the running kernel ABI. Legacy/data-only images may omit the field.
+
 ### Node host
 
 `NodeKernelHost` accepts `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With `"default"` (the path used by the vitest suite), the worker reads `host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via `resolveForNode`, and constructs a `VirtualPlatformIO` for the kernel. Without it, the worker falls back to raw `NodePlatformIO` (every host path reachable) — kept for legacy callers that haven't migrated.
@@ -634,7 +636,7 @@ bash build.sh
 2. Copies `wasm_posix_kernel.wasm` to `host/wasm/`
 3. Builds user programs from `programs/*.c` via `scripts/build-programs.sh`
 4. Builds TypeScript host via `npm run build` (tsup → ESM + CJS)
-5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree and writes `host/wasm/rootfs.vfs`
+5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
 
 `host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
 

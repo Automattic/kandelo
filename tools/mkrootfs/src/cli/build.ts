@@ -18,6 +18,7 @@ Required:
 
 Options:
   --repo-root <path>     root for resolving relative src= and url= paths (default: cwd)
+  --kernel-abi <n>       declare exact kernel ABI required by this VFS image
   --quiet                suppress non-fatal override warnings
   --help                 print this message
 `;
@@ -27,6 +28,7 @@ interface ParsedArgs {
   sourceTree: string;
   output: string;
   repoRoot?: string;
+  kernelAbi?: number;
   quiet: boolean;
 }
 
@@ -36,7 +38,15 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
   const positional: string[] = [];
   let output: string | undefined;
   let repoRoot: string | undefined;
+  let kernelAbi: number | undefined;
   let quiet = false;
+
+  const parseKernelAbi = (value: string): number => {
+    if (!/^\d+$/.test(value)) {
+      throw new UsageError(`--kernel-abi must be a non-negative integer, got "${value}"`);
+    }
+    return parseInt(value, 10);
+  };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -63,12 +73,22 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
         repoRoot = value;
         continue;
       }
+      if (key === "--kernel-abi") {
+        kernelAbi = parseKernelAbi(value);
+        continue;
+      }
       throw new UsageError(`unknown flag "${key}"`);
     }
     if (a === "--repo-root") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`flag "${a}" requires a value`);
       repoRoot = v;
+      continue;
+    }
+    if (a === "--kernel-abi") {
+      const v = args[++i];
+      if (v === undefined) throw new UsageError(`flag "${a}" requires a value`);
+      kernelAbi = parseKernelAbi(v);
       continue;
     }
     if (a.startsWith("-")) {
@@ -90,6 +110,7 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
     sourceTree: positional[1],
     output,
     repoRoot,
+    kernelAbi,
     quiet,
   };
 }
@@ -121,6 +142,13 @@ export async function runBuild(args: string[]): Promise<number> {
       manifest: parsed.manifest,
       sourceTree: parsed.sourceTree,
       repoRoot: parsed.repoRoot ?? process.cwd(),
+      metadata: parsed.kernelAbi === undefined
+        ? undefined
+        : {
+            version: 1,
+            kernelAbi: parsed.kernelAbi,
+            createdBy: "mkrootfs build",
+          },
       onWarn,
     });
   } catch (e) {
