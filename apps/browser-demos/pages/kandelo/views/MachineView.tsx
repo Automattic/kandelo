@@ -9,16 +9,28 @@ import * as React from "react";
 import { usePresentation, useStatus, useSurfaceAvailability } from "../kernel-host/react";
 import { Inspector } from "../panes/Inspector";
 import { Display } from "../panes/Display";
-import { Shell } from "../panes/Shell";
+import { Shell, type ShellProps, type ShellTerminal } from "../panes/Shell";
 import type { PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface MachineViewProps {
   focusInternals?: boolean;
   internalsTab: string;
   onInternalsTab: (id: string) => void;
+  terminals: ShellTerminal[];
+  activeTerminalId: string;
+  onActiveTerminalId: (id: string) => void;
+  onAddTerminal: () => void;
 }
 
-export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false, internalsTab, onInternalsTab }) => {
+export const MachineView: React.FC<MachineViewProps> = ({
+  focusInternals = false,
+  internalsTab,
+  onInternalsTab,
+  terminals,
+  activeTerminalId,
+  onActiveTerminalId,
+  onAddTerminal,
+}) => {
   const status = useStatus();
   const presentation = usePresentation();
   const availability = useSurfaceAvailability();
@@ -70,6 +82,13 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
     setPrimaryMode(surface === defaultPrimary ? "following-demo" : "pinned");
   };
 
+  const shellProps = {
+    terminals,
+    activeTerminalId,
+    onActiveTerminalId,
+    onAddTerminal,
+  };
+
   const primaryLabel = surfaceLabel(activePrimary);
   const demoSurface = status === "running"
     ? resolvePrimary(presentation.runningPrimary, availability, presentation.bootPrimary)
@@ -102,7 +121,7 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
       </div>
 
       <div className="kmachine-primary">
-        {renderSurface(activePrimary, internalsTab, onInternalsTab)}
+        {renderSurface(activePrimary, internalsTab, onInternalsTab, shellProps)}
       </div>
 
       {activePrimary !== "terminal" && (
@@ -113,7 +132,7 @@ export const MachineView: React.FC<MachineViewProps> = ({ focusInternals = false
             setTerminalOpen((v) => !v);
           }}
         >
-          <Shell autoFocus />
+          <Shell autoFocus {...shellProps} />
         </MachineDrawer>
       )}
 
@@ -176,10 +195,11 @@ function renderSurface(
   surface: PrimarySurface,
   internalsTab: string,
   onInternalsTab: (id: string) => void,
+  shellProps: Pick<ShellProps, "terminals" | "activeTerminalId" | "onActiveTerminalId" | "onAddTerminal">,
 ): React.ReactNode {
   switch (surface) {
     case "terminal":
-      return <Shell autoFocus />;
+      return <Shell autoFocus {...shellProps} />;
     case "framebuffer":
     case "web":
       return <Display autoFocus />;
