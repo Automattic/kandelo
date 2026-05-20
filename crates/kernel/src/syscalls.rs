@@ -4588,9 +4588,10 @@ pub fn sys_sigprocmask(proc: &mut Process, how: u32, set: u64) -> Result<u64, Er
 
 /// Exit the process. Closes all fds and dir streams, sets state to Exited.
 pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
-    // Close all file descriptors
-    let max_fd = 1024; // Use a reasonable upper bound
-    for fd in 0..max_fd {
+    // Close all open file descriptors. The fd table may be larger than
+    // FD_SETSIZE; collect first so sys_close can mutate the table safely.
+    let fds: Vec<i32> = proc.fd_table.iter().map(|(fd, _)| fd).collect();
+    for fd in fds {
         let _ = sys_close(proc, host, fd);
     }
 
@@ -8640,7 +8641,7 @@ pub fn sys_sysconf(name: i32) -> Result<i64, Errno> {
         0 => Ok(4096),   // _SC_ARG_MAX
         1 => Ok(0),      // _SC_CHILD_MAX (unspecified)
         2 => Ok(100),    // _SC_CLK_TCK
-        4 => Ok(1024),   // _SC_OPEN_MAX
+        4 => Ok(4096),   // _SC_OPEN_MAX
         6 => Ok(1),      // _SC_NPROCESSORS_ONLN
         8 => Ok(1),      // _SC_NPROCESSORS_CONF
         11 => Ok(65536), // _SC_PAGESIZE (Wasm page = 64KB)
@@ -13268,7 +13269,7 @@ mod tests {
 
     #[test]
     fn test_sysconf_open_max() {
-        assert_eq!(sys_sysconf(4), Ok(1024)); // _SC_OPEN_MAX
+        assert_eq!(sys_sysconf(4), Ok(4096)); // _SC_OPEN_MAX
     }
 
     #[test]
@@ -13585,7 +13586,7 @@ mod tests {
     fn test_getrlimit_nofile_default() {
         let proc = Process::new(1);
         let (soft, hard) = sys_getrlimit(&proc, 7).unwrap(); // RLIMIT_NOFILE
-        assert_eq!(soft, 1024);
+        assert_eq!(soft, 4096);
         assert_eq!(hard, 4096);
     }
 
