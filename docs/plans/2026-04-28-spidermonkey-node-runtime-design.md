@@ -4,6 +4,18 @@
 **Date:** 2026-04-28
 **Supersedes:** the QuickJS-NG `node.wasm` shim (PR #226), once shipped.
 
+## Handoff snapshot (2026-05-20)
+
+This branch documents the SpiderMonkey-based Node.js runtime path and the blocking investigation results. No SpiderMonkey port, Node compatibility layer, runtime build scripts, or package changes have been implemented in this branch.
+
+Completed work:
+
+- Captured the target architecture, module roadmap, validation gates, testing plan, risks, and estimated timeline.
+- Replaced the original "run a C++ exception spike first" open question with the spike + re-spike results.
+- Identified the pre-Phase-1 blockers that must close before implementation starts.
+
+Next agent should start with the Pre-Phase-1 unblockers at the end of this document. Do not begin Phase 1 runtime implementation until Gates 1.A through 1.C are green; otherwise the first real SpiderMonkey exception path can invalidate the port.
+
 ## Goals
 
 Build a real Node.js-compatible runtime for `wasm-posix-kernel`:
@@ -207,11 +219,23 @@ Plus a new benchmark suite (`benchmarks/run.ts --suite=node-runtime`): cold star
 
 ### Showstopper-class — must be resolved before committing to the path
 
-**1. wasm-fork-instrument vs C++ exceptions.** SpiderMonkey throws C++ exceptions through deep call stacks constantly. The fork instrumenter rewrites call graphs and inserts asyncify-style state machines. Two unknowns: (a) does it correctly preserve `try_table`/throw/rethrow blocks across instrumentation, and (b) does fork from inside a `catch` work (the open B1 follow-up in project memory says no — it's an unsupported pattern today).
+**1. wasm-fork-instrument vs C++ exceptions.** SpiderMonkey throws C++ exceptions through deep call stacks constantly. The fork instrumenter rewrites call graphs and inserts asyncify-style state machines. Two unknowns: (a) does it correctly preserve `try_table`/throw/rethrow blocks across instrumentation, and (b) does fork from inside a `catch` work.
 
-**Spike required**: build a tiny C++ program that throws across the fork point and instrument it. If broken, either fix the instrumenter or change Node-side strategy to never fork during JS execution (only at well-known idle points).
+**Status (2026-04-28):** Spike + re-spike complete. Findings:
 
-**This is the highest-leverage first step.**
+- libunwind missing from sysroot was the immediate blocker (closed by PR #368, branch `libcxx-pkg-libunwind` against `package-management`).
+- After bundling libunwind, the re-spike (`spike-cpp-eh/RERUN-RESULTS.md` on the phase-7-switch-dispatch worktree) revealed that fork × C++ EH interaction has TWO remaining gaps that block SpiderMonkey:
+  1. **fork-from-catch (test d, B1 follow-up territory).** Hangs in fork-instrument's REWIND replay because the unwinder's stash state isn't reconstructed. Tracked in `memory/fork-instrument-b1-followup.md`. **Required if SpiderMonkey ever forks from inside a catch handler** — and modern JS engines often unwind through internal try blocks, so this is highly likely.
+  2. **fork-after-catch (test b).** A NEW finding from the re-spike — even when the catch frame is fully popped before the fork, the fork hangs. Should be indistinguishable from a fork with no try/catch around it. **Cause unknown; needs root-cause investigation before SpiderMonkey can be trusted.**
+- The modern wasm-EH path (`try_table`/`catch_ref`/`throw_ref` lowering) cannot be tested today because the SDK forces `-mllvm -wasm-use-legacy-eh=true` and that flag silently overrides user-supplied modern lowering. Switching the SDK + rebuilding libcxx without the legacy flag is a separate unblocker.
+
+**Net status of Risk #1: NOT CLOSED.** Three sub-gates must clear before SpiderMonkey port work begins:
+
+- **Gate 1.A:** PR #368 (libcxx + bundled libunwind) merges into `main`.
+- **Gate 1.B:** B1 follow-up implementation (fork-from-catch via exnref re-synthesis, ~1.5 weeks per spike) ships, and test (d) flips from HANG to PASS in the re-spike.
+- **Gate 1.C:** Test (b)'s post-catch fork hang is root-caused and fixed (estimate unknown — could be a small fork-instrument fix or a deeper kernel signal/wakeup interaction).
+
+Optional Gate 1.D: SDK switches off `-mllvm -wasm-use-legacy-eh=true`, libcxx rebuilds without the flag, all four spike tests re-run with modern wasm-EH lowering. This is required if SpiderMonkey turns out to need modern EH for any internal reason; if the legacy-EH path closes Gates 1.A through 1.C, the modern path can be deferred.
 
 **2. SpiderMonkey GC + fork.** GC has thread-local nurseries, write barriers, concurrent sweeping. A fork mid-GC splits the heap into two inconsistent halves.
 
@@ -267,3 +291,19 @@ The fork-instrument + C++ exceptions spike is the gating first step. If that's b
 - Not a Node.js fork. Vendors Node's JS sources where pragmatic; does not promise drop-in Node behavior for everything.
 - Not a permanent V8/N-API substitute. Native addons remain unsupported.
 - Not single-quarter work.
+
+## Pre-Phase-1 unblockers
+
+Phase 1 implementation work is blocked. The 2026-04-28 spike + re-spike (see Risk #1 above) identified three sub-gates that must close before SpiderMonkey port work begins. None has an owner yet; recommend opening a tracking issue per gate.
+
+**Checklist (all must be green before starting Phase 1):**
+
+- [ ] **Gate 1.A — libcxx + libunwind landed.** PR #368 (`libcxx-pkg-libunwind`, base `package-management`) merges into `main`. This is the smallest gate — bundles LLVM libunwind statically into `libc++abi.a` so `_Unwind_RaiseException` resolves and C++ throws propagate end-to-end on the legacy-EH path the SDK currently emits. **Effort:** review-and-merge (PR is open). **Owner:** none assigned.
+- [ ] **Gate 1.B — fork-from-catch (B1) shipped.** Implement the B1 follow-up (see `memory/fork-instrument-b1-followup.md`): fork-instrument re-synthesises the unwinder's exnref/stash state during REWIND so that a fork from inside a plain legacy `catch` block succeeds. The 2026-04-21 spike confirmed feasibility and sized the work at ~1260 LoC over 1–1.5 weeks. Acceptance: re-running `spike-cpp-eh/build.sh` flips test (d) from HANG to PASS without regressing test (a) or test (c). **Effort:** ~1.5 weeks focused engineering. **Owner:** none assigned.
+- [ ] **Gate 1.C — fork-after-catch (test b) root-caused and fixed.** Re-spike found that even after a catch frame is fully popped, a subsequent fork hangs. This was not present before the libunwind bundle and is unexpected (should be indistinguishable from fork-without-EH). Likely fork-instrument or libunwind cleanup state leak; could also be a kernel signal/wakeup interaction. Acceptance: test (b) flips to PASS in `spike-cpp-eh/`. **Effort:** unknown — needs isolated investigation (could be hours, could be days). **Owner:** none assigned.
+
+**Optional gate (deferred unless required):**
+
+- [ ] **Gate 1.D — modern wasm-EH lowering enabled.** Remove `-mllvm -wasm-use-legacy-eh=true` from `sdk/src/lib/flags.ts:11` and rebuild libcxx/libcxxabi without the flag. Re-run all four spike tests under `try_table`/`catch_ref`/`throw_ref` lowering. Required only if SpiderMonkey itself needs modern EH for internal reasons; if Gates 1.A–1.C close on the legacy-EH path, this can wait until something specifically needs it.
+
+**Until Gates 1.A through 1.C are green, do not start Phase 1 implementation.** A working tsc demo at the end of Phase 1 means nothing if SpiderMonkey can't survive its first internal exception, and SpiderMonkey throws constantly through deep stacks.
