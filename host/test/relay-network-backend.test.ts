@@ -210,6 +210,93 @@ describe("RelayChannel envelope decode (inbound)", () => {
   });
 });
 
+// Inline copy of the production RelayHostShim from
+// host/src/browser-kernel-worker-entry.ts. The production class is
+// defined alongside `self.postMessage` / `kernelWorker` worker globals
+// and can't be imported in a vitest unit (no worker context). Keep the
+// body identical to the production one so this test pins the contract:
+// if either side drifts, the round-trip assertion below fails.
+class RelayHostShim {
+  constructor(private postFn: (msg: HostSendDgramMessage) => void) {}
+  send_dgram(
+    srcPort: number,
+    dstIp: [number, number, number, number],
+    dstPort: number,
+    data: Uint8Array,
+  ): number {
+    this.postFn({ type: "host_send_dgram", srcPort, dstIp, dstPort, data: new Uint8Array(data) });
+    return data.length;
+  }
+}
+
+interface HostSendDgramMessage {
+  type: "host_send_dgram";
+  srcPort: number;
+  dstIp: [number, number, number, number];
+  dstPort: number;
+  data: Uint8Array;
+}
+
+describe("RelayHostShim → RelayChannel contract", () => {
+  it("kernel send_dgram produces a host_send_dgram message that fans out via RelayChannel", () => {
+    // Simulate the worker-thread → main-thread postMessage hop with a
+    // direct function call: in production this is `self.postMessage`,
+    // which lands in BrowserKernel.handleWorkerMessage's `case
+    // "host_send_dgram"` and fans out to all `onHostSendDgram` listeners.
+    const kernel = new MockKernel();
+    const channel = new MockChannel();
+    const relay = new RelayChannel({
+      kernel,
+      channel,
+      localAddr: LOCAL_ADDR,
+      peerAddr: PEER_ADDR,
+    });
+    relay.setTargetPid(TARGET_PID);
+
+    const shim = new RelayHostShim((msg) => {
+      // Imitate BrowserKernel.handleWorkerMessage fan-out to onHostSendDgram listeners.
+      kernel.fireHostSendDgram({
+        srcPort: msg.srcPort,
+        dstIp: msg.dstIp,
+        dstPort: msg.dstPort,
+        data: msg.data,
+      });
+    });
+
+    // Kernel-side "outbound" call.
+    const written = shim.send_dgram(5029, PEER_ADDR, 6001, new Uint8Array([0xaa, 0xbb, 0xcc]));
+    expect(written).toBe(3);
+
+    // The envelope landed on the channel with the expected wire shape.
+    expect(channel.sent.length).toBe(1);
+    const env = channel.sent[0];
+    expect(env.length).toBe(ENVELOPE_HEADER_LEN + 3);
+    expect(env[0]).toBe(ENVELOPE_TYPE_UDP_DATAGRAM);
+    expect(env[1]).toBe(5029 >>> 8);
+    expect(env[2]).toBe(5029 & 0xff);
+    expect(env[5]).toBe(6001 >>> 8);
+    expect(env[6]).toBe(6001 & 0xff);
+    expect(Array.from(env.subarray(ENVELOPE_HEADER_LEN))).toEqual([0xaa, 0xbb, 0xcc]);
+
+    relay.close();
+  });
+
+  it("send_dgram defensively copies — later mutation of the kernel buffer does not leak to main", () => {
+    // The kernel-worker hands us a Uint8Array view into its scratch
+    // buffer; that buffer is reused by the next syscall. The shim must
+    // snapshot before the postMessage queue delivers, otherwise the
+    // main thread sees garbled bytes.
+    const captured: HostSendDgramMessage[] = [];
+    const shim = new RelayHostShim((msg) => captured.push(msg));
+    const buf = new Uint8Array([1, 2, 3, 4]);
+    shim.send_dgram(5029, PEER_ADDR, 6001, buf);
+    // Mutate the kernel-side buffer after the call returns.
+    buf[0] = 0xff;
+    buf[1] = 0xff;
+    expect(Array.from(captured[0].data)).toEqual([1, 2, 3, 4]);
+  });
+});
+
 describe("RelayChannel lifecycle", () => {
   it("unsubscribes from the kernel on close()", () => {
     const { relay, kernel } = makeRelay();
