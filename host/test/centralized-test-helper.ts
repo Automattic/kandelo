@@ -270,8 +270,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true, ptrWidth });
 
-        const ASYNCIFY_BUF_SIZE = 16384;
-        const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+        const FORK_BUF_SIZE = 16384;
+        const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 
@@ -283,7 +283,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           memory: childMemory,
           channelOffset: childChannelOffset,
           isForkChild: true,
-          asyncifyBufAddr,
+          forkBufAddr,
           ptrWidth,
         };
 

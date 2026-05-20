@@ -30,11 +30,6 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 
 **Files:** `crates/kernel/src/wasm_api.rs` — `deliver_pending_signals`
 
-### Git binary uses full asyncify (~6MB overhead)
-`git.wasm` requires full `wasm-opt --asyncify` instrumentation (7MB → 13MB) because git's HTTP transport dispatches through `call_indirect` via a vtable (`transport->vtable->get_refs_list()`). Asyncify's `--asyncify-onlylist` mode, which instruments only listed functions, fails for `call_indirect` paths — the fork import is never reached even though all functions in the chain are listed and correctly instrumented. Direct call paths (e.g., `cmd_commit` → `start_command` → `fork`) work fine with onlylist. Possible approaches: upstream binaryen fix for onlylist + call_indirect, `--asyncify-removelist` to selectively exclude large safe functions, or restructuring the fork mechanism to avoid asyncify entirely.
-
-**Files:** `packages/registry/git/build-git.sh`, `packages/registry/git/asyncify-onlylist.txt`
-
 ## Browser
 
 ### PTY terminal integration with xterm.js
@@ -235,3 +230,53 @@ document why; everything else can drop the flag and rely on the default
 plus any other `build-*.sh` that hits the same wall in the meantime.
 
 **Related:** PR #423 (commit `fa9f579f6 feat(php): make opcache fully load opcache.so + survive PASS_6`) for the original root-cause analysis.
+
+## Testing
+
+### Browser-host vitest parity via `@vitest/browser`
+Today's host test coverage is asymmetric: `host/test/*.test.ts` runs 56 vitest files against the Node host (kernel worker, NodeKernelHost, NodePlatformIO, syscall behavior, dlopen, mmap, fork via worker_threads), but the browser host is exercised only by:
+
+- `host/test/browser-worker-adapter.test.ts` — single vitest file using mocked Web Workers in Node; does not run real browser code.
+- `host/test/php-browser.spec.ts` — Playwright, one fixture.
+- `examples/browser/test/demos.spec.ts` (~15 tests) + `doom.spec.ts` — Playwright over real demo pages.
+
+Real-browser regressions land here repeatedly because the Node vitest suite is the de-facto fast feedback loop, and Playwright tests are slow, demo-shaped, and run `@slow`-tagged in CI. The dual-host-parity requirement (`CLAUDE.md` → *Two hosts: Browser AND Node.js*) is enforced by review prompts, not by tests — which has already failed twice (PRs #388 and #410 shipped Node-only fixes that broke browser demos with no test signal).
+
+The structural fix is to stand up `@vitest/browser` (Vitest's official browser provider, Playwright or WebdriverIO transport) so the existing `host/test/*.test.ts` suite can re-run inside a real Chromium. Each test that doesn't depend on Node-only APIs (worker_threads, fs from Node, etc.) becomes free dual-host coverage. The tests that *do* hit Node-only APIs would either be tagged `@node-only` or refactored against the host abstractions (`PlatformIO`, `WorkerAdapter`) so they pass through `BrowserWorkerAdapter` + `VirtualPlatformIO` in browser mode.
+
+Approximate scope:
+
+- `host/vitest.config.ts`: add a `browser` workspace project (Vitest 3.x supports per-project provider config).
+- Per-test audit: most fork/exec/pipe/socket tests should run unchanged once `node:fs`/`node:worker_threads` imports are routed through host adapters. File-resolution helpers (e.g., `tryResolveBinary`, `centralized-test-helper.ts`) need a browser-side equivalent that fetches `.wasm` via `import.meta.glob` or a vite-served URL.
+- CI: a new job under `prepare-merge.yml` / `staging-build.yml`'s `test-gate` runs the browser vitest project. Should run in headless Chromium against pre-built kernel + fixtures, not require a full demo page.
+- Migration is incremental: light up the browser project, run it with `--bail=0`, audit failures, tag genuinely Node-only tests, refactor the rest.
+
+End state: a regression that shows up only on the browser host (signal delivery race, worker exit message wiring, dlopen GOT handling) fails a vitest test in the same PR, not a Playwright demo or a user-reported `./run.sh browser` failure.
+
+**Files:** `host/vitest.config.ts`, `host/test/centralized-test-helper.ts`, `host/test/*.test.ts` (per-test audit), `host/src/worker-adapter-browser.ts`, `.github/workflows/prepare-merge.yml`, `.github/workflows/staging-build.yml`.
+
+**Related:** `CLAUDE.md` § *Two hosts: Browser AND Node.js — DUAL-HOST PARITY IS LOAD-BEARING*; PR #388 (brk-base) and PR #410 (a_crash trap) as the failure-mode precedents this would close.
+
+### Fork-instrument callback discovery broadening
+PR #307's C3/C4 fixtures pass through the existing direct + table/`call_indirect`
+closure, so the originally proposed "instrument every address-taken function"
+rule was not added. If a future port registers a fork-calling callback that is
+not discovered by that closure, implement a targeted callback-root rule rather
+than broad full address-taken expansion. Two approaches:
+
+- **Inter-procedural analysis:** identify `sigaction()` / `signal()` / `pthread_cleanup_push()` callers and propagate the function-pointer argument to determine which functions are actually registered as callbacks. Requires constant-propagation through the wasm bytecode. Complex but tool-internal.
+- **Libc-hook approach:** intercept `sigaction()` / `signal()` / `pthread_cleanup_push()` at the libc layer (a wpk-specific override in musl-overlay) and surface the registered callbacks to the kernel at runtime. The fork-instrument tool then doesn't need to discover them statically — it instruments only the call graph from `kernel_fork`, and the kernel rejects fork attempts from un-instrumented callbacks at delivery time. Simpler to implement but breaks the "fork from anywhere works statically" property.
+
+Any targeted rule must cover the callback-registration entry points proven by
+the current regression matrix:
+
+- `sigaction()` / `signal()` — signal handlers (C3).
+- `pthread_cleanup_push()` — pthread cancellation cleanup handlers (C4).
+- Any future address-taken host callback (`atexit`, `pthread_atfork`, `pthread_key_create` destructors, `qsort` comparators if they ever fork — pathological but possible).
+
+Trigger criterion: a shipping port reaches `fork()` from a registered callback
+that is absent from `wasm-fork-instrument --discover-only` output and fails at
+runtime because the callback's call chain was not instrumented.
+
+**Files:** `crates/fork-instrument/src/call_graph.rs` plus a possible
+`instrument::analyze_callback_registrations` pass.

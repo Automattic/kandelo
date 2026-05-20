@@ -8,8 +8,8 @@
 //!     handled in the host before reaching the kernel dispatcher
 //!   * [`wasm_posix_shared::channel`] — channel header byte layout
 //!   * Marshalled repr(C) structs — offsets via `core::mem::offset_of!`
-//!   * [`wasm_posix_shared::abi`] — asyncify save slots, global names,
-//!     custom-section name
+//!   * [`wasm_posix_shared::abi`] — expected process globals, export
+//!     deny-lists, custom-section name
 //!
 //! When `--kernel-wasm <path>` is provided, the snapshot also covers
 //! every export in the built kernel `.wasm` (after filtering through
@@ -226,7 +226,6 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         host_intercepted_syscalls(),
     );
     root.insert("channel_status_codes".into(), channel_status_codes());
-    root.insert("asyncify_save_slots".into(), asyncify_save_slots());
     root.insert("custom_sections".into(), custom_sections());
     root.insert(
         "process_expected_globals".into(),
@@ -520,21 +519,6 @@ fn channel_status_codes() -> Value {
         let mut m: JsonMap = BTreeMap::new();
         m.insert("number".into(), json!(n as u32));
         m.insert("name".into(), json!(name));
-        list.push(Value::Object(m.into_iter().collect()));
-    }
-    Value::Array(list)
-}
-
-fn asyncify_save_slots() -> Value {
-    let mut list = Vec::new();
-    for slot in shared::abi::ASYNCIFY_SAVE_SLOTS {
-        let mut m: JsonMap = BTreeMap::new();
-        m.insert("name".into(), json!(slot.name));
-        m.insert("meaning".into(), json!(slot.meaning));
-        m.insert("offset_wasm32".into(), json!(slot.offset_wasm32));
-        m.insert("offset_wasm64".into(), json!(slot.offset_wasm64));
-        m.insert("width_wasm32".into(), json!(slot.width_wasm32));
-        m.insert("width_wasm64".into(), json!(slot.width_wasm64));
         list.push(Value::Object(m.into_iter().collect()));
     }
     Value::Array(list)

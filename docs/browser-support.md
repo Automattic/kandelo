@@ -78,7 +78,7 @@ Browser fetch → Service Worker intercepts
 ## Capabilities
 
 ### Multi-Process
-- `fork()` via Asyncify snapshot/restore — child runs in new sub-worker with copied memory
+- `fork()` via `wasm-fork-instrument` snapshot/restore — child runs in new sub-worker with copied memory
 - `exec()` reads program binary from the shared filesystem, replaces process
 - `posix_spawn()` — fork+exec with file actions (addchdir, addfchdir, addclose, adddup2)
 - Process groups, wait/waitpid, cross-process signals, pipes
