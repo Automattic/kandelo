@@ -1,0 +1,22 @@
+kind = "library"
+
+name = "libxau"
+version = "1.0.12"
+kernel_abi = 7
+depends_on = ["xorgproto@2025.1"]
+
+[source]
+url = "https://www.x.org/releases/individual/lib/libXau-1.0.12.tar.xz"
+sha256 = "74d0e4dfa3d39ad8939e99bda37f5967aba528211076828464d2777d477fc0fb"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/xorg/lib/libxau/-/blob/libXau-1.0.12/COPYING"
+
+[build]
+script_path = "examples/libs/libxau/build-libxau.sh"
+
+[outputs]
+libs = ["lib/libXau.a"]
+headers = ["include/X11/Xauth.h"]
+pkgconfig = ["lib/pkgconfig/xau.pc"]

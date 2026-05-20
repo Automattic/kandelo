@@ -1,11 +1,10 @@
 /*
  * Minimal <linux/kd.h> for wasm-posix-kernel.
  *
- * fbDOOM (and similar Linux-VT software) calls KDGKBTYPE to detect the
- * keyboard type, then KDSKBMODE to switch into raw scancode mode. Our
- * kernel reports a 101-key keyboard and accepts any KDSKBMODE value
- * (no-op success) — the input pipeline delivers AT scancodes via stdin
- * regardless of the requested mode.
+ * Linux-VT framebuffer software calls KDGKBTYPE to detect the keyboard type,
+ * KDSKBMODE to switch keyboard mode, and KDGETMODE/KDSETMODE to switch
+ * text/graphics mode. Kandelo reports a 101-key keyboard and accepts mode
+ * changes as no-op compatibility requests.
  *
  * Any change here is part of the kernel ABI — bump ABI_VERSION.
  */
@@ -14,6 +13,11 @@
 
 /* KDGKBTYPE — get keyboard type. Result is a single byte. */
 #define KDGKBTYPE  0x4B33
+/* KDMKTONE — start a keyboard bell tone. */
+#define KDMKTONE   0x4B30
+/* KDGETMODE / KDSETMODE — get/set text or graphics mode. */
+#define KDGETMODE  0x4B3B
+#define KDSETMODE  0x4B3A
 /* KDGKBMODE / KDSKBMODE — get/set keyboard mode. */
 #define KDGKBMODE  0x4B44
 #define KDSKBMODE  0x4B45
@@ -21,6 +25,10 @@
 /* Keyboard type values (KDGKBTYPE results). */
 #define KB_84      0x01
 #define KB_101     0x02
+
+/* Display mode values. */
+#define KD_TEXT     0x00
+#define KD_GRAPHICS 0x01
 
 /* Keyboard mode values (KDSKBMODE arguments). */
 #define K_RAW       0x00

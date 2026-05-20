@@ -1,0 +1,13 @@
+diff --git a/src/Makefile.in b/src/Makefile.in
+index 0bd27bb..fe7d655 100644
+--- a/src/Makefile.in
++++ b/src/Makefile.in
+@@ -36,7 +36,7 @@ $(EXE): $(OBJECTS)
+ .c.o:
+ 	$(CC) -c $(CFLAGS) $(CPPFLAGS) $<
+ 
+-$(OBJECTS): *.h ../config.h
++$(OBJECTS): ../config.h
+ 
+ clean:
+ 	rm -f $(OBJECTS) $(EXE) core

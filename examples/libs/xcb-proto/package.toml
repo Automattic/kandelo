@@ -1,0 +1,20 @@
+kind = "library"
+
+name = "xcb-proto"
+version = "1.17.0"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://www.x.org/releases/individual/xcb/xcb-proto-1.17.0.tar.xz"
+sha256 = "2c1bacd2110f4799f74de6ebb714b94cf6f80fb112316b1219480fd22562148c"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/xorg/proto/xcbproto/-/blob/xcb-proto-1.17.0/COPYING"
+
+[build]
+script_path = "examples/libs/xcb-proto/build-xcb-proto.sh"
+
+[outputs]
+pkgconfig = ["lib/pkgconfig/xcb-proto.pc"]

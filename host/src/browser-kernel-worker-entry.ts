@@ -1261,6 +1261,14 @@ function handleMouseInject(msg: Extract<MainToKernelMessage, { type: "mouse_inje
   kernelWorker.injectMouseEvent(msg.dx, msg.dy, msg.buttons);
 }
 
+function handleMouseWheelInject(msg: Extract<MainToKernelMessage, { type: "mouse_wheel_inject" }>) {
+  kernelWorker.injectMouseWheelEvent(msg.delta);
+}
+
+function handleKeyboardInject(msg: Extract<MainToKernelMessage, { type: "keyboard_inject" }>) {
+  kernelWorker.injectKeyboardEvent(msg.keycode, msg.pressed);
+}
+
 /**
  * Drain up to `maxBytes` from the kernel's `/dev/dsp` ring and post the
  * bytes back to the main thread. The main thread's AudioContext
@@ -1671,6 +1679,8 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     }
     case "mouse_inject": handleMouseInject(msg); break;
+    case "mouse_wheel_inject": handleMouseWheelInject(msg); break;
+    case "keyboard_inject": handleKeyboardInject(msg); break;
     case "audio_drain": handleAudioDrain(msg); break;
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.

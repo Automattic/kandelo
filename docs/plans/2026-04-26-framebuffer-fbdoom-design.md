@@ -16,7 +16,7 @@ Worktree: `.superset/worktrees/wasm-posix-kernel/kernel-processes-writing-to-fra
 - Multi-buffering / `FBIOPAN_DISPLAY` as a real vsync — accepted as a no-op success.
 - Format negotiation via `FBIOPUT_VSCREENINFO` — kernel reports a fixed geometry/format; software either accepts it or fails. Most fbdev software is happy with whatever the device reports; fbDOOM definitely is.
 - Node.js host rendering — Node host fully supports the device for tests, but does not display pixels anywhere. Visual demo is browser-only.
-- Real `/dev/input/eventN` — keyboard arrives via stdin in raw termios mode, same as a real Linux console.
+- Real `/dev/input/eventN` for fbDOOM — keyboard arrives via stdin in raw termios mode, same as a real Linux console. Later desktop work may expose evdev for X/Wayland/SDL-style graphical seats.
 - Multiple framebuffers (`/dev/fb1`, `/dev/fb2`) — only `fb0`.
 
 **Constraint.** Per CLAUDE.md "never compromise hosted software." fbDOOM gets vendored and patched only as needed for cross-compilation hygiene — never to work around platform gaps. If fbDOOM exercises an ioctl we haven't implemented, we implement it (or return a sensible default), never `#ifdef` it out.

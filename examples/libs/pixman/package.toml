@@ -1,0 +1,28 @@
+# Per-library manifest for pixman. See docs/package-management.md.
+#
+# Xfbdev needs pixman for software raster composition. Keep it as a
+# standalone package so future framebuffer/desktop ports can share the
+# same wasm32 artifact.
+
+kind = "library"
+
+name = "pixman"
+version = "0.42.2"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://www.x.org/releases/individual/lib/pixman-0.42.2.tar.gz"
+sha256 = "ea1480efada2fd948bc75366f7c349e1c96d3297d09a3fe62626e38e234a625e"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/pixman/pixman/-/blob/pixman-0.42.2/COPYING"
+
+[build]
+script_path = "examples/libs/pixman/build-pixman.sh"
+
+[outputs]
+libs = ["lib/libpixman-1.a"]
+headers = ["include/pixman-1"]
+pkgconfig = ["lib/pkgconfig/pixman-1.pc"]

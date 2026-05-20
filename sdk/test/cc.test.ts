@@ -44,6 +44,23 @@ describe('buildClangArgs', () => {
     expect(args.join(' ')).toContain('channel_syscall.c');
   });
 
+  it('link-only: keeps Unix link order after the CRT startup object', () => {
+    const args = buildClangArgs(['foo.o', 'libbar.a', '-L/tmp/lib', '-lbaz', '-o', 'out.wasm'], toolchain);
+    const crt = args.indexOf('/tmp/sysroot/lib/crt1.o');
+    const foo = args.indexOf('foo.o');
+    const archive = args.indexOf('libbar.a');
+    const libPath = args.indexOf('-L/tmp/lib');
+    const lib = args.indexOf('-lbaz');
+    const libc = args.indexOf('/tmp/sysroot/lib/libc.a');
+
+    expect(crt).toBeGreaterThan(-1);
+    expect(crt).toBeLessThan(foo);
+    expect(foo).toBeLessThan(archive);
+    expect(archive).toBeLessThan(libPath);
+    expect(libPath).toBeLessThan(lib);
+    expect(lib).toBeLessThan(libc);
+  });
+
   it('preprocess-only: no link flags', () => {
     const args = buildClangArgs(['-E', 'foo.c'], toolchain);
     expect(args).not.toContain('-Wl,--entry=_start');

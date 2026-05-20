@@ -9,7 +9,7 @@ describe('filterArgs', () => {
   });
 
   it('silently removes ignored flags', () => {
-    const result = filterArgs(['-O2', '-pthread', '-fPIE', '-pie', 'main.c']);
+    const result = filterArgs(['-O2', '-pthread', '-fPIE', '-pie', '-lc', 'main.c']);
     expect(result.filtered).toEqual(['-O2', 'main.c']);
     expect(result.warnings).toEqual([]);
   });
@@ -54,9 +54,10 @@ describe('parseArgs', () => {
   });
 
   it('categorizes archive files', () => {
-    const parsed = parseArgs(['foo.o', 'libbar.a', '-o', 'out.wasm']);
+    const parsed = parseArgs(['foo.o', 'libbar.a', '-L/tmp/lib', '-lbar', '-o', 'out.wasm']);
     expect(parsed.objectFiles).toEqual(['foo.o']);
     expect(parsed.archiveFiles).toEqual(['libbar.a']);
+    expect(parsed.linkArgs).toEqual(['foo.o', 'libbar.a', '-L/tmp/lib', '-lbar']);
   });
 
   it('handles -ofilename (no space) syntax', () => {

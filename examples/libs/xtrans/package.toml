@@ -1,0 +1,21 @@
+kind = "library"
+
+name = "xtrans"
+version = "1.6.0"
+kernel_abi = 7
+depends_on = ["xorgproto@2025.1"]
+
+[source]
+url = "https://www.x.org/releases/individual/lib/xtrans-1.6.0.tar.xz"
+sha256 = "faafea166bf2451a173d9d593352940ec6404145c5d1da5c213423ce4d359e92"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/xorg/lib/libxtrans/-/blob/xtrans-1.6.0/COPYING"
+
+[build]
+script_path = "examples/libs/xtrans/build-xtrans.sh"
+
+[outputs]
+headers = ["include/X11/Xtrans"]
+pkgconfig = ["lib/pkgconfig/xtrans.pc"]

@@ -69,6 +69,10 @@ const SYS_RT_SIGTIMEDWAIT = 207;
  */
 const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
 
+/** wasm32posix/wasm64posix ABI layout for musl's non-packed epoll_event. */
+const WASM_EPOLL_EVENT_SIZE = 16;
+const WASM_EPOLL_EVENT_DATA_OFFSET = 8;
+
 /** Syscall numbers for signals */
 const SYS_KILL = 35;
 
@@ -2546,6 +2550,13 @@ export class CentralizedKernelWorker {
       this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
     }
 
+    // Linux drops epoll interests for a closed file descriptor. The host-side
+    // epoll mirror has to do the same or epoll_wait may return stale data.ptr
+    // values for callbacks that the guest has already freed.
+    if (syscallNr === SYS_CLOSE && retVal === 0) {
+      this.removeClosedFdFromEpollMirrors(channel.pid, origArgs[0]);
+    }
+
     // --- Signal-death check (centralized mode) ---
     // If deliver_pending_signals marked this process as Exited (e.g., abort()
     // raises SIGABRT with default action Terminate), don't complete the channel.
@@ -2621,6 +2632,11 @@ export class CentralizedKernelWorker {
       this.reapKilledProcessesAfterSyscall();
     }
 
+    // A successful connect can enqueue a pending connection on a listening
+    // socket, making a peer blocked in poll/select/accept runnable.
+    if (errVal === 0 && syscallNr === 54 /* CONNECT */) {
+      this.scheduleWakeBlockedRetries();
+    }
 
     // --- Normal completion ---
     if (logging) {
@@ -2737,10 +2753,25 @@ export class CentralizedKernelWorker {
               if (syscallNr === SYS_MSGRCV) copySize += 4;
             }
           }
-          processMem.set(
-            kernelMem.subarray(kernelPtr, kernelPtr + copySize),
-            origPtr,
-          );
+          const processRoom = processMem.byteLength - origPtr;
+          if (origPtr < 0 || origPtr >= processMem.byteLength || processRoom < copySize) {
+            const safeCopySize = Math.max(0, Math.min(copySize, processRoom));
+            if (safeCopySize > 0) {
+              processMem.set(
+                kernelMem.subarray(kernelPtr, kernelPtr + safeCopySize),
+                origPtr,
+              );
+            }
+            if (errVal === 0 && retVal >= 0) {
+              retVal = -14; // EFAULT
+              errVal = 14;
+            }
+          } else {
+            processMem.set(
+              kernelMem.subarray(kernelPtr, kernelPtr + copySize),
+              origPtr,
+            );
+          }
         }
 
         outOffset += size;
@@ -2969,6 +3000,19 @@ export class CentralizedKernelWorker {
       }
     }
     return indices;
+  }
+
+  private removeClosedFdFromEpollMirrors(pid: number, fd: number): void {
+    this.epollInterests.delete(`${pid}:${fd}`);
+
+    const pidPrefix = `${pid}:`;
+    for (const [key, interests] of this.epollInterests) {
+      if (!key.startsWith(pidPrefix)) continue;
+      const filtered = interests.filter((interest) => interest.fd !== fd);
+      if (filtered.length !== interests.length) {
+        this.epollInterests.set(key, filtered);
+      }
+    }
   }
 
   private wakeBlockedPoll(pid: number, pipeIdx: number): void {
@@ -4426,13 +4470,14 @@ export class CentralizedKernelWorker {
     const fd = origArgs[2];
     const eventPtr = origArgs[3]; // pointer in process memory
 
-    // Read epoll_event from process memory: { events: u32, data: u64 } = 12 bytes
+    // Read epoll_event from process memory:
+    // { events: u32, 4B padding, data: u64 } = 16 bytes on wasm.
     let events = 0;
     let data = 0n;
     if (eventPtr !== 0) {
       const pv = new DataView(channel.memory.buffer, eventPtr);
       events = pv.getUint32(0, true);
-      data = pv.getBigUint64(4, true);
+      data = pv.getBigUint64(WASM_EPOLL_EVENT_DATA_OFFSET, true);
     }
 
     // Call kernel — copy event struct to scratch
@@ -4440,10 +4485,10 @@ export class CentralizedKernelWorker {
     const kernelMem = this.getKernelMem();
     const dataStart = this.scratchOffset + CH_DATA;
 
-    // Copy 12-byte epoll_event to kernel scratch
+    // Copy epoll_event to kernel scratch.
     if (eventPtr !== 0) {
       const processMem = new Uint8Array(channel.memory.buffer);
-      kernelMem.set(processMem.subarray(eventPtr, eventPtr + 12), dataStart);
+      kernelMem.set(processMem.subarray(eventPtr, eventPtr + WASM_EPOLL_EVENT_SIZE), dataStart);
     }
 
     kernelView.setUint32(CH_SYSCALL, SYS_EPOLL_CTL, true);
@@ -4467,12 +4512,14 @@ export class CentralizedKernelWorker {
     const retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
-    // Mirror the change on the host side if the kernel succeeded
-    if (retVal === 0) {
-      const EPOLL_CTL_ADD = 1;
-      const EPOLL_CTL_DEL = 2;
-      const EPOLL_CTL_MOD = 3;
+    const EPOLL_CTL_ADD = 1;
+    const EPOLL_CTL_DEL = 2;
+    const EPOLL_CTL_MOD = 3;
 
+    // Mirror successful changes. For DEL, also remove from the mirror if the
+    // kernel says the target fd is already gone; Linux close semantics mean
+    // stale epoll interests must not be reported after the fd is closed.
+    if (retVal === 0 || op === EPOLL_CTL_DEL) {
       const key = `${channel.pid}:${epfd}`;
       let interests = this.epollInterests.get(key);
       if (!interests) {
@@ -4630,10 +4677,11 @@ export class CentralizedKernelWorker {
           if (revents & POLLERR) epEvents |= EPOLLERR;
           if (revents & POLLHUP) epEvents |= EPOLLHUP;
 
-          // Write epoll_event to process memory: { events: u32, data: u64 } = 12 bytes
-          const evOff = eventsPtr + readyCount * 12;
+          // Write epoll_event to process memory.
+          const evOff = eventsPtr + readyCount * WASM_EPOLL_EVENT_SIZE;
           processView.setUint32(evOff, epEvents, true);
-          processView.setBigUint64(evOff + 4, interests[i].data, true);
+          processView.setUint32(evOff + 4, 0, true);
+          processView.setBigUint64(evOff + WASM_EPOLL_EVENT_DATA_OFFSET, interests[i].data, true);
           readyCount++;
         }
       }
@@ -7402,6 +7450,26 @@ export class CentralizedKernelWorker {
    */
   injectMouseEvent(dx: number, dy: number, buttons: number): void {
     this.kernel.injectMouseEvent(dx, dy, buttons);
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Push a wheel event into the kernel's `/dev/input/event0` queue.
+   * Any process blocked in read/poll on the evdev node wakes on the next
+   * retry tick.
+   */
+  injectMouseWheelEvent(delta: number): void {
+    this.kernel.injectMouseWheelEvent(delta);
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Push a keyboard event into the kernel's `/dev/input/event1` queue.
+   * Any process blocked in read/poll on the evdev node wakes on the next
+   * retry tick.
+   */
+  injectKeyboardEvent(keycode: number, pressed: boolean): void {
+    this.kernel.injectKeyboardEvent(keycode, pressed);
     this.scheduleWakeBlockedRetries();
   }
 

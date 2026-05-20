@@ -1291,6 +1291,8 @@ pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
             // packets so a successor open starts clean. No host-side
             // unbind — the device is host→kernel only.
             crate::syscalls::maybe_release_mice(pid);
+            crate::syscalls::maybe_release_event0(pid);
+            crate::syscalls::maybe_release_event1(pid);
             // /dev/dsp cleanup: drop ownership and flush the PCM ring.
             // The host-side AudioContext keeps playing whatever is
             // already scheduled; we just stop feeding it new samples
@@ -4514,17 +4516,15 @@ pub extern "C" fn kernel_epoll_create1(flags: u32) -> i32 {
 pub extern "C" fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
 
-    // Read epoll_event struct from memory: { events: u32, data: u64 }
-    // On wasm32 without packing, u64 may be at offset 4 or 8 depending on alignment.
-    // musl's epoll_event on non-x86_64: events at offset 0 (4B), data at offset 4 (8B) = 12B total.
-    // But wasm32 aligns u64 to 8 bytes, so it's likely: events at 0, pad at 4, data at 8 = 16B.
-    // We'll try reading from offset 4 (packed) since musl doesn't use __packed__ on non-x86_64.
-    // Actually, for epoll_data_t which is a union, the alignment depends on the platform.
-    // On wasm32, the union has 4-byte alignment if the ABI is ILP32, making epoll_event 12 bytes.
+    // wasm32posix/wasm64posix use musl's non-packed epoll_event:
+    // events at 0, 4 bytes of padding, data at 8, size 16.
+    const WASM_EPOLL_EVENT_DATA_OFFSET: usize = 8;
     let (events, data) = if !event_ptr.is_null() {
         unsafe {
             let events = core::ptr::read_unaligned(event_ptr as *const u32);
-            let data = core::ptr::read_unaligned(event_ptr.add(4) as *const u64);
+            let data = core::ptr::read_unaligned(
+                event_ptr.add(WASM_EPOLL_EVENT_DATA_OFFSET) as *const u64
+            );
             (events, data)
         }
     } else {
@@ -4564,12 +4564,18 @@ pub extern "C" fn kernel_epoll_pwait(
     {
         Ok((count, events)) => {
             // Write events to output buffer
-            // Each epoll_event: { events: u32, data: u64 } = 12 bytes (packed on wasm32)
+            // Each epoll_event: { events: u32, padding: u32, data: u64 } = 16 bytes.
+            const WASM_EPOLL_EVENT_SIZE: usize = 16;
+            const WASM_EPOLL_EVENT_DATA_OFFSET: usize = 8;
             for (i, (ev, data)) in events.iter().enumerate() {
-                let offset = i * 12;
+                let offset = i * WASM_EPOLL_EVENT_SIZE;
                 unsafe {
                     core::ptr::write_unaligned(events_ptr.add(offset) as *mut u32, *ev);
-                    core::ptr::write_unaligned(events_ptr.add(offset + 4) as *mut u64, *data);
+                    core::ptr::write_unaligned(events_ptr.add(offset + 4) as *mut u32, 0);
+                    core::ptr::write_unaligned(
+                        events_ptr.add(offset + WASM_EPOLL_EVENT_DATA_OFFSET) as *mut u64,
+                        *data,
+                    );
                 }
             }
             count
@@ -7055,21 +7061,36 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     if listener.state != SocketState::Listening {
         return Err(Errno::ECONNREFUSED);
     }
+    let shared_backlog_idx = listener.shared_backlog_idx;
 
-    // Create accepted socket in the listener's process
-    let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
-    accepted_sock.state = SocketState::Connected;
-    accepted_sock.recv_buf_idx = Some(pipe_a_idx);
-    accepted_sock.send_buf_idx = Some(pipe_b_idx);
-    accepted_sock.global_pipes = true;
-    let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
+    if let Some(shared_idx) = shared_backlog_idx {
+        let pending = crate::socket::PendingConnection {
+            peer_addr: [0; 4],
+            peer_port: 0,
+            recv_pipe_idx: pipe_a_idx,
+            send_pipe_idx: pipe_b_idx,
+        };
+        let pushed =
+            unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pending) };
+        if !pushed {
+            return Err(Errno::ECONNREFUSED);
+        }
+    } else {
+        // Legacy inline backlog path for listeners created before shared
+        // AF_UNIX queues were introduced.
+        let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+        accepted_sock.state = SocketState::Connected;
+        accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+        accepted_sock.send_buf_idx = Some(pipe_b_idx);
+        accepted_sock.global_pipes = true;
+        let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
 
-    // Push to listener's backlog
-    let listener = listener_proc
-        .sockets
-        .get_mut(listener_sock_idx)
-        .ok_or(Errno::EBADF)?;
-    listener.listen_backlog.push(accepted_idx);
+        let listener = listener_proc
+            .sockets
+            .get_mut(listener_sock_idx)
+            .ok_or(Errno::EBADF)?;
+        listener.listen_backlog.push(accepted_idx);
+    }
 
     // Set up client socket (in current process)
     let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
@@ -7550,8 +7571,25 @@ pub extern "C" fn kernel_tcsetattr(fd: i32, action: u32, buf_ptr: *const u8, buf
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
-    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    let result = match syscalls::sys_ioctl(proc, fd, request, buf) {
+    let result = if matches!(
+        request,
+        0x4611 | 0x4B30 | 0x4B3A | 0x5605 | 0x5606 | 0x5607 | 0x5608 | 0x40044590
+    ) && (buf_ptr as usize) < 4096
+    {
+        // Linux declares several console ioctls with integer arguments, so
+        // libc passes the integer through the variadic slot instead of a real
+        // pointer. Preserve the generic sys_ioctl buffer API by adapting those
+        // small scalar arguments into a temporary little-endian buffer.
+        let mut tmp = [0u8; 256];
+        tmp[..4].copy_from_slice(&((buf_ptr as usize) as i32).to_le_bytes());
+        let mut host = WasmHostIO;
+        syscalls::sys_ioctl(proc, &mut host, fd, request, &mut tmp)
+    } else {
+        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
+        let mut host = WasmHostIO;
+        syscalls::sys_ioctl(proc, &mut host, fd, request, buf)
+    };
+    let result = match result {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -9885,6 +9923,21 @@ pub extern "C" fn kernel_inject_mouse_event(dx: i32, dy: i32, buttons: u32) {
     crate::mouse::inject_event(dx, dy, buttons);
 }
 
+/// Push one Linux evdev wheel event into `/dev/input/event0`. Positive values
+/// mean wheel-up, matching Linux `REL_WHEEL`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_inject_mouse_wheel_event(delta: i32) {
+    crate::mouse::inject_wheel_event(delta);
+}
+
+/// Push one Linux evdev keyboard key edge into `/dev/input/event1`.
+/// `keycode` is a Linux input key code; `pressed` is non-zero for key-down
+/// and zero for key-up.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_inject_keyboard_event(keycode: u32, pressed: u32) {
+    crate::mouse::inject_key_event(keycode.min(u16::MAX as u32) as u16, pressed != 0);
+}
+
 // ---------------------------------------------------------------------------
 // /dev/dsp — host-drained PCM samples
 // ---------------------------------------------------------------------------
@@ -9907,7 +9960,8 @@ pub extern "C" fn kernel_drain_audio(out_ptr: *mut u8, out_len: u32) -> u32 {
 }
 
 /// Read the currently configured `/dev/dsp` sample rate (Hz). Defaults
-/// to 11025 Hz before the user program calls `SNDCTL_DSP_SPEED`.
+/// to `audio::DEFAULT_SAMPLE_RATE` before the user program calls
+/// `SNDCTL_DSP_SPEED`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_audio_sample_rate() -> u32 {
     crate::audio::current_config().0

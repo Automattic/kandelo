@@ -168,11 +168,11 @@ pub trait HostIO {
     /// binding is a no-op.
     fn unbind_framebuffer(&mut self, pid: i32);
     /// Push pixel bytes to the host's framebuffer surface for `pid` at
-    /// byte `offset`. Used by software (e.g. fbDOOM) that issues
-    /// `write(fd_fb, …)` rather than mmap-and-store. The host owns the
-    /// pixel buffer in this mode; the kernel has no `FbBinding.addr` to
-    /// copy into. Geometry/format come from a prior `bind_framebuffer`
-    /// call with `addr=0, len=0` (the sentinel "write-based binding").
+    /// byte `offset`. Used by fbdev clients that issue `write(fd_fb, …)`
+    /// rather than mmap-and-store. The host owns the pixel buffer in this
+    /// mode; the kernel has no `FbBinding.addr` to copy into. Geometry and
+    /// format come from a prior `bind_framebuffer` call with `addr=0,
+    /// len=0` (the sentinel "write-based binding").
     fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]);
 }
 
@@ -398,6 +398,10 @@ pub struct Process {
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
     /// `mmap` and the matching `munmap`/process-exit/exec.
     pub fb_binding: Option<FbBinding>,
+    /// Requested `/dev/fb0` mode for this process. Defaults to the legacy
+    /// 640x400 mode and may be changed by FBIOPUT_VSCREENINFO before mmap.
+    pub fb_width: u32,
+    pub fb_height: u32,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -482,6 +486,8 @@ impl Process {
             procfs_bufs: Vec::new(),
             has_exec: false,
             fb_binding: None,
+            fb_width: 640,
+            fb_height: 400,
             fork_count: 0,
         }
     }

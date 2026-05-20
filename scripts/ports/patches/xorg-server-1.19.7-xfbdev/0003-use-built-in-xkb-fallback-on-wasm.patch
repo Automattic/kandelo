@@ -1,0 +1,52 @@
+diff --git a/xkb/ddxLoad.c b/xkb/ddxLoad.c
+index 2f347e8..0cc1d75 100644
+--- a/xkb/ddxLoad.c
++++ b/xkb/ddxLoad.c
+@@ -515,6 +515,21 @@ KeymapOrDefaults(DeviceIntPtr dev, XkbDescPtr xkb)
+     return xkb;
+ }
+ 
++#if defined(__wasm32__) || defined(__wasm__)
++static XkbDescPtr
++WasmFallbackKeymap(void)
++{
++    XkbDescPtr xkb = XkbAllocKeyboard();
++
++    if (!xkb)
++        return NULL;
++
++    xkb->min_key_code = 8;
++    xkb->max_key_code = 255;
++    return xkb;
++}
++#endif
++
+ 
+ XkbDescPtr
+ XkbCompileKeymap(DeviceIntPtr dev, XkbRMLVOSet * rmlvo)
+@@ -528,6 +543,12 @@ XkbCompileKeymap(DeviceIntPtr dev, XkbRMLVOSet * rmlvo)
+         return NULL;
+     }
+ 
++#if defined(__wasm32__) || defined(__wasm__)
++    LogMessage(X_WARNING,
++               "XKB: using built-in fallback keymap on wasm target\n");
++    return WasmFallbackKeymap();
++#endif
++
+     /* These are the components we really really need */
+     need = XkmSymbolsMask | XkmCompatMapMask | XkmTypesMask |
+         XkmKeyNamesMask | XkmVirtualModsMask;
+@@ -548,6 +569,12 @@ XkbCompileKeymapFromString(DeviceIntPtr dev,
+         return NULL;
+     }
+ 
++#if defined(__wasm32__) || defined(__wasm__)
++    LogMessage(X_WARNING,
++               "XKB: using built-in fallback keymap on wasm target\n");
++    return WasmFallbackKeymap();
++#endif
++
+     /* These are the components we really really need */
+     need = XkmSymbolsMask | XkmCompatMapMask | XkmTypesMask |
+            XkmKeyNamesMask | XkmVirtualModsMask;

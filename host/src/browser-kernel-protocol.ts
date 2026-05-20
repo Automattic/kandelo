@@ -203,6 +203,19 @@ export interface MouseInjectMessage {
   buttons: number;
 }
 
+/** Main-thread → kernel-worker Linux evdev REL_WHEEL injection. */
+export interface MouseWheelInjectMessage {
+  type: "mouse_wheel_inject";
+  delta: number;
+}
+
+/** Main-thread → kernel-worker Linux evdev keyboard injection. */
+export interface KeyboardInjectMessage {
+  type: "keyboard_inject";
+  keycode: number;
+  pressed: boolean;
+}
+
 /**
  * Main-thread → kernel-worker audio drain request. The main thread's
  * AudioContext scheduler ticks every ~50 ms, asks the kernel ring for
@@ -298,6 +311,8 @@ export type MainToKernelMessage =
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | MouseInjectMessage
+  | MouseWheelInjectMessage
+  | KeyboardInjectMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

@@ -1,0 +1,7 @@
+script_path = "examples/libs/libxkbfile/build-libxkbfile.sh"
+repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+commit      = "36f3d2328d965f80d3cc1d1ddd62e5920b96f276"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"

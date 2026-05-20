@@ -20,6 +20,28 @@ import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 
 const DEFAULT_MAX_PAGES = 16384;
+const VFSI_MAGIC = [0x49, 0x53, 0x46, 0x56];
+const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
+
+async function fetchArrayBuffer(url: string, label: string): Promise<ArrayBuffer> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`fetch failed for ${label}: ${response.status} ${response.statusText}`);
+  }
+  return response.arrayBuffer();
+}
+
+function assertVfsImage(bytes: Uint8Array, label: string): void {
+  const matches = (magic: number[]) => magic.every((b, i) => bytes[i] === b);
+  if (bytes.byteLength >= 4 && (matches(VFSI_MAGIC) || matches(ZSTD_MAGIC))) return;
+  const prefix = Array.from(bytes.slice(0, 8))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join(" ");
+  throw new Error(
+    `${label} is not a Kandelo VFS image (first bytes: ${prefix || "empty"}). ` +
+      "Run `scripts/build-rootfs.sh`; if Vite served HTML here, the rootfs artifact is missing.",
+  );
+}
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -220,9 +242,10 @@ export class BrowserKernel {
     const [wasmBytes, rootfsVfsBuf] = await Promise.all([
       kernelWasmBytes
         ? Promise.resolve(kernelWasmBytes)
-        : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-      fetch(rootfsVfsUrl).then((r) => r.arrayBuffer()),
+        : fetchArrayBuffer(kernelWasmUrl, "kernel.wasm"),
+      fetchArrayBuffer(rootfsVfsUrl, "rootfs.vfs"),
     ]);
+    assertVfsImage(new Uint8Array(rootfsVfsBuf), "rootfs.vfs");
 
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
@@ -258,11 +281,13 @@ export class BrowserKernel {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
         ? Promise.resolve(options.kernelWasm)
-        : fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
+        : fetchArrayBuffer(kernelWasmUrl, "kernel.wasm"),
       options.vfsImage === "default"
-        ? fetch(rootfsVfsUrl)
-            .then((r) => r.arrayBuffer())
-            .then((b) => new Uint8Array(b))
+        ? fetchArrayBuffer(rootfsVfsUrl, "rootfs.vfs").then((b) => {
+            const image = new Uint8Array(b);
+            assertVfsImage(image, "rootfs.vfs");
+            return image;
+          })
         : Promise.resolve(options.vfsImage),
     ]);
 
@@ -355,6 +380,7 @@ export class BrowserKernel {
       stdin: options.stdin,
       maxPages: this.maxPages,
     }) as number;
+    this.observePid(pid);
 
     const exit = new Promise<number>((resolve) => {
       this.exitResolvers.set(pid, resolve);
@@ -736,6 +762,16 @@ export class BrowserKernel {
     this.sendToKernel({ type: "mouse_inject", dx, dy, buttons });
   }
 
+  /** Push one Linux evdev REL_WHEEL event into `/dev/input/event0`. */
+  injectMouseWheelEvent(delta: number): void {
+    this.sendToKernel({ type: "mouse_wheel_inject", delta });
+  }
+
+  /** Push one Linux evdev keyboard key edge into `/dev/input/event1`. */
+  injectKeyboardEvent(keycode: number, pressed: boolean): void {
+    this.sendToKernel({ type: "keyboard_inject", keycode, pressed });
+  }
+
   /**
    * Drain up to `maxBytes` of PCM audio buffered in the kernel's
    * `/dev/dsp` ring. Returns the bytes plus the configured sample
@@ -844,6 +880,12 @@ export class BrowserKernel {
     this.kernelWorkerHandle.postMessage({ type: "pid_map_dump" } as unknown as MainToKernelMessage, []);
   }
 
+  private observePid(pid: number): void {
+    if (Number.isInteger(pid) && pid >= this.nextPid) {
+      this.nextPid = pid + 1;
+    }
+  }
+
   private sendToKernel(msg: MainToKernelMessage, transfer?: Transferable[]): void {
     this.kernelWorkerHandle.postMessage(msg, transfer ?? []);
   }
@@ -856,6 +898,9 @@ export class BrowserKernel {
   }
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
+    const observedPid = (msg as { pid?: unknown }).pid;
+    if (typeof observedPid === "number") this.observePid(observedPid);
+
     switch (msg.type) {
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);

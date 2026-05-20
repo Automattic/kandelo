@@ -278,6 +278,10 @@ export const PRESET_LIBRARY: Preset[] = [
     base: "kandelo:shell@abi8",
     packages: ["fbdoom@local", "doom-shareware@local", "bash@local", "coreutils@local"],
     accent: "#b5301c", glyph: "D", bootCommand: ["/usr/games/fbdoom"], estimatedUrlBytes: 1018 },
+  { id: "desktop-jwm", title: "Kandelo Xfbdev + JWM desktop", summary: "Real upstream Xfbdev starts against Kandelo fbdev/evdev, then JWM manages multiple libX11 clients.",
+    base: "kandelo:shell@abi8",
+    packages: ["fbseat-probe@local", "tinyx-xfbdev@local", "jwm@local", "libx11@local", "xvfs-browser@local", "xclock@local", "xeyes@local", "kdesktop@fallback", "rox-filer@blocked-gtk2", "bash@local", "coreutils@local"],
+    accent: "#2f7c8f", glyph: "X", bootCommand: ["/usr/local/bin/Xfbdev", ":0", "-screen", "640x480x32", "-nolisten", "tcp", "-noreset", "-dumbSched"], estimatedUrlBytes: 1320 },
 ];
 
 // ── Current-machine descriptor template ────────────────────────────────────

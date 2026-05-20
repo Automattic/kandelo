@@ -1119,10 +1119,11 @@ pub mod fbdev {
     /// flavour, total 80 bytes).
     ///
     /// On native Linux this struct uses native pointer width for `smem_start`
-    /// and `mmio_start`. fbDOOM only reads `id`, `smem_len`, `line_length`,
-    /// `type`, and `visual` — we report 0 for the address-shaped fields,
-    /// keeping the struct 32-bit-flavoured to match what musl's
-    /// `<linux/fb.h>` exposes to user-space programs built with `wasm32posix-cc`.
+    /// and `mmio_start`. Direct fbdev clients commonly read `id`, `smem_len`,
+    /// `line_length`, `type`, and `visual` — we report 0 for the
+    /// address-shaped fields, keeping the struct 32-bit-flavoured to match
+    /// what musl's `<linux/fb.h>` exposes to user-space programs built with
+    /// `wasm32posix-cc`.
     /// The trailing `_pad_to_80` aligns this to the 80-byte size that musl
     /// programs (and the kernel ABI snapshot) expect.
     #[derive(Debug, Clone, Copy, Default)]
@@ -1164,8 +1165,8 @@ mod fbdev_tests {
 /// OSS (Open Sound System) ABI constants.
 ///
 /// These mirror what glibc / musl expose via `<sys/soundcard.h>` to
-/// programs that talk to `/dev/dsp`. We accept the subset fbDOOM (and
-/// most real OSS clients) actually emit during init: speed, channel
+/// programs that talk to `/dev/dsp`. We accept the subset most OSS clients
+/// actually emit during init: speed, channel
 /// count, format, and a couple of accept-and-acknowledge ops.
 ///
 /// The numeric values are the standard OSS encoding — the same numbers

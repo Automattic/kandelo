@@ -1,0 +1,20 @@
+kind = "library"
+
+name = "pthread-stubs"
+version = "0.5"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://www.x.org/releases/individual/lib/libpthread-stubs-0.5.tar.xz"
+sha256 = "59da566decceba7c2a7970a4a03b48d9905f1262ff94410a649224e33d2442bc"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/xorg/lib/pthread-stubs/-/blob/0.5/COPYING"
+
+[build]
+script_path = "examples/libs/pthread-stubs/build-pthread-stubs.sh"
+
+[outputs]
+pkgconfig = ["lib/pkgconfig/pthread-stubs.pc"]

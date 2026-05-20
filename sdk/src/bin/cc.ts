@@ -6,6 +6,19 @@ import { runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
 import { type WasmArch, detectArch, targetTriple } from '../lib/arch.ts';
 
+function executableRuntimeArgs(toolchain: Toolchain, linkDl: boolean): string[] {
+  const args = [
+    join(toolchain.sysroot, 'lib', 'crt1.o'),
+    join(toolchain.glueDir, 'channel_syscall.c'),
+    join(toolchain.glueDir, 'compiler_rt.c'),
+    join(toolchain.glueDir, 'cxxrt.c'),
+  ];
+  if (linkDl) {
+    args.push(join(toolchain.glueDir, 'dlopen.c'));
+  }
+  return args;
+}
+
 export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: WasmArch = 'wasm32'): string[] {
   const { filtered, warnings } = filterArgs(userArgs, arch);
   for (const w of warnings) console.error(w);
@@ -32,11 +45,24 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
   if (parsed.preprocessOnly) args.push('-E');
   if (parsed.assemblyOnly) args.push('-S');
   if (parsed.outputFile) args.push('-o', parsed.outputFile);
-  args.push(...parsed.otherArgs);
 
-  args.push(...parsed.sourceFiles);
-  args.push(...parsed.objectFiles);
-  args.push(...parsed.archiveFiles);
+  if (linking) {
+    if (parsed.shared) {
+      args.push(...parsed.linkArgs);
+    } else {
+      args.push(
+        ...linkFlags(arch),
+        ...executableRuntimeArgs(toolchain, parsed.linkDl),
+        ...parsed.linkArgs,
+        join(toolchain.sysroot, 'lib', 'libc.a'),
+      );
+    }
+  } else {
+    args.push(...parsed.otherArgs);
+    args.push(...parsed.sourceFiles);
+    args.push(...parsed.objectFiles);
+    args.push(...parsed.archiveFiles);
+  }
 
   // -fPIC is consumed by parseArgs (so the linker can see `parsed.pic`),
   // but it must also reach clang at compile time so the resulting object
@@ -49,21 +75,6 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
     if (parsed.shared) {
       // Shared library build: no CRT, no libc, no syscall glue
       args.push(...SHARED_LINK_FLAGS);
-    } else {
-      // Executable build: link CRT, libc, and syscall glue
-      args.push(
-        join(toolchain.glueDir, 'channel_syscall.c'),
-        join(toolchain.glueDir, 'compiler_rt.c'),
-        join(toolchain.glueDir, 'cxxrt.c'),
-      );
-      if (parsed.linkDl) {
-        args.push(join(toolchain.glueDir, 'dlopen.c'));
-      }
-      args.push(
-        join(toolchain.sysroot, 'lib', 'crt1.o'),
-        join(toolchain.sysroot, 'lib', 'libc.a'),
-        ...linkFlags(arch),
-      );
     }
   }
 

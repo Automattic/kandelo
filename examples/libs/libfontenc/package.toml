@@ -1,0 +1,22 @@
+kind = "library"
+
+name = "libfontenc"
+version = "1.1.9"
+kernel_abi = 7
+depends_on = ["xorgproto@2025.1", "zlib@1.3.1"]
+
+[source]
+url = "https://www.x.org/releases/individual/lib/libfontenc-1.1.9.tar.xz"
+sha256 = "9d8392705cb10803d5fe1d27d236cbab3f664e26841ce01916bbbe430cf273e2"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/xorg/lib/libfontenc/-/blob/libfontenc-1.1.9/COPYING"
+
+[build]
+script_path = "examples/libs/libfontenc/build-libfontenc.sh"
+
+[outputs]
+libs = ["lib/libfontenc.a"]
+headers = ["include/X11/fonts/fontenc.h"]
+pkgconfig = ["lib/pkgconfig/fontenc.pc"]

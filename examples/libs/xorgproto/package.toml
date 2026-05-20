@@ -1,0 +1,45 @@
+# Header-only X protocol package for X.Org clients and servers.
+#
+# Modern X.Org ships the old split protocol packages (`xproto`,
+# `inputproto`, `randrproto`, etc.) from this combined xorgproto
+# tarball. Keeping it as one package matches upstream and avoids
+# carrying a dozen empty header-only recipes.
+
+kind = "library"
+
+name = "xorgproto"
+version = "2025.1"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://www.x.org/releases/individual/proto/xorgproto-2025.1.tar.xz"
+sha256 = "56898c716c0578df8a2d828c9c3e5c528277705c0484381a81960fe1a67668e8"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/xorg/proto/xorgproto/-/tree/xorgproto-2025.1"
+
+[build]
+script_path = "examples/libs/xorgproto/build-xorgproto.sh"
+
+[outputs]
+headers = ["include/X11", "include/GL"]
+pkgconfig = [
+    "lib/pkgconfig/bigreqsproto.pc",
+    "lib/pkgconfig/compositeproto.pc",
+    "lib/pkgconfig/damageproto.pc",
+    "lib/pkgconfig/fixesproto.pc",
+    "lib/pkgconfig/fontsproto.pc",
+    "lib/pkgconfig/inputproto.pc",
+    "lib/pkgconfig/kbproto.pc",
+    "lib/pkgconfig/randrproto.pc",
+    "lib/pkgconfig/recordproto.pc",
+    "lib/pkgconfig/renderproto.pc",
+    "lib/pkgconfig/resourceproto.pc",
+    "lib/pkgconfig/scrnsaverproto.pc",
+    "lib/pkgconfig/videoproto.pc",
+    "lib/pkgconfig/xcmiscproto.pc",
+    "lib/pkgconfig/xextproto.pc",
+    "lib/pkgconfig/xproto.pc",
+]

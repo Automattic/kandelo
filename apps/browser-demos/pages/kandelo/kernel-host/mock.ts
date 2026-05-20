@@ -302,6 +302,9 @@ export class MockKernelHost implements KernelHost {
     return {
       sendInput: () => { /* no-op */ },
       sendMouseEvent: () => { /* no-op */ },
+      sendPointerPosition: () => { /* no-op */ },
+      sendMouseWheelEvent: () => { /* no-op */ },
+      sendKeyEvent: () => { /* no-op */ },
       startAudio: async () => null,
       getBoundPid: () => null,
       onBoundPidChange: () => () => { /* no-op */ },
@@ -333,6 +336,14 @@ export class MockKernelHost implements KernelHost {
           terminalAccess: "drawer",
           internalsAccess: "drawer",
           autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+        };
+      case "desktop-jwm":
+        return {
+          bootPrimary: "syslog",
+          runningPrimary: ["framebuffer", "terminal", "syslog"],
+          terminalAccess: "drawer",
+          internalsAccess: "drawer",
+          autoCommand: "cat /home/desktop-lab.txt",
         };
       case "nginx":
       case "nginx-php":

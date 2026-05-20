@@ -1,6 +1,12 @@
 // Builds a LiveKernelHost over a real BrowserKernel. Used by default when the
 // kandelo page is loaded (use `?mock=1` for MockKernelHost).
 
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    window.location.reload();
+  });
+}
+
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { initServiceWorkerBridge } from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
@@ -16,6 +22,10 @@ import {
   writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
 import { decompress as decompressZstd } from "fzstd";
+import {
+  extractZipEntry,
+  parseZipCentralDirectory,
+} from "../../../../../host/src/vfs/zip";
 import {
   LiveKernelHost,
   type BootDescriptor,
@@ -57,6 +67,15 @@ import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
 import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
+import fbseatProbeWasmUrl from "@binaries/programs/wasm32/fbseat-probe.wasm?url";
+import kdesktopWasmUrl from "@binaries/programs/wasm32/kdesktop.wasm?url";
+import jwmWasmUrl from "@binaries/programs/wasm32/jwm.wasm?url";
+import xvfsBrowserWasmUrl from "@binaries/programs/wasm32/xvfs-browser.wasm?url";
+import xclockWasmUrl from "@binaries/programs/wasm32/xclock.wasm?url";
+import xeyesWasmUrl from "@binaries/programs/wasm32/xeyes.wasm?url";
+import xfbdevWasmUrl from "@binaries/programs/wasm32/Xfbdev.wasm?url";
+import xkbcompWasmUrl from "@binaries/programs/wasm32/xkbcomp.wasm?url";
+import xkeyboardConfigZipUrl from "@binaries/programs/wasm32/xkeyboard-config-2.45-kandelo-xkb.zip?url";
 
 const DEFAULT_SOFTWARE_MANIFEST_URLS = [
   "https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v11/gallery.json",
@@ -121,7 +140,8 @@ type LiveDemoId =
   | "nginx-php"
   | "wordpress-sqlite"
   | "wordpress-mariadb"
-  | "doom";
+  | "doom"
+  | "desktop-jwm";
 
 interface LiveProfile {
   id: LiveDemoId;
@@ -138,12 +158,32 @@ interface LiveProfile {
     maxMemoryPages?: number;
     web?: { label: string; requiredPorts: number[] };
   };
-  framebuffer?: "doom" | "test";
+  framebuffer?: "desktop" | "doom" | "test";
 }
 
 interface WebReadinessState {
   ready: boolean;
   probing: boolean;
+}
+
+interface DesktopProcessSpec {
+  path: string;
+  argv: string[];
+  env?: string[];
+  cwd?: string;
+}
+
+interface DesktopClientSpec extends DesktopProcessSpec {
+  label: string;
+  delayMs?: number;
+}
+
+interface DesktopSessionSpec {
+  probe: DesktopProcessSpec;
+  xServer: DesktopProcessSpec;
+  windowManager: DesktopProcessSpec;
+  clients: DesktopClientSpec[];
+  fallback: DesktopProcessSpec;
 }
 
 const APP_PREFIX = import.meta.env.BASE_URL + "app/";
@@ -209,6 +249,60 @@ const SERVICE_ENV: string[] = [
 ];
 
 const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
+const XFBDEV_ARGV = [
+  "Xfbdev",
+  ":0",
+  "-screen",
+  "640x480x32",
+  "-nolisten",
+  "tcp",
+  "-noreset",
+  "-dumbSched",
+  "-mouse",
+  "evdev,,device=/dev/input/event0",
+  "-keybd",
+  "evdev,,device=/dev/input/event1",
+];
+const JWM_ARGV = ["jwm", "-display", "unix/:0", "-f", "/home/.jwmrc"];
+const XVFS_BROWSER_ARGV = ["xvfs-browser", "/home"];
+const XCLOCK_ARGV = ["xclock"];
+const XEYES_ARGV = ["xeyes"];
+const X_CLIENT_ENV = [...SHELL_ENV, "DISPLAY=unix/:0"];
+const DESKTOP_SESSION: DesktopSessionSpec = {
+  probe: { path: "/usr/local/bin/fbseat-probe", argv: ["fbseat-probe"] },
+  xServer: { path: "/usr/local/bin/Xfbdev", argv: XFBDEV_ARGV },
+  windowManager: { path: "/usr/local/bin/jwm", argv: JWM_ARGV, env: X_CLIENT_ENV, cwd: "/home" },
+  clients: [
+    { label: "X VFS browser", path: "/usr/local/bin/xvfs-browser", argv: XVFS_BROWSER_ARGV, env: X_CLIENT_ENV, cwd: "/home", delayMs: 750 },
+    { label: "xclock", path: "/usr/local/bin/xclock", argv: XCLOCK_ARGV, env: X_CLIENT_ENV, cwd: "/home", delayMs: 750 },
+    { label: "xeyes", path: "/usr/local/bin/xeyes", argv: XEYES_ARGV, env: X_CLIENT_ENV, cwd: "/home", delayMs: 250 },
+  ],
+  fallback: { path: "/usr/local/bin/kdesktop", argv: ["kdesktop"] },
+};
+const DESKTOP_LAB_COMMAND = `cat >/home/desktop-lab.txt <<'EOF'
+Kandelo desktop lab
+
+Running stack:
+  /usr/local/bin/fbseat-probe
+  /usr/local/bin/Xfbdev
+  /usr/local/bin/jwm
+  /usr/local/bin/xvfs-browser
+  /usr/local/bin/xclock
+  /usr/local/bin/xeyes
+  built-in XKB fallback in the Xfbdev wasm port
+  /usr/local/bin/kdesktop fallback
+  /dev/fb0 framebuffer
+  /dev/input/event0 pointer events
+  /dev/input/event1 keyboard key events
+  /dev/input/mice legacy pointer fallback
+  opendir/readdir/stat against the Kandelo VFS
+
+This is the first real desktop-shaped rendering path. fbseat-probe validates
+the generic device contract, then the demo starts a real upstream Xfbdev build
+with JWM and a libX11 VFS browser on DISPLAY=:0. kdesktop remains only as an
+emergency framebuffer fallback while a richer file manager is ported.
+EOF
+cat /home/desktop-lab.txt`;
 
 export type FbDemo = "none" | "test" | "doom";
 
@@ -374,6 +468,14 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       };
     case "doom":
       return { id: "doom", vfsUrl: shellVfsUrl, descriptor: desc, presentation, framebuffer: "doom" };
+    case "desktop-jwm":
+      return {
+        id: "desktop-jwm",
+        vfsUrl: shellVfsUrl,
+        descriptor: desc,
+        presentation,
+        framebuffer: "desktop",
+      };
     case "shell":
     default:
       return {
@@ -408,6 +510,8 @@ async function bootProfile(
   const tick = (msg: string) => {
     host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
   };
+  const stdout = createDmesgOutputSink("stdout", tick);
+  const stderr = createDmesgOutputSink("stderr", tick);
 
   tick(`loading ${profile.id} profile...`);
   const [kernelBytes, vfsBytes, bashBytes, dashBytes, lazyBinaries, softwareBinaries] = await Promise.all([
@@ -431,6 +535,10 @@ async function bootProfile(
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
   }
   memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+  if (profile.id === "desktop-jwm") {
+    seedDesktopLabVfs(memfs);
+    await stageDesktopXkbData(memfs, tick);
+  }
 
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
@@ -440,8 +548,8 @@ async function bootProfile(
     memfs,
     maxWorkers: profile.init?.maxWorkers ?? 4,
     maxMemoryPages: profile.init?.maxMemoryPages,
-    onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
-    onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
+    onStdout: (data) => stdout.push(data),
+    onStderr: (data) => stderr.push(data),
     onProcessEvent: (event) => host.emitProcessEvent(event),
     onListenTcp: (_pid, _fd, port) => {
       seenPorts.add(port);
@@ -510,6 +618,41 @@ async function bootProfile(
 
   if (profile.framebuffer === "test") {
     void spawnLazy(kernel, "/usr/local/bin/fbtest", ["fbtest"], tick);
+  } else if (profile.framebuffer === "desktop") {
+    tick("probing graphical seat...");
+    const probeCode = await spawnLazy(kernel, DESKTOP_SESSION.probe.path, DESKTOP_SESSION.probe.argv, tick, DESKTOP_SESSION.probe);
+    if (probeCode !== 0) {
+      tick(`graphical seat probe exited with code ${probeCode}; continuing for inspection`);
+    }
+    tick("starting Xfbdev...");
+    const xfbdevExit = spawnLazy(kernel, DESKTOP_SESSION.xServer.path, DESKTOP_SESSION.xServer.argv, tick, DESKTOP_SESSION.xServer);
+    const earlyXfbdevStartup = await Promise.race([
+      xfbdevExit.then((code) => ({ kind: "exit" as const, code })),
+      sleep(750).then(() => ({ kind: "starting" as const })),
+    ]);
+    if (earlyXfbdevStartup.kind === "starting") {
+      tick("starting JWM...");
+      void spawnLazy(kernel, DESKTOP_SESSION.windowManager.path, DESKTOP_SESSION.windowManager.argv, tick, DESKTOP_SESSION.windowManager);
+      await sleep(250);
+      for (const client of DESKTOP_SESSION.clients) {
+        tick(`starting ${client.label}...`);
+        void spawnLazy(kernel, client.path, client.argv, tick, client);
+        if (client.delayMs) await sleep(client.delayMs);
+      }
+    }
+    const xfbdevStartup = earlyXfbdevStartup.kind === "exit"
+      ? earlyXfbdevStartup
+      : await Promise.race([
+          xfbdevExit.then((code) => ({ kind: "exit" as const, code })),
+          sleep(2_250).then(() => ({ kind: "running" as const })),
+        ]);
+    if (xfbdevStartup.kind === "running") {
+      tick("Xfbdev stayed up after startup window; leaving JWM and X VFS browser attached");
+      void xfbdevExit;
+    } else {
+      tick(`Xfbdev exited during startup with code ${xfbdevStartup.code}; starting kdesktop fallback`);
+      void spawnLazy(kernel, DESKTOP_SESSION.fallback.path, DESKTOP_SESSION.fallback.argv, tick, DESKTOP_SESSION.fallback);
+    }
   } else if (profile.framebuffer === "doom") {
     tick("starting Doom from bash...");
     void host.runShellCommand(profile.presentation.autoCommand ?? DOOM_COMMAND).catch((err) => {
@@ -535,6 +678,14 @@ function presentationFor(id: LiveDemoId): DemoPresentation {
         terminalAccess: "drawer",
         internalsAccess: "drawer",
         autoCommand: DOOM_COMMAND,
+      };
+    case "desktop-jwm":
+      return {
+        bootPrimary: "syslog",
+        runningPrimary: ["framebuffer", "terminal", "syslog"],
+        terminalAccess: "drawer",
+        internalsAccess: "drawer",
+        autoCommand: DESKTOP_LAB_COMMAND,
       };
     case "nginx":
     case "nginx-php":
@@ -691,6 +842,14 @@ async function registerFbPrograms(kernel: BrowserKernel): Promise<void> {
   const probes = [
     { path: "/usr/local/bin/fbdoom", url: fbdoomWasmUrl },
     { path: "/usr/local/bin/fbtest", url: fbtestWasmUrl },
+    { path: "/usr/local/bin/fbseat-probe", url: fbseatProbeWasmUrl },
+    { path: "/usr/local/bin/kdesktop", url: kdesktopWasmUrl },
+    { path: "/usr/local/bin/jwm", url: jwmWasmUrl },
+    { path: "/usr/local/bin/xvfs-browser", url: xvfsBrowserWasmUrl },
+    { path: "/usr/local/bin/xclock", url: xclockWasmUrl },
+    { path: "/usr/local/bin/xeyes", url: xeyesWasmUrl },
+    { path: "/usr/local/bin/Xfbdev", url: xfbdevWasmUrl },
+    { path: "/usr/bin/xkbcomp", url: xkbcompWasmUrl },
   ];
   ensureDirRecursive(kernel.fs, "/usr/local/bin");
   const sizes = await Promise.all(probes.map((p) => fetchSize(p.url)));
@@ -718,20 +877,192 @@ async function spawnLazy(
   path: string,
   argv: string[],
   tick: (msg: string) => void,
-): Promise<void> {
-  const fetchUrl = path === "/usr/local/bin/fbdoom" ? fbdoomWasmUrl
-    : path === "/usr/local/bin/fbtest" ? fbtestWasmUrl
-    : "";
-  if (!fetchUrl) return;
+  options: { env?: string[]; cwd?: string } = {},
+): Promise<number> {
+  const fetchUrl = lazyProgramUrl(path);
+  if (!fetchUrl) return -1;
   try {
     tick(`fetching ${argv[0]}...`);
     const bytes = await fetch(fetchUrl).then(failOn(argv[0])).then((r) => r.arrayBuffer());
     tick(`spawning ${argv[0]}...`);
-    await kernel.spawn(bytes, argv, { env: SHELL_ENV });
-    tick(`${argv[0]} exited`);
+    const code = await kernel.spawn(bytes, argv, {
+      env: options.env ?? SHELL_ENV,
+      cwd: options.cwd,
+    });
+    tick(`${argv[0]} exited with code ${code}`);
+    return code;
   } catch (err) {
     tick(`${argv[0]} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return -1;
   }
+}
+
+function lazyProgramUrl(path: string): string {
+  return path === "/usr/local/bin/fbdoom" ? fbdoomWasmUrl
+    : path === "/usr/local/bin/fbtest" ? fbtestWasmUrl
+    : path === "/usr/local/bin/fbseat-probe" ? fbseatProbeWasmUrl
+    : path === "/usr/local/bin/kdesktop" ? kdesktopWasmUrl
+    : path === "/usr/local/bin/jwm" ? jwmWasmUrl
+    : path === "/usr/local/bin/xvfs-browser" ? xvfsBrowserWasmUrl
+    : path === "/usr/local/bin/xclock" ? xclockWasmUrl
+    : path === "/usr/local/bin/xeyes" ? xeyesWasmUrl
+    : path === "/usr/local/bin/Xfbdev" ? xfbdevWasmUrl
+    : "";
+}
+
+async function stageDesktopXkbData(
+  fs: MemoryFileSystem,
+  tick: (msg: string) => void,
+): Promise<void> {
+  tick("staging XKB rules...");
+  const zipBytes = new Uint8Array(
+    await fetch(xkeyboardConfigZipUrl)
+      .then(failOn("xkeyboard-config zip"))
+      .then((r) => r.arrayBuffer()),
+  );
+  const entries = parseZipCentralDirectory(zipBytes);
+  let files = 0;
+  for (const entry of entries) {
+    if (entry.isDirectory || entry.isSymlink) continue;
+    if (!entry.fileName.startsWith("usr/share/X11/xkb/")) continue;
+    const path = "/" + entry.fileName.replace(/^\/+/, "");
+    const parent = path.slice(0, path.lastIndexOf("/"));
+    ensureDirRecursive(fs, parent);
+    writeVfsBinary(fs, path, extractZipEntry(zipBytes, entry), entry.mode & 0o777 || 0o644);
+    files++;
+  }
+  ensureDirRecursive(fs, "/usr/share/X11/xkb/compiled");
+  tick(`XKB rules ready (${files} files)`);
+}
+
+function seedDesktopLabVfs(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/home/Desktop");
+  ensureDirRecursive(fs, "/home/Documents");
+  writeVfsFile(fs, "/home/.jwmrc", `<?xml version="1.0"?>
+<JWM>
+  <RootMenu onroot="123">
+    <Program label="VFS Browser">/usr/local/bin/xvfs-browser /home</Program>
+    <Program label="xclock">/usr/local/bin/xclock</Program>
+    <Program label="xeyes">/usr/local/bin/xeyes</Program>
+    <Restart label="Restart JWM"/>
+    <Exit label="Exit JWM" confirm="false"/>
+  </RootMenu>
+
+  <Group>
+    <Class>XvfsBrowser</Class>
+    <Option>x:2</Option>
+    <Option>y:22</Option>
+    <Option>width:418</Option>
+    <Option>height:432</Option>
+  </Group>
+  <Group>
+    <Class>XClock</Class>
+    <Option>x:428</Option>
+    <Option>y:22</Option>
+    <Option>width:208</Option>
+    <Option>height:170</Option>
+  </Group>
+  <Group>
+    <Class>XEyes</Class>
+    <Option>x:428</Option>
+    <Option>y:222</Option>
+    <Option>width:208</Option>
+    <Option>height:146</Option>
+  </Group>
+
+  <Tray x="0" y="-1" width="640" height="24" autohide="off">
+    <TrayButton label="JWM">root:1</TrayButton>
+    <TaskList maxwidth="360"/>
+    <Clock format="%H:%M"/>
+  </Tray>
+
+  <WindowStyle decorations="motif">
+    <Font>fixed</Font>
+    <Width>2</Width>
+    <Corner>0</Corner>
+    <Foreground>#f6f3e8</Foreground>
+    <Background>#3f5967</Background>
+    <Active>
+      <Foreground>#ffffff</Foreground>
+      <Background>#2f7c8f</Background>
+    </Active>
+  </WindowStyle>
+  <TrayStyle decorations="motif">
+    <Font>fixed</Font>
+    <Background>#263238</Background>
+    <Foreground>#f6f3e8</Foreground>
+  </TrayStyle>
+  <TaskListStyle list="all" group="false">
+    <Font>fixed</Font>
+    <Foreground>#f6f3e8</Foreground>
+    <Background>#3b4b52</Background>
+    <Active>
+      <Foreground>#ffffff</Foreground>
+      <Background>#2f7c8f</Background>
+    </Active>
+  </TaskListStyle>
+  <MenuStyle decorations="motif">
+    <Font>fixed</Font>
+    <Foreground>#f6f3e8</Foreground>
+    <Background>#263238</Background>
+    <Active>
+      <Foreground>#ffffff</Foreground>
+      <Background>#2f7c8f</Background>
+    </Active>
+  </MenuStyle>
+  <TrayButtonStyle>
+    <Font>fixed</Font>
+    <Foreground>#f6f3e8</Foreground>
+    <Background>#42535a</Background>
+    <Active>
+      <Foreground>#ffffff</Foreground>
+      <Background>#2f7c8f</Background>
+    </Active>
+  </TrayButtonStyle>
+  <ClockStyle>
+    <Font>fixed</Font>
+    <Foreground>#f6f3e8</Foreground>
+    <Background>#263238</Background>
+  </ClockStyle>
+
+  <TitleButtonOrder>witmx</TitleButtonOrder>
+  <Desktops width="1" height="1">
+    <Background type="solid">#182026</Background>
+  </Desktops>
+  <FocusModel>click</FocusModel>
+  <MoveMode>opaque</MoveMode>
+  <ResizeMode>opaque</ResizeMode>
+  <DoubleClickSpeed>400</DoubleClickSpeed>
+  <DoubleClickDelta>4</DoubleClickDelta>
+</JWM>
+`);
+  writeVfsFile(fs, "/home/desktop-lab.txt", `Kandelo desktop lab
+
+This file is inside the live Kandelo VFS. The framebuffer desktop reads this
+directory with opendir/readdir/stat from inside a wasm32 process.
+
+The prototype now stages real Xfbdev and JWM binaries, then runs multiple
+libX11 clients on DISPLAY=:0: a VFS browser, xclock, and xeyes. That proves the
+next user-space layer above the framebuffer without adding desktop-demo-specific
+kernel code.
+
+The /usr/local/bin/fbseat-probe command validates the graphics seat ABI.
+The Xfbdev wasm port uses a built-in XKB fallback, avoiding an external
+xkbcomp fork before the display starts accepting clients.
+
+Input policy: text-mode programs should continue to use POSIX terminal
+I/O. The framebuffer desktop also exposes Linux fbdev/evdev devices because
+those are the practical compatibility layer for X, Wayland, SDL, and
+desktop-style graphical programs.
+`);
+  writeVfsFile(fs, "/home/Documents/next-steps.txt", `Next steps:
+1. keep POSIX terminal I/O as the default text input path
+2. keep Linux fbdev/evdev as optional graphical-seat compatibility devices
+3. run /usr/local/bin/fbseat-probe after graphics-seat changes
+4. keep Xfbdev accepting X clients through AF_UNIX sockets
+5. keep replacing the Xlib VFS browser fallback with a richer VFS-aware file manager
+`);
+  writeVfsFile(fs, "/home/Desktop/open-me.txt", "This desktop icon is backed by the Kandelo VFS.\n");
 }
 
 function maybeMarkWebReady(
@@ -827,6 +1158,23 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function createDmesgOutputSink(label: string, tick: (msg: string) => void): { push(data: Uint8Array): void } {
+  const decoder = new TextDecoder();
+  let carry = "";
+  return {
+    push(data: Uint8Array) {
+      carry += decoder.decode(data, { stream: true });
+      const lines = carry.split(/\r?\n/);
+      carry = lines.pop() ?? "";
+      for (const line of lines) tick(line || label);
+      if (carry.length > 4096) {
+        tick(carry);
+        carry = "";
+      }
+    },
+  };
+}
+
 function setupBridgeRestoreListener(
   kernel: BrowserKernel,
   httpPort: number,
@@ -861,7 +1209,12 @@ function descriptorFor(id: LiveDemoId): BootDescriptor {
       arch: "wasm32",
       kernel: "kernel@local",
       memoryPages: id === "wordpress-mariadb" || id === "node" || software ? 4096 : 2048,
-      features: ["shared-array-buffer", "pty", ...(item.id === "doom" ? ["framebuffer"] : []), ...(item.id === "shell" || item.id === "doom" || software ? [] : ["tcp-bridge"])],
+      features: [
+        "shared-array-buffer",
+        "pty",
+        ...(item.id === "doom" || item.id === "desktop-jwm" ? ["framebuffer"] : []),
+        ...(item.id === "shell" || item.id === "doom" || item.id === "desktop-jwm" || software ? [] : ["tcp-bridge"]),
+      ],
       time: "real",
     },
     packages: software ? [] : item.packages,
@@ -877,7 +1230,7 @@ function descriptorFor(id: LiveDemoId): BootDescriptor {
         return [kv.slice(0, idx), kv.slice(idx + 1)];
       })),
     },
-    caps: { network: item.id !== "shell" && item.id !== "doom" && !software },
+    caps: { network: item.id !== "shell" && item.id !== "doom" && item.id !== "desktop-jwm" && !software },
   };
 }
 
@@ -1243,6 +1596,7 @@ function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
     case "wordpress-sqlite":
     case "wordpress-mariadb":
     case "doom":
+    case "desktop-jwm":
       return id;
     case "wordpress":
       return "wordpress-sqlite";

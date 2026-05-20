@@ -131,7 +131,11 @@ has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
-has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
+has_programs() {
+    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; } &&
+    has_resolvable programs/kdesktop.wasm &&
+    has_resolvable programs/fbseat-probe.wasm
+}
 
 # Package-system entries: layout derived from package.toml's
 # `[[outputs]]` via `xtask build-deps output-path`. Source-tree

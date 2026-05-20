@@ -25,10 +25,12 @@ const repoRoot = path.resolve(__dirname, "../..");
 function resolveKernelArtifactsAlias(): Plugin {
   const KERNEL = "@kernel-wasm";
   const ROOTFS = "@rootfs-vfs";
+  const MISSING_ROOTFS_URL = "\0missing-rootfs-url";
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
     resolveId(source) {
+      if (source === MISSING_ROOTFS_URL) return source;
       const queryIdx = source.indexOf("?");
       const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
       const query = queryIdx === -1 ? "" : source.slice(queryIdx);
@@ -46,12 +48,17 @@ function resolveKernelArtifactsAlias(): Plugin {
       if (pathPart === ROOTFS) {
         const file = path.resolve(repoRoot, "host/wasm/rootfs.vfs");
         if (fs.existsSync(file)) return file + query;
+        if (query.includes("url")) return MISSING_ROOTFS_URL;
         this.error(
           "rootfs.vfs not found. Run `bash build.sh` from the repo root.\n" +
           `  Looked at: ${file}`
         );
       }
       return null;
+    },
+    load(id) {
+      if (id !== MISSING_ROOTFS_URL) return null;
+      return `export default "/__missing_binary__/rootfs.vfs";`;
     },
   };
 }
@@ -79,10 +86,12 @@ function resolveKernelArtifactsAlias(): Plugin {
  */
 function resolveBinariesAlias(): Plugin {
   const PREFIX = "@binaries/";
+  const MISSING_URL_PREFIX = "\0missing-binary-url:";
   return {
     name: "resolve-binaries-alias",
     enforce: "pre",
     resolveId(source) {
+      if (source.startsWith(MISSING_URL_PREFIX)) return source;
       if (!source.startsWith(PREFIX)) return null;
       const queryIdx = source.indexOf("?");
       const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
@@ -92,11 +101,20 @@ function resolveBinariesAlias(): Plugin {
       if (fs.existsSync(local)) return local + query;
       const fetched = path.resolve(repoRoot, "binaries", rest);
       if (fs.existsSync(fetched)) return fetched + query;
+      if (query.includes("url")) {
+        return MISSING_URL_PREFIX + rest;
+      }
       this.error(
         `@binaries: ${rest} not found. ` +
         `Looked at:\n  ${local}\n  ${fetched}\n` +
         `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`
       );
+    },
+    load(id) {
+      if (!id.startsWith(MISSING_URL_PREFIX)) return null;
+      const rest = id.slice(MISSING_URL_PREFIX.length);
+      const url = `/__missing_binary__/${encodeURIComponent(rest)}`;
+      return `export default ${JSON.stringify(url)};`;
     },
   };
 }

@@ -63,6 +63,27 @@ Key source files:
 | `lock.rs` | Advisory file locking (fcntl F_SETLK/F_GETLK) |
 | `wasm_api.rs` | Wasm export/import boundary (`#[no_mangle] extern "C"`) |
 
+### Device Surface Policy
+
+Kandelo is POSIX-first. Guest programs should use ordinary POSIX descriptors,
+PTYs, termios, paths, mmap, poll/select, pipes, sockets, and signals wherever
+those interfaces are sufficient.
+
+Linux device nodes are added only when they are compact, broadly useful
+compatibility surfaces. Current graphical-seat devices follow that rule:
+`/dev/fb0` for framebuffer rendering, `/dev/input/mice` for legacy pointer
+input, and `/dev/input/event0` / `/dev/input/event1` for evdev pointer and
+keyboard input. Text-mode keyboard input remains a terminal/PTY/stdin concern;
+evdev is for graphical stacks that need raw seat events.
+
+Linux VT aliases `/dev/tty0` and `/dev/tty1` are present only as lightweight
+compatibility shims over the controlling terminal. VT activation and KD
+graphics/text mode ioctls are accepted as no-op probes for Xfbdev/SDL-style
+console backends; Kandelo does not expose real virtual-console multiplexing.
+
+See `docs/plans/2026-05-18-graphics-seat-device-policy.md` for the detailed
+policy and guardrails.
+
 Key kernel exports (called by the host):
 
 ```
@@ -478,7 +499,8 @@ Browsers cannot create raw TCP connections. Two strategies:
 
 ## Framebuffer (`/dev/fb0`)
 
-The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, mplayer-fbdev, etc.) runs without source-level changes.
+The kernel exposes a Linux fbdev surface so unmodified direct-framebuffer
+software can run without source-level changes.
 
 ```
    user process                       kernel                            host
@@ -503,7 +525,9 @@ ABI version bumped 5 → 6 to capture the new `repr(C)` structs `FbBitfield`, `F
 
 ## Mouse input (`/dev/input/mice`)
 
-The kernel exposes a Linux `mousedev` PS/2 surface so unmodified fbdev software (fbDOOM, etc.) gets mouse input from the browser canvas. Direction is reversed vs. fbdev: events flow **host → kernel → process**.
+The kernel exposes a Linux `mousedev` PS/2 surface so unmodified fbdev
+software can get mouse input from the browser canvas. Direction is
+reversed vs. fbdev: events flow **host → kernel → process**.
 
 ```
    browser main thread                kernel-worker / kernel              user process
@@ -517,16 +541,22 @@ The kernel exposes a Linux `mousedev` PS/2 surface so unmodified fbdev software 
                                                                                           single-owner via MICE_OWNER (second open from another pid → EBUSY)
                                                                                    ◄────  read(fd, pkt, 3)
                                                            drain bytes from queue
-                                                                                   ─────►  decode + apply (e.g. ev_mouse for fbDOOM)
+                                                                                  ─────►  decode + apply
 ```
 
-The kernel buffers raw 3-byte packets — there is no userspace queue until the process allocates one and tells us about it, and a kernel-side queue lets `read()` complete synchronously without a host round-trip. The buffer is bounded at 4096 packets with whole-packet drop on overflow (≈10s at 400Hz). `poll()` returns `POLLIN` only when bytes are queued; `O_NONBLOCK` reads return `EAGAIN` when empty.
+The kernel buffers raw 3-byte packets — there is no userspace queue until the process allocates one and tells us about it, and a kernel-side queue lets `read()` complete synchronously without a host round-trip. Large motion is split into multiple signed-8-bit PS/2 packets so a desktop-style first move from the framebuffer center to the host cursor does not get truncated. The buffer is bounded at 4096 packets with whole-packet drop on overflow (≈10s at 400Hz). `poll()` returns `POLLIN` only when bytes are queued; `O_NONBLOCK` reads return `EAGAIN` when empty.
 
-Single-open semantics match real Linux mousedev exclusive-grab. The host inverts browser `deltaY` (browser positive-down → PS/2 positive-up) before injecting, so the kernel queue holds canonical PS/2 sign convention. ABI version bumped 6 → 7 to register the new `kernel_inject_mouse_event(i32, i32, u32) -> ()` export.
+Single-open semantics match real Linux mousedev exclusive-grab. The host inverts browser `deltaY` (browser positive-down → PS/2 positive-up) before injecting, so the kernel queue holds canonical PS/2 sign convention. When a framebuffer canvas is CSS-scaled, the host must map pointer motion through the framebuffer/CSS scale before injecting; pointer-lock paths should preserve fractional residuals so small host movements are not dropped. Desktop-style surfaces may instead map absolute host cursor position into framebuffer pixels and inject the relative delta needed to keep the guest-drawn cursor under the native cursor. ABI version bumped 6 → 7 to register the new `kernel_inject_mouse_event(i32, i32, u32) -> ()` export.
+
+For Linux evdev clients, the same host pointer path also feeds `/dev/input/event0` with `REL_X`, `REL_Y`, button edges, and `REL_WHEEL`. Unlike the PS/2 byte stream, evdev relative motion is emitted as full 32-bit `input_event.value` deltas; it must not inherit the PS/2 signed-8-bit clamp. Browser wheel events are normalized into evdev wheel ticks with positive values meaning wheel-up; the legacy `/dev/input/mice` path remains a plain three-byte PS/2 stream until an IMPS/2 negotiation surface is needed.
+
+The graphics-seat device boundary is documented in `docs/plans/2026-05-18-graphics-seat-device-policy.md`. The short version is POSIX-first for ordinary files, terminals, processes, pipes, sockets, and PTYs, with Linux fbdev/evdev/VT compatibility only where it unlocks broad graphical software rather than a demo-specific path.
 
 ## Audio output (`/dev/dsp`)
 
-The kernel exposes an OSS-style `/dev/dsp` character device so unmodified Linux audio software (fbDOOM, etc.) can play sound through a browser `AudioContext`. Direction is reversed vs. mouse: PCM samples flow **process → kernel → host**.
+The kernel exposes an OSS-style `/dev/dsp` character device so unmodified
+Linux audio software can play sound through a browser `AudioContext`.
+Direction is reversed vs. mouse: PCM samples flow **process → kernel → host**.
 
 ```
    user process                       kernel-worker / kernel                browser main thread
@@ -546,7 +576,10 @@ The kernel exposes an OSS-style `/dev/dsp` character device so unmodified Linux 
                                                                                 on AudioContext clock
 ```
 
-The kernel does **not** mix or synthesize audio. The user program (DOOM's mixer in `i_kernel_sound.c` plus the OPL2 software synth in `i_oplmusic.c` + `opl/opl3.c` for music) does that work and writes interleaved S16_LE frames; the kernel ring is just transport. fbDOOM's mixer produces 1280 stereo frames per ~28 ms game tic — slightly more than the 1260 frames the AudioContext consumes per tic — so the ring stays full enough to hide drain jitter, and the drop-oldest-on-overflow policy keeps memory bounded.
+The kernel does **not** mix or synthesize audio. User-space does that work
+and writes interleaved S16_LE frames; the kernel ring is just transport.
+The host drains whole frames and the drop-oldest-on-overflow policy keeps
+memory bounded when a producer outruns the browser audio scheduler.
 
 Single-open semantics match the typical OSS exclusive-grab model. Owner ownership is released on `close` of the last `/dev/dsp` fd, on `execve`, and on process exit; the ring is flushed at the same time so a successor open hears silence rather than the tail of the previous program. ABI version bumped 7 → 8 to register the new `kernel_drain_audio(i64, i32) -> i32` export plus the three readouts `kernel_audio_sample_rate / channels / pending`. The OSS ioctl encodings live in `crates/shared/src/lib.rs::oss`.
 

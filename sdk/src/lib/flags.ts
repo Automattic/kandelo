@@ -17,6 +17,10 @@ export function linkFlags(arch: WasmArch): string[] {
   return [
     '-nostdlib',
     '-Wl,--entry=_start',
+    // Pull conventional three-argument main() out of static archives.
+    // Clang's Wasm frontend emits __main_argc_argv/__main_void for the
+    // standard signatures, but older Unix code may define main(argc,argv,envp).
+    '-Wl,--undefined=main',
     '-Wl,--export=_start',
     '-Wl,--export=__heap_base',
     '-Wl,--import-memory',
@@ -58,7 +62,7 @@ export const SHARED_LINK_FLAGS: string[] = [
 const IGNORED_EXACT = new Set([
   '-pthread', '-lpthread',
   '-fPIE', '-pie',
-  '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
+  '-lc', '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
   '-rdynamic', '-Wl,-Bsymbolic',
 ]);
 
@@ -107,6 +111,7 @@ export interface ParsedArgs {
   objectFiles: string[];
   archiveFiles: string[];
   otherArgs: string[];
+  linkArgs: string[];
 }
 
 const SOURCE_EXTS = new Set(['.c', '.cc', '.cpp', '.cxx', '.m', '.mm', '.i', '.ii']);
@@ -137,6 +142,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     objectFiles: [],
     archiveFiles: [],
     otherArgs: [],
+    linkArgs: [],
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -161,21 +167,30 @@ export function parseArgs(args: string[]): ParsedArgs {
     } else if (FLAGS_WITH_VALUE.has(arg)) {
       // Flag that takes the next arg as its value — keep both as otherArgs
       result.otherArgs.push(arg);
+      result.linkArgs.push(arg);
       i++;
-      if (i < args.length) result.otherArgs.push(args[i]);
+      if (i < args.length) {
+        result.otherArgs.push(args[i]);
+        result.linkArgs.push(args[i]);
+      }
     } else if (!arg.startsWith('-')) {
       const ext = arg.substring(arg.lastIndexOf('.'));
       if (SOURCE_EXTS.has(ext)) {
         result.sourceFiles.push(arg);
+        result.linkArgs.push(arg);
       } else if (OBJECT_EXTS.has(ext)) {
         result.objectFiles.push(arg);
+        result.linkArgs.push(arg);
       } else if (ARCHIVE_EXTS.has(ext)) {
         result.archiveFiles.push(arg);
+        result.linkArgs.push(arg);
       } else {
         result.otherArgs.push(arg);
+        result.linkArgs.push(arg);
       }
     } else {
       result.otherArgs.push(arg);
+      result.linkArgs.push(arg);
     }
   }
 

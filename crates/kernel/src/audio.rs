@@ -3,19 +3,19 @@
 //! Surface mirrors what the Linux Open Sound System (OSS) `dsp` device
 //! exposes: a character device that user-space writes raw PCM frames
 //! into, with a handful of `ioctl`s for sample rate / format / channel
-//! count. The kernel does **not** synthesize or mix audio — DOOM's own
-//! mixer fills its 16-bit-stereo buffer and `write()`s it here. The host
-//! periodically drains the resulting byte stream via
+//! count. The kernel does **not** synthesize or mix audio — user-space
+//! fills a PCM buffer and `write()`s it here. The host periodically
+//! drains the resulting byte stream via
 //! [`drain_into`] (exposed as the `kernel_drain_audio` wasm export) and
 //! feeds it to a Web Audio AudioContext.
 //!
 //! ## Format
 //!
-//! We accept exactly the format fbDOOM (and most OSS clients) configure
-//! by default: signed-16-bit little-endian, stereo, ~11025–48000 Hz. The
-//! `ioctl` handler validates each request and stores the chosen rate /
-//! channel count so the host can pick them up via
-//! [`current_config`]; anything else is `EINVAL`.
+//! We accept a deliberately small, broadly useful OSS subset: signed
+//! 16-bit little-endian PCM, mono or stereo, and a hardware-sensible
+//! sample-rate range. The `ioctl` handler validates each request and
+//! stores the chosen rate / channel count so the host can pick them up
+//! via [`current_config`]; unsupported formats are `EINVAL`.
 //!
 //! ## Single-owner
 //!
@@ -44,13 +44,14 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 /// Owning pid of `/dev/dsp`, or `-1` if free.
 pub(crate) static DSP_OWNER: AtomicI32 = AtomicI32::new(-1);
 
-/// Currently configured sample rate (Hz). Defaults to fbDOOM's preferred
-/// 11025 Hz so a process that opens the device without ever calling
-/// `SNDCTL_DSP_SPEED` still produces something playable.
-pub(crate) static SAMPLE_RATE: AtomicU32 = AtomicU32::new(11025);
+/// Default OSS sample rate used before a program calls
+/// `SNDCTL_DSP_SPEED`.
+pub(crate) const DEFAULT_SAMPLE_RATE: u32 = 44100;
 
-/// Currently configured channel count (1 = mono, 2 = stereo). Defaults
-/// to stereo to match fbDOOM's default.
+/// Currently configured sample rate (Hz).
+pub(crate) static SAMPLE_RATE: AtomicU32 = AtomicU32::new(DEFAULT_SAMPLE_RATE);
+
+/// Currently configured channel count (1 = mono, 2 = stereo).
 pub(crate) static CHANNELS: AtomicU32 = AtomicU32::new(2);
 
 /// Bytes per S16_LE sample times channel count. Used to align ring
@@ -59,10 +60,9 @@ fn frame_bytes() -> usize {
     2 * (CHANNELS.load(Ordering::Relaxed) as usize).max(1)
 }
 
-/// Ring capacity in bytes. ~256 KiB → ~1.5 s of stereo S16 at 44100 Hz,
-/// or ~6 s at 11025 Hz. Generous enough that the host can fall behind a
-/// few RAFs without dropping audio, small enough that kernel memory
-/// pressure stays bounded.
+/// Ring capacity in bytes. ~256 KiB → ~1.5 s of stereo S16 at 44100 Hz.
+/// Generous enough that the host can fall behind a few RAFs without
+/// dropping audio, small enough that kernel memory pressure stays bounded.
 const MAX_QUEUED_BYTES: usize = 256 * 1024;
 
 struct GlobalRing(UnsafeCell<VecDeque<u8>>);
@@ -135,8 +135,7 @@ pub fn reset() {
 
 /// Set the sample rate (Hz). Returns the rate actually stored — OSS
 /// behavior: clamp to a hardware-sensible range and report back what we
-/// landed on. We accept the full range fbDOOM and similar consumers
-/// emit (11025, 22050, 44100, 48000) plus reasonable extremes.
+/// landed on.
 pub fn set_sample_rate(hz: u32) -> u32 {
     let clamped = hz.clamp(4000, 192000);
     SAMPLE_RATE.store(clamped, Ordering::Relaxed);
@@ -185,7 +184,7 @@ mod tests {
         // observable state behind.
         let g = TEST_RING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
-        SAMPLE_RATE.store(11025, Ordering::Relaxed);
+        SAMPLE_RATE.store(DEFAULT_SAMPLE_RATE, Ordering::Relaxed);
         CHANNELS.store(2, Ordering::Relaxed);
         g
     }

@@ -97,13 +97,13 @@ export interface KernelLike {
   readonly framebuffers?: FramebufferRegistryLike;
   /**
    * Per-pid wasm Memory accessor. Needed for mmap-based framebuffer
-   * bindings; write-based bindings (fbDOOM) don't reach into this.
+   * bindings; write-based bindings don't reach into this.
    */
   getProcessMemory?(pid: number): WebAssembly.Memory | undefined;
   /**
    * Append bytes to a process's stdin buffer. Used by the framebuffer
    * input path so DOM key events on the canvas reach the fb-bound
-   * process (fbDOOM reads scancodes from stdin).
+   * process.
    */
   appendStdinData?(pid: number, data: Uint8Array): void;
   /**
@@ -112,6 +112,10 @@ export interface KernelLike {
    * bit0=left, bit1=right, bit2=middle.
    */
   injectMouseEvent?(dx: number, dy: number, buttons: number): void;
+  /** Push one Linux evdev wheel event into `/dev/input/event0`. */
+  injectMouseWheelEvent?(delta: number): void;
+  /** Push one Linux evdev keyboard event into `/dev/input/event1`. */
+  injectKeyboardEvent?(keycode: number, pressed: boolean): void;
   /**
    * Drain PCM bytes buffered in `/dev/dsp` for browser playback.
    */
@@ -248,6 +252,17 @@ export interface FramebufferHandle {
    * process is bound or the wrapped kernel lacks mouse injection support.
    */
   sendMouseEvent(dx: number, dy: number, buttons: number): void;
+  /**
+   * Move the guest pointer to framebuffer coordinates and update button state.
+   *
+   * This is a host-side convenience. Guests still see ordinary relative
+   * Linux pointer events on `/dev/input/event0` and `/dev/input/mice`.
+   */
+  sendPointerPosition(x: number, y: number, buttons: number, options?: { reset?: boolean }): void;
+  /** Send one Linux evdev wheel event to `/dev/input/event0`. */
+  sendMouseWheelEvent(delta: number): void;
+  /** Send one Linux evdev keyboard edge to `/dev/input/event1`. */
+  sendKeyEvent(keycode: number, pressed: boolean): void;
   /**
    * Start draining `/dev/dsp` into Web Audio. Returns null when the wrapped
    * kernel does not expose audio draining.
@@ -708,8 +723,8 @@ export class LiveKernelHost implements KernelHost {
 
   /**
    * Write a command into the persistent PTY-backed shell. Owner code uses
-   * this for demos like Doom where the app should visibly originate from a
-   * real terminal command even when the terminal drawer starts closed.
+   * this for demos where the app should visibly originate from a real
+   * terminal command even when the terminal drawer starts closed.
    */
   async runShellCommand(command: string): Promise<void> {
     const pty = await this.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
@@ -1206,12 +1221,18 @@ export class LiveKernelHost implements KernelHost {
      * avoid leaking scancode bytes into the shell after exit.
      */
     let attachedPtyPid: number | null = null;
+    let guestPointerX: number | null = null;
+    let guestPointerY: number | null = null;
     const boundPidListeners = new ListenerSet<number | null>();
 
     const setBoundPid = (pid: number | null) => {
       if (pid === attachedPid) return;
       attachedPid = pid;
-      if (pid === null) attachedPtyPid = null;
+      if (pid === null) {
+        attachedPtyPid = null;
+        guestPointerX = null;
+        guestPointerY = null;
+      }
       boundPidListeners.emit(pid);
     };
 
@@ -1294,6 +1315,36 @@ export class LiveKernelHost implements KernelHost {
       sendMouseEvent: (dx, dy, buttons) => {
         if (ensureStillBound() === null) return;
         kernel.injectMouseEvent?.(dx, dy, buttons);
+        if (guestPointerX !== null) {
+          guestPointerX = Math.max(0, Math.min(canvas.width - 1, guestPointerX + dx));
+        }
+        if (guestPointerY !== null) {
+          guestPointerY = Math.max(0, Math.min(canvas.height - 1, guestPointerY - dy));
+        }
+      },
+      sendPointerPosition: (x, y, buttons, options = {}) => {
+        if (ensureStillBound() === null) return;
+        const targetX = Math.max(0, Math.min(canvas.width - 1, Math.round(x)));
+        const targetY = Math.max(0, Math.min(canvas.height - 1, Math.round(y)));
+        if (options.reset || guestPointerX === null || guestPointerY === null) {
+          const resetDelta = Math.max(canvas.width, canvas.height, 1) * 4;
+          kernel.injectMouseEvent?.(-resetDelta, resetDelta, buttons);
+          guestPointerX = 0;
+          guestPointerY = 0;
+        }
+        const dx = targetX - guestPointerX;
+        const dy = targetY - guestPointerY;
+        if (dx !== 0 || dy !== 0) kernel.injectMouseEvent?.(dx, -dy, buttons);
+        guestPointerX = targetX;
+        guestPointerY = targetY;
+      },
+      sendMouseWheelEvent: (delta) => {
+        if (ensureStillBound() === null) return;
+        kernel.injectMouseWheelEvent?.(delta);
+      },
+      sendKeyEvent: (keycode, pressed) => {
+        if (ensureStillBound() === null) return;
+        kernel.injectKeyboardEvent?.(keycode, pressed);
       },
       startAudio: async () => {
         if (!kernel.drainAudio) return null;

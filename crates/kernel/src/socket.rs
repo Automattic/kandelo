@@ -321,15 +321,13 @@ impl SocketTable {
 // accept queue across parent and children — any process can accept a
 // pending connection. Our SocketInfo lives in per-process tables, so a
 // naive fork+accept model would give each process its own backlog. To
-// match POSIX semantics for AF_INET listeners (the typical fork-server
-// pattern: nginx master + workers), we keep the actual pending queue
+// match POSIX semantics for stream listeners (the typical fork-server
+// pattern: nginx master + workers, or an X server that forks after
+// binding its display socket), we keep the actual pending queue
 // in this global table and reference it by index from each forked
 // SocketInfo copy.
-//
-// AF_UNIX same-process listeners still use the inline `listen_backlog`
-// field (sys_connect pre-allocates the accepted SocketInfo there).
 
-/// A pending TCP connection waiting in a shared accept queue.
+/// A pending stream connection waiting in a shared accept queue.
 pub struct PendingConnection {
     pub peer_addr: [u8; 4],
     pub peer_port: u16,

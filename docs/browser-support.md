@@ -103,18 +103,24 @@ Browser fetch → Service Worker intercepts
 - xterm.js integration via `PtyTerminal`
 
 ### Framebuffer (`/dev/fb0`)
-- 640×400 BGRA32 packed-pixel framebuffer; single-process owner.
+- Linux fbdev-compatible BGRA32 packed-pixel framebuffer; single-process owner.
+- Supported modes today are 640x400, 640x480, 800x600, and 1024x768 at 32 bpp.
 - The pixel buffer lives in the process's `WebAssembly.Memory` (a `SharedArrayBuffer`); the kernel notifies the host of `(pid, addr, len, w, h, stride, fmt)` on `mmap`, and the host renders via `requestAnimationFrame` + a 2D-canvas `putImageData` per frame.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
-- Keyboard input: the demo page maps browser `KeyboardEvent.code` to AT-set-1 scancodes and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software (which puts the tty into MEDIUMRAW mode) decodes those bytes as scancodes.
+- Keyboard input: framebuffer panes map browser `KeyboardEvent.code` to AT-set-1 scancodes for tty/MEDIUMRAW clients and to Linux evdev `KEY_*` edges on `/dev/input/event1` for graphical clients.
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via `FBIOPAN_DISPLAY` is a no-op.
 
 ### Mouse input (`/dev/input/mice`)
-- Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
-- **Pointer Lock recommended.** The DOOM demo calls `canvas.requestPointerLock()` on first click so the browser delivers unbounded relative motion (`MouseEvent.movementX/Y`). Without pointer lock, `clientX/Y` deltas clamp at the canvas edges and feel sluggish for first-person controls. Press `Esc` to release the lock.
-- Browser `deltaY` is positive-down; the demo inverts it before injection so the kernel queue holds canonical PS/2 (positive-up) deltas.
+- Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`. Framebuffer panes also translate DOM wheel events into Linux evdev `REL_WHEEL` through `/dev/input/event0` via `kernel_inject_mouse_wheel_event`.
+- Desktop-style Kandelo framebuffer panes map the host cursor's `clientX/Y` through the rendered canvas's framebuffer/CSS scale and inject the relative delta required to keep the guest-drawn cursor under the native cursor. The native cursor is hidden while `/dev/fb0` is bound, so the user sees only the guest cursor.
+- Pointer-lock pages, such as the DOOM demo, scale `movementX/Y` by the same framebuffer/CSS ratio and preserve fractional residuals between events so small movements are not dropped. Pointer lock is still the right path for first-person controls because it gives unbounded relative motion.
+- Browser `deltaY` is positive-down; browser paths invert it before injection so the kernel queue holds canonical PS/2 (positive-up) deltas.
 - Browser `MouseEvent.button` (0=L, 1=M, 2=R) is mapped to PS/2 button bits (bit0=L, bit1=R, bit2=M). Right-click suppresses the browser context menu via `contextmenu` `preventDefault()`.
 - Single-owner device (one process can hold `/dev/input/mice` open at a time; second open from another pid returns `EBUSY`).
+
+### Graphics seat policy
+- The browser desktop path is intentionally POSIX-first with small Linux compatibility devices where real graphical software expects them.
+- See `docs/plans/2026-05-18-graphics-seat-device-policy.md` for the device boundary and guardrails.
 
 ### Audio output (`/dev/dsp`)
 - The kernel exposes an OSS-style `/dev/dsp` character device. User programs `open(O_WRONLY)`, configure rate / channels / format via `SNDCTL_DSP_*` ioctls, and `write()` interleaved 16-bit-LE PCM. The kernel buffers samples in a 256 KiB ring (~1.5 s of stereo S16 @ 44.1 kHz). On overflow the *oldest* whole frame drops — same trade-off real OSS hardware makes under hardware overrun.

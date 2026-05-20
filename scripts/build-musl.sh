@@ -151,13 +151,13 @@ rm -rf "$SYSROOT"
 make install
 
 # ---------------------------------------------------------------
-# 6. Build __main_void wrapper and add to libc.a
+# 6. Build Wasm main adapter and add to libc.a
 # ---------------------------------------------------------------
-echo "==> Building __main_void wrapper..."
+echo "==> Building Wasm main adapter..."
 "$CC" --target=$TARGET -O2 -c \
-    "$OVERLAY_DIR/src/env/__main_void.c" \
-    -o "$SYSROOT/lib/__main_void.o"
-"$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__main_void.o"
+    "$OVERLAY_DIR/src/env/__wasm_posix_main.c" \
+    -o "$SYSROOT/lib/__wasm_posix_main.o"
+"$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__wasm_posix_main.o"
 
 # ---------------------------------------------------------------
 # 7. Build setjmp runtime (requires -fwasm-exceptions for __builtin_wasm_throw)

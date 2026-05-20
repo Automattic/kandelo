@@ -64,6 +64,8 @@ pub enum VirtualDevice {
     Fb0,     // /dev/fb0          host_handle = -5
     Mice,    // /dev/input/mice   host_handle = -6
     Dsp,     // /dev/dsp          host_handle = -7
+    Event0,  // /dev/input/event0 host_handle = -8
+    Event1,  // /dev/input/event1 host_handle = -9
 }
 
 impl VirtualDevice {
@@ -77,6 +79,8 @@ impl VirtualDevice {
             VirtualDevice::Fb0 => -5,
             VirtualDevice::Mice => -6,
             VirtualDevice::Dsp => -7,
+            VirtualDevice::Event0 => -8,
+            VirtualDevice::Event1 => -9,
         }
     }
 
@@ -90,6 +94,8 @@ impl VirtualDevice {
             -5 => Some(VirtualDevice::Fb0),
             -6 => Some(VirtualDevice::Mice),
             -7 => Some(VirtualDevice::Dsp),
+            -8 => Some(VirtualDevice::Event0),
+            -9 => Some(VirtualDevice::Event1),
             _ => None,
         }
     }
@@ -104,6 +110,8 @@ impl VirtualDevice {
             VirtualDevice::Fb0 => 5,
             VirtualDevice::Mice => 6,
             VirtualDevice::Dsp => 7,
+            VirtualDevice::Event0 => 8,
+            VirtualDevice::Event1 => 9,
         }
     }
 }
@@ -122,9 +130,15 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/full" => Some(VirtualDevice::Full),
         b"/dev/fb0" => Some(VirtualDevice::Fb0),
         b"/dev/input/mice" => Some(VirtualDevice::Mice),
+        b"/dev/input/event0" => Some(VirtualDevice::Event0),
+        b"/dev/input/event1" => Some(VirtualDevice::Event1),
         b"/dev/dsp" => Some(VirtualDevice::Dsp),
         _ => None,
     }
+}
+
+fn is_dev_tty_alias(path: &[u8]) -> bool {
+    matches!(path, b"/dev/tty" | b"/dev/tty0" | b"/dev/tty1")
 }
 
 /// Sentinel host_handle for synthetic in-kernel files.
@@ -200,43 +214,56 @@ fn match_dev_fd(path: &[u8]) -> Option<i32> {
     None
 }
 
-/// Try to claim `/dev/fb0` for the calling process.
-///
-/// `/dev/fb0` is single-owner: at most one process at a time can have an
-/// open fd referencing it. Re-opens by the current owner are allowed
-/// (mirrors Linux fbdev's "exclusive open" semantics). Anyone else gets
-/// `EBUSY`.
-fn acquire_fb0_or_busy(pid: u32) -> Result<(), Errno> {
-    use core::sync::atomic::Ordering;
-    let pid = pid as i32;
-    let owner = crate::process_table::FB0_OWNER.load(Ordering::SeqCst);
-    if owner != -1 && owner != pid {
-        return Err(Errno::EBUSY);
-    }
-    let _ = crate::process_table::FB0_OWNER.compare_exchange(
-        -1,
-        pid,
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-    );
-    Ok(())
+/// Process-group key used for single-seat framebuffer ownership.
+fn fb0_owner_key(proc: &Process) -> i32 {
+    let pgid = if proc.pgid == 0 { proc.pid } else { proc.pgid };
+    pgid as i32
 }
 
-/// Release `/dev/fb0` ownership held by `pid`, if any. Idempotent: safe
-/// to call from `close`, `munmap`, or process exit even when the process
-/// never owned the device.
-pub(crate) fn maybe_release_fb0(pid: u32) {
+/// Try to claim `/dev/fb0` for the calling process group.
+///
+/// `/dev/fb0` is a single-seat device. The first opener claims it for
+/// its POSIX process group, which allows forked display-server children
+/// to reopen the device during reset/daemonization while unrelated
+/// process groups still receive `EBUSY`.
+fn acquire_fb0_or_busy(proc: &Process) -> Result<(), Errno> {
     use core::sync::atomic::Ordering;
-    let _ = crate::process_table::FB0_OWNER.compare_exchange(
-        pid as i32,
+    let key = fb0_owner_key(proc);
+    let owner = crate::process_table::FB0_OWNER.load(Ordering::SeqCst);
+    if owner == key {
+        return Ok(());
+    }
+    if owner != -1 {
+        return Err(Errno::EBUSY);
+    }
+    match crate::process_table::FB0_OWNER.compare_exchange(
         -1,
+        key,
         Ordering::SeqCst,
         Ordering::SeqCst,
-    );
+    ) {
+        Ok(_) => Ok(()),
+        Err(current) if current == key => Ok(()),
+        Err(_) => Err(Errno::EBUSY),
+    }
+}
+
+fn note_fb0_holder_enter() {
+    use core::sync::atomic::Ordering;
+    crate::process_table::FB0_HOLDER_COUNT.fetch_add(1, Ordering::SeqCst);
+}
+
+fn note_fb0_holder_exit() {
+    use core::sync::atomic::Ordering;
+    let prev = crate::process_table::FB0_HOLDER_COUNT.fetch_sub(1, Ordering::SeqCst);
+    if prev <= 1 {
+        crate::process_table::FB0_HOLDER_COUNT.store(0, Ordering::SeqCst);
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+    }
 }
 
 /// True iff `proc` still has an open fd referencing `/dev/fb0`.
-fn proc_has_fb0_fd(proc: &Process) -> bool {
+pub(crate) fn proc_has_fb0_fd(proc: &Process) -> bool {
     use crate::ofd::FileType;
     for fd_i in 0..1024i32 {
         if let Ok(entry) = proc.fd_table.get(fd_i) {
@@ -250,6 +277,28 @@ fn proc_has_fb0_fd(proc: &Process) -> bool {
         }
     }
     false
+}
+
+fn proc_holds_fb0(proc: &Process) -> bool {
+    proc.fb_binding.is_some() || proc_has_fb0_fd(proc)
+}
+
+pub(crate) fn note_fb0_inherited_holder(proc: &Process) {
+    if proc_holds_fb0(proc) {
+        note_fb0_holder_enter();
+    }
+}
+
+pub(crate) fn release_fb0_removed_process_holder(proc: &Process) {
+    if proc_holds_fb0(proc) {
+        note_fb0_holder_exit();
+    }
+}
+
+fn release_fb0_if_process_idle(proc: &Process) {
+    if !proc_holds_fb0(proc) {
+        note_fb0_holder_exit();
+    }
 }
 
 /// Try to claim `/dev/input/mice` for the calling process.
@@ -282,7 +331,7 @@ pub(crate) fn maybe_release_mice(pid: u32) {
         core::sync::atomic::Ordering::SeqCst,
     );
     if prev.is_ok() {
-        crate::mouse::reset();
+        crate::mouse::reset_mice();
     }
 }
 
@@ -294,6 +343,97 @@ fn proc_has_mice_fd(proc: &Process) -> bool {
             if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
                 if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Mice)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn acquire_event0_or_busy(pid: u32) -> Result<(), Errno> {
+    let pid = pid as i32;
+    let owner = crate::mouse::EVENT0_OWNER.load(core::sync::atomic::Ordering::SeqCst);
+    if owner != -1 && owner != pid {
+        return Err(Errno::EBUSY);
+    }
+    let _ = crate::mouse::EVENT0_OWNER.compare_exchange(
+        -1,
+        pid,
+        core::sync::atomic::Ordering::SeqCst,
+        core::sync::atomic::Ordering::SeqCst,
+    );
+    Ok(())
+}
+
+pub(crate) fn maybe_release_event0(pid: u32) {
+    let prev = crate::mouse::EVENT0_OWNER.compare_exchange(
+        pid as i32,
+        -1,
+        core::sync::atomic::Ordering::SeqCst,
+        core::sync::atomic::Ordering::SeqCst,
+    );
+    if prev.is_ok() {
+        crate::mouse::reset_event0();
+    }
+}
+
+fn proc_has_event0_fd(proc: &Process) -> bool {
+    use crate::ofd::FileType;
+    for fd_i in 0..1024i32 {
+        if let Ok(entry) = proc.fd_table.get(fd_i) {
+            if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
+                if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::Event0)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn acquire_event1_or_busy(pid: u32) -> Result<(), Errno> {
+    let pid = pid as i32;
+    let owner = crate::mouse::EVENT1_OWNER.load(core::sync::atomic::Ordering::SeqCst);
+    if owner != -1 && owner != pid {
+        return Err(Errno::EBUSY);
+    }
+    let claimed = crate::mouse::EVENT1_OWNER.compare_exchange(
+        -1,
+        pid,
+        core::sync::atomic::Ordering::SeqCst,
+        core::sync::atomic::Ordering::SeqCst,
+    );
+    if claimed.is_ok() {
+        crate::mouse::reset_event1();
+    }
+    Ok(())
+}
+
+pub(crate) fn maybe_release_event1(pid: u32) {
+    let prev = crate::mouse::EVENT1_OWNER.compare_exchange(
+        pid as i32,
+        -1,
+        core::sync::atomic::Ordering::SeqCst,
+        core::sync::atomic::Ordering::SeqCst,
+    );
+    if prev.is_ok() {
+        crate::mouse::reset_event1();
+    }
+}
+
+fn proc_has_event1_fd(proc: &Process) -> bool {
+    use crate::ofd::FileType;
+    for fd_i in 0..1024i32 {
+        if let Ok(entry) = proc.fd_table.get(fd_i) {
+            if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
+                if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::Event1)
                 {
                     return true;
                 }
@@ -356,8 +496,8 @@ fn proc_has_dsp_fd(proc: &Process) -> bool {
 
 /// Handle ioctl on `/dev/dsp`.
 ///
-/// Implements the OSS commands fbDOOM (and most OSS clients) actually
-/// emit during init:
+/// Implements a small OSS command subset used by common `/dev/dsp`
+/// clients:
 /// - `SNDCTL_DSP_RESET` — clear the ring (no-op besides side effect).
 /// - `SNDCTL_DSP_SPEED` — set sample rate; in/out: i32 hz.
 /// - `SNDCTL_DSP_STEREO` — set channel count; in/out: i32 (0=mono, 1=stereo).
@@ -435,38 +575,296 @@ fn handle_dsp_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
     }
 }
 
-/// Fixed framebuffer geometry. fbDOOM is happy with whatever the device
-/// reports; pinning a single mode keeps the implementation small.
-const FB_WIDTH: u32 = 640;
-const FB_HEIGHT: u32 = 400;
+const IOC_WRITE: u32 = 1;
+const IOC_READ: u32 = 2;
+const EVDEV_IOC_TYPE: u32 = b'E' as u32;
+const EVIOCGVERSION_NR: u32 = 0x01;
+const EVIOCGID_NR: u32 = 0x02;
+const EVIOCGNAME_NR: u32 = 0x06;
+const EVIOCGBIT_BASE_NR: u32 = 0x20;
+const EVIOCGRAB_NR: u32 = 0x90;
+const EV_VERSION: u32 = 0x010001;
+const BUS_VIRTUAL: u16 = 0x06;
+const EV_SYN: u32 = 0x00;
+const EV_KEY: u32 = 0x01;
+const EV_REL: u32 = 0x02;
+const REL_X: u32 = 0x00;
+const REL_Y: u32 = 0x01;
+const REL_WHEEL: u32 = 0x08;
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+const BTN_MIDDLE: u32 = 0x112;
+const KDMKTONE: u32 = 0x4B30;
+const KDSETMODE: u32 = 0x4B3A;
+const KDGETMODE: u32 = 0x4B3B;
+const KD_TEXT: i32 = 0;
+const KD_GRAPHICS: i32 = 1;
+const VT_OPENQRY: u32 = 0x5600;
+const VT_GETMODE: u32 = 0x5601;
+const VT_SETMODE: u32 = 0x5602;
+const VT_GETSTATE: u32 = 0x5603;
+const VT_RELDISP: u32 = 0x5605;
+const VT_ACTIVATE: u32 = 0x5606;
+const VT_WAITACTIVE: u32 = 0x5607;
+const VT_DISALLOCATE: u32 = 0x5608;
+const VT_AUTO: u8 = 0;
+const FBIOBLANK: u32 = 0x4611;
+const FBIO_WAITFORVSYNC: u32 = 0x40044620;
+const FB_BLANK_POWERDOWN: i32 = 4;
+
+fn ioctl_nr(request: u32) -> u32 {
+    request & 0xff
+}
+
+fn ioctl_type(request: u32) -> u32 {
+    (request >> 8) & 0xff
+}
+
+fn ioctl_size(request: u32) -> usize {
+    ((request >> 16) & 0x3fff) as usize
+}
+
+fn ioctl_dir(request: u32) -> u32 {
+    (request >> 30) & 0x03
+}
+
+fn write_c_string(buf: &mut [u8], requested_len: usize, value: &[u8]) {
+    let len = core::cmp::min(requested_len, buf.len());
+    if len == 0 {
+        return;
+    }
+    let out = &mut buf[..len];
+    out.fill(0);
+    let n = core::cmp::min(value.len(), len.saturating_sub(1));
+    out[..n].copy_from_slice(&value[..n]);
+}
+
+fn set_evdev_bit(bits: &mut [u8], bit: u32) {
+    let byte = (bit / 8) as usize;
+    if byte < bits.len() {
+        bits[byte] |= 1u8 << (bit % 8);
+    }
+}
+
+fn fill_supported_key_bits(dev: VirtualDevice, bits: &mut [u8]) {
+    match dev {
+        VirtualDevice::Event0 => {
+            set_evdev_bit(bits, BTN_LEFT);
+            set_evdev_bit(bits, BTN_RIGHT);
+            set_evdev_bit(bits, BTN_MIDDLE);
+        }
+        VirtualDevice::Event1 => {
+            for key in 1..=68 {
+                set_evdev_bit(bits, key);
+            }
+            for key in [97u32, 100, 103, 105, 106, 108] {
+                set_evdev_bit(bits, key);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fill_supported_event_type_bits(dev: VirtualDevice, bits: &mut [u8]) {
+    set_evdev_bit(bits, EV_SYN);
+    set_evdev_bit(bits, EV_KEY);
+    if dev == VirtualDevice::Event0 {
+        set_evdev_bit(bits, EV_REL);
+    }
+}
+
+/// Handle ioctl on Linux evdev input devices.
+///
+/// This intentionally exposes a small read-only discovery surface:
+/// `EVIOCGVERSION`, `EVIOCGID`, `EVIOCGNAME`, and `EVIOCGBIT`. These are
+/// the common probes SDL, X, and desktop input stacks issue before reading
+/// `struct input_event` records.
+fn handle_evdev_ioctl(dev: VirtualDevice, request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+    let nr = ioctl_nr(request);
+    let type_ = ioctl_type(request);
+    if type_ != EVDEV_IOC_TYPE {
+        return Err(Errno::ENOTTY);
+    }
+    if nr == EVIOCGRAB_NR && ioctl_dir(request) == IOC_WRITE {
+        return Ok(());
+    }
+    if ioctl_dir(request) != IOC_READ {
+        return Err(Errno::ENOTTY);
+    }
+
+    match nr {
+        EVIOCGVERSION_NR => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            buf[..4].copy_from_slice(&EV_VERSION.to_le_bytes());
+            Ok(())
+        }
+        EVIOCGID_NR => {
+            if buf.len() < 8 {
+                return Err(Errno::EINVAL);
+            }
+            let product = if dev == VirtualDevice::Event0 {
+                1u16
+            } else {
+                2u16
+            };
+            buf[..2].copy_from_slice(&BUS_VIRTUAL.to_le_bytes());
+            buf[2..4].copy_from_slice(&0x6b64u16.to_le_bytes());
+            buf[4..6].copy_from_slice(&product.to_le_bytes());
+            buf[6..8].copy_from_slice(&1u16.to_le_bytes());
+            Ok(())
+        }
+        EVIOCGNAME_NR => {
+            let requested_len = ioctl_size(request);
+            let name = if dev == VirtualDevice::Event0 {
+                b"Kandelo relative pointer".as_slice()
+            } else {
+                b"Kandelo keyboard".as_slice()
+            };
+            write_c_string(buf, requested_len, name);
+            Ok(())
+        }
+        nr if nr >= EVIOCGBIT_BASE_NR => {
+            let ev_type = nr - EVIOCGBIT_BASE_NR;
+            let requested_len = ioctl_size(request);
+            let len = core::cmp::min(requested_len, buf.len());
+            let bits = &mut buf[..len];
+            bits.fill(0);
+            match ev_type {
+                EV_SYN => fill_supported_event_type_bits(dev, bits),
+                EV_KEY => fill_supported_key_bits(dev, bits),
+                EV_REL if dev == VirtualDevice::Event0 => {
+                    set_evdev_bit(bits, REL_X);
+                    set_evdev_bit(bits, REL_Y);
+                    set_evdev_bit(bits, REL_WHEEL);
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        _ => Err(Errno::ENOTTY),
+    }
+}
+
+/// Handle a minimal Linux virtual-terminal compatibility surface.
+///
+/// This is deliberately small: Kandelo does not multiplex real virtual
+/// consoles, but Xfbdev/SDL-style Linux console backends commonly probe these
+/// ioctls while opening `/dev/tty0` or `/dev/tty1`. We report one always-active
+/// VT and accept mode/activation requests as no-ops.
+fn handle_linux_vt_ioctl(request: u32, buf: &mut [u8]) -> Option<Result<(), Errno>> {
+    match request {
+        KDGETMODE => {
+            if buf.len() < 4 {
+                return Some(Err(Errno::EINVAL));
+            }
+            buf[..4].copy_from_slice(&KD_TEXT.to_le_bytes());
+            Some(Ok(()))
+        }
+        KDSETMODE => {
+            if buf.len() >= 4 {
+                let mode = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+                if mode != KD_TEXT && mode != KD_GRAPHICS {
+                    return Some(Err(Errno::EINVAL));
+                }
+            }
+            Some(Ok(()))
+        }
+        VT_OPENQRY => {
+            if buf.len() < 4 {
+                return Some(Err(Errno::EINVAL));
+            }
+            buf[..4].copy_from_slice(&1i32.to_le_bytes());
+            Some(Ok(()))
+        }
+        VT_GETSTATE => {
+            if buf.len() < 6 {
+                return Some(Err(Errno::EINVAL));
+            }
+            buf[..2].copy_from_slice(&1u16.to_le_bytes()); // v_active
+            buf[2..4].copy_from_slice(&0u16.to_le_bytes()); // v_signal
+            buf[4..6].copy_from_slice(&0x0002u16.to_le_bytes()); // bit 1 => tty1
+            Some(Ok(()))
+        }
+        VT_GETMODE => {
+            if buf.len() < 8 {
+                return Some(Err(Errno::EINVAL));
+            }
+            buf[..8].fill(0);
+            buf[0] = VT_AUTO;
+            Some(Ok(()))
+        }
+        KDMKTONE | VT_SETMODE | VT_RELDISP | VT_ACTIVATE | VT_WAITACTIVE | VT_DISALLOCATE => {
+            Some(Ok(()))
+        }
+        _ => None,
+    }
+}
+
+/// Framebuffer modes are process-local. Each process starts in the legacy
+/// 640x400 mode and may select another supported mode with
+/// FBIOPUT_VSCREENINFO before mapping `/dev/fb0`.
 const FB_BYTES_PER_PIXEL: u32 = 4;
-const FB_LINE_LENGTH: u32 = FB_WIDTH * FB_BYTES_PER_PIXEL;
-const FB_SMEM_LEN: u32 = FB_LINE_LENGTH * FB_HEIGHT;
+const FB_MAX_WIDTH: u32 = 1024;
+const FB_MAX_HEIGHT: u32 = 768;
+
+fn fb_line_length(width: u32) -> u32 {
+    width.saturating_mul(FB_BYTES_PER_PIXEL)
+}
+
+fn fb_smem_len(width: u32, height: u32) -> u32 {
+    fb_line_length(width).saturating_mul(height)
+}
+
+fn fb_max_smem_len() -> u32 {
+    fb_smem_len(FB_MAX_WIDTH, FB_MAX_HEIGHT)
+}
+
+fn fb_mode_supported(width: u32, height: u32, bpp: u32) -> bool {
+    // X servers often distinguish 24-bit visual depth from 32-bit packed
+    // framebuffer storage. Accept both requests, but keep exposing the
+    // Kandelo aperture as BGRA32 via FBIOGET_*.
+    matches!(bpp, 24 | 32)
+        && matches!(
+            (width, height),
+            (640, 400) | (640, 480) | (800, 600) | (1024, 768)
+        )
+}
 
 /// Handle ioctl on `/dev/fb0`.
 ///
-/// Implements the four fbdev ioctls fbDOOM (and most fbdev clients)
-/// actually use:
+/// Implements the fbdev ioctls common direct-framebuffer clients use:
 /// - `FBIOGET_VSCREENINFO` / `FBIOGET_FSCREENINFO` report fixed geometry
 ///   in BGRA32 packed-pixel form.
 /// - `FBIOPAN_DISPLAY` is accepted but is a no-op (presentation is driven
 ///   by host RAF, not user-space pan calls).
 /// - `FBIOPUT_VSCREENINFO` accepts only the geometry we expose; anything
 ///   else is `EINVAL`.
+/// - `FBIOBLANK` / `FBIO_WAITFORVSYNC` are accepted as no-op display-control
+///   compatibility calls.
 ///
 /// Anything else returns `ENOTTY`.
-fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+fn handle_fb_ioctl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
     use wasm_posix_shared::fbdev::*;
+    let width = proc.fb_width;
+    let height = proc.fb_height;
+    let line_length = fb_line_length(width);
     match request {
         FBIOGET_VSCREENINFO => {
             if buf.len() < core::mem::size_of::<FbVarScreenInfo>() {
                 return Err(Errno::EINVAL);
             }
             let mut v = FbVarScreenInfo::default();
-            v.xres = FB_WIDTH;
-            v.yres = FB_HEIGHT;
-            v.xres_virtual = FB_WIDTH;
-            v.yres_virtual = FB_HEIGHT;
+            v.xres = width;
+            v.yres = height;
+            v.xres_virtual = width;
+            v.yres_virtual = height;
             v.bits_per_pixel = FB_BYTES_PER_PIXEL * 8;
             // BGRA32: byte 0 = blue, 1 = green, 2 = red, 3 = alpha.
             v.blue = FbBitfield {
@@ -500,8 +898,8 @@ fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
             }
             let mut f = FbFixScreenInfo::default();
             f.id[..6].copy_from_slice(b"wasmfb");
-            f.smem_len = FB_SMEM_LEN;
-            f.line_length = FB_LINE_LENGTH;
+            f.smem_len = fb_max_smem_len();
+            f.line_length = line_length;
             f.fb_type = FB_TYPE_PACKED_PIXELS;
             f.visual = FB_VISUAL_TRUECOLOR;
             unsafe {
@@ -510,17 +908,48 @@ fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
             Ok(())
         }
         FBIOPAN_DISPLAY => Ok(()),
+        FBIOBLANK => {
+            if buf.len() >= 4 {
+                let blank = i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+                if !(0..=FB_BLANK_POWERDOWN).contains(&blank) {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            Ok(())
+        }
+        FBIO_WAITFORVSYNC => Ok(()),
         FBIOPUT_VSCREENINFO => {
             if buf.len() < core::mem::size_of::<FbVarScreenInfo>() {
                 return Err(Errno::EINVAL);
             }
             let v: FbVarScreenInfo =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const FbVarScreenInfo) };
-            if v.xres != FB_WIDTH
-                || v.yres != FB_HEIGHT
-                || v.bits_per_pixel != FB_BYTES_PER_PIXEL * 8
-            {
+            if !fb_mode_supported(v.xres, v.yres, v.bits_per_pixel) {
                 return Err(Errno::EINVAL);
+            }
+            let new_line_length = fb_line_length(v.xres);
+            let new_smem_len = fb_smem_len(v.xres, v.yres) as usize;
+            if let Some(binding) = proc.fb_binding {
+                if binding.len != 0 && binding.len < new_smem_len {
+                    return Err(Errno::EBUSY);
+                }
+            }
+            proc.fb_width = v.xres;
+            proc.fb_height = v.yres;
+            if let Some(mut binding) = proc.fb_binding {
+                binding.w = v.xres;
+                binding.h = v.yres;
+                binding.stride = new_line_length;
+                proc.fb_binding = Some(binding);
+                host.bind_framebuffer(
+                    proc.pid as i32,
+                    binding.addr,
+                    binding.len,
+                    binding.w,
+                    binding.h,
+                    binding.stride,
+                    binding.fmt,
+                );
             }
             Ok(())
         }
@@ -576,11 +1005,18 @@ pub fn sys_open(
 
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
+        let had_fb0_holder = dev == VirtualDevice::Fb0 && proc_holds_fb0(proc);
         if dev == VirtualDevice::Fb0 {
-            acquire_fb0_or_busy(proc.pid)?;
+            acquire_fb0_or_busy(proc)?;
         }
         if dev == VirtualDevice::Mice {
             acquire_mice_or_busy(proc.pid)?;
+        }
+        if dev == VirtualDevice::Event0 {
+            acquire_event0_or_busy(proc.pid)?;
+        }
+        if dev == VirtualDevice::Event1 {
+            acquire_event1_or_busy(proc.pid)?;
         }
         if dev == VirtualDevice::Dsp {
             acquire_dsp_or_busy(proc.pid)?;
@@ -594,6 +1030,9 @@ pub fn sys_open(
         );
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        if dev == VirtualDevice::Fb0 && !had_fb0_holder {
+            note_fb0_holder_enter();
+        }
         return Ok(fd);
     }
 
@@ -629,8 +1068,8 @@ pub fn sys_open(
         return Ok(fd);
     }
 
-    // /dev/tty — open controlling terminal (alias for current session's PTY or stdin)
-    if resolved == b"/dev/tty" {
+    // /dev/tty and Linux VT aliases — open controlling terminal.
+    if is_dev_tty_alias(&resolved) {
         // Check if any open fd refers to a PTY slave — use that
         for fd_i in 0..1024i32 {
             if let Ok(entry) = proc.fd_table.get(fd_i as i32) {
@@ -953,7 +1392,7 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         && proc.fb_binding.is_none()
         && !proc_has_fb0_fd(proc)
     {
-        maybe_release_fb0(proc.pid);
+        release_fb0_if_process_idle(proc);
     }
 
     // /dev/input/mice ownership: release once the process has dropped
@@ -963,6 +1402,22 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         && !proc_has_mice_fd(proc)
     {
         maybe_release_mice(proc.pid);
+    }
+
+    // /dev/input/event0 ownership: same single-owner lifecycle as mice.
+    if file_type == FileType::CharDevice
+        && VirtualDevice::from_host_handle(host_handle) == Some(VirtualDevice::Event0)
+        && !proc_has_event0_fd(proc)
+    {
+        maybe_release_event0(proc.pid);
+    }
+
+    // /dev/input/event1 ownership: same single-owner lifecycle as event0.
+    if file_type == FileType::CharDevice
+        && VirtualDevice::from_host_handle(host_handle) == Some(VirtualDevice::Event1)
+        && !proc_has_event1_fd(proc)
+    {
+        maybe_release_event1(proc.pid);
     }
 
     // /dev/dsp ownership: same pattern — release once the last Dsp fd
@@ -1328,6 +1783,20 @@ pub fn sys_read(
                         VirtualDevice::Urandom => host.host_getrandom(buf)?,
                         VirtualDevice::Mice => {
                             let n = crate::mouse::read_into(buf);
+                            if n == 0 {
+                                return Err(Errno::EAGAIN);
+                            }
+                            n
+                        }
+                        VirtualDevice::Event0 => {
+                            let n = crate::mouse::read_event_into(buf);
+                            if n == 0 {
+                                return Err(Errno::EAGAIN);
+                            }
+                            n
+                        }
+                        VirtualDevice::Event1 => {
+                            let n = crate::mouse::read_key_event_into(buf);
                             if n == 0 {
                                 return Err(Errno::EAGAIN);
                             }
@@ -1704,35 +2173,39 @@ pub fn sys_write(
                     return match dev {
                         VirtualDevice::Full => Err(Errno::ENOSPC),
                         VirtualDevice::Fb0 => {
-                            // Write-based fbdev clients (fbDOOM-style): the
-                            // user fills its own buffer, then `write(fd_fb,
-                            // pixels, len)` to push them to the framebuffer.
+                            // Write-based fbdev clients: the user fills its
+                            // own buffer, then `write(fd_fb, pixels, len)` to
+                            // push them to the framebuffer.
                             // We don't use mmap here — register a sentinel
                             // FbBinding with addr=0/len=0 on first write so
                             // the host knows to allocate its own pixel
                             // buffer for this pid; per-write deltas go
                             // through `fb_write`.
                             if proc.fb_binding.is_none() {
+                                let width = proc.fb_width;
+                                let height = proc.fb_height;
+                                let line_length = fb_line_length(width);
                                 proc.fb_binding = Some(crate::process::FbBinding {
                                     addr: 0,
                                     len: 0,
-                                    w: FB_WIDTH,
-                                    h: FB_HEIGHT,
-                                    stride: FB_LINE_LENGTH,
+                                    w: width,
+                                    h: height,
+                                    stride: line_length,
                                     fmt: 0,
                                 });
                                 host.bind_framebuffer(
                                     proc.pid as i32,
                                     0,
                                     0,
-                                    FB_WIDTH,
-                                    FB_HEIGHT,
-                                    FB_LINE_LENGTH,
+                                    width,
+                                    height,
+                                    line_length,
                                     0,
                                 );
                             }
                             let offset = ofd.offset.max(0) as usize;
-                            let max_off = (FB_SMEM_LEN as usize).saturating_sub(offset);
+                            let max_off = (fb_smem_len(proc.fb_width, proc.fb_height) as usize)
+                                .saturating_sub(offset);
                             let n = buf.len().min(max_off);
                             if n > 0 {
                                 host.fb_write(proc.pid as i32, offset, &buf[..n]);
@@ -1754,7 +2227,7 @@ pub fn sys_write(
                             crate::audio::write_pcm(buf);
                             Ok(buf.len())
                         }
-                        _ => Ok(buf.len()), // Null, Zero, Urandom, Mice: discard
+                        _ => Ok(buf.len()), // Null, Zero, Urandom, input devices: discard
                     };
                 }
             }
@@ -1864,7 +2337,7 @@ pub fn sys_lseek(
 
     // Virtual char devices: seek is a no-op for null/zero/etc. /dev/fb0
     // is the exception — seek positions the cursor for the write-based
-    // pixel-blit path used by fbDOOM-style software.
+    // pixel-blit path used by some fbdev software.
     if ofd.file_type == FileType::CharDevice {
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
             if dev == VirtualDevice::Fb0 {
@@ -1872,7 +2345,7 @@ pub fn sys_lseek(
                 let new_off = match whence {
                     SEEK_SET => offset,
                     SEEK_CUR => cur + offset,
-                    SEEK_END => FB_SMEM_LEN as i64 + offset,
+                    SEEK_END => fb_smem_len(proc.fb_width, proc.fb_height) as i64 + offset,
                     _ => return Err(Errno::EINVAL),
                 };
                 if new_off < 0 {
@@ -2909,9 +3382,11 @@ use crate::process::{DirStream, ProcessState};
 use wasm_posix_shared::WasmDirent;
 
 /// Check if a resolved path is a PTY or terminal device path.
-/// Returns a synthetic stat for /dev/ptmx, /dev/pts/N, /dev/tty.
+/// Returns a synthetic stat for /dev/ptmx, /dev/pts/N, /dev/tty, and
+/// Linux VT aliases.
 fn match_pty_stat(resolved: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
-    if resolved == b"/dev/ptmx" || resolved == b"/dev/tty" || resolved.starts_with(b"/dev/pts/") {
+    if resolved == b"/dev/ptmx" || is_dev_tty_alias(resolved) || resolved.starts_with(b"/dev/pts/")
+    {
         Some(WasmStat {
             st_dev: 5,
             st_ino: 0x50545900,
@@ -3949,12 +4424,14 @@ pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     if proc.fb_binding.is_some() {
         host.unbind_framebuffer(proc.pid as i32);
         proc.fb_binding = None;
-        maybe_release_fb0(proc.pid);
+        release_fb0_if_process_idle(proc);
     }
     // /dev/input/mice cleanup: exec also drops mouse ownership. The
     // post-exec image starts with a clean queue — no stale packets from
     // the parent program survive across exec.
     maybe_release_mice(proc.pid);
+    maybe_release_event0(proc.pid);
+    maybe_release_event1(proc.pid);
     // /dev/dsp cleanup: same — drop ownership and flush any queued PCM
     // so a post-exec program doesn't hear the tail of its predecessor.
     maybe_release_dsp(proc.pid);
@@ -4387,6 +4864,15 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
         let _ = sys_close(proc, host, fd);
     }
 
+    // POSIX process exit tears down all mappings. `/dev/fb0` ownership is
+    // tied to both fds and live mappings, so an exiting process with a
+    // framebuffer mmap must release the host binding even if it never called
+    // munmap(2).
+    if proc.fb_binding.take().is_some() {
+        host.unbind_framebuffer(proc.pid as i32);
+        release_fb0_if_process_idle(proc);
+    }
+
     // Close all directory streams
     let num_streams = proc.dir_streams.len();
     for i in 0..num_streams {
@@ -4398,6 +4884,13 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
 
     // POSIX: all advisory locks held by the process are released on exit.
     proc.lock_table.remove_all_for_pid(proc.pid);
+
+    // These are idempotent, and cover abnormal close paths while preserving
+    // the normal close-time cleanup for the common case.
+    maybe_release_mice(proc.pid);
+    maybe_release_event0(proc.pid);
+    maybe_release_event1(proc.pid);
+    maybe_release_dsp(proc.pid);
 
     proc.state = ProcessState::Exited;
     proc.exit_status = status;
@@ -4719,8 +5212,11 @@ pub fn sys_mmap(
         let _fd_entry = proc.fd_table.get(fd)?;
 
         // /dev/fb0: map the pixel buffer in process memory and notify the
-        // host. Geometry is fixed at FB_WIDTH × FB_HEIGHT × 4; the caller
-        // must request exactly that length.
+        // host. The caller must request enough memory for the selected
+        // visible mode, capped at the framebuffer aperture reported by
+        // FBIOGET_FSCREENINFO. Linux fbdev drivers commonly report VRAM
+        // capacity rather than only the current visible frame, and Xfbdev
+        // relies on that by mmaping before FBIOPUT_VSCREENINFO.
         let entry = proc.fd_table.get(fd)?;
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
         if ofd.file_type == FileType::CharDevice
@@ -4729,7 +5225,12 @@ pub fn sys_mmap(
             if proc.fb_binding.is_some() {
                 return Err(Errno::EINVAL);
             }
-            if len != FB_SMEM_LEN as usize {
+            let width = proc.fb_width;
+            let height = proc.fb_height;
+            let line_length = fb_line_length(width);
+            let visible_len = fb_smem_len(width, height) as usize;
+            let max_len = fb_max_smem_len() as usize;
+            if len < visible_len || len > max_len {
                 return Err(Errno::EINVAL);
             }
             let alloc_flags = flags | MAP_ANONYMOUS;
@@ -4740,18 +5241,18 @@ pub fn sys_mmap(
             proc.fb_binding = Some(crate::process::FbBinding {
                 addr: addr_out,
                 len,
-                w: FB_WIDTH,
-                h: FB_HEIGHT,
-                stride: FB_LINE_LENGTH,
+                w: width,
+                h: height,
+                stride: line_length,
                 fmt: 0, // BGRA32
             });
             host.bind_framebuffer(
                 proc.pid as i32,
                 addr_out,
                 len,
-                FB_WIDTH,
-                FB_HEIGHT,
-                FB_LINE_LENGTH,
+                width,
+                height,
+                line_length,
                 0,
             );
             return Ok(addr_out);
@@ -4805,7 +5306,7 @@ pub fn sys_munmap(
         host.unbind_framebuffer(proc.pid as i32);
         // Release ownership if the process also has no remaining Fb0 fds.
         if !proc_has_fb0_fd(proc) {
-            maybe_release_fb0(proc.pid);
+            release_fb0_if_process_idle(proc);
         }
     }
 
@@ -5655,11 +6156,13 @@ pub fn sys_listen(
     }
     sock.state = SocketState::Listening;
 
-    // For AF_INET listeners, allocate a shared accept queue that fork
+    // For stream listeners, allocate a shared accept queue that fork
     // children will inherit. This way every process sharing this listener
     // pulls from the same queue (POSIX semantics) — see socket.rs.
     let domain = sock.domain;
-    if domain == SocketDomain::Inet && sock.shared_backlog_idx.is_none() {
+    if matches!(domain, SocketDomain::Inet | SocketDomain::Unix)
+        && sock.shared_backlog_idx.is_none()
+    {
         let backlog_idx = unsafe { crate::socket::shared_listener_backlog_table().alloc() };
         sock.shared_backlog_idx = Some(backlog_idx);
     }
@@ -5692,15 +6195,16 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
         return Err(Errno::EINVAL);
     }
 
-    // AF_INET listeners use a shared cross-process accept queue. Try
+    // Stream listeners use a shared cross-process accept queue. Try
     // popping from there first; the accepted SocketInfo is created
     // lazily here in the accepting process. See socket.rs.
     if let Some(shared_idx) = sock.shared_backlog_idx {
+        let domain = sock.domain;
         let bind_addr = sock.bind_addr;
         let bind_port = sock.bind_port;
         let pending = unsafe { crate::socket::shared_listener_backlog_table().pop(shared_idx) };
         if let Some(pc) = pending {
-            let mut accepted = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+            let mut accepted = SocketInfo::new(domain, SocketType::Stream, 0);
             accepted.state = SocketState::Connected;
             accepted.recv_buf_idx = Some(pc.recv_pipe_idx);
             accepted.send_buf_idx = Some(pc.send_pipe_idx);
@@ -5720,9 +6224,9 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
             let new_fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0)?;
             return Ok(new_fd);
         }
-        // Shared queue empty — fall through to per-process backlog
-        // for AF_UNIX-style entries (none for INET listeners). We return
-        // EAGAIN below if both queues are empty.
+        // Shared queue empty — fall through to per-process backlog for
+        // legacy inline entries. We return EAGAIN below if both queues
+        // are empty.
         let _ = SocketType::Stream; // silence unused-import warning if path unused
         let _ = SocketDomain::Inet;
     }
@@ -5963,38 +6467,58 @@ pub fn sys_connect(
             if listener.state != SocketState::Listening {
                 return Err(Errno::ECONNREFUSED);
             }
+            let shared_backlog_idx = listener.shared_backlog_idx;
 
             // Create pipe pair for bidirectional communication (in global table for fork safety)
             let pipe_table = unsafe { crate::pipe::global_pipe_table() };
             let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
             let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
 
-            // Create accepted socket (server side)
-            let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
-            accepted_sock.state = SocketState::Connected;
-            accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads client's writes
-            accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to client's reads
-            accepted_sock.global_pipes = true;
-            let accepted_idx = proc.sockets.alloc(accepted_sock);
+            let accepted_idx = if let Some(shared_idx) = shared_backlog_idx {
+                let pending = crate::socket::PendingConnection {
+                    peer_addr: [0; 4],
+                    peer_port: 0,
+                    recv_pipe_idx: pipe_a_idx,
+                    send_pipe_idx: pipe_b_idx,
+                };
+                let pushed = unsafe {
+                    crate::socket::shared_listener_backlog_table().push(shared_idx, pending)
+                };
+                if !pushed {
+                    return Err(Errno::ECONNREFUSED);
+                }
+                None
+            } else {
+                // Legacy inline backlog path for listeners created before
+                // shared AF_UNIX queues were introduced.
+                let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+                accepted_sock.state = SocketState::Connected;
+                accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads client's writes
+                accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to client's reads
+                accepted_sock.global_pipes = true;
+                let accepted_idx = proc.sockets.alloc(accepted_sock);
 
-            // Push to listener's backlog
-            let listener = proc
-                .sockets
-                .get_mut(listener_sock_idx)
-                .ok_or(Errno::EBADF)?;
-            listener.listen_backlog.push(accepted_idx);
+                let listener = proc
+                    .sockets
+                    .get_mut(listener_sock_idx)
+                    .ok_or(Errno::EBADF)?;
+                listener.listen_backlog.push(accepted_idx);
+                Some(accepted_idx)
+            };
 
             // Set up client socket
             let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
             client.send_buf_idx = Some(pipe_a_idx); // writes to pipe_a (server's reads)
             client.recv_buf_idx = Some(pipe_b_idx); // reads from pipe_b (server's writes)
             client.state = SocketState::Connected;
-            client.peer_idx = Some(accepted_idx);
+            client.peer_idx = accepted_idx;
             client.global_pipes = true;
 
             // Set peer_idx on accepted socket
-            let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
-            accepted.peer_idx = Some(sock_idx);
+            if let Some(accepted_idx) = accepted_idx {
+                let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
+                accepted.peer_idx = Some(sock_idx);
+            }
 
             Ok(())
         }
@@ -6291,7 +6815,7 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                 }
             }
             FileType::Regular | FileType::CharDevice | FileType::Directory | FileType::MemFd => {
-                // /dev/input/mice gates POLLIN on the actual queue state
+                // /dev/input devices gate POLLIN on their actual queue state
                 // — readiness here mirrors what sys_read returns. Without
                 // this special case, poll() would spin because the
                 // generic char-device branch reports always-ready.
@@ -6302,6 +6826,22 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         revents |= POLLIN;
                     }
                     // Mice doesn't accept writes — never report POLLOUT.
+                } else if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::Event0)
+                {
+                    if pollfd.events & POLLIN != 0 && crate::mouse::has_event_data() {
+                        revents |= POLLIN;
+                    }
+                    // event0 doesn't accept writes — never report POLLOUT.
+                } else if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::Event1)
+                {
+                    if pollfd.events & POLLIN != 0 && crate::mouse::has_key_event_data() {
+                        revents |= POLLIN;
+                    }
+                    // event1 doesn't accept writes — never report POLLOUT.
                 } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
                 {
@@ -6574,11 +7114,18 @@ pub fn sys_openat(
 
     // Virtual device nodes — handle in-kernel, no host call
     if let Some(dev) = match_virtual_device(&resolved) {
+        let had_fb0_holder = dev == VirtualDevice::Fb0 && proc_holds_fb0(proc);
         if dev == VirtualDevice::Fb0 {
-            acquire_fb0_or_busy(proc.pid)?;
+            acquire_fb0_or_busy(proc)?;
         }
         if dev == VirtualDevice::Mice {
             acquire_mice_or_busy(proc.pid)?;
+        }
+        if dev == VirtualDevice::Event0 {
+            acquire_event0_or_busy(proc.pid)?;
+        }
+        if dev == VirtualDevice::Event1 {
+            acquire_event1_or_busy(proc.pid)?;
         }
         if dev == VirtualDevice::Dsp {
             acquire_dsp_or_busy(proc.pid)?;
@@ -6592,6 +7139,9 @@ pub fn sys_openat(
         );
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
+        if dev == VirtualDevice::Fb0 && !had_fb0_holder {
+            note_fb0_holder_enter();
+        }
         return Ok(fd);
     }
 
@@ -6627,8 +7177,8 @@ pub fn sys_openat(
         return Ok(fd);
     }
 
-    // /dev/tty — open controlling terminal
-    if resolved == b"/dev/tty" {
+    // /dev/tty and Linux VT aliases — open controlling terminal.
+    if is_dev_tty_alias(&resolved) {
         for fd_i in 0..1024i32 {
             if let Ok(entry) = proc.fd_table.get(fd_i as i32) {
                 if let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) {
@@ -6942,7 +7492,13 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, _action: u32, buf: &[u8]) -> R
 /// ioctl -- device control.
 /// Supports generic ioctls (FIONREAD, FIONBIO, FIOCLEX, FIONCLEX) on any fd type,
 /// plus terminal ioctls (TIOCGWINSZ, TIOCSWINSZ) on CharDevice fds only.
-pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+pub fn sys_ioctl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
     // FIOCLEX / FIONCLEX operate on the fd entry directly, not the OFD.
     match request {
         0x5451 => {
@@ -7116,7 +7672,7 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
         if ofd.file_type == FileType::CharDevice
             && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Fb0)
         {
-            return handle_fb_ioctl(request, buf);
+            return handle_fb_ioctl(proc, host, request, buf);
         }
     }
 
@@ -7130,10 +7686,23 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
         }
     }
 
+    // --- /dev/input/event* ioctls — Linux evdev discovery surface ---
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice {
+            match VirtualDevice::from_host_handle(ofd.host_handle) {
+                Some(dev @ (VirtualDevice::Event0 | VirtualDevice::Event1)) => {
+                    return handle_evdev_ioctl(dev, request, buf);
+                }
+                _ => {}
+            }
+        }
+    }
+
     // --- Linux VT keyboard ioctls (KDGKBTYPE / KDGKBMODE / KDSKBMODE) ---
     //
-    // fbDOOM (and other Linux-VT-targeted software) calls these on a
-    // tty fd to detect the keyboard and switch into raw-scancode mode.
+    // Linux-VT-targeted software calls these on a tty fd to detect the
+    // keyboard and switch into raw-scancode mode.
     // We don't have a real VT — input arrives as a stream of bytes
     // through stdin from whatever the host is feeding (canvas
     // keyboard, in the browser demo). The ioctls succeed with sensible
@@ -7173,6 +7742,10 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
     );
     if !is_terminal {
         return Err(Errno::ENOTTY);
+    }
+
+    if let Some(result) = handle_linux_vt_ioctl(request, buf) {
+        return result;
     }
 
     // Helper: get mutable reference to the appropriate TerminalState.
@@ -9587,6 +10160,12 @@ mod tests {
     /// The registry uses UnsafeCell internally and is not thread-safe, so tests
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset_fb0_owner() {
+        use core::sync::atomic::Ordering;
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        crate::process_table::FB0_HOLDER_COUNT.store(0, Ordering::SeqCst);
+    }
 
     /// Mock host I/O for testing.
     struct MockHostIO {
@@ -12391,8 +12970,9 @@ mod tests {
     #[test]
     fn test_ioctl_tiocgwinsz() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
-        let result = sys_ioctl(&mut proc, 0, 0x5413, &mut buf); // TIOCGWINSZ
+        let result = sys_ioctl(&mut proc, &mut host, 0, 0x5413, &mut buf); // TIOCGWINSZ
         assert!(result.is_ok());
         let ws_row = u16::from_le_bytes([buf[0], buf[1]]);
         let ws_col = u16::from_le_bytes([buf[2], buf[3]]);
@@ -12403,14 +12983,15 @@ mod tests {
     #[test]
     fn test_ioctl_tiocswinsz() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
         buf[0..2].copy_from_slice(&120u16.to_le_bytes()); // rows
         buf[2..4].copy_from_slice(&200u16.to_le_bytes()); // cols
-        let result = sys_ioctl(&mut proc, 0, 0x5414, &mut buf); // TIOCSWINSZ
+        let result = sys_ioctl(&mut proc, &mut host, 0, 0x5414, &mut buf); // TIOCSWINSZ
         assert!(result.is_ok());
         // Read back
         let mut buf2 = [0u8; 8];
-        sys_ioctl(&mut proc, 0, 0x5413, &mut buf2).unwrap(); // TIOCGWINSZ
+        sys_ioctl(&mut proc, &mut host, 0, 0x5413, &mut buf2).unwrap(); // TIOCGWINSZ
         let ws_row = u16::from_le_bytes([buf2[0], buf2[1]]);
         let ws_col = u16::from_le_bytes([buf2[2], buf2[3]]);
         assert_eq!(ws_row, 120);
@@ -12418,19 +12999,64 @@ mod tests {
     }
 
     #[test]
+    fn test_dev_tty0_alias_opens_controlling_terminal() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/tty0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 8];
+        sys_ioctl(&mut proc, &mut host, fd, 0x5413, &mut buf).unwrap(); // TIOCGWINSZ
+        assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), 24);
+        assert_eq!(u16::from_le_bytes([buf[2], buf[3]]), 80);
+    }
+
+    #[test]
+    fn test_linux_vt_console_ioctls_are_supported_on_tty() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/tty1", O_RDWR, 0).unwrap();
+
+        let mut kd_mode = [0u8; 4];
+        sys_ioctl(&mut proc, &mut host, fd, KDGETMODE, &mut kd_mode).unwrap();
+        assert_eq!(i32::from_le_bytes(kd_mode), KD_TEXT);
+
+        let mut set_graphics = KD_GRAPHICS.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, KDSETMODE, &mut set_graphics).unwrap();
+
+        let mut openqry = [0u8; 4];
+        sys_ioctl(&mut proc, &mut host, fd, VT_OPENQRY, &mut openqry).unwrap();
+        assert_eq!(i32::from_le_bytes(openqry), 1);
+
+        let mut state = [0u8; 6];
+        sys_ioctl(&mut proc, &mut host, fd, VT_GETSTATE, &mut state).unwrap();
+        assert_eq!(u16::from_le_bytes([state[0], state[1]]), 1);
+        assert_eq!(u16::from_le_bytes([state[4], state[5]]), 0x0002);
+
+        let mut mode = [0xffu8; 8];
+        sys_ioctl(&mut proc, &mut host, fd, VT_GETMODE, &mut mode).unwrap();
+        assert_eq!(mode[0], VT_AUTO);
+        assert_eq!(&mode[1..], &[0u8; 7]);
+
+        let mut vt_arg = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, VT_ACTIVATE, &mut vt_arg).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, VT_WAITACTIVE, &mut vt_arg).unwrap();
+    }
+
+    #[test]
     fn test_ioctl_unsupported_returns_enotty() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 8];
-        let result = sys_ioctl(&mut proc, 0, 0x9999, &mut buf);
+        let result = sys_ioctl(&mut proc, &mut host, 0, 0x9999, &mut buf);
         assert_eq!(result, Err(Errno::ENOTTY));
     }
 
     #[test]
     fn test_ioctl_fionbio_set_nonblock() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         // Set O_NONBLOCK via FIONBIO on stdout (fd 1)
         let mut buf = 1i32.to_le_bytes();
-        let result = sys_ioctl(&mut proc, 1, 0x5421, &mut buf);
+        let result = sys_ioctl(&mut proc, &mut host, 1, 0x5421, &mut buf);
         assert!(result.is_ok());
         let ofd = proc
             .ofd_table
@@ -12439,7 +13065,7 @@ mod tests {
         assert_ne!(ofd.status_flags & wasm_posix_shared::flags::O_NONBLOCK, 0);
         // Clear it
         let mut buf = 0i32.to_le_bytes();
-        sys_ioctl(&mut proc, 1, 0x5421, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 1, 0x5421, &mut buf).unwrap();
         let ofd = proc
             .ofd_table
             .get(proc.fd_table.get(1).unwrap().ofd_ref.0)
@@ -12450,15 +13076,16 @@ mod tests {
     #[test]
     fn test_ioctl_fioclex_fionclex() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 4];
         // Set FD_CLOEXEC via FIOCLEX on fd 0
-        sys_ioctl(&mut proc, 0, 0x5451, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x5451, &mut buf).unwrap();
         assert_ne!(
             proc.fd_table.get(0).unwrap().fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC,
             0
         );
         // Clear via FIONCLEX
-        sys_ioctl(&mut proc, 0, 0x5450, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x5450, &mut buf).unwrap();
         assert_eq!(
             proc.fd_table.get(0).unwrap().fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC,
             0
@@ -12474,7 +13101,7 @@ mod tests {
         sys_write(&mut proc, &mut host, write_fd, b"hello").unwrap();
         // FIONREAD should return 5
         let mut buf = [0u8; 4];
-        sys_ioctl(&mut proc, read_fd, 0x541B, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, read_fd, 0x541B, &mut buf).unwrap();
         let avail = i32::from_le_bytes(buf);
         assert_eq!(avail, 5);
     }
@@ -12482,9 +13109,10 @@ mod tests {
     #[test]
     fn test_ioctl_fionread_regular() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         // FIONREAD on a CharDevice returns 0
         let mut buf = [0u8; 4];
-        sys_ioctl(&mut proc, 0, 0x541B, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x541B, &mut buf).unwrap();
         let avail = i32::from_le_bytes(buf);
         assert_eq!(avail, 0);
     }
@@ -12501,7 +13129,7 @@ mod tests {
 
         // No OOB pending: SIOCATMARK returns 0
         let mut iobuf = [0u8; 4];
-        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd1, 0x8905, &mut iobuf).unwrap();
         assert_eq!(i32::from_le_bytes(iobuf), 0);
 
         // Send OOB byte from fd0
@@ -12510,7 +13138,7 @@ mod tests {
 
         // SIOCATMARK on fd1 returns 1
         let mut iobuf = [0u8; 4];
-        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd1, 0x8905, &mut iobuf).unwrap();
         assert_eq!(i32::from_le_bytes(iobuf), 1);
 
         // Recv OOB byte from fd1
@@ -12521,7 +13149,7 @@ mod tests {
 
         // After reading OOB, SIOCATMARK returns 0
         let mut iobuf = [0u8; 4];
-        sys_ioctl(&mut proc, fd1, 0x8905, &mut iobuf).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd1, 0x8905, &mut iobuf).unwrap();
         assert_eq!(i32::from_le_bytes(iobuf), 0);
     }
 
@@ -14597,6 +15225,62 @@ mod tests {
     }
 
     #[test]
+    fn test_unix_stream_listener_shared_across_fork() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut table = crate::process_table::ProcessTable::new();
+        table.create_process(9011).unwrap();
+        let mut host = MockHostIO::new();
+        let path = b"/tmp/fork_unix_9011.sock";
+
+        let resolved = {
+            let parent = table.get(9011).unwrap();
+            crate::path::resolve_path(path, &parent.cwd)
+        };
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+
+        let server_fd = {
+            let parent = table.get_mut(9011).unwrap();
+            let server_fd = sys_socket(parent, &mut host, 1, 1, 0).unwrap();
+            sys_bind(parent, &mut host, server_fd, &addr[..addrlen]).unwrap();
+            sys_listen(parent, &mut host, server_fd, 5).unwrap();
+            let entry = parent.fd_table.get(server_fd).unwrap();
+            let ofd = parent.ofd_table.get(entry.ofd_ref.0).unwrap();
+            let sock_idx = (-(ofd.host_handle + 1)) as usize;
+            assert!(
+                parent
+                    .sockets
+                    .get(sock_idx)
+                    .unwrap()
+                    .shared_backlog_idx
+                    .is_some(),
+                "AF_UNIX listeners should use the shared accept queue"
+            );
+            server_fd
+        };
+
+        table.fork_process(9011, 9012).unwrap();
+
+        {
+            let parent = table.get_mut(9011).unwrap();
+            let client_fd = sys_socket(parent, &mut host, 1, 1, 0).unwrap();
+            sys_connect(parent, &mut host, client_fd, &addr[..addrlen]).unwrap();
+        }
+
+        {
+            let child = table.get_mut(9012).unwrap();
+            let accepted_fd = sys_accept(child, &mut host, server_fd).unwrap();
+            assert!(accepted_fd >= 0);
+        }
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
     fn test_unix_stream_connect_no_listener() {
         let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
         let mut proc = Process::new(9002);
@@ -15475,6 +16159,8 @@ mod tests {
             VirtualDevice::Fb0,
             VirtualDevice::Mice,
             VirtualDevice::Dsp,
+            VirtualDevice::Event0,
+            VirtualDevice::Event1,
         ] {
             assert_eq!(
                 VirtualDevice::from_host_handle(dev.host_handle()),
@@ -16606,19 +17292,20 @@ mod tests {
     #[test]
     fn test_tiocgpgrp_tiocspgrp() {
         let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
         let mut buf = [0u8; 4];
 
         // TIOCGPGRP on stdin (fd 0, which is a CharDevice)
-        sys_ioctl(&mut proc, 0, 0x540F, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x540F, &mut buf).unwrap();
         let pgid = i32::from_le_bytes(buf);
         assert_eq!(pgid, 1); // default foreground_pgid
 
         // TIOCSPGRP — set to 42
         buf.copy_from_slice(&42i32.to_le_bytes());
-        sys_ioctl(&mut proc, 0, 0x5410, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x5410, &mut buf).unwrap();
 
         // Read back
-        sys_ioctl(&mut proc, 0, 0x540F, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, 0, 0x540F, &mut buf).unwrap();
         let pgid = i32::from_le_bytes(buf);
         assert_eq!(pgid, 42);
     }
@@ -16631,7 +17318,7 @@ mod tests {
 
         // Open a regular file
         let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
-        let result = sys_ioctl(&mut proc, fd, 0x540F, &mut buf);
+        let result = sys_ioctl(&mut proc, &mut host, fd, 0x540F, &mut buf);
         assert_eq!(result, Err(Errno::ENOTTY));
     }
 
@@ -18070,15 +18757,14 @@ mod tests {
 
     #[test]
     fn fbioget_vscreeninfo_returns_640x400_bgra32() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::fbdev::*;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 160];
-        sys_ioctl(&mut proc, fd, FBIOGET_VSCREENINFO, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, FBIOGET_VSCREENINFO, &mut buf).unwrap();
         let v: FbVarScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
         assert_eq!(v.xres, 640);
         assert_eq!(v.yres, 400);
@@ -18096,19 +18782,18 @@ mod tests {
     }
 
     #[test]
-    fn fbioget_fscreeninfo_reports_correct_smem_len() {
-        use core::sync::atomic::Ordering;
+    fn fbioget_fscreeninfo_reports_framebuffer_aperture() {
         use wasm_posix_shared::fbdev::*;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 80];
-        sys_ioctl(&mut proc, fd, FBIOGET_FSCREENINFO, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, FBIOGET_FSCREENINFO, &mut buf).unwrap();
         let f: FbFixScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
         assert_eq!(&f.id[..6], b"wasmfb");
-        assert_eq!(f.smem_len, 640 * 400 * 4);
+        assert_eq!(f.smem_len, 1024 * 768 * 4);
         assert_eq!(f.line_length, 640 * 4);
         assert_eq!(f.fb_type, FB_TYPE_PACKED_PIXELS);
         assert_eq!(f.visual, FB_VISUAL_TRUECOLOR);
@@ -18118,23 +18803,44 @@ mod tests {
 
     #[test]
     fn fbiopan_display_succeeds() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::fbdev::*;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 160];
-        sys_ioctl(&mut proc, fd, FBIOPAN_DISPLAY, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, FBIOPAN_DISPLAY, &mut buf).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fb_display_control_ioctls_succeed() {
+        reset_fb0_owner();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+
+        let mut blank = 0i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, FBIOBLANK, &mut blank).unwrap();
+
+        let mut bad_blank = 99i32.to_le_bytes();
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, FBIOBLANK, &mut bad_blank),
+            Err(Errno::EINVAL)
+        );
+
+        let mut crtc = 0u32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, FBIO_WAITFORVSYNC, &mut crtc).unwrap();
+
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
     fn fbioput_vscreeninfo_rejects_mismatched_geometry() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::fbdev::*;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -18147,7 +18853,7 @@ mod tests {
         unsafe {
             core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v);
         }
-        let err = sys_ioctl(&mut proc, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap_err();
+        let err = sys_ioctl(&mut proc, &mut host, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap_err();
         assert_eq!(err, Errno::EINVAL);
 
         // Matching geometry succeeds.
@@ -18158,30 +18864,150 @@ mod tests {
         unsafe {
             core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v);
         }
-        sys_ioctl(&mut proc, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, FBIOPUT_VSCREENINFO, &mut buf).unwrap();
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fbioput_vscreeninfo_selects_640x480_mode() {
+        use wasm_posix_shared::fbdev::*;
+        reset_fb0_owner();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+
+        let mut v = FbVarScreenInfo::default();
+        v.xres = 640;
+        v.yres = 480;
+        v.xres_virtual = 640;
+        v.yres_virtual = 480;
+        v.bits_per_pixel = 32;
+        let mut vbuf = [0u8; 160];
+        unsafe {
+            core::ptr::write_unaligned(vbuf.as_mut_ptr() as *mut _, v);
+        }
+        sys_ioctl(&mut proc, &mut host, fd, FBIOPUT_VSCREENINFO, &mut vbuf).unwrap();
+
+        sys_ioctl(&mut proc, &mut host, fd, FBIOGET_VSCREENINFO, &mut vbuf).unwrap();
+        let got: FbVarScreenInfo = unsafe { core::ptr::read_unaligned(vbuf.as_ptr() as *const _) };
+        assert_eq!(got.xres, 640);
+        assert_eq!(got.yres, 480);
+
+        let mut fbuf = [0u8; 80];
+        sys_ioctl(&mut proc, &mut host, fd, FBIOGET_FSCREENINFO, &mut fbuf).unwrap();
+        let f: FbFixScreenInfo = unsafe { core::ptr::read_unaligned(fbuf.as_ptr() as *const _) };
+        assert_eq!(f.smem_len, 1024 * 768 * 4);
+        assert_eq!(f.line_length, 640 * 4);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fbioput_vscreeninfo_accepts_24bit_depth_on_32bit_storage() {
+        use wasm_posix_shared::fbdev::*;
+        reset_fb0_owner();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+
+        let mut v = FbVarScreenInfo::default();
+        v.xres = 640;
+        v.yres = 480;
+        v.xres_virtual = 640;
+        v.yres_virtual = 480;
+        v.bits_per_pixel = 24;
+        let mut vbuf = [0u8; 160];
+        unsafe {
+            core::ptr::write_unaligned(vbuf.as_mut_ptr() as *mut _, v);
+        }
+        sys_ioctl(&mut proc, &mut host, fd, FBIOPUT_VSCREENINFO, &mut vbuf).unwrap();
+
+        sys_ioctl(&mut proc, &mut host, fd, FBIOGET_VSCREENINFO, &mut vbuf).unwrap();
+        let got: FbVarScreenInfo = unsafe { core::ptr::read_unaligned(vbuf.as_ptr() as *const _) };
+        assert_eq!(got.xres, 640);
+        assert_eq!(got.yres, 480);
+        assert_eq!(got.bits_per_pixel, 32);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn fbioput_vscreeninfo_rebinds_live_mapping_when_aperture_covers_mode() {
+        use wasm_posix_shared::fbdev::*;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        reset_fb0_owner();
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let aperture_len = (1024 * 768 * 4) as usize;
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aperture_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+        assert_eq!(host.bind_framebuffer_calls.len(), 1);
+
+        let mut v = FbVarScreenInfo::default();
+        v.xres = 640;
+        v.yres = 480;
+        v.xres_virtual = 640;
+        v.yres_virtual = 480;
+        v.bits_per_pixel = 32;
+        let mut vbuf = [0u8; 160];
+        unsafe {
+            core::ptr::write_unaligned(vbuf.as_mut_ptr() as *mut _, v);
+        }
+        sys_ioctl(&mut proc, &mut host, fd, FBIOPUT_VSCREENINFO, &mut vbuf).unwrap();
+
+        let binding = proc.fb_binding.expect("fb binding should remain live");
+        assert_eq!(
+            (
+                binding.addr,
+                binding.len,
+                binding.w,
+                binding.h,
+                binding.stride
+            ),
+            (addr, aperture_len, 640, 480, 640 * 4)
+        );
+        assert_eq!(host.bind_framebuffer_calls.len(), 2);
+        let call = &host.bind_framebuffer_calls[1];
+        assert_eq!(
+            (call.pid, call.addr, call.len, call.w, call.h, call.stride),
+            (proc.pid as i32, addr, aperture_len, 640, 480, 640 * 4)
+        );
 
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
     fn unknown_fb_ioctl_returns_enotty() {
-        use core::sync::atomic::Ordering;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 160]; // big enough that ENOTTY is the only failure mode
-        let err = sys_ioctl(&mut proc, fd, 0x46FF, &mut buf).unwrap_err();
+        let err = sys_ioctl(&mut proc, &mut host, fd, 0x46FF, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOTTY);
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
     fn write_fb0_lazy_binds_and_forwards_pixels() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -18225,10 +19051,9 @@ mod tests {
 
     #[test]
     fn mmap_fb0_records_binding_and_calls_host() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -18268,10 +19093,9 @@ mod tests {
 
     #[test]
     fn second_mmap_of_fb0_returns_einval() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -18306,15 +19130,14 @@ mod tests {
 
     #[test]
     fn mmap_fb0_with_wrong_length_returns_einval() {
-        use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
-        // Wrong size — fbDOOM-style code requests smem_len exactly.
+        // Wrong size: fbdev mappings must request smem_len exactly.
         let err = sys_mmap(
             &mut proc,
             &mut host,
@@ -18338,7 +19161,7 @@ mod tests {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -18369,7 +19192,7 @@ mod tests {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::flags::O_RDWR;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
@@ -18390,13 +19213,53 @@ mod tests {
         sys_execve(&mut proc, &mut host, b"/bin/sh").unwrap();
         assert!(proc.fb_binding.is_none());
         assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+        assert_eq!(
+            crate::process_table::FB0_OWNER.load(Ordering::SeqCst),
+            proc.pgid as i32
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
         assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+    }
+
+    #[test]
+    fn exit_releases_live_fb_mapping_and_owner() {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        reset_fb0_owner();
+
+        let mut proc = Process::new(1);
+        let mut host = TrackingHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let len = (640 * 400 * 4) as usize;
+        let _ = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        sys_exit(&mut proc, &mut host, 0);
+
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert!(proc.fb_binding.is_none());
+        assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+
+        let mut successor = Process::new(2);
+        let fd2 = sys_open(&mut successor, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        sys_close(&mut successor, &mut host, fd2).unwrap();
     }
 
     #[test]
     fn open_dev_fb0_is_single_owner() {
         use core::sync::atomic::Ordering;
-        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+        reset_fb0_owner();
 
         let mut proc1 = Process::new(1);
         let mut proc2 = Process::new(2);
@@ -18417,7 +19280,7 @@ mod tests {
         sys_close(&mut proc1, &mut host, fd1).unwrap();
         assert_eq!(
             crate::process_table::FB0_OWNER.load(Ordering::SeqCst),
-            proc1.pid as i32
+            proc1.pgid as i32
         );
         sys_close(&mut proc1, &mut host, fd1b).unwrap();
         assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
@@ -18426,6 +19289,36 @@ mod tests {
         let fd2 = sys_open(&mut proc2, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
         sys_close(&mut proc2, &mut host, fd2).unwrap();
         assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+    }
+
+    #[test]
+    fn open_dev_fb0_allows_owner_process_group_handoff() {
+        use core::sync::atomic::Ordering;
+        reset_fb0_owner();
+
+        let mut parent = Process::new(101);
+        let mut child = Process::new(102);
+        let mut outsider = Process::new(201);
+        child.pgid = parent.pgid;
+        let mut host = MockHostIO::new();
+
+        let parent_fd = sys_open(&mut parent, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let child_fd = sys_open(&mut child, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+
+        let err = sys_open(&mut outsider, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap_err();
+        assert_eq!(err, Errno::EBUSY);
+
+        sys_close(&mut parent, &mut host, parent_fd).unwrap();
+        assert_eq!(
+            crate::process_table::FB0_OWNER.load(Ordering::SeqCst),
+            child.pgid as i32
+        );
+
+        sys_close(&mut child, &mut host, child_fd).unwrap();
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+
+        let outsider_fd = sys_open(&mut outsider, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        sys_close(&mut outsider, &mut host, outsider_fd).unwrap();
     }
 
     // -----------------------------------------------------------------
@@ -18440,6 +19333,8 @@ mod tests {
     fn reset_mice_state() {
         use core::sync::atomic::Ordering;
         crate::mouse::MICE_OWNER.store(-1, Ordering::SeqCst);
+        crate::mouse::EVENT0_OWNER.store(-1, Ordering::SeqCst);
+        crate::mouse::EVENT1_OWNER.store(-1, Ordering::SeqCst);
         crate::mouse::reset();
     }
 
@@ -18449,8 +19344,14 @@ mod tests {
             match_virtual_device(b"/dev/input/mice"),
             Some(VirtualDevice::Mice)
         );
-        // No /dev/input/event0 — evdev is out of scope for v1.
-        assert_eq!(match_virtual_device(b"/dev/input/event0"), None);
+        assert_eq!(
+            match_virtual_device(b"/dev/input/event0"),
+            Some(VirtualDevice::Event0)
+        );
+        assert_eq!(
+            match_virtual_device(b"/dev/input/event1"),
+            Some(VirtualDevice::Event1)
+        );
     }
 
     #[test]
@@ -18528,6 +19429,402 @@ mod tests {
     }
 
     #[test]
+    fn event0_stat_is_chr() {
+        let st = virtual_device_stat(VirtualDevice::Event0, 0, 0);
+        assert_eq!(
+            st.st_mode & wasm_posix_shared::mode::S_IFMT,
+            wasm_posix_shared::mode::S_IFCHR
+        );
+        assert_eq!(st.st_ino, VirtualDevice::Event0.ino());
+    }
+
+    #[test]
+    fn open_event0_acquires_ownership_and_second_open_from_other_pid_is_ebusy() {
+        use core::sync::atomic::Ordering;
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc1 = Process::new(1);
+        let mut proc2 = Process::new(2);
+        let mut host = MockHostIO::new();
+
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+        assert_eq!(
+            crate::mouse::EVENT0_OWNER.load(Ordering::SeqCst),
+            proc1.pid as i32
+        );
+
+        let err = sys_open(&mut proc2, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap_err();
+        assert_eq!(err, Errno::EBUSY);
+
+        let fd1b = sys_open(&mut proc1, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+        assert_ne!(fd1, fd1b);
+        sys_close(&mut proc1, &mut host, fd1).unwrap();
+        sys_close(&mut proc1, &mut host, fd1b).unwrap();
+    }
+
+    fn parse_evdev_event(bytes: &[u8]) -> (u16, u16, i32) {
+        assert!(bytes.len() >= 16);
+        let type_ = u16::from_le_bytes([bytes[8], bytes[9]]);
+        let code = u16::from_le_bytes([bytes[10], bytes[11]]);
+        let value = i32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+        (type_, code, value)
+    }
+
+    fn eviocg(nr: u32, len: usize) -> u32 {
+        (IOC_READ << 30) | ((len as u32) << 16) | (EVDEV_IOC_TYPE << 8) | nr
+    }
+
+    fn eviocgbit(ev_type: u32, len: usize) -> u32 {
+        eviocg(EVIOCGBIT_BASE_NR + ev_type, len)
+    }
+
+    fn eviocgrab() -> u32 {
+        (IOC_WRITE << 30) | (4 << 16) | (EVDEV_IOC_TYPE << 8) | EVIOCGRAB_NR
+    }
+
+    fn bit_is_set(bytes: &[u8], bit: u32) -> bool {
+        let byte = (bit / 8) as usize;
+        byte < bytes.len() && (bytes[byte] & (1u8 << (bit % 8))) != 0
+    }
+
+    #[test]
+    fn read_event0_drains_evdev_packets() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+
+        crate::mouse::inject_event(7, -3, 0b001);
+
+        let mut buf = [0u8; 64];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 64);
+        assert_eq!(parse_evdev_event(&buf[0..16]), (0x01, 0x110, 1));
+        assert_eq!(parse_evdev_event(&buf[16..32]), (0x02, 0x00, 7));
+        assert_eq!(parse_evdev_event(&buf[32..48]), (0x02, 0x01, 3));
+        assert_eq!(parse_evdev_event(&buf[48..64]), (0x00, 0x00, 0));
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn read_event0_preserves_large_relative_motion() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+
+        crate::mouse::inject_event(500, -500, 0);
+
+        let mut buf = [0u8; 48];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 48);
+        assert_eq!(parse_evdev_event(&buf[0..16]), (0x02, 0x00, 500));
+        assert_eq!(parse_evdev_event(&buf[16..32]), (0x02, 0x01, 500));
+        assert_eq!(parse_evdev_event(&buf[32..48]), (0x00, 0x00, 0));
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn read_event0_drains_wheel_packets() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+
+        crate::mouse::inject_wheel_event(-2);
+
+        let mut buf = [0u8; 32];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 32);
+        assert_eq!(parse_evdev_event(&buf[0..16]), (0x02, REL_WHEEL as u16, -2));
+        assert_eq!(parse_evdev_event(&buf[16..32]), (0x00, 0x00, 0));
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn event0_evdev_ioctls_report_pointer_capabilities() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+
+        let mut version = [0u8; 4];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocg(EVIOCGVERSION_NR, 4),
+            &mut version,
+        )
+        .unwrap();
+        assert_eq!(u32::from_le_bytes(version), EV_VERSION);
+
+        let mut id = [0u8; 8];
+        sys_ioctl(&mut proc, &mut host, fd, eviocg(EVIOCGID_NR, 8), &mut id).unwrap();
+        assert_eq!(u16::from_le_bytes([id[0], id[1]]), BUS_VIRTUAL);
+        assert_eq!(u16::from_le_bytes([id[4], id[5]]), 1);
+
+        let mut name = [0u8; 32];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocg(EVIOCGNAME_NR, name.len()),
+            &mut name,
+        )
+        .unwrap();
+        assert!(name.starts_with(b"Kandelo relative pointer\0"));
+
+        let mut ev_bits = [0u8; 4];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocgbit(EV_SYN, ev_bits.len()),
+            &mut ev_bits,
+        )
+        .unwrap();
+        assert!(bit_is_set(&ev_bits, EV_SYN));
+        assert!(bit_is_set(&ev_bits, EV_KEY));
+        assert!(bit_is_set(&ev_bits, EV_REL));
+
+        let mut rel_bits = [0u8; 2];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocgbit(EV_REL, rel_bits.len()),
+            &mut rel_bits,
+        )
+        .unwrap();
+        assert!(bit_is_set(&rel_bits, REL_X));
+        assert!(bit_is_set(&rel_bits, REL_Y));
+        assert!(bit_is_set(&rel_bits, REL_WHEEL));
+
+        let mut key_bits = [0u8; 64];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocgbit(EV_KEY, key_bits.len()),
+            &mut key_bits,
+        )
+        .unwrap();
+        assert!(bit_is_set(&key_bits, BTN_LEFT));
+        assert!(bit_is_set(&key_bits, BTN_RIGHT));
+        assert!(bit_is_set(&key_bits, BTN_MIDDLE));
+        assert!(!bit_is_set(&key_bits, 30));
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn event1_evdev_ioctls_report_keyboard_capabilities() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event1", O_RDONLY, 0).unwrap();
+
+        let mut name = [0u8; 32];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocg(EVIOCGNAME_NR, name.len()),
+            &mut name,
+        )
+        .unwrap();
+        assert!(name.starts_with(b"Kandelo keyboard\0"));
+
+        let mut ev_bits = [0u8; 4];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocgbit(EV_SYN, ev_bits.len()),
+            &mut ev_bits,
+        )
+        .unwrap();
+        assert!(bit_is_set(&ev_bits, EV_SYN));
+        assert!(bit_is_set(&ev_bits, EV_KEY));
+        assert!(!bit_is_set(&ev_bits, EV_REL));
+
+        let mut rel_bits = [0xffu8; 1];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocgbit(EV_REL, rel_bits.len()),
+            &mut rel_bits,
+        )
+        .unwrap();
+        assert_eq!(rel_bits, [0u8; 1]);
+
+        let mut key_bits = [0u8; 16];
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            eviocgbit(EV_KEY, key_bits.len()),
+            &mut key_bits,
+        )
+        .unwrap();
+        assert!(bit_is_set(&key_bits, 1)); // KEY_ESC
+        assert!(bit_is_set(&key_bits, 30)); // KEY_A
+        assert!(bit_is_set(&key_bits, 57)); // KEY_SPACE
+        assert!(bit_is_set(&key_bits, 103)); // KEY_UP
+        assert!(!bit_is_set(&key_bits, BTN_LEFT));
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn event_devices_accept_eviocgrab_as_noop() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let event0 = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDWR, 0).unwrap();
+        let event1 = sys_open(&mut proc, &mut host, b"/dev/input/event1", O_RDWR, 0).unwrap();
+
+        let mut grab = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, event0, eviocgrab(), &mut grab).unwrap();
+        sys_ioctl(&mut proc, &mut host, event1, eviocgrab(), &mut grab).unwrap();
+
+        let mut ungrab = 0i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, event0, eviocgrab(), &mut ungrab).unwrap();
+        sys_ioctl(&mut proc, &mut host, event1, eviocgrab(), &mut ungrab).unwrap();
+
+        sys_close(&mut proc, &mut host, event0).unwrap();
+        sys_close(&mut proc, &mut host, event1).unwrap();
+    }
+
+    #[test]
+    fn read_event0_returns_eagain_when_empty() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+
+        let mut buf = [0u8; 16];
+        let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EAGAIN);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn close_event0_releases_owner() {
+        use core::sync::atomic::Ordering;
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+        assert_eq!(
+            crate::mouse::EVENT0_OWNER.load(Ordering::SeqCst),
+            proc.pid as i32
+        );
+
+        crate::mouse::inject_event(1, 1, 1);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(crate::mouse::EVENT0_OWNER.load(Ordering::SeqCst), -1);
+        assert!(
+            !crate::mouse::has_event_data(),
+            "close should reset event0 queue when releasing ownership"
+        );
+    }
+
+    #[test]
+    fn event1_stat_is_chr() {
+        let st = virtual_device_stat(VirtualDevice::Event1, 0, 0);
+        assert_eq!(
+            st.st_mode & wasm_posix_shared::mode::S_IFMT,
+            wasm_posix_shared::mode::S_IFCHR
+        );
+        assert_eq!(st.st_ino, VirtualDevice::Event1.ino());
+    }
+
+    #[test]
+    fn open_event1_acquires_ownership_and_second_open_from_other_pid_is_ebusy() {
+        use core::sync::atomic::Ordering;
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc1 = Process::new(1);
+        let mut proc2 = Process::new(2);
+        let mut host = MockHostIO::new();
+
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/input/event1", O_RDONLY, 0).unwrap();
+        assert_eq!(
+            crate::mouse::EVENT1_OWNER.load(Ordering::SeqCst),
+            proc1.pid as i32
+        );
+
+        let err = sys_open(&mut proc2, &mut host, b"/dev/input/event1", O_RDONLY, 0).unwrap_err();
+        assert_eq!(err, Errno::EBUSY);
+
+        let fd1b = sys_open(&mut proc1, &mut host, b"/dev/input/event1", O_RDONLY, 0).unwrap();
+        assert_ne!(fd1, fd1b);
+        sys_close(&mut proc1, &mut host, fd1).unwrap();
+        sys_close(&mut proc1, &mut host, fd1b).unwrap();
+    }
+
+    #[test]
+    fn read_event1_drains_keyboard_evdev_packets() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event1", O_RDONLY, 0).unwrap();
+
+        crate::mouse::inject_key_event(14, true);
+
+        let mut buf = [0u8; 32];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 32);
+        assert_eq!(parse_evdev_event(&buf[0..16]), (0x01, 14, 1));
+        assert_eq!(parse_evdev_event(&buf[16..32]), (0x00, 0x00, 0));
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn read_event1_returns_eagain_when_empty() {
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event1", O_RDONLY, 0).unwrap();
+
+        let mut buf = [0u8; 16];
+        let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EAGAIN);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
     fn close_mice_releases_owner() {
         use core::sync::atomic::Ordering;
         let _g = MICE_OWNER_LOCK.lock().unwrap();
@@ -18588,7 +19885,7 @@ mod tests {
         use core::sync::atomic::Ordering;
         crate::audio::DSP_OWNER.store(-1, Ordering::SeqCst);
         crate::audio::reset();
-        crate::audio::SAMPLE_RATE.store(11025, Ordering::Relaxed);
+        crate::audio::SAMPLE_RATE.store(crate::audio::DEFAULT_SAMPLE_RATE, Ordering::Relaxed);
         crate::audio::CHANNELS.store(2, Ordering::Relaxed);
     }
 
@@ -18659,8 +19956,8 @@ mod tests {
     #[test]
     fn read_dsp_returns_zero() {
         // OSS write-only: read returns 0 (EOF-like), not EAGAIN — same
-        // policy as /dev/null. Stops fbDOOM from spinning if it ever
-        // tries to read back the ring.
+        // policy as /dev/null. Stops callers from spinning if they ever
+        // try to read back the ring.
         let _g = DSP_OWNER_LOCK.lock().unwrap();
         reset_dsp_state();
 
@@ -18685,7 +19982,7 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
 
         let mut arg = 44100i32.to_le_bytes();
-        sys_ioctl(&mut proc, fd, SNDCTL_DSP_SPEED, &mut arg).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SPEED, &mut arg).unwrap();
         // The kernel echoes back the rate it actually configured.
         assert_eq!(i32::from_le_bytes(arg), 44100);
         assert_eq!(crate::audio::current_config().0, 44100);
@@ -18704,11 +20001,11 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
 
         let mut arg = 0x08u32.to_le_bytes(); // AFMT_U8 — unsupported
-        let err = sys_ioctl(&mut proc, fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap_err();
+        let err = sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap_err();
         assert_eq!(err, Errno::EINVAL);
 
         let mut arg = AFMT_S16_LE.to_le_bytes();
-        sys_ioctl(&mut proc, fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_SETFMT, &mut arg).unwrap();
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
@@ -18723,7 +20020,7 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dsp", O_WRONLY, 0).unwrap();
 
         let mut arg = [0u8; 4];
-        sys_ioctl(&mut proc, fd, SNDCTL_DSP_GETFMTS, &mut arg).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_GETFMTS, &mut arg).unwrap();
         assert_eq!(u32::from_le_bytes(arg), AFMT_S16_LE);
 
         sys_close(&mut proc, &mut host, fd).unwrap();
@@ -18743,7 +20040,7 @@ mod tests {
         assert_eq!(crate::audio::pending_bytes(), 4);
 
         let mut arg = [0u8; 0];
-        sys_ioctl(&mut proc, fd, SNDCTL_DSP_RESET, &mut arg).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, SNDCTL_DSP_RESET, &mut arg).unwrap();
         assert_eq!(crate::audio::pending_bytes(), 0);
 
         sys_close(&mut proc, &mut host, fd).unwrap();

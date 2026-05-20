@@ -160,6 +160,31 @@ export class WasmPosixKernel {
     inject(dx, dy, buttons);
   }
 
+  /**
+   * Push one Linux evdev wheel event into `/dev/input/event0`.
+   * Positive values follow Linux REL_WHEEL convention: wheel-up.
+   */
+  injectMouseWheelEvent(delta: number): void {
+    const inject = this.instance?.exports?.kernel_inject_mouse_wheel_event as
+      | ((delta: number) => void)
+      | undefined;
+    if (!inject) return;
+    inject(delta);
+  }
+
+  /**
+   * Push one Linux evdev keyboard key edge into `/dev/input/event1`.
+   * `keycode` is a Linux input-event key code. `pressed` is true for
+   * key-down and false for key-up.
+   */
+  injectKeyboardEvent(keycode: number, pressed: boolean): void {
+    const inject = this.instance?.exports?.kernel_inject_keyboard_event as
+      | ((keycode: number, pressed: number) => void)
+      | undefined;
+    if (!inject) return;
+    inject(keycode >>> 0, pressed ? 1 : 0);
+  }
+
   // ---------------------------------------------------------------------------
   // /dev/dsp — host-drained PCM audio
   // ---------------------------------------------------------------------------

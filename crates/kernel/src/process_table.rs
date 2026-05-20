@@ -24,13 +24,17 @@ use wasm_posix_shared::flags::O_ACCMODE;
 use crate::ofd::FileType;
 use crate::process::Process;
 
-/// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
+/// Owning process group of `/dev/fb0`, or `-1` if no process holds it.
 ///
-/// `/dev/fb0` is single-open; the second `open` while another process
-/// holds the device returns `EBUSY`. The owner is released when the
-/// owning process closes its last `/dev/fb0` fd, calls `munmap` on its
-/// framebuffer region, or exits.
+/// `/dev/fb0` is a single-seat device. The first opener claims the seat
+/// for its POSIX process group; forked children stay in that group and may
+/// reopen the device during server reset/daemonization. Processes outside
+/// the owning group get `EBUSY`.
 pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
+
+/// Number of processes in the owning process group that currently hold
+/// `/dev/fb0` by at least one fd or a live framebuffer mmap.
+pub static FB0_HOLDER_COUNT: AtomicI32 = AtomicI32::new(0);
 
 /// Table of all processes managed by the centralized kernel.
 ///
@@ -115,6 +119,8 @@ fn bump_inherited_resource_refcounts(child: &Process) {
             }
         }
     }
+
+    crate::syscalls::note_fb0_inherited_holder(child);
 
     // Host file handles (regular files / dirs / chardevs / pipe-via-host).
     for (_idx, ofd) in child.ofd_table.iter() {
@@ -254,6 +260,8 @@ impl ProcessTable {
     pub fn remove_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
         let proc = self.processes.remove(&pid)?;
         let mut host_net_closes: Vec<i32> = Vec::new();
+
+        crate::syscalls::release_fb0_removed_process_holder(&proc);
 
         let pipe_table = unsafe { crate::pipe::global_pipe_table() };
 

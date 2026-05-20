@@ -1,0 +1,39 @@
+diff --git a/src/menu.c b/src/menu.c
+--- a/src/menu.c
++++ b/src/menu.c
+@@ -663,21 +663,30 @@ MenuSelectionType UpdateMotion(Menu *menu,
+          tp = menu;
+       } else {
+          tp = menu->parent;
+       }
+ 
+-      y = -1;
+       if(event->xbutton.button == Button4) {
++         y = -1;
+          y = GetPreviousMenuIndex(tp);
++         if(y >= 0) {
++            SetPosition(tp, y);
++         }
++         return MENU_NOSELECTION;
+       } else if(event->xbutton.button == Button5) {
++         y = -1;
+          y = GetNextMenuIndex(tp);
+-      }
+-
+-      if(y >= 0) {
+-         SetPosition(tp, y);
++         if(y >= 0) {
++            SetPosition(tp, y);
++         }
++         return MENU_NOSELECTION;
+       }
+ 
+-      return MENU_NOSELECTION;
++      SetMousePosition(event->xbutton.x_root, event->xbutton.y_root,
++                       event->xbutton.window);
++      x = event->xbutton.x_root - menu->x;
++      y = event->xbutton.y_root - menu->y;
++      subwindow = event->xbutton.subwindow;
+ 
+    } else if(event->type == KeyPress) {
+       ActionType action;

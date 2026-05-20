@@ -27,6 +27,18 @@ name = "ifhwaddr"
 wasm = "ifhwaddr.wasm"
 
 [[outputs]]
+name = "kdesktop"
+wasm = "kdesktop.wasm"
+
+[[outputs]]
+name = "xvfs-browser"
+wasm = "xvfs-browser.wasm"
+
+[[outputs]]
+name = "fbseat-probe"
+wasm = "fbseat-probe.wasm"
+
+[[outputs]]
 name = "mmap_shared_test"
 wasm = "mmap_shared_test.wasm"
 

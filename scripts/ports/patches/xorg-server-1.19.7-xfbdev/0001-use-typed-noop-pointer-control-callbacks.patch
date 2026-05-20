@@ -1,0 +1,54 @@
+diff --git a/dix/devices.c b/dix/devices.c
+index 57d61ff..b80987a 100644
+--- a/dix/devices.c
++++ b/dix/devices.c
+@@ -641,6 +641,13 @@ CoreKeyboardProc(DeviceIntPtr pDev, int what)
+     return BadMatch;
+ }
+ 
++static void
++NoopPtrCtrlProc(DeviceIntPtr dev, PtrCtrl *ctrl)
++{
++    (void) dev;
++    (void) ctrl;
++}
++
+ /**
+  * Device control function for the Virtual Core Pointer.
+  */
+@@ -672,7 +679,7 @@ CorePointerProc(DeviceIntPtr pDev, int what)
+ 
+         if (!InitPointerDeviceStruct
+             ((DevicePtr) pDev, map, NBUTTONS, btn_labels,
+-             (PtrCtrlProcPtr) NoopDDA, GetMotionHistorySize(), NAXES,
++             NoopPtrCtrlProc, GetMotionHistorySize(), NAXES,
+              axes_labels)) {
+             ErrorF("Could not initialize device '%s'. Out of memory.\n",
+                    pDev->name);
+diff --git a/hw/kdrive/src/kinput.c b/hw/kdrive/src/kinput.c
+index 2b69d14..a01c62d 100644
+--- a/hw/kdrive/src/kinput.c
++++ b/hw/kdrive/src/kinput.c
+@@ -74,6 +74,13 @@ static KdPointerDriver *kdPointerDrivers = NULL;
+ static Bool kdInputEnabled;
+ static Bool kdOffScreen;
+ static unsigned long kdOffScreenTime;
++
++static void
++KdNoopPtrCtrlProc(DeviceIntPtr dev, PtrCtrl *ctrl)
++{
++    (void) dev;
++    (void) ctrl;
++}
+ 
+ static void
+ KdBlockSigio(void)
+@@ -418,7 +425,7 @@ KdPointerProc(DeviceIntPtr pDevice, int onoff)
+         }
+ 
+         InitPointerDeviceStruct(pDev, pi->map, pi->nButtons, btn_labels,
+-                                (PtrCtrlProcPtr) NoopDDA,
++                                KdNoopPtrCtrlProc,
+                                 GetMotionHistorySize(), pi->nAxes, axes_labels);
+ 
+         free(btn_labels);

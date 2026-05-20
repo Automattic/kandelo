@@ -1,0 +1,14 @@
+diff --git a/hw/kdrive/src/kinput.c b/hw/kdrive/src/kinput.c
+index a01c62d..012d11e 100644
+--- a/hw/kdrive/src/kinput.c
++++ b/hw/kdrive/src/kinput.c
+@@ -1905,8 +1905,8 @@ KdEnqueuePointerEvent(KdPointerInfo * pi, unsigned long flags, int rx, int ry,
+     z = rz;
+ 
+     if (flags & KD_MOUSE_DELTA) {
++        dixflags = POINTER_RELATIVE;
+         if (x || y || z) {
+-            dixflags = POINTER_RELATIVE | POINTER_ACCELERATE;
+             _KdEnqueuePointerEvent(pi, MotionNotify, x, y, z, 0, dixflags,
+                                    FALSE);
+         }

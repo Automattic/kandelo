@@ -985,9 +985,10 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
         // Fork children do NOT inherit the framebuffer binding. The
         // /dev/fb0 device is single-owner (FB0_OWNER); a forked child
         // gets a private mmap copy in its own Memory but is not
-        // registered as a host display target. fbDOOM doesn't fork
-        // mid-game; documented limitation in the design doc.
+        // registered as a host display target.
         fb_binding: None,
+        fb_width: 640,
+        fb_height: 400,
         fork_count: 0,
     })
 }
@@ -1380,6 +1381,8 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         // exec wipes any prior framebuffer binding — the new program
         // must open and mmap /dev/fb0 itself.
         fb_binding: None,
+        fb_width: 640,
+        fb_height: 400,
         // The fork counter exists as a kernel-side regression guardrail.
         // Resetting on exec keeps semantics simple: the next spawn-from-this-pid
         // test starts from a clean slate. The plan's regression check inspects

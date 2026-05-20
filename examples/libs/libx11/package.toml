@@ -1,0 +1,22 @@
+kind = "library"
+
+name = "libx11"
+version = "1.8.13"
+kernel_abi = 7
+depends_on = ["xorgproto@2025.1", "xtrans@1.6.0", "libxcb@1.17.0"]
+
+[source]
+url = "https://www.x.org/releases/individual/lib/libX11-1.8.13.tar.xz"
+sha256 = "69606f485c2c07c14ef64f75b7bb326d48587af33795d9ab3e607c0b5f94f11c"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/xorg/lib/libx11/-/blob/libX11-1.8.13/COPYING"
+
+[build]
+script_path = "examples/libs/libx11/build-libx11.sh"
+
+[outputs]
+libs = ["lib/libX11.a"]
+headers = ["include/X11/Xlib.h"]
+pkgconfig = ["lib/pkgconfig/x11.pc"]

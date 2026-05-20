@@ -9,8 +9,8 @@
  *     `[addr, addr+len)` of the process Memory onto a canvas. The
  *     view is rebuilt after every `WebAssembly.Memory.grow()`.
  *
- *   - **write-based** — used by software (e.g. fbDOOM) that does
- *     `write(fd_fb, …)` rather than mmap. The kernel emits a
+ *   - **write-based** — used by software that does `write(fd_fb, …)`
+ *     rather than mmap. The kernel emits a
  *     *sentinel* `bind` with `addr === 0 && len === 0`. The host
  *     allocates its own pixel buffer (`hostBuffer`); pixels arrive
  *     through `fbWrite(pid, offset, bytes)`. Renderers read directly
@@ -68,6 +68,12 @@ export class FramebufferRegistry {
   private writeListeners = new Set<FbWriteListener>();
 
   bind(b: FbBindingInput): void {
+    for (const pid of [...this.bindings.keys()]) {
+      if (pid === b.pid) continue;
+      this.bindings.delete(pid);
+      for (const l of this.listeners) l(pid, "unbind");
+    }
+
     const isWriteBased = b.addr === 0 && b.len === 0;
     const hostBuffer = isWriteBased
       ? new Uint8ClampedArray(new ArrayBuffer(b.h * b.stride))

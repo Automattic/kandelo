@@ -1,0 +1,32 @@
+diff --git a/Xi/extinit.c b/Xi/extinit.c
+index 8048462..c5f6123 100644
+--- a/Xi/extinit.c
++++ b/Xi/extinit.c
+@@ -980,11 +980,11 @@ SetMaskForExtEvent(Mask mask, int event)
+ {
+     int i;
+ 
++    if ((event < LASTEvent) || (event >= 128))
++        FatalError("MaskForExtensionEvent: bogus event number %d\n", event);
++
+     EventInfo[ExtEventIndex].mask = mask;
+     EventInfo[ExtEventIndex++].type = event;
+-
+-    if ((event < LASTEvent) || (event >= 128))
+-        FatalError("MaskForExtensionEvent: bogus event number");
+ 
+     for (i = 0; i < MAXDEVICES; i++)
+         SetMaskForEvent(i, mask, event);
+@@ -1285,6 +1285,12 @@ XInputExtensionInit(void)
+     if (!XIBarrierInit())
+         FatalError("Could not initialize barriers.\n");
+ 
++    /*
++     * KDrive may restart the server generation before any X clients connect.
++     * Reinitialize the legacy XI1 event bookkeeping before registering again.
++     */
++    RestoreExtensionEvents();
++
+     extEntry = AddExtension(INAME, IEVENTS, IERRORS, ProcIDispatch,
+                             SProcIDispatch, IResetProc, StandardMinorOpcode);
+     if (extEntry) {
