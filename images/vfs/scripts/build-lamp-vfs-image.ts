@@ -29,6 +29,10 @@ import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { populateShellEnvironment } from "./shell-vfs-build";
 import { prewarmOpcache } from "./opcache-prewarm";
+import {
+  webPresentation,
+  writeKandeloDemoConfig,
+} from "./kandelo-demo-config";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -444,6 +448,13 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "lamp",
+  });
+  writeKandeloDemoConfig(fs, {
+    version: 1,
+    profiles: {
+      "wordpress-mariadb": { presentation: webPresentation() },
+      lamp: { presentation: webPresentation() },
+    },
   });
 
   await saveImage(fs, OUT_FILE);
