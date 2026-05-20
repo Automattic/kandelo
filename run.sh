@@ -155,12 +155,13 @@ has_dinit()         { pkg_has_output dinit dinit.wasm || [ -f "$REPO_ROOT/packag
 has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/packages/registry/cpython/bin/python.wasm" ]; }
 has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/python.vfs.zst" ]; }
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst" ]; }
-has_shell_vfs()     { pkg_has_output shell shell.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst" ]; }
-has_node()          { pkg_has_output node node.wasm || [ -f "$REPO_ROOT/packages/registry/quickjs/bin/node.wasm" ]; }
+has_shell_vfs()     { pkg_has_output shell shell.vfs.zst; }
+has_node()          { pkg_has_output node node.wasm; }
 has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/packages/registry/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
+has_mariadb_test_vfs() { pkg_has_output mariadb-test mariadb-test.vfs.zst; }
 has_bc()            { pkg_has_output bc bc.wasm || [ -f "$REPO_ROOT/packages/registry/bc/bin/bc.wasm" ]; }
 has_file()          { pkg_has_output file file.wasm || [ -f "$REPO_ROOT/packages/registry/file/bin/file.wasm" ]; }
 has_less()          { pkg_has_output less less.wasm || [ -f "$REPO_ROOT/packages/registry/less/bin/less.wasm" ]; }
@@ -449,6 +450,20 @@ build_mariadb64_vfs() {
     info "MariaDB VFS image (wasm64) built"
 }
 
+build_mariadb_test_vfs() {
+    if has_mariadb_test_vfs; then
+        info "MariaDB test VFS image"
+        return
+    fi
+    build_mariadb
+    build_dash
+    build_coreutils
+    build_dinit
+    step "Building MariaDB test VFS image"
+    bash "$REPO_ROOT/packages/registry/mariadb-test/build-mariadb-test.sh"
+    info "MariaDB test VFS image built"
+}
+
 build_wordpress() {
     if ! has_wordpress; then
         step "Downloading WordPress"
@@ -640,6 +655,14 @@ build_node() {
     fi
     need_kernel
     need_sdk
+    local node_wasm="$REPO_ROOT/packages/registry/quickjs/bin/node.wasm"
+    if [ -f "$node_wasm" ]; then
+        step "Installing existing node.wasm into local-binaries"
+        source "$REPO_ROOT/scripts/install-local-binary.sh"
+        install_local_binary node "$node_wasm"
+        info "node installed"
+        return
+    fi
     step "Building node.wasm"
     local host_target
     host_target="$(rustc -vV | awk '/^host/ {print $2}')"
@@ -716,10 +739,8 @@ build_nethack_zip() {
 
 build_shell_vfs() {
     if ! has_shell_vfs; then
-        build_vim_zip
-        build_nethack_zip
         step "Building Shell VFS image"
-        bash "$REPO_ROOT/images/vfs/scripts/build-shell-vfs-image.sh"
+        bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
         info "Shell VFS image built"
     else
         info "Shell VFS image"
@@ -1331,6 +1352,7 @@ build_target() {
         mariadb64)  build_mariadb64 ;;
         mariadb-vfs) build_mariadb_vfs ;;
         mariadb64-vfs) build_mariadb64_vfs ;;
+        mariadb-test) build_mariadb_test_vfs ;;
         redis)      build_redis ;;
         dinit)      build_dinit ;;
         cpython)    build_cpython ;;
@@ -1394,7 +1416,7 @@ BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-
 # a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
 # listed: they're toolchain prerequisites for source builds, and any
 # `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
