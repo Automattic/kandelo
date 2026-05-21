@@ -284,10 +284,10 @@ export type SurfaceAvailability = Record<PrimarySurface, boolean>;
 
 export interface DemoPresentation {
   /**
-   * Surface that should dominate while the machine is booting. Demos default
-   * to syslog so users can see real startup progress.
+   * Surface that should dominate while the machine is booting. Most demos use
+   * syslog so users can see real startup progress.
    */
-  bootPrimary: "syslog";
+  bootPrimary: PrimarySurface;
   /**
    * Ordered surface preferences once the demo is ready for use. The UI picks
    * the first available surface and falls back as runtime state changes.
@@ -687,8 +687,8 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.kernel = undefined;
-    this.ptySession = null;
-    this.shellPid = null;
+    this.ptySessions.clear();
+    this.shellPids.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false });
