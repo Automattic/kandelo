@@ -53,7 +53,7 @@ CFLAGS=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
+    -mllvm -wasm-use-legacy-eh=false
 )
 
 LINK_FLAGS=(
@@ -79,7 +79,11 @@ LINK_FLAGS=(
     -Wl,--export=__abi_version
 )
 
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+# Phase 7: fork support comes from wasm-fork-instrument (replaces
+# wasm-opt --asyncify). The tool auto-discovers fork-path functions via
+# call-graph analysis from `kernel.kernel_fork`; no onlylist is needed.
+# See docs/fork-instrumentation.md.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
 build_program() {
     local src="$1"
@@ -91,11 +95,14 @@ build_program() {
     echo "  Compiling $name..."
     "$CC" "${CFLAGS[@]}" "$src" "${LINK_FLAGS[@]}" -o "$wasm"
 
-    # Asyncify for fork/exec support
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    # Apply fork instrumentation if the program uses fork. The tool is a
+    # no-op for modules without `kernel.kernel_fork`, so it's safe to run
+    # unconditionally on every program. Programs without fork stay
+    # byte-identical except for a small ABI metadata section the tool
+    # always emits (see runtime::inject_runtime).
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
+            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
     fi
 }
 
@@ -125,12 +132,13 @@ build_cpp_program() {
         -lc++ -lc++abi \
         -o "$wasm"
 
-    # Asyncify for fork/exec support. Harmless when no kernel.kernel_fork
-    # import is present (the pass becomes a no-op).
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    # Phase 7: fork support comes from wasm-fork-instrument. The tool is
+    # a no-op for modules without `kernel.kernel_fork`, so it's safe to
+    # run unconditionally — programs without fork stay byte-identical
+    # except for the ABI metadata section.
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
+            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
     fi
 }
 
@@ -154,10 +162,6 @@ fi
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
-    # Skip sh.c — host/wasm/sh.wasm is the pre-built full-featured dash binary.
-    # The minimal sh.c was a placeholder; building it overwrites dash with a
-    # shell that lacks eval and other builtins needed by wordexp/popen.
-    [ "$(basename "$src")" = "sh.c" ] && continue
     # Skip hello64.c — built separately with wasm64 toolchain below
     [ "$(basename "$src")" = "hello64.c" ] && continue
     build_program "$src" "$OUT_DIR_32"
@@ -195,7 +199,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -matomics -mbulk-memory
         -fno-trapping-math
         -mllvm -wasm-enable-sjlj
-        -mllvm -wasm-use-legacy-eh=true
+        -mllvm -wasm-use-legacy-eh=false
     )
 
     LINK_FLAGS64=(

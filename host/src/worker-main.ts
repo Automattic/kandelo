@@ -11,6 +11,20 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
+import {
+  ABI_SYSCALLS,
+  CHANNEL_STATUS_IDLE,
+  CHANNEL_STATUS_PENDING,
+  CH_ARG_SIZE,
+  CH_ARGS,
+  CH_DATA,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_STATUS,
+  CH_SYSCALL,
+  CH_TOTAL_SIZE,
+  HOST_INTERCEPTED_SYSCALLS,
+} from "./generated/abi";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -27,10 +41,7 @@ function alignUp(value: number, align: number): number {
   return Math.ceil(value / align) * align;
 }
 
-const SYS_MMAP_NR = 46;
-const CH_ARG_SIZE = 8;
-const CH_RETURN = 56;
-const CH_ERRNO = 64;
+const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
 const PROT_READ_WRITE = 3;
 const MAP_PRIVATE_ANONYMOUS = 0x22;
 
@@ -91,45 +102,41 @@ function buildKernelImports(
     kernel_exit: (status: number): void => {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
-      view.setBigInt64(base + 8, BigInt(status), true); // arg0 as i64
+      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+      view.setBigInt64(base + CH_ARGS, BigInt(status), true);
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for complete, then trap
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
-      Atomics.store(i32, base / 4, 0);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
     },
 
     // Clone dispatches through channel (SYS_CLONE)
     kernel_clone: (fnPtr: number | bigint, stackPtr: number | bigint, flags: number,
       arg: number | bigint, ptidPtr: number | bigint, tlsPtr: number | bigint, ctidPtr: number | bigint): number => {
       const SYS_CLONE_NR = 201;
-      const CH_ARG_SIZE = 8;
-      const CH_RETURN = 56;
-      const CH_ERRNO = 64;
-      const CH_DATA = 72;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, SYS_CLONE_NR, true);
-      view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, BigInt(flags), true);
-      view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(stackPtr), true);
-      view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
-      view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
-      view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
-      view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
+      view.setInt32(base + CH_SYSCALL, SYS_CLONE_NR, true);
+      view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(flags), true);
+      view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(stackPtr), true);
+      view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
+      view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
+      view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
+      view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
       // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
       view.setUint32(base + CH_DATA, n(fnPtr), true);
       view.setUint32(base + CH_DATA + 4, n(arg), true);
 
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
-      Atomics.store(i32, base / 4, 0);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
       if (err) return -err;
       return result;
@@ -137,23 +144,19 @@ function buildKernelImports(
 
     // Fork dispatches through channel (SYS_FORK)
     kernel_fork: (): number => {
-      const SYS_FORK_NR = 212;
-      const CH_ARG_SIZE = 8;
-      const CH_RETURN = 56;
-      const CH_ERRNO = 64;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, SYS_FORK_NR, true);
-      for (let i = 0; i < 6; i++) view.setBigInt64(base + 8 + i * CH_ARG_SIZE, 0n, true);
+      view.setInt32(base + CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_FORK, true);
+      for (let i = 0; i < 6; i++) view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
 
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
-      Atomics.store(i32, base / 4, 0);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
       if (err) return -err;
       return result;
@@ -195,7 +198,7 @@ function buildDlopenImports(
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
-  const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
+  const asyncifyBufAddr = channelOffset - FORK_BUF_SIZE;
   const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
   const headSlot = asyncifyBufAddr - headOffset;
   const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
@@ -213,22 +216,22 @@ function buildDlopenImports(
     const requested = size + Math.max(align, 1) - 1;
     const view = new DataView(memory.buffer);
     const base = channelOffset;
-    view.setInt32(base + 4, SYS_MMAP_NR, true);
-    view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, 0n, true);
-    view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(requested), true);
-    view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
-    view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
-    view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, -1n, true);
-    view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
+    view.setInt32(base + CH_SYSCALL, SYS_MMAP_NR, true);
+    view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, 0n, true);
+    view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(requested), true);
+    view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
+    view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
+    view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, -1n, true);
+    view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
 
     const i32 = new Int32Array(memory.buffer);
-    Atomics.store(i32, base / 4, 1);
-    Atomics.notify(i32, base / 4, 1);
-    while (Atomics.wait(i32, base / 4, 1) === "ok") { /* wait for mmap */ }
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+    while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* wait for mmap */ }
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const err = view.getUint32(base + CH_ERRNO, true);
-    Atomics.store(i32, base / 4, 0);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
     if (err || result < 0) {
       throw new Error(`dlopen: mmap(${requested}) failed errno=${err || -result}`);
@@ -675,8 +678,8 @@ function buildImportObject(
   return importObject;
 }
 
-/** Size of the asyncify data buffer used for fork stack save/restore */
-const ASYNCIFY_BUF_SIZE = 16384;
+/** Size of the fork save buffer used by wpk_fork_* instrumentation */
+const FORK_BUF_SIZE = 16384;
 
 // Slot below asyncifyBufAddr that stores the head pointer of the dlopen
 // archive linked list. Fork's memcpy carries the parent's archive into
@@ -826,35 +829,36 @@ export async function centralizedWorkerMain(
       memory, channelOffset, initData.argv || [], initData.env || [],
     );
 
-    // Check if the module has asyncify exports (compiled with wasm-opt --asyncify)
+    // Check if the module has wpk_fork_* instrumentation exports
+    // (produced by our wasm-fork-instrument tool).
     const moduleExports = WebAssembly.Module.exports(module);
-    const hasAsyncify = moduleExports.some(e => e.name === "asyncify_get_state");
-    // Asyncify fork state — captured by kernel_fork closure
+    const hasForkInstrumentation = moduleExports.some(e => e.name === "wpk_fork_state");
+    // Fork state — captured by kernel_fork closure
     let forkResult = 0;
-    const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
+    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
 
-    if (hasAsyncify) {
-      // Override kernel_fork with asyncify-aware version.
+    if (hasForkInstrumentation) {
+      // Override kernel_fork with fork-instrumentation-aware version.
       // Late-bound: processInstance is set after instantiation.
       let processInstance: WebAssembly.Instance | null = null;
 
       kernelImports.kernel_fork = (): number => {
         if (!processInstance) return -38; // ENOSYS
 
-        const getState = processInstance.exports.asyncify_get_state as () => number;
+        const getState = processInstance.exports.wpk_fork_state as () => number;
         const state = getState();
         if (state === 2) {
-          // Rewinding: stop rewind and return the stored fork result
-          (processInstance.exports.asyncify_stop_rewind as () => void)();
+          // Rewinding: end rewind and return the stored fork result
+          (processInstance.exports.wpk_fork_rewind_end as () => void)();
           return forkResult;
         }
 
-        // Normal call: start asyncify unwind to save the call stack.
+        // Normal call: start unwind to save the call stack.
         // SYS_FORK is sent after _start returns (unwind complete).
-        const view = new DataView(memory.buffer);
-        view.setInt32(asyncifyBufAddr, asyncifyBufAddr + 8, true);     // start ptr
-        view.setInt32(asyncifyBufAddr + 4, asyncifyBufAddr + ASYNCIFY_BUF_SIZE, true); // end ptr
-        (processInstance.exports.asyncify_start_unwind as (addr: number) => void)(asyncifyBufAddr);
+        // wpk_fork_unwind_begin self-initializes current_pos and snapshots
+        // saved_globals (including __tls_base and __stack_pointer) into the
+        // buffer — the host no longer pre-seeds the header.
+        (processInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         return 0; // ignored during unwind
       };
 
@@ -873,69 +877,28 @@ export async function centralizedWorkerMain(
       processInstance = instance;
       verifyProgramAbi(instance, initData.kernelAbiVersion, pid);
 
-      // For fork children: fix __tls_base and __stack_pointer after instantiation.
-      // Both globals are reset to defaults by WebAssembly.instantiate() but need
-      // the parent's values for correct operation.
-      if (initData.isForkChild && initData.asyncifyBufAddr != null) {
-        const view = new DataView(memory.buffer);
-
-        // Restore __tls_base: child's __wasm_init_memory skips __wasm_init_tls
-        // because the init flag is already set (copied from parent memory),
-        // leaving __tls_base at 0 instead of the correct TLS segment address.
-        const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
-        if (tlsBaseGlobal) {
-          if (ptrWidth === 8) {
-            const savedBase = Number(view.getBigUint64(initData.asyncifyBufAddr - 8, true));
-            if (savedBase > 0) tlsBaseGlobal.value = BigInt(savedBase);
-          } else {
-            const savedBase = view.getUint32(initData.asyncifyBufAddr - 4, true);
-            if (savedBase > 0) tlsBaseGlobal.value = savedBase;
-          }
-        }
-
-        // Restore __stack_pointer: the child's fresh wasm instance has the
-        // module default __stack_pointer (top of shadow stack). But the parent's
-        // was lower (stack grows down). Asyncify rewind restores wasm locals but
-        // NOT globals. Without this, function calls in the child allocate shadow
-        // stack frames from the wrong base, overlapping the parent function's
-        // locals (corrupting arrays, structs on the shadow stack).
-        const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
-        if (stackPtrGlobal) {
-          if (ptrWidth === 8) {
-            const savedSp = Number(view.getBigUint64(initData.asyncifyBufAddr - 16, true));
-            if (savedSp > 0) stackPtrGlobal.value = BigInt(savedSp);
-          } else {
-            const savedSp = view.getUint32(initData.asyncifyBufAddr - 8, true);
-            if (savedSp > 0) stackPtrGlobal.value = savedSp;
-          }
-        }
-      }
-
-      // Set __channel_base in TLS
-      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
-
-      // Replay parent's dlopens before resuming, so the child's table
-      // and side-module data state match the parent's. The non-asyncify
-      // fork branch below re-executes _start (and thus re-runs the
-      // C-side dlopen calls) so it doesn't need replay.
-      if (initData.isForkChild) {
-        try {
-          dlopenSupport.replayDlopens();
-        } catch (e) {
-          throw new Error(`fork-replay-dlopen failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
+      // For the fork-parent case (initial launch, not a fork child), install
+      // __channel_base now — the parent's __tls_base is already correctly
+      // populated by instantiation, so setupChannelBase can read it.
+      //
+      // For fork children: defer until AFTER wpk_fork_rewind_begin runs
+      // (inside the loop below), because rewind_begin is what restores
+      // the child's __tls_base from the fork save buffer; setupChannelBase
+      // would otherwise see a zeroed __tls_base.
+      if (!initData.isForkChild) {
+        setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
       }
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
-      // Run with asyncify fork support
+      // Run with wpk_fork_* instrumentation
       let exitCode = 0;
       try {
         const start = instance.exports._start as () => void;
-        const getState = instance.exports.asyncify_get_state as () => number;
-        const stopUnwind = instance.exports.asyncify_stop_unwind as () => void;
-        const startRewind = instance.exports.asyncify_start_rewind as (addr: number) => void;
+        const getState = instance.exports.wpk_fork_state as () => number;
+        const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
+        const rewindBegin = instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
 
         // For fork children: start with rewind to resume from fork point
         let needsRewind = !!initData.isForkChild;
@@ -943,10 +906,11 @@ export async function centralizedWorkerMain(
           forkResult = 0; // fork() returns 0 in child
         }
 
-        // Use parent's asyncify buffer address for child rewind
-        const rewindAddr = initData.isForkChild && initData.asyncifyBufAddr != null
-          ? initData.asyncifyBufAddr
-          : asyncifyBufAddr;
+        // Use parent's fork buffer address for child rewind
+        const rewindAddr = initData.isForkChild && initData.forkBufAddr != null
+          ? initData.forkBufAddr
+          : forkBufAddr;
+        let replayedForkChildDlopens = false;
 
         // Choose entry: normal _start, or — for a fork-from-non-main-thread
         // child — call the parent thread's thread function directly. _start
@@ -975,7 +939,22 @@ export async function centralizedWorkerMain(
 
         for (;;) {
           if (needsRewind) {
-            startRewind(rewindAddr);
+            // wpk_fork_rewind_begin restores all saved mutable globals
+            // (including __tls_base and __stack_pointer) from the fork
+            // buffer. Must run before setupChannelBase, which reads
+            // __tls_base to locate the channel-base TLS slot.
+            rewindBegin(rewindAddr);
+            // Now that rewind_begin has restored __tls_base, install
+            // __channel_base for this (child) instance.
+            setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
+            if (initData.isForkChild && !replayedForkChildDlopens) {
+              try {
+                dlopenSupport.replayDlopens();
+              } catch (e) {
+                throw new Error(`fork-replay-dlopen failed: ${e instanceof Error ? e.message : String(e)}`);
+              }
+              replayedForkChildDlopens = true;
+            }
             needsRewind = false;
           }
 
@@ -988,18 +967,13 @@ export async function centralizedWorkerMain(
             throw e;
           }
 
-          const asyncState = getState();
-          if (asyncState === 1) {
-            // Asyncify unwind completed (fork) — finalize and send SYS_FORK
-            stopUnwind();
+          const forkState = getState();
+          if (forkState === 1) {
+            // Unwind completed (fork) — finalize and send SYS_FORK.
+            unwindEnd();
 
-            // Save TLS data for the fork child before the host copies memory.
-            // The child's WebAssembly.instantiate() will run __wasm_init_memory
-            // which calls __wasm_init_tls, overwriting the TLS area with template
-            // values and resetting __wasm_thread_pointer to 0.
-            saveParentTls(instance, memory, asyncifyBufAddr, ptrWidth);
-
-            // Send SYS_FORK through the channel now that memory has asyncify data
+            // Send SYS_FORK through the channel now that memory has the
+            // fork save buffer populated (saved_globals + frames).
             const childPid = sendForkSyscall(memory, channelOffset);
             if (childPid < 0) {
               throw new Error(`Fork failed: errno=${-childPid}`);
@@ -1020,7 +994,7 @@ export async function centralizedWorkerMain(
 
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     } else {
-      // No asyncify — use original channel-based fork (re-execute _start)
+      // No fork instrumentation — use original channel-based fork (re-execute _start)
       // Fork children re-execute _start: first kernel_fork call returns 0
       if (initData.isForkChild) {
         let firstFork = true;
@@ -1206,7 +1180,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
       return tlsOffset;
     }
 
-    // Pattern 3: post-asyncify — global.get <tls_base>; i32/i64.const <offset>; i32/i64.add
+    // Pattern 3: instrumented/optimized — global.get <tls_base>; i32/i64.const <offset>; i32/i64.add
     if (src[pos] === 0x23) {
       let p3 = pos + 1;
       const [, globalIdxBytes] = readLEB128(src, p3); p3 += globalIdxBytes;
@@ -1282,80 +1256,24 @@ function setupChannelBase(
 }
 
 /**
- * Save parent's __tls_base and __stack_pointer before fork so the child can
- * restore them.
- *
- * __tls_base: The child's WebAssembly.instantiate() skips __wasm_init_tls
- * (init flag is set from copied parent memory), leaving __tls_base at 0.
- * Stored at [asyncifyBufAddr - 4].
- *
- * __stack_pointer: The child gets a fresh wasm instance whose __stack_pointer
- * is the module default (top of shadow stack). But the parent's __stack_pointer
- * was lower (stack grows down). After asyncify rewind, wasm locals are restored
- * but __stack_pointer (a global) is NOT. Any function call in the child would
- * allocate its shadow stack frame from the wrong base, overlapping and corrupting
- * the parent function's shadow stack locals (arrays, structs).
- * Stored at [asyncifyBufAddr - 8].
- */
-function saveParentTls(
-  instance: WebAssembly.Instance,
-  memory: WebAssembly.Memory,
-  asyncifyBufAddr: number,
-  ptrWidth: 4 | 8 = 4,
-): void {
-  const view = new DataView(memory.buffer);
-
-  const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
-  if (tlsBaseGlobal) {
-    const tlsBase = Number(tlsBaseGlobal.value);
-    if (tlsBase > 0) {
-      if (ptrWidth === 8) {
-        view.setBigUint64(asyncifyBufAddr - 8, BigInt(tlsBase), true);
-      } else {
-        view.setUint32(asyncifyBufAddr - 4, tlsBase, true);
-      }
-    }
-  }
-
-  const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
-  if (stackPtrGlobal) {
-    const stackPtr = Number(stackPtrGlobal.value);
-    if (stackPtr > 0) {
-      if (ptrWidth === 8) {
-        view.setBigUint64(asyncifyBufAddr - 16, BigInt(stackPtr), true);
-      } else {
-        view.setUint32(asyncifyBufAddr - 8, stackPtr, true);
-      }
-    }
-  }
-}
-
-/**
  * Send SYS_FORK through the channel and wait for the result.
  * Returns child pid on success, or -errno on failure.
  */
 function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): number {
-  const SYS_FORK_NR = 212;
-  const CH_SYSCALL = 4;
-  const CH_ARGS = 8;
-  const CH_ARG_SIZE = 8; // each arg is i64 (8 bytes)
-  const CH_RETURN = 56;
-  const CH_ERRNO = 64;
-
   const view = new DataView(memory.buffer);
-  view.setInt32(channelOffset + CH_SYSCALL, SYS_FORK_NR, true);
+  view.setInt32(channelOffset + CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_FORK, true);
   for (let i = 0; i < 6; i++) {
     view.setBigInt64(channelOffset + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
   }
 
   const i32 = new Int32Array(memory.buffer);
-  Atomics.store(i32, channelOffset / 4, 1); // CH_PENDING
-  Atomics.notify(i32, channelOffset / 4, 1);
-  while (Atomics.wait(i32, channelOffset / 4, 1) === "ok") { /* */ }
+  Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+  Atomics.notify(i32, (channelOffset + CH_STATUS) / 4, 1);
+  while (Atomics.wait(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
   const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
   const err = view.getUint32(channelOffset + CH_ERRNO, true);
-  Atomics.store(i32, channelOffset / 4, 0);
+  Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
   if (err) return -err;
   return result;
@@ -1591,13 +1509,10 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
  * 4. Calls the thread function via the indirect function table
  * 5. On return: performs CLONE_CHILD_CLEARTID (write 0 + futex wake at ctidPtr)
  *
- * When the thread function calls fork() and the binary carries
- * asyncify instrumentation, this entry point also drives the
- * unwind/SYS_FORK/rewind cycle so the child Worker receives a
- * populated asyncify buffer (saved frames + saved __tls_base /
- * __stack_pointer). Without this, fork-from-non-main-thread
- * children rewind from a zeroed buffer and crash on the first
- * stack frame.
+ * If the thread function calls fork(), this entry point drives the
+ * `wpk_fork_*` unwind/SYS_FORK/rewind loop just like the main process worker,
+ * but rooted at the pthread function and this thread's channel-local fork
+ * buffer.
  */
 export async function centralizedThreadWorkerMain(
   port: MessagePort,
@@ -1620,35 +1535,27 @@ export async function centralizedThreadWorkerMain(
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
 
-    // Detect asyncify instrumentation. If present, override
-    // kernel_fork below so a fork() from this thread drives the
-    // asyncify state machine just like the main process worker.
     const moduleExports = WebAssembly.Module.exports(module);
-    const hasAsyncify = moduleExports.some(e => e.name === "asyncify_get_state");
-    const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
+    const hasForkInstrumentation = moduleExports.some(e => e.name === "wpk_fork_state");
+    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
     let forkResult = 0;
 
     const kernelImports = buildKernelImports(memory, channelOffset);
-    if (hasAsyncify) {
+    if (hasForkInstrumentation) {
       kernelImports.kernel_fork = (): number => {
         if (!threadInstance) return -38; // ENOSYS
 
-        const getState = threadInstance.exports.asyncify_get_state as () => number;
+        const getState = threadInstance.exports.wpk_fork_state as () => number;
         const state = getState();
         if (state === 2) {
-          // Rewinding: stop rewind and return the stored fork result.
-          (threadInstance.exports.asyncify_stop_rewind as () => void)();
+          (threadInstance.exports.wpk_fork_rewind_end as () => void)();
           return forkResult;
         }
-        // Normal call: start unwind to save the thread's call stack.
-        const view = new DataView(memory.buffer);
-        view.setInt32(asyncifyBufAddr, asyncifyBufAddr + 8, true);
-        view.setInt32(asyncifyBufAddr + 4, asyncifyBufAddr + ASYNCIFY_BUF_SIZE, true);
-        (threadInstance.exports.asyncify_start_unwind as (addr: number) => void)(asyncifyBufAddr);
-        return 0; // ignored during unwind
+
+        (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
+        return 0;
       };
     }
-
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
       () => threadInstance, ptrWidth);
     const instance = new WebAssembly.Instance(module, importObject);
@@ -1661,8 +1568,7 @@ export async function centralizedThreadWorkerMain(
     // page-aligned addresses in the thread region, overwriting __channel_base.
     // The channel spill page has 65464 bytes free after the header; we only need 8.
     const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number | bigint) => void) | undefined;
-    const CH_TOTAL = 65608; // CH_HEADER_SIZE (72) + CH_DATA_SIZE (65536)
-    const safeTlsAddr = channelOffset + CH_TOTAL; // inside channel spill page, 4-byte aligned
+    const safeTlsAddr = channelOffset + CH_TOTAL_SIZE; // inside channel spill page, 4-byte aligned
     const tlsBlock = safeTlsAddr;
 
     if (wasmInitTls && tlsBlock > 0) {
@@ -1720,51 +1626,38 @@ export async function centralizedThreadWorkerMain(
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
 
-    const threadArgBigOrNum = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
-    let result: number = 0;
-
-    if (hasAsyncify) {
-      // Drive fork() as an unwind→SYS_FORK→rewind cycle so that:
-      //   (1) the asyncify buffer holds saved frames + saved
-      //       __tls_base / __stack_pointer the child needs at
-      //       rewind, and
-      //   (2) the parent thread resumes from the fork() call site
-      //       with the child pid as fork()'s return value (just
-      //       like the main process worker's loop).
-      const getState = instance.exports.asyncify_get_state as () => number;
-      const stopUnwind = instance.exports.asyncify_stop_unwind as () => void;
-      const startRewind = instance.exports.asyncify_start_rewind as (addr: number) => void;
+    const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
+    let result = 0;
+    if (hasForkInstrumentation) {
+      const getState = instance.exports.wpk_fork_state as () => number;
+      const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
+      const rewindBegin = instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
       let needsRewind = false;
 
-      forkLoop:
       for (;;) {
         if (needsRewind) {
-          startRewind(asyncifyBufAddr);
+          rewindBegin(forkBufAddr);
           needsRewind = false;
         }
+
         try {
-          const raw = threadFn(threadArgBigOrNum);
+          const raw = threadFn(threadArg);
           result = Number(raw);
         } catch (e) {
           if (e instanceof Error && e.message.includes("unreachable")) {
             result = 0;
-            break forkLoop;
+            break;
           }
           if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
             result = 0;
-            break forkLoop;
+            break;
           }
           throw e;
         }
 
-        const asyncState = getState();
-        if (asyncState === 1) {
-          // Unwind completed — frames + __tls_base + __stack_pointer
-          // are now in the buffer. The kernel-worker will read this
-          // memory range (a copy of) into the child Worker via
-          // handleFork's parent-memory copy.
-          stopUnwind();
-          saveParentTls(instance, memory, asyncifyBufAddr, ptrWidth);
+        const forkState = getState();
+        if (forkState === 1) {
+          unwindEnd();
           const childPid = sendForkSyscall(memory, channelOffset);
           if (childPid < 0) {
             throw new Error(`Fork failed: errno=${-childPid}`);
@@ -1773,18 +1666,18 @@ export async function centralizedThreadWorkerMain(
           needsRewind = true;
           continue;
         }
-
-        // Normal return from threadFn — done.
         break;
       }
     } else {
       try {
-        const raw = threadFn(threadArgBigOrNum);
+        const raw = threadFn(threadArg);
         result = Number(raw);
       } catch (e) {
         if (e instanceof Error && e.message.includes("unreachable")) {
+          // Thread exited via kernel_exit → unreachable trap
           result = 0;
         } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
+          // call_indirect type mismatch — treat as thread crash but don't abort
           result = 0;
         } else {
           throw e;
@@ -1804,14 +1697,14 @@ export async function centralizedThreadWorkerMain(
     {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
-      view.setInt32(base + 8, result ?? 0, true);
+      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+      view.setInt32(base + CH_ARGS, result ?? 0, true);
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for kernel to process the exit
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
-      Atomics.store(i32, base / 4, 0);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
     }
 
     port.postMessage({

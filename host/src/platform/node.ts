@@ -9,8 +9,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { PlatformIO, StatResult } from "../types";
-import { translateOpenFlags } from "../vfs/host-fs";
+import type { PlatformIO, StatResult, StatfsResult } from "../types";
+import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { NativeMetadataOverlay } from "./native-metadata";
 
 export class NodePlatformIO implements PlatformIO {
@@ -33,7 +33,18 @@ export class NodePlatformIO implements PlatformIO {
     this._shmDir = path.join(os.tmpdir(), "wasm-posix-shm");
   }
 
-  /** Rewrite /dev/shm/ paths to a tmpdir-backed directory (macOS compat). */
+  /**
+   * Adapt POSIX-shaped kernel paths to whatever Node `fs.*` understands
+   * on the host. Two translations live here:
+   *
+   *   - `/dev/shm/...` → tmpdir-backed dir (macOS has no `/dev/shm`).
+   *   - On Windows: `/<letter>/...` → `<letter>:/...`. The kernel is
+   *     POSIX; user programs (musl-libc nginx, php-fpm) reject paths
+   *     that don't start with `/` as relative. Callers shape Windows
+   *     host paths as `/C/Users/...` (matching `@php-wasm/util`'s
+   *     `toPosixPath`); we reverse it here before handing the value
+   *     to Node `fs.*`.
+   */
   private rewritePath(p: string): string {
     if (p.startsWith("/dev/shm/") || p === "/dev/shm") {
       const rel = p.slice("/dev/shm".length); // "" or "/foo"
@@ -41,6 +52,10 @@ export class NodePlatformIO implements PlatformIO {
       // Ensure the shm directory exists on first use
       fs.mkdirSync(this._shmDir, { recursive: true });
       return target;
+    }
+    if (process.platform === "win32") {
+      const winPath = translateWindowsDrivePath(p);
+      if (winPath !== null) return winPath;
     }
     return p;
   }
@@ -133,6 +148,10 @@ export class NodePlatformIO implements PlatformIO {
 
   lstat(path: string): StatResult {
     return this.metadata.toStatResult(fs.lstatSync(this.rewritePath(path)));
+  }
+
+  statfs(path: string): StatfsResult {
+    return nativeStatfs(this.rewritePath(path));
   }
 
   mkdir(path: string, mode: number): void {
@@ -271,4 +290,20 @@ export class NodePlatformIO implements PlatformIO {
       Atomics.wait(arr, 0, 0, ms);
     }
   }
+}
+
+/**
+ * Translate a POSIX-shaped path carrying a Windows drive prefix back
+ * to native Windows form: `/C/foo` → `C:/foo`, `/C` → `C:/`.
+ *
+ * Returns `null` if `p` does not begin with `/<letter>` followed by
+ * end-of-string or `/`. Exported for unit tests; callers should
+ * gate on `process.platform === "win32"` themselves.
+ *
+ * Mirrors `@php-wasm/util:toPosixPath` on the CLI side.
+ */
+export function translateWindowsDrivePath(p: string): string | null {
+  const m = p.match(/^\/([A-Za-z])(\/.*)?$/);
+  if (!m) return null;
+  return `${m[1]}:${m[2] ?? "/"}`;
 }

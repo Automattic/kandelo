@@ -11,6 +11,10 @@
  * FAIL until libcxxabi bundles libunwind via LIBCXXABI_USE_LLVM_UNWINDER=ON
  * — that is the point. Do not remove or rename without first landing the
  * fix it gates.
+ *
+ * The B1 fork-from-catch and post-catch fork fixtures previously hosted
+ * here moved into host/test/fork-instrument-coverage.test.ts as C-02 and
+ * C-11 of the regression matrix.
  */
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";

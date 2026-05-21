@@ -521,6 +521,23 @@ add_filter('pre_http_request', function($pre, $args, $url) {
 if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `;
 
+const PHP_FPM_WORKERS = 6;
+const PATCHED_PHP_FPM_CONF = `[global]
+daemonize = no
+error_log = /dev/stderr
+log_level = notice
+
+[www]
+user = nobody
+group = nobody
+listen = 127.0.0.1:9000
+pm = static
+pm.max_children = ${PHP_FPM_WORKERS}
+clear_env = no
+slowlog = /dev/null
+request_slowlog_trace_depth = 0
+`;
+
 async function runWordPress(): Promise<Record<string, number>> {
   const results: Record<string, number> = {};
 
@@ -547,10 +564,11 @@ async function runWordPress(): Promise<Record<string, number>> {
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
+  writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
 
   const kernel = new BrowserKernel({
     memfs,
-    maxWorkers: 8,
+    maxWorkers: 12,
     maxMemoryPages: 4096,
     onStdout: () => {},
     onStderr: () => {},

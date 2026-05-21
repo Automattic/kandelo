@@ -37,6 +37,8 @@ static char **node__argv;
    socket fd-watch table on every iteration. Exit when no JS jobs, no
    timers, no pending socket watches, and no os.setReadHandler watches
    (the REPL keeps itself alive solely via the latter). */
+static int nm_install_meta_resolve(JSContext *ctx, JSModuleDef *m);
+
 static int js_node_loop(JSContext *ctx)
 {
     JSRuntime *rt = JS_GetRuntime(ctx);
@@ -133,6 +135,7 @@ static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
                       eval_flags | JS_EVAL_FLAG_COMPILE_ONLY);
         if (!JS_IsException(val)) {
             js_module_set_import_meta(ctx, val, false, true);
+            nm_install_meta_resolve(ctx, JS_VALUE_GET_PTR(val));
             val = JS_EvalFunction(ctx, val);
         }
         val = js_std_await(ctx, val);
@@ -576,6 +579,74 @@ static char *nm_collapse_directory(JSContext *ctx, char *path)
 }
 
 static char *node_module_normalize(JSContext *ctx, const char *base_name,
+                                    const char *name, void *opaque);
+
+/* import.meta.resolve(specifier) — Node semantics.
+   Reads import.meta.url off `this`, strips the `file://` prefix to get the
+   importer's filename, runs the full Node-style resolution (same code path
+   as static / dynamic import), and returns the result as a URL string.
+   File paths come back as `file://<abs-path>`; `node:` / `qjs:` specifiers
+   pass through verbatim so callers can distinguish builtins. */
+static JSValue nm_meta_resolve(JSContext *ctx, JSValueConst this_val,
+                                int argc, JSValueConst *argv)
+{
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx,
+            "import.meta.resolve requires a specifier argument");
+
+    const char *spec = JS_ToCString(ctx, argv[0]);
+    if (!spec) return JS_EXCEPTION;
+
+    JSValue url_v = JS_GetPropertyStr(ctx, this_val, "url");
+    const char *url = JS_ToCString(ctx, url_v);
+    JS_FreeValue(ctx, url_v);
+    if (!url) {
+        JS_FreeCString(ctx, spec);
+        return JS_EXCEPTION;
+    }
+
+    const char *base = url;
+    if (!strncmp(base, "file://", 7)) base += 7;
+
+    char *resolved = node_module_normalize(ctx, base, spec, NULL);
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, spec);
+    if (!resolved) return JS_EXCEPTION;
+
+    JSValue ret;
+    if (resolved[0] == '/') {
+        size_t len = strlen(resolved);
+        char *buf = js_malloc(ctx, len + 7 + 1);
+        if (!buf) { js_free(ctx, resolved); return JS_EXCEPTION; }
+        memcpy(buf, "file://", 7);
+        memcpy(buf + 7, resolved, len + 1);
+        ret = JS_NewString(ctx, buf);
+        js_free(ctx, buf);
+    } else {
+        ret = JS_NewString(ctx, resolved);
+    }
+    js_free(ctx, resolved);
+    return ret;
+}
+
+/* Attach `resolve` to the import.meta object of `m`. js_module_set_import_meta
+   only installs `url` + `main`; Node also exposes `resolve`, and packages like
+   pi-coding-agent rely on it for runtime alias resolution. */
+static int nm_install_meta_resolve(JSContext *ctx, JSModuleDef *m)
+{
+    JSValue meta = JS_GetImportMeta(ctx, m);
+    if (JS_IsException(meta)) return -1;
+    JSValue fn = JS_NewCFunction(ctx, nm_meta_resolve, "resolve", 1);
+    if (JS_IsException(fn)) {
+        JS_FreeValue(ctx, meta);
+        return -1;
+    }
+    JS_DefinePropertyValueStr(ctx, meta, "resolve", fn, JS_PROP_C_W_E);
+    JS_FreeValue(ctx, meta);
+    return 0;
+}
+
+static char *node_module_normalize(JSContext *ctx, const char *base_name,
                                     const char *name, void *opaque)
 {
     if (!strncmp(name, "qjs:", 4) || !strncmp(name, "node:", 5))
@@ -817,6 +888,7 @@ static JSModuleDef *nm_build_require_bridge(JSContext *ctx,
         return NULL;
     }
     JSModuleDef *m = JS_VALUE_GET_PTR(func);
+    nm_install_meta_resolve(ctx, m);
     JS_FreeValue(ctx, func);
     return m;
 }
@@ -836,7 +908,9 @@ static JSModuleDef *node_module_loader(JSContext *ctx, const char *module_name,
     if (module_name[0] == '/' && nm_is_cjs_path(ctx, module_name))
         return nm_build_require_bridge(ctx, module_name, module_name);
 
-    return js_module_loader(ctx, module_name, opaque, attributes);
+    JSModuleDef *m = js_module_loader(ctx, module_name, opaque, attributes);
+    if (m) nm_install_meta_resolve(ctx, m);
+    return m;
 }
 
 static void help(void)

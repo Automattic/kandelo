@@ -131,6 +131,15 @@ export interface StatResult {
   gid: number;
 }
 
+export interface SharedFsStats {
+  blockSize: number;
+  totalBlocks: number;
+  freeBlocks: number;
+  totalInodes: number;
+  freeInodes: number;
+  maxName: number;
+}
+
 const ERROR_MESSAGES: Record<number, string> = {
   [ENOENT]: "No such file or directory",
   [EIO]: "I/O error",
@@ -299,6 +308,17 @@ export class SharedFS {
     if (fs.r32(SB_BLOCK_SIZE) !== BLOCK_SIZE)
       throw new SFSError(EINVAL, "Bad block size");
     return fs;
+  }
+
+  statfs(): SharedFsStats {
+    return {
+      blockSize: this.r32(SB_BLOCK_SIZE),
+      totalBlocks: this.r32(SB_TOTAL_BLOCKS),
+      freeBlocks: Atomics.load(this.i32, SB_FREE_BLOCKS >> 2),
+      totalInodes: this.r32(SB_TOTAL_INODES),
+      freeInodes: Atomics.load(this.i32, SB_FREE_INODES >> 2),
+      maxName: MAX_NAME,
+    };
   }
 
   // ── Low-level read/write helpers ─────────────────────────────────

@@ -27,6 +27,7 @@ import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 
 const wordpressVfsPath = resolveBinary("programs/wordpress.vfs.zst");
 const dinitWasmPath = resolveBinary("programs/dinit/dinit.wasm");
+const PHP_FPM_WORKERS = 6;
 
 const port = parseInt(process.argv[2] || "8080", 10);
 
@@ -40,7 +41,8 @@ async function main() {
   const dinitBytes = loadBytes(dinitWasmPath);
 
   const host = new NodeKernelHost({
-    maxWorkers: 8,
+    maxWorkers: 12,
+    maxPages: 4096,
     rootfsImage: wordpressVfs,
     onStdout: (_pid, data) => process.stdout.write(data),
     onStderr: (_pid, data) => process.stderr.write(data),
@@ -98,6 +100,9 @@ async function configureWordPressVfs(image: ArrayBuffer): Promise<ArrayBuffer> {
   const nginxConf = readVfsText(fs, "/etc/nginx/nginx.conf")
     .replace(/listen\s+8080;/, `listen ${port};`);
   writeVfsFile(fs, "/etc/nginx/nginx.conf", nginxConf);
+  const phpFpmConf = readVfsText(fs, "/etc/php-fpm.conf")
+    .replace(/pm\.max_children\s*=\s*\d+/, `pm.max_children = ${PHP_FPM_WORKERS}`);
+  writeVfsFile(fs, "/etc/php-fpm.conf", phpFpmConf);
   for (const service of ["wp-config-init", "php-fpm", "nginx"]) {
     const path = `/etc/dinit.d/${service}`;
     const conf = readVfsText(fs, path).replace(/^logfile\s*=.*\n/gm, "");

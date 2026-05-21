@@ -47,6 +47,7 @@ export const enum OpfsOpcode {
   OPENDIR = 16,
   READDIR = 17,
   CLOSEDIR = 18,
+  STATFS = 19,
 }
 
 /** Default SAB size: 4 MB */
@@ -216,6 +217,62 @@ export class OpfsChannel {
       atimeMs: f64[7],
       mtimeMs: f64[8],
       ctimeMs: f64[9],
+    };
+  }
+
+  writeStatfsResult(statfs: {
+    type: number;
+    bsize: number;
+    blocks: number;
+    bfree: number;
+    bavail: number;
+    files: number;
+    ffree: number;
+    fsid: number;
+    namelen: number;
+    frsize: number;
+    flags: number;
+  }): void {
+    const f64 = new Float64Array(this.buffer, DATA_OFFSET, 11);
+    f64[0] = statfs.type;
+    f64[1] = statfs.bsize;
+    f64[2] = statfs.blocks;
+    f64[3] = statfs.bfree;
+    f64[4] = statfs.bavail;
+    f64[5] = statfs.files;
+    f64[6] = statfs.ffree;
+    f64[7] = statfs.fsid;
+    f64[8] = statfs.namelen;
+    f64[9] = statfs.frsize;
+    f64[10] = statfs.flags;
+  }
+
+  readStatfsResult(): {
+    type: number;
+    bsize: number;
+    blocks: number;
+    bfree: number;
+    bavail: number;
+    files: number;
+    ffree: number;
+    fsid: number;
+    namelen: number;
+    frsize: number;
+    flags: number;
+  } {
+    const f64 = new Float64Array(this.buffer, DATA_OFFSET, 11);
+    return {
+      type: f64[0],
+      bsize: f64[1],
+      blocks: f64[2],
+      bfree: f64[3],
+      bavail: f64[4],
+      files: f64[5],
+      ffree: f64[6],
+      fsid: f64[7],
+      namelen: f64[8],
+      frsize: f64[9],
+      flags: f64[10],
     };
   }
 

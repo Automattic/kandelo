@@ -1,7 +1,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use wasm_posix_shared::{Errno, WasmStat};
+use wasm_posix_shared::{Errno, WasmStat, WasmStatfs};
 
 use crate::fd::FdTable;
 use crate::lock::LockTable;
@@ -31,6 +31,9 @@ pub trait HostIO {
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno>;
     fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
     fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
+    fn host_statfs(&mut self, _path: &[u8]) -> Result<WasmStatfs, Errno> {
+        Err(Errno::ENOSYS)
+    }
     fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno>;
     fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno>;
     fn host_unlink(&mut self, path: &[u8]) -> Result<(), Errno>;

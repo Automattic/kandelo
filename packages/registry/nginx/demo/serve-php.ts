@@ -2,8 +2,8 @@
  * serve-php.ts — Run nginx (multi-worker) + php-fpm on wasm-posix-kernel.
  *
  * Starts multiple Wasm processes in the same kernel:
- *   - php-fpm master (pid 1) → forks 1 worker (pid 2)
- *   - nginx master   (pid 3) → forks 2 workers (pid 4, 5)
+ *   - php-fpm master → forks 6 worker processes
+ *   - nginx master   → forks 2 worker processes
  *
  * The kernel's cross-process loopback routes nginx → php-fpm traffic
  * through in-kernel pipes.
@@ -50,18 +50,19 @@ async function main() {
   const nginxBytes = loadBytes(nginxWasm);
 
   const host = new NodeKernelHost({
-    maxWorkers: 8,
+    maxWorkers: 12,
+    maxPages: 4096,
     onStdout: (_pid, data) => process.stdout.write(data),
     onStderr: (_pid, data) => process.stderr.write(data),
   });
 
   await host.init();
 
-  // --- Process 1: php-fpm master ---
-  // pid 1, fork child gets pid 2
-  console.log("Starting php-fpm master (pid 1) on 127.0.0.1:9000...");
+  // --- php-fpm master + static worker pool ---
+  console.log("Starting php-fpm master on 127.0.0.1:9000...");
   const fpmExit = host.spawn(phpFpmBytes, [
     "php-fpm",
+    "-R",
     "-y", phpFpmConf,
     "-c", "/dev/null",
     "--nodaemonize",
@@ -75,7 +76,7 @@ async function main() {
   await new Promise((r) => setTimeout(r, 2000));
 
   // --- nginx master ---
-  console.log("Starting nginx master (pid 3) on http://localhost:8080/...");
+  console.log("Starting nginx master on http://localhost:8080/...");
   console.log("  nginx will fork 2 worker processes");
   host.spawn(nginxBytes, [
     "nginx",
