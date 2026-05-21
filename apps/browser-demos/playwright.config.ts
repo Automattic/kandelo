@@ -22,5 +22,15 @@ export default defineConfig({
       name: "chromium",
       use: { browserName: "chromium" },
     },
+    {
+      name: "firefox",
+      testMatch: "coi.spec.ts",
+      use: { browserName: "firefox" },
+    },
+    {
+      name: "webkit",
+      testMatch: "coi.spec.ts",
+      use: { browserName: "webkit" },
+    },
   ],
 });
