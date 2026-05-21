@@ -21,8 +21,8 @@ description: |
 
     package_staging_required — at least one changed file can affect
       package archive outputs or the package staging/publish machinery.
-      Browser demo app, browser-demo workflow, and docs-only changes do
-      not set this flag.
+      Browser demo app, CI workflow/action-only, and docs-only changes
+      do not set this flag.
 
   vitest gates on `!docs_only` rather than on `kernel` — its 51 test
   files exercise built packages (dash, bash, nginx, erlang, php,
