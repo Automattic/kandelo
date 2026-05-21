@@ -23,13 +23,38 @@
 
 import { WasmPosixKernel } from "./kernel";
 import { SharedLockTable } from "./shared-lock-table";
+import {
+  ABI_SYSCALLS,
+  CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_IDLE,
+  CHANNEL_STATUS_PENDING,
+  CH_ARG_SIZE,
+  CH_ARGS,
+  CH_ARGS_COUNT,
+  CH_DATA,
+  CH_DATA_SIZE,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_SIG_BASE,
+  CH_SIG_FLAGS,
+  CH_SIG_HANDLER,
+  CH_SIG_OLD_MASK,
+  CH_SIG_SIGNUM,
+  CH_STATUS,
+  CH_SYSCALL,
+  CH_TOTAL_SIZE,
+  HOST_INTERCEPTED_SYSCALLS,
+  STRUCT_SIZE_WASM_STAT,
+  STRUCT_SIZE_WASM_STATFS,
+  STRUCT_SIZE_WASM_TIMESPEC,
+} from "./generated/abi";
 
 import type { KernelConfig, PlatformIO } from "./types";
 
 /** Channel status values */
-const CH_IDLE = 0;
-const CH_PENDING = 1;
-const CH_COMPLETE = 2;
+const CH_IDLE = CHANNEL_STATUS_IDLE;
+const CH_PENDING = CHANNEL_STATUS_PENDING;
+const CH_COMPLETE = CHANNEL_STATUS_COMPLETE;
 
 /**
  * Size of the wpk_fork save buffer. Each channel reserves
@@ -46,14 +71,14 @@ const ETIMEDOUT = 110;
 const EINTR_ERRNO = 4;
 
 /** Syscall numbers for sleep/delay */
-const SYS_NANOSLEEP = 41;
-const SYS_USLEEP = 68;
-const SYS_CLOCK_NANOSLEEP = 124;
+const SYS_NANOSLEEP = ABI_SYSCALLS.Nanosleep;
+const SYS_USLEEP = ABI_SYSCALLS.Usleep;
+const SYS_CLOCK_NANOSLEEP = ABI_SYSCALLS.ClockNanosleep;
 const SYS_FUTEX = 200;
-const SYS_POLL = 60;
+const SYS_POLL = ABI_SYSCALLS.Poll;
 const SYS_PPOLL = 251;
 const SYS_PSELECT6 = 252;
-const SYS_SELECT = 103;
+const SYS_SELECT = ABI_SYSCALLS.Select;
 const SYS_EPOLL_PWAIT = 241;
 const SYS_EPOLL_CREATE1 = 239;
 const SYS_EPOLL_CREATE = 378;
@@ -69,20 +94,20 @@ const SYS_RT_SIGTIMEDWAIT = 207;
 const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
 
 /** Syscall numbers for signals */
-const SYS_KILL = 35;
+const SYS_KILL = ABI_SYSCALLS.Kill;
 
 /** Syscall numbers for fork/exec/clone */
-const SYS_EXECVE = 211;
-const SYS_EXECVEAT = 386;
-const SYS_FORK = 212;
-const SYS_VFORK = 213;
-const SYS_SPAWN = 500;
+const SYS_EXECVE = HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE;
+const SYS_EXECVEAT = HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT;
+const SYS_FORK = HOST_INTERCEPTED_SYSCALLS.SYS_FORK;
+const SYS_VFORK = HOST_INTERCEPTED_SYSCALLS.SYS_VFORK;
+const SYS_SPAWN = HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN;
 const SYS_CLONE = 201;
-const SYS_EXIT = 34;
+const SYS_EXIT = ABI_SYSCALLS.Exit;
 const SYS_EXIT_GROUP = 387;
-const SYS_SETPGID = 90;
-const SYS_SETSID = 92;
-const SYS_WAIT4 = 139;
+const SYS_SETPGID = ABI_SYSCALLS.Setpgid;
+const SYS_SETSID = ABI_SYSCALLS.Setsid;
+const SYS_WAIT4 = ABI_SYSCALLS.Wait4;
 const SYS_WAITID = 288;
 /** SYS_THREAD_CANCEL: host-side wake-up for deferred pthread cancellation.
  * See libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
@@ -174,26 +199,9 @@ const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PR
 const READ_LIKE_SYSCALLS = new Set([3, 56, 63, 64, 82, 138]); // READ, RECV, RECVFROM, PREAD, READV, RECVMSG
 /** Write-like syscalls that may produce pipe/socket data */
 const WRITE_LIKE_SYSCALLS = new Set([4, 55, 62, 65, 81, 137, 294]); // WRITE, SEND, SENDTO, PWRITE, WRITEV, SENDMSG, SENDFILE
-/** Channel layout offsets */
-const CH_STATUS = 0;
-const CH_SYSCALL = 4;
-const CH_ARGS = 8;
-const CH_ARG_SIZE = 8;  // each arg is i64 (8 bytes)
-const CH_ARGS_COUNT = 6;
-const CH_RETURN = 56;
-const CH_ERRNO = 64;
-const CH_DATA = 72;
-const CH_DATA_SIZE = 65536;
-const CH_TOTAL_SIZE = CH_DATA + CH_DATA_SIZE;
-
 // Signal delivery area — last 48 bytes of data buffer.
 // Written by kernel_dequeue_signal, read by glue channel_syscall.c.
-const CH_SIG_BASE = CH_DATA + CH_DATA_SIZE - 48;
-const CH_SIG_SIGNUM = CH_SIG_BASE;         // u32: signal number (0 = none)
-const CH_SIG_HANDLER = CH_SIG_BASE + 4;    // u32: function table index
-const CH_SIG_FLAGS = CH_SIG_BASE + 8;      // u32: sa_flags
 const CH_SIG_SI_VALUE = CH_SIG_BASE + 12;  // i32: si_value.sival_int
-const CH_SIG_OLD_MASK = CH_SIG_BASE + 16;  // u64: saved blocked mask
 const CH_SIG_SI_CODE = CH_SIG_BASE + 24;   // i32: si_code
 const CH_SIG_SI_PID = CH_SIG_BASE + 28;    // u32: si_pid
 const CH_SIG_SI_UID = CH_SIG_BASE + 32;    // u32: si_uid
@@ -272,8 +280,9 @@ function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
 }
 
 /** Struct sizes for output data copying */
-const WASM_STAT_SIZE = 88;
-const TIMESPEC_SIZE = 16; // { i64 tv_sec, i32 tv_nsec, i32 pad } on wasm32
+const WASM_STAT_SIZE = STRUCT_SIZE_WASM_STAT;
+const TIMESPEC_SIZE = STRUCT_SIZE_WASM_TIMESPEC;
+const WASM_STATFS_SIZE = STRUCT_SIZE_WASM_STATFS;
 const ITIMERVAL_SIZE = 16; // musl time64 path: 4 x long (4 bytes each on wasm32)
 const RLIMIT_SIZE = 16;   // 2 x i64 on wasm32
 const STACK_T_SIZE = 12;  // stack_t: { void* ss_sp, int ss_flags, size_t ss_size } on wasm32
@@ -556,9 +565,9 @@ const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
   // because SYS_statfs64 is aliased to SYS_statfs on our platform
   129: [
     { argIndex: 0, direction: "in", size: { type: "cstring" } },               // STATFS64: path
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 72 } },      //           buf (WasmStatfs = 72 bytes)
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: WASM_STATFS_SIZE } },
   ],
-  130: [{ argIndex: 2, direction: "out", size: { type: "fixed", size: 72 } }], // FSTATFS64: buf (WasmStatfs = 72 bytes)
+  130: [{ argIndex: 2, direction: "out", size: { type: "fixed", size: WASM_STATFS_SIZE } }], // FSTATFS64: buf
 
   // *at variants
   69: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],           // OPENAT: path
