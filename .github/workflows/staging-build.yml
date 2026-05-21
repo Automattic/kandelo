@@ -43,11 +43,36 @@ jobs:
   # ---------------------------------------------------------------------
 
 
+  change-scope:
+    # Fork-PR support is deferred (design doc §9.1). Keep the same
+    # same-repo security boundary as the package build jobs.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
+      package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Detect package staging scope
+        id: scope
+        uses: ./.github/actions/detect-change-scope
+        with:
+          base-ref: origin/${{ github.event.pull_request.base.ref }}
+
   preflight:
     # Fork-PR support is deferred (design doc §9.1). The gate below
     # keeps fork PRs from hitting a no-token `gh release view` failure
     # inside the matrix-compute step.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: [change-scope]
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.change-scope.outputs.package_staging_required == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read           # gh release view (target tag probe)
@@ -284,10 +309,34 @@ jobs:
             -f description="Tests green. Apply the ready-to-ship label to build the durable release and merge." \
             -f target_url="https://github.com/${{ github.repository }}/blob/main/docs/plans/2026-04-29-pr-package-builds-design.md"
 
+  package-staging-not-required:
+    needs: [change-scope]
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.change-scope.outputs.package_staging_required == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Post merge-gate success for no-op package staging
+        run: |
+          gh api -X POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description="No package-affecting changes; package staging skipped." \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
   toolchain-cache:
     # Same fork-PR gate as preflight + the legacy `build` job. Fork PRs
     # see this job as Skipped, consistent with current behavior.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: [change-scope]
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.change-scope.outputs.package_staging_required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
