@@ -1,20 +1,20 @@
 # SpiderMonkey-Based Node.js Runtime — Design
 
-**Status:** Design (not yet implemented)
+**Status:** Phase 0 engine port scaffold in tree
 **Date:** 2026-04-28
 **Supersedes:** the QuickJS-NG `node.wasm` shim (PR #226), once shipped.
 
-## Handoff snapshot (2026-05-20)
+## Handoff snapshot (2026-05-20 update)
 
-This branch documents the SpiderMonkey-based Node.js runtime path and the blocking investigation results. No SpiderMonkey port, Node compatibility layer, runtime build scripts, or package changes have been implemented in this branch.
+This branch now has the first SpiderMonkey package:
 
-Completed work:
+- `packages/registry/spidermonkey/package.toml` pins Firefox ESR `140.11.0esr` source and declares the standalone JS shell output as `js.wasm`.
+- `packages/registry/spidermonkey/build-spidermonkey.sh` downloads/verifies the ESR tarball, resolves `libcxx@21`, configures a wasm32 POSIX SpiderMonkey shell build with JIT disabled, then runs `wasm-opt` and `wasm-fork-instrument`.
+- `packages/registry/spidermonkey/test/spidermonkey.test.ts` covers `js -e` and modern JavaScript builtins under the centralized kernel harness.
 
-- Captured the target architecture, module roadmap, validation gates, testing plan, risks, and estimated timeline.
-- Replaced the original "run a C++ exception spike first" open question with the spike + re-spike results.
-- Identified the pre-Phase-1 blockers that must close before implementation starts.
+The Node compatibility layer, vendored Node builtin modules, and SpiderMonkey JSAPI embedding are still not implemented. Next work should start that embedding on top of the working standalone engine package.
 
-Next agent should start with the Pre-Phase-1 unblockers at the end of this document. Do not begin Phase 1 runtime implementation until Gates 1.A through 1.C are green; otherwise the first real SpiderMonkey exception path can invalidate the port.
+The previous Pre-Phase-1 C++ EH gates are no longer blockers: `docs/posix-status.md` now records fork from C++ catch handlers and the SpiderMonkey spike's post-catch fork case as Full, with coverage in `host/test/fork-instrument-coverage.test.ts`.
 
 ## Goals
 
@@ -74,19 +74,23 @@ Treat the BCA tree and WinterJS patches as a **debugging reference** when someth
 
 ## Engine porting strategy
 
-**Build location:** `examples/libs/spidermonkey/build-spidermonkey.sh`, following the pattern of `examples/libs/quickjs/build-quickjs.sh` (which produces both engine and Node embedding from one script). Builds register through `cargo xtask build-deps` for caching.
+**Build location:** `packages/registry/spidermonkey/build-spidermonkey.sh`, following the current package-registry convention. The first package produces the standalone SpiderMonkey shell (`js.wasm`) only. A later package or expanded build step should produce the Node embedding once the engine shell is green. Builds register through `cargo xtask build-deps` for caching.
 
-**Vanilla build first**: vendor pinned upstream Mozilla SpiderMonkey ESR (latest available at start of work, version recorded in `examples/libs/spidermonkey/VERSION`). Cross-compile with our toolchain:
+**Vanilla build first**: pin upstream Mozilla Firefox ESR source (currently `140.11.0esr`, recorded in `packages/registry/spidermonkey/VERSION`). Cross-compile the JS shell with our toolchain:
 
 ```
 CC=wasm32posix-cc CXX=wasm32posix-c++ \
   AR=wasm32posix-ar RANLIB=wasm32posix-ranlib \
-  ./mach build --target=wasm32-unknown-none \
-    --disable-jit --disable-ion --disable-baseline \
-    --enable-threads --enable-rust-simd=no
+  MOZCONFIG=packages/registry/spidermonkey/mozconfig-wasm32 \
+  ./mach --no-interactive build
 ```
 
-Patch only on demand. Document each patch in `examples/libs/spidermonkey/patches/README.md` with rationale.
+The Mozilla configure target is `wasm32-unknown-linux-musl` because
+`config.sub` rejects `wasm32-unknown-unknown` as an unknown OS. The compiler
+driver remains `wasm32posix-cc` / `wasm32posix-c++`, so generated code still
+uses Kandelo's wasm32 POSIX sysroot rather than a host Linux or WASI sysroot.
+
+Patch only on demand. Document each patch in `packages/registry/spidermonkey/patches/README.md` with rationale.
 
 **Threading enabled** — we have pthreads and SpiderMonkey worker contexts work with them. JIT disabled (no JIT possible in wasm); interpreter path is portable.
 
@@ -219,7 +223,7 @@ Plus a new benchmark suite (`benchmarks/run.ts --suite=node-runtime`): cold star
 
 ### Showstopper-class — must be resolved before committing to the path
 
-**1. wasm-fork-instrument vs C++ exceptions.** SpiderMonkey throws C++ exceptions through deep call stacks constantly. The fork instrumenter rewrites call graphs and inserts asyncify-style state machines. Two unknowns: (a) does it correctly preserve `try_table`/throw/rethrow blocks across instrumentation, and (b) does fork from inside a `catch` work.
+**1. wasm-fork-instrument vs C++ exceptions.** SpiderMonkey throws C++ exceptions through deep call stacks constantly. The fork instrumenter rewrites call graphs and inserts asyncify-style state machines. Two unknowns had to close before the port could start: (a) preserving `try_table`/throw/rethrow blocks across instrumentation, and (b) fork from inside or after C++ catch paths.
 
 **Status (2026-04-28):** Spike + re-spike complete. Findings:
 
@@ -229,13 +233,13 @@ Plus a new benchmark suite (`benchmarks/run.ts --suite=node-runtime`): cold star
   2. **fork-after-catch (test b).** A NEW finding from the re-spike — even when the catch frame is fully popped before the fork, the fork hangs. Should be indistinguishable from a fork with no try/catch around it. **Cause unknown; needs root-cause investigation before SpiderMonkey can be trusted.**
 - The modern wasm-EH path (`try_table`/`catch_ref`/`throw_ref` lowering) cannot be tested today because the SDK forces `-mllvm -wasm-use-legacy-eh=true` and that flag silently overrides user-supplied modern lowering. Switching the SDK + rebuilding libcxx without the legacy flag is a separate unblocker.
 
-**Net status of Risk #1: NOT CLOSED.** Three sub-gates must clear before SpiderMonkey port work begins:
+**Net status of Risk #1: CLOSED for starting the engine port, still validate with SpiderMonkey itself.** The tree now records this support as Full in `docs/posix-status.md`, and `host/test/fork-instrument-coverage.test.ts` covers C-02/C-03/C-04/C-05/C-06/C-07/C-10/C-11/S-08. The first SpiderMonkey shell build must still serve as the real-world validation event.
 
-- **Gate 1.A:** PR #368 (libcxx + bundled libunwind) merges into `main`.
-- **Gate 1.B:** B1 follow-up implementation (fork-from-catch via exnref re-synthesis, ~1.5 weeks per spike) ships, and test (d) flips from HANG to PASS in the re-spike.
-- **Gate 1.C:** Test (b)'s post-catch fork hang is root-caused and fixed (estimate unknown — could be a small fork-instrument fix or a deeper kernel signal/wakeup interaction).
+- **Gate 1.A:** libcxx + bundled libunwind is in tree as `packages/registry/libcxx` and consumers link `-lc++ -lc++abi`.
+- **Gate 1.B:** fork-from-catch is covered by the modern wasm-EH B1 machinery.
+- **Gate 1.C:** post-catch fork is covered by C-11, the SpiderMonkey spike test (b) regression fixture.
 
-Optional Gate 1.D: SDK switches off `-mllvm -wasm-use-legacy-eh=true`, libcxx rebuilds without the flag, all four spike tests re-run with modern wasm-EH lowering. This is required if SpiderMonkey turns out to need modern EH for any internal reason; if the legacy-EH path closes Gates 1.A through 1.C, the modern path can be deferred.
+Gate 1.D is also effectively closed for this path: the SDK and libcxx now explicitly use modern wasm-EH lowering with `-mllvm -wasm-use-legacy-eh=false`.
 
 **2. SpiderMonkey GC + fork.** GC has thread-local nurseries, write barriers, concurrent sweeping. A fork mid-GC splits the heap into two inconsistent halves.
 
@@ -261,11 +265,11 @@ Optional Gate 1.D: SDK switches off `-mllvm -wasm-use-legacy-eh=true`, libcxx re
 
 ## Decisions
 
-1. **SpiderMonkey version:** latest ESR at start of work. Pin in `examples/libs/spidermonkey/VERSION`.
+1. **SpiderMonkey version:** latest ESR at start of work. Pin in `packages/registry/spidermonkey/VERSION`.
 2. **Vendoring strategy for Node `lib/`:** snapshot copy. `runtime/node/lib/VENDOR.md` records upstream Node.js version, git revision, import date, and list of locally-modified files. Refresh by re-snapshotting and replaying patches.
 3. **JS-side debugger:** deferred. Tracked in "Future work" below.
 4. **Browser host stdin/PTY for Claude Code:** xterm.js → kernel PTY → Node process. Same path as the existing shell demo.
-5. **Layout:** follows existing language-port convention. `examples/libs/spidermonkey/build-spidermonkey.sh` builds engine + embedding + bootstrap into a single `node.wasm` (replaces current QuickJS-based one). Vendored Node `lib/` sources under `runtime/node/lib/`. C++ embedding source under `crates/node-runtime/`. Same pattern as `examples/libs/cpython/`, `perl/`, `ruby/`.
+5. **Layout:** follows the current package-registry convention. `packages/registry/spidermonkey/build-spidermonkey.sh` builds the engine shell first. The later Node runtime should either expand this package or add a sibling package that emits `node.wasm` from a SpiderMonkey JSAPI embedding plus vendored Node `lib/` sources under `runtime/node/lib/`.
 
 ## Future work (out of scope for initial implementation)
 
@@ -294,16 +298,17 @@ The fork-instrument + C++ exceptions spike is the gating first step. If that's b
 
 ## Pre-Phase-1 unblockers
 
-Phase 1 implementation work is blocked. The 2026-04-28 spike + re-spike (see Risk #1 above) identified three sub-gates that must close before SpiderMonkey port work begins. None has an owner yet; recommend opening a tracking issue per gate.
+Phase 1 Node-runtime implementation should wait until the Phase 0 engine shell is green. The historical C++ EH blockers below are retained for context, but they are no longer open blockers in this tree.
 
 **Checklist (all must be green before starting Phase 1):**
 
-- [ ] **Gate 1.A — libcxx + libunwind landed.** PR #368 (`libcxx-pkg-libunwind`, base `package-management`) merges into `main`. This is the smallest gate — bundles LLVM libunwind statically into `libc++abi.a` so `_Unwind_RaiseException` resolves and C++ throws propagate end-to-end on the legacy-EH path the SDK currently emits. **Effort:** review-and-merge (PR is open). **Owner:** none assigned.
-- [ ] **Gate 1.B — fork-from-catch (B1) shipped.** Implement the B1 follow-up (see `memory/fork-instrument-b1-followup.md`): fork-instrument re-synthesises the unwinder's exnref/stash state during REWIND so that a fork from inside a plain legacy `catch` block succeeds. The 2026-04-21 spike confirmed feasibility and sized the work at ~1260 LoC over 1–1.5 weeks. Acceptance: re-running `spike-cpp-eh/build.sh` flips test (d) from HANG to PASS without regressing test (a) or test (c). **Effort:** ~1.5 weeks focused engineering. **Owner:** none assigned.
-- [ ] **Gate 1.C — fork-after-catch (test b) root-caused and fixed.** Re-spike found that even after a catch frame is fully popped, a subsequent fork hangs. This was not present before the libunwind bundle and is unexpected (should be indistinguishable from fork-without-EH). Likely fork-instrument or libunwind cleanup state leak; could also be a kernel signal/wakeup interaction. Acceptance: test (b) flips to PASS in `spike-cpp-eh/`. **Effort:** unknown — needs isolated investigation (could be hours, could be days). **Owner:** none assigned.
+- [x] **Gate 1.A — libcxx + libunwind landed.** `packages/registry/libcxx` provides libc++/libc++abi with libunwind bundled into `libc++abi.a`.
+- [x] **Gate 1.B — fork-from-catch (B1) shipped.** Covered by fork-instrument C-series tests.
+- [x] **Gate 1.C — fork-after-catch (test b) root-caused and fixed.** Covered by C-11 in `host/test/fork-instrument-coverage.test.ts`.
+- [x] **Gate 1.E — SpiderMonkey shell validates the real codebase.** `packages/registry/spidermonkey/bin/js.wasm` builds, is instrumented, and passes `packages/registry/spidermonkey/test/spidermonkey.test.ts` under the centralized kernel harness.
 
 **Optional gate (deferred unless required):**
 
-- [ ] **Gate 1.D — modern wasm-EH lowering enabled.** Remove `-mllvm -wasm-use-legacy-eh=true` from `sdk/src/lib/flags.ts:11` and rebuild libcxx/libcxxabi without the flag. Re-run all four spike tests under `try_table`/`catch_ref`/`throw_ref` lowering. Required only if SpiderMonkey itself needs modern EH for internal reasons; if Gates 1.A–1.C close on the legacy-EH path, this can wait until something specifically needs it.
+- [x] **Gate 1.D — modern wasm-EH lowering enabled.** SDK and libcxx use `-mllvm -wasm-use-legacy-eh=false`.
 
-**Until Gates 1.A through 1.C are green, do not start Phase 1 implementation.** A working tsc demo at the end of Phase 1 means nothing if SpiderMonkey can't survive its first internal exception, and SpiderMonkey throws constantly through deep stacks.
+**Gate 1.E is green, so the next PR can start the Node compatibility embedding.** A working Node shim should continue to depend on the upstream SpiderMonkey shell surviving the Kandelo build, instrumentation, and kernel execution path.

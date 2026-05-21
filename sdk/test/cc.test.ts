@@ -54,4 +54,16 @@ describe('buildClangArgs', () => {
     expect(args).not.toContain('-pthread');
     expect(args).toContain('-fPIC');
   });
+
+  it('normalizes equivalent configure-supplied wasm target aliases', () => {
+    const args = buildClangArgs(['--target=wasm32-linux-musl', '-c', 'foo.c'], toolchain);
+    expect(args.filter((arg) => arg.startsWith('--target='))).toEqual(['--target=wasm32-unknown-unknown']);
+  });
+
+  it('treats linker response lists as link commands', () => {
+    const args = buildClangArgs(['-fuse-ld=lld', '-o', 'out.wasm', '-Wl,@/tmp/objects.list'], toolchain);
+    expect(args).toContain('-Wl,--entry=_start');
+    expect(args.join(' ')).toContain('channel_syscall.c');
+    expect(args.join(' ')).toContain('libc.a');
+  });
 });

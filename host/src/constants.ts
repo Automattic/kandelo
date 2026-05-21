@@ -74,6 +74,117 @@ function readSLEB128_i64(buf: Uint8Array, off: number): [bigint, number] {
   return [result, pos - off];
 }
 
+function skipWasmBlockType(buf: Uint8Array, off: number): number {
+  const first = buf[off];
+  if (
+    first === 0x40 || // empty
+    first === 0x7f || // i32
+    first === 0x7e || // i64
+    first === 0x7d || // f32
+    first === 0x7c || // f64
+    first === 0x7b || // v128
+    first === 0x70 || // funcref
+    first === 0x6f    // externref
+  ) {
+    return off + 1;
+  }
+  const [, bytes] = readSLEB128_i32(buf, off);
+  return off + bytes;
+}
+
+function skipVectorMemarg(buf: Uint8Array, off: number): number {
+  const [, alignBytes] = readULEB128(buf, off);
+  off += alignBytes;
+  const [, offsetBytes] = readULEB128(buf, off);
+  return off + offsetBytes;
+}
+
+function skipPrefixedInstructionImmediate(prefix: number, buf: Uint8Array, off: number): number | null {
+  const [subop, subopBytes] = readULEB128(buf, off);
+  off += subopBytes;
+
+  if (prefix === 0xfc) {
+    switch (subop) {
+      // saturating conversions
+      case 0:
+      case 1:
+      case 2:
+      case 3:
+      case 4:
+      case 5:
+      case 6:
+      case 7:
+        return off;
+      case 8: { // memory.init dataidx memidx
+        const [, dataBytes] = readULEB128(buf, off);
+        off += dataBytes;
+        const [, memBytes] = readULEB128(buf, off);
+        return off + memBytes;
+      }
+      case 9: { // data.drop dataidx
+        const [, dataBytes] = readULEB128(buf, off);
+        return off + dataBytes;
+      }
+      case 10: { // memory.copy dstmem srcmem
+        const [, dstBytes] = readULEB128(buf, off);
+        off += dstBytes;
+        const [, srcBytes] = readULEB128(buf, off);
+        return off + srcBytes;
+      }
+      case 11: { // memory.fill memidx
+        const [, memBytes] = readULEB128(buf, off);
+        return off + memBytes;
+      }
+      case 12: { // table.init elemidx tableidx
+        const [, elemBytes] = readULEB128(buf, off);
+        off += elemBytes;
+        const [, tableBytes] = readULEB128(buf, off);
+        return off + tableBytes;
+      }
+      case 13: { // elem.drop elemidx
+        const [, elemBytes] = readULEB128(buf, off);
+        return off + elemBytes;
+      }
+      case 14: { // table.copy dst src
+        const [, dstBytes] = readULEB128(buf, off);
+        off += dstBytes;
+        const [, srcBytes] = readULEB128(buf, off);
+        return off + srcBytes;
+      }
+      case 15:
+      case 16:
+      case 17: {
+        // table.grow/table.size/table.fill tableidx
+        const [, tableBytes] = readULEB128(buf, off);
+        return off + tableBytes;
+      }
+      default:
+        return null;
+    }
+  }
+
+  if (prefix === 0xfd) {
+    if (subop === 12 || subop === 13) return off + 16; // v128.const
+    if (subop >= 21 && subop <= 34) return skipVectorMemarg(buf, off); // vector memory ops
+    if (subop === 84) return off + 1; // i8x16.shuffle
+    if (subop >= 92 && subop <= 99) return off + 1; // lane extraction/replacement
+    if (subop >= 112 && subop <= 123) return off + 1;
+    if (subop >= 124 && subop <= 131) return off + 1;
+    if (subop >= 156 && subop <= 159) return off + 1;
+    return off;
+  }
+
+  if (prefix === 0xfe) {
+    if (subop === 0 || subop === 1) return skipVectorMemarg(buf, off); // memory.atomic.notify/wait32
+    if (subop === 2) return skipVectorMemarg(buf, off); // memory.atomic.wait64
+    if (subop === 3) return off; // atomic.fence
+    if (subop >= 16 && subop <= 79) return skipVectorMemarg(buf, off);
+    return null;
+  }
+
+  return null;
+}
+
 /**
  * Skip an import-section entry's payload at `pos`, returning the new position.
  * `numFuncImports` and `numGlobalImports` are incremented by reference if the
@@ -233,9 +344,10 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
 /**
  * Extract the constant value returned by a program's `__abi_version`
  * export, if present. The glue (`libc/glue/channel_syscall.c`) defines this
- * function as a single `i32.const N; end` (with the standard
- * export-wrapper `call __wasm_call_ctors` prefix), so we can read N
- * directly from the function body without instantiating.
+ * function as a single `i32.const N; end` (often with the standard
+ * export-wrapper `call __wasm_call_ctors` prefix). Fork instrumentation can
+ * inject its own constants before that return path, so parse the body and only
+ * accept an `i32.const` that is returned directly.
  *
  * Used by tests to skip cleanly when cached binaries were built against
  * a different `ABI_VERSION` than the running kernel.
@@ -310,20 +422,66 @@ export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
     pos++; // valtype
   }
 
-  // Walk instructions; the wrapper prefix is `call <ctors>` (0x10 + leb128).
-  // The ABI value is the first `i32.const` we encounter.
+  // Walk instructions and find the constant directly returned by this trivial
+  // marker export. Instrumentation may insert unrelated constants before it.
   while (pos < bodyEnd) {
     const op = src[pos++];
-    if (op === 0x10) {
-      // call: skip LEB128 function index
-      const [, n] = readULEB128(src, pos); pos += n;
-    } else if (op === 0x41) {
-      // i32.const
+    if (op === 0x0b) {
+      if (pos === bodyEnd) return null;
+      continue;
+    }
+    if (op === 0x41) {
       const [val] = readSLEB128_i32(src, pos);
-      return val;
+      const [, n] = readSLEB128_i32(src, pos);
+      const next = pos + n;
+      if (src[next] === 0x0f || (src[next] === 0x0b && next + 1 === bodyEnd)) {
+        return val;
+      }
+      pos = next;
+    } else if (op === 0x10 || op === 0x0c || op === 0x0d || op === 0x12 || op === 0xd2) {
+      const [, n] = readULEB128(src, pos);
+      pos += n;
+    } else if (op === 0x02 || op === 0x03 || op === 0x04) {
+      pos = skipWasmBlockType(src, pos);
+    } else if (op === 0x0e) {
+      const [targetCount, targetCountBytes] = readULEB128(src, pos);
+      pos += targetCountBytes;
+      for (let i = 0; i <= targetCount; i++) {
+        const [, n] = readULEB128(src, pos);
+        pos += n;
+      }
+    } else if (op === 0x11) {
+      const [, typeBytes] = readULEB128(src, pos);
+      pos += typeBytes;
+      const [, tableBytes] = readULEB128(src, pos);
+      pos += tableBytes;
+    } else if (op === 0x1c) {
+      const [typeCount, typeCountBytes] = readULEB128(src, pos);
+      pos += typeCountBytes;
+      for (let i = 0; i < typeCount; i++) {
+        const [, n] = readULEB128(src, pos);
+        pos += n;
+      }
+    } else if ((op >= 0x20 && op <= 0x26) || op === 0xd0) {
+      const [, n] = readULEB128(src, pos);
+      pos += n;
+    } else if (op >= 0x28 && op <= 0x3e) {
+      pos = skipVectorMemarg(src, pos);
+    } else if (op === 0x3f || op === 0x40) {
+      pos++;
+    } else if (op === 0x42) {
+      const [, n] = readSLEB128_i64(src, pos);
+      pos += n;
+    } else if (op === 0x43) {
+      pos += 4;
+    } else if (op === 0x44) {
+      pos += 8;
+    } else if (op === 0xfc || op === 0xfd || op === 0xfe) {
+      const next = skipPrefixedInstructionImmediate(op, src, pos);
+      if (next === null) return null;
+      pos = next;
     } else {
-      // Unexpected opcode for this trivial export wrapper.
-      return null;
+      // Most scalar numeric/control/parametric instructions have no immediates.
     }
   }
   return null;
