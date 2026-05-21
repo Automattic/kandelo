@@ -2,7 +2,7 @@
 
 Fold a computer into a URL. Kandelo is a POSIX-compatible multi-process kernel for WebAssembly that lets you compile C programs against a real musl libc and run them in the browser or Node.js with syscall-level compatibility.
 
-**Live demo**: [Open Kandelo in the browser](https://brandonpayton.github.io/wasm-posix-kernel/)
+**Live demo**: [Open Kandelo in the browser](https://brandonpayton.github.io/kandelo/)
 
 ***ATTENTION:*** This repo may contain .wasm binary builds in its history. In the future, history will likely be rewritten to remove these as they are offloaded to a better data store.
 
