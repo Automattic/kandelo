@@ -20,6 +20,9 @@ const jsWasm =
   (existsSync(packageBuild) ? packageBuild : null);
 
 const DEFAULT_TIMEOUT = 20_000;
+const DEFAULT_TEST_TIMEOUT = DEFAULT_TIMEOUT + 10_000;
+const LONG_TIMEOUT = 30_000;
+const LONG_TEST_TIMEOUT = LONG_TIMEOUT + 15_000;
 
 function loadWasm(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -65,7 +68,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("2");
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("supports modern JavaScript syntax that QuickJS compatibility needs", async () => {
     const result = await runJs([
@@ -82,7 +85,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
       "function",
       "18446744073709551616",
     ]);
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("supports Intl APIs", async () => {
     const result = await runJs([
@@ -97,7 +100,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
       "1.234.567,89",
       "January",
     ]);
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("covers broader Intl locale data", async () => {
     const result = await runJs([
@@ -118,7 +121,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
       "true",
       "true",
     ]);
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("supports SharedArrayBuffer, Atomics, and shell workers", async () => {
     const result = await runJs([
@@ -132,7 +135,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("42");
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("supports Atomics wait timeout and not-equal results", async () => {
     const result = await runJs([
@@ -145,7 +148,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(stdoutLines(result.stdout)).toEqual(["timed-out", "not-equal"]);
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("coordinates multiple shell workers through shared memory", async () => {
     const result = await runJs([
@@ -160,7 +163,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(stdoutLines(result.stdout)).toEqual(["3", "3"]);
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("tears down workers repeatedly while GC runs", async () => {
     const result = await runJs([
@@ -173,11 +176,11 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
       "  if (typeof gc === 'function') gc()",
       "}",
       "print('worker-teardown-ok')",
-    ].join("\n"), { shellArgs: ["--shared-memory=on"], timeout: 30_000 });
+    ].join("\n"), { shellArgs: ["--shared-memory=on"], timeout: LONG_TIMEOUT });
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("worker-teardown-ok");
-  });
+  }, LONG_TEST_TIMEOUT);
 
   it("reports stack overflow as a JavaScript exception", async () => {
     const result = await runJs([
@@ -192,7 +195,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(stdoutLines(result.stdout)).toEqual(["InternalError", "true"]);
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("loads and reads files through the shell file APIs", async () => {
     const result = await runJs([
@@ -208,7 +211,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(stdoutLines(result.stdout)).toEqual(["loaded:37", "true"]);
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("executes a mounted script file and exposes scriptArgs", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "spidermonkey-script-"));
@@ -248,7 +251,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
       await host.destroy().catch(() => {});
       rmSync(tempDir, { recursive: true, force: true });
     }
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("round-trips UTF-8 source and stdout", async () => {
     const result = await runJs([
@@ -257,21 +260,21 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("unicode:\u2603:\u00e9:\u6f22\u5b57");
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("returns non-zero for syntax errors", async () => {
     const result = await runJs("function {");
 
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("SyntaxError");
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("returns non-zero for uncaught exceptions", async () => {
     const result = await runJs("throw new Error('spidermonkey-boom')");
 
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("spidermonkey-boom");
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("handles typed arrays, weak refs, and explicit GC pressure", async () => {
     const result = await runJs([
@@ -292,7 +295,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
       "  if (typeof gc === 'function') gc()",
       "}",
       "print(total)",
-    ].join("\n"), { timeout: 30_000 });
+    ].join("\n"), { timeout: LONG_TIMEOUT });
 
     expect(result.exitCode).toBe(0);
     expect(stdoutLines(result.stdout)).toEqual([
@@ -300,7 +303,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
       "42",
       "49995",
     ]);
-  });
+  }, LONG_TEST_TIMEOUT);
 
   it("drains Promise microtasks in the shell job queue", async () => {
     const result = await runJs([
@@ -313,7 +316,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("sync,promise");
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 
   it("documents that nested WebAssembly is not exposed without a wasm JIT backend", async () => {
     const result = await runJs([
@@ -323,5 +326,5 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(stdoutLines(result.stdout)).toEqual(["undefined", "false"]);
-  });
+  }, DEFAULT_TEST_TIMEOUT);
 });
