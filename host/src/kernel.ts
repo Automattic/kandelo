@@ -18,6 +18,7 @@ import type { KernelConfig, PlatformIO, StatResult, StatfsResult } from "./types
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
+import { STRUCT_SIZE_WASM_DIRENT, STRUCT_SIZE_WASM_STAT } from "./generated/abi";
 
 /**
  * Map filesystem error codes to negative errno values.
@@ -78,13 +79,13 @@ function negErrno(err: unknown): number {
 }
 
 /** Size of the WasmStat struct in bytes (repr(C) layout). */
-const WASM_STAT_SIZE = 88;
+const WASM_STAT_SIZE = STRUCT_SIZE_WASM_STAT;
 
 /** Size of the WasmStatfs struct in bytes (repr(C) layout). */
 const WASM_STATFS_SIZE = 72;
 
 /** Size of the WasmDirent struct: d_ino(u64) + d_type(u32) + d_namlen(u32). */
-const WASM_DIRENT_SIZE = 16;
+const WASM_DIRENT_SIZE = STRUCT_SIZE_WASM_DIRENT;
 
 export interface KernelCallbacks {
   onKill?: (pid: number, signal: number) => number;

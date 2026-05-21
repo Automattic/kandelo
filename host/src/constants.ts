@@ -1,14 +1,7 @@
 /** WebAssembly page size (64 KiB) */
 export const WASM_PAGE_SIZE = 65536;
 
-/** Channel header size in bytes (6 x i64 args = 48B, i64 return = 8B, i32 errno + pad = 8B) */
-export const CH_HEADER_SIZE = 72;
-
-/** Channel data buffer size */
-export const CH_DATA_SIZE = 65536;
-
-/** Total channel size: header + data */
-export const CH_TOTAL_SIZE = CH_HEADER_SIZE + CH_DATA_SIZE;
+export { CH_DATA_SIZE, CH_HEADER_SIZE, CH_TOTAL_SIZE } from "./generated/abi";
 
 /** Default max pages for WebAssembly.Memory */
 export const DEFAULT_MAX_PAGES = 16384;
