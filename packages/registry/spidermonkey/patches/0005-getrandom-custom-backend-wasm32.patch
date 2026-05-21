@@ -1,10 +1,12 @@
 diff --git a/build/rust/getrandom/lib.rs b/build/rust/getrandom/lib.rs
 --- a/build/rust/getrandom/lib.rs
 +++ b/build/rust/getrandom/lib.rs
-@@ -2,4 +2,36 @@
+@@ -1,5 +1,39 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-
+-
++
 +#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 +use core::ffi::c_void;
 +

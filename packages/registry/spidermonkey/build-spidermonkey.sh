@@ -186,10 +186,10 @@ ac_add_options --disable-jit
 ac_add_options --disable-jemalloc
 ac_add_options --disable-stdcxx-compat
 ac_add_options --without-system-zlib
-ac_add_options --without-intl-api
-ac_add_options --disable-icu4x
+ac_add_options --with-intl-api
+ac_add_options --enable-icu4x
 ac_add_options --disable-shared-js
-ac_add_options --disable-shared-memory
+ac_add_options --enable-shared-memory
 ac_add_options --disable-clang-plugin
 ac_add_options --disable-tests
 ac_add_options --disable-debug-symbols

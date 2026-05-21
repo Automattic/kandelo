@@ -22,6 +22,11 @@ Kandelo wasm32 integration points needed by the standalone SpiderMonkey shell.
   path to a wasm trap instead of unsupported host crash machinery.
 - `0009-use-wasm-frame-address-for-native-stack-base.patch`: records the native
   stack base using wasm frame-address support.
+- `0010-use-wasm-icu-data-section-syntax.patch`: uses Mozilla's wasm-compatible
+  ICU data assembly section syntax for the Kandelo wasm32 target.
+- `0011-heap-autorunparallel-task-on-wasm32.patch`: stores transient GC helper
+  tasks on the heap for wasm32 to avoid stack-allocated multiple-inheritance
+  task layout corruption in Kandelo worker threads.
 
 Revisit this set when bumping ESR versions. Most patches are
 Kandelo-specific integration glue, but any general wasm32 or POSIX portability

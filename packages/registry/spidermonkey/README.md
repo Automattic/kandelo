@@ -7,6 +7,8 @@ Current scope:
 
 - standalone SpiderMonkey shell (`js -e 'print(1+1)'`)
 - wasm32 POSIX cross-build through `wasm32posix-cc` / `wasm32posix-c++`
+- ECMAScript `Intl` support through Mozilla's in-tree ICU/ICU4X
+- JS shared memory and shell worker support
 - JIT disabled, C++ exceptions enabled, fork instrumentation applied after
   optimization
 
