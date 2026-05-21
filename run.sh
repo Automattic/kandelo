@@ -8,6 +8,7 @@
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh fetch                Fetch binaries pinned by per-package package.toml
 #   ./run.sh run <example> [args] Run a Node.js example
+#   ./run.sh prepare-browser      Fetch/build browser demo assets
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
@@ -131,7 +132,17 @@ has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
-has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
+has_programs() {
+    has_resolvable programs/fork-exec.wasm &&
+    has_resolvable programs/fbtest.wasm &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/pipe-throughput.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/file-throughput.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/syscall-latency.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/fork-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/clone-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/spawn-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/hello.wasm" ]
+}
 
 # Package-system entries: layout derived from package.toml's
 # `[[outputs]]` via `xtask build-deps output-path`. Source-tree
@@ -1913,9 +1924,7 @@ cmd_fetch() {
     "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}" "$@"
 }
 
-cmd_browser() {
-    local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
-
+cmd_prepare_browser() {
     # Fetch the per-package binaries for enabled browser demos first.
     # The resolver-aware has_X
     # guards below then treat fetched binaries as "already built", so
@@ -1926,6 +1935,12 @@ cmd_browser() {
     fetch_browser_binaries
 
     build_browser
+}
+
+cmd_browser() {
+    local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
+
+    cmd_prepare_browser
 
     # Install browser deps if needed (re-run if package.json is newer than node_modules)
     if [ ! -d "$BROWSER_DIR/node_modules" ] || [ "$BROWSER_DIR/package.json" -nt "$BROWSER_DIR/node_modules" ]; then
@@ -2128,6 +2143,7 @@ cmd_list() {
     echo "  ./run.sh run dlopen                  dlopen shared library demo"
     echo ""
     echo "${BOLD}Browser:${RESET}"
+    echo "  ./run.sh prepare-browser             Fetch/build browser demo assets"
     echo "  ./run.sh browser                     Start Vite dev server for browser demos"
     echo ""
     echo "${BOLD}Test suites:${RESET}"
@@ -2153,6 +2169,7 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     fetch)    cmd_fetch "${@:2}" ;;
+    prepare-browser) cmd_prepare_browser ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;
     test)     cmd_test "${@:2}" ;;
