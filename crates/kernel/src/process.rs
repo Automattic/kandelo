@@ -114,6 +114,20 @@ pub trait HostIO {
     /// Notify the host that an AF_INET socket is now listening, so the host
     /// can open a real TCP server on the given port.
     fn host_net_listen(&mut self, fd: i32, port: u16, addr: &[u8; 4]) -> Result<(), Errno>;
+    /// Send a UDP datagram to a non-loopback destination via a host transport.
+    /// The default impl returns `ENETUNREACH`; hosts that own a UDP relay
+    /// (e.g., the browser's WebRTC `RelayHostShim`) override this. Fire-and-
+    /// forget — the wire is unreliable by definition, so there is no
+    /// acknowledgement and no retry.
+    fn send_dgram(
+        &mut self,
+        _src_port: u16,
+        _dst_ip: [u8; 4],
+        _dst_port: u16,
+        _data: &[u8],
+    ) -> Result<usize, Errno> {
+        Err(Errno::ENETUNREACH)
+    }
     fn host_getaddrinfo(&mut self, name: &[u8], result: &mut [u8]) -> Result<usize, Errno>;
     fn host_fcntl_lock(
         &mut self,
