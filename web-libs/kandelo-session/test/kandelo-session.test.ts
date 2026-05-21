@@ -289,6 +289,29 @@ describe("LiveKernelHost: descriptor + gallery lifecycle defaults", () => {
     expect(await host.galleryQuery({ tab: "recent" })).toEqual([]);
     await expect(host.saveCurrentToGallery("x")).rejects.toThrow("not implemented yet");
   });
+
+  it("setGalleryItems replaces presets and notifies gallery subscribers", async () => {
+    const host = new LiveKernelHost();
+    const cb = vi.fn();
+    const off = host.subscribeGallery(cb);
+    host.setGalleryItems([{
+      id: "node",
+      title: "Node",
+      summary: "Node preset",
+      base: "kandelo:shell@abi8",
+      packages: ["node@1"],
+      bootCommand: ["node"],
+      accent: "#43853d",
+      glyph: "js",
+      estimatedUrlBytes: 20,
+    }]);
+    off();
+    host.setGalleryItems([]);
+
+    expect(cb).toHaveBeenCalledOnce();
+    const items = await host.galleryQuery({ tab: "presets" });
+    expect(items).toHaveLength(0);
+  });
 });
 
 describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
@@ -448,6 +471,7 @@ describe("MockKernelHost: KernelHost contract", () => {
     expect(typeof host.subscribeStatus).toBe("function");
     expect(typeof host.snapshot).toBe("function");
     expect(typeof host.attachFramebuffer).toBe("function");
+    expect(typeof host.subscribeGallery).toBe("function");
   });
 });
 
