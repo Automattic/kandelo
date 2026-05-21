@@ -364,6 +364,10 @@ export class MockKernelHost implements KernelHost {
 
   // ── Gallery ──────────────────────────────────────────────────────────────
 
+  subscribeGallery(_cb: () => void): () => void {
+    return () => {};
+  }
+
   async galleryQuery(q: GalleryQuery): Promise<GalleryItem[]> {
     await delay(12);
     if (q.tab !== "presets") return []; // mock only seeds the presets tab
