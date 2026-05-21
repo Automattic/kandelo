@@ -27,6 +27,10 @@ import {
   symlink,
 } from "./vfs-image-helpers";
 import { populateShellEnvironment } from "./shell-vfs-build";
+import {
+  terminalPresentation,
+  writeKandeloDemoConfig,
+} from "./kandelo-demo-config";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
@@ -91,6 +95,12 @@ async function main() {
   symlink(fs, "/usr/bin/npm", "/usr/local/bin/npm");
   symlink(fs, "/usr/bin/npx", "/bin/npx");
   symlink(fs, "/usr/bin/npx", "/usr/local/bin/npx");
+  writeKandeloDemoConfig(fs, {
+    version: 1,
+    profiles: {
+      node: { presentation: terminalPresentation() },
+    },
+  });
 
   await saveImage(fs, OUT_FILE);
 }

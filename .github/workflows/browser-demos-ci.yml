@@ -1,0 +1,48 @@
+name: Browser demo smoke tests
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/browser-demos-ci.yml"
+      - "apps/browser-demos/**"
+      - "host/src/**"
+      - "web-libs/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/browser-demos-ci.yml"
+      - "apps/browser-demos/**"
+      - "host/src/**"
+      - "web-libs/**"
+
+permissions:
+  contents: read
+
+jobs:
+  coi:
+    name: COI smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/browser-demos/package-lock.json
+
+      - name: Install browser demo dependencies
+        working-directory: apps/browser-demos
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Playwright browsers
+        working-directory: apps/browser-demos
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Run cross-origin isolation smoke tests
+        working-directory: apps/browser-demos
+        run: |
+          npx playwright test test/coi.spec.ts \
+            --project=chromium \
+            --project=firefox \
+            --project=webkit
