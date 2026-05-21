@@ -8,7 +8,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import kernelWasmUrl from "../../../../host/wasm/wasm_posix_kernel.wasm?url";
+import kernelWasmUrl from "@kernel-wasm?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
 import "@xterm/xterm/css/xterm.css";
