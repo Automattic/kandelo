@@ -38,11 +38,35 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------
-  # gate — review state + required-checks + wait-for-staging-build.
+  # gate — review state + required-checks + wait-for-staging-build
+  # when package staging is required.
   # All gates that must pass BEFORE we burn matrix-build compute live
   # here so a failed gate is cheap. On success, downstream jobs run.
   # ---------------------------------------------------------------------
+  change-scope:
+    if: |
+      github.event.label.name == 'ready-to-ship' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
+      package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Detect package staging scope
+        id: scope
+        uses: ./.github/actions/detect-change-scope
+        with:
+          base-ref: origin/${{ github.event.pull_request.base.ref }}
+
   gate:
+    needs: [change-scope]
     if: |
       github.event.label.name == 'ready-to-ship' &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -157,6 +181,7 @@ jobs:
           echo "PR $PR_HEAD_SHA merges cleanly into origin/main."
 
       - name: Wait for staging-build on PR HEAD
+        if: needs.change-scope.outputs.package_staging_required == 'true'
         # staging-build runs the same matrix flow on every PR push (and
         # since Phase B-1, the matrix already targets the undated
         # `binaries-abi-v<N>` tag in parallel with the legacy build).
@@ -216,7 +241,8 @@ jobs:
   # ---------------------------------------------------------------------
 
   preflight:
-    needs: [gate]
+    needs: [gate, change-scope]
+    if: needs.change-scope.outputs.package_staging_required == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read           # gh release view (target tag probe)
@@ -434,7 +460,8 @@ jobs:
           '
 
   toolchain-cache:
-    needs: [gate]
+    needs: [gate, change-scope]
+    if: needs.change-scope.outputs.package_staging_required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -989,6 +1016,86 @@ jobs:
   #     visible state. There are no [binary] URLs in package.toml
   #     to amend; the bot-PR mechanism is gone.
 
+
+  # ---------------------------------------------------------------------
+  # merge-gate-post-noop — package staging was not required.
+  #
+  # Browser/docs/workflow-only PRs do not need PR staging archives and
+  # must not trigger durable package builds on label. After the regular
+  # review/check/mergeability gate succeeds, post the same merge-gate
+  # success context and enable auto-merge without touching releases.
+  # ---------------------------------------------------------------------
+  merge-gate-post-noop:
+    needs: [gate, change-scope]
+    if: |
+      !cancelled() &&
+      needs.gate.result == 'success' &&
+      needs.change-scope.outputs.package_staging_required == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
+      pull-requests: write     # auto-merge + comment
+      statuses: write          # post merge-gate=success
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Post merge-gate=success on original PR HEAD
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/$PR_HEAD_SHA" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description="No package-affecting changes; package staging skipped."
+
+      - name: Enable squash auto-merge on original PR
+        id: automerge
+        run: |
+          set +e
+          output=$(gh pr merge "$PR_NUMBER" \
+            --repo ${{ github.repository }} \
+            --auto --squash 2>&1)
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            printf '%s\n' "$output"
+            echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "$output" >&2
+          if printf '%s\n' "$output" | grep -q 'without `workflows` permission'; then
+            echo "manual_merge_required=true" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge passed and posted \`merge-gate=success\`, but GitHub Actions cannot enable auto-merge because this PR changes workflow files. A user with workflow permission must merge this PR manually."
+            exit 0
+          fi
+
+          echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Comment on original PR
+        continue-on-error: true
+        run: |
+          BODY="prepare-merge: no package-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
+          set +e
+          for attempt in 1 2 3; do
+            if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then
+              exit 0
+            fi
+            echo "::warning::gh pr comment failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          echo "::warning::gh pr comment failed after 3 attempts; merge-gate was posted but the explanatory comment was not"
+
+      - name: Drop label + comment on failure
+        if: failure()
+        run: |
+          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the no-op merge-gate-post step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
 
   # ---------------------------------------------------------------------
   # merge-gate-post — single merge-gate poster + auto-merge enabler.
