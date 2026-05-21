@@ -89,7 +89,11 @@ runs:
 
         if [ "$FETCH_BASE" = 'true' ]; then
           remote_branch="${BASE_REF#origin/}"
-          git fetch origin "$remote_branch" --depth=1
+          if [ "$remote_branch" != "$BASE_REF" ]; then
+            git fetch origin "+refs/heads/$remote_branch:refs/remotes/origin/$remote_branch" --no-tags
+          else
+            git fetch origin "$BASE_REF" --no-tags
+          fi
         fi
 
         if ! files=$(git diff --name-only "$BASE_REF"...HEAD 2>/tmp/detect-change-scope.diff.err); then
