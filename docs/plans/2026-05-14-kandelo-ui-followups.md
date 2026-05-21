@@ -90,7 +90,8 @@ host/test). Worth doing once it's set up:
   bash + init.
 - Quit DOOM via menu → Procs drops fbdoom; canvas clears.
 - Relaunch fbdoom from bash → canvas re-attaches.
-- Ctrl+Shift+Esc releases canvas focus.
+- Focused framebuffer panes forward keyboard input as Linux keycodes; clicking
+  another pane or pressing Ctrl+Shift+Esc moves focus back to the UI.
 - Procs tab post-exec shows `fbdoom -iwad /doom1.wad`, not `bash`.
 
 ### Kernel-export tests (synthetic harness)
