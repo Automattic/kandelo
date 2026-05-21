@@ -1,9 +1,10 @@
 name: Detect change scope
 description: |
-  Compute kernel/docs_only flags from the diff vs a base ref. Used by
-  staging-build.yml and prepare-merge.yml to gate test suites.
+  Compute kernel/docs_only/package_staging_required flags from the
+  diff vs a base ref. Used by staging-build.yml and prepare-merge.yml
+  to gate test suites and package staging.
 
-  Two tiers:
+  Scopes:
 
     docs_only — every changed file is in the docs/meta allowlist
       (docs/, top-level *.md, LICENSE, COPYING*, .gitignore et al, the
@@ -17,6 +18,11 @@ description: |
       Caller's base ref is the known-good baseline because every
       commit there was gated through prepare-merge with full suites
       green.
+
+    package_staging_required — at least one changed file can affect
+      package archive outputs or the package staging/publish machinery.
+      Browser demo app, browser-demo workflow, and docs-only changes do
+      not set this flag.
 
   vitest gates on `!docs_only` rather than on `kernel` — its 51 test
   files exercise built packages (dash, bash, nginx, erlang, php,
@@ -59,6 +65,16 @@ outputs:
       'true' when every changed path is in the docs/meta allowlist.
       Gates the prereq kernel build + vitest.
     value: ${{ steps.scope.outputs.docs_only }}
+  package_staging_required:
+    description: |
+      'true' when at least one changed path can affect package build
+      outputs or package staging CI logic.
+    value: ${{ steps.scope.outputs.package_staging_required }}
+  package_staging_reason:
+    description: |
+      Human-readable explanation of why package staging is required
+      or why it was skipped.
+    value: ${{ steps.scope.outputs.package_staging_reason }}
 
 runs:
   using: composite
@@ -76,9 +92,37 @@ runs:
           git fetch origin "$remote_branch" --depth=1
         fi
 
-        files=$(git diff --name-only "$BASE_REF"...HEAD)
+        if ! files=$(git diff --name-only "$BASE_REF"...HEAD 2>/tmp/detect-change-scope.diff.err); then
+          echo "::warning::three-dot diff against $BASE_REF failed; falling back to two-dot diff"
+          cat /tmp/detect-change-scope.diff.err >&2 || true
+          files=$(git diff --name-only "$BASE_REF"..HEAD)
+        fi
         echo "Changed files vs $BASE_REF:"
         echo "$files" | sed 's/^/  /'
+
+        action_dir="${GITHUB_ACTION_PATH:-.github/actions/detect-change-scope}"
+        . "$action_dir/package-staging-paths.sh"
+        package_files=$(echo "$files" | package_staging_changed_files)
+        if [ -z "$files" ]; then
+          echo 'package_staging_required=true' >> "$GITHUB_OUTPUT"
+          echo 'package_staging_reason=Empty diff; package staging required as a fail-safe.' >> "$GITHUB_OUTPUT"
+          package_staging_state='will run - empty diff fail-safe'
+        elif [ -n "$package_files" ]; then
+          count=$(echo "$package_files" | sed '/^$/d' | wc -l | tr -d ' ')
+          first_matches=$(echo "$package_files" | sed '/^$/d' | head -n 3 | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+          if [ "$count" -gt 3 ]; then
+            reason="Package-affecting changes: ${first_matches} (+$((count - 3)) more)"
+          else
+            reason="Package-affecting changes: ${first_matches}"
+          fi
+          echo 'package_staging_required=true' >> "$GITHUB_OUTPUT"
+          echo "package_staging_reason=$reason" >> "$GITHUB_OUTPUT"
+          package_staging_state='will run'
+        else
+          echo 'package_staging_required=false' >> "$GITHUB_OUTPUT"
+          echo 'package_staging_reason=No package-affecting changes; package staging skipped.' >> "$GITHUB_OUTPUT"
+          package_staging_state='skip - no package-affecting changes'
+        fi
 
         # Tier B — kernel filter (gates cargo + libc-test + POSIX + sortix).
         # Includes this action's own path so changes to the detection
@@ -121,4 +165,4 @@ runs:
           vitest_state='will run'
         fi
 
-        echo "::notice::vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
+        echo "::notice::package staging: $package_staging_state | vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
