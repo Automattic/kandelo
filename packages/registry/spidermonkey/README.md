@@ -17,6 +17,8 @@ Out of scope for this package:
 - the Node-compatible embedding
 - vendored Node builtin modules
 - npm / Express / Claude Code validation
+- JS-facing nested WebAssembly compilation, which currently requires a
+  SpiderMonkey wasm JIT backend while this package builds with JIT disabled
 
 Those live on top of this engine port after the shell is green.
 
