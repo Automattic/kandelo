@@ -310,8 +310,10 @@ export class MockKernelHost implements KernelHost {
   }
 
   getWebPreview(): WebPreviewState | null {
-    const servicePresets = new Set(["nginx", "nginx-php", "wordpress-sqlite", "wordpress-mariadb"]);
-    if (!servicePresets.has(this.descriptor.id)) return null;
+    const hasWebService =
+      (this.descriptor.runtime.features.includes("tcp-bridge") || hasPackage(this.descriptor, "nginx")) &&
+      this.descriptor.boot.argv.some((arg) => arg.includes("dinit"));
+    if (!hasWebService) return null;
     return {
       label: this.descriptor.title,
       url: "about:blank",
@@ -325,33 +327,12 @@ export class MockKernelHost implements KernelHost {
   }
 
   getPresentation(): DemoPresentation {
-    switch (this.descriptor.id) {
-      case "doom":
-        return {
-          bootPrimary: "syslog",
-          runningPrimary: ["framebuffer", "terminal"],
-          terminalAccess: "drawer",
-          internalsAccess: "drawer",
-          autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
-        };
-      case "nginx":
-      case "nginx-php":
-      case "wordpress-sqlite":
-      case "wordpress-mariadb":
-        return {
-          bootPrimary: "syslog",
-          runningPrimary: ["web", "terminal", "syslog"],
-          terminalAccess: "drawer",
-          internalsAccess: "drawer",
-        };
-      default:
-        return {
-          bootPrimary: "syslog",
-          runningPrimary: ["terminal", "syslog"],
-          terminalAccess: "primary",
-          internalsAccess: "drawer",
-        };
-    }
+    return {
+      bootPrimary: "syslog",
+      runningPrimary: ["terminal", "syslog"],
+      terminalAccess: "primary",
+      internalsAccess: "drawer",
+    };
   }
 
   subscribePresentation(cb: (state: DemoPresentation) => void): () => void {
@@ -363,7 +344,10 @@ export class MockKernelHost implements KernelHost {
     return {
       syslog: true,
       terminal: this._status !== "idle",
-      framebuffer: this.descriptor.id === "doom" && this._status === "running",
+      framebuffer: (
+        this.descriptor.runtime.features.includes("framebuffer") ||
+        hasPackage(this.descriptor, "fbdoom")
+      ) && this._status === "running",
       web: preview?.status === "running",
     };
   }
@@ -428,4 +412,8 @@ function walkVfs(root: VfsNode, path: string): VfsNode | null {
     node = next;
   }
   return node;
+}
+
+function hasPackage(desc: BootDescriptor, name: string): boolean {
+  return desc.packages.some((pkg) => pkg === name || pkg.startsWith(`${name}@`));
 }

@@ -7,6 +7,11 @@ import {
   type MachineStatus,
   type ProcessEvent,
 } from "../src/kernel-host";
+import {
+  parseKandeloDemoConfig,
+  resolveDemoAssets,
+  resolveDemoPresentation,
+} from "../src/demo-config";
 import { MockKernelHost } from "../../../apps/browser-demos/pages/kandelo/kernel-host/mock";
 
 /**
@@ -300,6 +305,134 @@ describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
     const snap = await host.snapshot({ preferMode: "manifest" });
     expect(snap.mode).toBe("manifest");
     expect(snap.reason).toContain("Mode forced to manifest");
+  });
+});
+
+describe("Kandelo demo config", () => {
+  it("resolves profile presentation over image defaults", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      presentation: {
+        bootPrimary: "syslog",
+        runningPrimary: ["terminal", "syslog"],
+        terminalAccess: "primary",
+        internalsAccess: "drawer",
+      },
+      profiles: {
+        doom: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["framebuffer", "terminal", "syslog"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+            autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+          },
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    const presentation = resolveDemoPresentation(config!, "doom");
+    expect(presentation.runningPrimary).toEqual(["framebuffer", "terminal", "syslog"]);
+    expect(presentation.terminalAccess).toBe("drawer");
+    expect(presentation.autoCommand).toContain("fbdoom");
+  });
+
+  it("throws when profile metadata is incomplete", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        webapp: {
+          presentation: {
+            runningPrimary: ["web", "terminal"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+          },
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(() => resolveDemoPresentation(config!, "webapp")).toThrow("bootPrimary");
+  });
+
+  it("throws when profile metadata has an invalid surface", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        webapp: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["bogus", "web", "web", "terminal"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+          },
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(() => resolveDemoPresentation(config!, "webapp")).toThrow("runningPrimary[0]");
+  });
+
+  it("resolves and validates profile assets", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      assets: [
+        { path: "/common.dat", url: "https://example.invalid/common.dat" },
+      ],
+      profiles: {
+        doom: {
+          assets: [
+            {
+              path: "/doom1.wad",
+              url: "https://example.invalid/doom1.wad",
+              sha256: "abc123",
+              mode: 420,
+              devCorsProxy: true,
+            },
+          ],
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(resolveDemoAssets(config!, "doom")).toEqual([
+      { path: "/common.dat", url: "https://example.invalid/common.dat" },
+      {
+        path: "/doom1.wad",
+        url: "https://example.invalid/doom1.wad",
+        sha256: "abc123",
+        mode: 420,
+        devCorsProxy: true,
+      },
+    ]);
+  });
+
+  it("throws when profile assets use a relative path", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        doom: {
+          assets: [
+            { path: "doom1.wad", url: "https://example.invalid/doom1.wad" },
+          ],
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(() => resolveDemoAssets(config!, "doom")).toThrow("path must be absolute");
+  });
+
+  it("returns null when no matching presentation exists", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {},
+    }));
+    expect(config).not.toBeNull();
+
+    expect(resolveDemoPresentation(config!, "missing")).toBeNull();
   });
 });
 

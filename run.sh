@@ -179,7 +179,7 @@ has_lsof()          { pkg_has_output lsof lsof.wasm || [ -f "$REPO_ROOT/packages
 has_unzip()         { pkg_has_output unzip unzip.wasm || [ -f "$REPO_ROOT/packages/registry/unzip/bin/unzip.wasm" ]; }
 has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/packages/registry/nano/bin/nano.wasm" ]; }
 has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/packages/registry/nethack/bin/nethack.wasm" ]; }
-has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || { [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ] && [ -f "$REPO_ROOT/packages/registry/fbdoom/doom1.wad" ]; }; }
+has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ]; }
 has_vim()           { pkg_has_output vim vim.wasm || [ -f "$REPO_ROOT/packages/registry/vim/bin/vim.wasm" ]; }
 has_git()           { pkg_has_output git git.wasm || [ -f "$REPO_ROOT/packages/registry/git/bin/git.wasm" ]; }
 has_perl()          { pkg_has_output perl perl.wasm || [ -f "$REPO_ROOT/packages/registry/perl/bin/perl.wasm" ]; }
@@ -739,6 +739,7 @@ build_nethack_zip() {
 
 build_shell_vfs() {
     if ! has_shell_vfs; then
+        build_fbdoom
         step "Building Shell VFS image"
         bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
         info "Shell VFS image built"
@@ -1709,6 +1710,7 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/fbdoom/fbdoom-src" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom.wasm" \
                   "$REPO_ROOT/packages/registry/fbdoom/doom1.wad" \
                   "$REPO_ROOT/packages/registry/fbdoom/COPYING.txt" \
                   "$REPO_ROOT/packages/registry/fbdoom/CREDITS.txt" \
