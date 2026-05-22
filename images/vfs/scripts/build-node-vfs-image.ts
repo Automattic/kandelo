@@ -31,6 +31,7 @@ import {
   terminalPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
+import { nodeGuide } from "./kandelo-demo-guides";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
@@ -98,7 +99,10 @@ async function main() {
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
-      node: { presentation: terminalPresentation() },
+      node: {
+        presentation: terminalPresentation(),
+        guide: nodeGuide(),
+      },
     },
   });
 

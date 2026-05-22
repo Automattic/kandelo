@@ -23,6 +23,7 @@ import {
   terminalPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
+import { shellGuide } from "./kandelo-demo-guides";
 
 const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
 const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
@@ -44,7 +45,10 @@ async function main() {
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
-      shell: { presentation: terminalPresentation() },
+      shell: {
+        presentation: terminalPresentation(),
+        guide: shellGuide(),
+      },
       doom: {
         presentation: framebufferPresentation(DOOM_COMMAND),
         assets: [

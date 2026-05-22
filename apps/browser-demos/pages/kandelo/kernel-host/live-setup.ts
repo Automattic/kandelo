@@ -29,6 +29,7 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
   resolveDemoAssets,
+  resolveDemoGuide,
   resolveDemoPresentation,
   type DemoAssetConfig,
   type KandeloDemoConfig,
@@ -458,6 +459,7 @@ function showBootError(
   const message = err instanceof Error ? err.message : String(err);
   host.clearDmesg();
   host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setDescriptor(descriptor);
   host.setPresentation({
     bootPrimary: "syslog",
@@ -559,6 +561,7 @@ async function bootProfile(
   assertCurrent();
   host.clearDmesg();
   host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setDescriptor({
     ...profile.descriptor,
     title: requestedDescriptor.title || profile.descriptor.title,
@@ -606,6 +609,7 @@ async function bootProfile(
     ?? profile.fallbackPresentation
     ?? null;
   if (presentation) host.setPresentation(presentation);
+  host.setDemoGuide(imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null);
   const assets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
   await stageConfiguredAssets(memfs, assets, tick);
   assertCurrent();

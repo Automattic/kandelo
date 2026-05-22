@@ -419,6 +419,18 @@
   letter-spacing: 0.04em;
 }
 
+.kmachine-workspace {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 8px;
+}
+.kmachine-workspace.no-demo-guide {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .kmachine-primary {
   flex: 1;
   min-height: 0;
@@ -503,6 +515,212 @@
 .kmachine-drawer-body > .kpane {
   border-radius: 0;
   box-shadow: none;
+}
+
+.kdemo {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius);
+  background:
+    linear-gradient(180deg, color-mix(in oklch, var(--k-surface) 86%, black), var(--k-surface));
+  box-shadow: var(--k-shadow);
+  padding: 12px;
+}
+
+.kdemo-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.kdemo-kicker {
+  color: var(--k-accent);
+  font-family: var(--k-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.kdemo h2 {
+  margin: 2px 0 0;
+  color: var(--k-text);
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.kdemo-id {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid color-mix(in oklch, var(--k-accent) 28%, transparent);
+  border-radius: 6px;
+  padding: 4px 6px;
+  color: var(--k-text-muted);
+  font-family: var(--k-font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.kdemo-summary {
+  margin: 0;
+  color: var(--k-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.kdemo-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.kdemo-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.kdemo-section-title {
+  color: var(--k-text-faint);
+  font-family: var(--k-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.kdemo-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.kdemo-action {
+  min-width: 0;
+  min-height: 70px;
+  border: 1px solid var(--k-border);
+  border-radius: 7px;
+  background: color-mix(in oklch, var(--k-surface-sunk) 72%, transparent);
+  color: var(--k-text);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 9px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.kdemo-action:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--k-accent) 42%, var(--k-border));
+  background: color-mix(in oklch, var(--k-accent) 10%, var(--k-surface-sunk));
+}
+
+.kdemo-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.kdemo-action span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--k-text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.kdemo-action small {
+  color: var(--k-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.kdemo-editor {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  border: 1px solid var(--k-border);
+  border-radius: 7px;
+  background: #15100c;
+  color: var(--k-shell-text);
+  padding: 9px;
+  font-family: var(--k-font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  outline: none;
+}
+
+.kdemo-editor:focus {
+  border-color: color-mix(in oklch, var(--k-accent) 55%, var(--k-border));
+}
+
+.kdemo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.kdemo-lang {
+  color: var(--k-text-faint);
+  font-family: var(--k-font-mono);
+  font-size: 10px;
+}
+
+.kdemo-run {
+  margin-left: auto;
+  height: 28px;
+  border: 1px solid color-mix(in oklch, var(--k-accent) 48%, transparent);
+  border-radius: 6px;
+  background: var(--k-accent);
+  color: #231406;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.kdemo-run:hover:not(:disabled) {
+  background: var(--k-accent-fire);
+}
+
+.kdemo-run:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.kdemo-companion {
+  width: 100%;
+  height: 154px;
+  border: 1px solid var(--k-border);
+  border-radius: 7px;
+  background: #191512;
+}
+
+.kdemo-status {
+  flex-shrink: 0;
+  margin-top: auto;
+  border-top: 1px solid var(--k-border);
+  padding-top: 10px;
+  color: var(--k-text-faint);
+  font-family: var(--k-font-mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 980px) {
+  .kmachine-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(320px, 1fr) minmax(240px, 36vh);
+  }
 }
 
 .ktile {
