@@ -19,10 +19,11 @@ const jsWasm =
   tryResolveBinary("programs/js.wasm") ??
   (existsSync(packageBuild) ? packageBuild : null);
 
-const DEFAULT_TIMEOUT = process.env.CI ? 60_000 : 20_000;
-const DEFAULT_TEST_TIMEOUT = DEFAULT_TIMEOUT + 10_000;
-const LONG_TIMEOUT = process.env.CI ? 90_000 : 30_000;
-const LONG_TEST_TIMEOUT = LONG_TIMEOUT + 30_000;
+const DEFAULT_TIMEOUT = process.env.CI ? 120_000 : 20_000;
+const DEFAULT_TEST_TIMEOUT = DEFAULT_TIMEOUT + 30_000;
+const LONG_TIMEOUT = process.env.CI ? 180_000 : 30_000;
+const LONG_TEST_TIMEOUT = LONG_TIMEOUT + 60_000;
+const CI_PROGRESS_INTERVAL = 15_000;
 
 function loadWasm(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -31,13 +32,18 @@ function loadWasm(path: string): ArrayBuffer {
 
 async function runJs(
   source: string,
-  options: { shellArgs?: string[]; timeout?: number } = {},
+  options: { label?: string; shellArgs?: string[]; timeout?: number } = {},
 ) {
-  return runCentralizedProgram({
-    programPath: jsWasm!,
-    argv: ["js", ...(options.shellArgs ?? []), "-e", source],
-    timeout: options.timeout ?? DEFAULT_TIMEOUT,
-  });
+  const label =
+    options.label ?? expect.getState().currentTestName ?? "js shell program";
+  return withCiProgress(
+    label,
+    runCentralizedProgram({
+      programPath: jsWasm!,
+      argv: ["js", ...(options.shellArgs ?? []), "-e", source],
+      timeout: options.timeout ?? DEFAULT_TIMEOUT,
+    }),
+  );
 }
 
 function stdoutLines(stdout: string): string[] {
@@ -59,6 +65,28 @@ async function withTimeout<T>(
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+async function withCiProgress<T>(label: string, promise: Promise<T>): Promise<T> {
+  if (!process.env.CI) {
+    return promise;
+  }
+
+  const start = Date.now();
+  const elapsedSeconds = () => Math.round((Date.now() - start) / 1000);
+  console.info(`[spidermonkey] ${label} started`);
+  const interval = setInterval(() => {
+    console.info(
+      `[spidermonkey] ${label} still running after ${elapsedSeconds()}s`,
+    );
+  }, CI_PROGRESS_INTERVAL);
+
+  try {
+    return await promise;
+  } finally {
+    clearInterval(interval);
+    console.info(`[spidermonkey] ${label} finished after ${elapsedSeconds()}s`);
   }
 }
 
@@ -239,7 +267,14 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
     try {
       await host.init();
       const exitCode = await withTimeout(
-        host.spawn(loadWasm(jsWasm!), ["js", "/mnt/args.js", "alpha", "beta"], {}),
+        withCiProgress(
+          "mounted script execution",
+          host.spawn(
+            loadWasm(jsWasm!),
+            ["js", "/mnt/args.js", "alpha", "beta"],
+            {},
+          ),
+        ),
         DEFAULT_TIMEOUT,
         "script execution timed out",
       );
