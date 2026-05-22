@@ -910,6 +910,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
+          # Keep the synthetic pull-request merge commit's two parents
+          # available. With the default depth=1 Git marks HEAD shallow,
+          # so `git show --format=%P HEAD` reports no parents.
+          fetch-depth: 2
 
       - name: Capture PR merge base
         id: merge_ref
