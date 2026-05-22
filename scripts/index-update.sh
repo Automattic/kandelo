@@ -74,6 +74,27 @@ require() {
   fi
 }
 
+retry() {
+  local attempts="${INDEX_UPDATE_RETRY_ATTEMPTS:-5}"
+  local delay="${INDEX_UPDATE_RETRY_DELAY_SECONDS:-5}"
+  local n=1
+  local status=0
+
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    status=$?
+    if [ "$n" -ge "$attempts" ]; then
+      return "$status"
+    fi
+    echo "index-update.sh: command failed with exit $status; retrying in ${delay}s: $*" >&2
+    sleep "$delay"
+    n=$((n + 1))
+    delay=$((delay * 2))
+  done
+}
+
 require target-tag    "$TARGET_TAG"
 require package       "$PACKAGE"
 require version       "$VERSION"
@@ -111,12 +132,12 @@ trap 'bash .github/scripts/state-lock.sh release || true' EXIT
 INDEX_DIR="$(mktemp -d)"
 INDEX_PATH="$INDEX_DIR/index.toml"
 
-if gh release view "$TARGET_TAG" \
+if retry gh release view "$TARGET_TAG" \
      --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}" \
      --json assets --jq '.assets[].name' 2>/dev/null \
      | grep -qx 'index.toml'
 then
-  gh release download "$TARGET_TAG" \
+  retry gh release download "$TARGET_TAG" \
     --repo "$GITHUB_REPOSITORY" \
     --pattern index.toml \
     --dir "$INDEX_DIR" \
@@ -169,7 +190,7 @@ cargo run --release -p xtask --target "$HOST_TRIPLE" --quiet -- \
 # 4. Upload archive (success path only) + updated index back to the
 #    release. --clobber for idempotency: a retried matrix-build job
 #    must produce the same final state.
-if ! gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+if ! retry gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
   release_args=(
     "$TARGET_TAG"
     --repo "$GITHUB_REPOSITORY"
@@ -190,16 +211,16 @@ if ! gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; 
       release_args+=(--notes "Package binary index for ${TARGET_TAG}")
       ;;
   esac
-  gh release create "${release_args[@]}" || true
+  retry gh release create "${release_args[@]}" || true
 fi
 
 if [ "$STATUS" = "success" ]; then
-  gh release upload "$TARGET_TAG" \
+  retry gh release upload "$TARGET_TAG" \
     --repo "$GITHUB_REPOSITORY" \
     --clobber \
     "$ARCHIVE_PATH"
 fi
-gh release upload "$TARGET_TAG" \
+retry gh release upload "$TARGET_TAG" \
   --repo "$GITHUB_REPOSITORY" \
   --clobber \
   "$INDEX_PATH"
