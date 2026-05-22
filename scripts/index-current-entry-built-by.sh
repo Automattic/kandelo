@@ -34,10 +34,14 @@ awk -v pkg="$pkg" -v arch="$arch" -v sha="$sha" -v rev="$rev" '
     exit
   }
 
-  $0 == "[[packages]]" {
+  function maybe_emit() {
     if (matches()) {
       emit_and_exit()
     }
+  }
+
+  $0 == "[[packages]]" {
+    maybe_emit()
     reset_package()
     next
   }
@@ -62,11 +66,13 @@ awk -v pkg="$pkg" -v arch="$arch" -v sha="$sha" -v rev="$rev" '
 
   in_pkg && in_arch && $0 == "status = \"success\"" {
     success = 1
+    maybe_emit()
     next
   }
 
   in_pkg && in_arch && $0 == "cache_key_sha = \"" sha "\"" {
     sha_match = 1
+    maybe_emit()
     next
   }
 
@@ -74,6 +80,7 @@ awk -v pkg="$pkg" -v arch="$arch" -v sha="$sha" -v rev="$rev" '
     built_by = $0
     sub(/^built_by = "/, "", built_by)
     sub(/"$/, "", built_by)
+    maybe_emit()
     next
   }
 
