@@ -87,6 +87,7 @@ jobs:
         working-directory: apps/browser-demos
         env:
           VITE_BASE: /kandelo/
+          VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
         run: npm run build
 
       - name: Deploy to gh-pages
