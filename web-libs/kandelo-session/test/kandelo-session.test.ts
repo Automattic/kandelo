@@ -10,6 +10,7 @@ import {
 import {
   parseKandeloDemoConfig,
   resolveDemoAssets,
+  resolveDemoGuide,
   resolveDemoPresentation,
 } from "../src/demo-config";
 import { MockKernelHost } from "../../../apps/browser-demos/pages/kandelo/kernel-host/mock";
@@ -289,6 +290,29 @@ describe("LiveKernelHost: descriptor + gallery lifecycle defaults", () => {
     expect(await host.galleryQuery({ tab: "recent" })).toEqual([]);
     await expect(host.saveCurrentToGallery("x")).rejects.toThrow("not implemented yet");
   });
+
+  it("setGalleryItems replaces presets and notifies gallery subscribers", async () => {
+    const host = new LiveKernelHost();
+    const cb = vi.fn();
+    const off = host.subscribeGallery(cb);
+    host.setGalleryItems([{
+      id: "node",
+      title: "Node",
+      summary: "Node preset",
+      base: "kandelo:shell@abi8",
+      packages: ["node@1"],
+      bootCommand: ["node"],
+      accent: "#43853d",
+      glyph: "js",
+      estimatedUrlBytes: 20,
+    }]);
+    off();
+    host.setGalleryItems([]);
+
+    expect(cb).toHaveBeenCalledOnce();
+    const items = await host.galleryQuery({ tab: "presets" });
+    expect(items).toHaveLength(0);
+  });
 });
 
 describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
@@ -425,6 +449,58 @@ describe("Kandelo demo config", () => {
     expect(() => resolveDemoAssets(config!, "doom")).toThrow("path must be absolute");
   });
 
+  it("resolves and validates guide actions", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        node: {
+          guide: {
+            title: "Node demo",
+            groups: [
+              {
+                title: "REPL",
+                actions: [
+                  {
+                    id: "expr",
+                    label: "Expression",
+                    description: "Send input.",
+                    kind: "terminal.write",
+                    payload: "process.version\n",
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(resolveDemoGuide(config!, "node")?.groups?.[0].actions[0].kind).toBe("terminal.write");
+    expect(resolveDemoGuide(config!, "missing")).toBeNull();
+  });
+
+  it("rejects duplicate guide action ids", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      guide: {
+        title: "Bad guide",
+        groups: [
+          {
+            title: "Actions",
+            actions: [
+              { id: "dup", label: "One", kind: "terminal.run", payload: "echo one" },
+              { id: "dup", label: "Two", kind: "terminal.write", payload: "two\n" },
+            ],
+          },
+        ],
+      },
+    }));
+    expect(config).not.toBeNull();
+
+    expect(() => resolveDemoGuide(config!, "shell")).toThrow("duplicate action id");
+  });
+
   it("returns null when no matching presentation exists", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
@@ -448,6 +524,8 @@ describe("MockKernelHost: KernelHost contract", () => {
     expect(typeof host.subscribeStatus).toBe("function");
     expect(typeof host.snapshot).toBe("function");
     expect(typeof host.attachFramebuffer).toBe("function");
+    expect(typeof host.subscribeGallery).toBe("function");
+    expect(typeof host.getDemoGuide).toBe("function");
   });
 });
 

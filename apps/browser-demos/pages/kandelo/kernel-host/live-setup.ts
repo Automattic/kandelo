@@ -2,7 +2,10 @@
 // kandelo page is loaded (use `?mock=1` for MockKernelHost).
 
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { initServiceWorkerBridge } from "../../../lib/init/service-worker-bridge";
+import {
+  ensureServiceWorkerReady,
+  initServiceWorkerBridge,
+} from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
 import {
   COREUTILS_NAMES,
@@ -26,6 +29,7 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
   resolveDemoAssets,
+  resolveDemoGuide,
   resolveDemoPresentation,
   type DemoAssetConfig,
   type KandeloDemoConfig,
@@ -121,6 +125,12 @@ type SoftwareProfile = {
 const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
+
+class BootSuperseded extends Error {
+  constructor() {
+    super("boot superseded");
+  }
+}
 
 type LiveVfsImage =
   | "shell"
@@ -270,6 +280,7 @@ const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
@@ -346,31 +357,98 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<LiveKernelHost> {
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
-  const galleryItems = await loadLiveGalleryItems();
+  let serviceWorkerReady: Promise<ServiceWorker> | null = null;
+  const localGalleryItems = liveGalleryItems();
 
   const host = new LiveKernelHost({
     status: "booting",
     descriptor: descriptorFor("shell"),
-    galleryItems,
+    galleryItems: localGalleryItems,
     applyBootDescriptor: async (desc, h) => {
-      const seq = ++bootSeq;
-      try {
-        if (currentKernel) {
-          await currentKernel.destroy().catch(() => {});
-          currentKernel = null;
-        }
-        currentKernel = await bootProfile(h, profileFor(desc.id, "none"), desc, seq);
-      } catch (err) {
-        currentKernel = null;
-        h.detachKernel();
-        showBootError(h, desc, err);
-      }
+      await startBoot(h, profileFor(desc.id, "none"), desc);
     },
   });
 
+  const requireServiceWorker = (tick?: (msg: string) => void) => {
+    if (!serviceWorkerReady) {
+      tick?.("preparing service worker...");
+      serviceWorkerReady = ensureServiceWorkerReady(SW_URL)
+        .then(async (controller) => {
+          if (window.crossOriginIsolated) {
+            sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+            return controller;
+          }
+
+          if (sessionStorage.getItem(COI_RELOAD_SESSION_KEY) === "1") {
+            sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+            throw new Error(
+              "Kandelo could not enable cross-origin isolation after the service worker became active. " +
+              "Reload the page; if this persists, clear site data for this site and check whether a browser extension is blocking service workers or COOP/COEP headers.",
+            );
+          }
+
+          sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
+          tick?.("service worker active; reloading to enable cross-origin isolation...");
+          window.location.reload();
+          await new Promise<never>((_, reject) => {
+            window.setTimeout(() => {
+              reject(new Error(
+                "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
+              ));
+            }, 5_000);
+          });
+        })
+        .catch((err) => {
+          serviceWorkerReady = null;
+          throw err;
+        });
+    }
+    return serviceWorkerReady;
+  };
+
   const initialId = normalizeDemoId(opts.demo) ?? "shell";
-  currentKernel = await bootProfile(host, profileFor(initialId, opts.fb), descriptorFor(initialId), ++bootSeq);
+  void startBoot(host, profileFor(initialId, opts.fb), descriptorFor(initialId));
+  void requireServiceWorker()
+    .then(() => refreshSoftwareGallery(host, localGalleryItems))
+    .catch((err) => {
+      console.warn("Service worker gate failed before gallery refresh:", err);
+      host.setGalleryItems(localGalleryItems);
+    });
   return host;
+
+  async function startBoot(
+    h: LiveKernelHost,
+    profile: LiveProfile,
+    descriptor: BootDescriptor,
+  ): Promise<void> {
+    const seq = ++bootSeq;
+    const previousKernel = currentKernel;
+    currentKernel = null;
+    if (previousKernel) {
+      await previousKernel.destroy().catch(() => {});
+    }
+    h.detachKernel();
+
+    try {
+      const kernel = await bootProfile(
+        h,
+        profile,
+        descriptor,
+        () => seq === bootSeq,
+        requireServiceWorker,
+      );
+      if (seq !== bootSeq) {
+        await kernel.destroy().catch(() => {});
+        return;
+      }
+      currentKernel = kernel;
+    } catch (err) {
+      if (err instanceof BootSuperseded || seq !== bootSeq) return;
+      currentKernel = null;
+      h.detachKernel();
+      showBootError(h, descriptor, err);
+    }
+  }
 }
 
 function showBootError(
@@ -381,6 +459,7 @@ function showBootError(
   const message = err instanceof Error ? err.message : String(err);
   host.clearDmesg();
   host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setDescriptor(descriptor);
   host.setPresentation({
     bootPrimary: "syslog",
@@ -472,10 +551,17 @@ async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
   requestedDescriptor: BootDescriptor,
-  seq: number,
+  isCurrent: () => boolean,
+  requireServiceWorker: (tick?: (msg: string) => void) => Promise<ServiceWorker>,
 ): Promise<BrowserKernel> {
+  const assertCurrent = () => {
+    if (!isCurrent()) throw new BootSuperseded();
+  };
+
+  assertCurrent();
   host.clearDmesg();
   host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setDescriptor({
     ...profile.descriptor,
     title: requestedDescriptor.title || profile.descriptor.title,
@@ -487,9 +573,14 @@ async function bootProfile(
 
   let t = 0;
   const tick = (msg: string) => {
+    if (!isCurrent()) return;
     host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
   };
 
+  await requireServiceWorker(tick);
+  assertCurrent();
+
+  tick("service worker active and cross-origin isolated");
   tick(`loading ${profile.id} profile...`);
   const [kernelBytes, vfsBytes, bashBytes, dashBytes, lazyBinaries, softwareBinaries] = await Promise.all([
     fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((r) => r.arrayBuffer()),
@@ -499,6 +590,7 @@ async function bootProfile(
     loadShellUtilityDefs(profile.includeNodeUtility),
     loadSoftwareBinaries(profile.software),
   ]);
+  assertCurrent();
 
   tick(`kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`);
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
@@ -517,97 +609,109 @@ async function bootProfile(
     ?? profile.fallbackPresentation
     ?? null;
   if (presentation) host.setPresentation(presentation);
+  host.setDemoGuide(imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null);
   const assets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
   await stageConfiguredAssets(memfs, assets, tick);
+  assertCurrent();
 
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
   const webReadiness: WebReadinessState = { ready: false, probing: false };
-  const kernel = new BrowserKernel({
-    memfs,
-    maxWorkers: profile.init?.maxWorkers ?? 4,
-    maxMemoryPages: profile.init?.maxMemoryPages,
-    onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
-    onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
-    onProcessEvent: (event) => host.emitProcessEvent(event),
-    onListenTcp: (_pid, _fd, port) => {
-      seenPorts.add(port);
-      tick(`service listening on :${port}`);
-      maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
-    },
-  });
-  await kernel.init(kernelBytes);
-
-  tick("staging shell utilities...");
-  stageShellUtilities(kernel, dashBytes, bashBytes, lazyBinaries);
-  stageSoftwareBinaries(kernel, softwareBinaries);
-  await registerFramebufferTestProgram(kernel);
-  host.attachKernel(kernel);
-  const shellEnv = profile.software?.shellEnv ?? shellEnvFor(profile.shell);
-  host.setDefaultShell({
-    programBytes: bashBytes,
-    argv: ["bash", "-l", "-i"],
-    env: shellEnv,
-    cwd: shellCwdFor(profile.shell),
-  });
-
-  if (profile.init?.web) {
-    tick("initializing HTTP bridge...");
-    host.setWebPreview({
-      label: profile.init.web.label,
-      url: APP_PREFIX,
-      status: "starting",
-      message: "Waiting for service ports",
+  let kernel: BrowserKernel | null = null;
+  try {
+    kernel = new BrowserKernel({
+      memfs,
+      maxWorkers: profile.init?.maxWorkers ?? 4,
+      maxMemoryPages: profile.init?.maxMemoryPages,
+      onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
+      onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
+      onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
+      onListenTcp: (_pid, _fd, port) => {
+        if (!isCurrent()) return;
+        seenPorts.add(port);
+        tick(`service listening on :${port}`);
+        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+      },
     });
-    const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
-    if (!swBridge) {
+    await kernel.init(kernelBytes);
+    assertCurrent();
+
+    tick("staging shell utilities...");
+    stageShellUtilities(kernel, dashBytes, bashBytes, lazyBinaries);
+    stageSoftwareBinaries(kernel, softwareBinaries);
+    await registerFramebufferTestProgram(kernel);
+    assertCurrent();
+    host.attachKernel(kernel);
+    const shellEnv = profile.software?.shellEnv ?? shellEnvFor(profile.shell);
+    host.setDefaultShell({
+      programBytes: bashBytes,
+      argv: ["bash", "-l", "-i"],
+      env: shellEnv,
+      cwd: shellCwdFor(profile.shell),
+    });
+
+    if (profile.init?.web) {
+      tick("initializing HTTP bridge...");
       host.setWebPreview({
         label: profile.init.web.label,
         url: APP_PREFIX,
-        status: "error",
-        message: "Service workers unavailable",
+        status: "starting",
+        message: "Waiting for service ports",
       });
-    } else {
-      kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
-      bridgeSent = true;
-      setupBridgeRestoreListener(kernel, HTTP_PORT, tick);
+      const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
+      assertCurrent();
+      if (!swBridge) {
+        host.setWebPreview({
+          label: profile.init.web.label,
+          url: APP_PREFIX,
+          status: "error",
+          message: "Service workers unavailable",
+        });
+      } else {
+        kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
+        bridgeSent = true;
+        setupBridgeRestoreListener(kernel, HTTP_PORT, tick);
+      }
     }
-  }
 
-  if (profile.init) {
-    const initBytes = readVfsFile(memfs, profile.init.argv[0]);
-    tick(`spawning ${profile.init.argv[0]}...`);
-    void kernel.spawn(initBytes, profile.init.argv, {
-      env: profile.init.env,
-      cwd: profile.init.cwd ?? "/",
-    }).then(
-      (code) => tick(`${profile.init?.argv[0] ?? "init"} exited with code ${code}`),
-      (err) => tick(`init failed: ${err instanceof Error ? err.message : String(err)}`),
-    );
-  }
+    if (profile.init) {
+      const initBytes = readVfsFile(memfs, profile.init.argv[0]);
+      tick(`spawning ${profile.init.argv[0]}...`);
+      void kernel.spawn(initBytes, profile.init.argv, {
+        env: profile.init.env,
+        cwd: profile.init.cwd ?? "/",
+      }).then(
+        (code) => tick(`${profile.init?.argv[0] ?? "init"} exited with code ${code}`),
+        (err) => tick(`init failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }
 
-  if (seq >= 0) {
     host.setStatus("running");
-  }
-  maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
 
-  if (profile.framebufferTest) {
-    void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
-  } else if (presentation?.autoCommand) {
-    tick("starting configured command from bash...");
-    void host.runShellCommand(presentation.autoCommand).catch((err) => {
-      tick(`configured command failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  } else if (profile.autoCommand) {
-    tick(`running ${profile.autoCommand}...`);
-    void host.runShellCommand(profile.autoCommand).catch((err) => {
-      tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }
+    if (profile.framebufferTest) {
+      void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
+    } else if (presentation?.autoCommand) {
+      tick("starting configured command from bash...");
+      void host.runShellCommand(presentation.autoCommand).catch((err) => {
+        tick(`configured command failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    } else if (profile.autoCommand) {
+      tick(`running ${profile.autoCommand}...`);
+      void host.runShellCommand(profile.autoCommand).catch((err) => {
+        tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
 
-  tick("ready");
-  return kernel;
+    tick("ready");
+    return kernel;
+  } catch (err) {
+    if (kernel && !isCurrent()) {
+      await kernel.destroy().catch(() => {});
+    }
+    throw err;
+  }
 }
 
 function stageShellUtilities(
@@ -632,10 +736,9 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
     profile.software.vfsArchiveUrl,
     profile.software.vfsArtifactPath,
   );
-  return vfsImage.buffer.slice(
-    vfsImage.byteOffset,
-    vfsImage.byteOffset + vfsImage.byteLength,
-  );
+  const copy = new Uint8Array(vfsImage.byteLength);
+  copy.set(vfsImage);
+  return copy.buffer;
 }
 
 async function loadSoftwareBinaries(
@@ -966,13 +1069,16 @@ function liveGalleryItems(): GalleryItem[] {
   }));
 }
 
-async function loadLiveGalleryItems(): Promise<GalleryItem[]> {
-  const localItems = liveGalleryItems();
+async function refreshSoftwareGallery(
+  host: LiveKernelHost,
+  localItems: GalleryItem[],
+): Promise<void> {
   try {
-    return [...localItems, ...await loadKandeloSoftwareGalleryItems()];
+    const softwareItems = await loadKandeloSoftwareGalleryItems();
+    host.setGalleryItems([...localItems, ...softwareItems]);
   } catch (err) {
     console.warn("Could not load kandelo-software gallery entries:", err);
-    return localItems;
+    host.setGalleryItems(localItems);
   }
 }
 

@@ -3,7 +3,7 @@
 // Click a card → host.applyBootDescriptor(descriptorFromPreset(item)).
 
 import * as React from "react";
-import { useKernelHost } from "../kernel-host/react";
+import { useGalleryItems } from "../kernel-host/react";
 import { classifyTier } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
   GalleryItem,
@@ -16,28 +16,8 @@ export interface GalleryProps {
 }
 
 export const Gallery: React.FC<GalleryProps> = ({ onLaunch, onShare }) => {
-  const host = useKernelHost();
   const [q, setQ] = React.useState("");
-  const [items, setItems] = React.useState<GalleryItem[]>([]);
-  const [loading, setLoading] = React.useState(false);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    void host.galleryQuery({ tab: "presets" }).then(
-      (result) => {
-        if (cancelled) return;
-        setItems(result);
-        setLoading(false);
-      },
-      () => {
-        if (cancelled) return;
-        setItems([]);
-        setLoading(false);
-      },
-    );
-    return () => { cancelled = true; };
-  }, [host]);
+  const { items, loading } = useGalleryItems("presets");
 
   const filtered = q
     ? items.filter((i) => (i.title + " " + i.summary).toLowerCase().includes(q.toLowerCase()))

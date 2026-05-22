@@ -9,8 +9,9 @@
 import * as React from "react";
 import type {
   KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState, DemoPresentation,
-  SurfaceAvailability,
+  SurfaceAvailability, GalleryItem, GalleryTab,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
 
@@ -92,4 +93,50 @@ export function useSurfaceAvailability(): SurfaceAvailability {
     return host.subscribeSurfaceAvailability(setState);
   }, [host]);
   return state;
+}
+
+export function useDemoGuide(): DemoGuideConfig | null {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<DemoGuideConfig | null>(() => host.getDemoGuide());
+  React.useEffect(() => {
+    setState(host.getDemoGuide());
+    return host.subscribeDemoGuide(setState);
+  }, [host]);
+  return state;
+}
+
+export function useGalleryItems(tab: GalleryTab = "presets"): {
+  items: GalleryItem[];
+  loading: boolean;
+} {
+  const host = useKernelHost();
+  const [items, setItems] = React.useState<GalleryItem[]>([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      setLoading(true);
+      void host.galleryQuery({ tab }).then(
+        (result) => {
+          if (cancelled) return;
+          setItems(result);
+          setLoading(false);
+        },
+        () => {
+          if (cancelled) return;
+          setItems([]);
+          setLoading(false);
+        },
+      );
+    };
+    load();
+    const off = host.subscribeGallery(load);
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [host, tab]);
+
+  return { items, loading };
 }

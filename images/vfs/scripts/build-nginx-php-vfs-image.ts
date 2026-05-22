@@ -24,6 +24,7 @@ import {
   webPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
+import { nginxPhpGuide } from "./kandelo-demo-guides";
 
 const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php.vfs.zst");
 const PHP_FPM_WORKERS = 6;
@@ -271,7 +272,10 @@ async function main() {
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
-      "nginx-php": { presentation: webPresentation() },
+      "nginx-php": {
+        presentation: webPresentation(),
+        guide: nginxPhpGuide(),
+      },
     },
   });
 

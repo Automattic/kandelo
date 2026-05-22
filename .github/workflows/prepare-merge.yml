@@ -51,6 +51,8 @@ jobs:
     permissions:
       contents: read
     outputs:
+      kernel: ${{ steps.scope.outputs.kernel }}
+      docs_only: ${{ steps.scope.outputs.docs_only }}
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
     steps:
@@ -470,7 +472,9 @@ jobs:
 
   toolchain-cache:
     needs: [gate, change-scope]
-    if: needs.change-scope.outputs.package_staging_required == 'true'
+    if: |
+      needs.change-scope.outputs.package_staging_required == 'true' ||
+      needs.change-scope.outputs.kernel == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -886,26 +890,56 @@ jobs:
             || true
 
   test-gate:
-    needs: [preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
+    needs: [change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
     if: |
       !cancelled() &&
-      needs.preflight.result == 'success' &&
       needs.toolchain-cache.result == 'success' &&
-      (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
-      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+      (
+        (
+          needs.change-scope.outputs.package_staging_required == 'true' &&
+          needs.preflight.result == 'success' &&
+          (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
+          (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+          (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+        ) ||
+        (
+          needs.change-scope.outputs.package_staging_required == 'false' &&
+          needs.change-scope.outputs.kernel == 'true'
+        )
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      merge_base_sha: ${{ steps.merge_ref.outputs.merge_base_sha }}
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # Keep the merge commit's parents available for the package
-          # test helper's base-drift guard.
+          # Keep the synthetic pull-request merge commit's two parents
+          # available. With the default depth=1 Git marks HEAD shallow,
+          # so `git show --format=%P HEAD` reports no parents.
           ref: ${{ github.ref }}
           fetch-depth: 2
+
+      - name: Capture PR merge base
+        id: merge_ref
+        run: |
+          set -euo pipefail
+          parents=$(git show --no-patch --format=%P HEAD)
+          MERGE_BASE_SHA=$(printf "%s\n" "$parents" | awk "{print \$1}")
+          MERGE_HEAD_SHA=$(printf "%s\n" "$parents" | awk "{print \$2}")
+          if [ -z "$MERGE_BASE_SHA" ] || [ -z "$MERGE_HEAD_SHA" ]; then
+            echo "::error::prepare-merge expected HEAD to be the pull_request merge commit, got parents: $parents"
+            exit 1
+          fi
+          if [ "$MERGE_HEAD_SHA" != "${{ github.event.pull_request.head.sha }}" ]; then
+            echo "::error::pull_request merge ref second parent $MERGE_HEAD_SHA does not match PR head ${{ github.event.pull_request.head.sha }}"
+            exit 1
+          fi
+          echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Fetch submodules (musl, libc-test, os-test)
         uses: ./.github/actions/fetch-submodules
@@ -929,7 +963,7 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Download matrix artifacts
-        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
+        if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
         uses: actions/download-artifact@v4
         with:
           pattern: '*-wasm*'
@@ -943,20 +977,26 @@ jobs:
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
-      - name: Materialize binaries (per-package package.pr.toml overlay)
+      - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
-        # Walk downloaded matrix artifacts (lib + prog) via the shared
-        # script, then resolve every package: matrix-built via
-        # overlay (file://), durable release via package.toml's
-        # https://. See staging-build.yml's mirror step.
+        # Package-staging runs resolve against the durable release plus
+        # local file:// overlays for newly built/promoted archives. Kernel-only
+        # runs skip overlays and resolve every package from the existing
+        # durable ABI release; the fresh kernel built below shadows kernel.wasm
+        # via local-binaries/.
         run: |
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
+          set -euo pipefail
+          if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
+            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
-            bash scripts/fetch-binaries.sh --allow-stale
-          '
+          else
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
+          fi
+          echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
 
       - name: Build kernel + test programs + install host deps
         # `npx playwright install chromium` mirrors staging-build.yml: the
@@ -980,6 +1020,7 @@ jobs:
           '
 
       - name: Run cargo tests (kernel unit tests)
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -987,6 +1028,7 @@ jobs:
           '
 
       - name: Run fork-instrument tests
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -1000,14 +1042,17 @@ jobs:
           '
 
       - name: Run libc-test conformance suite
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
@@ -1042,7 +1087,8 @@ jobs:
     if: |
       !cancelled() &&
       needs.gate.result == 'success' &&
-      needs.change-scope.outputs.package_staging_required == 'false'
+      needs.change-scope.outputs.package_staging_required == 'false' &&
+      needs.change-scope.outputs.kernel == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
@@ -1092,7 +1138,11 @@ jobs:
       - name: Comment on original PR
         continue-on-error: true
         run: |
-          BODY="prepare-merge: no package-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
+          if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
+            BODY="prepare-merge: no package-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable auto-merge for this workflow-changing PR."
+          else
+            BODY="prepare-merge: no package-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
+          fi
           set +e
           for attempt in 1 2 3; do
             if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then
@@ -1110,6 +1160,115 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the no-op merge-gate-post step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
 
   # ---------------------------------------------------------------------
+  # merge-gate-post-kernel-only — package staging was not required, but
+  # kernel/runtime tests were.
+  #
+  # Non-ABI kernel/runtime PRs should validate the PR merge ref without
+  # building or publishing package archives. Once test-gate passes against
+  # durable binaries plus the freshly built kernel, post the normal
+  # merge-gate context and enable auto-merge.
+  # ---------------------------------------------------------------------
+  merge-gate-post-kernel-only:
+    needs: [gate, change-scope, test-gate]
+    if: |
+      !cancelled() &&
+      needs.gate.result == 'success' &&
+      needs.test-gate.result == 'success' &&
+      needs.change-scope.outputs.package_staging_required == 'false' &&
+      needs.change-scope.outputs.kernel == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
+      pull-requests: write     # auto-merge + comment
+      statuses: write          # post merge-gate=success
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Verify prepared base is still current
+        run: |
+          set -euo pipefail
+          PREPARED_BASE="${{ needs.test-gate.outputs.merge_base_sha }}"
+          if [ -z "$PREPARED_BASE" ]; then
+            echo "::error::test-gate did not report merge_base_sha"
+            exit 1
+          fi
+
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          git init --quiet "$RUNNER_TEMP/base-drift"
+          cd "$RUNNER_TEMP/base-drift"
+          git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
+
+          if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
+            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`$BASE_REF\` advanced while prepare-merge was running (prepared \`$PREPARED_BASE\`, current \`$CURRENT_BASE\`). Re-apply \`ready-to-ship\` so kernel/runtime tests run against the latest base."
+            exit 1
+          fi
+
+      - name: Post merge-gate=success on original PR HEAD
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/$PR_HEAD_SHA" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description="Kernel test-gate passed; package staging and publishing skipped."
+
+      - name: Enable squash auto-merge on original PR
+        id: automerge
+        run: |
+          set +e
+          output=$(gh pr merge "$PR_NUMBER" \
+            --repo ${{ github.repository }} \
+            --auto --squash 2>&1)
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
+            printf '%s\n' "$output"
+            echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "$output" >&2
+          if printf '%s\n' "$output" | grep -q 'without `workflows` permission'; then
+            echo "manual_merge_required=true" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge passed and posted \`merge-gate=success\`, but GitHub Actions cannot enable auto-merge because this PR changes workflow files. A user with workflow permission must merge this PR manually."
+            exit 0
+          fi
+
+          echo "manual_merge_required=false" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Comment on original PR
+        continue-on-error: true
+        run: |
+          if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
+            BODY="prepare-merge: kernel/runtime tests passed against the PR merge ref; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable auto-merge for this workflow-changing PR."
+          else
+            BODY="prepare-merge: kernel/runtime tests passed against the PR merge ref; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
+          fi
+          set +e
+          for attempt in 1 2 3; do
+            if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then
+              exit 0
+            fi
+            echo "::warning::gh pr comment failed (attempt $attempt/3); retrying in 10s"
+            sleep 10
+          done
+          echo "::warning::gh pr comment failed after 3 attempts; merge-gate was posted but the explanatory comment was not"
+
+      - name: Drop label + comment on failure
+        if: failure()
+        run: |
+          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the kernel-only merge-gate-post step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
+
+  # ---------------------------------------------------------------------
   # merge-gate-post — single merge-gate poster + auto-merge enabler.
   #
   # Post binary-resolution-via-index-ledger: there's no bot PR (no
@@ -1125,8 +1284,12 @@ jobs:
   # against what consumers will fetch from binaries-abi-v<N>.
   # ---------------------------------------------------------------------
   merge-gate-post:
-    needs: [gate, preflight, test-gate]
-    if: ${{ !cancelled() && needs.test-gate.result == 'success' }}
+    needs: [gate, change-scope, preflight, test-gate]
+    if: |
+      !cancelled() &&
+      needs.change-scope.outputs.package_staging_required == 'true' &&
+      needs.preflight.result == 'success' &&
+      needs.test-gate.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
@@ -1206,7 +1369,11 @@ jobs:
         # blast radius; the inner retry recovers most transients.
         continue-on-error: true
         run: |
-          BODY="prepare-merge: test-gate passed against the PR merge ref and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
+          if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
+            BODY="prepare-merge: test-gate passed against the PR merge ref and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable auto-merge for this workflow-changing PR."
+          else
+            BODY="prepare-merge: test-gate passed against the PR merge ref and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
+          fi
           set +e
           for attempt in 1 2 3; do
             if gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "$BODY"; then

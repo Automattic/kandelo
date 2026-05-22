@@ -24,6 +24,7 @@ import {
   webPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
+import { nginxGuide } from "./kandelo-demo-guides";
 
 const REPO_ROOT = findRepoRoot();
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "nginx.vfs.zst");
@@ -134,7 +135,10 @@ async function main() {
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
-      nginx: { presentation: webPresentation() },
+      nginx: {
+        presentation: webPresentation(),
+        guide: nginxGuide(),
+      },
     },
   });
 
