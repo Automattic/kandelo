@@ -23,7 +23,7 @@ const qs = new URLSearchParams(location.search);
 const useMock = qs.get("mock") === "1";
 const useIdle = qs.get("idle") === "1";
 const demo = qs.get("demo");
-const fbDemo = qs.get("fb"); // "test" | "doom" | null
+const fbDemo = qs.get("fb"); // "test" | null
 
 const mount = (host: KernelHost) => {
   ReactDOM.createRoot(container).render(
@@ -59,7 +59,7 @@ if (useMock) {
       const { createLiveHost } = await import("./kernel-host/live-setup");
       const host = await createLiveHost({
         demo,
-        fb: fbDemo === "test" || fbDemo === "doom" ? fbDemo : "none",
+        fb: fbDemo === "test" ? "test" : "none",
       });
       mount(host);
     } catch (err) {

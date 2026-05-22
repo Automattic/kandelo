@@ -43,11 +43,38 @@ jobs:
   # ---------------------------------------------------------------------
 
 
+  change-scope:
+    # Fork-PR support is deferred (design doc §9.1). Keep the same
+    # same-repo security boundary as the package build jobs.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      kernel: ${{ steps.scope.outputs.kernel }}
+      docs_only: ${{ steps.scope.outputs.docs_only }}
+      package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
+      package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Detect package staging scope
+        id: scope
+        uses: ./.github/actions/detect-change-scope
+        with:
+          base-ref: origin/${{ github.event.pull_request.base.ref }}
+
   preflight:
     # Fork-PR support is deferred (design doc §9.1). The gate below
     # keeps fork PRs from hitting a no-token `gh release view` failure
     # inside the matrix-compute step.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: [change-scope]
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.change-scope.outputs.package_staging_required == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read           # gh release view (target tag probe)
@@ -284,10 +311,36 @@ jobs:
             -f description="Tests green. Apply the ready-to-ship label to build the durable release and merge." \
             -f target_url="https://github.com/${{ github.repository }}/blob/main/docs/plans/2026-04-29-pr-package-builds-design.md"
 
+  package-staging-not-required:
+    needs: [change-scope]
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.change-scope.outputs.package_staging_required == 'false' &&
+      needs.change-scope.outputs.kernel == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Post merge-gate success for no-op package staging
+        run: |
+          gh api -X POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description="No package-affecting changes; package staging skipped." \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
   toolchain-cache:
     # Same fork-PR gate as preflight + the legacy `build` job. Fork PRs
     # see this job as Skipped, consistent with current behavior.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: [change-scope]
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (needs.change-scope.outputs.package_staging_required == 'true' ||
+       needs.change-scope.outputs.kernel == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -709,11 +762,10 @@ jobs:
             || true
 
   test-gate:
-    # Runs the 5 test suites against the union of (matrix-built archives
-    # + durable release fallback). This is the test-before-publish
-    # safety property the legacy `build` job preserves today, hoisted up
-    # to the matrix level: a green test-gate is what blesses the
-    # subsequent publish (Task 6) of the matrix archives.
+    # Runs vitest against the union of (matrix-built archives + durable
+    # release fallback). Kernel/runtime changes also run the slow native
+    # and conformance suites; package-only changes skip those suites but
+    # still validate package behavior through vitest.
     #
     # Run even when some matrix entries failed. Per the design doc,
     # partial-matrix-failure is a real scenario the consumer side
@@ -726,18 +778,30 @@ jobs:
     # legitimately hit all package archives in pr-<N>-staging (because
     # the previous run published them) while still needing to validate
     # the gate itself, especially after workflow/test-gate fixes.
-    needs: [preflight, toolchain-cache, lib-matrix-build, matrix-build]
+    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build]
     if: |
       !cancelled() &&
-      needs.preflight.result == 'success' &&
       needs.toolchain-cache.result == 'success' &&
-      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+      (
+        (
+          needs.change-scope.outputs.package_staging_required == 'true' &&
+          needs.preflight.result == 'success' &&
+          (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+          (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+        ) ||
+        (
+          needs.change-scope.outputs.package_staging_required == 'false' &&
+          needs.change-scope.outputs.kernel == 'true'
+        )
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      statuses: write
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -773,7 +837,7 @@ jobs:
         # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
         # containing one .tar.zst. The pattern excludes the
         # toolchain-sysroots helper artifact uploaded by toolchain-cache.
-        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
+        if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
         uses: actions/download-artifact@v4
         with:
           pattern: '*-wasm*'
@@ -791,22 +855,26 @@ jobs:
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
-      - name: Materialize binaries (per-package package.pr.toml overlay)
+      - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
-        # Walk the downloaded matrix artifacts (lib + prog) and write
-        # packages/registry/<pkg>/package.pr.toml file:// pointers via the
-        # shared scripts/materialize-pr-overlays.sh. Then run
-        # fetch-binaries to populate binaries/ symlinks for every
-        # package (matrix-built via overlay; durable release via
-        # package.toml's https:// for anything skipped by D3).
+        # Package-staging runs resolve against the PR staging release plus
+        # local file:// overlays for matrix-built archives. Kernel-only runs
+        # skip overlays entirely and resolve every package from the durable
+        # ABI release; the fresh kernel built below shadows kernel.wasm via
+        # local-binaries/.
         run: |
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
+          set -euo pipefail
+          if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
+            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
-            bash scripts/fetch-binaries.sh --allow-stale
-          '
+          else
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
+          fi
+          echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
 
       - name: Build kernel + test programs + install host deps
         # Test prereqs not shipped in the release archives: kernel.wasm
@@ -833,6 +901,7 @@ jobs:
           '
 
       - name: Run cargo tests (kernel unit tests)
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -840,6 +909,7 @@ jobs:
           '
 
       - name: Run fork-instrument tests
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -853,16 +923,32 @@ jobs:
           '
 
       - name: Run libc-test conformance suite
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
+        if: needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
+
+      - name: Post merge-gate success for kernel-only staging
+        if: |
+          needs.change-scope.outputs.package_staging_required == 'false' &&
+          needs.change-scope.outputs.kernel == 'true'
+        run: |
+          gh api -X POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description="Kernel tests passed; package staging skipped." \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # publish / generate-index — REMOVED.
   #

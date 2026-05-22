@@ -20,6 +20,10 @@ import {
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
+import {
+  webPresentation,
+  writeKandeloDemoConfig,
+} from "./kandelo-demo-config";
 
 const REPO_ROOT = findRepoRoot();
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "nginx.vfs.zst");
@@ -127,6 +131,12 @@ async function main() {
       restartDelay: 2,
     },
   ]);
+  writeKandeloDemoConfig(fs, {
+    version: 1,
+    profiles: {
+      nginx: { presentation: webPresentation() },
+    },
+  });
 
   await saveImage(fs, OUT_FILE);
 }
