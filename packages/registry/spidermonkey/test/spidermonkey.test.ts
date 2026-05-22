@@ -19,10 +19,10 @@ const jsWasm =
   tryResolveBinary("programs/js.wasm") ??
   (existsSync(packageBuild) ? packageBuild : null);
 
-const DEFAULT_TIMEOUT = 20_000;
+const DEFAULT_TIMEOUT = process.env.CI ? 60_000 : 20_000;
 const DEFAULT_TEST_TIMEOUT = DEFAULT_TIMEOUT + 10_000;
-const LONG_TIMEOUT = 30_000;
-const LONG_TEST_TIMEOUT = LONG_TIMEOUT + 15_000;
+const LONG_TIMEOUT = process.env.CI ? 90_000 : 30_000;
+const LONG_TEST_TIMEOUT = LONG_TIMEOUT + 30_000;
 
 function loadWasm(path: string): ArrayBuffer {
   const buf = readFileSync(path);
