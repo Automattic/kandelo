@@ -24,6 +24,7 @@ import type {
   DemoPresentation, ProcessEvent, ProcessInfo, PtyHandle, Snapshot, SnapshotOptions,
   SurfaceAvailability, SyscallEvent, SyscallFilter, VfsDirent, WebPreviewState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { takeSnapshot } from "../../../../../web-libs/kandelo-session/src/snapshot";
 import {
   BOOT_LOG, KSTATE, MEMMAP, MOUNTS, PROCS, SHELL_SESSION, SYSCALLS,
@@ -66,6 +67,7 @@ export class MockKernelHost implements KernelHost {
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
+  private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
   private ptySessions = new Map<string, MockPtySession>();
   private bootSpeed: number;
   private bootStarted = false;
@@ -81,6 +83,27 @@ export class MockKernelHost implements KernelHost {
     if (this._status === "booting" || this._status === "running") {
       this.startBoot();
     }
+  }
+
+  private ensurePtySession(path: string): MockPtySession {
+    let session = this.ptySessions.get(path);
+    if (!session) {
+      session = {
+        listeners: new ListenerSet<Uint8Array>(),
+        history: [],
+        started: false,
+      };
+      this.ptySessions.set(path, session);
+    }
+    return session;
+  }
+
+  private emitPty(path: string, text: string): void {
+    const session = this.ensurePtySession(path);
+    const bytes = new TextEncoder().encode(text);
+    session.history.push(bytes);
+    if (session.history.length > 2048) session.history.shift();
+    session.listeners.emit(bytes);
   }
 
   // ── status ───────────────────────────────────────────────────────────────
@@ -105,6 +128,7 @@ export class MockKernelHost implements KernelHost {
     this.descriptor = structuredClone(desc);
     this.presentationListeners.emit(this.getPresentation());
     this.surfaceListeners.emit(this.getSurfaceAvailability());
+    this.demoGuideListeners.emit(this.getDemoGuide());
     this.dmesgRing = [];
     this.dmesgListeners.emit({ t: 0, level: "info", facility: "kernel", msg: "reboot" });
     this.bootStarted = false;
@@ -165,23 +189,8 @@ export class MockKernelHost implements KernelHost {
   ): Promise<PtyHandle> {
     await delay(20);
     const sessionKey = path || "/dev/pts/0";
-    let session = this.ptySessions.get(sessionKey);
-    if (!session) {
-      session = {
-        listeners: new ListenerSet<Uint8Array>(),
-        history: [],
-        started: false,
-      };
-      this.ptySessions.set(sessionKey, session);
-    }
-
-    const enc = new TextEncoder();
-    const send = (s: string) => {
-      const bytes = enc.encode(s);
-      session.history.push(bytes);
-      if (session.history.length > 2048) session.history.shift();
-      session.listeners.emit(bytes);
-    };
+    const session = this.ensurePtySession(sessionKey);
+    const send = (s: string) => this.emitPty(sessionKey, s);
 
     let idx = 0;
     const drive = (): void => {
@@ -241,6 +250,25 @@ export class MockKernelHost implements KernelHost {
       resize: () => { /* no-op */ },
       close: () => { /* listeners gc with the closure */ },
     };
+  }
+
+  async runShellCommand(command: string): Promise<void> {
+    const path = "/dev/pts/0";
+    const normalized = command.endsWith("\n") ? command : `${command}\n`;
+    this.emitPty(path, normalized.replace(/\n/g, "\r\n"));
+    this.dmesgRing.push({
+      t: performance.now(),
+      level: "info",
+      facility: "demo",
+      msg: `mock action: ${command.split("\n")[0].slice(0, 96)}`,
+    });
+    this.dmesgListeners.emit(this.dmesgRing[this.dmesgRing.length - 1]);
+    await delay(100);
+    this.emitPty(
+      path,
+      `(mock) demo action delivered through KernelHost.runShellCommand\r\n` +
+      "\x1b[38;5;208muser@kandelo\x1b[0m:\x1b[34m~\x1b[0m$ ",
+    );
   }
 
   // ── VFS ──────────────────────────────────────────────────────────────────
@@ -354,6 +382,14 @@ export class MockKernelHost implements KernelHost {
 
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void {
     return this.surfaceListeners.add(cb);
+  }
+
+  getDemoGuide(): DemoGuideConfig | null {
+    return null;
+  }
+
+  subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {
+    return this.demoGuideListeners.add(cb);
   }
 
   // ── Snapshot ─────────────────────────────────────────────────────────────

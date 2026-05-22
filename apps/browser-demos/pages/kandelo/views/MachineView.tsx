@@ -6,10 +6,11 @@
 // demos. Terminal and internals stay available as drawers.
 
 import * as React from "react";
-import { usePresentation, useStatus, useSurfaceAvailability } from "../kernel-host/react";
+import { useDemoGuide, usePresentation, useStatus, useSurfaceAvailability } from "../kernel-host/react";
 import { Inspector } from "../panes/Inspector";
 import { Display } from "../panes/Display";
 import { Shell, type ShellProps, type ShellTerminal } from "../panes/Shell";
+import { DemoGuide } from "../panes/DemoGuide";
 import type { PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface MachineViewProps {
@@ -34,6 +35,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
   const status = useStatus();
   const presentation = usePresentation();
   const availability = useSurfaceAvailability();
+  const demoGuide = useDemoGuide();
   const rootRef = React.useRef<HTMLDivElement>(null);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
@@ -97,6 +99,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
     ? resolvePrimary(presentation.runningPrimary, availability, presentation.bootPrimary)
     : presentation.runningPrimary[0] ?? "terminal";
   const canOpenDemo = status === "running" && isSurfaceAvailable(demoSurface, availability);
+  const showDemoGuide = demoGuide !== null;
 
   const beginDrawerResize = (
     event: React.PointerEvent<HTMLDivElement>,
@@ -153,8 +156,17 @@ export const MachineView: React.FC<MachineViewProps> = ({
         <div className="kmachine-current">{primaryLabel}</div>
       </div>
 
-      <div className="kmachine-primary">
-        {renderSurface(activePrimary, internalsTab, onInternalsTab, shellProps)}
+      <div className={`kmachine-workspace${showDemoGuide ? "" : " no-demo-guide"}`}>
+        <div className="kmachine-primary">
+          {renderSurface(activePrimary, internalsTab, onInternalsTab, shellProps)}
+        </div>
+        {showDemoGuide && (
+          <DemoGuide
+            onOpenTerminal={() => {
+              setTerminalOpen(true);
+            }}
+          />
+        )}
       </div>
 
       {activePrimary !== "terminal" && (
