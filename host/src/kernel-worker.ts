@@ -674,6 +674,10 @@ export class CentralizedKernelWorker {
     /** Date.now() deadline for finite-timeout poll/ppoll retries, or -1. */
     deadline?: number;
   }>();
+  /** Absolute finite poll/ppoll deadlines carried across EAGAIN retries. */
+  private pollRetryDeadlines = new Map<string, number>();
+  /** Absolute finite select/pselect6 deadlines carried across EAGAIN retries. */
+  private selectRetryDeadlines = new Map<string, number>();
   /** Pending pselect6/select retries — used for signal-driven wakeup and timeout tracking */
   private pendingSelectRetries = new Map<number, {
     timer: any;  // setTimeout or setImmediate handle
@@ -722,13 +726,13 @@ export class CentralizedKernelWorker {
   /** Processes with finite stdin (setStdinData). Reads return EOF when buffer exhausted.
    *  Processes NOT in this set get EAGAIN (blocking) when no stdin data is available. */
   private stdinFinite = new Set<number>();
-  /** Active TCP connections per process for piggyback flushing */
+  /** Active TCP connections per listener process for piggyback flushing */
   private tcpConnections = new Map<number, Array<{
     sendPipeIdx: number;
     scratchOffset: number;
     clientSocket: import("net").Socket;
     recvPipeIdx: number;
-    schedulePump: () => void;
+    schedulePump: (delayMs?: number) => void;
   }>>();
   /** Per-process MAP_SHARED file-backed mappings: pid → Map<addr, info> */
   private sharedMappings = new Map<number, Map<number, {
@@ -2263,6 +2267,9 @@ export class CentralizedKernelWorker {
       this.handleBlockingRetry(channel, syscallNr, origArgs);
       return;
     }
+    if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
+      this.pollRetryDeadlines.delete(this.pollRetryDeadlineKey(channel, syscallNr));
+    }
 
     // 2. Sleep syscalls: kernel returned success immediately, but we need
     //    to delay the response to simulate the sleep duration.
@@ -2437,9 +2444,10 @@ export class CentralizedKernelWorker {
     // produce data in the PTY output_buf that needs to reach the host (xterm.js).
     this.drainAllPtyOutputs();
 
-    // Flush TCP send pipes before notifying the process — gets PHP's
-    // response data to the browser without waiting for the next pump cycle
-    this.flushTcpSendPipes(channel.pid);
+    // Flush TCP send pipes before notifying the process. Connections are
+    // keyed by the listener pid, but forked children can write responses to
+    // inherited sockets, so flush all active bridge connections here.
+    this.flushTcpSendPipes();
 
     // Set status to COMPLETE and notify process
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
@@ -3195,28 +3203,31 @@ export class CentralizedKernelWorker {
     console.error('=== End Profile ===\n');
   }
 
-  private flushTcpSendPipes(pid: number): void {
-    const conns = this.tcpConnections.get(pid);
-    if (!conns || conns.length === 0) return;
-
+  private flushTcpSendPipes(pid?: number): void {
     const pipeRead = this.kernelInstance!.exports.kernel_pipe_read as
       (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
     const mem = this.getKernelMem();
+    const groups = pid === undefined
+      ? Array.from(this.tcpConnections.values())
+      : [this.tcpConnections.get(pid) ?? []];
 
     // Injected-connection pipes live in the global pipe table; pid=0
     // tells kernel_pipe_read to use it directly. See kernel_inject_connection.
-    for (const conn of conns) {
-      // Drain all available data from the send pipe (not just one chunk)
-      for (;;) {
-        const readN = pipeRead(0, conn.sendPipeIdx, BigInt(conn.scratchOffset), 65536);
-        if (readN <= 0) break;
-        const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
-        if (!conn.clientSocket.destroyed) {
-          conn.clientSocket.write(outData);
+    for (const conns of groups) {
+      for (const conn of conns) {
+        // Drain all available data from the send pipe (not just one chunk)
+        for (;;) {
+          const readN = pipeRead(0, conn.sendPipeIdx, BigInt(conn.scratchOffset), 65536);
+          if (readN <= 0) break;
+          const outData = Buffer.from(mem.slice(conn.scratchOffset, conn.scratchOffset + readN));
+          if (!conn.clientSocket.destroyed) {
+            conn.clientSocket.write(outData);
+          }
         }
+        // Schedule a short delayed pump to detect peer close. Data itself is
+        // already flushed above, so this must not become an idle immediate loop.
+        conn.schedulePump(25);
       }
-      // Schedule pump to detect pipe closure (PHP closing the socket)
-      conn.schedulePump();
     }
   }
 
@@ -3283,12 +3294,22 @@ export class CentralizedKernelWorker {
         }
       }
       if (timeoutMs === 0) {
+        this.pollRetryDeadlines.delete(this.pollRetryDeadlineKey(channel, syscallNr));
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
         return;
       }
 
       // Resolve which pipe indices the polled fds map to (for event-driven wakeup)
       const pipeIndices = this.resolvePollPipeIndices(channel.pid, origArgs, syscallNr);
+      const deadlineKey = this.pollRetryDeadlineKey(channel, syscallNr);
+      const deadline = timeoutMs > 0
+        ? this.getFiniteRetryDeadline(this.pollRetryDeadlines, deadlineKey, timeoutMs)
+        : -1;
+      if (deadline > 0 && Date.now() >= deadline) {
+        this.pollRetryDeadlines.delete(deadlineKey);
+        this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+        return;
+      }
 
       // For finite timeout, track the deadline so we return 0 (timeout) when it
       // expires instead of retrying forever. The nfds=0 case (pure sleep) is
@@ -3296,28 +3317,33 @@ export class CentralizedKernelWorker {
       const nfds = origArgs[1]; // poll(fds, nfds, ...) / ppoll(fds, nfds, ...)
       if (timeoutMs > 0 && nfds === 0) {
         // Pure sleep: no fds to poll, just wait for timeout
+        const remainingMs = Math.max(deadline - Date.now(), 1);
         const timer = setTimeout(() => {
           this.pendingPollRetries.delete(channel.channelOffset);
+          this.pollRetryDeadlines.delete(deadlineKey);
           if (this.processes.has(channel.pid)) {
             this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
           }
-        }, timeoutMs);
+        }, remainingMs);
         this.pendingPollRetries.set(channel.channelOffset, {
           timer,
           channel,
           pipeIndices,
           needsSignalSafeWake,
-          deadline: Date.now() + timeoutMs,
+          deadline,
         });
         return;
       }
 
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       const retryFn = () => {
         this.pendingPollRetries.delete(channel.channelOffset);
-        if (!this.processes.has(channel.pid)) return;
+        if (!this.processes.has(channel.pid)) {
+          this.pollRetryDeadlines.delete(deadlineKey);
+          return;
+        }
         // Check deadline for finite timeout
         if (deadline > 0 && Date.now() >= deadline) {
+          this.pollRetryDeadlines.delete(deadlineKey);
           this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
           return;
         }
@@ -3573,6 +3599,27 @@ export class CentralizedKernelWorker {
     this.handleSyscall(channel);
   }
 
+  private pollRetryDeadlineKey(channel: ChannelInfo, syscallNr: number): string {
+    return `${channel.pid}:${channel.channelOffset}:${syscallNr}`;
+  }
+
+  private selectRetryDeadlineKey(channel: ChannelInfo, syscallNr: number): string {
+    return `${channel.pid}:${syscallNr}`;
+  }
+
+  private getFiniteRetryDeadline(
+    deadlines: Map<string, number>,
+    key: string,
+    timeoutMs: number,
+  ): number {
+    let deadline = deadlines.get(key);
+    if (deadline === undefined) {
+      deadline = Date.now() + timeoutMs;
+      deadlines.set(key, deadline);
+    }
+    return deadline;
+  }
+
   /**
    * Handle sleep syscalls where the kernel returns success immediately
    * but we need to delay the channel response.
@@ -3591,15 +3638,15 @@ export class CentralizedKernelWorker {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
       const sec = kernelView.getUint32(CH_DATA, true);
       const nsec = kernelView.getUint32(CH_DATA + 8, true);
-      delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+      delayMs = sec * 1000 + Math.ceil(nsec / 1_000_000);
     } else if (syscallNr === SYS_USLEEP && retVal >= 0) {
       const usec = origArgs[0] >>> 0;
-      delayMs = Math.max(1, Math.floor(usec / 1000));
+      delayMs = Math.ceil(usec / 1000);
     } else if (syscallNr === SYS_CLOCK_NANOSLEEP && retVal >= 0) {
       const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
       const sec = kernelView.getUint32(CH_DATA, true);
       const nsec = kernelView.getUint32(CH_DATA + 8, true);
-      delayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
+      delayMs = sec * 1000 + Math.ceil(nsec / 1_000_000);
     }
 
     if (delayMs > 0) {
@@ -3759,23 +3806,30 @@ export class CentralizedKernelWorker {
     // already iterates pendingSelectRetries entries).
     if (nfds === 0 && readPtr === 0 && writePtr === 0 && exceptPtr === 0) {
       if (timeoutMs === 0) {
+        this.selectRetryDeadlines.delete(this.selectRetryDeadlineKey(channel, SYS_SELECT));
         this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
         return;
       }
       const finite = timeoutMs > 0;
+      const deadlineKey = this.selectRetryDeadlineKey(channel, SYS_SELECT);
+      const deadline = finite
+        ? this.getFiniteRetryDeadline(this.selectRetryDeadlines, deadlineKey, timeoutMs)
+        : -1;
+      const delayMs = finite ? Math.max(deadline - Date.now(), 1) : -1;
       const timer = finite
         ? setTimeout(() => {
             this.pendingSelectRetries.delete(channel.pid);
+            this.selectRetryDeadlines.delete(deadlineKey);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
             }
-          }, timeoutMs)
+          }, delayMs)
         : (null as any);
       this.pendingSelectRetries.set(channel.pid, {
         timer,
         channel,
         origArgs,
-        deadline: finite ? Date.now() + timeoutMs : -1,
+        deadline,
         needsSignalSafeWake: false,
         syscallNr: SYS_SELECT,
       });
@@ -3852,14 +3906,22 @@ export class CentralizedKernelWorker {
     // EAGAIN retry for blocking select. Mirrors handlePselect6.
     if (retVal === -1 && errVal === EAGAIN) {
       if (timeoutMs === 0) {
+        this.selectRetryDeadlines.delete(this.selectRetryDeadlineKey(channel, SYS_SELECT));
         this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
         return;
       }
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+      const deadlineKey = this.selectRetryDeadlineKey(channel, SYS_SELECT);
+      const deadline = timeoutMs > 0
+        ? this.getFiniteRetryDeadline(this.selectRetryDeadlines, deadlineKey, timeoutMs)
+        : -1;
       const retryFn = () => {
         this.pendingSelectRetries.delete(channel.pid);
-        if (!this.processes.has(channel.pid)) return;
+        if (!this.processes.has(channel.pid)) {
+          this.selectRetryDeadlines.delete(deadlineKey);
+          return;
+        }
         if (deadline > 0 && Date.now() >= deadline) {
+          this.selectRetryDeadlines.delete(deadlineKey);
           this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
           return;
         }
@@ -3875,6 +3937,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    this.selectRetryDeadlines.delete(this.selectRetryDeadlineKey(channel, SYS_SELECT));
     this.completeChannel(channel, SYS_SELECT, origArgs, undefined, retVal, errVal);
   }
 
@@ -3998,11 +4061,15 @@ export class CentralizedKernelWorker {
     // Handle EAGAIN retry for blocking select
     if (retVal === -1 && errVal === EAGAIN) {
       if (timeoutMs === 0) {
+        this.selectRetryDeadlines.delete(this.selectRetryDeadlineKey(channel, SYS_PSELECT6));
         this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
         return;
       }
 
-      const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
+      const deadlineKey = this.selectRetryDeadlineKey(channel, SYS_PSELECT6);
+      const deadline = timeoutMs > 0
+        ? this.getFiniteRetryDeadline(this.selectRetryDeadlines, deadlineKey, timeoutMs)
+        : -1;
       // pselect6 with a non-null sigmask pointer has the same late-signal
       // race as ppoll. See scheduleWakeBlockedRetriesDeferred.
       const needsSignalSafeWake = maskDataPtr !== 0;
@@ -4012,12 +4079,14 @@ export class CentralizedKernelWorker {
       // With infinite timeout: block until signal (wakeAllBlockedRetries).
       if (nfds === 0) {
         if (timeoutMs > 0) {
+          const remainingMs = Math.max(deadline - Date.now(), 1);
           const timer = setTimeout(() => {
             this.pendingSelectRetries.delete(channel.pid);
+            this.selectRetryDeadlines.delete(deadlineKey);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
             }
-          }, timeoutMs);
+          }, remainingMs);
           this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline, needsSignalSafeWake });
         } else {
           // Infinite timeout with nfds=0: wait for signal delivery.
@@ -4030,8 +4099,12 @@ export class CentralizedKernelWorker {
       // For finite timeout with actual fds, track the deadline
       const retryFn = () => {
         this.pendingSelectRetries.delete(channel.pid);
-        if (!this.processes.has(channel.pid)) return;
+        if (!this.processes.has(channel.pid)) {
+          this.selectRetryDeadlines.delete(deadlineKey);
+          return;
+        }
         if (deadline > 0 && Date.now() >= deadline) {
+          this.selectRetryDeadlines.delete(deadlineKey);
           this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
           return;
         }
@@ -4042,6 +4115,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
+    this.selectRetryDeadlines.delete(this.selectRetryDeadlineKey(channel, SYS_PSELECT6));
     this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, retVal, errVal);
   }
 
@@ -7613,14 +7687,10 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      // Always reschedule while connection is alive. After fork(), the child
-      // process writes response data to the same pipe, but flushTcpSendPipes
-      // is keyed by pid and won't find the parent's connections. Without
-      // continuous pumping, response data gets stranded in the pipe.
-      // Use setImmediate for both active and idle — the 2ms idle delay adds
-      // significant latency when fork children write to the send pipe (since
-      // flushTcpSendPipes is keyed by parent pid and won't find child writes).
-      schedulePump();
+      // Keep active transfers responsive, but do not spin an immediate pump
+      // while the connection is idle. Forked children are covered by
+      // completeChannel() flushing all active bridge connections.
+      schedulePump(readN > 0 || inboundQueue.length > 0 || clientEnded ? 0 : 25);
     };
 
     // Incoming TCP data → write directly to recv pipe, queue overflow

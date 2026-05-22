@@ -13,7 +13,7 @@ use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespe
 
 use crate::fd::OpenFileDescRef;
 use crate::lock::FileLock;
-use crate::ofd::FileType;
+use crate::ofd::{FileType, PendingDirEntry};
 use crate::pipe::{DEFAULT_PIPE_CAPACITY, PipeBuffer};
 use crate::process::{HostIO, Process};
 use crate::signal::SignalHandler;
@@ -1824,6 +1824,7 @@ pub fn sys_lseek(
             ofd.dir_host_handle = -1; // will be reopened by next getdents64
             ofd.dir_synth_state = 0;
             ofd.dir_entry_offset = 0;
+            ofd.dir_pending_entry = None;
             ofd.offset = offset;
 
             if offset > 0 {
@@ -1892,6 +1893,7 @@ pub fn sys_lseek(
         if whence == SEEK_SET {
             ofd.dir_synth_state = 0;
             ofd.dir_entry_offset = 0;
+            ofd.dir_pending_entry = None;
             ofd.offset = offset;
             return Ok(offset);
         }
@@ -3709,79 +3711,116 @@ pub fn sys_getdents64(
     }
 
     loop {
-        match host.host_readdir(dir_handle, &mut name_buf)? {
-            Some((d_ino, d_type, name_len)) => {
-                // Skip host "." and ".." entries (we already synthesized them)
-                if (name_len == 1 && name_buf[0] == b'.')
-                    || (name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.')
-                {
-                    continue;
-                }
+        let pending_entry = {
+            let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+            ofd.dir_pending_entry.take()
+        };
 
-                entry_offset += 1;
+        match pending_entry {
+            Some(pending) => {
+                let next_offset = entry_offset + 1;
                 let written = write_dirent64(
                     buf,
                     pos,
-                    d_ino,
-                    entry_offset,
-                    d_type as u8,
-                    &name_buf[..name_len],
+                    pending.ino,
+                    next_offset,
+                    pending.d_type as u8,
+                    &pending.name,
                 );
                 if written == 0 {
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dir_pending_entry = Some(pending);
+                    }
                     if pos == 0 {
                         return Err(Errno::EINVAL);
                     }
                     break;
                 }
+                entry_offset = next_offset;
                 pos += written;
             }
-            None => {
-                // Close the host dir handle
-                let _ = host.host_closedir(dir_handle);
-
-                // Inject synthetic entries for virtual filesystems when listing "/"
-                if path == b"/" {
-                    let virtuals: &[&[u8]] = &[b"proc"];
-                    // synth_state tracks how many virtual entries we've emitted (2 = done with . and ..)
-                    let virt_base = proc
-                        .ofd_table
-                        .get(ofd_idx)
-                        .ok_or(Errno::EBADF)?
-                        .dir_synth_state;
-                    let virt_start = if virt_base > 2 {
-                        (virt_base - 2) as usize
-                    } else {
-                        0
-                    };
-                    for (i, name) in virtuals.iter().enumerate() {
-                        if i < virt_start {
-                            continue;
-                        }
-                        entry_offset += 1;
-                        let written =
-                            write_dirent64(buf, pos, 2, entry_offset, 4 /* DT_DIR */, name);
-                        if written == 0 {
-                            // Save progress — we'll resume from here on next call
-                            if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-                                ofd.dir_entry_offset = entry_offset - 1;
-                                ofd.dir_host_handle = -3; // signal: host exhausted, virtuals pending
-                                ofd.dir_synth_state = 2 + i as u8;
-                            }
-                            if pos == 0 {
-                                return Err(Errno::EINVAL);
-                            }
-                            return Ok(pos);
-                        }
-                        pos += written;
+            None => match host.host_readdir(dir_handle, &mut name_buf)? {
+                Some((d_ino, d_type, name_len)) => {
+                    // Skip host "." and ".." entries (we already synthesized them)
+                    if (name_len == 1 && name_buf[0] == b'.')
+                        || (name_len == 2 && name_buf[0] == b'.' && name_buf[1] == b'.')
+                    {
+                        continue;
                     }
-                }
 
-                // Mark as fully exhausted
-                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-                    ofd.dir_host_handle = -2;
+                    let name = name_buf[..name_len].to_vec();
+                    let next_offset = entry_offset + 1;
+                    let written = write_dirent64(buf, pos, d_ino, next_offset, d_type as u8, &name);
+                    if written == 0 {
+                        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                            ofd.dir_pending_entry = Some(PendingDirEntry {
+                                ino: d_ino,
+                                d_type,
+                                name,
+                            });
+                        }
+                        if pos == 0 {
+                            return Err(Errno::EINVAL);
+                        }
+                        break;
+                    }
+                    entry_offset = next_offset;
+                    pos += written;
                 }
-                break;
-            }
+                None => {
+                    // Close the host dir handle
+                    let _ = host.host_closedir(dir_handle);
+
+                    // Inject synthetic entries for virtual filesystems when listing "/"
+                    if path == b"/" {
+                        let virtuals: &[&[u8]] = &[b"proc"];
+                        // synth_state tracks how many virtual entries we've emitted (2 = done with . and ..)
+                        let virt_base = proc
+                            .ofd_table
+                            .get(ofd_idx)
+                            .ok_or(Errno::EBADF)?
+                            .dir_synth_state;
+                        let virt_start = if virt_base > 2 {
+                            (virt_base - 2) as usize
+                        } else {
+                            0
+                        };
+                        for (i, name) in virtuals.iter().enumerate() {
+                            if i < virt_start {
+                                continue;
+                            }
+                            entry_offset += 1;
+                            let written = write_dirent64(
+                                buf,
+                                pos,
+                                2,
+                                entry_offset,
+                                4, /* DT_DIR */
+                                name,
+                            );
+                            if written == 0 {
+                                // Save progress — we'll resume from here on next call
+                                if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                                    ofd.dir_entry_offset = entry_offset - 1;
+                                    ofd.dir_host_handle = -3; // signal: host exhausted, virtuals pending
+                                    ofd.dir_synth_state = 2 + i as u8;
+                                }
+                                if pos == 0 {
+                                    return Err(Errno::EINVAL);
+                                }
+                                return Ok(pos);
+                            }
+                            pos += written;
+                        }
+                    }
+
+                    // Mark as fully exhausted
+                    if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                        ofd.dir_host_handle = -2;
+                    }
+                    break;
+                }
+            },
         }
     }
 
@@ -16582,6 +16621,51 @@ mod tests {
         // Then end of directory (no host entries)
         let r = sys_readdir(&mut proc, &mut host, dh, &mut dirent_buf, &mut name_buf).unwrap();
         assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn test_getdents64_preserves_entry_that_does_not_fit() {
+        fn dirent_names(buf: &[u8], bytes: usize) -> Vec<Vec<u8>> {
+            let mut names = Vec::new();
+            let mut pos = 0usize;
+            while pos < bytes {
+                let reclen = u16::from_le_bytes([buf[pos + 16], buf[pos + 17]]) as usize;
+                assert!(reclen >= 24);
+                let name_start = pos + 19;
+                let name_end = (name_start..pos + reclen)
+                    .find(|&i| buf[i] == 0)
+                    .unwrap_or(pos + reclen);
+                names.push(buf[name_start..name_end].to_vec());
+                pos += reclen;
+            }
+            names
+        }
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.dir_entry_count = 4; // test.txt, foo.txt, bar.txt, baz.txt
+        let fd = sys_open(&mut proc, &mut host, b"/tmp", O_RDONLY | O_DIRECTORY, 0).unwrap();
+
+        // This fits ".", "..", "test.txt", and "foo.txt" exactly. The next
+        // host entry ("bar.txt") must not be consumed and lost.
+        let mut first_buf = [0u8; 112];
+        let first_n = sys_getdents64(&mut proc, &mut host, fd, &mut first_buf).unwrap();
+        assert_eq!(
+            dirent_names(&first_buf, first_n),
+            vec![
+                b".".to_vec(),
+                b"..".to_vec(),
+                b"test.txt".to_vec(),
+                b"foo.txt".to_vec(),
+            ]
+        );
+
+        let mut second_buf = [0u8; 128];
+        let second_n = sys_getdents64(&mut proc, &mut host, fd, &mut second_buf).unwrap();
+        assert_eq!(
+            dirent_names(&second_buf, second_n),
+            vec![b"bar.txt".to_vec(), b"baz.txt".to_vec()]
+        );
     }
 
     #[test]
