@@ -35,6 +35,10 @@ import {
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { populateShellEnvironment } from "./shell-vfs-build";
+import {
+  webPresentation,
+  writeKandeloDemoConfig,
+} from "./kandelo-demo-config";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -54,6 +58,7 @@ const GRUNT_RUNNER_PATH = "/usr/local/lib/kandelo/grunt-cli-runner.js";
 
 const WP_DEV_DIR = ensureWordPressDevelopClone();
 ensureWordPressNpmDependencies(WP_DEV_DIR);
+ensureWordPressBuiltAssets(WP_DEV_DIR);
 const PHPUNIT_PHAR = ensureDownloadedFile({
   url: PHPUNIT_URL,
   sha256: PHPUNIT_SHA256,
@@ -178,9 +183,29 @@ function ensureWordPressNpmDependencies(dir: string): void {
   });
 }
 
+function ensureWordPressBuiltAssets(dir: string): void {
+  const jqueryPath = join(dir, "src", "wp-includes", "js", "jquery", "jquery.js");
+  const buildDir = join(dir, "src", "wp-includes", "build");
+  if (existsSync(jqueryPath) && existsSync(buildDir)) {
+    return;
+  }
+
+  console.log("==> Building WordPress development assets for the VFS image");
+  execFileSync("npm", ["run", "build:dev"], {
+    cwd: dir,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      npm_config_progress: "false",
+      npm_config_fund: "false",
+      npm_config_audit: "false",
+    },
+  });
+}
+
 function ensureNpmDist(): void {
   if (existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) return;
-  execFileSync("bash", [join(REPO_ROOT, "examples", "libs", "npm", "fetch-npm.sh")], {
+  execFileSync("bash", [join(REPO_ROOT, "packages", "registry", "npm", "fetch-npm.sh")], {
     stdio: "inherit",
   });
 }
@@ -238,8 +263,8 @@ function populateNginxConfig(fs: MemoryFileSystem): void {
 
   const nginxConf = `user root;
 daemon off;
-master_process on;
-worker_processes 2;
+master_process off;
+worker_processes 1;
 error_log stderr info;
 pid /tmp/nginx.pid;
 
@@ -387,6 +412,71 @@ process.env.npm_config_registry ||= "http://proxy.local/";
 process.env.npm_config_include ||= "dev";
 process.env.npm_config_maxsockets ||= "1";
 process.env.npm_config_omit ||= "optional";
+function isPlainInstallCommand(args) {
+  if (args[0] !== "install" && args[0] !== "i") return false;
+  return args.slice(1).every((arg) => arg.startsWith("-"));
+}
+function dependencySnapshotFor(packageJson) {
+  return JSON.stringify({
+    dependencies: packageJson.dependencies || {},
+    devDependencies: packageJson.devDependencies || {},
+  });
+}
+function preinstalledWordPressDependenciesAreCurrent() {
+  const fs = require("fs");
+  const projectRoot = "/work/wordpress-develop";
+  try {
+    if (!fs.existsSync(projectRoot + "/node_modules/.package-lock.json")) return false;
+    const expected = fs.readFileSync(projectRoot + "/package-dependencies.json", "utf8").trim();
+    const packageJson = JSON.parse(fs.readFileSync(projectRoot + "/package.json", "utf8"));
+    return dependencySnapshotFor(packageJson) === expected;
+  } catch {
+    return false;
+  }
+}
+function isBuildScriptCommand(args) {
+  return (args[0] === "run" || args[0] === "run-script") && (args[1] === "build" || args[1] === "build:dev");
+}
+function prebuiltWordPressSourceTreeIsClean() {
+  const childProcess = require("child_process");
+  try {
+    const status = childProcess.execSync(
+      "cd /work/wordpress-develop && git -c core.fileMode=false status --porcelain --untracked-files=no -- src Gruntfile.js package-lock.json webpack.config.js tools",
+      { encoding: "utf8" },
+    );
+    return status.trim() === "";
+  } catch {
+    return false;
+  }
+}
+function prebuiltWordPressAssetsAreCurrent() {
+  const fs = require("fs");
+  const projectRoot = "/work/wordpress-develop";
+  return preinstalledWordPressDependenciesAreCurrent()
+    && prebuiltWordPressSourceTreeIsClean()
+    && fs.existsSync(projectRoot + "/src/wp-includes/js/jquery/jquery.js")
+    && fs.existsSync(projectRoot + "/src/wp-includes/blocks/paragraph/block.json")
+    && fs.existsSync(projectRoot + "/src/wp-admin/css/wp-admin.min.css");
+}
+if (isPlainInstallCommand(process.argv.slice(2)) && preinstalledWordPressDependenciesAreCurrent()) {
+  console.log("WordPress development dependencies are already installed in this VFS image.");
+  console.log("up to date");
+  process.exit(0);
+}
+if (isBuildScriptCommand(process.argv.slice(2)) && prebuiltWordPressAssetsAreCurrent()) {
+  const fs = require("fs");
+  let version = "unknown";
+  try {
+    version = JSON.parse(fs.readFileSync("/work/wordpress-develop/package.json", "utf8")).version || version;
+  } catch {}
+  const script = process.argv[3];
+  console.log("");
+  console.log("> WordPress@" + version + " " + script);
+  console.log("> Kandelo prebuilt WordPress development assets");
+  console.log("");
+  console.log("WordPress development assets are already built in this VFS image.");
+  process.exit(0);
+}
 if ((process.argv[2] === "run" || process.argv[2] === "run-script") && (process.argv[3] === "build" || process.argv[3] === "build:dev")) {
   const fs = require("fs");
   let version = "unknown";
@@ -433,8 +523,250 @@ function populatePhpUnit(fs: MemoryFileSystem): void {
 
   const wrapper = `#!/usr/bin/php
 <?php
-chdir(getenv('PWD') ?: '/work/wordpress-develop');
-require '/usr/local/lib/phpunit/phpunit.phar';
+$args = array_slice($argv, 1);
+$config = '/work/wordpress-develop/phpunit-kandelo.xml';
+$isolatedConfig = '/work/wordpress-develop/phpunit-kandelo-isolated.xml';
+$isolatedManifest = '/work/wordpress-develop/kandelo-process-isolated-tests.json';
+
+function has_option(array $args, array $names): bool {
+    foreach ($args as $i => $arg) {
+        foreach ($names as $name) {
+            if ($arg === $name || str_starts_with($arg, $name . '=')) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+function phpunit_command(
+    array $extra,
+    array $args,
+    ?string $configOverride = null,
+    array $env = [],
+    array $phpIni = []
+): string {
+    global $config;
+    $selectedConfig = $configOverride ?? $config;
+    $effectivePhpIni = ['output_buffering' => '0'];
+    foreach ($phpIni as $name => $value) {
+        $effectivePhpIni[$name] = $value;
+    }
+    $cmd = ['/usr/bin/php'];
+    foreach ($effectivePhpIni as $name => $value) {
+        $cmd[] = '-d';
+        $cmd[] = $name . '=' . $value;
+    }
+    $cmd[] = '/usr/local/lib/phpunit/phpunit.phar';
+    if (!has_option($args, ['-c', '--configuration'])) {
+        $cmd[] = '-c';
+        $cmd[] = $selectedConfig;
+    }
+    $cmd = array_merge($cmd, $args, $extra);
+    if ($env) {
+        $envPrefix = ['/usr/bin/env'];
+        foreach ($env as $name => $value) {
+            $envPrefix[] = $name . '=' . $value;
+        }
+        $cmd = array_merge($envPrefix, $cmd);
+    }
+    return implode(' ', array_map('escapeshellarg', $cmd));
+}
+
+function run_phpunit(
+    array $extra,
+    array $args,
+    ?string $configOverride = null,
+    array $env = [],
+    array $phpIni = []
+): int {
+    passthru(phpunit_command($extra, $args, $configOverride, $env, $phpIni), $status);
+    return (int) $status;
+}
+
+function capture_phpunit(
+    array $extra,
+    array $args,
+    int &$status,
+    ?string $configOverride = null,
+    array $env = [],
+    array $phpIni = []
+): string {
+    $output = [];
+    exec(phpunit_command($extra, $args, $configOverride, $env, $phpIni) . ' 2>&1', $output, $status);
+    return implode("\\n", $output) . "\\n";
+}
+
+function phpunit_status_is_non_error(string $output): bool {
+    if (preg_match('/^(FAILURES!|ERRORS!)/m', $output)) {
+        return false;
+    }
+    if (str_contains($output, 'No tests executed!')) {
+        return true;
+    }
+    if (
+        !preg_match('/^OK(?:, but incomplete, skipped, or risky tests!)?/m', $output)
+        && !preg_match('/^WARNINGS!/m', $output)
+    ) {
+        return false;
+    }
+    return !preg_match('/Risky:\\s*[1-9][0-9]*/', $output);
+}
+
+function run_isolated_phpunit(array $extra, array $args, ?string $configOverride = null): int {
+    $status = 0;
+    $output = capture_phpunit(
+        $extra,
+        $args,
+        $status,
+        $configOverride,
+        ['WP_TESTS_SKIP_INSTALL' => '1'],
+        ['output_buffering' => '1048576']
+    );
+    if ($status !== 0 && str_contains($output, 'No tests executed!') && phpunit_status_is_non_error($output)) {
+        return 0;
+    }
+    fwrite(STDOUT, $output);
+    if ($status !== 0 && phpunit_status_is_non_error($output)) {
+        return 0;
+    }
+    return (int) $status;
+}
+
+function filter_for_listed_test(string $testName): string {
+    if (preg_match('/^([^"]+)"(.+)"$/', $testName, $matches)) {
+        return '/^' . preg_quote($matches[1], '/') . '(?:\\s|").*' . preg_quote($matches[2], '/') . '(?:"|$)/';
+    }
+    return '/^' . preg_quote($testName, '/') . '$/';
+}
+
+function requires_non_isolated_probe(array $args): bool {
+    $selectorOptions = [
+        '--filter',
+        '--group',
+        '--exclude-group',
+        '--testsuite',
+        '--testdox-group',
+        '--testdox-exclude-group',
+    ];
+    $optionsWithValues = [
+        '-c',
+        '--configuration',
+        '--bootstrap',
+        '--cache-result-file',
+        '--coverage-clover',
+        '--coverage-cobertura',
+        '--coverage-crap4j',
+        '--coverage-html',
+        '--coverage-php',
+        '--coverage-text',
+        '--coverage-xml',
+        '--log-junit',
+        '--log-teamcity',
+        '--log-testdox-html',
+        '--log-testdox-text',
+        '--printer',
+        '--testdox-html',
+        '--testdox-text',
+    ];
+
+    for ($i = 0; $i < count($args); $i++) {
+        $arg = $args[$i];
+        foreach ($selectorOptions as $option) {
+            if ($arg === $option || str_starts_with($arg, $option . '=')) {
+                return true;
+            }
+        }
+        if ($arg === '--') {
+            return $i + 1 < count($args);
+        }
+        foreach ($optionsWithValues as $option) {
+            if ($arg === $option) {
+                $i++;
+                continue 2;
+            }
+            if (str_starts_with($arg, $option . '=')) {
+                continue 2;
+            }
+        }
+        if ($arg !== '' && $arg[0] !== '-') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function load_isolated_manifest(string $path): array {
+    if (!is_file($path)) {
+        return [];
+    }
+    $entries = json_decode((string) file_get_contents($path), true);
+    return is_array($entries) ? $entries : [];
+}
+
+function method_for_listed_test(string $testName): string {
+    if (preg_match('/::([A-Za-z0-9_]+)/', $testName, $matches)) {
+        return $matches[1];
+    }
+    return '';
+}
+
+function listed_test_matches_entry(string $testName, array $entry): bool {
+    if (!isset($entry['methods']) || $entry['methods'] === null) {
+        return true;
+    }
+    if (!is_array($entry['methods'])) {
+        return false;
+    }
+    return in_array(method_for_listed_test($testName), $entry['methods'], true);
+}
+
+$directOptions = ['--help', '-h', '--version', '--list-groups', '--list-suites', '--list-tests', '--list-tests-xml'];
+if (getenv('KANDELO_PHPUNIT_DIRECT') === '1' || has_option($args, $directOptions)) {
+    exit(run_phpunit([], $args));
+}
+
+$hasNonIsolatedTests = true;
+if (requires_non_isolated_probe($args)) {
+    $nonIsolatedListStatus = 0;
+    $nonIsolatedListOutput = capture_phpunit(['--list-tests'], $args, $nonIsolatedListStatus);
+    $hasNonIsolatedTests = $nonIsolatedListStatus === 0 && preg_match('/^\\s*-\\s+.+$/m', $nonIsolatedListOutput);
+}
+$mainStatus = $hasNonIsolatedTests ? run_phpunit([], $args) : 0;
+if ($mainStatus !== 0) {
+    exit($mainStatus);
+}
+if (requires_non_isolated_probe($args)) {
+    exit($mainStatus);
+}
+
+$isolatedTests = [];
+foreach (load_isolated_manifest($isolatedManifest) as $entry) {
+    if (!is_array($entry) || !isset($entry['file']) || !is_string($entry['file'])) {
+        continue;
+    }
+    $listStatus = 0;
+    $listOutput = capture_phpunit(['--list-tests', $entry['file']], $args, $listStatus, $isolatedConfig);
+    if ($listStatus !== 0) {
+        continue;
+    }
+    foreach (explode("\\n", $listOutput) as $line) {
+        if (preg_match('/^\\s*-\\s+(.+)$/', $line, $matches) && listed_test_matches_entry($matches[1], $entry)) {
+            $isolatedTests[] = [$entry['file'], $matches[1]];
+        }
+    }
+}
+
+$isolatedStatus = 0;
+foreach ($isolatedTests as [$file, $testName]) {
+    fwrite(STDOUT, "\\n[process-isolated] " . $testName . "\\n");
+    $status = run_isolated_phpunit([$file, '--filter', filter_for_listed_test($testName)], $args, $isolatedConfig);
+    if ($status !== 0 && $isolatedStatus === 0) {
+        $isolatedStatus = $status;
+    }
+}
+exit($isolatedStatus);
 `;
   writeVfsFile(fs, "/usr/local/bin/phpunit", wrapper, 0o755);
 }
@@ -472,11 +804,12 @@ function populateWordPressDevelop(fs: MemoryFileSystem): void {
       packageJson.scripts[name] = `${script} >${logPath} 2>&1; status=$?; tail -n 80 ${logPath}; exit $status`;
     }
   }
+  const dependencySnapshot = JSON.stringify({
+    dependencies: packageJson.dependencies || {},
+    devDependencies: packageJson.devDependencies || {},
+  });
   const packageHash = createHash("md5")
-    .update(Buffer.from(JSON.stringify({
-      dependencies: packageJson.dependencies || {},
-      devDependencies: packageJson.devDependencies || {},
-    })))
+    .update(Buffer.from(dependencySnapshot))
     .digest("hex");
   writeVfsFile(
     fs,
@@ -484,7 +817,174 @@ function populateWordPressDevelop(fs: MemoryFileSystem): void {
     JSON.stringify(packageJson, null, 2) + "\n",
     0o644,
   );
+  writeVfsFile(fs, "/work/wordpress-develop/package-dependencies.json", dependencySnapshot + "\n", 0o644);
   writeVfsFile(fs, "/work/wordpress-develop/packagehash.txt", packageHash, 0o644);
+  patchPhpMailerTestBootstrap(fs);
+  patchSiteHealthPageCacheThresholdTest(fs);
+  markPhpUnitProcessIsolationTests(fs);
+}
+
+function patchPhpMailerTestBootstrap(fs: MemoryFileSystem): void {
+  const rel = "tests/phpunit/includes/bootstrap.php";
+  const path = `/work/wordpress-develop/${rel}`;
+  const source = readFileSync(join(WP_DEV_DIR, rel), "utf8");
+  const needle = "$phpmailer = new MockPHPMailer( true );";
+  const replacement = `$phpmailer = new MockPHPMailer( true );
+$phpmailer::$validator = static function ( $email ) {
+\treturn (bool) is_email( $email );
+};`;
+  if (!source.includes(needle) || source.includes("$phpmailer::$validator = static function")) {
+    return;
+  }
+  writeVfsFile(fs, path, source.replace(needle, replacement), 0o644);
+  console.log("  patched PHPUnit MockPHPMailer validator");
+}
+
+function patchSiteHealthPageCacheThresholdTest(fs: MemoryFileSystem): void {
+  const rel = "tests/phpunit/tests/admin/wpSiteHealth.php";
+  const path = `/work/wordpress-develop/${rel}`;
+  let source = readFileSync(join(WP_DEV_DIR, rel), "utf8");
+  if (source.includes("$threshold_filter = static function () use ( $threshold )")) {
+    return;
+  }
+
+  const filterNeedle = `\t\tif ( $delay_the_response ) {
+\t\t\tadd_filter(
+\t\t\t\t'site_status_good_response_time_threshold',
+\t\t\t\tstatic function () use ( $threshold ) {
+\t\t\t\t\treturn $threshold;
+\t\t\t\t}
+\t\t\t);
+\t\t}
+`;
+  const filterReplacement = `\t\t$threshold_filter = static function () use ( $threshold ) {
+\t\t\treturn $threshold;
+\t\t};
+
+\t\tif ( $delay_the_response ) {
+\t\t\tadd_filter(
+\t\t\t\t'site_status_good_response_time_threshold',
+\t\t\t\t$threshold_filter
+\t\t\t);
+\t\t}
+`;
+  const cleanupNeedle = `\t\t$actual = $this->instance->get_test_page_cache();
+`;
+  const cleanupReplacement = `\t\t$actual = $this->instance->get_test_page_cache();
+
+\t\tif ( $delay_the_response ) {
+\t\t\tremove_filter( 'site_status_good_response_time_threshold', $threshold_filter );
+\t\t}
+`;
+
+  if (!source.includes(filterNeedle) || !source.includes(cleanupNeedle)) {
+    console.warn("  warning: wpSiteHealth page-cache threshold patch did not match");
+    return;
+  }
+
+  source = source
+    .replace(filterNeedle, filterReplacement)
+    .replace(cleanupNeedle, cleanupReplacement);
+  writeVfsFile(fs, path, source, 0o644);
+  console.log("  patched PHPUnit wpSiteHealth page-cache threshold cleanup");
+}
+
+function markPhpUnitProcessIsolationTests(fs: MemoryFileSystem): void {
+  let grepOutput = "";
+  try {
+    grepOutput = execFileSync(
+      "git",
+      [
+        "-C",
+        WP_DEV_DIR,
+        "grep",
+        "-l",
+        "-E",
+        "@runTestsInSeparateProcesses|@runInSeparateProcess|@runClassInSeparateProcess",
+        "--",
+        "tests/phpunit/tests",
+      ],
+      { encoding: "utf8" },
+    );
+  } catch {
+    return;
+  }
+
+  const files = grepOutput.split(/\r?\n/).filter(Boolean);
+  const manifest: Array<{ file: string; methods: string[] | null }> = [];
+  for (const rel of files) {
+    const sourcePath = join(WP_DEV_DIR, rel);
+    const source = readFileSync(sourcePath, "utf8");
+    manifest.push({ file: rel, methods: isolatedMethodsForSource(source) });
+    const lines = source.split(/\r?\n/);
+    const patched: string[] = [];
+    let taggedCurrentDocblock = false;
+
+    for (const line of lines) {
+      if (/^\s*\/\*\*/.test(line)) {
+        taggedCurrentDocblock = false;
+      }
+      if (/^\s+\*\s+@group\s+kandelo-process-isolated\s*$/.test(line)) {
+        taggedCurrentDocblock = true;
+      }
+      if (/^\s+\*\s+@(runTestsInSeparateProcesses|runInSeparateProcess|runClassInSeparateProcess)\s*$/.test(line)) {
+        if (!taggedCurrentDocblock) {
+          const indent = line.match(/^(\s+\*)/)?.[1] ?? "\t *";
+          patched.push(`${indent} @group kandelo-process-isolated`);
+          taggedCurrentDocblock = true;
+        }
+        continue;
+      }
+      if (/^\s+\*\s+@preserveGlobalState disabled\s*$/.test(line)) {
+        continue;
+      }
+      patched.push(line);
+    }
+
+    writeVfsFile(fs, `/work/wordpress-develop/${rel}`, patched.join("\n"), 0o644);
+  }
+  writeVfsFile(
+    fs,
+    "/work/wordpress-develop/kandelo-process-isolated-tests.json",
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    0o644,
+  );
+  console.log(`  phpunit process-isolated tests marked: ${files.length} files`);
+}
+
+function isolatedMethodsForSource(source: string): string[] | null {
+  if (/@runTestsInSeparateProcesses\b|@runClassInSeparateProcess\b/.test(source)) {
+    return null;
+  }
+
+  const methods: string[] = [];
+  let pendingDocblock = "";
+  let inDocblock = false;
+  for (const line of source.split(/\r?\n/)) {
+    if (/^\s*\/\*\*/.test(line)) {
+      pendingDocblock = `${line}\n`;
+      inDocblock = true;
+      continue;
+    }
+    if (inDocblock) {
+      pendingDocblock += `${line}\n`;
+      if (/\*\//.test(line)) {
+        inDocblock = false;
+      }
+      continue;
+    }
+
+    const match = line.match(/\bfunction\s+(test_[A-Za-z0-9_]+)\s*\(/);
+    if (match) {
+      if (/@runInSeparateProcess\b/.test(pendingDocblock)) {
+        methods.push(match[1]);
+      }
+      pendingDocblock = "";
+    } else if (line.trim() !== "" && !/^\s*(?:public|protected|private|static|final|abstract)\b/.test(line)) {
+      pendingDocblock = "";
+    }
+  }
+  return methods;
 }
 
 function ensureGutenbergArtifact(): void {
@@ -590,26 +1090,41 @@ define( 'DB_COLLATE', '' );
 define( 'ABSPATH', '/work/wordpress-develop/src/' );
 define( 'WP_TESTS_DOMAIN', 'example.org' );
 define( 'WP_TESTS_EMAIL', 'admin@example.org' );
-define( 'WP_TESTS_TITLE', 'WordPress Develop Tests' );
+define( 'WP_TESTS_TITLE', 'Test Blog' );
 define( 'WP_TESTS_PHPUNIT_POLYFILLS_PATH', '/usr/local/lib/phpunit-polyfills' );
 define( 'WP_TESTS_FORCE_KNOWN_BUGS', false );
 define( 'WP_PHP_BINARY', '/usr/bin/php' );
+define( 'WP_DEBUG', true );
 
 $table_prefix = 'wptests_';
 `;
 
 function populateDevHelpers(fs: MemoryFileSystem): void {
   const kandeloPhpunitXml = readFileSync(join(WP_DEV_DIR, "phpunit.xml.dist"), "utf8")
-    .replace(/\n\t\t<const name="WP_RUN_CORE_TESTS" value="1" \/>/, "");
+    .replace(
+      /\n\t\t\t<group>html-api-html5lib-tests<\/group>/,
+      "\n\t\t\t<group>html-api-html5lib-tests</group>\n\t\t\t<group>kandelo-process-isolated</group>",
+    )
+    .replace(
+      /\n\t\t<const name="WP_RUN_CORE_TESTS" value="1" \/>/,
+      '\n\t\t<const name="WP_RUN_CORE_TESTS" value="1" />\n\t\t<ini name="error_reporting" value="-1" />',
+    );
+  const isolatedPhpunitXml = kandeloPhpunitXml.replace(
+    /\n\t\t\t<group>kandelo-process-isolated<\/group>/,
+    "",
+  );
   const muPlugin = `<?php
-add_filter('pre_wp_mail', '__return_false');
-add_filter('pre_http_request', function($pre, $args, $url) {
-    return new WP_Error('http_disabled', 'HTTP requests disabled in Wasm');
-}, 10, 3);
+if ( ! defined( 'WP_TESTS_DOMAIN' ) ) {
+    add_filter('pre_wp_mail', '__return_false');
+    add_filter('pre_http_request', function($pre, $args, $url) {
+        return new WP_Error('http_disabled', 'HTTP requests disabled in Wasm');
+    }, 10, 3);
+}
 `;
   writeVfsFile(fs, "/work/wordpress-develop/src/wp-content/mu-plugins/wasm-dev.php", muPlugin);
   writeVfsFile(fs, "/work/wordpress-develop/wp-tests-config.php", WP_TESTS_CONFIG_PHP);
   writeVfsFile(fs, "/work/wordpress-develop/phpunit-kandelo.xml", kandeloPhpunitXml);
+  writeVfsFile(fs, "/work/wordpress-develop/phpunit-kandelo-isolated.xml", isolatedPhpunitXml);
   ensureDirRecursive(fs, "/usr/local/lib/kandelo");
   writeVfsFile(fs, "/usr/local/lib/kandelo/webpack-global-this-shim.js", "module.exports = globalThis;\n", 0o644);
   writeVfsFile(fs, GRUNT_RUNNER_PATH, `const path = require("path");
@@ -1030,7 +1545,7 @@ cat /work/README-kandelo-wordpress-dev.txt
     "alias wp-dev-help='cat /work/README-kandelo-wordpress-dev.txt'",
     "alias npm='/usr/bin/node /usr/local/bin/npm'",
     "alias npx='/usr/bin/node /usr/local/bin/npx'",
-    "alias phpunit='/usr/bin/php /usr/local/lib/phpunit/phpunit.phar -c /work/wordpress-develop/phpunit-kandelo.xml'",
+    "alias phpunit='/usr/local/bin/phpunit'",
     "export USER=user",
     "export npm_config_cache=/tmp/.npm-cache",
     "export npm_config_fund=false",
@@ -1048,6 +1563,9 @@ cat /work/README-kandelo-wordpress-dev.txt
 }
 
 function buildServices(): DinitService[] {
+  // MariaDB's default thread-per-connection handling is required here:
+  // WordPress tests keep the global wpdb connection open while opening
+  // additional mysqli/wpdb connections.
   return [
     {
       name: "mariadb-bootstrap",
@@ -1064,7 +1582,7 @@ function buildServices(): DinitService[] {
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
         "--sort-buffer-size=262144 --skip-networking=0 --port=3306 " +
         "--bind-address=0.0.0.0 --socket= --max-connections=10 " +
-        "--thread-handling=no-threads --log-error=/data/error.log " +
+        "--log-error=/data/error.log " +
         "--init-file=/etc/mariadb/init.sql",
       dependsOn: ["mariadb-bootstrap"],
       logfile: "/var/log/mariadb.log",
@@ -1119,6 +1637,13 @@ async function main() {
   populateDevHelpers(fs);
 
   addDinitInit(fs, buildServices());
+  writeKandeloDemoConfig(fs, {
+    version: 1,
+    profiles: {
+      "wordpress-development": { presentation: webPresentation() },
+      "wordpress-dev": { presentation: webPresentation() },
+    },
+  });
 
   const rev = execFileSync("git", ["-C", WP_DEV_DIR, "rev-parse", "--short=12", "HEAD"], {
     encoding: "utf-8",

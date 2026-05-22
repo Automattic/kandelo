@@ -1,0 +1,24 @@
+# Per-library manifest for IJG libjpeg, used by PHP GD's JPEG support.
+
+kind = "library"
+
+name = "libjpeg"
+version = "9f"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://ijg.org/files/jpegsrc.v9f.tar.gz"
+sha256 = "04705c110cb2469caa79fb71fba3d7bf834914706e9641a4589485c1f832565b"
+
+[license]
+spdx = "IJG"
+url = "https://ijg.org/files/README"
+
+[build]
+script_path = "packages/registry/libjpeg/build-libjpeg.sh"
+
+[outputs]
+libs = ["lib/libjpeg.a"]
+headers = ["include/jpeglib.h", "include/jerror.h", "include/jmorecfg.h", "include/jconfig.h"]
+pkgconfig = ["lib/pkgconfig/libjpeg.pc"]

@@ -21,8 +21,12 @@ for the current design, ABI, save-buffer layout, and operating limits.
 ## CLI
 
 ```sh
-wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
+wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork] [--direct-only]
 ```
+
+Use `--direct-only` for large runtimes whose fork path is known not to
+go through function pointers. It keeps `call_indirect` callers out of
+the conservative fork-path closure.
 
 ## Status
 

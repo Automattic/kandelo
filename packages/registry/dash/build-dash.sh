@@ -160,14 +160,17 @@ fi
 # Must run last — it hardcodes mutable-global offsets and any later pass
 # reordering globals would corrupt the fork buffer.
 FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ -x "$FORK_INSTRUMENT" ]; then
-    echo "==> Applying fork instrumentation..."
-    "$FORK_INSTRUMENT" "$DASH_BIN" -o "$DASH_BIN.instr"
-    mv "$DASH_BIN.instr" "$DASH_BIN"
-else
-    echo "WARNING: wasm-fork-instrument not found. Fork (command substitution, pipes) will not work." >&2
-    echo "  Run 'bash build.sh' to build it." >&2
+if [ ! -x "$FORK_INSTRUMENT" ]; then
+    bash "$REPO_ROOT/scripts/build-fork-instrument-tool.sh"
 fi
+if [ ! -x "$FORK_INSTRUMENT" ]; then
+    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
+    echo "  Run: bash scripts/build-fork-instrument-tool.sh" >&2
+    exit 1
+fi
+echo "==> Applying fork instrumentation..."
+"$FORK_INSTRUMENT" "$DASH_BIN" -o "$DASH_BIN.instr"
+mv "$DASH_BIN.instr" "$DASH_BIN"
 
 echo "==> dash built successfully!"
 

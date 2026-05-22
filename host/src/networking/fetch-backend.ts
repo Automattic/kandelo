@@ -24,6 +24,8 @@ export interface FetchBackendOptions {
 export class FetchNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
   private hostnameMap = new Map<string, string>(); // ip string → hostname
+  private hostnameToIp = new Map<string, Uint8Array>();
+  private nextSyntheticIp = 0;
   private options: FetchBackendOptions;
 
   constructor(options?: FetchBackendOptions) {
@@ -180,14 +182,15 @@ export class FetchNetworkBackend implements NetworkIO {
   }
 
   getaddrinfo(hostname: string): Uint8Array {
-    // In the browser, return a synthetic IP.
-    // The actual connection uses the Host header, not this IP.
-    // Use a deterministic hash to generate a fake IP in the 10.x.x.x range.
-    let hash = 0;
-    for (let i = 0; i < hostname.length; i++) {
-      hash = ((hash << 5) - hash + hostname.charCodeAt(i)) | 0;
+    if (isGuaranteedInvalidHostname(hostname)) {
+      throw new Error("ENOTFOUND");
     }
-    const ip = new Uint8Array([10, (hash >> 16) & 0xff, (hash >> 8) & 0xff, hash & 0xff]);
+
+    // In the browser, return a synthetic IP. The actual connection uses the
+    // Host header, not this IP. Allocate unique documentation-net addresses
+    // so reverse lookups in connect() cannot be poisoned by hostname hash
+    // collisions during large test suites.
+    const ip = this.syntheticIp(hostname);
     // Store hostname→IP mapping so connect() can recover the hostname
     // (needed when program connects to port 443 where Host header may not be present
     // before TLS handshake, or for constructing proper URLs)
@@ -195,6 +198,35 @@ export class FetchNetworkBackend implements NetworkIO {
     this.hostnameMap.set(ipStr, hostname);
     return ip;
   }
+
+  private syntheticIp(hostname: string): Uint8Array {
+    const existing = this.hostnameToIp.get(hostname);
+    if (existing) return new Uint8Array(existing);
+
+    const ip = allocateDocumentationIp(this.nextSyntheticIp++);
+    this.hostnameToIp.set(hostname, ip);
+    return new Uint8Array(ip);
+  }
+}
+
+const DOCUMENTATION_SUBNETS = [
+  [203, 0, 113],
+  [198, 51, 100],
+  [192, 0, 2],
+] as const;
+
+function allocateDocumentationIp(index: number): Uint8Array {
+  const subnet = DOCUMENTATION_SUBNETS[Math.floor(index / 254)];
+  if (!subnet) {
+    throw new Error("Synthetic DNS address pool exhausted");
+  }
+  const host = (index % 254) + 1;
+  return new Uint8Array([...subnet, host]);
+}
+
+function isGuaranteedInvalidHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/\.$/, "").toLowerCase();
+  return normalized === "invalid" || normalized.endsWith(".invalid");
 }
 
 /** Find the position of \r\n\r\n in the buffer. Returns -1 if not found. */

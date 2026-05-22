@@ -33,7 +33,7 @@ export class NodeTimeProvider implements TimeProvider {
   }
 
   nanosleep(sec: number, nsec: number): void {
-    const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
+    const ms = sec * 1000 + Math.ceil(nsec / 1_000_000);
     if (ms > 0) {
       const sab = new SharedArrayBuffer(4);
       Atomics.wait(new Int32Array(sab), 0, 0, ms);
@@ -42,6 +42,9 @@ export class NodeTimeProvider implements TimeProvider {
 }
 
 export class BrowserTimeProvider implements TimeProvider {
+  private readonly wallStartMs = Date.now();
+  private readonly perfStartMs = performance.now();
+
   clockGettime(clockId: number): { sec: number; nsec: number } {
     if (clockId === 1 || clockId === 2 || clockId === 3) {
       // CLOCK_MONOTONIC / CLOCK_PROCESS_CPUTIME_ID / CLOCK_THREAD_CPUTIME_ID
@@ -49,12 +52,12 @@ export class BrowserTimeProvider implements TimeProvider {
       return { sec: Math.floor(ms / 1000), nsec: Math.floor((ms % 1000) * 1_000_000) };
     }
     // CLOCK_REALTIME
-    const now = Date.now();
-    return { sec: Math.floor(now / 1000), nsec: (now % 1000) * 1_000_000 };
+    const ms = this.wallStartMs + (performance.now() - this.perfStartMs);
+    return { sec: Math.floor(ms / 1000), nsec: Math.floor((ms % 1000) * 1_000_000) };
   }
 
   nanosleep(sec: number, nsec: number): void {
-    const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
+    const ms = sec * 1000 + Math.ceil(nsec / 1_000_000);
     if (ms > 0) {
       const sab = new SharedArrayBuffer(4);
       Atomics.wait(new Int32Array(sab), 0, 0, ms);
