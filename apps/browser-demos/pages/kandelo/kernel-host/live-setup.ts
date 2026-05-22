@@ -2,7 +2,10 @@
 // kandelo page is loaded (use `?mock=1` for MockKernelHost).
 
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { initServiceWorkerBridge } from "../../../lib/init/service-worker-bridge";
+import {
+  ensureServiceWorkerReady,
+  initServiceWorkerBridge,
+} from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
 import {
   COREUTILS_NAMES,
@@ -352,6 +355,7 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<LiveKernelHost> {
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
+  let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const localGalleryItems = liveGalleryItems();
 
   const host = new LiveKernelHost({
@@ -363,7 +367,30 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     },
   });
 
-  void refreshSoftwareGallery(host, localGalleryItems);
+  const requireServiceWorker = () => {
+    if (!serviceWorkerReady) {
+      serviceWorkerReady = ensureServiceWorkerReady(SW_URL)
+        .then(async (controller) => {
+          if (!window.crossOriginIsolated) {
+            window.location.reload();
+            await new Promise<never>(() => {});
+          }
+          return controller;
+        })
+        .catch((err) => {
+          serviceWorkerReady = null;
+          throw err;
+        });
+    }
+    return serviceWorkerReady;
+  };
+
+  void requireServiceWorker()
+    .then(() => refreshSoftwareGallery(host, localGalleryItems))
+    .catch((err) => {
+      console.warn("Service worker gate failed before gallery refresh:", err);
+      host.setGalleryItems(localGalleryItems);
+    });
 
   const initialId = normalizeDemoId(opts.demo) ?? "shell";
   void startBoot(host, profileFor(initialId, opts.fb), descriptorFor(initialId));
@@ -383,7 +410,13 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     h.detachKernel();
 
     try {
-      const kernel = await bootProfile(h, profile, descriptor, () => seq === bootSeq);
+      const kernel = await bootProfile(
+        h,
+        profile,
+        descriptor,
+        () => seq === bootSeq,
+        requireServiceWorker,
+      );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
         return;
@@ -498,6 +531,7 @@ async function bootProfile(
   profile: LiveProfile,
   requestedDescriptor: BootDescriptor,
   isCurrent: () => boolean,
+  requireServiceWorker: () => Promise<ServiceWorker>,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -521,6 +555,11 @@ async function bootProfile(
     host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
   };
 
+  tick("preparing service worker...");
+  await requireServiceWorker();
+  assertCurrent();
+
+  tick("service worker active");
   tick(`loading ${profile.id} profile...`);
   const [kernelBytes, vfsBytes, bashBytes, dashBytes, lazyBinaries, softwareBinaries] = await Promise.all([
     fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((r) => r.arrayBuffer()),
