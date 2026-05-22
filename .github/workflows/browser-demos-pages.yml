@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/browser-demos-pages.yml"
+      - ".github/actions/fetch-submodules/**"
+      - ".gitmodules"
       - "apps/browser-demos/**"
       - "host/src/**"
       - "web-libs/**"
@@ -40,6 +42,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fetch musl submodule
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl
 
       - uses: actions/setup-node@v4
         with:
