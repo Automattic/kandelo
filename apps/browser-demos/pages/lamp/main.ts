@@ -148,6 +148,7 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
+const PHP_FPM_PORT = 9000;
 const PHP_FPM_WORKERS = 6;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
@@ -277,14 +278,14 @@ async function start() {
 
     setStatus("Booting kernel with /sbin/dinit...", "loading");
     // Track which ports are listening so we only load the iframe once
-    // BOTH nginx (8080) and mariadbd (3306) are accepting connections —
-    // dinit considers a `process` service started right after exec(),
-    // racing the daemon's actual port-bind by ~10s for mariadbd.
+    // nginx (8080), php-fpm (9000), and mariadbd (3306) are accepting
+    // connections — dinit considers a `process` service started right after
+    // exec(), racing the daemon's actual port-bind by ~10s for mariadbd.
     // Also gate on bridgeReady — see nginx/main.ts for the bridge-vs-listen
     // race rationale (mariadb's slow boot usually masks it here, but be
     // explicit anyway).
     const seenPorts = new Set<number>();
-    const REQUIRED_PORTS = [HTTP_PORT, 3306];
+    const REQUIRED_PORTS = [HTTP_PORT, PHP_FPM_PORT, 3306];
     let bridgeReady = false;
     const tryLoadFrame = async () => {
       const allReady = REQUIRED_PORTS.every((p) => seenPorts.has(p));

@@ -7657,7 +7657,7 @@ export class CentralizedKernelWorker {
     this.notifyPipeReadable(recvPipeIdx);
 
     // Pump the response.
-    return await this.pumpHttpResponse(
+    const response = await this.pumpHttpResponse(
       GLOBAL_PIPE_PID,
       sendPipeIdx,
       recvPipeIdx,
@@ -7668,6 +7668,20 @@ export class CentralizedKernelWorker {
       timeoutMs,
       label,
     );
+    const retryBudget = opts.emptyResponseRetries ?? 1;
+    if (
+      retryBudget > 0 &&
+      (request.method === "GET" || request.method === "HEAD") &&
+      response.status === 200 &&
+      Object.keys(response.headers).length === 0 &&
+      response.body.length === 0
+    ) {
+      return await this.sendHttpRequest(port, request, {
+        ...opts,
+        emptyResponseRetries: retryBudget - 1,
+      });
+    }
+    return response;
   }
 
   /**
@@ -7737,6 +7751,8 @@ export class CentralizedKernelWorker {
       const finish = (response: HttpResponse) => {
         pipeCloseRead(pid, sendPipeIdx);
         pipeCloseWrite(pid, recvPipeIdx);
+        this.notifyPipeReadable(recvPipeIdx);
+        this.scheduleWakeBlockedRetries();
         resolve(response);
       };
 

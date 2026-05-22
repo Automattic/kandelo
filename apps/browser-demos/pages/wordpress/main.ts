@@ -33,7 +33,8 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
-const PHP_FPM_WORKERS = 6;
+const PHP_FPM_PORT = 9000;
+const PHP_FPM_WORKERS = 1;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -151,10 +152,12 @@ async function start() {
 
     setStatus("Booting kernel with /sbin/dinit...", "loading");
     // See nginx/main.ts for the bridge-vs-listen race rationale.
-    let nginxListening = false;
+    const seenPorts = new Set<number>();
+    const REQUIRED_PORTS = [HTTP_PORT, PHP_FPM_PORT];
     let bridgeReady = false;
     const tryLoadFrame = () => {
-      if (nginxListening && bridgeReady && reloadBtn.disabled) {
+      const allReady = REQUIRED_PORTS.every((p) => seenPorts.has(p));
+      if (allReady && bridgeReady && reloadBtn.disabled) {
         setStatus("WordPress running! Loading page...", "running");
         reloadBtn.disabled = false;
         loadFrame();
@@ -169,10 +172,8 @@ async function start() {
       onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
       onListenTcp: (_pid, _fd, port) => {
         appendLog(`service listening on :${port}\n`, "info");
-        if (port === HTTP_PORT) {
-          nginxListening = true;
-          tryLoadFrame();
-        }
+        seenPorts.add(port);
+        tryLoadFrame();
       },
     });
 

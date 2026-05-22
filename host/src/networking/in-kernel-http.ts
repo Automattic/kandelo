@@ -46,6 +46,8 @@ export interface SendHttpRequestOptions {
   timeoutMs?: number;
   /** Optional label appended to log lines for grepping in busy demos. */
   debugLabel?: string;
+  /** Internal retry budget for a server-side close before any HTTP bytes. */
+  emptyResponseRetries?: number;
 }
 
 const encoder = new TextEncoder();

@@ -51,7 +51,7 @@ const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
-const PHP_FPM_WORKERS = 6;
+const PHP_FPM_WORKERS = 1;
 
 // --- Service configs (reuse logic from init modules) ---
 
@@ -193,14 +193,23 @@ request_slowlog_trace_depth = 0
   );
   const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
 
+curl.cainfo=/etc/ssl/certs/ca-certificates.crt
+openssl.cafile=/etc/ssl/certs/ca-certificates.crt
+
 [opcache]
 opcache.enable=1
 opcache.enable_cli=1
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
 opcache.validate_timestamps=0
+opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 `;
   writeVfsFile(fs, "/etc/php.ini", phpIni);
+  writeVfsFile(
+    fs,
+    "/etc/php-opcache-blacklist.txt",
+    "/var/www/html/wp-includes/SimplePie/autoloader.php\n",
+  );
 
   // FPM router script
   const fpmRouter = `<?php
@@ -345,7 +354,6 @@ if (isset($_SERVER['HTTP_HOST'])) {
     define('WP_SITEURL', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
 }
 
-define('WP_HTTP_BLOCK_EXTERNAL', true);
 define('DISABLE_WP_CRON', true);
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -390,18 +398,51 @@ async function main() {
   ensureDirRecursive(fs, "/var/www/html/wp-content/database");
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
 
-  // mu-plugin to disable operations that hang in Wasm
+  // Keep side-effectful operations disabled, but leave outbound HTTP enabled
+  // so WordPress can exercise the browser/kernel external request bridge.
   const muPlugin = `<?php
 add_filter('pre_wp_mail', '__return_false');
-add_filter('pre_http_request', function($pre, $args, $url) {
-    return new WP_Error('http_disabled', 'HTTP requests disabled in Wasm');
-}, 10, 3);
+add_filter('http_request_args', function($args) {
+    $ca_file = '/etc/ssl/certs/ca-certificates.crt';
+    if (is_readable($ca_file)) {
+        $args['sslcertificates'] = $ca_file;
+    }
+    return $args;
+});
+add_filter('wp_admin_canonical_url', function($url) {
+    $home_path = wp_parse_url(home_url('/'), PHP_URL_PATH);
+    if (!$home_path || '/' === $home_path) {
+        return $url;
+    }
+
+    $prefix = rtrim($home_path, '/');
+    $parts = wp_parse_url($url);
+    if (empty($parts['path']) || 0 === strpos($parts['path'], $prefix . '/')) {
+        return $url;
+    }
+
+    $rebuilt = '';
+    if (!empty($parts['scheme'])) {
+        $rebuilt .= $parts['scheme'] . '://';
+    }
+    if (!empty($parts['host'])) {
+        $rebuilt .= $parts['host'];
+    }
+    if (!empty($parts['port'])) {
+        $rebuilt .= ':' . $parts['port'];
+    }
+    $rebuilt .= $prefix . '/' . ltrim($parts['path'], '/');
+    if (!empty($parts['query'])) {
+        $rebuilt .= '?' . $parts['query'];
+    }
+    return $rebuilt;
+});
 if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
 `;
   writeVfsFile(fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", muPlugin);
 
   // WordPress core files
-  const excludeDb = (rel: string) => rel.endsWith(".db");
+  const excludeDb = (rel: string) => rel.endsWith(".db") || rel === "wp-config.php";
   console.log("Writing WordPress core files...");
   let wpCount = walkAndWrite(fs, WP_DIR, "/var/www/html", { exclude: excludeDb });
   console.log(`  WordPress core: ${wpCount} files`);
@@ -435,6 +476,10 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "wp",
+    excludePaths: [
+      "/var/www/html/wp-config.php",
+      "/var/www/html/wp-includes/SimplePie/autoloader.php",
+    ],
   });
 
   // Save image

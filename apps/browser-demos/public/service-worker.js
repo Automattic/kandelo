@@ -295,7 +295,13 @@ if (typeof window !== "undefined") {
   // --- CORS proxy URL (injected at build time, empty string in dev) ---
   var CORS_PROXY_URL = "__CORS_PROXY_URL__";
   // In dev mode the placeholder is not replaced — treat as unconfigured
-  if (CORS_PROXY_URL.indexOf("__") === 0) CORS_PROXY_URL = "";
+  if (CORS_PROXY_URL.indexOf("__") === 0) {
+    CORS_PROXY_URL =
+      self.location.hostname === "127.0.0.1" ||
+      self.location.hostname === "localhost"
+        ? "/cors-proxy?url="
+        : "";
+  }
 
   /**
    * Check if a URL is cross-origin relative to the service worker's origin.
@@ -403,7 +409,7 @@ if (typeof window !== "undefined") {
 
     // If we have a CORS proxy, route through it
     if (CORS_PROXY_URL) {
-      var proxyUrl = CORS_PROXY_URL + targetUrl;
+      var proxyUrl = CORS_PROXY_URL + encodeURIComponent(targetUrl);
       return fetch(proxyUrl).then(function (response) {
         var headers = new Headers(response.headers);
         headers.set("Cross-Origin-Resource-Policy", "cross-origin");
@@ -634,8 +640,20 @@ if (typeof window !== "undefined") {
                 if (!locUrl.pathname.startsWith(appPrefix)) {
                   locUrl.pathname = appPrefix.slice(0, -1) + locUrl.pathname;
                 }
-                respHeaders.set("Location", locUrl.toString());
               }
+              var redirectStatus = bridgeResp.status;
+              if (
+                (redirectStatus === 301 || redirectStatus === 302) &&
+                request.method !== "GET" &&
+                request.method !== "HEAD"
+              ) {
+                redirectStatus = 303;
+              }
+              respHeaders.set("Location", locUrl.toString());
+              return new Response(null, {
+                status: redirectStatus,
+                headers: respHeaders,
+              });
             } catch (e) {
               /* leave as-is */
             }

@@ -44,6 +44,8 @@ export interface OpcachePrewarmOptions {
   sourceRoots: string[];
   /** Label used in log lines. */
   label: string;
+  /** Absolute VFS paths that must not be compiled into the file cache. */
+  excludePaths?: string[];
 }
 
 // Must match the `opcache.file_cache=` setting in each demo's runtime
@@ -146,7 +148,14 @@ export async function prewarmOpcache(
     // Phase 1: list every .php under the roots so the host can batch.
     console.log(`[opcache-prewarm:${label}] listing .php files...`);
     const listBytes = await runPhase("list", { kind: "list", roots: options.sourceRoots });
-    const phpPaths = parseList(listBytes);
+    const excluded = new Set(options.excludePaths ?? []);
+    const listedPhpPaths = parseList(listBytes);
+    const phpPaths = listedPhpPaths.filter((path) => !excluded.has(path));
+    if (excluded.size > 0) {
+      console.log(
+        `[opcache-prewarm:${label}] excluded ${listedPhpPaths.length - phpPaths.length} php files from compile`,
+      );
+    }
     console.log(`[opcache-prewarm:${label}] ${phpPaths.length} php files to compile`);
 
     // Phase 2: compile every listed PHP file into the shared kernel memfs
