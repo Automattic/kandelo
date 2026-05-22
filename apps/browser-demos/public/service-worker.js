@@ -675,6 +675,7 @@ if (typeof window !== "undefined") {
             }
           }
         }
+        rewriteAppUrlHeader(respHeaders, "Link", url);
 
         // COEP/CORP for cross-origin isolation
         if (!respHeaders.has("Cross-Origin-Embedder-Policy")) {
@@ -718,11 +719,23 @@ if (typeof window !== "undefined") {
       contentType.indexOf("text/css") === 0 ||
       contentType.indexOf("text/javascript") === 0 ||
       contentType.indexOf("application/javascript") === 0 ||
+      contentType.indexOf("application/x-javascript") === 0 ||
       contentType.indexOf("application/json") === 0 ||
+      contentType.indexOf("+json") !== -1 ||
       contentType.indexOf("application/xml") === 0 ||
       contentType.indexOf("text/xml") === 0 ||
+      contentType.indexOf("+xml") !== -1 ||
       contentType.indexOf("image/svg+xml") === 0
     );
+  }
+
+  function rewriteAppUrlHeader(headers, name, requestUrl) {
+    var value = headers.get(name);
+    if (!value) return;
+    var rewritten = rewriteSameHostAppUrls(value, requestUrl);
+    if (rewritten !== value) {
+      headers.set(name, rewritten);
+    }
   }
 
   function rewriteSameHostAppUrls(text, requestUrl) {
@@ -740,13 +753,23 @@ if (typeof window !== "undefined") {
       "http:\\\\/\\\\/" + hostPattern + "\\\\/(?!" + escapedAppPathPattern + "(?:\\\\/|$))",
       "g",
     );
+    var encodedAppPathPattern = appPathPattern.replace(/\//g, "%2F");
+    var encoded = new RegExp(
+      "http%3A%2F%2F" + hostPattern + "%2F(?!" + encodedAppPathPattern + "(?:%2F|$))",
+      "gi",
+    );
     return text
       .replace(plain, publicBase)
       .replace(escaped, publicBase.replace(/\//g, "\\/"))
+      .replace(encoded, encodeURIComponent(publicBase))
       .replace(new RegExp("http://" + hostPattern + "/", "g"), publicOrigin)
       .replace(
         new RegExp("http:\\\\/\\\\/" + hostPattern + "\\\\/", "g"),
         publicOrigin.replace(/\//g, "\\/"),
+      )
+      .replace(
+        new RegExp("http%3A%2F%2F" + hostPattern + "%2F", "gi"),
+        encodeURIComponent(publicOrigin),
       );
   }
 
