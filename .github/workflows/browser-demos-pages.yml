@@ -5,7 +5,14 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/browser-demos-pages.yml"
+      - ".github/actions/fetch-submodules/**"
+      - ".gitmodules"
+      - "MANIFEST"
       - "apps/browser-demos/**"
+      - "benchmarks/**"
+      - "examples/**"
+      - "host/package.json"
+      - "host/package-lock.json"
       - "host/src/**"
       - "web-libs/**"
       - "Cargo.lock"
@@ -20,15 +27,19 @@ on:
       - "packages/registry/**/build.toml"
       - "programs/**"
       - "rust-toolchain.toml"
+      - "images/rootfs/**"
       - "images/vfs/**"
       - "run.sh"
       - "scripts/build-musl.sh"
       - "scripts/build-programs.sh"
+      - "scripts/build-rootfs.sh"
       - "scripts/dev-shell.sh"
       - "scripts/fetch-binaries.sh"
+      - "scripts/install-overlay-headers.sh"
       - "scripts/install-local-binary.sh"
       - "scripts/resolve-binary.sh"
       - "sdk/**"
+      - "tools/mkrootfs/**"
       - "tools/xtask/**"
   workflow_dispatch:
 
@@ -39,9 +50,14 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - name: Fetch musl submodule
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl
+
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
@@ -71,10 +87,11 @@ jobs:
         working-directory: apps/browser-demos
         env:
           VITE_BASE: /kandelo/
+          VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
         run: npm run build
 
       - name: Deploy to gh-pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: apps/browser-demos/dist

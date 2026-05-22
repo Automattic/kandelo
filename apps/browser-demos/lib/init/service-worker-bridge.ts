@@ -6,18 +6,48 @@
  */
 import { HttpBridgeHost } from "../http-bridge";
 
-function waitForServiceWorkerController(): Promise<ServiceWorker> {
+const SERVICE_WORKER_READY_TIMEOUT_MS = 10_000;
+
+function waitForServiceWorkerController(
+  timeoutMs = SERVICE_WORKER_READY_TIMEOUT_MS,
+): Promise<ServiceWorker> {
   if (navigator.serviceWorker.controller) {
     return Promise.resolve(navigator.serviceWorker.controller);
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+      reject(new Error("Timed out waiting for service worker control"));
+    }, timeoutMs);
+
+    const onControllerChange = () => {
+      const controller = navigator.serviceWorker.controller;
+      if (!controller) return;
+      window.clearTimeout(timeout);
+      navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+      resolve(controller);
+    };
+
     navigator.serviceWorker.addEventListener(
       "controllerchange",
-      () => resolve(navigator.serviceWorker.controller!),
-      { once: true },
+      onControllerChange,
     );
   });
+}
+
+/**
+ * Ensure the page is controlled by the unified service worker before code
+ * starts work that depends on cross-origin isolation or SW-routed fetches.
+ */
+export async function ensureServiceWorkerReady(swUrl: string): Promise<ServiceWorker> {
+  if (!("serviceWorker" in navigator)) {
+    throw new Error("Service workers unavailable");
+  }
+
+  await navigator.serviceWorker.register(swUrl, { updateViaCache: "none" });
+  await navigator.serviceWorker.ready;
+  return waitForServiceWorkerController();
 }
 
 /**
@@ -43,13 +73,7 @@ export async function initServiceWorkerBridge(
   }
 
   const bridge = new HttpBridgeHost();
-
-  // Register the unified service worker (no-op if already registered by COI script)
-  await navigator.serviceWorker.register(swUrl);
-
-  // Wait for the service worker to activate and claim this client
-  await navigator.serviceWorker.ready;
-  const controller = await waitForServiceWorkerController();
+  const controller = await ensureServiceWorkerReady(swUrl);
 
   // Send bridge port and wait for SW to confirm it's initialized
   await new Promise<void>((resolve) => {
