@@ -230,8 +230,12 @@ export class BrowserKernel {
       rootfsImage: new Uint8Array(rootfsVfsBuf),
     });
 
-    // Forward any lazy archive metadata from a pre-loaded VFS image so the
-    // worker can materialize archive-backed files on first exec.
+    // Forward any lazy metadata from a pre-loaded VFS image so the worker
+    // can materialize image-backed files on first exec.
+    const lazyEntries = this.memfs!.exportLazyEntries();
+    if (lazyEntries.length > 0) {
+      this.sendToKernel({ type: "register_lazy_files", entries: lazyEntries });
+    }
     const archiveEntries = this.memfs!.exportLazyArchiveEntries();
     if (archiveEntries.length > 0) {
       this.sendToKernel({ type: "register_lazy_archives", entries: archiveEntries });
