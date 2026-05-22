@@ -1,0 +1,1 @@
+const n=new TextEncoder;function e(e,t,o,c=420){const s=n.encode(o),i=e.open(t,577,c);e.write(i,s,0,s.length),e.close(i)}function t(n,e,t,o=493){const c=n.open(e,577,o);n.write(c,t,0,t.length),n.close(c)}function o(n,e,t=493){try{n.mkdir(e,t)}catch{}}export{t as a,o as e,e as w};

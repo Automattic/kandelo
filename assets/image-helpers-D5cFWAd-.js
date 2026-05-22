@@ -1,0 +1,1 @@
+function n(n,t,e,c=420){o(n,t,(new TextEncoder).encode(e),c)}function o(n,o,t,e=493){const c=n.open(o,577,e);n.write(c,t,0,t.length),n.close(c)}function t(n,o){try{n.mkdir(o,493)}catch{}}function e(n,o){const e=o.split("/").filter(Boolean);let c="";for(const s of e)c+="/"+s,t(n,c)}export{e as a,n as b,t as e,o as w};

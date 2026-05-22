@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="/kandelo/service-worker.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Node — wasm-posix-kernel</title>
+  <style>
+    /* Inset xterm contents from the terminal background edges so lines don't
+       sit flush against the chrome. FitAddon re-measures on resize so the
+       column count adjusts correctly. */
+    .terminal-area #terminal { padding: 0.5rem; background: #0d1117; }
+  </style>
+  <script type="module" crossorigin src="/kandelo/assets/node-BQv0ToVl.js"></script>
+  <link rel="modulepreload" crossorigin href="/kandelo/assets/preload-helper-D6EpyWyH.js">
+  <link rel="modulepreload" crossorigin href="/kandelo/assets/xterm-B9d0xqMB.js">
+  <link rel="modulepreload" crossorigin href="/kandelo/assets/browser-kernel-host-BM34n6GZ.js">
+  <link rel="modulepreload" crossorigin href="/kandelo/assets/node-vfs.vfs-DzrtBGET.js">
+  <link rel="stylesheet" crossorigin href="/kandelo/assets/xterm-6GBZ9nXN.css">
+  <link rel="stylesheet" crossorigin href="/kandelo/assets/layout-CVR4BuDr.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="sidebar-title">Demos</div>
+    <a href="/kandelo/">Simple Programs</a>
+    <a href="/kandelo/pages/nginx/">nginx</a>
+    <a href="/kandelo/pages/php/">PHP CLI</a>
+    <a href="/kandelo/pages/nginx-php/">nginx + PHP-FPM</a>
+    <a href="/kandelo/pages/mariadb/">MariaDB</a>
+    <a href="/kandelo/pages/redis/">Redis</a>
+    <a href="/kandelo/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
+    <a href="/kandelo/pages/lamp/">WordPress (LEMP)</a>
+    <a href="/kandelo/pages/shell/">Shell</a>
+    <a href="/kandelo/pages/python/">Python</a>
+    <a href="/kandelo/pages/perl/">Perl</a>
+    <a href="/kandelo/pages/ruby/">Ruby</a>
+    <a href="/kandelo/pages/erlang/">Erlang</a>
+    <a href="/kandelo/pages/texlive/">TeX Live</a>
+    <a href="/kandelo/pages/node/" aria-current="page">Node</a>
+    <a class="sidebar-revision" href="https://github.com/brandonpayton/kandelo/commit/767cedf0855b7a260fca4899550b6ba144a67d49" target="_blank" rel="noopener">rev: 767cedf</a>
+  </nav>
+  <div class="main">
+    <div class="main-header">
+      <h1>Node on wasm-posix-kernel</h1>
+      <p class="subtitle">QuickJS-based Node-compatible runtime + npm 10.9.2, running inside a POSIX kernel compiled to WebAssembly</p>
+      <div class="controls" style="padding:0.5rem 0">
+        <select id="presets" style="padding-right:2px">
+          <option value="">Select example</option>
+          <option value="version">node --version</option>
+          <option value="hello">console.log('hello from node-wasm')</option>
+          <option value="process">process.versions</option>
+          <option value="fs">readdir /usr/local/lib/npm</option>
+          <option value="npm-version">npm --version</option>
+          <option value="cowsay">npm install cowsay &amp;&amp; cowsay 'Hello Kandelo'</option>
+        </select>
+        <button id="clear">Clear</button>
+        <span class="hint" style="margin-left:0.5rem;color:#888">↑/↓ history · Enter to run · Ctrl-L to clear · Ctrl-C cancels current line</span>
+      </div>
+    </div>
+    <div class="preview-area">
+      <div class="terminal-area">
+        <div id="terminal"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
