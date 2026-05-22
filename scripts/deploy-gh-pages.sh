@@ -34,6 +34,10 @@ if ! grep -q "service-worker.js" dist/index.html; then
   echo "ERROR: COI script tag not found in dist/index.html"
   exit 1
 fi
+if [ -n "$CORS_PROXY" ] && ! grep -Fq "var CORS_PROXY_URL = \"${CORS_PROXY}\";" dist/service-worker.js; then
+  echo "ERROR: CORS proxy URL was not injected into dist/service-worker.js"
+  exit 1
+fi
 echo "Verification passed."
 echo ""
 
