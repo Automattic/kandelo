@@ -593,6 +593,10 @@ if (typeof window !== "undefined") {
           headers[key] = value;
         });
         headers["host"] = url.host;
+        headers["x-forwarded-host"] = url.host;
+        headers["x-forwarded-prefix"] = appRootPath();
+        headers["x-forwarded-proto"] = url.protocol.replace(":", "");
+        headers["x-forwarded-uri"] = url.pathname + url.search;
 
         // Inject cookies from our jar
         var cookiePath = hasAppPrefix
@@ -680,7 +684,17 @@ if (typeof window !== "undefined") {
           respHeaders.set("Cross-Origin-Resource-Policy", "same-origin");
         }
 
-        return new Response(bridgeResp.body, {
+        var body = bridgeResp.body;
+        if (shouldRewriteAppResponseBody(respHeaders)) {
+          var text = new TextDecoder().decode(body);
+          var rewritten = rewriteSameHostAppUrls(text, url);
+          if (rewritten !== text) {
+            body = new TextEncoder().encode(rewritten);
+            respHeaders.delete("Content-Length");
+          }
+        }
+
+        return new Response(body, {
           status: bridgeResp.status,
           headers: respHeaders,
         });
@@ -694,5 +708,49 @@ if (typeof window !== "undefined") {
         });
       }
     })();
+  }
+
+  function shouldRewriteAppResponseBody(headers) {
+    if (headers.has("Content-Encoding")) return false;
+    var contentType = (headers.get("Content-Type") || "").toLowerCase();
+    return (
+      contentType.indexOf("text/html") === 0 ||
+      contentType.indexOf("text/css") === 0 ||
+      contentType.indexOf("text/javascript") === 0 ||
+      contentType.indexOf("application/javascript") === 0 ||
+      contentType.indexOf("application/json") === 0 ||
+      contentType.indexOf("application/xml") === 0 ||
+      contentType.indexOf("text/xml") === 0 ||
+      contentType.indexOf("image/svg+xml") === 0
+    );
+  }
+
+  function rewriteSameHostAppUrls(text, requestUrl) {
+    var rootPath = appRootPath();
+    var publicOrigin = requestUrl.protocol + "//" + requestUrl.host + "/";
+    var publicBase = requestUrl.protocol + "//" + requestUrl.host + rootPath + "/";
+    var hostPattern = escapeRegExp(requestUrl.host);
+    var appPathPattern = escapeRegExp(rootPath.slice(1));
+    var plain = new RegExp(
+      "http://" + hostPattern + "/(?!" + appPathPattern + "(?:/|$))",
+      "g",
+    );
+    var escapedAppPathPattern = appPathPattern.replace(/\//g, "\\\\/");
+    var escaped = new RegExp(
+      "http:\\\\/\\\\/" + hostPattern + "\\\\/(?!" + escapedAppPathPattern + "(?:\\\\/|$))",
+      "g",
+    );
+    return text
+      .replace(plain, publicBase)
+      .replace(escaped, publicBase.replace(/\//g, "\\/"))
+      .replace(new RegExp("http://" + hostPattern + "/", "g"), publicOrigin)
+      .replace(
+        new RegExp("http:\\\\/\\\\/" + hostPattern + "\\\\/", "g"),
+        publicOrigin.replace(/\//g, "\\/"),
+      );
+  }
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 }
