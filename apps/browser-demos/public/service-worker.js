@@ -398,18 +398,51 @@ if (typeof window !== "undefined") {
    * Fetch a cross-origin URL, routing through the CORS proxy if configured.
    * Returns a Response with CORP headers added so COEP: require-corp is satisfied.
    */
+  function corsSafeResponseHeaders(response) {
+    var headers = new Headers();
+    [
+      "Accept-Ranges",
+      "Cache-Control",
+      "Content-Length",
+      "Content-Range",
+      "Content-Type",
+      "ETag",
+      "Expires",
+      "Last-Modified",
+    ].forEach(function (name) {
+      var value = response.headers.get(name);
+      if (value) headers.set(name, value);
+    });
+
+    // The page is cross-origin isolated. Cross-origin fetch() requests are
+    // allowed by COEP when they pass CORS, and this synthetic response is the
+    // response the page sees. Do not depend on the proxy or upstream server to
+    // provide these policy headers.
+    headers.set("Access-Control-Allow-Origin", self.location.origin);
+    headers.set("Access-Control-Allow-Credentials", "true");
+    headers.set("Access-Control-Expose-Headers", [
+      "Accept-Ranges",
+      "Content-Length",
+      "Content-Range",
+      "Content-Type",
+      "ETag",
+      "Last-Modified",
+      "X-Playground-Cors-Proxy",
+    ].join(", "));
+    headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+    headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+    headers.append("Vary", "Origin");
+    return headers;
+  }
+
   function fetchCrossOrigin(request) {
     var targetUrl = request.url;
 
     // If we have a CORS proxy, route through it
     if (CORS_PROXY_URL) {
       var proxyUrl = CORS_PROXY_URL + targetUrl;
-      return fetch(proxyUrl).then(function (response) {
-        var headers = new Headers(response.headers);
-        headers.set("Cross-Origin-Resource-Policy", "cross-origin");
-        if (!headers.has("Cross-Origin-Embedder-Policy")) {
-          headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-        }
+      return fetch(proxyUrl, { credentials: "omit", mode: "cors" }).then(function (response) {
+        var headers = corsSafeResponseHeaders(response);
         return new Response(response.body, {
           status: response.status,
           statusText: response.statusText,
@@ -423,10 +456,7 @@ if (typeof window !== "undefined") {
       if (response.type === "opaque" || response.type === "opaqueredirect") {
         return response;
       }
-      var headers = new Headers(response.headers);
-      if (!headers.has("Cross-Origin-Resource-Policy")) {
-        headers.set("Cross-Origin-Resource-Policy", "cross-origin");
-      }
+      var headers = corsSafeResponseHeaders(response);
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
