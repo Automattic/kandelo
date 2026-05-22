@@ -461,6 +461,7 @@ function handleSpawn(msg: SpawnMessage) {
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
+    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
 
     if (msg.maxAddr != null) {
       kernelWorker.setMaxAddr(pid, msg.maxAddr);

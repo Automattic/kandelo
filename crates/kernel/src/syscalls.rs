@@ -2,12 +2,13 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
+use wasm_posix_shared::access::{R_OK, W_OK, X_OK};
 use wasm_posix_shared::fcntl_cmd::*;
 use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
 use wasm_posix_shared::flags::*;
 use wasm_posix_shared::flock_op::*;
 use wasm_posix_shared::lock_type::*;
-use wasm_posix_shared::mode::{S_IFCHR, S_IFIFO, S_IFREG};
+use wasm_posix_shared::mode::{S_IFCHR, S_IFDIR, S_IFIFO, S_IFMT, S_IFREG};
 use wasm_posix_shared::seek::*;
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
@@ -549,6 +550,174 @@ fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     }
 }
 
+const S_ISVTX: u32 = 0o1000;
+const AT_EACCESS: u32 = 0x200;
+
+fn has_access_for_ids(uid: u32, gid: u32, st: &WasmStat, amode: u32) -> bool {
+    if amode == 0 {
+        return true;
+    }
+
+    if uid == 0 {
+        if amode & X_OK == 0 {
+            return true;
+        }
+        let file_type = st.st_mode & S_IFMT;
+        return file_type == S_IFDIR || st.st_mode & 0o111 != 0;
+    }
+
+    let available = if uid == st.st_uid {
+        (st.st_mode >> 6) & 0o7
+    } else if gid == st.st_gid {
+        (st.st_mode >> 3) & 0o7
+    } else {
+        st.st_mode & 0o7
+    };
+
+    available & amode == amode
+}
+
+fn has_access(proc: &Process, st: &WasmStat, amode: u32) -> bool {
+    has_access_for_ids(proc.euid, proc.egid, st, amode)
+}
+
+fn check_access(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> {
+    if has_access(proc, st, amode) {
+        Ok(())
+    } else {
+        Err(Errno::EACCES)
+    }
+}
+
+fn check_access_for_ids(uid: u32, gid: u32, st: &WasmStat, amode: u32) -> Result<(), Errno> {
+    if has_access_for_ids(uid, gid, st, amode) {
+        Ok(())
+    } else {
+        Err(Errno::EACCES)
+    }
+}
+
+fn parent_path(path: &[u8]) -> Vec<u8> {
+    if path == b"/" {
+        return alloc::vec![b'/'];
+    }
+    match path.iter().rposition(|&b| b == b'/') {
+        Some(0) | None => alloc::vec![b'/'],
+        Some(pos) => path[..pos].to_vec(),
+    }
+}
+
+fn check_search_dir(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    let st = host.host_stat(path)?;
+    if st.st_mode & S_IFMT != S_IFDIR {
+        return Err(Errno::ENOTDIR);
+    }
+    check_access(proc, &st, X_OK)
+}
+
+fn check_search_path(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    let parent = parent_path(path);
+    check_search_dir_chain(proc, host, &parent)
+}
+
+fn check_search_dir_chain(proc: &Process, host: &mut dyn HostIO, dir: &[u8]) -> Result<(), Errno> {
+    check_search_dir(proc, host, b"/")?;
+    if dir == b"/" {
+        return Ok(());
+    }
+
+    let mut current = Vec::new();
+    for component in dir.split(|&b| b == b'/').filter(|part| !part.is_empty()) {
+        current.push(b'/');
+        current.extend_from_slice(component);
+        check_search_dir(proc, host, &current)?;
+    }
+    Ok(())
+}
+
+fn check_parent_writable(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    let parent = parent_path(path);
+    check_search_dir_chain(proc, host, &parent)?;
+    let st = host.host_stat(&parent)?;
+    check_access(proc, &st, W_OK | X_OK)
+}
+
+fn check_sticky_child(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    let parent = parent_path(path);
+    let parent_st = host.host_stat(&parent)?;
+    if parent_st.st_mode & S_ISVTX == 0 || proc.euid == 0 {
+        return Ok(());
+    }
+
+    let child_st = host.host_lstat(path)?;
+    if proc.euid == parent_st.st_uid || proc.euid == child_st.st_uid {
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
+}
+
+fn open_access_mask(oflags: u32, st: &WasmStat) -> u32 {
+    let mut amode = match oflags & O_ACCMODE {
+        O_WRONLY => W_OK,
+        O_RDWR => R_OK | W_OK,
+        _ => R_OK,
+    };
+    if oflags & O_TRUNC != 0 {
+        amode |= W_OK;
+    }
+    if st.st_mode & S_IFMT == S_IFDIR {
+        amode |= X_OK;
+    }
+    amode
+}
+
+fn check_open_permissions(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    resolved: &[u8],
+    oflags: u32,
+) -> Result<bool, Errno> {
+    check_search_path(proc, host, resolved)?;
+
+    match host.host_stat(resolved) {
+        Ok(st) => {
+            if oflags & O_CREAT != 0 && st.st_mode & S_IFMT == S_IFDIR {
+                return Err(Errno::EISDIR);
+            }
+            check_access(proc, &st, open_access_mask(oflags, &st))?;
+            Ok(false)
+        }
+        Err(Errno::ENOENT) if oflags & O_CREAT != 0 => {
+            check_parent_writable(proc, host, resolved)?;
+            Ok(true)
+        }
+        Err(Errno::ENOENT) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+fn check_owner_or_root(proc: &Process, st: &WasmStat) -> Result<(), Errno> {
+    if proc.euid == 0 || proc.euid == st.st_uid {
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
+}
+
+fn check_exec_path(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    check_search_path(proc, host, path)?;
+    let st = host.host_stat(path)?;
+    if st.st_mode & S_IFMT != S_IFREG {
+        return Err(Errno::EACCES);
+    }
+    check_access(proc, &st, X_OK)
+}
+
+fn requested_id_allowed(current_real: u32, current_effective: u32, requested: u32) -> bool {
+    requested == 0xFFFFFFFF || requested == current_real || requested == current_effective
+}
+
 /// Open a file, returning the new file descriptor number.
 pub fn sys_open(
     proc: &mut Process,
@@ -687,16 +856,12 @@ pub fn sys_open(
         return Ok(fd);
     }
 
-    // POSIX: open() on an existing directory with O_CREAT returns EISDIR
-    if oflags & O_CREAT != 0 {
-        if let Ok(st) = host.host_stat(&resolved) {
-            if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
-                return Err(Errno::EISDIR);
-            }
-        }
-    }
+    let created = check_open_permissions(proc, host, &resolved, oflags)?;
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
+    if created {
+        host.host_chown(&resolved, proc.euid, proc.egid)?;
+    }
 
     let file_type = if oflags & O_DIRECTORY != 0 {
         FileType::Directory
@@ -2993,6 +3158,7 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     }
     // VFS is the source of truth for ownership: host_stat already returns the
     // file's real uid/gid, so just propagate.
+    check_search_path(proc, host, &resolved)?;
     host.host_stat(&resolved)
 }
 
@@ -3060,6 +3226,7 @@ pub fn sys_lstat(
     }
     // VFS is the source of truth for ownership: host_lstat already returns the
     // link's real uid/gid, so just propagate.
+    check_search_path(proc, host, &resolved)?;
     host.host_lstat(&resolved)
 }
 
@@ -3071,16 +3238,22 @@ pub fn sys_mkdir(
 ) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
     let effective_mode = mode & !proc.umask;
-    host.host_mkdir(&resolved, effective_mode)
+    check_parent_writable(proc, host, &resolved)?;
+    host.host_mkdir(&resolved, effective_mode)?;
+    host.host_chown(&resolved, proc.euid, proc.egid)
 }
 
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    check_parent_writable(proc, host, &resolved)?;
+    check_sticky_child(proc, host, &resolved)?;
     host.host_rmdir(&resolved)
 }
 
 pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    check_parent_writable(proc, host, &resolved)?;
+    check_sticky_child(proc, host, &resolved)?;
     // AF_UNIX bind() creates a real host inode, so unlink must remove both the
     // registry entry and the inode. ENOENT from host_unlink is tolerated because
     // some hosts (test mocks) don't track the inode.
@@ -3117,6 +3290,12 @@ pub fn sys_rename(
 ) -> Result<(), Errno> {
     let old = resolve_path(oldpath, &proc.cwd);
     let new = resolve_path(newpath, &proc.cwd);
+    check_parent_writable(proc, host, &old)?;
+    check_parent_writable(proc, host, &new)?;
+    check_sticky_child(proc, host, &old)?;
+    if host.host_lstat(&new).is_ok() {
+        check_sticky_child(proc, host, &new)?;
+    }
     host.host_rename(&old, &new)
 }
 
@@ -3128,6 +3307,8 @@ pub fn sys_link(
 ) -> Result<(), Errno> {
     let old = resolve_path(oldpath, &proc.cwd);
     let new = resolve_path(newpath, &proc.cwd);
+    check_search_path(proc, host, &old)?;
+    check_parent_writable(proc, host, &new)?;
     host.host_link(&old, &new)
 }
 
@@ -3139,6 +3320,7 @@ pub fn sys_symlink(
 ) -> Result<(), Errno> {
     // Note: symlink target is stored as-is (not resolved), but linkpath is resolved
     let link = resolve_path(linkpath, &proc.cwd);
+    check_parent_writable(proc, host, &link)?;
     host.host_symlink(target, &link)
 }
 
@@ -3159,6 +3341,7 @@ pub fn sys_readlink(
         return Err(Errno::EINVAL);
     }
 
+    check_search_path(proc, host, &resolved)?;
     host.host_readlink(&resolved, buf)
 }
 
@@ -3169,6 +3352,9 @@ pub fn sys_chmod(
     mode: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    check_owner_or_root(proc, &st)?;
     host.host_chmod(&resolved, mode)
 }
 
@@ -3180,6 +3366,10 @@ pub fn sys_chown(
     gid: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    if proc.euid != 0 {
+        return Err(Errno::EPERM);
+    }
+    check_search_path(proc, host, &resolved)?;
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -3190,6 +3380,9 @@ pub fn sys_access(
     amode: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    if amode & !(R_OK | W_OK | X_OK) != 0 {
+        return Err(Errno::EINVAL);
+    }
     if match_virtual_device(&resolved).is_some()
         || match_dev_fd(&resolved).is_some()
         || match_pty_stat(&resolved, 0, 0).is_some()
@@ -3204,7 +3397,9 @@ pub fn sys_access(
         }
         return Ok(());
     }
-    host.host_access(&resolved, amode)
+    check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    check_access_for_ids(proc.uid, proc.gid, &st, amode)
 }
 
 /// Change the current working directory.
@@ -3228,11 +3423,13 @@ pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
         return Ok(());
     }
     // Validate the path exists and is a directory
+    check_search_path(proc, host, &resolved)?;
     let stat = host.host_stat(&resolved)?;
     let file_type = stat.st_mode & wasm_posix_shared::mode::S_IFMT;
     if file_type != wasm_posix_shared::mode::S_IFDIR {
         return Err(Errno::ENOTDIR);
     }
+    check_access(proc, &stat, X_OK)?;
     proc.cwd = resolved;
     Ok(())
 }
@@ -3266,6 +3463,12 @@ pub fn sys_getcwd(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
 /// Open a directory for reading. Returns a directory stream handle.
 pub fn sys_opendir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<i32, Errno> {
     let resolved = crate::path::resolve_path(path, &proc.cwd);
+    check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    if st.st_mode & S_IFMT != S_IFDIR {
+        return Err(Errno::ENOTDIR);
+    }
+    check_access(proc, &st, R_OK | X_OK)?;
     let host_handle = host.host_opendir(&resolved)?;
     let stream = DirStream {
         host_handle,
@@ -3962,6 +4165,7 @@ pub fn sys_execve(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
     // This is critical for posix_spawn with chdir file actions — the child's CWD
     // may differ from the initial data directory the host knows about.
     let resolved = crate::path::resolve_path(path, &proc.cwd);
+    check_exec_path(proc, host, &resolved)?;
     host.host_exec(&resolved)
 }
 
@@ -3986,11 +4190,13 @@ pub fn sys_execveat(
             return Err(Errno::ENOENT);
         }
         let exec_path = ofd.path.clone();
+        check_exec_path(proc, host, &exec_path)?;
         host.host_exec(&exec_path)
     } else if path.is_empty() {
         Err(Errno::ENOENT)
     } else if path[0] == b'/' {
         // Absolute path — ignore dirfd
+        check_exec_path(proc, host, path)?;
         host.host_exec(path)
     } else {
         // Relative path — resolve against dirfd or CWD
@@ -4004,6 +4210,7 @@ pub fn sys_execveat(
             ofd.path.clone()
         };
         let resolved = crate::path::resolve_path(path, &base);
+        check_exec_path(proc, host, &resolved)?;
         host.host_exec(&resolved)
     }
 }
@@ -4538,6 +4745,9 @@ pub fn sys_utimensat(
         (sec, nsec, sec, nsec)
     };
 
+    check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    check_owner_or_root(proc, &st)?;
     host.host_utimensat(&resolved, atime_sec, atime_nsec, mtime_sec, mtime_nsec)
 }
 
@@ -5604,11 +5814,13 @@ pub fn sys_bind(
             // code lives at the merge base but didn't survive into the
             // rebased branch.)
             use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
+            check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
             let h = match host.host_open(&resolved, O_CREAT | O_EXCL | O_WRONLY, 0o600) {
                 Ok(h) => h,
                 Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
                 Err(e) => return Err(e),
             };
+            host.host_chown(&resolved, proc.euid, proc.egid)?;
             let _ = host.host_close(h);
 
             // Register in global Unix socket registry. If a stale entry exists
@@ -6688,16 +6900,12 @@ pub fn sys_openat(
         mode
     };
 
-    // POSIX: open() on an existing directory with O_CREAT returns EISDIR
-    if oflags & O_CREAT != 0 {
-        if let Ok(st) = host.host_stat(&resolved) {
-            if st.st_mode & wasm_posix_shared::mode::S_IFMT == wasm_posix_shared::mode::S_IFDIR {
-                return Err(Errno::EISDIR);
-            }
-        }
-    }
+    let created = check_open_permissions(proc, host, &resolved, oflags)?;
 
     let host_handle = host.host_open(&resolved, oflags, effective_mode)?;
+    if created {
+        host.host_chown(&resolved, proc.euid, proc.egid)?;
+    }
 
     let file_type = if oflags & O_DIRECTORY != 0 {
         FileType::Directory
@@ -6792,6 +7000,7 @@ pub fn sys_fstatat(
     }
     // VFS is the source of truth for ownership: host_stat / host_lstat
     // already return the real uid/gid, so just propagate.
+    check_search_path(proc, host, &resolved)?;
     if flags & AT_SYMLINK_NOFOLLOW != 0 {
         host.host_lstat(&resolved)
     } else {
@@ -6812,9 +7021,12 @@ pub fn sys_unlinkat(
     use wasm_posix_shared::flags::AT_REMOVEDIR;
 
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    check_parent_writable(proc, host, &resolved)?;
     if flags & AT_REMOVEDIR != 0 {
+        check_sticky_child(proc, host, &resolved)?;
         host.host_rmdir(&resolved)
     } else {
+        check_sticky_child(proc, host, &resolved)?;
         // AF_UNIX bind() creates a host inode; remove both the registry
         // entry and the inode. (Same as sys_unlink.)
         {
@@ -6853,7 +7065,9 @@ pub fn sys_mkdirat(
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
     let effective_mode = mode & !proc.umask;
-    host.host_mkdir(&resolved, effective_mode)
+    check_parent_writable(proc, host, &resolved)?;
+    host.host_mkdir(&resolved, effective_mode)?;
+    host.host_chown(&resolved, proc.euid, proc.egid)
 }
 
 /// renameat -- rename relative to directory fds.
@@ -6867,6 +7081,12 @@ pub fn sys_renameat(
 ) -> Result<(), Errno> {
     let old_resolved = resolve_at_path(proc, olddirfd, oldpath)?;
     let new_resolved = resolve_at_path(proc, newdirfd, newpath)?;
+    check_parent_writable(proc, host, &old_resolved)?;
+    check_parent_writable(proc, host, &new_resolved)?;
+    check_sticky_child(proc, host, &old_resolved)?;
+    if host.host_lstat(&new_resolved).is_ok() {
+        check_sticky_child(proc, host, &new_resolved)?;
+    }
     host.host_rename(&old_resolved, &new_resolved)
 }
 
@@ -8576,7 +8796,11 @@ pub fn sys_fchmod(
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     match ofd.file_type {
-        FileType::Regular | FileType::Directory => host.host_fchmod(ofd.host_handle, mode),
+        FileType::Regular | FileType::Directory => {
+            let st = host.host_fstat(ofd.host_handle)?;
+            check_owner_or_root(proc, &st)?;
+            host.host_fchmod(ofd.host_handle, mode)
+        }
         // CharDevice / Pipe / Socket / PtyMaster / PtySlave / etc.: Linux
         // allows fchmod on these (e.g. on /dev/stderr or a unix-domain
         // socket fd — daemons like dinit do this routinely and abort on
@@ -8600,7 +8824,12 @@ pub fn sys_fchown(
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
     match ofd.file_type {
-        FileType::Regular | FileType::Directory => host.host_fchown(ofd.host_handle, uid, gid),
+        FileType::Regular | FileType::Directory => {
+            if proc.euid != 0 {
+                return Err(Errno::EPERM);
+            }
+            host.host_fchown(ofd.host_handle, uid, gid)
+        }
         // Match sys_fchmod above — accept the call on all fd types so
         // daemons that touch ownership during startup don't fail.
         _ => Ok(()),
@@ -8690,8 +8919,10 @@ pub fn sys_setrlimit(proc: &mut Process, resource: u32, soft: u64, hard: u64) ->
     if soft > hard {
         return Err(Errno::EINVAL);
     }
-    // Non-root: cannot raise hard limit above current
-    // (In our simulated environment, we allow it since uid check is simulated)
+    let current_hard = proc.rlimits[resource as usize][1];
+    if proc.euid != 0 && hard > current_hard {
+        return Err(Errno::EPERM);
+    }
     proc.rlimits[resource as usize] = [soft, hard];
 
     // RLIMIT_NOFILE (resource 7): sync fd table max_fds with new soft limit.
@@ -8721,9 +8952,15 @@ pub fn sys_faccessat(
     dirfd: i32,
     path: &[u8],
     amode: u32,
-    _flags: u32,
+    flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    if amode & !(R_OK | W_OK | X_OK) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if flags & !(AT_EACCESS | wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW) != 0 {
+        return Err(Errno::EINVAL);
+    }
     if match_virtual_device(&resolved).is_some()
         || match_dev_fd(&resolved).is_some()
         || crate::devfs::match_devfs_dir(&resolved).is_some()
@@ -8736,7 +8973,18 @@ pub fn sys_faccessat(
         }
         return Ok(());
     }
-    host.host_access(&resolved, amode)
+    check_search_path(proc, host, &resolved)?;
+    let st = if flags & wasm_posix_shared::flags::AT_SYMLINK_NOFOLLOW != 0 {
+        host.host_lstat(&resolved)?
+    } else {
+        host.host_stat(&resolved)?
+    };
+    let (uid, gid) = if flags & AT_EACCESS != 0 {
+        (proc.euid, proc.egid)
+    } else {
+        (proc.uid, proc.gid)
+    };
+    check_access_for_ids(uid, gid, &st, amode)
 }
 
 /// fchmodat -- change file mode relative to directory fd.
@@ -8752,6 +9000,9 @@ pub fn sys_fchmodat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    check_owner_or_root(proc, &st)?;
     host.host_chmod(&resolved, mode)
 }
 
@@ -8766,6 +9017,10 @@ pub fn sys_fchownat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    if proc.euid != 0 {
+        return Err(Errno::EPERM);
+    }
+    check_search_path(proc, host, &resolved)?;
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -8781,6 +9036,8 @@ pub fn sys_linkat(
 ) -> Result<(), Errno> {
     let old_resolved = resolve_at_path(proc, olddirfd, oldpath)?;
     let new_resolved = resolve_at_path(proc, newdirfd, newpath)?;
+    check_search_path(proc, host, &old_resolved)?;
+    check_parent_writable(proc, host, &new_resolved)?;
     host.host_link(&old_resolved, &new_resolved)
 }
 
@@ -8796,6 +9053,7 @@ pub fn sys_symlinkat(
     linkpath: &[u8],
 ) -> Result<(), Errno> {
     let resolved_link = resolve_at_path(proc, newdirfd, linkpath)?;
+    check_parent_writable(proc, host, &resolved_link)?;
     host.host_symlink(target, &resolved_link)
 }
 
@@ -8817,6 +9075,7 @@ pub fn sys_readlinkat(
         return Err(Errno::EINVAL);
     }
 
+    check_search_path(proc, host, &resolved)?;
     host.host_readlink(&resolved, buf)
 }
 
@@ -9167,6 +9426,9 @@ pub fn sys_setpriority(proc: &mut Process, which: i32, who: u32, prio: i32) -> R
     }
     // Clamp to [-20, 19]
     let clamped = prio.max(-20).min(19);
+    if proc.euid != 0 && clamped < proc.nice {
+        return Err(Errno::EPERM);
+    }
     proc.nice = clamped;
     Ok(())
 }
@@ -9220,6 +9482,7 @@ pub fn sys_realpath(
         candidate.extend_from_slice(&component);
 
         // lstat to check if this component is a symlink
+        check_search_path(proc, host, &candidate)?;
         match host.host_lstat(&candidate) {
             Ok(stat) => {
                 // S_IFLNK = 0o120000 = 0xA000
@@ -9289,6 +9552,7 @@ pub fn sys_realpath(
     }
 
     // Final existence check
+    check_search_path(proc, host, &resolved)?;
     host.host_stat(&resolved)?;
 
     let len = resolved.len();
@@ -9421,7 +9685,14 @@ pub fn sys_fstatfs(
 }
 
 /// setresuid — set real, effective, and saved user IDs (simulated).
-pub fn sys_setresuid(proc: &mut Process, ruid: u32, euid: u32, _suid: u32) -> Result<(), Errno> {
+pub fn sys_setresuid(proc: &mut Process, ruid: u32, euid: u32, suid: u32) -> Result<(), Errno> {
+    if proc.euid != 0
+        && (!requested_id_allowed(proc.uid, proc.euid, ruid)
+            || !requested_id_allowed(proc.uid, proc.euid, euid)
+            || !requested_id_allowed(proc.uid, proc.euid, suid))
+    {
+        return Err(Errno::EPERM);
+    }
     if ruid != 0xFFFFFFFF {
         proc.uid = ruid;
     }
@@ -9437,7 +9708,14 @@ pub fn sys_getresuid(proc: &Process) -> (u32, u32, u32) {
 }
 
 /// setresgid — set real, effective, and saved group IDs (simulated).
-pub fn sys_setresgid(proc: &mut Process, rgid: u32, egid: u32, _sgid: u32) -> Result<(), Errno> {
+pub fn sys_setresgid(proc: &mut Process, rgid: u32, egid: u32, sgid: u32) -> Result<(), Errno> {
+    if proc.euid != 0
+        && (!requested_id_allowed(proc.gid, proc.egid, rgid)
+            || !requested_id_allowed(proc.gid, proc.egid, egid)
+            || !requested_id_allowed(proc.gid, proc.egid, sgid))
+    {
+        return Err(Errno::EPERM);
+    }
     if rgid != 0xFFFFFFFF {
         proc.gid = rgid;
     }
@@ -9464,7 +9742,10 @@ pub fn sys_getgroups(proc: &Process, size: u32) -> Result<(u32, u32), Errno> {
 }
 
 /// setgroups — set supplementary group IDs (no-op).
-pub fn sys_setgroups(_proc: &mut Process, _size: u32) -> Result<(), Errno> {
+pub fn sys_setgroups(proc: &mut Process, _size: u32) -> Result<(), Errno> {
+    if proc.euid != 0 {
+        return Err(Errno::EPERM);
+    }
     Ok(())
 }
 
@@ -9588,6 +9869,71 @@ mod tests {
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn test_path_is_dir(path: &[u8]) -> bool {
+        path.ends_with(b"/")
+            || path.ends_with(b"dir")
+            || matches!(
+                path,
+                b"/" | b"/absolute"
+                    | b"/base"
+                    | b"/base/dir/child"
+                    | b"/bin"
+                    | b"/data"
+                    | b"/dev"
+                    | b"/dst"
+                    | b"/etc"
+                    | b"/home"
+                    | b"/home/user"
+                    | b"/opt"
+                    | b"/root"
+                    | b"/some"
+                    | b"/src"
+                    | b"/srv"
+                    | b"/test"
+                    | b"/tmp"
+                    | b"/usr"
+                    | b"/usr/bin"
+                    | b"/var"
+                    | b"/wrong"
+                    | b"/a"
+                    | b"/a/b"
+                    | b"/a/c"
+            )
+    }
+
+    fn test_default_mode(path: &[u8]) -> u32 {
+        if test_path_is_dir(path) {
+            S_IFDIR | 0o755
+        } else if path.starts_with(b"/bin/") || path.starts_with(b"/usr/bin/") {
+            S_IFREG | 0o755
+        } else {
+            S_IFREG | 0o644
+        }
+    }
+
+    fn test_stat_with_mode(mode: u32) -> WasmStat {
+        WasmStat {
+            st_dev: 0,
+            st_ino: 1,
+            st_mode: mode,
+            st_nlink: 1,
+            st_uid: 0,
+            st_gid: 0,
+            st_size: 1024,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
+            _pad: 0,
+        }
+    }
+
+    fn test_default_stat(path: &[u8]) -> WasmStat {
+        test_stat_with_mode(test_default_mode(path))
+    }
+
     /// Mock host I/O for testing.
     struct MockHostIO {
         next_handle: i64,
@@ -9600,9 +9946,11 @@ mod tests {
         /// Per-path owner overrides for host_stat / host_lstat. Mirrors how a real
         /// host-side VFS owns ownership; tests use `set_file_with_owner` to seed.
         file_owners: std::collections::HashMap<Vec<u8>, (u32, u32)>,
+        file_modes: std::collections::HashMap<Vec<u8>, u32>,
         /// Per-handle owner mapping captured at host_open time so host_fstat
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
+        handle_paths: std::collections::HashMap<i64, Vec<u8>>,
         missing_paths: std::collections::HashSet<Vec<u8>>,
         statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
     }
@@ -9618,7 +9966,9 @@ mod tests {
                 sigsuspend_error: false,
                 clock_time: (1234567890, 123456789),
                 file_owners: std::collections::HashMap::new(),
+                file_modes: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
+                handle_paths: std::collections::HashMap::new(),
                 missing_paths: std::collections::HashSet::new(),
                 statfs_by_path: std::collections::HashMap::new(),
             }
@@ -9637,6 +9987,18 @@ mod tests {
             _content: &[u8],
         ) {
             self.file_owners.insert(path.to_vec(), (uid, gid));
+            let full_mode = if _mode & S_IFMT != 0 {
+                _mode
+            } else {
+                S_IFREG | (_mode & 0o7777)
+            };
+            self.file_modes.insert(path.to_vec(), full_mode);
+        }
+
+        fn set_dir_with_owner(&mut self, path: &[u8], uid: u32, gid: u32, mode: u32) {
+            self.file_owners.insert(path.to_vec(), (uid, gid));
+            self.file_modes
+                .insert(path.to_vec(), S_IFDIR | (mode & 0o7777));
         }
 
         fn set_missing_path(&mut self, path: &[u8]) {
@@ -9649,14 +10011,21 @@ mod tests {
     }
 
     impl HostIO for MockHostIO {
-        fn host_open(&mut self, path: &[u8], _flags: u32, _mode: u32) -> Result<i64, Errno> {
+        fn host_open(&mut self, path: &[u8], flags: u32, mode: u32) -> Result<i64, Errno> {
             let handle = self.next_handle;
             self.next_handle += 1;
+            if flags & O_CREAT != 0 {
+                self.missing_paths.remove(path);
+                self.file_modes
+                    .entry(path.to_vec())
+                    .or_insert(S_IFREG | (mode & 0o7777));
+            }
             // Capture path -> owner mapping so host_fstat(handle) returns the
             // same uid/gid host_stat(path) would.
             if let Some(&owner) = self.file_owners.get(path) {
                 self.handle_owners.insert(handle, owner);
             }
+            self.handle_paths.insert(handle, path.to_vec());
             Ok(handle)
         }
 
@@ -9681,10 +10050,20 @@ mod tests {
 
         fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno> {
             let (uid, gid) = self.handle_owners.get(&handle).copied().unwrap_or((0, 0));
+            let mode = self
+                .handle_paths
+                .get(&handle)
+                .map(|path| {
+                    self.file_modes
+                        .get(path)
+                        .copied()
+                        .unwrap_or_else(|| test_default_mode(path))
+                })
+                .unwrap_or(S_IFREG | 0o644);
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 0,
-                st_mode: S_IFREG | 0o644,
+                st_mode: mode,
                 st_nlink: 1,
                 st_uid: uid,
                 st_gid: gid,
@@ -9703,16 +10082,11 @@ mod tests {
             if self.missing_paths.contains(path) {
                 return Err(Errno::ENOENT);
             }
-            // Return S_IFDIR for paths that look like directories
-            let is_dir = path.ends_with(b"dir")
-                || path.ends_with(b"tmp")
-                || path.ends_with(b"/")
-                || path == b"/";
-            let mode = if is_dir {
-                S_IFDIR | 0o755
-            } else {
-                S_IFREG | 0o644
-            };
+            let mode = self
+                .file_modes
+                .get(path)
+                .copied()
+                .unwrap_or_else(|| test_default_mode(path));
             let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
             Ok(WasmStat {
                 st_dev: 0,
@@ -9736,14 +10110,12 @@ mod tests {
             // Return S_IFLNK for paths containing "link" (for symlink tests),
             // otherwise return regular file/directory mode.
             let is_symlink = path.windows(4).any(|w| w == b"link");
-            let is_dir = path.ends_with(b"/") || path == b"/";
             let mode = if is_symlink {
                 S_IFLNK | 0o777
-            } else if is_dir {
-                S_IFDIR | 0o755
             } else {
-                S_IFREG | 0o644
+                test_default_mode(path)
             };
+            let mode = self.file_modes.get(path).copied().unwrap_or(mode);
             let (uid, gid) = self.file_owners.get(path).copied().unwrap_or((0, 0));
             Ok(WasmStat {
                 st_dev: 0,
@@ -9774,7 +10146,10 @@ mod tests {
                 .unwrap_or_else(default_statfs))
         }
 
-        fn host_mkdir(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> {
+        fn host_mkdir(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
+            self.missing_paths.remove(path);
+            self.file_modes
+                .insert(path.to_vec(), S_IFDIR | (mode & 0o7777));
             Ok(())
         }
         fn host_rmdir(&mut self, _path: &[u8]) -> Result<(), Errno> {
@@ -9800,7 +10175,14 @@ mod tests {
             Ok(n)
         }
 
-        fn host_chmod(&mut self, _path: &[u8], _mode: u32) -> Result<(), Errno> {
+        fn host_chmod(&mut self, path: &[u8], mode: u32) -> Result<(), Errno> {
+            let old = self
+                .file_modes
+                .get(path)
+                .copied()
+                .unwrap_or(S_IFREG | 0o644);
+            self.file_modes
+                .insert(path.to_vec(), (old & S_IFMT) | (mode & 0o7777));
             Ok(())
         }
         fn host_chown(&mut self, path: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
@@ -9808,6 +10190,11 @@ mod tests {
             // host_stat(path) must return the new uid/gid. Tests rely on this
             // to verify sys_chown propagates through to the host VFS.
             self.file_owners.insert(path.to_vec(), (uid, gid));
+            for (handle, handle_path) in &self.handle_paths {
+                if handle_path.as_slice() == path {
+                    self.handle_owners.insert(*handle, (uid, gid));
+                }
+            }
             Ok(())
         }
         fn host_access(&mut self, _path: &[u8], _amode: u32) -> Result<(), Errno> {
@@ -10030,6 +10417,15 @@ mod tests {
         fn fb_write(&mut self, _pid: i32, _offset: usize, _bytes: &[u8]) {}
     }
 
+    fn user_process(pid: u32) -> Process {
+        let mut proc = Process::new(pid);
+        proc.uid = 1000;
+        proc.euid = 1000;
+        proc.gid = 1000;
+        proc.egid = 1000;
+        proc
+    }
+
     #[test]
     fn test_open_close_cycle() {
         let mut proc = Process::new(1);
@@ -10042,6 +10438,137 @@ mod tests {
 
         // fd 3 should now be EBADF
         assert_eq!(proc.fd_table.get(fd), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_non_root_create_in_root_denied() {
+        let mut proc = user_process(10);
+        let mut host = MockHostIO::new();
+        host.set_missing_path(b"/owned-by-root-created");
+
+        let err = sys_open(
+            &mut proc,
+            &mut host,
+            b"/owned-by-root-created",
+            O_WRONLY | O_CREAT,
+            0o644,
+        )
+        .unwrap_err();
+
+        assert_eq!(err, Errno::EACCES);
+    }
+
+    #[test]
+    fn test_non_root_create_in_owned_home_allowed_and_chowned() {
+        let mut proc = user_process(11);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/home", 0, 0, 0o755);
+        host.set_dir_with_owner(b"/home/user", 1000, 1000, 0o755);
+        host.set_missing_path(b"/home/user/new-file");
+
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/home/user/new-file",
+            O_WRONLY | O_CREAT,
+            0o644,
+        )
+        .unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+
+        let st = host.host_stat(b"/home/user/new-file").unwrap();
+        assert_eq!(st.st_uid, 1000);
+        assert_eq!(st.st_gid, 1000);
+        assert_eq!(st.st_mode & 0o777, 0o644);
+    }
+
+    #[test]
+    fn test_non_root_access_write_root_denied() {
+        let mut proc = user_process(12);
+        let mut host = MockHostIO::new();
+
+        let err = sys_access(&mut proc, &mut host, b"/", W_OK).unwrap_err();
+
+        assert_eq!(err, Errno::EACCES);
+    }
+
+    #[test]
+    fn test_non_root_chdir_root_home_denied() {
+        let mut proc = user_process(13);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/root", 0, 0, 0o700);
+
+        let err = sys_chdir(&mut proc, &mut host, b"/root").unwrap_err();
+
+        assert_eq!(err, Errno::EACCES);
+    }
+
+    #[test]
+    fn test_non_root_exec_without_execute_denied() {
+        let mut proc = user_process(14);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/home/user", 1000, 1000, 0o755);
+        host.set_file_with_owner(b"/home/user/script", 1000, 1000, 0o644, b"");
+
+        let err = sys_execve(&mut proc, &mut host, b"/home/user/script").unwrap_err();
+
+        assert_eq!(err, Errno::EACCES);
+    }
+
+    #[test]
+    fn test_non_root_unlink_sticky_other_file_denied() {
+        let mut proc = user_process(15);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/tmp", 0, 0, 0o1777);
+        host.set_file_with_owner(b"/tmp/root-owned", 0, 0, 0o644, b"");
+
+        let err = sys_unlink(&mut proc, &mut host, b"/tmp/root-owned").unwrap_err();
+
+        assert_eq!(err, Errno::EPERM);
+    }
+
+    #[test]
+    fn test_non_root_readlink_in_private_dir_denied() {
+        let mut proc = user_process(16);
+        let mut host = MockHostIO::new();
+        host.set_dir_with_owner(b"/root", 0, 0, 0o700);
+        host.set_file_with_owner(b"/root/link", 0, 0, 0o777, b"");
+        let mut buf = [0u8; 256];
+
+        let err = sys_readlink(&mut proc, &mut host, b"/root/link", &mut buf).unwrap_err();
+
+        assert_eq!(err, Errno::EACCES);
+    }
+
+    #[test]
+    fn test_non_root_setresuid_to_root_denied() {
+        let mut proc = user_process(17);
+
+        let err = sys_setresuid(&mut proc, 0, 0, 0xFFFFFFFF).unwrap_err();
+
+        assert_eq!(err, Errno::EPERM);
+        assert_eq!(proc.uid, 1000);
+        assert_eq!(proc.euid, 1000);
+    }
+
+    #[test]
+    fn test_non_root_setresgid_to_root_denied() {
+        let mut proc = user_process(18);
+
+        let err = sys_setresgid(&mut proc, 0, 0, 0xFFFFFFFF).unwrap_err();
+
+        assert_eq!(err, Errno::EPERM);
+        assert_eq!(proc.gid, 1000);
+        assert_eq!(proc.egid, 1000);
+    }
+
+    #[test]
+    fn test_non_root_setgroups_denied() {
+        let mut proc = user_process(19);
+
+        let err = sys_setgroups(&mut proc, 0).unwrap_err();
+
+        assert_eq!(err, Errno::EPERM);
     }
 
     #[test]
@@ -14028,15 +14555,7 @@ mod tests {
         }
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_stat_path = path.to_vec();
-            let is_dir = path.ends_with(b"dir")
-                || path.ends_with(b"tmp")
-                || path.ends_with(b"/")
-                || path == b"/";
-            let mode = if is_dir {
-                S_IFDIR | 0o755
-            } else {
-                S_IFREG | 0o644
-            };
+            let mode = test_default_mode(path);
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 1,
@@ -14057,15 +14576,7 @@ mod tests {
         fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_lstat_path = path.to_vec();
             // Return regular file/dir by default (not symlink) so realpath works
-            let is_dir = path.ends_with(b"dir")
-                || path.ends_with(b"tmp")
-                || path.ends_with(b"/")
-                || path == b"/";
-            let mode = if is_dir {
-                S_IFDIR | 0o755
-            } else {
-                S_IFREG | 0o644
-            };
+            let mode = test_default_mode(path);
             Ok(WasmStat {
                 st_dev: 0,
                 st_ino: 2,
@@ -14452,7 +14963,7 @@ mod tests {
         let dirfd = open_dir_fd(&mut proc, &mut host, b"/var/dir");
         let result = sys_faccessat(&mut proc, &mut host, dirfd, b"file", 0, 0);
         assert!(result.is_ok());
-        assert_eq!(host.last_access_path, b"/var/dir/file");
+        assert_eq!(host.last_stat_path, b"/var/dir/file");
     }
 
     #[test]
@@ -16660,23 +17171,8 @@ mod tests {
             fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
                 Ok(unsafe { core::mem::zeroed() })
             }
-            fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
-                Ok(WasmStat {
-                    st_dev: 0,
-                    st_ino: 1,
-                    st_mode: S_IFREG | 0o644,
-                    st_nlink: 1,
-                    st_uid: 0,
-                    st_gid: 0,
-                    st_size: 100,
-                    st_atime_sec: 0,
-                    st_atime_nsec: 0,
-                    st_mtime_sec: 0,
-                    st_mtime_nsec: 0,
-                    st_ctime_sec: 0,
-                    st_ctime_nsec: 0,
-                    _pad: 0,
-                })
+            fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+                Ok(test_default_stat(path))
             }
             fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
                 let mode = if path == b"/tmp/mylink" {
@@ -16918,8 +17414,8 @@ mod tests {
             fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
                 Ok(unsafe { core::mem::zeroed() })
             }
-            fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
-                Ok(unsafe { core::mem::zeroed() })
+            fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+                Ok(test_default_stat(path))
             }
             fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
                 let mode = if path == b"/tmp/loop1" || path == b"/tmp/loop2" {
@@ -17162,23 +17658,8 @@ mod tests {
             fn host_fstat(&mut self, _h: i64) -> Result<WasmStat, Errno> {
                 Ok(unsafe { core::mem::zeroed() })
             }
-            fn host_stat(&mut self, _p: &[u8]) -> Result<WasmStat, Errno> {
-                Ok(WasmStat {
-                    st_dev: 0,
-                    st_ino: 1,
-                    st_mode: S_IFREG | 0o644,
-                    st_nlink: 1,
-                    st_uid: 0,
-                    st_gid: 0,
-                    st_size: 100,
-                    st_atime_sec: 0,
-                    st_atime_nsec: 0,
-                    st_mtime_sec: 0,
-                    st_mtime_nsec: 0,
-                    st_ctime_sec: 0,
-                    st_ctime_nsec: 0,
-                    _pad: 0,
-                })
+            fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
+                Ok(test_default_stat(path))
             }
             fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
                 let mode = if path == b"/a/b/sym" {

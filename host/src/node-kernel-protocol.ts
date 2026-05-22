@@ -48,6 +48,10 @@ export interface SpawnMessage {
   argv: string[];
   env?: string[];
   cwd?: string;
+  /** Initial real/effective user ID for the process. Defaults to root. */
+  uid?: number;
+  /** Initial real/effective group ID for the process. Defaults to root. */
+  gid?: number;
   pty?: boolean;
   /** Initial PTY winsize. When set with `pty: true`, the kernel applies
    *  the winsize before the wasm program starts so the first ioctl

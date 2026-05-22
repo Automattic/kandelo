@@ -124,7 +124,7 @@ export interface KernelLike {
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; pty?: boolean; stdin?: Uint8Array },
+    options?: { env?: string[]; cwd?: string; uid?: number; gid?: number; pty?: boolean; stdin?: Uint8Array },
   ): Promise<number>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
@@ -545,6 +545,8 @@ export interface LiveKernelHostOptions {
     argv: string[];
     env?: string[];
     cwd?: string;
+    uid?: number;
+    gid?: number;
   };
   /** Initial status. Defaults to "idle". */
   status?: MachineStatus;
@@ -572,7 +574,13 @@ const DEFAULT_DESCRIPTOR: BootDescriptor = {
   },
   packages: [],
   mounts: [],
-  boot: { argv: ["/bin/sh"], cwd: "/", env: {} },
+  boot: {
+    argv: ["/bin/sh"],
+    cwd: "/root",
+    env: { HOME: "/root", USER: "root", LOGNAME: "root" },
+    uid: 0,
+    gid: 0,
+  },
   caps: {},
 };
 
@@ -863,6 +871,8 @@ export class LiveKernelHost implements KernelHost {
         pty: true,
         env: shell.env,
         cwd: shell.cwd,
+        uid: shell.uid,
+        gid: shell.gid,
       });
       const pid = kernel.nextPid - 1;
       this.shellPids.set(pid, sessionKey);

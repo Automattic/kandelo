@@ -28,6 +28,9 @@ const canvas = document.getElementById("fb") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 
 const WAD_VFS_PATH = "/usr/local/games/doom/doom1.wad";
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
+const DEMO_HOME = "/home/user";
 
 // DOOM shareware IWAD — id Software, freely redistributable.
 // Mirror: SlitaZ Linux package sources (hosted at iBiblio). This pin
@@ -197,7 +200,17 @@ startBtn.addEventListener("click", async () => {
   const exitPromise = kernel.spawn(
     fbdoomBytes,
     ["fbdoom", "-iwad", WAD_VFS_PATH],
-    { env: ["HOME=/home", "TERM=linux"], cwd: "/home" },
+    {
+      env: [
+        `HOME=${DEMO_HOME}`,
+        "TERM=linux",
+        "USER=user",
+        "LOGNAME=user",
+      ],
+      cwd: DEMO_HOME,
+      uid: DEMO_UID,
+      gid: DEMO_GID,
+    },
   );
 
   attachCanvas(canvas, kernel.framebuffers, pid, {
