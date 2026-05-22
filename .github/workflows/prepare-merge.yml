@@ -123,7 +123,16 @@ jobs:
           # NOT bypassable, even by maintainers — the workflow's own
           # post-publish tests gate the merge-gate status, and bypassing
           # pre-existing failed checks here would defeat that intent.
-          FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --required --json bucket -q '[.[] | select(.bucket == "fail")] | length')
+          REQUIRED_CHECKS_ERR="$RUNNER_TEMP/required-checks.err"
+          if ! FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --required --json bucket -q '[.[] | select(.bucket == "fail")] | length' 2>"$REQUIRED_CHECKS_ERR"); then
+            if grep -qi "no required checks reported" "$REQUIRED_CHECKS_ERR"; then
+              echo "::notice::no required checks reported yet; continuing"
+              FAILING=0
+            else
+              cat "$REQUIRED_CHECKS_ERR" >&2
+              exit 1
+            fi
+          fi
           if [ "$FAILING" -gt 0 ]; then
             gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
             gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing."
