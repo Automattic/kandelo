@@ -1,0 +1,241 @@
+#!/bin/bash
+set -euo pipefail
+
+SDK_CXX="${WASM_POSIX_CXX_DRIVER:-0}"
+if [[ "$(basename "$0")" == *c++ ]]; then
+  SDK_CXX=1
+fi
+
+die() {
+  echo "wasm32posix-cc: $*" >&2
+  exit 1
+}
+
+find_tool() {
+  local name="$1"
+  if [[ -n "${WASM_POSIX_LLVM_DIR:-}" && -x "${WASM_POSIX_LLVM_DIR}/${name}" ]]; then
+    printf '%s\n' "${WASM_POSIX_LLVM_DIR}/${name}"
+    return 0
+  fi
+  local dir
+  for dir in /usr/lib/llvm/bin /usr/local/bin /usr/bin /bin; do
+    if [[ -x "${dir}/${name}" ]]; then
+      printf '%s\n' "${dir}/${name}"
+      return 0
+    fi
+  done
+  if command -v "$name" >/dev/null 2>&1; then
+    command -v "$name"
+    return 0
+  fi
+  return 1
+}
+
+if [[ "$SDK_CXX" -eq 1 ]]; then
+  CLANG="$(find_tool clang++ || true)"
+  [[ -n "$CLANG" ]] || die "clang++ not found; set WASM_POSIX_LLVM_DIR"
+else
+  CLANG="$(find_tool clang || true)"
+  [[ -n "$CLANG" ]] || die "clang not found; set WASM_POSIX_LLVM_DIR"
+fi
+
+TOOL_DIR="$(dirname "$CLANG")"
+SYSROOT="${WASM_POSIX_SYSROOT:-/usr/wasm32posix/sysroot}"
+GLUE_DIR="${WASM_POSIX_GLUE_DIR:-/usr/wasm32posix/glue}"
+GLUE_OBJ_DIR="${WASM_POSIX_GLUE_OBJ_DIR:-/usr/wasm32posix/glue-objects}"
+RESOURCE_DIR="${WASM_POSIX_CLANG_RESOURCE_DIR:-/usr/lib/llvm/lib/clang/21}"
+WASM_LD="$(find_tool wasm-ld || true)"
+
+[[ -f "${SYSROOT}/lib/libc.a" ]] || die "missing ${SYSROOT}/lib/libc.a"
+[[ -f "${GLUE_DIR}/channel_syscall.c" ]] || die "missing ${GLUE_DIR}/channel_syscall.c"
+[[ -n "$WASM_LD" ]] || die "wasm-ld not found; set WASM_POSIX_LLVM_DIR"
+
+linking=1
+shared=0
+link_dl=0
+filtered=()
+
+while [[ "$#" -gt 0 ]]; do
+  arg="$1"
+  shift
+  case "$arg" in
+    -c|-E|-S)
+      linking=0
+      filtered+=("$arg")
+      ;;
+    -shared)
+      shared=1
+      ;;
+    -ldl)
+      link_dl=1
+      ;;
+    -pthread|-lpthread|-fPIE|-pie|-lrt|-lresolv|-lm|-lcrypt|-lutil|-rdynamic|-Wl,-Bsymbolic)
+      ;;
+    -Wl,-rpath,*|-Wl,-soname,*|-Wl,--version-script*)
+      ;;
+    -dynamiclib)
+      echo "wasm32posix-cc: warning: ${arg} is not supported for Wasm targets (ignored)" >&2
+      ;;
+    *)
+      filtered+=("$arg")
+      ;;
+  esac
+done
+
+compile_flags=(
+  --target=wasm32-unknown-unknown
+  -matomics
+  -mbulk-memory
+  -mexception-handling
+  -mllvm -wasm-enable-sjlj
+  -mllvm -wasm-use-legacy-eh=false
+  -fno-trapping-math
+  -fintegrated-cc1
+  -ccc-install-dir "$TOOL_DIR"
+  "-B${TOOL_DIR}"
+  "--sysroot=${SYSROOT}"
+)
+
+if [[ -d "$RESOURCE_DIR" ]]; then
+  compile_flags+=(-resource-dir "$RESOURCE_DIR")
+fi
+
+shared_link_flags=(
+  -nostdlib
+  -Wl,--experimental-pic
+  -Wl,--shared
+  -Wl,--shared-memory
+  -Wl,--export-all
+  -Wl,--allow-undefined
+)
+
+exe_link_flags=(
+  -nostdlib
+  -Wl,--entry=_start
+  -Wl,--export=_start
+  -Wl,--export=__heap_base
+  -Wl,--import-memory
+  -Wl,--shared-memory
+  -Wl,--max-memory=1073741824
+  -Wl,--allow-undefined
+  -Wl,--global-base=1114112
+  -Wl,--table-base=3
+  -Wl,--export-table
+  -Wl,--growable-table
+  -Wl,--export=__wasm_init_tls
+  -Wl,--export=__tls_base
+  -Wl,--export=__tls_size
+  -Wl,--export=__tls_align
+  -Wl,--export=__stack_pointer
+  -Wl,--export=__wasm_thread_init
+  -Wl,--export=__abi_version
+)
+
+if [[ "$linking" -eq 0 ]]; then
+  exec "$CLANG" "${compile_flags[@]}" "${filtered[@]}"
+fi
+
+output="a.out"
+compile_args=()
+source_inputs=()
+object_inputs=()
+user_link_args=()
+
+idx=0
+while [[ "$idx" -lt "${#filtered[@]}" ]]; do
+  arg="${filtered[$idx]}"
+  case "$arg" in
+    -o)
+      idx=$((idx + 1))
+      [[ "$idx" -lt "${#filtered[@]}" ]] || die "-o requires an output path"
+      output="${filtered[$idx]}"
+      ;;
+    -o*)
+      output="${arg#-o}"
+      ;;
+    *.c|*.cc|*.cpp|*.cxx|*.C)
+      source_inputs+=("$arg")
+      ;;
+    *.o|*.obj|*.a)
+      object_inputs+=("$arg")
+      ;;
+    -Wl,*)
+      IFS=',' read -r -a wl_parts <<< "${arg#-Wl,}"
+      user_link_args+=("${wl_parts[@]}")
+      ;;
+    -L)
+      idx=$((idx + 1))
+      [[ "$idx" -lt "${#filtered[@]}" ]] || die "-L requires a directory"
+      user_link_args+=("-L${filtered[$idx]}")
+      ;;
+    -L*|-l*)
+      user_link_args+=("$arg")
+      ;;
+    *)
+      compile_args+=("$arg")
+      ;;
+  esac
+  idx=$((idx + 1))
+done
+
+compiled_objects=()
+for src in "${source_inputs[@]}"; do
+  base="$(basename "$src")"
+  obj="/tmp/${base}.$$.$((${#compiled_objects[@]} + 1)).o"
+  "$CLANG" "${compile_flags[@]}" "${compile_args[@]}" -c "$src" -o "$obj"
+  compiled_objects+=("$obj")
+done
+
+append_ld_flags() {
+  local flag part
+  for flag in "$@"; do
+    case "$flag" in
+      -nostdlib)
+        ;;
+      -Wl,*)
+        IFS=',' read -r -a wl_parts <<< "${flag#-Wl,}"
+        for part in "${wl_parts[@]}"; do
+          ld_flags+=("$part")
+        done
+        ;;
+      *)
+        ld_flags+=("$flag")
+        ;;
+    esac
+  done
+}
+
+ld_flags=()
+if [[ "$shared" -eq 1 ]]; then
+  append_ld_flags "${shared_link_flags[@]}"
+  "$WASM_LD" -m wasm32 -L"${SYSROOT}/lib" \
+    "${object_inputs[@]}" "${compiled_objects[@]}" "${user_link_args[@]}" \
+    "${ld_flags[@]}" -o "$output"
+  exit $?
+fi
+
+glue_inputs=(
+  "${GLUE_OBJ_DIR}/channel_syscall.o"
+  "${GLUE_OBJ_DIR}/compiler_rt.o"
+  "${GLUE_OBJ_DIR}/cxxrt.o"
+)
+if [[ "$link_dl" -eq 1 ]]; then
+  glue_inputs+=("${GLUE_OBJ_DIR}/dlopen.o")
+fi
+if [[ ! -f "${glue_inputs[0]}" ]]; then
+  die "missing precompiled glue objects in ${GLUE_OBJ_DIR}"
+fi
+
+stdlib_inputs=()
+if [[ "$SDK_CXX" -eq 1 ]]; then
+  [[ -f "${SYSROOT}/lib/libc++.a" ]] || die "missing ${SYSROOT}/lib/libc++.a"
+  [[ -f "${SYSROOT}/lib/libc++abi.a" ]] || die "missing ${SYSROOT}/lib/libc++abi.a"
+  stdlib_inputs+=("${SYSROOT}/lib/libc++.a" "${SYSROOT}/lib/libc++abi.a")
+fi
+
+append_ld_flags "${exe_link_flags[@]}"
+"$WASM_LD" -m wasm32 -L"${SYSROOT}/lib" \
+  "${object_inputs[@]}" "${compiled_objects[@]}" "${glue_inputs[@]}" \
+  "${SYSROOT}/lib/crt1.o" "${user_link_args[@]}" "${stdlib_inputs[@]}" "${SYSROOT}/lib/libc.a" \
+  "${ld_flags[@]}" -o "$output"
+exit $?

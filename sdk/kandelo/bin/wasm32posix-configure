@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+
+export CC="${CC:-wasm32posix-cc}"
+export CXX="${CXX:-wasm32posix-c++}"
+export AR="${AR:-wasm32posix-ar}"
+export RANLIB="${RANLIB:-wasm32posix-ranlib}"
+export NM="${NM:-wasm32posix-nm}"
+export STRIP="${STRIP:-wasm32posix-strip}"
+export PKG_CONFIG="${PKG_CONFIG:-wasm32posix-pkg-config}"
+if [[ -z "${CONFIG_SITE:-}" && -f /usr/wasm32posix/config.site ]]; then
+  export CONFIG_SITE=/usr/wasm32posix/config.site
+fi
+
+configure_script="./configure"
+if [[ "$#" -gt 0 && "$1" == */configure ]]; then
+  configure_script="$1"
+  shift
+fi
+
+exec "$configure_script" --host=wasm32-unknown-none --prefix=/usr "$@"

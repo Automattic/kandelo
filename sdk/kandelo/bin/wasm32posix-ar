@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ -n "${WASM_POSIX_LLVM_DIR:-}" && -x "${WASM_POSIX_LLVM_DIR}/llvm-ar" ]]; then
+  exec "${WASM_POSIX_LLVM_DIR}/llvm-ar" "$@"
+fi
+for dir in /usr/lib/llvm/bin /usr/local/bin /usr/bin /bin; do
+  if [[ -x "${dir}/llvm-ar" ]]; then
+    exec "${dir}/llvm-ar" "$@"
+  fi
+done
+echo "wasm32posix-ar: llvm-ar not found; set WASM_POSIX_LLVM_DIR" >&2
+exit 1
