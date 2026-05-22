@@ -123,7 +123,7 @@ jobs:
           # NOT bypassable, even by maintainers — the workflow's own
           # post-publish tests gate the merge-gate status, and bypassing
           # pre-existing failed checks here would defeat that intent.
-          FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
+          FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --required --json bucket -q '[.[] | select(.bucket == "fail")] | length')
           if [ "$FAILING" -gt 0 ]; then
             gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
             gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing."
@@ -893,7 +893,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Keep the merge commit's parents available for the package
+          # test helper's base-drift guard.
           ref: ${{ github.ref }}
+          fetch-depth: 2
 
       - name: Fetch submodules (musl, libc-test, os-test)
         uses: ./.github/actions/fetch-submodules
