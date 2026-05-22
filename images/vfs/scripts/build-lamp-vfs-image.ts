@@ -368,6 +368,8 @@ function phpSingleQuotedContent(value: string): string {
 }
 
 function buildServices(): DinitService[] {
+  // Use MariaDB's default thread-per-connection handling so one open
+  // client connection does not block the next client's handshake.
   return [
     {
       name: "mariadb-bootstrap",
@@ -384,7 +386,7 @@ function buildServices(): DinitService[] {
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
         "--sort-buffer-size=262144 --skip-networking=0 --port=3306 " +
         "--bind-address=0.0.0.0 --socket= --max-connections=10 " +
-        "--thread-handling=no-threads --log-error=/data/error.log " +
+        "--log-error=/data/error.log " +
         // --init-file runs after the daemon is ready — guarantees the
         // wordpress DB exists even if the bootstrap timeout-and-kill
         // truncated the original CREATE DATABASE.

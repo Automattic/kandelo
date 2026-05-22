@@ -126,6 +126,7 @@ pkg_has_output() {
     fi
 }
 
+has_local_kernel() { [ -f "$REPO_ROOT/local-binaries/kernel.wasm" ] || [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
 has_kernel()    { has_resolvable kernel.wasm || [ -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ]; }
 has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
 has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
@@ -174,6 +175,7 @@ has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_RO
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/packages/registry/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
+has_wordpress_dev_vfs() { pkg_has_output wordpress-dev wordpress-dev.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/wordpress-dev.vfs.zst" ]; }
 has_mariadb_test_vfs() { pkg_has_output mariadb-test mariadb-test.vfs.zst; }
 has_bc()            { pkg_has_output bc bc.wasm || [ -f "$REPO_ROOT/packages/registry/bc/bin/bc.wasm" ]; }
 has_file()          { pkg_has_output file file.wasm || [ -f "$REPO_ROOT/packages/registry/file/bin/file.wasm" ]; }
@@ -218,27 +220,31 @@ has_dlopen()        { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
 
 need_kernel() {
     if ! has_kernel; then
-        step "Building kernel"
-        cd "$REPO_ROOT"
-        cargo build --release -p wasm-posix-kernel \
-            -Z build-std=core,alloc
-        # Mirror what build.sh does: copy to local-binaries/ (the
-        # canonical override tree the binary-resolver checks). The
-        # host/wasm/ copy is preserved as a legacy fallback for older
-        # consumers that haven't migrated to local-binaries/.
-        mkdir -p local-binaries host/wasm
-        cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
-            local-binaries/kernel.wasm
-        cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
-            host/wasm/wasm_posix_kernel.wasm
-        if [ -f target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
-            cp target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm \
-                local-binaries/userspace.wasm
-        fi
-        info "Kernel built"
+        build_kernel_from_source
     else
         info "Kernel"
     fi
+}
+
+build_kernel_from_source() {
+    step "Building kernel"
+    cd "$REPO_ROOT"
+    cargo build --release -p wasm-posix-kernel \
+        -Z build-std=core,alloc
+    # Mirror what build.sh does: copy to local-binaries/ (the
+    # canonical override tree the binary-resolver checks). The
+    # host/wasm/ copy is preserved as a legacy fallback for older
+    # consumers that haven't migrated to local-binaries/.
+    mkdir -p local-binaries host/wasm
+    cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+        local-binaries/kernel.wasm
+    cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+        host/wasm/wasm_posix_kernel.wasm
+    if [ -f target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
+        cp target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm \
+            local-binaries/userspace.wasm
+    fi
+    info "Kernel built"
 }
 
 need_sysroot() {
@@ -324,7 +330,11 @@ need_node_modules() {
 # ─── Build targets ────────────────────────────────────────────────────────────
 
 build_kernel() {
-    need_kernel
+    if has_local_kernel; then
+        info "Kernel"
+    else
+        build_kernel_from_source
+    fi
 }
 
 build_sysroot() {
@@ -380,13 +390,13 @@ build_nginx() {
 }
 
 build_php() {
-    if has_php; then
+    if [ "${WASM_POSIX_FORCE_BUILD:-0}" != "1" ] && has_php; then
         info "php"
         return
     fi
     need_kernel
     need_sdk
-    if ! has_php; then
+    if [ "${WASM_POSIX_FORCE_BUILD:-0}" = "1" ] || ! has_php; then
         step "Building PHP CLI"
         bash "$REPO_ROOT/packages/registry/php/build-php.sh"
         info "PHP CLI built"
@@ -396,13 +406,13 @@ build_php() {
 }
 
 build_php_fpm() {
-    if has_php_fpm; then
+    if [ "${WASM_POSIX_FORCE_BUILD:-0}" != "1" ] && has_php_fpm; then
         info "php-fpm"
         return
     fi
     need_kernel
     need_sdk
-    if ! has_php_fpm; then
+    if [ "${WASM_POSIX_FORCE_BUILD:-0}" = "1" ] || ! has_php_fpm; then
         step "Building PHP-FPM"
         bash "$REPO_ROOT/packages/registry/php/build-php.sh"
         info "PHP-FPM built"
@@ -614,6 +624,10 @@ build_redis() {
 }
 
 build_dinit() {
+    if has_dinit; then
+        info "dinit"
+        return
+    fi
     need_kernel
     need_sdk
     # dinit uses libc++ which the mariadb build script installs into
@@ -622,13 +636,9 @@ build_dinit() {
     if [ ! -f "$REPO_ROOT/sysroot/lib/libc++.a" ]; then
         build_mariadb
     fi
-    if ! has_dinit; then
-        step "Building dinit"
-        bash "$REPO_ROOT/packages/registry/dinit/build-dinit.sh"
-        info "dinit built"
-    else
-        info "dinit"
-    fi
+    step "Building dinit"
+    bash "$REPO_ROOT/packages/registry/dinit/build-dinit.sh"
+    info "dinit built"
 }
 
 build_msmtpd() {
@@ -834,6 +844,16 @@ build_lamp_vfs() {
     # @binaries/ Vite alias resolves against).
     bash "$REPO_ROOT/packages/registry/lamp/build-lamp.sh"
     info "LAMP VFS image built"
+}
+
+build_wordpress_dev_vfs() {
+    if [ "${WASM_POSIX_FORCE_BUILD:-0}" != "1" ] && has_wordpress_dev_vfs; then
+        info "WordPress development VFS image"
+        return
+    fi
+    step "Building WordPress development VFS image"
+    bash "$REPO_ROOT/packages/registry/wordpress-dev/build-wordpress-dev.sh"
+    info "WordPress development VFS image built"
 }
 
 build_nginx_vfs() {
@@ -1410,6 +1430,7 @@ build_target() {
         erlang)     build_erlang ;;
         erlang-vfs) build_erlang_vfs ;;
         lamp-vfs)   build_lamp_vfs ;;
+        wordpress-dev-vfs) build_wordpress_dev_vfs ;;
         nginx-vfs)  build_nginx_vfs ;;
         redis-vfs)  build_redis_vfs ;;
         nginx-php-vfs) build_nginx_php_vfs ;;
@@ -1530,6 +1551,7 @@ build_all() {
     build_wordpress
     build_wp_vfs
     build_lamp_vfs
+    build_wordpress_dev_vfs
     build_erlang
     build_erlang_vfs
     build_texlive
@@ -1544,7 +1566,9 @@ clean_target() {
     case "$target" in
         kernel)
             rm -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" \
-                  "$REPO_ROOT/host/wasm/wasm_posix_userspace.wasm"
+                  "$REPO_ROOT/host/wasm/wasm_posix_userspace.wasm" \
+                  "$REPO_ROOT/local-binaries/kernel.wasm" \
+                  "$REPO_ROOT/local-binaries/userspace.wasm"
             rm -rf "$REPO_ROOT/target/wasm64-unknown-unknown/" "$REPO_ROOT/target/wasm32-unknown-unknown/"
             warn "Cleaned kernel" ;;
         sysroot)
@@ -1599,9 +1623,14 @@ clean_target() {
         php)
             rm -rf "$REPO_ROOT/packages/registry/php/php-src" \
                    "$REPO_ROOT/packages/registry/php/php-install"
+            rm -f "$REPO_ROOT/local-binaries/programs/wasm32/php/php.wasm" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/php/opcache.so" \
+                  "$REPO_ROOT/packages/registry/php/bin/php.wasm" \
+                  "$REPO_ROOT/packages/registry/php/bin/opcache.so"
             warn "Cleaned PHP CLI" ;;
         php-fpm)
             rm -f "$REPO_ROOT/local-binaries/programs/wasm32/php/php-fpm.wasm" \
+                  "$REPO_ROOT/packages/registry/php/bin/php-fpm.wasm" \
                   "$REPO_ROOT/packages/registry/php/php-src/sapi/fpm/php-fpm"
             warn "Cleaned PHP-FPM" ;;
         mariadb)
@@ -1679,6 +1708,11 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/lamp.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/lamp.vfs.zst"
             warn "Cleaned LAMP VFS image" ;;
+        wordpress-dev-vfs)
+            rm -f "$REPO_ROOT/apps/browser-demos/public/wordpress-dev.vfs.zst" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/wordpress-dev.vfs.zst" \
+                  "$REPO_ROOT/binaries/programs/wasm32/wordpress-dev.vfs.zst"
+            warn "Cleaned WordPress development VFS image" ;;
         nginx-vfs)
             rm -f "$REPO_ROOT/apps/browser-demos/public/nginx.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/nginx-vfs.vfs.zst"
@@ -1841,7 +1875,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs wordpress-dev-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -1883,7 +1917,7 @@ cmd_rebuild() {
     fi
     for t in "$@"; do
         clean_target "$t"
-        build_target "$t"
+        WASM_POSIX_FORCE_BUILD=1 build_target "$t"
     done
     echo ""
     info "Rebuild complete"
@@ -2162,6 +2196,7 @@ cmd_list() {
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  wordpress-dev-vfs WordPress development VFS image $(has_wordpress_dev_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl        Perl 5.40                              $(has_perl && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  ruby        Ruby                                   $(has_ruby && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  erlang      Erlang/OTP 28 BEAM VM                   $(has_erlang && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

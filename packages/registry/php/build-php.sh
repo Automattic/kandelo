@@ -3,17 +3,19 @@ set -euo pipefail
 
 # Builds two PHP binaries from one source tree:
 #
-#   sapi/cli/php        → php.wasm     (CLI)
+#   sapi/cli/php        → php.wasm     (CLI; fork-instrumented)
 #   sapi/fpm/php-fpm    → php-fpm.wasm (FastCGI Process Manager;
-#                                       fork-instrumented)
+#                                       direct-call fork instrumentation)
 #
 # The two builds were previously separate scripts (this one + the
 # now-removed packages/registry/nginx/demo/build-php-fpm.sh). Unifying them lets a
 # single autoconf invocation produce both sapis from one source tree
 # and one set of patched config.h/Makefile.
 #
-# CFLAGS/LDFLAGS are set to FPM's stricter requirements. CLI ships
-# with the same flags for debuggability.
+# CFLAGS/LDFLAGS are set to FPM's stricter requirements (line tables
+# preserved, clang's automatic wasm-opt step skipped) because they make
+# the FPM fork path easier to inspect and instrument. CLI ships with
+# the same flags for debuggability.
 
 PHP_VERSION="${PHP_VERSION:-8.3.15}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,22 +50,35 @@ OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
 [ -z "$OPENSSL_PREFIX" ] && { echo "==> Resolving openssl..."; OPENSSL_PREFIX="$(resolve_dep openssl)"; }
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:-}"
 [ -z "$LIBXML2_PREFIX" ] && { echo "==> Resolving libxml2..."; LIBXML2_PREFIX="$(resolve_dep libxml2)"; }
+LIBPNG_PREFIX="${WASM_POSIX_DEP_LIBPNG_DIR:-}"
+[ -z "$LIBPNG_PREFIX" ] && { echo "==> Resolving libpng..."; LIBPNG_PREFIX="$(resolve_dep libpng)"; }
+LIBJPEG_PREFIX="${WASM_POSIX_DEP_LIBJPEG_DIR:-}"
+[ -z "$LIBJPEG_PREFIX" ] && { echo "==> Resolving libjpeg..."; LIBJPEG_PREFIX="$(resolve_dep libjpeg)"; }
+ONIGURUMA_PREFIX="${WASM_POSIX_DEP_ONIGURUMA_DIR:-}"
+[ -z "$ONIGURUMA_PREFIX" ] && { echo "==> Resolving Oniguruma..."; ONIGURUMA_PREFIX="$(resolve_dep oniguruma)"; }
 [ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib resolve missing libz.a"; exit 1; }
 [ -f "$SQLITE_PREFIX/lib/libsqlite3.a" ] || { echo "ERROR: sqlite resolve missing libsqlite3.a"; exit 1; }
 [ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || { echo "ERROR: openssl resolve missing libssl.a"; exit 1; }
 [ -f "$LIBXML2_PREFIX/lib/libxml2.a" ] || { echo "ERROR: libxml2 resolve missing libxml2.a"; exit 1; }
+[ -f "$LIBPNG_PREFIX/lib/libpng16.a" ] || { echo "ERROR: libpng resolve missing libpng16.a"; exit 1; }
+[ -f "$LIBJPEG_PREFIX/lib/libjpeg.a" ] || { echo "ERROR: libjpeg resolve missing libjpeg.a"; exit 1; }
+[ -f "$ONIGURUMA_PREFIX/lib/libonig.a" ] || { echo "ERROR: Oniguruma resolve missing libonig.a"; exit 1; }
 echo "==> zlib at $ZLIB_PREFIX"
 echo "==> sqlite at $SQLITE_PREFIX"
 echo "==> openssl at $OPENSSL_PREFIX"
 echo "==> libxml2 at $LIBXML2_PREFIX"
+echo "==> libpng at $LIBPNG_PREFIX"
+echo "==> libjpeg at $LIBJPEG_PREFIX"
+echo "==> Oniguruma at $ONIGURUMA_PREFIX"
 
-# Compose PKG_CONFIG_PATH for all 4 deps so wasm32posix-configure's
+# Compose PKG_CONFIG_PATH for all deps so wasm32posix-configure's
 # pkg-config probes can find them in the cache instead of the sysroot.
-DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig"
+DEP_PKG_CONFIG_PATH="$ZLIB_PREFIX/lib/pkgconfig:$SQLITE_PREFIX/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig:$LIBXML2_PREFIX/lib/pkgconfig:$LIBPNG_PREFIX/lib/pkgconfig:$LIBJPEG_PREFIX/lib/pkgconfig:$ONIGURUMA_PREFIX/lib/pkgconfig"
 
 # Compose -I and -L flags for defense-in-depth (autoconf raw probes).
-DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include"
-DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib"
+DEP_CPPFLAGS="-I$ZLIB_PREFIX/include -I$SQLITE_PREFIX/include -I$OPENSSL_PREFIX/include -I$LIBXML2_PREFIX/include -I$LIBPNG_PREFIX/include -I$LIBJPEG_PREFIX/include -I$ONIGURUMA_PREFIX/include"
+DEP_LDFLAGS="-L$ZLIB_PREFIX/lib -L$SQLITE_PREFIX/lib -L$OPENSSL_PREFIX/lib -L$LIBXML2_PREFIX/lib -L$LIBPNG_PREFIX/lib -L$LIBJPEG_PREFIX/lib -L$ONIGURUMA_PREFIX/lib"
+PHP_CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0 -DZEND_ENABLE_ZVAL_LONG64=1"
 
 if [ ! -d "$SRC_DIR" ]; then
     echo "==> Downloading PHP $PHP_VERSION..."
@@ -75,6 +90,13 @@ if [ ! -d "$SRC_DIR" ]; then
 fi
 
 cd "$SRC_DIR"
+
+if [ "${WASM_POSIX_FORCE_BUILD:-0}" = "1" ]; then
+    rm -f Makefile
+elif [ -f Makefile ] && ! grep -q -- "-DZEND_ENABLE_ZVAL_LONG64=1" Makefile; then
+    echo "==> Existing PHP Makefile lacks 64-bit zval integers; reconfiguring..."
+    rm -f Makefile
+fi
 
 # Apply patches for Wasm compatibility
 echo "==> Patching PHP for Wasm..."
@@ -131,6 +153,36 @@ if [ -f ext/opcache/zend_accelerator_module.c ] \
     rm -f ext/opcache/zend_accelerator_module.c.bak ext/opcache/zend_accelerator_module.c.bak2
 fi
 
+# PHP's date extension bundles timelib. Upstream timelib chooses a
+# 64-bit epoch type from platform ABI macros such as __LP64__ or _WIN64,
+# but wasm32 intentionally has 32-bit C longs even when PHP zvals are
+# configured for 64-bit integers. Keep strtotime()/DateTime range in sync
+# with PHP_INT_SIZE by keying timelib's epoch type off the same Zend macro.
+if [ -f ext/date/lib/timelib.h ] \
+   && ! grep -q "wasm-timelib-long64 patch applied" ext/date/lib/timelib.h; then
+    perl -i.bak -0pe 's/#if \(defined\(__x86_64__\) \|\| defined\(__LP64__\) \|\| defined\(_LP64\) \|\| defined\(_WIN64\)\) && !defined\(TIMELIB_FORCE_LONG32\)/#if (defined(ZEND_ENABLE_ZVAL_LONG64) || defined(__x86_64__) || defined(__LP64__) || defined(_LP64) || defined(_WIN64)) \&\& !defined(TIMELIB_FORCE_LONG32) \/* wasm-timelib-long64 patch applied *\//g' \
+        ext/date/lib/timelib.h
+    rm -f ext/date/lib/timelib.h.bak
+    # The generated Makefile has dependency tracking stripped below, so
+    # force recompilation of date/timelib objects after changing the header.
+    rm -f ext/date/*.o ext/date/*.lo ext/date/.libs/*.o \
+        ext/date/lib/*.o ext/date/lib/*.lo ext/date/lib/.libs/*.o
+fi
+
+# The browser demos run one wasm worker per process and route concurrency
+# through the kernel host. PHP-FPM's normal master/worker fork model is a poor
+# fit here: broad fork instrumentation overflows browser wasm stacks while
+# serving WordPress, and narrow instrumentation leaves the master/worker path
+# unstable. Run the FPM request loop in the foreground process instead. nginx
+# still talks FastCGI to php-fpm on port 9000; only the internal worker fork is
+# bypassed for wasm.
+if [ -f sapi/fpm/fpm/fpm_children.c ] \
+   && ! grep -q "wasm-fpm-single-process patch applied" sapi/fpm/fpm/fpm_children.c; then
+    perl -i.bak -0pe 's/pid = fork\(\);\n\n\t\tswitch \(pid\) {/pid = 0; \/* wasm-fpm-single-process patch applied: run worker loop without fork on wasm. *\/\n\n\t\tswitch (pid) {/' \
+        sapi/fpm/fpm/fpm_children.c
+    rm -f sapi/fpm/fpm/fpm_children.c.bak
+fi
+
 echo "==> Configuring PHP for Wasm (CLI + FPM, single tree)..."
 # Drop a stale config.cache from a previous build whose env (CPPFLAGS,
 # PKG_CONFIG_PATH, etc.) may not match this run. autoconf would
@@ -165,6 +217,12 @@ if [ ! -f Makefile ]; then
     # invokes on our wasm port — but the import has to resolve at
     # instantiation time).
     #
+    # -DZEND_ENABLE_ZVAL_LONG64=1: wasm32 has 32-bit C longs, but PHP's
+    # engine supports 64-bit zval integers independently (used on Win64).
+    # WordPress' test suite and parsers assume common 64-bit PHP integer
+    # semantics, and otherwise hit PHP 8's float-to-int precision warnings
+    # on unsigned 32-bit constants such as 0xFFFFFFFF.
+    #
     # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
     # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
     # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
@@ -179,7 +237,7 @@ if [ ! -f Makefile ]; then
     # passes its own `blocks*vars > 4M` size guard.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
-    LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
+    LDFLAGS="$DEP_LDFLAGS --no-wasm-opt -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
 -Wl,-z,stack-size=4194304" \
     wasm32posix-configure \
@@ -190,7 +248,8 @@ if [ ! -f Makefile ]; then
         --enable-fpm \
         --enable-opcache \
         --enable-mbstring \
-        --disable-mbregex \
+        --enable-mbregex \
+        --with-iconv \
         --enable-ctype \
         --enable-tokenizer \
         --enable-filter \
@@ -207,6 +266,8 @@ if [ ! -f Makefile ]; then
         --with-mysqli=mysqlnd \
         --enable-fileinfo \
         --enable-exif \
+        --enable-gd \
+        --with-jpeg \
         --with-zlib \
         --with-openssl \
         --with-libxml \
@@ -217,9 +278,13 @@ if [ ! -f Makefile ]; then
         --enable-xmlwriter \
         --cache-file="$SCRIPT_DIR/config.cache" \
         --prefix="$INSTALL_DIR" \
-        CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0"
-    # CFLAGS includes -gline-tables-only for debug stack traces.
-    # The debug-trace value is worth keeping. CLI inherits the same
+        CFLAGS="$PHP_CFLAGS"
+    # CFLAGS includes -gline-tables-only and LDFLAGS sets --no-wasm-opt
+    # to preserve DWARF and the wasm name section for debug stack traces.
+    # The legacy reason — keeping function names visible to an asyncify
+    # onlylist — went away when fork instrumentation moved to
+    # wasm-fork-instrument (which works off function indices, not names),
+    # but the debug-trace value is worth keeping. CLI inherits the same
     # flags; it just produces a slightly larger binary.
 
     # Patch config.h: disable features that pass link-time checks (--allow-undefined)
@@ -334,7 +399,11 @@ echo "==> Applying fork instrumentation to CLI..."
 mv "$SCRIPT_DIR/bin/php.wasm.instr" "$SCRIPT_DIR/bin/php.wasm"
 
 echo "==> Applying fork instrumentation to FPM..."
-"$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm.instr"
+# PHP-FPM's fork path is a direct master-process path. Including
+# conservative call_indirect edges pulls broad PHP request-handling
+# signatures into the instrumented set, which bloats wasm frames enough
+# to overflow browser workers while serving WordPress.
+"$FORK_INSTRUMENT" --direct-only "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm.instr"
 mv "$SCRIPT_DIR/bin/php-fpm.wasm.instr" "$SCRIPT_DIR/bin/php-fpm.wasm"
 
 ls -la "$SCRIPT_DIR/bin/php.wasm" "$SCRIPT_DIR/bin/php-fpm.wasm"
