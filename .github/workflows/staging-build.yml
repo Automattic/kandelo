@@ -445,6 +445,7 @@ jobs:
     if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
+      actions: read      # gh run download library artifacts
       contents: write    # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
@@ -653,8 +654,9 @@ jobs:
         # `library_matrix` input; we don't need a separate filter
         # here because no other artifact uploaded earlier in the run
         # matches `*-wasm*`.
-        uses: actions/download-artifact@v4
+        uses: ./.github/actions/download-run-artifacts
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/lib-archives
 
@@ -796,6 +798,7 @@ jobs:
       )
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       statuses: write
     env:
@@ -838,8 +841,9 @@ jobs:
         # containing one .tar.zst. The pattern excludes the
         # toolchain-sysroots helper artifact uploaded by toolchain-cache.
         if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
-        uses: actions/download-artifact@v4
+        uses: ./.github/actions/download-run-artifacts
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
