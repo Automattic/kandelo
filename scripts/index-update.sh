@@ -80,17 +80,33 @@ gh_retry() {
   local attempt=1
   local max_attempts=4
   local delay=2
+  local stdout_file
+  local stderr_file
+
+  stdout_file="$(mktemp)"
+  stderr_file="$(mktemp)"
 
   while true; do
-    if "$@"; then
+    : >"$stdout_file"
+    : >"$stderr_file"
+
+    if "$@" >"$stdout_file" 2>"$stderr_file"; then
+      cat "$stdout_file"
+      rm -f "$stdout_file" "$stderr_file"
       return 0
     fi
 
     local rc=$?
     if [ "$attempt" -ge "$max_attempts" ]; then
+      cat "$stderr_file" >&2
+      if [ -s "$stdout_file" ]; then
+        cat "$stdout_file" >&2
+      fi
+      rm -f "$stdout_file" "$stderr_file"
       return "$rc"
     fi
 
+    cat "$stderr_file" >&2
     echo "index-update.sh: GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
     sleep "$delay"
     attempt=$((attempt + 1))
@@ -100,8 +116,20 @@ gh_retry() {
 
 release_asset_info() {
   local asset_name="$1"
-  gh_retry gh api "/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}/releases/tags/${TARGET_TAG}" \
+  local info
+
+  info="$(gh_retry gh api "/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}/releases/tags/${TARGET_TAG}" \
     --jq ".assets[] | select(.name == \"$asset_name\") | [.id, .size] | @tsv"
+  )"
+
+  [ -n "$info" ] || return 0
+
+  if ! [[ "$info" =~ ^[0-9]+[[:space:]][0-9]+$ ]]; then
+    echo "index-update.sh: invalid release asset metadata for $asset_name: $info" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$info"
 }
 
 ensure_release_exists() {
