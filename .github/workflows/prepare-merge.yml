@@ -1,26 +1,27 @@
 name: Prepare merge
 
 # Triggered when a maintainer applies the `ready-to-ship` label to an
-# approved PR. Drives the per-package matrix flow against GitHub's PR
-# merge ref (preflight + toolchain-cache + matrix-build + test-gate;
-# Phase B-1's pattern, targeting the durable `binaries-abi-v<N>` tag),
-# then posts `merge-gate=success` on the original PR head and enables
-# auto-merge.
+# approved PR. Captures the current base branch SHA once, synthesizes a
+# PR-head-into-that-base merge commit, and drives the per-package matrix
+# flow against that exact synthetic merge (preflight + toolchain-cache +
+# matrix-build + test-gate; Phase B-1's pattern, targeting the durable
+# `binaries-abi-v<N>` tag). It then posts `merge-gate=success` on the
+# original PR head and enables auto-merge.
 #
 # Flow (see docs/plans/2026-05-05-decoupled-package-builds-design.md
 # §5.5 + docs/plans/2026-04-29-pr-package-builds-design.md §4.2):
 #   * targets the undated `binaries-abi-v<N>` tag (per-archive uploads),
-#   * preflight runs against the PR merge ref and narrows the matrix to
-#     `(package, arch)` pairs whose cache_key_sha differs from what's
-#     already published in the durable release,
+#   * preflight runs against the synthetic merge commit and narrows the
+#     matrix to `(package, arch)` pairs whose cache_key_sha differs from
+#     what's already published in the durable release,
 #   * builds each remaining pair in parallel via `xtask archive-stage`,
 #     publishing each archive and index entry atomically, and
 #   * gates the merge on the test-suite resolving from the durable
 #     release state.
 #
 # `merge-gate=success` is posted on the original PR HEAD SHA after the
-# durable-release test gate passes against the PR merge ref. Branch
-# protection on `main` requires this status.
+# durable-release test gate passes against the synthetic merge commit.
+# Branch protection on `main` requires this status.
 #
 # See:
 #   docs/plans/2026-05-05-decoupled-package-builds-design.md §5.5
@@ -30,6 +31,31 @@ on:
   pull_request:
     types: [labeled]
 
+env:
+  GIT_FETCH_RETRY_FUNC: |
+    git_fetch_retry() {
+      local attempt=1
+      local max_attempts=5
+      local delay=2
+      local rc
+
+      while true; do
+        if git fetch "$@"; then
+          return 0
+        fi
+
+        rc=$?
+        if [ "$attempt" -ge "$max_attempts" ]; then
+          return "$rc"
+        fi
+
+        echo "::warning::git fetch failed with exit code $rc (attempt $attempt/$max_attempts); retrying in ${delay}s" >&2
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+      done
+    }
+
 # Do not use workflow-level concurrency. GitHub Actions keeps at most
 # one pending run per concurrency group, so a third ready PR cancels/
 # replaces the second instead of forming a real queue. The
@@ -38,12 +64,122 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------
+  # synthesize-merge — capture exactly one base SHA and synthesize the PR
+  # merge commit used by every package/test job in this run.
+  #
+  # Do not consume GitHub's refs/pull/<N>/merge here. That ref can lag
+  # behind the live base branch on pull_request:labeled events. The
+  # selected base SHA below is the single base used for change scope,
+  # package cache keys/builds/promotions, and test-gate. Final posting jobs
+  # still re-check that the base branch has not advanced since this SHA.
+  # ---------------------------------------------------------------------
+  synthesize-merge:
+    if: |
+      github.event.label.name == 'ready-to-ship' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      base_sha: ${{ steps.synthesize.outputs.base_sha }}
+      head_sha: ${{ steps.synthesize.outputs.head_sha }}
+      merge_sha: ${{ steps.synthesize.outputs.merge_sha }}
+      bundle_artifact: ${{ steps.synthesize.outputs.bundle_artifact }}
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Capture base and synthesize PR merge
+        id: synthesize
+        run: |
+          set -euo pipefail
+
+          work="$RUNNER_TEMP/synthesize-merge"
+          bundle_dir="$RUNNER_TEMP/synthetic-pr-merge"
+          mkdir -p "$bundle_dir"
+
+          git init --quiet "$work"
+          cd "$work"
+          git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          BASE_SHA=$(git rev-parse "refs/remotes/origin/${BASE_REF}")
+
+          git_fetch_retry --quiet --no-tags origin "$PR_HEAD_SHA"
+          if ! git cat-file -e "$PR_HEAD_SHA^{commit}" 2>/dev/null; then
+            echo "::error::Could not fetch PR head commit $PR_HEAD_SHA"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_AUTHOR_NAME="github-actions[bot]"
+          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          head_date=$(git show -s --format=%cI "$PR_HEAD_SHA")
+          export GIT_AUTHOR_DATE="$head_date"
+          export GIT_COMMITTER_DATE="$head_date"
+
+          git checkout --quiet --detach "$BASE_SHA"
+          set +e
+          merge_output=$(git merge --no-ff --no-commit "$PR_HEAD_SHA" 2>&1)
+          merge_status=$?
+          set -e
+          printf '%s\n' "$merge_output"
+          if [ "$merge_status" -ne 0 ]; then
+            echo "::error::Could not synthesize PR merge from base $BASE_SHA and head $PR_HEAD_SHA"
+            exit 1
+          fi
+
+          TREE_SHA=$(git write-tree)
+          MERGE_SHA=$(printf 'Synthetic prepare-merge for PR #%s\n\nBase: %s\nHead: %s\n' "$PR_NUMBER" "$BASE_SHA" "$PR_HEAD_SHA" |
+            git commit-tree "$TREE_SHA" -p "$BASE_SHA" -p "$PR_HEAD_SHA")
+          git update-ref refs/heads/synthesized-merge "$MERGE_SHA"
+
+          parents=$(git show --no-patch --format=%P "$MERGE_SHA")
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
+
+          git bundle create "$bundle_dir/synthesized-merge.bundle" \
+            refs/heads/synthesized-merge "^$BASE_SHA" "^$PR_HEAD_SHA"
+
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "merge_sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+          echo "bundle_artifact=synthetic-pr-merge" >> "$GITHUB_OUTPUT"
+          echo "Synthetic merge $MERGE_SHA uses base $BASE_SHA and head $PR_HEAD_SHA."
+
+      - name: Upload synthetic merge bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-pr-merge
+          path: ${{ runner.temp }}/synthetic-pr-merge/synthesized-merge.bundle
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Drop label + comment on synthesis failure
+        if: failure()
+        run: |
+          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: prepare-merge could not synthesize and persist a merge of PR head \`$PR_HEAD_SHA\` into the current \`$BASE_REF\` base. Please rebase or merge \`$BASE_REF\` if there are conflicts, then re-apply \`ready-to-ship\`." || true
+
+  # ---------------------------------------------------------------------
   # gate — review state + required-checks + wait-for-staging-build
   # when package staging is required.
   # All gates that must pass BEFORE we burn matrix-build compute live
   # here so a failed gate is cheap. On success, downstream jobs run.
   # ---------------------------------------------------------------------
   change-scope:
+    needs: [synthesize-merge]
     if: |
       github.event.label.name == 'ready-to-ship' &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -58,14 +194,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
 
       - name: Detect package staging scope
         id: scope
         uses: ./.github/actions/detect-change-scope
         with:
-          base-ref: origin/${{ github.event.pull_request.base.ref }}
+          base-ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-base: 'false'
 
   gate:
     needs: [change-scope]
@@ -74,16 +241,57 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
+      actions: read          # gh run list/watch for staging-build
+      checks: read           # gh pr checks reads check runs
+      contents: read         # gh pr view/checks repository metadata
       pull-requests: write     # drop label / comment on failure
       statuses: read
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Verify PR review state + required checks green
         id: gate
         run: |
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
           # reviewDecision values:
           #   APPROVED          — at least one approving review, branch
           #                       protection requires reviews
@@ -100,21 +308,21 @@ jobs:
           # Required-check failures are NEVER bypassable here — those
           # gate on objective signals.
           LABELER="${{ github.event.sender.login }}"
-          PERM=$(gh api "/repos/${{ github.repository }}/collaborators/${LABELER}/permission" -q .permission 2>/dev/null || echo "")
+          PERM=$(gh_retry gh api "/repos/${{ github.repository }}/collaborators/${LABELER}/permission" -q .permission)
           MAINTAINER=0
           case "$PERM" in
             admin|maintain) MAINTAINER=1 ;;
           esac
           echo "labeler=$LABELER permission=$PERM maintainer=$MAINTAINER"
 
-          REVIEW=$(gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
+          REVIEW=$(gh_retry gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
           case "$REVIEW" in
             REVIEW_REQUIRED|CHANGES_REQUESTED)
               if [ "$MAINTAINER" = "1" ]; then
                 echo "::notice::review state $REVIEW; bypassed by maintainer ${LABELER}"
               else
-                gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-                gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}. (A maintainer — admin/maintain permission — can re-apply \`ready-to-ship\` to override.)"
+                gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+                gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}. (A maintainer — admin/maintain permission — can re-apply \`ready-to-ship\` to override.)" || true
                 exit 1
               fi
               ;;
@@ -125,62 +333,12 @@ jobs:
           # NOT bypassable, even by maintainers — the workflow's own
           # post-publish tests gate the merge-gate status, and bypassing
           # pre-existing failed checks here would defeat that intent.
-          FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
+          FAILING=$(gh_retry gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
           if [ "$FAILING" -gt 0 ]; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing."
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing." || true
             exit 1
           fi
-
-      - name: Validate PR is mergeable into main
-        # Validate-only check so prepare-merge can post a clear message
-        # and drop the label when GitHub cannot compose the PR merge
-        # ref. The package matrix below checks out `github.ref`
-        # (`refs/pull/<N>/merge` on pull_request events), so cache keys,
-        # package builds, and tests run against the merged tree rather
-        # than the PR head alone.
-        #
-        # Uses a shallow checkout + `git merge-tree` to test mergeability
-        # without a working tree or any state side-effects. Conflict
-        # markers in the merge-tree output indicate textual conflicts.
-        run: |
-          # Fetch enough history to merge-tree base + heads.
-          git init --quiet /tmp/merge-check
-          cd /tmp/merge-check
-          git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet origin "main:refs/remotes/origin/main"
-          git fetch --quiet origin "$PR_HEAD_SHA"
-
-          # `git merge-tree` (3-arg form) writes the merged tree to its
-          # stdout and emits conflict markers (`<<<<<<<`) on textual
-          # conflicts. Non-zero exit indicates an unrecoverable merge
-          # (e.g. unrelated histories) — treat the same as a conflict.
-          MERGE_BASE=$(git merge-base "refs/remotes/origin/main" "$PR_HEAD_SHA" || true)
-          if [ -z "$MERGE_BASE" ]; then
-            echo "::warning::Could not find merge-base; assuming conflict."
-            CONFLICT=1
-          else
-            set +e
-            output=$(git merge-tree "$MERGE_BASE" "refs/remotes/origin/main" "$PR_HEAD_SHA" 2>&1)
-            mt_status=$?
-            set -e
-            if [ "$mt_status" -ne 0 ]; then
-              echo "git merge-tree failed: $output"
-              CONFLICT=1
-            elif printf '%s\n' "$output" | grep -q '^<<<<<<<'; then
-              CONFLICT=1
-            else
-              CONFLICT=0
-            fi
-          fi
-
-          if [ "$CONFLICT" = "1" ]; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR has merge conflicts with main. Please rebase or merge main and re-apply the label."
-            exit 1
-          fi
-
-          echo "PR $PR_HEAD_SHA merges cleanly into origin/main."
 
       - name: Wait for staging-build on PR HEAD
         if: needs.change-scope.outputs.package_staging_required == 'true'
@@ -188,43 +346,126 @@ jobs:
         # since Phase B-1, the matrix already targets the undated
         # `binaries-abi-v<N>` tag in parallel with the legacy build).
         # Waiting here lets prepare-merge promote PR-staged archives
-        # whose cache key still matches the PR merge ref, while rebuilding
-        # entries whose merged-tree inputs changed.
+        # whose cache key still matches the selected synthetic merge tree,
+        # while rebuilding entries whose merged-tree inputs changed.
         run: |
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
           # The label event can fire before staging-build's run is
           # registered against PR_HEAD_SHA. Retry briefly.
+          #
+          # staging-build also listens to label changes so toggling
+          # skip-staging-tests can re-run the gate with the new policy.
+          # Other label events, including ready-to-ship, create an
+          # all-skipped workflow run. Ignore those skipped runs here so
+          # the gate watches the latest real staging-build run for this
+          # commit.
           RUN_ID=""
           for attempt in 1 2 3 4 5 6; do
-            RUN_ID=$(gh run list \
+            RUN_ID=$(gh_retry gh run list \
               --repo ${{ github.repository }} \
               --workflow=staging-build.yml \
               --commit="$PR_HEAD_SHA" \
-              --limit=1 \
-              --json databaseId \
-              --jq '.[0].databaseId // empty')
+              --limit=20 \
+              --json databaseId,status,conclusion \
+              --jq '[.[] | select(.conclusion != "skipped")][0].databaseId // empty')
             [ -n "$RUN_ID" ] && break
             sleep 10
           done
 
           if [ -z "$RUN_ID" ]; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`."
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no non-skipped \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`." || true
             exit 1
           fi
 
           echo "Waiting for staging-build run $RUN_ID on $PR_HEAD_SHA…"
           # --exit-status: non-zero on failure/cancelled conclusion.
-          if ! gh run watch "$RUN_ID" --repo ${{ github.repository }} --exit-status; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Re-apply \`ready-to-ship\` once it is green."
+          if ! gh_retry gh run watch "$RUN_ID" --repo ${{ github.repository }} --exit-status; then
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Re-apply \`ready-to-ship\` once it is green." || true
             exit 1
           fi
 
       - name: Drop label + comment on gate failure
         if: failure()
         run: |
-          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge gate failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
+          gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+          gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge gate failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
 
   # ---------------------------------------------------------------------
   # Per-package matrix flow.
@@ -243,7 +484,7 @@ jobs:
   # ---------------------------------------------------------------------
 
   preflight:
-    needs: [gate, change-scope]
+    needs: [synthesize-merge, gate, change-scope]
     if: needs.change-scope.outputs.package_staging_required == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -259,33 +500,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # On pull_request events this is refs/pull/<N>/merge. Build
-          # and test the exact tree GitHub intends to merge, not just
-          # the PR head. fetch-depth 2 keeps the merge parent available
-          # for changed-file detection and the final base-drift guard.
-          ref: ${{ github.ref }}
-          fetch-depth: 2
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
 
       - name: Fetch musl submodule
         # Hardened submodule fetch via the reusable action (PR #435).
         # preflight only needs musl (it builds xtask and computes the
         # matrix; tests/libc/libc-test and tests/sortix/os-test materialize in matrix-build / test-gate
-        # via their own checkouts). The durable-release-lock and the
-        # mergeability/change-scope gates from the legacy publish job
-        # have moved to `gate` (`Validate PR is mergeable into main`)
-        # and `merge-gate-finalize` (durable-release-lock acquire) per
-        # the Phase C restructure.
+        # via their own checkouts). Mergeability is proven by
+        # `synthesize-merge`, and base drift is checked by the final
+        # merge-gate posting jobs.
         uses: ./.github/actions/fetch-submodules
         with:
           submodules: libc/musl
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
         with:
           use-gha-cache: false
+          use-flakehub: false
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
@@ -310,28 +578,28 @@ jobs:
       - name: Compute matrix
         id: compute
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          SYNTH_BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          SYNTH_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
 
-            parents=$(git show --no-patch --format=%P HEAD)
-            MERGE_BASE_SHA=$(printf "%s\n" "$parents" | awk "{print \$1}")
-            MERGE_HEAD_SHA=$(printf "%s\n" "$parents" | awk "{print \$2}")
-            if [ -z "$MERGE_BASE_SHA" ] || [ -z "$MERGE_HEAD_SHA" ]; then
-              echo "::error::prepare-merge expected HEAD to be the pull_request merge commit, got parents: $parents"
+            if [ "$(git rev-parse HEAD)" != "$SYNTHETIC_MERGE_SHA" ]; then
+              echo "::error::preflight is not on synthetic merge $SYNTHETIC_MERGE_SHA"
               exit 1
             fi
-            if [ "$MERGE_HEAD_SHA" != "${{ github.event.pull_request.head.sha }}" ]; then
-              echo "::error::pull_request merge ref second parent $MERGE_HEAD_SHA does not match PR head ${{ github.event.pull_request.head.sha }}"
+            parents=$(git show --no-patch --format=%P HEAD)
+            actual_base=$(printf "%s\n" "$parents" | awk "{print \$1}")
+            actual_head=$(printf "%s\n" "$parents" | awk "{print \$2}")
+            MERGE_BASE_SHA="$SYNTH_BASE_SHA"
+            MERGE_HEAD_SHA="$SYNTH_HEAD_SHA"
+            if [ "$actual_base" != "$MERGE_BASE_SHA" ] || [ "$actual_head" != "$MERGE_HEAD_SHA" ]; then
+              echo "::error::prepare-merge synthetic merge parent mismatch: parents=$parents base=$MERGE_BASE_SHA head=$MERGE_HEAD_SHA"
               exit 1
             fi
             echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
-
-            if ! git cat-file -e "$MERGE_BASE_SHA^{commit}" 2>/dev/null || \
-               ! git cat-file -e "$MERGE_HEAD_SHA^{commit}" 2>/dev/null; then
-              git fetch --deepen=1 origin "${{ github.ref }}"
-            fi
 
             pr_changed_files=$(git diff --name-only "$MERGE_BASE_SHA"..HEAD || true)
             base_delta_files=$(git diff --name-only "$MERGE_HEAD_SHA" "$MERGE_BASE_SHA" || true)
@@ -462,7 +730,7 @@ jobs:
           '
 
   toolchain-cache:
-    needs: [gate, change-scope]
+    needs: [synthesize-merge, gate, change-scope]
     if: |
       needs.change-scope.outputs.package_staging_required == 'true' ||
       needs.change-scope.outputs.kernel == 'true'
@@ -470,7 +738,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
 
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
@@ -479,9 +778,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Compute cache key
         # Mirrors `staging-build.yml`'s `toolchain-cache.key` formula
@@ -547,7 +851,7 @@ jobs:
   # for forced entries and entries absent from both durable and PR
   # staging releases.
   promote-staging:
-    needs: [preflight]
+    needs: [synthesize-merge, preflight]
     if: needs.preflight.outputs.promote_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
@@ -560,7 +864,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
 
       - name: Build xtask
         run: |
@@ -570,7 +905,7 @@ jobs:
       - name: Download staged archive
         id: archive
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -590,7 +925,7 @@ jobs:
 
       - name: Promote archive + index entry
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -607,7 +942,7 @@ jobs:
   # Library wave — kind=library packages. See staging-build.yml for
   # the lib-then-program design rationale.
   lib-matrix-build:
-    needs: [preflight, toolchain-cache]
+    needs: [synthesize-merge, preflight, toolchain-cache]
     if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
@@ -622,14 +957,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
 
       - name: Compute commit-bound build provenance
         id: provenance
         run: |
           ts=$(git log -1 --format=%aI HEAD)
           echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "build-host=${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}" >> "$GITHUB_OUTPUT"
 
       - name: Fetch musl submodule
         uses: ./.github/actions/fetch-submodules
@@ -638,9 +1004,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -707,7 +1078,7 @@ jobs:
       - name: Publish archive + index entry
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -724,7 +1095,7 @@ jobs:
       - name: Record failed build in index
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -739,7 +1110,7 @@ jobs:
 
   # Program wave — kind=program packages, gated on the library wave.
   matrix-build:
-    needs: [preflight, toolchain-cache, promote-staging, lib-matrix-build]
+    needs: [synthesize-merge, preflight, toolchain-cache, promote-staging, lib-matrix-build]
     if: |
       !cancelled() &&
       needs.preflight.result == 'success' &&
@@ -760,14 +1131,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
 
       - name: Compute commit-bound build provenance
         id: provenance
         run: |
           ts=$(git log -1 --format=%aI HEAD)
           echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "build-host=${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}" >> "$GITHUB_OUTPUT"
           echo "provenance: build-timestamp=$ts" >&2
 
       - name: Fetch musl submodule
@@ -777,9 +1179,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -850,7 +1257,7 @@ jobs:
       - name: Publish archive + index entry
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -867,7 +1274,7 @@ jobs:
       - name: Record failed build in index
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -881,7 +1288,7 @@ jobs:
             || true
 
   test-gate:
-    needs: [change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
+    needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
@@ -909,24 +1316,59 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
 
-      - name: Capture PR merge base
-        id: merge_ref
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
           parents=$(git show --no-patch --format=%P HEAD)
-          MERGE_BASE_SHA=$(printf "%s\n" "$parents" | awk "{print \$1}")
-          MERGE_HEAD_SHA=$(printf "%s\n" "$parents" | awk "{print \$2}")
-          if [ -z "$MERGE_BASE_SHA" ] || [ -z "$MERGE_HEAD_SHA" ]; then
-            echo "::error::prepare-merge expected HEAD to be the pull_request merge commit, got parents: $parents"
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
             exit 1
           fi
-          if [ "$MERGE_HEAD_SHA" != "${{ github.event.pull_request.head.sha }}" ]; then
-            echo "::error::pull_request merge ref second parent $MERGE_HEAD_SHA does not match PR head ${{ github.event.pull_request.head.sha }}"
+
+      - name: Capture synthesized merge base
+        id: merge_ref
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::test-gate is not on synthetic merge $SYNTHETIC_MERGE_SHA"
             exit 1
           fi
-          echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf "%s\n" "$parents" | awk "{print \$1}")
+          actual_head=$(printf "%s\n" "$parents" | awk "{print \$2}")
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
+          echo "merge_base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Fetch submodules (musl, libc-test, os-test)
         uses: ./.github/actions/fetch-submodules
@@ -935,9 +1377,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -1070,7 +1517,7 @@ jobs:
   # success context and enable auto-merge without touching releases.
   # ---------------------------------------------------------------------
   merge-gate-post-noop:
-    needs: [gate, change-scope]
+    needs: [synthesize-merge, gate, change-scope]
     if: |
       !cancelled() &&
       needs.gate.result == 'success' &&
@@ -1082,10 +1529,33 @@ jobs:
       pull-requests: write     # auto-merge + comment
       statuses: write          # post merge-gate=success
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
+      - name: Verify prepared base is still current
+        run: |
+          set -euo pipefail
+          PREPARED_BASE="${{ needs.synthesize-merge.outputs.base_sha }}"
+          if [ -z "$PREPARED_BASE" ]; then
+            echo "::error::synthesize-merge did not report base_sha"
+            exit 1
+          fi
+
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          git init --quiet "$RUNNER_TEMP/base-drift"
+          cd "$RUNNER_TEMP/base-drift"
+          git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
+
+          if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
+            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`$BASE_REF\` advanced while prepare-merge was running (prepared \`$PREPARED_BASE\`, current \`$CURRENT_BASE\`). Re-apply \`ready-to-ship\` so the no-op merge gate is based on the latest base."
+            exit 1
+          fi
+
       - name: Post merge-gate=success on original PR HEAD
         run: |
           gh api \
@@ -1150,9 +1620,9 @@ jobs:
   # merge-gate-post-kernel-only — package staging was not required, but
   # kernel/runtime tests were.
   #
-  # Non-ABI kernel/runtime PRs should validate the PR merge ref without
-  # building or publishing package archives. Once test-gate passes against
-  # durable binaries plus the freshly built kernel, post the normal
+  # Non-ABI kernel/runtime PRs should validate the synthetic merge commit
+  # without building or publishing package archives. Once test-gate passes
+  # against durable binaries plus the freshly built kernel, post the normal
   # merge-gate context and enable auto-merge.
   # ---------------------------------------------------------------------
   merge-gate-post-kernel-only:
@@ -1169,7 +1639,7 @@ jobs:
       pull-requests: write     # auto-merge + comment
       statuses: write          # post merge-gate=success
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -1186,7 +1656,8 @@ jobs:
           git init --quiet "$RUNNER_TEMP/base-drift"
           cd "$RUNNER_TEMP/base-drift"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
           CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
@@ -1235,9 +1706,9 @@ jobs:
         continue-on-error: true
         run: |
           if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
-            BODY="prepare-merge: kernel/runtime tests passed against the PR merge ref; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable auto-merge for this workflow-changing PR."
+            BODY="prepare-merge: kernel/runtime tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable auto-merge for this workflow-changing PR."
           else
-            BODY="prepare-merge: kernel/runtime tests passed against the PR merge ref; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
+            BODY="prepare-merge: kernel/runtime tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
           fi
           set +e
           for attempt in 1 2 3; do
@@ -1267,7 +1738,7 @@ jobs:
   # Fires when test-gate succeeds against the durable release state.
   # Prepare may have built missing archives, promoted exact archives
   # from pr-<N>-staging, or found every cache_key_sha already on the
-  # durable tag; in all cases test-gate validates the PR merge ref
+  # durable tag; in all cases test-gate validates the synthetic PR merge
   # against what consumers will fetch from binaries-abi-v<N>.
   # ---------------------------------------------------------------------
   merge-gate-post:
@@ -1283,7 +1754,7 @@ jobs:
       pull-requests: write     # auto-merge + comment
       statuses: write          # post merge-gate=success
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -1300,7 +1771,8 @@ jobs:
           git init --quiet "$RUNNER_TEMP/base-drift"
           cd "$RUNNER_TEMP/base-drift"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
           CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
@@ -1311,7 +1783,7 @@ jobs:
 
       - name: Post merge-gate=success on original PR HEAD
         run: |
-          DESC="test-gate passed on the PR merge ref against durable archives on ${{ needs.preflight.outputs.target_tag }}."
+          DESC="test-gate passed on the synthetic PR merge against durable archives on ${{ needs.preflight.outputs.target_tag }}."
           gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
@@ -1357,9 +1829,9 @@ jobs:
         continue-on-error: true
         run: |
           if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
-            BODY="prepare-merge: test-gate passed against the PR merge ref and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable auto-merge for this workflow-changing PR."
+            BODY="prepare-merge: test-gate passed against the synthetic PR merge and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable auto-merge for this workflow-changing PR."
           else
-            BODY="prepare-merge: test-gate passed against the PR merge ref and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
+            BODY="prepare-merge: test-gate passed against the synthetic PR merge and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD and auto-merge enabled."
           fi
           set +e
           for attempt in 1 2 3; do

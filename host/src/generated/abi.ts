@@ -188,3 +188,400 @@ export const ABI_SYSCALLS = {
   Wait4: 139,
   Getaddrinfo: 140,
 } as const;
+
+export type SyscallArgDirection = "in" | "out" | "inout";
+
+export type SyscallArgSizeSpec =
+  | { type: "cstring" }
+  | { type: "arg"; argIndex: number; multiplier?: number; add?: number }
+  | { type: "deref"; argIndex: number }
+  | { type: "fixed"; size: number };
+
+export interface SyscallArgDesc {
+  argIndex: number;
+  direction: SyscallArgDirection;
+  size: SyscallArgSizeSpec;
+  copyRetvalAdd?: number;
+}
+
+export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
+  1: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  3: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+  ],
+  4: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+  ],
+  6: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 88 } },
+  ],
+  9: [
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } },
+  ],
+  11: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 88 } },
+  ],
+  12: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 88 } },
+  ],
+  13: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  14: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  15: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  16: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  17: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  18: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  19: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+  ],
+  20: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  21: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  22: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  23: [
+    { argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 } },
+  ],
+  24: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  25: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  26: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 } },
+  ],
+  36: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  37: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 } },
+  ],
+  40: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  41: [
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: 16 } },
+  ],
+  43: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+  ],
+  44: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  45: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  51: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+  ],
+  53: [
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+  ],
+  54: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+  ],
+  55: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+  ],
+  56: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+  ],
+  58: [
+    { argIndex: 3, direction: "out", size: { type: "deref", argIndex: 4 } },
+    { argIndex: 4, direction: "inout", size: { type: "fixed", size: 4 } },
+  ],
+  59: [
+    { argIndex: 3, direction: "in", size: { type: "arg", argIndex: 4 } },
+  ],
+  60: [
+    { argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1, multiplier: 8 } },
+  ],
+  61: [
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 8 } },
+  ],
+  62: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 4, direction: "in", size: { type: "arg", argIndex: 5 } },
+  ],
+  63: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 4, direction: "out", size: { type: "deref", argIndex: 5 } },
+    { argIndex: 5, direction: "inout", size: { type: "fixed", size: 4 } },
+  ],
+  64: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+  ],
+  65: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+  ],
+  69: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  70: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 256 } },
+  ],
+  71: [
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 256 } },
+  ],
+  72: [
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 256 } },
+  ],
+  75: [
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 390 } },
+  ],
+  78: [
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } },
+  ],
+  83: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  84: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
+  ],
+  85: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  93: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 88 } },
+  ],
+  94: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  95: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  96: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 3, direction: "in", size: { type: "cstring" } },
+  ],
+  97: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  98: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  99: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  100: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 3, direction: "in", size: { type: "cstring" } },
+  ],
+  101: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 2, direction: "in", size: { type: "cstring" } },
+  ],
+  102: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 } },
+  ],
+  108: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 144 } },
+  ],
+  109: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+  ],
+  110: [
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } },
+  ],
+  114: [
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+  ],
+  115: [
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+  ],
+  119: [
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 8 } },
+  ],
+  120: [
+    { argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 } },
+  ],
+  122: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+  ],
+  123: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  124: [
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },
+  ],
+  125: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 } },
+  ],
+  129: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 72 } },
+  ],
+  130: [
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 72 } },
+  ],
+  132: [
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
+  ],
+  134: [
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
+  ],
+  137: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+  ],
+  138: [
+    { argIndex: 1, direction: "inout", size: { type: "arg", argIndex: 2 } },
+  ],
+  139: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 } },
+  ],
+  140: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 256 } },
+  ],
+  205: [
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 128 } },
+  ],
+  206: [
+    { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } },
+  ],
+  207: [
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 128 } },
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },
+  ],
+  209: [
+    { argIndex: 0, direction: "in", size: { type: "fixed", size: 12 } },
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 12 } },
+  ],
+  211: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  223: [
+    { argIndex: 1, direction: "inout", size: { type: "fixed", size: 16 } },
+  ],
+  224: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  225: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  230: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 36 } },
+  ],
+  236: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  250: [
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 16 } },
+  ],
+  251: [
+    { argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1, multiplier: 8 } },
+  ],
+  260: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+    { argIndex: 4, direction: "out", size: { type: "fixed", size: 256 } },
+  ],
+  271: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  272: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  326: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
+  ],
+  327: [
+    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 } },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 } },
+  ],
+  328: [
+    { argIndex: 1, direction: "out", size: { type: "fixed", size: 32 } },
+  ],
+  331: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+    { argIndex: 3, direction: "in", size: { type: "fixed", size: 32 } },
+  ],
+  332: [
+    { argIndex: 0, direction: "in", size: { type: "cstring" } },
+  ],
+  333: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 } },
+  ],
+  334: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },
+    { argIndex: 3, direction: "out", size: { type: "fixed", size: 4 } },
+    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 } },
+  ],
+  335: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },
+  ],
+  336: [
+    { argIndex: 1, direction: "in", size: { type: "fixed", size: 32 } },
+    { argIndex: 2, direction: "out", size: { type: "fixed", size: 32 } },
+  ],
+  338: [
+    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2, add: 4 }, copyRetvalAdd: 4 },
+  ],
+  339: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2, add: 4 } },
+  ],
+  340: [
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 96 } },
+  ],
+  342: [
+    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2, multiplier: 6 } },
+  ],
+  347: [
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 88 } },
+  ],
+  382: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  383: [
+    { argIndex: 1, direction: "in", size: { type: "cstring" } },
+  ],
+  384: [
+    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
+    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
+  ],
+};

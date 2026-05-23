@@ -24,6 +24,13 @@
 import { WasmPosixKernel } from "./kernel";
 import { SharedLockTable } from "./shared-lock-table";
 import {
+  buildRawHttpRequest,
+  parseRawHttpResponse,
+  type HttpRequest,
+  type HttpResponse,
+  type SendHttpRequestOptions,
+} from "./networking/in-kernel-http";
+import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_IDLE,
@@ -44,12 +51,24 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
-  STRUCT_SIZE_WASM_STAT,
-  STRUCT_SIZE_WASM_STATFS,
-  STRUCT_SIZE_WASM_TIMESPEC,
+  SYSCALL_ARGS,
+  type SyscallArgDesc,
 } from "./generated/abi";
 
 import type { KernelConfig, PlatformIO } from "./types";
+
+function concatChunksLocal(chunks: Uint8Array[]): Uint8Array {
+  if (chunks.length === 0) return new Uint8Array(0);
+  if (chunks.length === 1) return chunks[0]!;
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
 
 /** Channel status values */
 const CH_IDLE = CHANNEL_STATUS_IDLE;
@@ -163,9 +182,6 @@ const SYS_PWRITEV = 296;
 const SYS_FCNTL = 10;
 
 /** SysV IPC syscall numbers (only those still intercepted on host) */
-const SYS_MSGRCV = 338;
-const SYS_MSGSND = 339;
-const SYS_SEMOP = 342;
 const SYS_SEMCTL = 343;
 const SYS_SHMAT = 345;
 const SYS_SHMDT = 346;
@@ -279,35 +295,6 @@ function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
   return out;
 }
 
-/** Struct sizes for output data copying */
-const WASM_STAT_SIZE = STRUCT_SIZE_WASM_STAT;
-const TIMESPEC_SIZE = STRUCT_SIZE_WASM_TIMESPEC;
-const WASM_STATFS_SIZE = STRUCT_SIZE_WASM_STATFS;
-const ITIMERVAL_SIZE = 16; // musl time64 path: 4 x long (4 bytes each on wasm32)
-const RLIMIT_SIZE = 16;   // 2 x i64 on wasm32
-const STACK_T_SIZE = 12;  // stack_t: { void* ss_sp, int ss_flags, size_t ss_size } on wasm32
-
-// -----------------------------------------------------------------------
-// Arg descriptor system for pointer redirection
-//
-// For each syscall that has pointer arguments, we describe which args
-// are pointers, their direction (in/out/inout), and how to determine
-// the data size (null-terminated string, fixed size, or specified by
-// another arg).
-// -----------------------------------------------------------------------
-
-type SizeSpec =
-  | { type: "cstring" }           // null-terminated string
-  | { type: "arg"; argIndex: number } // size given by another arg
-  | { type: "deref"; argIndex: number } // size from u32 value at pointer arg (e.g. socklen_t*)
-  | { type: "fixed"; size: number };  // fixed-size struct
-
-interface ArgDesc {
-  argIndex: number;
-  direction: "in" | "out" | "inout";
-  size: SizeSpec;
-}
-
 /**
  * Decode just the argv and envp strings out of a SYS_SPAWN blob. The kernel
  * does the authoritative parsing (file actions, attrs); this minimal
@@ -363,329 +350,6 @@ function decodeSpawnBlobStrings(blob: Uint8Array): { argv: string[]; envp: strin
   }
   return { argv, envp };
 }
-
-/** Per-syscall pointer arg descriptors.
- * Only syscalls with pointer args need entries here. */
-const SYSCALL_ARGS: Record<number, ArgDesc[]> = {
-  // File operations
-  1:  [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],     // OPEN: path
-  3:  [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }], // READ: buf
-  4:  [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // WRITE: buf
-  6:  [{ argIndex: 1, direction: "out", size: { type: "fixed", size: WASM_STAT_SIZE } }], // FSTAT: stat_buf
-  64: [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }], // PREAD: buf
-  65: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // PWRITE: buf
-
-  // _llseek
-  119: [{ argIndex: 3, direction: "out", size: { type: "fixed", size: 8 } }],  // _LLSEEK: result_ptr (off_t)
-
-  // FD operations
-  9:  [{ argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } }],   // PIPE: 2 x i32
-  78: [{ argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } }],   // PIPE2: 2 x i32
-
-  // Stat
-  11: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // STAT: path
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: WASM_STAT_SIZE } },
-  ],
-  12: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // LSTAT: path
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: WASM_STAT_SIZE } },
-  ],
-  93: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               // FSTATAT: path
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: WASM_STAT_SIZE } },
-  ],
-
-  // Directory operations
-  13: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // MKDIR: path
-  14: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // RMDIR: path
-  15: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // UNLINK: path
-  16: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // RENAME: old
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               //         new
-  ],
-  17: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // LINK: old
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               //       new
-  ],
-  18: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // SYMLINK: target
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               //          linkpath
-  ],
-  19: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // READLINK: path
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     //           buf
-  ],
-  20: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // CHMOD: path
-  21: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // CHOWN: path
-  22: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // ACCESS: path
-  23: [{ argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 } }], // GETCWD: buf
-  24: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // CHDIR: path
-  25: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // OPENDIR: path
-  26: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } },      // READDIR: dirent
-    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 } },     //          name_buf
-  ],
-  122: [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }], // GETDENTS64: buf
-
-  // Signals
-  36: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },       // SIGACTION: act
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 16 } },      //            oldact
-  ],
-  37: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 8 } },       // SIGPROCMASK: set
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 8 } },      //              oldset
-  ],
-  110: [{ argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } }],  // SIGSUSPEND: mask
-  205: [{ argIndex: 2, direction: "in", size: { type: "fixed", size: 128 } }], // RT_SIGQUEUEINFO: siginfo_t
-
-  // Time
-  40: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: TIMESPEC_SIZE } }], // CLOCK_GETTIME
-  41: [{ argIndex: 0, direction: "in", size: { type: "fixed", size: TIMESPEC_SIZE } }],  // NANOSLEEP
-  123: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: TIMESPEC_SIZE } }], // CLOCK_GETRES
-  124: [{ argIndex: 2, direction: "in", size: { type: "fixed", size: TIMESPEC_SIZE } }], // CLOCK_NANOSLEEP
-
-  // POSIX timers
-  326: [                                                                                 // TIMER_CREATE: (clock_id, sigevent, *timerid)
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },                 //   ksigevent (16 bytes)
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },                 //   timerid (i32)
-  ],
-  327: [                                                                                 // TIMER_SETTIME: (timerid, flags, new, old)
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 32 } },                 //   new itimerspec (4 x i64 = 32 bytes)
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 } },                //   old itimerspec (4 x i64 = 32 bytes)
-  ],
-  328: [                                                                                 // TIMER_GETTIME: (timerid, curr)
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 32 } },                //   curr itimerspec (4 x i64 = 32 bytes)
-  ],
-
-  // UTIMENSAT: (dirfd, path, times, flags)
-  125: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: TIMESPEC_SIZE * 2 } },
-  ],
-
-  250: [
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },      // PRLIMIT64: new_rlim
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 16 } },     //            old_rlim
-  ],
-
-  // Environment
-  43: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // GETENV: name
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     //         buf
-  ],
-  44: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // SETENV: name
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               //         value
-  ],
-  45: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // UNSETENV: name
-
-  75: [{ argIndex: 0, direction: "out", size: { type: "fixed", size: 390 } }], // UNAME: buf (struct utsname = 6x65)
-  120: [{ argIndex: 0, direction: "out", size: { type: "arg", argIndex: 1 } }], // GETRANDOM: buf
-  109: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // REALPATH: path
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     //           buf
-  ],
-
-  // Scheduling
-  230: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 36 } }],  // SCHED_GETPARAM: param (36-byte struct)
-  236: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 16 } }],  // SCHED_RR_GET_INTERVAL: timespec (16 bytes)
-
-  // Signals
-  206: [{ argIndex: 0, direction: "out", size: { type: "fixed", size: 8 } }],   // RT_SIGPENDING: set
-  207: [                                                                         // RT_SIGTIMEDWAIT: (mask, info, timeout)
-    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 } },          //   mask (sigset_t, 8 bytes)
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 128 } },       //   info (siginfo_t, 128 bytes)
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 } },         //   timeout (timespec, 16 bytes)
-  ],
-  209: [                                                                        // SIGALTSTACK: ss + oss
-    { argIndex: 0, direction: "in", size: { type: "fixed", size: STACK_T_SIZE } },   // ss (input)
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: STACK_T_SIZE } },  // oss (output)
-  ],
-
-  // Sockets
-  51: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // BIND: addr
-  53: [                                                                         // ACCEPT: addr + addrlen
-    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
-  ],
-  384: [                                                                        // ACCEPT4: addr + addrlen (same as accept)
-    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
-  ],
-  54: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // CONNECT: addr
-  59: [{ argIndex: 3, direction: "in", size: { type: "arg", argIndex: 4 } }],  // SETSOCKOPT: optval
-  114: [                                                                        // GETSOCKNAME: addr + addrlen
-    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },   //   addr (output, size from *addrlen)
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },     //   addrlen (inout, socklen_t = 4 bytes)
-  ],
-  115: [                                                                        // GETPEERNAME: addr + addrlen
-    { argIndex: 1, direction: "out", size: { type: "deref", argIndex: 2 } },
-    { argIndex: 2, direction: "inout", size: { type: "fixed", size: 4 } },
-  ],
-  55: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],  // SEND: buf
-  56: [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }], // RECV: buf
-  58: [                                                                        // GETSOCKOPT: optval + optlen
-    { argIndex: 3, direction: "out", size: { type: "deref", argIndex: 4 } },   //   optval (output, size from *optlen)
-    { argIndex: 4, direction: "inout", size: { type: "fixed", size: 4 } },     //   optlen (inout, socklen_t = 4 bytes)
-  ],
-  61: [{ argIndex: 3, direction: "out", size: { type: "fixed", size: 8 } }],   // SOCKETPAIR: sv
-
-  140: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // GETADDRINFO: name
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 256 } },     //              result_buf
-  ],
-  137: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }], // SENDMSG: msg
-  138: [{ argIndex: 1, direction: "inout", size: { type: "arg", argIndex: 2 } }], // RECVMSG: msg
-  62: [
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },      // SENDTO: buf
-    { argIndex: 4, direction: "in", size: { type: "arg", argIndex: 5 } },      //         dest_addr
-  ],
-  63: [
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     // RECVFROM: buf
-    { argIndex: 4, direction: "out", size: { type: "deref", argIndex: 5 } },   //           src_addr (size from *addrlen)
-    { argIndex: 5, direction: "inout", size: { type: "fixed", size: 4 } },     //           addrlen (inout, socklen_t = 4)
-  ],
-
-  // Poll/select
-  60: [{ argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1 } }], // POLL: fds (nfds * 8)
-  251: [{ argIndex: 0, direction: "inout", size: { type: "arg", argIndex: 1 } }], // PPOLL: fds (nfds * 8)
-
-  // (epoll syscalls are now intercepted on the host side — see handleEpollCreate/Ctl/Pwait)
-
-  // Terminal
-  70: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 256 } }], // TCGETATTR
-  71: [{ argIndex: 2, direction: "in", size: { type: "fixed", size: 256 } }],  // TCSETATTR
-  72: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 256 } }], // IOCTL
-
-  // File system
-  85: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],           // TRUNCATE: path
-  // statfs64/fstatfs64: musl sends (path, sizeof, buf) / (fd, sizeof, buf)
-  // because SYS_statfs64 is aliased to SYS_statfs on our platform
-  129: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // STATFS64: path
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: WASM_STATFS_SIZE } },
-  ],
-  130: [{ argIndex: 2, direction: "out", size: { type: "fixed", size: WASM_STATFS_SIZE } }], // FSTATFS64: buf
-
-  // *at variants
-  69: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],           // OPENAT: path
-  94: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],           // UNLINKAT: path
-  95: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],           // MKDIRAT: path
-  96: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               // RENAMEAT: oldpath
-    { argIndex: 3, direction: "in", size: { type: "cstring" } },               //           newpath
-  ],
-  97: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],           // FACCESSAT: path
-  98: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],           // FCHMODAT: path
-  99: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],           // FCHOWNAT: path
-  100: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               // LINKAT: oldpath
-    { argIndex: 3, direction: "in", size: { type: "cstring" } },               //         newpath
-  ],
-  101: [
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               // SYMLINKAT: target
-    { argIndex: 2, direction: "in", size: { type: "cstring" } },               //            linkpath
-  ],
-  102: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               // READLINKAT: path
-    { argIndex: 2, direction: "out", size: { type: "arg", argIndex: 3 } },     //             buf (a3), bufsiz (a4)
-  ],
-
-  // Resource limits
-  83: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: RLIMIT_SIZE } }],  // GETRLIMIT
-  84: [{ argIndex: 1, direction: "in", size: { type: "fixed", size: RLIMIT_SIZE } }],   // SETRLIMIT
-
-  108: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: 144 } }], // GETRUSAGE: buf (time64 rusage = 18x8)
-  132: [
-    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 } },       // GETRESUID
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
-  ],
-  134: [
-    { argIndex: 0, direction: "out", size: { type: "fixed", size: 4 } },       // GETRESGID
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 4 } },
-  ],
-
-  // Wait
-  139: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 } },       // WAIT4: wstatus
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 32 } },      //        rusage
-  ],
-
-  // Exec
-  211: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],          // EXECVE: path
-
-  // prctl(option, arg2, arg3, arg4, arg5)
-  // Always marshal arg2 as a 16-byte inout buffer:
-  //   PR_SET_NAME (15): kernel reads thread name from buf
-  //   PR_GET_NAME (16): kernel writes thread name to buf
-  //   Any other option: kernel ignores buf entirely (sys_prctl returns Ok(()) for
-  //   unknown options without touching it), so always-marshalling is wasted-but-safe.
-  // Without this, the user's wasm32 buffer pointer was passed unchanged to the
-  // kernel's `from_raw_parts_mut(arg2 as *mut u8, 16)` — the kernel would
-  // dereference user-space addresses against its own memory, with the failure
-  // mode depending on whether the address landed in already-grown kernel pages
-  // (silent corruption) or past them (RuntimeError: memory access out of bounds).
-  // Triggered by mariadbd's pthread_setname_np during boot.
-  223: [{ argIndex: 1, direction: "inout", size: { type: "fixed", size: 16 } }],
-
-  // Timer
-  225: [
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: ITIMERVAL_SIZE } },   // SETITIMER: new
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: ITIMERVAL_SIZE } },  //            old
-  ],
-  224: [{ argIndex: 1, direction: "out", size: { type: "fixed", size: ITIMERVAL_SIZE } }], // GETITIMER
-
-  // statx
-  260: [
-    { argIndex: 1, direction: "in", size: { type: "cstring" } },               // STATX: path
-    { argIndex: 4, direction: "out", size: { type: "fixed", size: 256 } },     //        statxbuf (a5)
-  ],
-
-  // mknod/mknodat
-  271: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],          // MKNOD: path
-  272: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],          // MKNODAT: path
-
-  // faccessat2/fchmodat2
-  382: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],          // FACCESSAT2: path
-  383: [{ argIndex: 1, direction: "in", size: { type: "cstring" } }],          // FCHMODAT2: path
-
-  // POSIX message queues
-  331: [                                                                        // MQ_OPEN: (name, flags, mode, attr)
-    { argIndex: 0, direction: "in", size: { type: "cstring" } },               //   name
-    { argIndex: 3, direction: "in", size: { type: "fixed", size: 32 } },        //   mq_attr (if O_CREAT && non-null)
-  ],
-  332: [{ argIndex: 0, direction: "in", size: { type: "cstring" } }],          // MQ_UNLINK: name
-  333: [                                                                        // MQ_TIMEDSEND: (mqd, msg_ptr, msg_len, priority, timeout)
-    { argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } },      //   message data
-    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 } },        //   timespec (optional)
-  ],
-  334: [                                                                        // MQ_TIMEDRECEIVE: (mqd, msg_ptr, msg_len, prio_ptr, timeout)
-    { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } },     //   message buffer (out)
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 4 } },        //   priority (out)
-    { argIndex: 4, direction: "in", size: { type: "fixed", size: 16 } },        //   timespec (optional)
-  ],
-  335: [                                                                        // MQ_NOTIFY: (mqd, sigevent)
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 16 } },        //   sigevent (optional)
-  ],
-  336: [                                                                        // MQ_GETSETATTR: (mqd, new_attr, old_attr)
-    { argIndex: 1, direction: "in", size: { type: "fixed", size: 32 } },        //   new mq_attr (optional)
-    { argIndex: 2, direction: "out", size: { type: "fixed", size: 32 } },       //   old mq_attr (out)
-  ],
-
-  // SysV IPC
-  338: [{ argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 } }],  // MSGRCV: msgp ({mtype, mtext})
-  339: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],   // MSGSND: msgp ({mtype, mtext})
-  340: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 96 } }], // MSGCTL: msqid_ds buf
-  342: [{ argIndex: 1, direction: "in", size: { type: "arg", argIndex: 2 } }],   // SEMOP: sembuf[] (nsops * 6)
-  347: [{ argIndex: 2, direction: "inout", size: { type: "fixed", size: 88 } }], // SHMCTL: shmid_ds buf
-};
-
-// Also need a way to compute poll size: nfds * sizeof(struct pollfd) = nfds * 8
-// This is handled as a special case in the size computation.
 
 /** Syscall number → name mapping for logging */
 export const SYSCALL_NAMES: Record<number, string> = {
@@ -2350,11 +2014,9 @@ export class CentralizedKernelWorker {
           }
           size = len + 1; // include null terminator
         } else if (desc.size.type === "arg") {
-          size = origArgs[desc.size.argIndex];
-          // Special cases: struct size multipliers and prefixes
-          if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;   // pollfd = 8 bytes
-          if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) size += 4; // mtype (long) prefix
-          if (syscallNr === SYS_SEMOP) size *= 6;   // struct sembuf = 6 bytes
+          size =
+            origArgs[desc.size.argIndex] * (desc.size.multiplier ?? 1)
+            + (desc.size.add ?? 0);
         } else if (desc.size.type === "deref") {
           // Dereference: arg is a pointer to a u32 value (e.g. socklen_t*)
           const derefPtr = origArgs[desc.size.argIndex];
@@ -2673,7 +2335,7 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     syscallNr: number,
     origArgs: number[],
-    argDescs: ArgDesc[] | undefined,
+    argDescs: SyscallArgDesc[] | undefined,
     retVal: number,
     errVal: number,
   ): void {
@@ -2699,11 +2361,9 @@ export class CentralizedKernelWorker {
           }
           size = len + 1;
         } else if (desc.size.type === "arg") {
-          size = origArgs[desc.size.argIndex];
-          if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) size *= 8;
-          if (syscallNr === SYS_EPOLL_PWAIT) size *= 12;
-          if (syscallNr === SYS_MSGSND || syscallNr === SYS_MSGRCV) size += 4; // mtype prefix
-          if (syscallNr === SYS_SEMOP) size *= 6;  // struct sembuf = 6 bytes
+          size =
+            origArgs[desc.size.argIndex] * (desc.size.multiplier ?? 1)
+            + (desc.size.add ?? 0);
         } else if (desc.size.type === "deref") {
           const derefPtr = origArgs[desc.size.argIndex];
           if (derefPtr === 0) continue;
@@ -2738,10 +2398,9 @@ export class CentralizedKernelWorker {
           let copySize = size;
           if (desc.direction === "out" && desc.size.type === "arg") {
             // For read/recv-like syscalls, retVal is bytes read — limit copy to actual data
-            if (retVal > 0 && retVal < size) {
-              copySize = retVal;
-              // msgrcv retVal is mtext length, but scratch also has mtype (4B) prefix
-              if (syscallNr === SYS_MSGRCV) copySize += 4;
+            const copyRetvalAdd = desc.copyRetvalAdd ?? 0;
+            if (retVal > 0 && retVal + copyRetvalAdd < size) {
+              copySize = retVal + copyRetvalAdd;
             }
           }
           processMem.set(
@@ -7530,8 +7189,11 @@ export class CentralizedKernelWorker {
   /**
    * Pick the next listener target for a port via round-robin.
    * Only considers processes that are still registered.
+   *
+   * Public so external callers (the in-kernel HTTP request bridge) can
+   * resolve a port to a {pid, fd} before injecting a connection.
    */
-  private pickListenerTarget(port: number): {pid: number, fd: number} | null {
+  pickListenerTarget(port: number): {pid: number, fd: number} | null {
     const targets = this.tcpListenerTargets.get(port);
     if (!targets || targets.length === 0) return null;
 
@@ -7557,6 +7219,228 @@ export class CentralizedKernelWorker {
     const idx = (this.tcpListenerRRIndex.get(port) ?? 0) % candidates.length;
     this.tcpListenerRRIndex.set(port, idx + 1);
     return candidates[idx]!;
+  }
+
+  // ---------------------------------------------------------------------------
+  // External HTTP request bridge (host → in-kernel server, no real TCP)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Send an HTTP/1.1 request to a server running inside the kernel and
+   * resolve with the parsed response. Bypasses real TCP — uses
+   * `kernel_inject_connection` + `kernel_pipe_*` directly.
+   *
+   * Used by both the browser service-worker bridge and the Node host's
+   * `fetchInKernel` API (see
+   * docs/plans/2026-04-30-external-kernel-http-request-interface.md).
+   */
+  async sendHttpRequest(
+    port: number,
+    request: HttpRequest,
+    opts: SendHttpRequestOptions = {},
+  ): Promise<HttpResponse> {
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const label = opts.debugLabel ?? `${request.method} ${request.url}`;
+
+    const target = this.pickListenerTarget(port);
+    if (!target) {
+      throw new Error(`No in-kernel listener for port ${port}`);
+    }
+
+    const exports = this.kernelInstance!.exports;
+    const injectConnection = exports.kernel_inject_connection as (
+      pid: number, fd: number, a: number, b: number, c: number, d: number, port: number,
+    ) => number;
+    const pipeWrite = exports.kernel_pipe_write as (
+      pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
+    ) => number;
+    const pipeRead = exports.kernel_pipe_read as (
+      pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
+    ) => number;
+    const pipeIsWriteOpen = exports.kernel_pipe_is_write_open as (
+      pid: number, pipeIdx: number,
+    ) => number;
+    const pipeCloseWrite = exports.kernel_pipe_close_write as (
+      pid: number, pipeIdx: number,
+    ) => number;
+    const pipeCloseRead = exports.kernel_pipe_close_read as (
+      pid: number, pipeIdx: number,
+    ) => number;
+
+    // Synthetic remote — picked from the ephemeral range so the kernel
+    // doesn't think two simultaneous external calls share a 4-tuple.
+    const remotePort = 1024 + Math.floor(Math.random() * 60_000);
+    const recvPipeIdx = injectConnection(
+      target.pid, target.fd,
+      127, 0, 0, 1,
+      remotePort,
+    );
+    if (recvPipeIdx < 0) {
+      throw new Error(
+        `[in-kernel-http ${label}] kernel_inject_connection failed (${recvPipeIdx})`,
+      );
+    }
+    const sendPipeIdx = recvPipeIdx + 1;
+    const GLOBAL_PIPE_PID = 0;
+
+    // Wake any pending poll on the target so accept() fires immediately.
+    // Without this we'd wait for the next 5s poll fallback timer.
+    this.wakeTargetPollNow(target.pid);
+    this.scheduleWakeBlockedRetries();
+
+    // Write the request bytes through the TCP scratch buffer.
+    const rawRequest = buildRawHttpRequest(request);
+    const written = this.writePipeChunked(pipeWrite, GLOBAL_PIPE_PID, recvPipeIdx, rawRequest);
+    if (written < rawRequest.length) {
+      // Partial write here would mean the recv pipe filled up before the
+      // server even started reading. Treat as a hard error for the prototype.
+      pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+      pipeCloseRead(GLOBAL_PIPE_PID, sendPipeIdx);
+      throw new Error(
+        `[in-kernel-http ${label}] partial write ${written}/${rawRequest.length}`,
+      );
+    }
+
+    // Wake any reader/poller already blocked on the recv pipe.
+    this.notifyPipeReadable(recvPipeIdx);
+
+    // Pump the response.
+    const response = await this.pumpHttpResponse(
+      GLOBAL_PIPE_PID,
+      sendPipeIdx,
+      recvPipeIdx,
+      pipeRead,
+      pipeIsWriteOpen,
+      pipeCloseRead,
+      pipeCloseWrite,
+      timeoutMs,
+      label,
+    );
+    const retryBudget = opts.emptyResponseRetries ?? 1;
+    if (
+      retryBudget > 0 &&
+      (request.method === "GET" || request.method === "HEAD") &&
+      response.status === 200 &&
+      Object.keys(response.headers).length === 0 &&
+      response.body.length === 0
+    ) {
+      return await this.sendHttpRequest(port, request, {
+        ...opts,
+        emptyResponseRetries: retryBudget - 1,
+      });
+    }
+    return response;
+  }
+
+  /**
+   * Synchronously cancel any pending poll/ppoll waiting on the given pid
+   * so the in-kernel server's accept loop fires this tick. Used by
+   * sendHttpRequest right after injecting a connection.
+   */
+  private wakeTargetPollNow(pid: number): void {
+    for (const [key, entry] of this.pendingPollRetries) {
+      if (entry.channel.pid !== pid) continue;
+      if (entry.timer !== null) clearTimeout(entry.timer);
+      this.pendingPollRetries.delete(key);
+      if (this.processes.has(pid)) this.retrySyscall(entry.channel);
+      break;
+    }
+  }
+
+  /**
+   * Write `data` through the TCP scratch buffer, looping until either the
+   * pipe stops accepting or we've written everything. Returns total bytes
+   * written.
+   */
+  private writePipeChunked(
+    pipeWrite: (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number,
+    pid: number,
+    pipeIdx: number,
+    data: Uint8Array,
+  ): number {
+    const scratchOffset = this.tcpScratchOffset;
+    const PAGE = 65536;
+    let written = 0;
+    while (written < data.length) {
+      const chunk = Math.min(data.length - written, PAGE);
+      // Re-acquire view each iteration — memory.grow can detach the buffer.
+      const mem = this.getKernelMem();
+      mem.set(data.subarray(written, written + chunk), scratchOffset);
+      const n = pipeWrite(pid, pipeIdx, BigInt(scratchOffset), chunk);
+      if (n <= 0) break;
+      written += n;
+    }
+    return written;
+  }
+
+  /**
+   * Pump response bytes out of `sendPipeIdx` until the server closes its
+   * write end. Resolves with the parsed response, or with status 504 on
+   * timeout. Closes both pipe ends before resolving.
+   */
+  private pumpHttpResponse(
+    pid: number,
+    sendPipeIdx: number,
+    recvPipeIdx: number,
+    pipeRead: (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number,
+    pipeIsWriteOpen: (pid: number, pipeIdx: number) => number,
+    pipeCloseRead: (pid: number, pipeIdx: number) => number,
+    pipeCloseWrite: (pid: number, pipeIdx: number) => number,
+    timeoutMs: number,
+    label: string,
+  ): Promise<HttpResponse> {
+    return new Promise<HttpResponse>((resolve) => {
+      const chunks: Uint8Array[] = [];
+      const start = Date.now();
+      let sawWriteOpen = false;
+      const scratchOffset = this.tcpScratchOffset;
+      const PAGE = 65536;
+
+      const finish = (response: HttpResponse) => {
+        pipeCloseRead(pid, sendPipeIdx);
+        pipeCloseWrite(pid, recvPipeIdx);
+        this.notifyPipeReadable(recvPipeIdx);
+        this.scheduleWakeBlockedRetries();
+        resolve(response);
+      };
+
+      const tick = () => {
+        if (Date.now() - start > timeoutMs) {
+          finish({ status: 504, headers: {}, body: new Uint8Array(0) });
+          return;
+        }
+
+        // Drain whatever is currently in the pipe.
+        let gotData = false;
+        for (;;) {
+          const n = pipeRead(pid, sendPipeIdx, BigInt(scratchOffset), PAGE);
+          if (n <= 0) break;
+          gotData = true;
+          const mem = this.getKernelMem();
+          chunks.push(mem.slice(scratchOffset, scratchOffset + n));
+        }
+
+        if (gotData) {
+          // Wake any writer blocked filling this pipe (we just freed buffer).
+          this.notifyPipeWritable(sendPipeIdx);
+        }
+
+        const writeOpen = pipeIsWriteOpen(pid, sendPipeIdx) === 1;
+        if (writeOpen && !sawWriteOpen) sawWriteOpen = true;
+
+        if (sawWriteOpen && !writeOpen && !gotData) {
+          // Server closed its end and we drained all bytes.
+          const raw = concatChunksLocal(chunks);
+          finish(parseRawHttpResponse(raw));
+          return;
+        }
+
+        // Re-arm. Tight when bytes were flowing, slower poll otherwise.
+        setTimeout(tick, gotData ? 0 : 2);
+      };
+
+      tick();
+    });
   }
 
   /**

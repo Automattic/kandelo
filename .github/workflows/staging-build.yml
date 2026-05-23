@@ -18,13 +18,18 @@ name: Staging build
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Serialize concurrent runs on the same PR so a slow build doesn't
-# step on a fresher push's run. cancel-in-progress: true means a new
-# push aborts an in-flight run — fine, the overlay is content-keyed.
+# step on a fresher push or label state. cancel-in-progress: true means
+# a new push/label event aborts an in-flight run — fine, the overlay is
+# content-keyed.
+#
+# `labeled`/`unlabeled` is only active for the skip-staging-tests label.
+# Other PR labels, including ready-to-ship, get an isolated concurrency
+# group so they cannot cancel a real staging run before the jobs skip.
 concurrency:
-  group: staging-build-pr-${{ github.event.pull_request.number }}
+  group: staging-build-pr-${{ github.event.pull_request.number }}-${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'skip-staging-tests' && github.run_id || 'active' }}
   cancel-in-progress: true
 
 jobs:
@@ -46,7 +51,13 @@ jobs:
   change-scope:
     # Fork-PR support is deferred (design doc §9.1). Keep the same
     # same-repo security boundary as the package build jobs.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action != 'labeled' &&
+        github.event.action != 'unlabeled' ||
+        github.event.label.name == 'skip-staging-tests'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,11 +66,22 @@ jobs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
+      skip_staging_tests: ${{ steps.skip.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      - name: Detect staging test skip label
+        id: skip
+        run: |
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'skip-staging-tests') }}" = "true" ]; then
+            echo "skip_staging_tests=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::skip-staging-tests label present; staging-build will materialize artifacts and defer expensive tests to prepare-merge."
+          else
+            echo "skip_staging_tests=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Detect package staging scope
         id: scope
@@ -101,11 +123,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
         with:
           use-gha-cache: false
+          use-flakehub: false
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
@@ -130,7 +155,7 @@ jobs:
       - name: Compute matrix
         id: compute
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
@@ -294,7 +319,7 @@ jobs:
         # overwrite the success with pending and block the auto-merge
         # prepare-merge just enabled.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           existing=$(gh api \
             "/repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}/status" \
@@ -316,12 +341,13 @@ jobs:
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
       needs.change-scope.outputs.package_staging_required == 'false' &&
-      needs.change-scope.outputs.kernel == 'false'
+      needs.change-scope.outputs.kernel == 'false' &&
+      needs.change-scope.outputs.skip_staging_tests != 'true'
     runs-on: ubuntu-latest
     permissions:
       statuses: write
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Post merge-gate success for no-op package staging
         run: |
@@ -357,9 +383,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Compute cache key
         # Mirrors the key in the legacy `build` job (and prepare-merge)
@@ -472,9 +503,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -540,7 +576,7 @@ jobs:
       - name: Publish archive + index entry
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -557,7 +593,7 @@ jobs:
       - name: Record failed build in index
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -622,9 +658,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -731,7 +772,7 @@ jobs:
       - name: Publish archive + index entry
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -748,7 +789,7 @@ jobs:
       - name: Record failed build in index
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -799,9 +840,10 @@ jobs:
       contents: read
       statuses: write
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+      SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -819,9 +861,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -876,7 +923,15 @@ jobs:
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
 
+      - name: Skip staging test suites
+        if: env.SKIP_STAGING_TESTS == 'true'
+        run: |
+          echo "skip-staging-tests label is present on this PR."
+          echo "staging-build validated preflight, toolchain cache, package matrix/builds, and binary materialization."
+          echo "Kernel/test program build, cargo tests, fork-instrument tests, vitest, libc-test, POSIX, and Sortix are deferred to prepare-merge."
+
       - name: Build kernel + test programs + install host deps
+        if: env.SKIP_STAGING_TESTS != 'true'
         # Test prereqs not shipped in the release archives: kernel.wasm
         # is built fresh (and copied into local-binaries/ where the
         # resolver finds it ahead of binaries/), as are programs/*.wasm
@@ -901,7 +956,9 @@ jobs:
           '
 
       - name: Run cargo tests (kernel unit tests)
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -909,7 +966,9 @@ jobs:
           '
 
       - name: Run fork-instrument tests
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -917,28 +976,36 @@ jobs:
           '
 
       - name: Run vitest (host integration tests)
+        if: env.SKIP_STAGING_TESTS != 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             cd host && npx vitest run
           '
 
       - name: Run libc-test conformance suite
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
       - name: Post merge-gate success for kernel-only staging
         if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
           needs.change-scope.outputs.package_staging_required == 'false' &&
           needs.change-scope.outputs.kernel == 'true'
         run: |
@@ -993,7 +1060,7 @@ jobs:
     permissions:
       pull-requests: write   # post/edit PR comment
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
