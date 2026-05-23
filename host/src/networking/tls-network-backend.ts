@@ -454,6 +454,8 @@ export class TlsNetworkBackend implements NetworkIO {
         // Write plaintext response to server downstream — TLS engine encrypts
         // it automatically and it appears on clientEnd.downstream.readable.
         await conn.serverDownstreamWriter.write(responseBytes);
+        await conn.serverDownstreamWriter.close();
+        conn.closed = true;
       } catch (err) {
         // Send a 502 Bad Gateway response through TLS
         const errorBody = `Error fetching ${url}: ${err}`;
@@ -465,6 +467,8 @@ export class TlsNetworkBackend implements NetworkIO {
         );
         try {
           await conn.serverDownstreamWriter.write(errorResponse);
+          await conn.serverDownstreamWriter.close();
+          conn.closed = true;
         } catch {
           // Ignore write errors
         }
