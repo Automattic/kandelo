@@ -283,22 +283,29 @@ jobs:
         run: |
           # The label event can fire before staging-build's run is
           # registered against PR_HEAD_SHA. Retry briefly.
+          #
+          # staging-build also listens to label changes so toggling
+          # skip-staging-tests can re-run the gate with the new policy.
+          # Other label events, including ready-to-ship, create an
+          # all-skipped workflow run. Ignore those skipped runs here so
+          # the gate watches the latest real staging-build run for this
+          # commit.
           RUN_ID=""
           for attempt in 1 2 3 4 5 6; do
             RUN_ID=$(gh run list \
               --repo ${{ github.repository }} \
               --workflow=staging-build.yml \
               --commit="$PR_HEAD_SHA" \
-              --limit=1 \
-              --json databaseId \
-              --jq '.[0].databaseId // empty')
+              --limit=20 \
+              --json databaseId,status,conclusion \
+              --jq '[.[] | select(.conclusion != "skipped")][0].databaseId // empty')
             [ -n "$RUN_ID" ] && break
             sleep 10
           done
 
           if [ -z "$RUN_ID" ]; then
             gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`."
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no non-skipped \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`."
             exit 1
           fi
 
