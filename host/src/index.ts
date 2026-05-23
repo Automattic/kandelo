@@ -15,7 +15,7 @@ export { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-mai
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
 export type { KernelConfig, PlatformIO, StatResult, StatfsResult, NetworkIO } from "./types";
 export { TcpNetworkBackend, FetchNetworkBackend } from "./networking";
-export type { FetchBackendOptions } from "./networking";
+export type { FetchBackendOptions, HttpRequest, HttpResponse } from "./networking";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type {
   HostToWorkerMessage,

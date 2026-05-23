@@ -12,8 +12,7 @@
  * can finalize wp-config.php's runtime values (WP_HOME / WP_SITEURL).
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
-import { HttpBridgeHost } from "../../lib/http-bridge";
+import { setupServiceWorkerFetchBridge } from "../../lib/init/sw-bridge-fetch";
 import { TerminalPanel } from "../../lib/init";
 import { PtyTerminal } from "../../lib/pty-terminal";
 import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
@@ -155,6 +154,7 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
+const PHP_FPM_PORT = 9000;
 const PHP_FPM_WORKERS = 6;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
@@ -181,7 +181,6 @@ let frame = document.getElementById("frame") as HTMLIFrameElement;
 const decoder = new TextDecoder();
 
 let kernel: BrowserKernel | null = null;
-let bridgeHttpPort: number | null = null;
 
 function appendLog(text: string, cls?: string) {
   const span = document.createElement("span");
@@ -203,24 +202,6 @@ function loadFrame() {
   next.src = APP_PREFIX;
   frame.replaceWith(next);
   frame = next;
-}
-
-function setupBridgeRestoreListener() {
-  if (!("serviceWorker" in navigator)) return;
-  navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type !== "need-bridge") return;
-    const replyPort = event.ports[0];
-    if (!replyPort) return;
-    const bridge = new HttpBridgeHost();
-    replyPort.postMessage(
-      { type: "bridge-restored", appPrefix: APP_PREFIX },
-      [bridge.getSwPort()],
-    );
-    if (kernel && bridgeHttpPort != null) {
-      kernel.sendBridgePort(bridge.detachHostPort(), bridgeHttpPort);
-    }
-    appendLog("Bridge restored after service worker restart\n", "info");
-  });
 }
 
 function setupTerminalPane(kernel: BrowserKernel): void {
@@ -308,26 +289,20 @@ async function start() {
     fs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
     const vfsImage = await fs.saveImage();
 
-    appendLog("Initializing service worker bridge...\n", "info");
-    const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
-    if (!swBridge) {
-      throw new Error("Service workers unavailable — HTTP bridge not initialized");
-    }
-
     setStatus("Booting kernel with /sbin/dinit...", "loading");
     // Track which ports are listening so we only load the iframe once
-    // BOTH nginx (8080) and mariadbd (3306) are accepting connections —
-    // dinit considers a `process` service started right after exec(),
-    // racing the daemon's actual port-bind by ~10s for mariadbd.
-    // Also gate on bridgeSent — see nginx/main.ts for the bridge-vs-listen
+    // nginx (8080), php-fpm (9000), and mariadbd (3306) are accepting
+    // connections — dinit considers a `process` service started right after
+    // exec(), racing the daemon's actual port-bind by ~10s for mariadbd.
+    // Also gate on bridgeReady — see nginx/main.ts for the bridge-vs-listen
     // race rationale (mariadb's slow boot usually masks it here, but be
     // explicit anyway).
     const seenPorts = new Set<number>();
-    const REQUIRED_PORTS = [HTTP_PORT, 3306];
-    let bridgeSent = false;
+    const REQUIRED_PORTS = [HTTP_PORT, PHP_FPM_PORT, 3306];
+    let bridgeReady = false;
     const tryLoadFrame = async () => {
       const allReady = REQUIRED_PORTS.every((p) => seenPorts.has(p));
-      if (allReady && bridgeSent && reloadBtn.disabled) {
+      if (allReady && bridgeReady && reloadBtn.disabled) {
         setStatus("WordPress running! Loading page...", "running");
         reloadBtn.disabled = false;
 
@@ -398,11 +373,13 @@ async function start() {
       ],
     });
 
-    kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
-    bridgeHttpPort = HTTP_PORT;
+    appendLog("Initializing service worker bridge -> fetchInKernel...\n", "info");
+    await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
+      timeoutMs: 300_000,
+      debugLog: (line) => appendLog(line + "\n", "info"),
+    });
     appendLog(`HTTP bridge ready on port ${HTTP_PORT}\n`, "info");
-    setupBridgeRestoreListener();
-    bridgeSent = true;
+    bridgeReady = true;
     tryLoadFrame();
 
     setupTerminalPane(kernel);
