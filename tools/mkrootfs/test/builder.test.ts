@@ -360,4 +360,29 @@ describe("image builder — round-trip", () => {
     // Symlink from pass 3
     expect(mfs.readlink("/usr/bin/sh")).toBe("/bin/dash");
   });
+
+  it("can stamp image-level kernel ABI metadata", async () => {
+    const fixture = join(fixtures, "basic");
+    const image = await buildImage({
+      sourceTree: join(fixture, "rootfs"),
+      manifest: join(fixture, "MANIFEST"),
+      repoRoot: fixture,
+      metadata: {
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "builder.test",
+      },
+    });
+
+    expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+      version: 1,
+      kernelAbi: 11,
+      createdBy: "builder.test",
+    });
+    expect(MemoryFileSystem.fromImage(image).getImageMetadata()).toEqual({
+      version: 1,
+      kernelAbi: 11,
+      createdBy: "builder.test",
+    });
+  });
 });

@@ -18,6 +18,7 @@ Required:
 
 Options:
   --format <table|json>  output format (default: table)
+  --metadata             include image-level metadata in the output
   --help                 print this message
 `;
 
@@ -33,6 +34,7 @@ const S_IFIFO = 0o010000;
 interface ParsedArgs {
   image: string;
   format: "table" | "json";
+  metadata: boolean;
 }
 
 class UsageError extends Error {}
@@ -40,10 +42,15 @@ class UsageError extends Error {}
 function parseArgs(args: string[]): ParsedArgs | "help" {
   const positional: string[] = [];
   let format: "table" | "json" = "table";
+  let metadata = false;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--help" || a === "-h") return "help";
+    if (a === "--metadata") {
+      metadata = true;
+      continue;
+    }
     if (a === "--format") {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`flag "${a}" requires a value`);
@@ -77,7 +84,7 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
       `expected 1 positional arg (image), got ${positional.length}`,
     );
   }
-  return { image: positional[0], format };
+  return { image: positional[0], format, metadata };
 }
 
 function typeChar(mode: number): string {
@@ -169,6 +176,10 @@ function formatTable(entries: InspectEntry[]): string {
   return lines.join("\n") + "\n";
 }
 
+function formatMetadataTable(metadata: unknown): string {
+  return `metadata ${JSON.stringify(metadata ?? null)}\n`;
+}
+
 export async function runInspect(args: string[]): Promise<number> {
   let parsed: ParsedArgs | "help";
   try {
@@ -210,10 +221,18 @@ export async function runInspect(args: string[]): Promise<number> {
   }
 
   const entries = collectEntries(mfs);
+  const metadata = mfs.getImageMetadata();
 
   if (parsed.format === "json") {
-    process.stdout.write(JSON.stringify(entries, null, 2) + "\n");
+    process.stdout.write(
+      JSON.stringify(
+        parsed.metadata ? { metadata, entries } : entries,
+        null,
+        2,
+      ) + "\n",
+    );
   } else {
+    if (parsed.metadata) process.stdout.write(formatMetadataTable(metadata));
     process.stdout.write(formatTable(entries));
   }
   return 0;

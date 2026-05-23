@@ -6,7 +6,10 @@
 import { readFileSync, readdirSync, lstatSync, writeFileSync, mkdirSync } from "fs";
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type {
+  MemoryFileSystem,
+  VfsImageMetadata,
+} from "../../../host/src/vfs/memory-fs";
 
 export {
   writeVfsFile,
@@ -73,7 +76,16 @@ export function walkAndWrite(
  *
  * `outFile` must end in `.vfs.zst` to make the on-disk format obvious.
  */
-export async function saveImage(fs: MemoryFileSystem, outFile: string): Promise<Uint8Array> {
+export interface SaveImageOptions {
+  metadata?: VfsImageMetadata;
+  kernelAbi?: number;
+}
+
+export async function saveImage(
+  fs: MemoryFileSystem,
+  outFile: string,
+  options: SaveImageOptions = {},
+): Promise<Uint8Array> {
   if (!outFile.endsWith(".vfs.zst")) {
     throw new Error(
       `saveImage outFile must end in .vfs.zst (got: ${outFile})`,
@@ -81,7 +93,15 @@ export async function saveImage(fs: MemoryFileSystem, outFile: string): Promise<
   }
 
   console.log("Saving VFS image...");
-  const image = await fs.saveImage();
+  const metadata = options.metadata ??
+    (options.kernelAbi === undefined
+      ? undefined
+      : {
+          version: 1 as const,
+          kernelAbi: options.kernelAbi,
+          createdBy: "images/vfs/scripts/saveImage",
+        });
+  const image = await fs.saveImage({ metadata });
   // Level 19 — slow build, smaller download. Decompression speed is
   // unaffected by compression level, so this is a one-sided trade.
   const compressed = zstdCompressSync(image, {
