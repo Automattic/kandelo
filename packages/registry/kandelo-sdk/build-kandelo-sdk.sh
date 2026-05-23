@@ -17,11 +17,28 @@ fi
 
 LIBCXX_DIR="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
 if [[ -n "$LIBCXX_DIR" ]]; then
+  copy_if_changed() {
+    local src="$1"
+    local dst="$2"
+
+    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+      return
+    fi
+
+    cp -f "$src" "$dst"
+  }
+
   mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
-  cp -f "$LIBCXX_DIR/lib/libc++.a" "$SYSROOT/lib/libc++.a"
-  cp -f "$LIBCXX_DIR/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
-  rm -rf "$SYSROOT/include/c++/v1"
-  cp -RL "$LIBCXX_DIR/include/c++/v1" "$SYSROOT/include/c++/v1"
+  copy_if_changed "$LIBCXX_DIR/lib/libc++.a" "$SYSROOT/lib/libc++.a"
+  copy_if_changed "$LIBCXX_DIR/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+
+  LIBCXX_INCLUDE_SRC="$LIBCXX_DIR/include/c++/v1"
+  LIBCXX_INCLUDE_DST="$SYSROOT/include/c++/v1"
+  if [[ ! -d "$LIBCXX_INCLUDE_DST" ]] \
+    || [[ "$(cd "$LIBCXX_INCLUDE_SRC" && pwd -P)" != "$(cd "$LIBCXX_INCLUDE_DST" && pwd -P)" ]]; then
+    rm -rf "$LIBCXX_INCLUDE_DST"
+    cp -RL "$LIBCXX_INCLUDE_SRC" "$LIBCXX_INCLUDE_DST"
+  fi
 fi
 
 mkdir -p "$GLUE_OBJ_DIR"
