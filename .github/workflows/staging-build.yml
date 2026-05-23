@@ -24,8 +24,12 @@ on:
 # step on a fresher push or label state. cancel-in-progress: true means
 # a new push/label event aborts an in-flight run — fine, the overlay is
 # content-keyed.
+#
+# `labeled`/`unlabeled` is only active for the skip-staging-tests label.
+# Other PR labels, including ready-to-ship, get an isolated concurrency
+# group so they cannot cancel a real staging run before the jobs skip.
 concurrency:
-  group: staging-build-pr-${{ github.event.pull_request.number }}
+  group: staging-build-pr-${{ github.event.pull_request.number }}-${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'skip-staging-tests' && github.run_id || 'active' }}
   cancel-in-progress: true
 
 jobs:
@@ -47,7 +51,13 @@ jobs:
   change-scope:
     # Fork-PR support is deferred (design doc §9.1). Keep the same
     # same-repo security boundary as the package build jobs.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action != 'labeled' &&
+        github.event.action != 'unlabeled' ||
+        github.event.label.name == 'skip-staging-tests'
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
