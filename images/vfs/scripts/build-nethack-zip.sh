@@ -18,10 +18,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BROWSER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$BROWSER_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-OUTPUT_DIR="$BROWSER_DIR/public"
+OUTPUT_DIR="$REPO_ROOT/apps/browser-demos/public"
 OUTPUT_FILE="$OUTPUT_DIR/nethack.zip"
 
 # Resolve the nethack package via the resolver. Returns the cache

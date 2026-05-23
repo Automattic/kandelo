@@ -86,6 +86,14 @@ function resolveKernelArtifactsAlias(): Plugin {
  */
 function resolveBinariesAlias(): Plugin {
   const PREFIX = "@binaries/";
+  const applyDefaultArch = (rel: string): string => {
+    if (!rel.startsWith("programs/")) return rel;
+    const tail = rel.slice("programs/".length);
+    const first = tail.split("/", 1)[0];
+    if (first === "wasm32" || first === "wasm64") return rel;
+    return `programs/wasm32/${tail}`;
+  };
+
   return {
     name: "resolve-binaries-alias",
     enforce: "pre",
@@ -94,7 +102,7 @@ function resolveBinariesAlias(): Plugin {
       const queryIdx = source.indexOf("?");
       const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
       const query = queryIdx === -1 ? "" : source.slice(queryIdx);
-      const rest = pathPart.slice(PREFIX.length);
+      const rest = applyDefaultArch(pathPart.slice(PREFIX.length));
       const local = path.resolve(repoRoot, "local-binaries", rest);
       if (fs.existsSync(local)) return local + query;
       const fetched = path.resolve(repoRoot, "binaries", rest);
