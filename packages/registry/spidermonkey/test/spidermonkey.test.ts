@@ -194,20 +194,26 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
   }, DEFAULT_TEST_TIMEOUT);
 
   it("tears down workers repeatedly while GC runs", async () => {
-    const result = await runJs([
-      "for (var i = 0; i < 12; i++) {",
-      "  var sab = new SharedArrayBuffer(4)",
-      "  var view = new Int32Array(sab)",
-      "  setSharedObject(sab)",
-      "  evalInWorker(`var view = new Int32Array(getSharedObject()); Atomics.store(view, 0, 1); Atomics.notify(view, 0);`)",
-      "  if (Atomics.wait(view, 0, 0, 10000) !== 'ok') throw new Error('worker wait failed')",
-      "  if (typeof gc === 'function') gc()",
-      "}",
-      "print('worker-teardown-ok')",
-    ].join("\n"), { shellArgs: ["--shared-memory=on"], timeout: LONG_TIMEOUT });
+    for (let i = 0; i < 4; i++) {
+      const result = await runJs([
+        "var sab = new SharedArrayBuffer(4)",
+        "var view = new Int32Array(sab)",
+        "setSharedObject(sab)",
+        "evalInWorker(`var view = new Int32Array(getSharedObject()); Atomics.store(view, 0, 1); Atomics.notify(view, 0);`)",
+        "if (Atomics.wait(view, 0, 0, 10000) !== 'ok') throw new Error('worker wait failed')",
+        "var garbage = []",
+        "for (var j = 0; j < 1000; j++) garbage.push({ j, text: 'gc-pressure-' + j })",
+        "if (typeof gc === 'function') gc()",
+        "print('worker-teardown-ok')",
+      ].join("\n"), {
+        label: `worker teardown iteration ${i + 1}`,
+        shellArgs: ["--shared-memory=on"],
+        timeout: LONG_TIMEOUT,
+      });
 
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe("worker-teardown-ok");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toBe("worker-teardown-ok");
+    }
   }, LONG_TEST_TIMEOUT);
 
   it("reports stack overflow as a JavaScript exception", async () => {
