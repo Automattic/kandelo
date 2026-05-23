@@ -11,6 +11,7 @@ import type {
   KernelHost, MachineStatus, DmesgLine, Snapshot, WebPreviewState, DemoPresentation,
   SurfaceAvailability, GalleryItem, GalleryTab,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
 
@@ -90,6 +91,16 @@ export function useSurfaceAvailability(): SurfaceAvailability {
   React.useEffect(() => {
     setState(host.getSurfaceAvailability());
     return host.subscribeSurfaceAvailability(setState);
+  }, [host]);
+  return state;
+}
+
+export function useDemoGuide(): DemoGuideConfig | null {
+  const host = useKernelHost();
+  const [state, setState] = React.useState<DemoGuideConfig | null>(() => host.getDemoGuide());
+  React.useEffect(() => {
+    setState(host.getDemoGuide());
+    return host.subscribeDemoGuide(setState);
   }, [host]);
   return state;
 }

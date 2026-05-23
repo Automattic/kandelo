@@ -1,3 +1,5 @@
+import type { DemoGuideConfig } from "./demo-config";
+
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
 // Every Kandelo UI surface (Sidebar, LiveURLBar, MachineView, Inspector tabs,
@@ -444,6 +446,7 @@ export interface KernelHost {
 
   // shell / pty
   attachPty(path?: string, opts?: { cols: number; rows: number }): Promise<PtyHandle>;
+  runShellCommand(command: string): Promise<void>;
 
   // VFS / procfs
   readFile(path: string): Promise<Uint8Array>;
@@ -473,6 +476,8 @@ export interface KernelHost {
   subscribePresentation(cb: (state: DemoPresentation) => void): () => void;
   getSurfaceAvailability(): SurfaceAvailability;
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
+  getDemoGuide(): DemoGuideConfig | null;
+  subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -628,12 +633,14 @@ export class LiveKernelHost implements KernelHost {
   private presentationListeners = new ListenerSet<DemoPresentation>();
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private galleryListeners = new ListenerSet<void>();
+  private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
   private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
+  private demoGuide: DemoGuideConfig | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
 
@@ -694,6 +701,7 @@ export class LiveKernelHost implements KernelHost {
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false });
+    this.setDemoGuide(null);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -712,6 +720,12 @@ export class LiveKernelHost implements KernelHost {
   setGalleryItems(items: GalleryItem[]): void {
     this.galleryItems = items.map((item) => ({ ...item, packages: item.packages.slice(), bootCommand: item.bootCommand.slice() }));
     this.galleryListeners.emit(undefined);
+  }
+
+  /** Update the optional guide metadata exposed by the current VFS image. */
+  setDemoGuide(guide: DemoGuideConfig | null): void {
+    this.demoGuide = guide ? structuredClone(guide) : null;
+    this.demoGuideListeners.emit(this.getDemoGuide());
   }
 
   /**
@@ -819,6 +833,7 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false });
+    this.setDemoGuide(null);
     await this.kernel?.destroy?.();
   }
 
@@ -1344,6 +1359,14 @@ export class LiveKernelHost implements KernelHost {
 
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void {
     return this.surfaceListeners.add(cb);
+  }
+
+  getDemoGuide(): DemoGuideConfig | null {
+    return this.demoGuide ? structuredClone(this.demoGuide) : null;
+  }
+
+  subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {
+    return this.demoGuideListeners.add(cb);
   }
 
   // ── KernelHost: sharing ──────────────────────────────────────────────────
