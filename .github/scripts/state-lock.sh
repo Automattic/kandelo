@@ -141,32 +141,6 @@ delete_lock_if_unchanged() {
     origin ":$LOCK_REF" >/dev/null 2>&1
 }
 
-probe_push_access() {
-  local probe_sha expected_sha lease output current_sha
-
-  probe_sha="$(create_lock_commit)"
-  expected_sha="$(remote_lock_sha || true)"
-  if [ -n "$expected_sha" ]; then
-    lease="--force-with-lease=$LOCK_REF:$expected_sha"
-  else
-    lease="--force-with-lease=$LOCK_REF:"
-  fi
-
-  if output="$(git_remote push --dry-run "$lease" origin "$probe_sha:$LOCK_REF" 2>&1)"; then
-    return 0
-  fi
-
-  current_sha="$(remote_lock_sha || true)"
-  if [ "$current_sha" != "$expected_sha" ]; then
-    echo "State lock changed while probing push access for subject=$SUBJECT; treating as contention."
-    return 0
-  fi
-
-  echo "::error::state-lock cannot push ${LOCK_REF}; check this job's permissions (contents: write is required)." >&2
-  printf '%s\n' "$output" >&2
-  exit 1
-}
-
 lock_message_for() {
   local lock_sha="$1"
   git_remote fetch --no-tags --depth=1 origin "$LOCK_REF" >/dev/null 2>&1
@@ -247,15 +221,14 @@ acquire() {
 
   local repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
   local run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+  local unresolved_push_failures=0
   ensure_owner_token
 
-  probe_push_access
-
   while true; do
-    local lock_sha
+    local lock_sha push_output
     lock_sha="$(create_lock_commit)"
 
-    if git_remote push origin "$lock_sha:$LOCK_REF" >/dev/null 2>&1; then
+    if push_output="$(git_remote push origin "$lock_sha:$LOCK_REF" 2>&1)"; then
       write_lock_state "$LOCK_REF" "$lock_sha"
       echo "Acquired state lock $LOCK_REF (subject=$SUBJECT) at $lock_sha."
       return 0
@@ -264,9 +237,18 @@ acquire() {
     local held_sha
     held_sha="$(remote_lock_sha || true)"
     if [ -z "$held_sha" ]; then
+      unresolved_push_failures=$((unresolved_push_failures + 1))
+      if [ "$unresolved_push_failures" -ge "${STATE_LOCK_UNRESOLVED_PUSH_FAILURES:-3}" ]; then
+        echo "::error::state-lock cannot push ${LOCK_REF} and cannot read a current lock after ${unresolved_push_failures} attempts." >&2
+        echo "::error::Check this job's permissions (contents: write is required) and GitHub git transport availability." >&2
+        printf '%s\n' "$push_output" >&2
+        exit 1
+      fi
+      echo "State lock push did not acquire subject=$SUBJECT and no current lock was readable; retrying."
       sleep 2
       continue
     fi
+    unresolved_push_failures=0
 
     local message owner_run_id owner_token owner_detail owner_epoch status stale_reason now age
     message="$(lock_message_for "$held_sha" 2>/dev/null || true)"
