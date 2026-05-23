@@ -6,7 +6,7 @@
  *
  * The shell environment is pre-built into a VFS image (shell.vfs) containing
  * dash, symlinks, magic database, vim runtime, and system configs. At runtime
- * we restore the image, register lazy binaries, and spawn dash.
+ * we restore the image, rewrite lazy asset URLs, and spawn bash.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
@@ -15,6 +15,7 @@ import {
   rewriteShellLazyFileUrls,
   shellLazyFileEntries,
 } from "../../lib/init/shell-lazy-files";
+import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
 import kernelWasmUrl from "@kernel-wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/shell.vfs.zst?url";
@@ -108,9 +109,9 @@ function prepareShellFs(): MemoryFileSystem {
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
     maxByteLength: 256 * 1024 * 1024,
   });
-  // URLs were stored as build-time placeholders; rewrite them to deployed
-  // Vite asset URLs before BrowserKernel.init forwards lazy metadata.
-  memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+  // URLs were stored as build-time placeholders; rewrite them to Vite asset
+  // URLs before BrowserKernel.init forwards lazy metadata.
+  memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
   rewriteShellLazyFileUrls(memfs);
   return memfs;
 }
