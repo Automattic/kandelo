@@ -222,6 +222,9 @@ acquire() {
   local repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
   local run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
   local unresolved_push_failures=0
+  local unresolved_push_first_epoch=0
+  local unresolved_push_delay=2
+  local unresolved_push_max_seconds="${STATE_LOCK_UNRESOLVED_PUSH_FAILURE_SECONDS:-120}"
   ensure_owner_token
 
   while true; do
@@ -237,18 +240,35 @@ acquire() {
     local held_sha
     held_sha="$(remote_lock_sha || true)"
     if [ -z "$held_sha" ]; then
+      local unresolved_now unresolved_elapsed
+      unresolved_now="$(date -u +%s)"
+      if [ "$unresolved_push_first_epoch" = "0" ]; then
+        unresolved_push_first_epoch="$unresolved_now"
+      fi
+      unresolved_elapsed=$((unresolved_now - unresolved_push_first_epoch))
       unresolved_push_failures=$((unresolved_push_failures + 1))
-      if [ "$unresolved_push_failures" -ge "${STATE_LOCK_UNRESOLVED_PUSH_FAILURES:-3}" ]; then
-        echo "::error::state-lock cannot push ${LOCK_REF} and cannot read a current lock after ${unresolved_push_failures} attempts." >&2
+      if [ -n "${STATE_LOCK_UNRESOLVED_PUSH_FAILURES:-}" ] \
+           && [ "$unresolved_push_failures" -ge "$STATE_LOCK_UNRESOLVED_PUSH_FAILURES" ] \
+           || [ "$unresolved_elapsed" -ge "$unresolved_push_max_seconds" ]
+      then
+        echo "::error::state-lock cannot push ${LOCK_REF} and cannot read a current lock after ${unresolved_push_failures} attempts over ${unresolved_elapsed}s." >&2
         echo "::error::Check this job's permissions (contents: write is required) and GitHub git transport availability." >&2
         printf '%s\n' "$push_output" >&2
         exit 1
       fi
-      echo "State lock push did not acquire subject=$SUBJECT and no current lock was readable; retrying."
-      sleep 2
+      echo "State lock push did not acquire subject=$SUBJECT and no current lock was readable; retrying in ${unresolved_push_delay}s."
+      sleep "$unresolved_push_delay"
+      if [ "$unresolved_push_delay" -lt 30 ]; then
+        unresolved_push_delay=$((unresolved_push_delay * 2))
+        if [ "$unresolved_push_delay" -gt 30 ]; then
+          unresolved_push_delay=30
+        fi
+      fi
       continue
     fi
     unresolved_push_failures=0
+    unresolved_push_first_epoch=0
+    unresolved_push_delay=2
 
     local message owner_run_id owner_token owner_detail owner_epoch status stale_reason now age
     message="$(lock_message_for "$held_sha" 2>/dev/null || true)"
