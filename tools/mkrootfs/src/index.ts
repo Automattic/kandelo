@@ -3,14 +3,14 @@
 // VFS images.
 //
 // Usage:
-//   mkrootfs build <MANIFEST> <sourceTree> -o <output.vfs> [--repo-root=<dir>] [--quiet]
-//   mkrootfs inspect <image>
+//   mkrootfs build <MANIFEST> <sourceTree> -o <output.vfs> [--repo-root=<dir>] [--kernel-abi=N] [--quiet]
+//   mkrootfs inspect <image> [--metadata]
 //   mkrootfs extract <image> <outDir>
 //   mkrootfs add <image> <vfs-path> {--file <src>|--dir|--symlink <target>} [--mode=N] [--uid=N] [--gid=N] [--force]
 
 const USAGE = `Usage: mkrootfs {build|inspect|extract|add} ...
-  build   <MANIFEST> <sourceTree> -o <output.vfs> [--repo-root=<dir>] [--quiet]
-  inspect <image>
+  build   <MANIFEST> <sourceTree> -o <output.vfs> [--repo-root=<dir>] [--kernel-abi=N] [--quiet]
+  inspect <image> [--metadata]
   extract <image> <outDir>
   add     <image> <vfs-path> {--file <src>|--dir|--symlink <target>} [--mode=N] [--uid=N] [--gid=N] [--force]
 `;

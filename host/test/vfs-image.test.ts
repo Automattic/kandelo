@@ -249,6 +249,106 @@ describe("VFS image save/restore", () => {
     });
   });
 
+  describe("image metadata", () => {
+    it("stores and restores a kernel ABI declaration", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/bin/tool", new Uint8Array([0, 97, 115, 109]), 0o755);
+      mfs.setImageMetadata({
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "vfs-image.test",
+      });
+
+      const image = await mfs.saveImage();
+      const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+      const flags = view.getUint32(8, true);
+      expect(flags & 4).toBe(4); // metadata flag set
+
+      expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "vfs-image.test",
+      });
+
+      const restored = MemoryFileSystem.fromImage(image);
+      expect(restored.getImageMetadata()).toEqual({
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "vfs-image.test",
+      });
+      expect(new TextDecoder().decode(readFile(restored, "/bin/tool")))
+        .toBe("\0asm");
+    });
+
+    it("preserves metadata when a restored image is saved again", async () => {
+      const mfs = createMemfs();
+      const image = await mfs.saveImage({
+        metadata: { version: 1, kernelAbi: 9 },
+      });
+
+      const restored = MemoryFileSystem.fromImage(image);
+      const resaved = await restored.saveImage();
+
+      expect(MemoryFileSystem.readImageMetadata(resaved)).toEqual({
+        version: 1,
+        kernelAbi: 9,
+      });
+    });
+
+    it("can clear metadata on save", async () => {
+      const mfs = createMemfs();
+      const image = await mfs.saveImage({
+        metadata: { version: 1, kernelAbi: 9 },
+      });
+      const restored = MemoryFileSystem.fromImage(image);
+
+      const cleared = await restored.saveImage({ metadata: null });
+      const view = new DataView(cleared.buffer, cleared.byteOffset, cleared.byteLength);
+      const flags = view.getUint32(8, true);
+      expect(flags & 4).toBe(0);
+      expect(MemoryFileSystem.readImageMetadata(cleared)).toBeNull();
+    });
+
+    it("reads metadata from a zstd-wrapped image without materializing callers' fs state", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/data.txt", new TextEncoder().encode("metadata"));
+      const image = await mfs.saveImage({
+        metadata: { version: 1, kernelAbi: 12 },
+      });
+      const compressed = new Uint8Array(zstdCompressSync(image));
+
+      expect(MemoryFileSystem.readImageMetadata(compressed)).toEqual({
+        version: 1,
+        kernelAbi: 12,
+      });
+      expect(MemoryFileSystem.fromImage(compressed).getImageMetadata()).toEqual({
+        version: 1,
+        kernelAbi: 12,
+      });
+    });
+
+    it("rejects malformed metadata declarations", async () => {
+      const mfs = createMemfs();
+      await expect(
+        mfs.saveImage({ metadata: { version: 1, kernelAbi: 1.5 } }),
+      ).rejects.toThrow(/kernelAbi/);
+      await expect(
+        mfs.saveImage({ metadata: { version: 2 as 1, kernelAbi: 11 } }),
+      ).rejects.toThrow(/metadata version/);
+    });
+
+    it("validates a declared kernel ABI against the running ABI supplied by the caller", async () => {
+      const mfs = createMemfs();
+      const image = await mfs.saveImage({
+        metadata: { version: 1, kernelAbi: 11 },
+      });
+
+      expect(() => MemoryFileSystem.assertImageKernelAbi(image, 11)).not.toThrow();
+      expect(() => MemoryFileSystem.assertImageKernelAbi(image, 12, "test image"))
+        .toThrow(/test image requires kernel ABI 11.*running kernel is ABI 12/);
+    });
+  });
+
   describe("zstd-compressed images", () => {
     it("fromImage transparently decompresses a zstd-wrapped image", async () => {
       const mfs = createMemfs();
