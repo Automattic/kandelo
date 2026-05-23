@@ -81,6 +81,11 @@ require revision      "$REVISION"
 require arch          "$ARCH"
 require status        "$STATUS"
 
+# Lets state-lock.sh distinguish a live same-run matrix owner from a
+# completed same-run job that failed to release the lock after an upload
+# or token error.
+export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-${PACKAGE}, ${ARCH}}"
+
 case "$STATUS" in
   success)
     require archive-path  "$ARCHIVE_PATH"

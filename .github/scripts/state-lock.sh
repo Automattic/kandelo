@@ -14,7 +14,9 @@ set -euo pipefail
 
 LOCK_POLL_SECONDS="${STATE_LOCK_POLL_SECONDS:-${DURABLE_RELEASE_LOCK_POLL_SECONDS:-30}}"
 LOCK_STALE_SECONDS="${STATE_LOCK_STALE_SECONDS:-${DURABLE_RELEASE_LOCK_STALE_SECONDS:-21600}}"
+LOCK_SAME_RUN_STALE_SECONDS="${STATE_LOCK_SAME_RUN_STALE_SECONDS:-1800}"
 STATE_LOCK_OWNER_TOKEN="${STATE_LOCK_OWNER_TOKEN:-}"
+STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-}"
 
 usage() {
   echo "usage: $0 acquire <subject>|release" >&2
@@ -78,6 +80,7 @@ write_lock_state() {
     printf 'STATE_LOCK_SHA=%q\n' "$lock_sha"
     printf 'STATE_LOCK_SUBJECT=%q\n' "$SUBJECT"
     printf 'STATE_LOCK_OWNER_TOKEN=%q\n' "$STATE_LOCK_OWNER_TOKEN"
+    printf 'STATE_LOCK_OWNER_DETAIL=%q\n' "$STATE_LOCK_OWNER_DETAIL"
     printf 'DURABLE_RELEASE_LOCK_REF=%q\n' "$lock_ref"
     printf 'DURABLE_RELEASE_LOCK_SHA=%q\n' "$lock_sha"
   } >"$state_file"
@@ -88,6 +91,7 @@ write_lock_state() {
       echo "STATE_LOCK_SHA=$lock_sha"
       echo "STATE_LOCK_SUBJECT=$SUBJECT"
       echo "STATE_LOCK_OWNER_TOKEN=$STATE_LOCK_OWNER_TOKEN"
+      echo "STATE_LOCK_OWNER_DETAIL=$STATE_LOCK_OWNER_DETAIL"
       # Backward-compat for any callers still reading the old env names.
       echo "DURABLE_RELEASE_LOCK_REF=$lock_ref"
       echo "DURABLE_RELEASE_LOCK_SHA=$lock_sha"
@@ -152,6 +156,35 @@ owner_field() {
   sed -n "s/^${field}=//p" | head -n 1
 }
 
+same_run_owner_is_inactive() {
+  local repo="$1"
+  local owner_run_id="$2"
+  local owner_detail="$3"
+  local jobs
+  local found=0
+  local active=0
+  local job_name job_status
+
+  if [ -z "$owner_detail" ]; then
+    return 1
+  fi
+
+  jobs="$(gh api "/repos/${repo}/actions/runs/${owner_run_id}/jobs" \
+    --paginate \
+    --jq '.jobs[] | [.name, .status] | @tsv' 2>/dev/null || true)"
+
+  while IFS=$'\t' read -r job_name job_status; do
+    if [[ "$job_name" == *"$owner_detail"* ]]; then
+      found=1
+      if [ "$job_status" != "completed" ]; then
+        active=1
+      fi
+    fi
+  done <<<"$jobs"
+
+  [ "$found" = "1" ] && [ "$active" = "0" ]
+}
+
 create_lock_commit() {
   local now
   local tree
@@ -169,6 +202,7 @@ run_id=${GITHUB_RUN_ID}
 run_attempt=${GITHUB_RUN_ATTEMPT:-}
 job=${GITHUB_JOB:-}
 owner_token=${STATE_LOCK_OWNER_TOKEN}
+owner_detail=${STATE_LOCK_OWNER_DETAIL}
 run_url=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 created_epoch=${now}
 EOF
@@ -212,10 +246,11 @@ acquire() {
       continue
     fi
 
-    local message owner_run_id owner_token owner_epoch status stale_reason now age
+    local message owner_run_id owner_token owner_detail owner_epoch status stale_reason now age
     message="$(lock_message_for "$held_sha" 2>/dev/null || true)"
     owner_run_id="$(printf '%s\n' "$message" | owner_field run_id)"
     owner_token="$(printf '%s\n' "$message" | owner_field owner_token)"
+    owner_detail="$(printf '%s\n' "$message" | owner_field owner_detail)"
     owner_epoch="$(printf '%s\n' "$message" | owner_field created_epoch)"
     stale_reason=""
 
@@ -225,6 +260,10 @@ acquire() {
            && [ "$owner_token" = "$STATE_LOCK_OWNER_TOKEN" ]
       then
         stale_reason="left by this lock owner"
+      elif [ "$owner_run_id" = "$run_id" ] \
+             && same_run_owner_is_inactive "$repo" "$owner_run_id" "$owner_detail"
+      then
+        stale_reason="same-run owner job is no longer active (${owner_detail})"
       else
         status="$(gh api "/repos/${repo}/actions/runs/${owner_run_id}" -q .status 2>/dev/null || true)"
         if [ "$status" = "completed" ]; then
@@ -236,7 +275,12 @@ acquire() {
     if [ -z "$stale_reason" ] && [ -n "$owner_epoch" ]; then
       now="$(date -u +%s)"
       age=$((now - owner_epoch))
-      if [ "$age" -gt "$LOCK_STALE_SECONDS" ]; then
+      if [ -n "$owner_run_id" ] \
+           && [ "$owner_run_id" = "$run_id" ] \
+           && [ "$age" -gt "$LOCK_SAME_RUN_STALE_SECONDS" ]
+      then
+        stale_reason="same-run lock is older than ${LOCK_SAME_RUN_STALE_SECONDS}s"
+      elif [ "$age" -gt "$LOCK_STALE_SECONDS" ]; then
         stale_reason="lock is older than ${LOCK_STALE_SECONDS}s"
       fi
     fi
