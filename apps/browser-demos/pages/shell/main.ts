@@ -15,6 +15,8 @@ import {
   COREUTILS_NAMES,
   type BinaryDef,
 } from "../../lib/init/shell-binaries";
+import { fetchSize } from "../../lib/init/fetch-size";
+import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
 import kernelWasmUrl from "@kernel-wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
@@ -96,17 +98,6 @@ let kernelBytes: ArrayBuffer | null = null;
 let dashBytes: ArrayBuffer | null = null;
 let bashBytes: ArrayBuffer | null = null;
 let lazyBinaries: BinaryDef[] = [];
-
-/** Fetch file size via HEAD request. Returns 0 on failure. */
-async function fetchSize(url: string): Promise<number> {
-  try {
-    const resp = await fetch(url, { method: "HEAD" });
-    if (!resp.ok) return 0;
-    return parseInt(resp.headers.get("content-length") || "0", 10) || 0;
-  } catch {
-    return 0;
-  }
-}
 
 async function loadBinaries(): Promise<string> {
   if (kernelBytes && dashBytes && bashBytes && vfsImageBuf) return "";
@@ -206,9 +197,9 @@ async function startInteractiveShell() {
     const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
       maxByteLength: 256 * 1024 * 1024,
     });
-    // Archive URLs were stored as bare filenames at build time; prepend the
-    // deployed base URL so fetch() resolves correctly regardless of routing.
-    memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+    // Archive URLs were stored as bare filenames at build time; map known
+    // archives to Vite-emitted assets so hosted builds do not 404.
+    memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
 
     const kernel = new BrowserKernel({ memfs });
 

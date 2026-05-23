@@ -21,8 +21,14 @@ import { BrowserKernel } from "@host/browser-kernel-host";
 import { setupServiceWorkerFetchBridge } from "../../lib/init/sw-bridge-fetch";
 import { TerminalPanel } from "../../lib/init";
 import { PtyTerminal } from "../../lib/pty-terminal";
+import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
+import {
+  WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_URL_MU_PLUGIN,
+  wordpressConfigTemplate,
+} from "../../lib/init/wordpress-runtime-config";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
+import { ensureDirRecursive, writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import "../../lib/terminal-panel.css";
@@ -140,14 +146,21 @@ async function start() {
       "info",
     );
 
-    // The VFS image bakes vim.zip + nethack.zip lazy archives with bare
-    // filenames as URLs. Prepend the deployed base URL so fetch()
-    // resolves correctly regardless of routing.
+    // Patch released VFS images at runtime so hosted builds get current
+    // public WordPress URLs and Vite-emitted lazy archive asset URLs.
     const memfs = MemoryFileSystem.fromImage(rawVfsImage, {
       maxByteLength: 512 * 1024 * 1024,
     });
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
-    memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+    writeVfsFile(memfs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
+    writeVfsFile(memfs, "/etc/wp-config-template.php", wordpressConfigTemplate("sqlite"));
+    ensureDirRecursive(memfs, "/var/www/html/wp-content/mu-plugins");
+    writeVfsFile(
+      memfs,
+      "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
+      WORDPRESS_URL_MU_PLUGIN,
+    );
+    memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
     const vfsImage = await memfs.saveImage();
 
     setStatus("Booting kernel with /sbin/dinit...", "loading");

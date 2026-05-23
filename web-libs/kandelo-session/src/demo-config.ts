@@ -21,15 +21,51 @@ export interface DemoAssetConfig {
   devCorsProxy?: boolean;
 }
 
+export type DemoActionKind = "terminal.run" | "terminal.write";
+
+export interface DemoActionConfig {
+  id: string;
+  label: string;
+  description?: string;
+  kind: DemoActionKind;
+  payload: string;
+}
+
+export interface DemoActionGroupConfig {
+  title: string;
+  actions: DemoActionConfig[];
+}
+
+export interface DemoScriptConfig {
+  title: string;
+  language: string;
+  initialText: string;
+}
+
+export interface DemoCompanionConfig {
+  title: string;
+  srcDoc: string;
+}
+
+export interface DemoGuideConfig {
+  title: string;
+  summary?: string;
+  groups?: DemoActionGroupConfig[];
+  script?: DemoScriptConfig;
+  companion?: DemoCompanionConfig;
+}
+
 export interface KandeloDemoProfileConfig {
   presentation?: DemoPresentationConfig;
   assets?: DemoAssetConfig[];
+  guide?: DemoGuideConfig;
 }
 
 export interface KandeloDemoConfig {
   version: 1;
   presentation?: DemoPresentationConfig;
   assets?: DemoAssetConfig[];
+  guide?: DemoGuideConfig;
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
 
@@ -40,6 +76,7 @@ const PRIMARY_SURFACES = new Set<PrimarySurface>([
   "web",
 ]);
 const ACCESS_MODES = new Set(["primary", "drawer", "side"]);
+const ACTION_KINDS = new Set<DemoActionKind>(["terminal.run", "terminal.write"]);
 
 export function parseKandeloDemoConfig(text: string): KandeloDemoConfig | null {
   const value: unknown = JSON.parse(text);
@@ -51,7 +88,7 @@ export function resolveDemoPresentation(
   config: KandeloDemoConfig,
   profileId: string,
 ): DemoPresentation | null {
-  const profile = isRecord(config.profiles) ? config.profiles[profileId] : undefined;
+  const profile = profileConfig(config, profileId);
   if (isRecord(profile) && profile.presentation !== undefined) {
     return normalizePresentationConfig(profile.presentation);
   }
@@ -64,7 +101,7 @@ export function resolveDemoAssets(
   config: KandeloDemoConfig,
   profileId: string,
 ): DemoAssetConfig[] {
-  const profile = isRecord(config.profiles) ? config.profiles[profileId] : undefined;
+  const profile = profileConfig(config, profileId);
   return [
     ...normalizeAssets(config.assets, "assets"),
     ...normalizeAssets(
@@ -72,6 +109,26 @@ export function resolveDemoAssets(
       `profiles.${profileId}.assets`,
     ),
   ];
+}
+
+export function resolveDemoGuide(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoGuideConfig | null {
+  const profile = profileConfig(config, profileId);
+  if (isRecord(profile) && profile.guide !== undefined) {
+    return normalizeGuide(profile.guide, `profiles.${profileId}.guide`);
+  }
+  return config.guide === undefined
+    ? null
+    : normalizeGuide(config.guide, "guide");
+}
+
+function profileConfig(
+  config: KandeloDemoConfig,
+  profileId: string,
+): KandeloDemoProfileConfig | undefined {
+  return isRecord(config.profiles) ? config.profiles[profileId] : undefined;
 }
 
 function normalizePresentationConfig(config: unknown): DemoPresentation {
@@ -123,9 +180,104 @@ function normalizeAsset(value: unknown, field: string): DemoAssetConfig {
   };
 }
 
+function normalizeGuide(value: unknown, field: string): DemoGuideConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  const guide: DemoGuideConfig = {
+    title: requiredString(value.title, `${field}.title`),
+  };
+  if (typeof value.summary === "string") {
+    guide.summary = value.summary;
+  }
+  if (value.groups !== undefined) {
+    guide.groups = normalizeActionGroups(value.groups, `${field}.groups`);
+  }
+  if (value.script !== undefined) {
+    guide.script = normalizeScript(value.script, `${field}.script`);
+  }
+  if (value.companion !== undefined) {
+    guide.companion = normalizeCompanion(value.companion, `${field}.companion`);
+  }
+  ensureUniqueActionIds(guide, field);
+  return guide;
+}
+
+function normalizeActionGroups(value: unknown, field: string): DemoActionGroupConfig[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${field} must be an array`);
+  }
+  return value.map((group, index) => normalizeActionGroup(group, `${field}[${index}]`));
+}
+
+function normalizeActionGroup(value: unknown, field: string): DemoActionGroupConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  if (!Array.isArray(value.actions)) {
+    throw new Error(`${field}.actions must be an array`);
+  }
+  return {
+    title: requiredString(value.title, `${field}.title`),
+    actions: value.actions.map((action, index) => normalizeAction(action, `${field}.actions[${index}]`)),
+  };
+}
+
+function normalizeAction(value: unknown, field: string): DemoActionConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  const kind = actionKind(value.kind, `${field}.kind`);
+  return {
+    id: requiredString(value.id, `${field}.id`),
+    label: requiredString(value.label, `${field}.label`),
+    ...(typeof value.description === "string" ? { description: value.description } : {}),
+    kind,
+    payload: requiredString(value.payload, `${field}.payload`),
+  };
+}
+
+function normalizeScript(value: unknown, field: string): DemoScriptConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  return {
+    title: requiredString(value.title, `${field}.title`),
+    language: requiredString(value.language, `${field}.language`),
+    initialText: stringField(value.initialText, `${field}.initialText`),
+  };
+}
+
+function normalizeCompanion(value: unknown, field: string): DemoCompanionConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  return {
+    title: requiredString(value.title, `${field}.title`),
+    srcDoc: requiredString(value.srcDoc, `${field}.srcDoc`),
+  };
+}
+
+function ensureUniqueActionIds(guide: DemoGuideConfig, field: string): void {
+  const seen = new Set<string>();
+  for (const group of guide.groups ?? []) {
+    for (const action of group.actions) {
+      if (seen.has(action.id)) {
+        throw new Error(`${field} has duplicate action id: ${action.id}`);
+      }
+      seen.add(action.id);
+    }
+  }
+}
+
 function requiredString(value: unknown, field: string): string {
   if (typeof value === "string" && value.length > 0) return value;
   throw new Error(`${field} must be a non-empty string`);
+}
+
+function stringField(value: unknown, field: string): string {
+  if (typeof value === "string") return value;
+  throw new Error(`${field} must be a string`);
 }
 
 function parseSurface(value: unknown, field: string): PrimarySurface {
@@ -154,6 +306,13 @@ function accessMode(
     return value as DemoPresentation["terminalAccess"];
   }
   throw new Error(`presentation.${field} must be one of: ${Array.from(ACCESS_MODES).join(", ")}`);
+}
+
+function actionKind(value: unknown, field: string): DemoActionKind {
+  if (typeof value === "string" && ACTION_KINDS.has(value as DemoActionKind)) {
+    return value as DemoActionKind;
+  }
+  throw new Error(`${field} must be one of: ${Array.from(ACTION_KINDS).join(", ")}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
