@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WP_VERSION="${WP_VERSION:-6.7.2}"
+WP_VERSION="${WP_VERSION:-7.0}"
 SQLITE_PLUGIN_VERSION="${SQLITE_PLUGIN_VERSION:-2.1.16}"
 
 WP_DIR="$SCRIPT_DIR/wordpress"
@@ -86,16 +86,14 @@ $table_prefix = 'wp_';
 
 define('WP_DEBUG', true);
 define('WP_DEBUG_LOG', true);
-define('WP_DEBUG_DISPLAY', true);
+define('WP_DEBUG_DISPLAY', false);
+@ini_set('display_errors', '0');
 
 // Dynamic site URL from request Host header — prevents stale DB redirects
 if (isset($_SERVER['HTTP_HOST'])) {
     define('WP_HOME', 'http://' . $_SERVER['HTTP_HOST']);
     define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST']);
 }
-
-// Disable external HTTP requests (no network needed for install)
-define('WP_HTTP_BLOCK_EXTERNAL', true);
 
 // Disable cron (no background processes)
 define('DISABLE_WP_CRON', true);

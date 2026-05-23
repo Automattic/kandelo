@@ -48,6 +48,7 @@ import type {
   InitMessage,
   SpawnMessage,
   TerminateProcessMessage,
+  HttpRequestMessage,
 } from "./node-kernel-protocol";
 
 if (!parentPort) {
@@ -976,6 +977,21 @@ function handlePtyResize(pid: number, rows: number, cols: number) {
   kernelWorker.ptySetWinsize(ptyIdx, rows, cols);
 }
 
+// --- External HTTP request bridge ---
+
+async function handleHttpRequest(msg: HttpRequestMessage) {
+  try {
+    const response = await kernelWorker.sendHttpRequest(
+      msg.port,
+      msg.request,
+      { timeoutMs: msg.timeoutMs },
+    );
+    respond(msg.requestId, response);
+  } catch (e) {
+    respondError(msg.requestId, String(e));
+  }
+}
+
 // --- Message dispatch ---
 
 port.on("message", (msg: MainToKernelMessage) => {
@@ -1075,5 +1091,8 @@ port.on("message", (msg: MainToKernelMessage) => {
       }
       break;
     }
+    case "http_request":
+      handleHttpRequest(msg);
+      break;
   }
 });

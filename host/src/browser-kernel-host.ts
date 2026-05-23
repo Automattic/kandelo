@@ -14,6 +14,9 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
+import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+
+export type { HttpRequest, HttpResponse };
 import kernelWasmUrl from "@kernel-wasm?url";
 import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
@@ -669,6 +672,29 @@ export class BrowserKernel {
   /** Wake any process blocked on writing to the given pipe. */
   wakeBlockedWriters(pipeIdx: number): void {
     this.sendToKernel({ type: "wake_blocked_writers", pipeIdx });
+  }
+
+  /**
+   * Send an HTTP request to a server running inside the kernel and return
+   * the parsed response. Bypasses real TCP — uses the kernel's
+   * `kernel_inject_connection` path directly. Prototype API.
+   *
+   * The in-kernel server must already be listening on `port`. Each call
+   * opens a fresh injected connection (no pipelining).
+   */
+  async fetchInKernel(
+    port: number,
+    request: HttpRequest,
+    options?: { timeoutMs?: number },
+  ): Promise<HttpResponse> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, {
+      type: "http_request",
+      requestId,
+      port,
+      request,
+      timeoutMs: options?.timeoutMs,
+    }) as Promise<HttpResponse>;
   }
 
   /** Pick a listener target for the given port. */

@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: write
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Delete pr-${{ github.event.pull_request.number }}-staging
         run: |
@@ -93,7 +93,7 @@ jobs:
       contents: write
       pull-requests: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Sweep orphan pr-*-staging tags
         run: |

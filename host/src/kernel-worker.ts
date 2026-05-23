@@ -24,6 +24,13 @@
 import { WasmPosixKernel } from "./kernel";
 import { SharedLockTable } from "./shared-lock-table";
 import {
+  buildRawHttpRequest,
+  parseRawHttpResponse,
+  type HttpRequest,
+  type HttpResponse,
+  type SendHttpRequestOptions,
+} from "./networking/in-kernel-http";
+import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_IDLE,
@@ -50,6 +57,19 @@ import {
 } from "./generated/abi";
 
 import type { KernelConfig, PlatformIO } from "./types";
+
+function concatChunksLocal(chunks: Uint8Array[]): Uint8Array {
+  if (chunks.length === 0) return new Uint8Array(0);
+  if (chunks.length === 1) return chunks[0]!;
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
 
 /** Channel status values */
 const CH_IDLE = CHANNEL_STATUS_IDLE;
@@ -7533,8 +7553,11 @@ export class CentralizedKernelWorker {
   /**
    * Pick the next listener target for a port via round-robin.
    * Only considers processes that are still registered.
+   *
+   * Public so external callers (the in-kernel HTTP request bridge) can
+   * resolve a port to a {pid, fd} before injecting a connection.
    */
-  private pickListenerTarget(port: number): {pid: number, fd: number} | null {
+  pickListenerTarget(port: number): {pid: number, fd: number} | null {
     const targets = this.tcpListenerTargets.get(port);
     if (!targets || targets.length === 0) return null;
 
@@ -7560,6 +7583,228 @@ export class CentralizedKernelWorker {
     const idx = (this.tcpListenerRRIndex.get(port) ?? 0) % candidates.length;
     this.tcpListenerRRIndex.set(port, idx + 1);
     return candidates[idx]!;
+  }
+
+  // ---------------------------------------------------------------------------
+  // External HTTP request bridge (host → in-kernel server, no real TCP)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Send an HTTP/1.1 request to a server running inside the kernel and
+   * resolve with the parsed response. Bypasses real TCP — uses
+   * `kernel_inject_connection` + `kernel_pipe_*` directly.
+   *
+   * Used by both the browser service-worker bridge and the Node host's
+   * `fetchInKernel` API (see
+   * docs/plans/2026-04-30-external-kernel-http-request-interface.md).
+   */
+  async sendHttpRequest(
+    port: number,
+    request: HttpRequest,
+    opts: SendHttpRequestOptions = {},
+  ): Promise<HttpResponse> {
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const label = opts.debugLabel ?? `${request.method} ${request.url}`;
+
+    const target = this.pickListenerTarget(port);
+    if (!target) {
+      throw new Error(`No in-kernel listener for port ${port}`);
+    }
+
+    const exports = this.kernelInstance!.exports;
+    const injectConnection = exports.kernel_inject_connection as (
+      pid: number, fd: number, a: number, b: number, c: number, d: number, port: number,
+    ) => number;
+    const pipeWrite = exports.kernel_pipe_write as (
+      pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
+    ) => number;
+    const pipeRead = exports.kernel_pipe_read as (
+      pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
+    ) => number;
+    const pipeIsWriteOpen = exports.kernel_pipe_is_write_open as (
+      pid: number, pipeIdx: number,
+    ) => number;
+    const pipeCloseWrite = exports.kernel_pipe_close_write as (
+      pid: number, pipeIdx: number,
+    ) => number;
+    const pipeCloseRead = exports.kernel_pipe_close_read as (
+      pid: number, pipeIdx: number,
+    ) => number;
+
+    // Synthetic remote — picked from the ephemeral range so the kernel
+    // doesn't think two simultaneous external calls share a 4-tuple.
+    const remotePort = 1024 + Math.floor(Math.random() * 60_000);
+    const recvPipeIdx = injectConnection(
+      target.pid, target.fd,
+      127, 0, 0, 1,
+      remotePort,
+    );
+    if (recvPipeIdx < 0) {
+      throw new Error(
+        `[in-kernel-http ${label}] kernel_inject_connection failed (${recvPipeIdx})`,
+      );
+    }
+    const sendPipeIdx = recvPipeIdx + 1;
+    const GLOBAL_PIPE_PID = 0;
+
+    // Wake any pending poll on the target so accept() fires immediately.
+    // Without this we'd wait for the next 5s poll fallback timer.
+    this.wakeTargetPollNow(target.pid);
+    this.scheduleWakeBlockedRetries();
+
+    // Write the request bytes through the TCP scratch buffer.
+    const rawRequest = buildRawHttpRequest(request);
+    const written = this.writePipeChunked(pipeWrite, GLOBAL_PIPE_PID, recvPipeIdx, rawRequest);
+    if (written < rawRequest.length) {
+      // Partial write here would mean the recv pipe filled up before the
+      // server even started reading. Treat as a hard error for the prototype.
+      pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+      pipeCloseRead(GLOBAL_PIPE_PID, sendPipeIdx);
+      throw new Error(
+        `[in-kernel-http ${label}] partial write ${written}/${rawRequest.length}`,
+      );
+    }
+
+    // Wake any reader/poller already blocked on the recv pipe.
+    this.notifyPipeReadable(recvPipeIdx);
+
+    // Pump the response.
+    const response = await this.pumpHttpResponse(
+      GLOBAL_PIPE_PID,
+      sendPipeIdx,
+      recvPipeIdx,
+      pipeRead,
+      pipeIsWriteOpen,
+      pipeCloseRead,
+      pipeCloseWrite,
+      timeoutMs,
+      label,
+    );
+    const retryBudget = opts.emptyResponseRetries ?? 1;
+    if (
+      retryBudget > 0 &&
+      (request.method === "GET" || request.method === "HEAD") &&
+      response.status === 200 &&
+      Object.keys(response.headers).length === 0 &&
+      response.body.length === 0
+    ) {
+      return await this.sendHttpRequest(port, request, {
+        ...opts,
+        emptyResponseRetries: retryBudget - 1,
+      });
+    }
+    return response;
+  }
+
+  /**
+   * Synchronously cancel any pending poll/ppoll waiting on the given pid
+   * so the in-kernel server's accept loop fires this tick. Used by
+   * sendHttpRequest right after injecting a connection.
+   */
+  private wakeTargetPollNow(pid: number): void {
+    for (const [key, entry] of this.pendingPollRetries) {
+      if (entry.channel.pid !== pid) continue;
+      if (entry.timer !== null) clearTimeout(entry.timer);
+      this.pendingPollRetries.delete(key);
+      if (this.processes.has(pid)) this.retrySyscall(entry.channel);
+      break;
+    }
+  }
+
+  /**
+   * Write `data` through the TCP scratch buffer, looping until either the
+   * pipe stops accepting or we've written everything. Returns total bytes
+   * written.
+   */
+  private writePipeChunked(
+    pipeWrite: (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number,
+    pid: number,
+    pipeIdx: number,
+    data: Uint8Array,
+  ): number {
+    const scratchOffset = this.tcpScratchOffset;
+    const PAGE = 65536;
+    let written = 0;
+    while (written < data.length) {
+      const chunk = Math.min(data.length - written, PAGE);
+      // Re-acquire view each iteration — memory.grow can detach the buffer.
+      const mem = this.getKernelMem();
+      mem.set(data.subarray(written, written + chunk), scratchOffset);
+      const n = pipeWrite(pid, pipeIdx, BigInt(scratchOffset), chunk);
+      if (n <= 0) break;
+      written += n;
+    }
+    return written;
+  }
+
+  /**
+   * Pump response bytes out of `sendPipeIdx` until the server closes its
+   * write end. Resolves with the parsed response, or with status 504 on
+   * timeout. Closes both pipe ends before resolving.
+   */
+  private pumpHttpResponse(
+    pid: number,
+    sendPipeIdx: number,
+    recvPipeIdx: number,
+    pipeRead: (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number,
+    pipeIsWriteOpen: (pid: number, pipeIdx: number) => number,
+    pipeCloseRead: (pid: number, pipeIdx: number) => number,
+    pipeCloseWrite: (pid: number, pipeIdx: number) => number,
+    timeoutMs: number,
+    label: string,
+  ): Promise<HttpResponse> {
+    return new Promise<HttpResponse>((resolve) => {
+      const chunks: Uint8Array[] = [];
+      const start = Date.now();
+      let sawWriteOpen = false;
+      const scratchOffset = this.tcpScratchOffset;
+      const PAGE = 65536;
+
+      const finish = (response: HttpResponse) => {
+        pipeCloseRead(pid, sendPipeIdx);
+        pipeCloseWrite(pid, recvPipeIdx);
+        this.notifyPipeReadable(recvPipeIdx);
+        this.scheduleWakeBlockedRetries();
+        resolve(response);
+      };
+
+      const tick = () => {
+        if (Date.now() - start > timeoutMs) {
+          finish({ status: 504, headers: {}, body: new Uint8Array(0) });
+          return;
+        }
+
+        // Drain whatever is currently in the pipe.
+        let gotData = false;
+        for (;;) {
+          const n = pipeRead(pid, sendPipeIdx, BigInt(scratchOffset), PAGE);
+          if (n <= 0) break;
+          gotData = true;
+          const mem = this.getKernelMem();
+          chunks.push(mem.slice(scratchOffset, scratchOffset + n));
+        }
+
+        if (gotData) {
+          // Wake any writer blocked filling this pipe (we just freed buffer).
+          this.notifyPipeWritable(sendPipeIdx);
+        }
+
+        const writeOpen = pipeIsWriteOpen(pid, sendPipeIdx) === 1;
+        if (writeOpen && !sawWriteOpen) sawWriteOpen = true;
+
+        if (sawWriteOpen && !writeOpen && !gotData) {
+          // Server closed its end and we drained all bytes.
+          const raw = concatChunksLocal(chunks);
+          finish(parseRawHttpResponse(raw));
+          return;
+        }
+
+        // Re-arm. Tight when bytes were flowing, slower poll otherwise.
+        setTimeout(tick, gotData ? 0 : 2);
+      };
+
+      tick();
+    });
   }
 
   /**
