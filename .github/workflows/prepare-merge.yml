@@ -31,6 +31,31 @@ on:
   pull_request:
     types: [labeled]
 
+env:
+  GIT_FETCH_RETRY_FUNC: |
+    git_fetch_retry() {
+      local attempt=1
+      local max_attempts=5
+      local delay=2
+      local rc
+
+      while true; do
+        if git fetch "$@"; then
+          return 0
+        fi
+
+        rc=$?
+        if [ "$attempt" -ge "$max_attempts" ]; then
+          return "$rc"
+        fi
+
+        echo "::warning::git fetch failed with exit code $rc (attempt $attempt/$max_attempts); retrying in ${delay}s" >&2
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+      done
+    }
+
 # Do not use workflow-level concurrency. GitHub Actions keeps at most
 # one pending run per concurrency group, so a third ready PR cancels/
 # replaces the second instead of forming a real queue. The
@@ -80,10 +105,11 @@ jobs:
           cd "$work"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
 
-          git fetch --quiet --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
           BASE_SHA=$(git rev-parse "refs/remotes/origin/${BASE_REF}")
 
-          git fetch --quiet --no-tags origin "$PR_HEAD_SHA"
+          git_fetch_retry --quiet --no-tags origin "$PR_HEAD_SHA"
           if ! git cat-file -e "$PR_HEAD_SHA^{commit}" 2>/dev/null; then
             echo "::error::Could not fetch PR head commit $PR_HEAD_SHA"
             exit 1
@@ -183,7 +209,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -488,7 +515,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -725,7 +753,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -850,7 +879,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -942,7 +972,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -1115,7 +1146,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -1299,7 +1331,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -1513,7 +1546,8 @@ jobs:
           git init --quiet "$RUNNER_TEMP/base-drift"
           cd "$RUNNER_TEMP/base-drift"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
           CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
@@ -1622,7 +1656,8 @@ jobs:
           git init --quiet "$RUNNER_TEMP/base-drift"
           cd "$RUNNER_TEMP/base-drift"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
           CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
@@ -1736,7 +1771,8 @@ jobs:
           git init --quiet "$RUNNER_TEMP/base-drift"
           cd "$RUNNER_TEMP/base-drift"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
           CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
