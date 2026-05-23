@@ -71,6 +71,9 @@ nix_develop=(
     --keep GITHUB_WORKSPACE \
     --keep GITHUB_EVENT_NAME \
     --keep GITHUB_EVENT_PATH \
+    --keep SYNTH_BASE_SHA \
+    --keep SYNTH_HEAD_SHA \
+    --keep SYNTHETIC_MERGE_SHA \
     --keep RUNNER_TEMP \
     --keep RUNNER_OS \
     --keep RUNNER_ARCH \
