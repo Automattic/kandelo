@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WP_VERSION="${WP_VERSION:-6.7.2}"
+WP_VERSION="${WP_VERSION:-7.0}"
 
 WP_DIR="$SCRIPT_DIR/wordpress"
 
@@ -49,7 +49,8 @@ $table_prefix = 'wp_';
 
 define('WP_DEBUG', true);
 define('WP_DEBUG_LOG', true);
-define('WP_DEBUG_DISPLAY', true);
+define('WP_DEBUG_DISPLAY', false);
+@ini_set('display_errors', '0');
 
 // Dynamic site URL from request Host header
 if (isset($_SERVER['HTTP_HOST'])) {
@@ -57,8 +58,7 @@ if (isset($_SERVER['HTTP_HOST'])) {
     define('WP_SITEURL', 'http://' . $_SERVER['HTTP_HOST']);
 }
 
-// Disable external HTTP requests and cron
-define('WP_HTTP_BLOCK_EXTERNAL', true);
+// Disable cron (no background processes)
 define('DISABLE_WP_CRON', true);
 
 if ( ! defined( 'ABSPATH' ) ) {

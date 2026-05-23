@@ -31,6 +31,31 @@ on:
   pull_request:
     types: [labeled]
 
+env:
+  GIT_FETCH_RETRY_FUNC: |
+    git_fetch_retry() {
+      local attempt=1
+      local max_attempts=5
+      local delay=2
+      local rc
+
+      while true; do
+        if git fetch "$@"; then
+          return 0
+        fi
+
+        rc=$?
+        if [ "$attempt" -ge "$max_attempts" ]; then
+          return "$rc"
+        fi
+
+        echo "::warning::git fetch failed with exit code $rc (attempt $attempt/$max_attempts); retrying in ${delay}s" >&2
+        sleep "$delay"
+        attempt=$((attempt + 1))
+        delay=$((delay * 2))
+      done
+    }
+
 # Do not use workflow-level concurrency. GitHub Actions keeps at most
 # one pending run per concurrency group, so a third ready PR cancels/
 # replaces the second instead of forming a real queue. The
@@ -65,7 +90,7 @@ jobs:
       BASE_REF: ${{ github.event.pull_request.base.ref }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Capture base and synthesize PR merge
         id: synthesize
@@ -80,10 +105,11 @@ jobs:
           cd "$work"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
 
-          git fetch --quiet --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
           BASE_SHA=$(git rev-parse "refs/remotes/origin/${BASE_REF}")
 
-          git fetch --quiet --no-tags origin "$PR_HEAD_SHA"
+          git_fetch_retry --quiet --no-tags origin "$PR_HEAD_SHA"
           if ! git cat-file -e "$PR_HEAD_SHA^{commit}" 2>/dev/null; then
             echo "::error::Could not fetch PR head commit $PR_HEAD_SHA"
             exit 1
@@ -183,7 +209,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -214,16 +241,57 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
+      actions: read          # gh run list/watch for staging-build
+      checks: read           # gh pr checks reads check runs
+      contents: read         # gh pr view/checks repository metadata
       pull-requests: write     # drop label / comment on failure
       statuses: read
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Verify PR review state + required checks green
         id: gate
         run: |
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
           # reviewDecision values:
           #   APPROVED          — at least one approving review, branch
           #                       protection requires reviews
@@ -240,21 +308,21 @@ jobs:
           # Required-check failures are NEVER bypassable here — those
           # gate on objective signals.
           LABELER="${{ github.event.sender.login }}"
-          PERM=$(gh api "/repos/${{ github.repository }}/collaborators/${LABELER}/permission" -q .permission 2>/dev/null || echo "")
+          PERM=$(gh_retry gh api "/repos/${{ github.repository }}/collaborators/${LABELER}/permission" -q .permission)
           MAINTAINER=0
           case "$PERM" in
             admin|maintain) MAINTAINER=1 ;;
           esac
           echo "labeler=$LABELER permission=$PERM maintainer=$MAINTAINER"
 
-          REVIEW=$(gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
+          REVIEW=$(gh_retry gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
           case "$REVIEW" in
             REVIEW_REQUIRED|CHANGES_REQUESTED)
               if [ "$MAINTAINER" = "1" ]; then
                 echo "::notice::review state $REVIEW; bypassed by maintainer ${LABELER}"
               else
-                gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-                gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}. (A maintainer — admin/maintain permission — can re-apply \`ready-to-ship\` to override.)"
+                gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+                gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}. (A maintainer — admin/maintain permission — can re-apply \`ready-to-ship\` to override.)" || true
                 exit 1
               fi
               ;;
@@ -265,10 +333,10 @@ jobs:
           # NOT bypassable, even by maintainers — the workflow's own
           # post-publish tests gate the merge-gate status, and bypassing
           # pre-existing failed checks here would defeat that intent.
-          FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
+          FAILING=$(gh_retry gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
           if [ "$FAILING" -gt 0 ]; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing."
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing." || true
             exit 1
           fi
 
@@ -281,40 +349,123 @@ jobs:
         # whose cache key still matches the selected synthetic merge tree,
         # while rebuilding entries whose merged-tree inputs changed.
         run: |
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
           # The label event can fire before staging-build's run is
           # registered against PR_HEAD_SHA. Retry briefly.
+          #
+          # staging-build also listens to label changes so toggling
+          # skip-staging-tests can re-run the gate with the new policy.
+          # Other label events, including ready-to-ship, create an
+          # all-skipped workflow run. Ignore those skipped runs here so
+          # the gate watches the latest real staging-build run for this
+          # commit.
           RUN_ID=""
           for attempt in 1 2 3 4 5 6; do
-            RUN_ID=$(gh run list \
+            RUN_ID=$(gh_retry gh run list \
               --repo ${{ github.repository }} \
               --workflow=staging-build.yml \
               --commit="$PR_HEAD_SHA" \
-              --limit=1 \
-              --json databaseId \
-              --jq '.[0].databaseId // empty')
+              --limit=20 \
+              --json databaseId,status,conclusion \
+              --jq '[.[] | select(.conclusion != "skipped")][0].databaseId // empty')
             [ -n "$RUN_ID" ] && break
             sleep 10
           done
 
           if [ -z "$RUN_ID" ]; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`."
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no non-skipped \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`." || true
             exit 1
           fi
 
           echo "Waiting for staging-build run $RUN_ID on $PR_HEAD_SHA…"
           # --exit-status: non-zero on failure/cancelled conclusion.
-          if ! gh run watch "$RUN_ID" --repo ${{ github.repository }} --exit-status; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Re-apply \`ready-to-ship\` once it is green."
+          if ! gh_retry gh run watch "$RUN_ID" --repo ${{ github.repository }} --exit-status; then
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Re-apply \`ready-to-ship\` once it is green." || true
             exit 1
           fi
 
       - name: Drop label + comment on gate failure
         if: failure()
         run: |
-          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge gate failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
+          gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+          gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge gate failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
 
   # ---------------------------------------------------------------------
   # Per-package matrix flow.
@@ -364,7 +515,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -394,11 +546,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
         with:
           use-gha-cache: false
+          use-flakehub: false
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
@@ -423,7 +578,7 @@ jobs:
       - name: Compute matrix
         id: compute
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           SYNTH_BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
           SYNTH_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
@@ -598,7 +753,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -622,9 +778,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Compute cache key
         # Mirrors `staging-build.yml`'s `toolchain-cache.key` formula
@@ -718,7 +879,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -743,7 +905,7 @@ jobs:
       - name: Download staged archive
         id: archive
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -763,7 +925,7 @@ jobs:
 
       - name: Promote archive + index entry
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -810,7 +972,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -841,9 +1004,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -910,7 +1078,7 @@ jobs:
       - name: Publish archive + index entry
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -927,7 +1095,7 @@ jobs:
       - name: Record failed build in index
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -978,7 +1146,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -1010,9 +1179,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -1083,7 +1257,7 @@ jobs:
       - name: Publish archive + index entry
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -1100,7 +1274,7 @@ jobs:
       - name: Record failed build in index
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -1157,7 +1331,8 @@ jobs:
           SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
           set -euo pipefail
-          git fetch --quiet --depth=1 origin "$PR_HEAD_SHA"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
           git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
             "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
           actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
@@ -1202,9 +1377,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -1349,7 +1529,7 @@ jobs:
       pull-requests: write     # auto-merge + comment
       statuses: write          # post merge-gate=success
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -1366,7 +1546,8 @@ jobs:
           git init --quiet "$RUNNER_TEMP/base-drift"
           cd "$RUNNER_TEMP/base-drift"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
           CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
@@ -1458,7 +1639,7 @@ jobs:
       pull-requests: write     # auto-merge + comment
       statuses: write          # post merge-gate=success
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -1475,7 +1656,8 @@ jobs:
           git init --quiet "$RUNNER_TEMP/base-drift"
           cd "$RUNNER_TEMP/base-drift"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
           CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
@@ -1572,7 +1754,7 @@ jobs:
       pull-requests: write     # auto-merge + comment
       statuses: write          # post merge-gate=success
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
@@ -1589,7 +1771,8 @@ jobs:
           git init --quiet "$RUNNER_TEMP/base-drift"
           cd "$RUNNER_TEMP/base-drift"
           git remote add origin "https://${{ github.token }}@github.com/${{ github.repository }}.git"
-          git fetch --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$BASE_REF:refs/remotes/origin/$BASE_REF"
           CURRENT_BASE=$(git rev-parse "refs/remotes/origin/$BASE_REF")
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
