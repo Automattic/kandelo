@@ -698,37 +698,9 @@ build_vim_zip() {
         return
     fi
 
-    # vim.zip = vim.wasm + minimal runtime tree, packaged for the
-    # browser shell demo's lazy-archive fetch. Vim's release archive
-    # ships both pieces (build-vim.sh stages runtime/ alongside
-    # vim.wasm into the resolver scratch), so this builder just locates
-    # the cache canonical dir and rezips. No upstream source download.
-    local vim_dir
-    vim_dir="$(cargo run -p xtask --target aarch64-apple-darwin --quiet -- \
-        build-deps resolve vim --arch wasm32 2>/dev/null)" || {
-        warn "vim package could not be resolved — run: ./run.sh build vim"
-        return
-    }
-    if [ ! -f "$vim_dir/vim.wasm" ] || [ ! -d "$vim_dir/runtime" ]; then
-        warn "vim cache at $vim_dir is missing vim.wasm or runtime/ — re-fetch the release"
-        return
-    fi
-
     step "Packaging vim.zip from cached vim package"
-    local stage out
-    stage="$(mktemp -d)"
-    out="$REPO_ROOT/apps/browser-demos/public/vim.zip"
-    mkdir -p "$stage/bin" "$stage/share/vim/vim91" "$(dirname "$out")"
-    cp "$vim_dir/vim.wasm" "$stage/bin/vim"
-    chmod 755 "$stage/bin/vim"
-    cp -R "$vim_dir/runtime/." "$stage/share/vim/vim91/"
-    rm -f "$out"
-    (cd "$stage" && zip -r -q "$out" .)
-    rm -rf "$stage"
-    # shellcheck source=scripts/install-local-binary.sh
-    source "$REPO_ROOT/scripts/install-local-binary.sh"
-    install_local_binary vim "$out"
-    info "vim.zip built ($(du -h "$out" | cut -f1))"
+    bash "$REPO_ROOT/images/vfs/scripts/build-vim-zip.sh"
+    info "vim.zip built ($(du -h "$REPO_ROOT/apps/browser-demos/public/vim.zip" | cut -f1))"
 }
 
 build_nethack_zip() {
@@ -1398,6 +1370,7 @@ build_target() {
         unzip)      build_unzip ;;
         nano)       build_nano ;;
         nethack)    build_nethack ;;
+        nethack-zip) build_nethack_zip ;;
         fbdoom)     build_fbdoom ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
@@ -1428,7 +1401,7 @@ BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-
 # a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
 # listed: they're toolchain prerequisites for source builds, and any
 # `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do

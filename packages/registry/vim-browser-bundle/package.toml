@@ -1,0 +1,20 @@
+kind = "program"
+name = "vim-browser-bundle"
+version = "9.1.0900"
+kernel_abi = 7
+depends_on = ["vim@9.1.0900"]
+
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Vim"
+url = "https://github.com/vim/vim/blob/v9.1.0900/LICENSE"
+
+[build]
+script_path = "packages/registry/vim-browser-bundle/build-vim-browser-bundle.sh"
+
+[[outputs]]
+name = "vim"
+wasm = "vim.zip"
