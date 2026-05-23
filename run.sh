@@ -8,6 +8,7 @@
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh fetch                Fetch binaries pinned by per-package package.toml
 #   ./run.sh run <example> [args] Run a Node.js example
+#   ./run.sh prepare-browser      Fetch/build browser demo assets
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
@@ -131,7 +132,17 @@ has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
-has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
+has_programs() {
+    has_resolvable programs/fork-exec.wasm &&
+    has_resolvable programs/fbtest.wasm &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/pipe-throughput.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/file-throughput.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/syscall-latency.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/fork-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/clone-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/spawn-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/hello.wasm" ]
+}
 
 # Package-system entries: layout derived from package.toml's
 # `[[outputs]]` via `xtask build-deps output-path`. Source-tree
@@ -179,7 +190,7 @@ has_lsof()          { pkg_has_output lsof lsof.wasm || [ -f "$REPO_ROOT/packages
 has_unzip()         { pkg_has_output unzip unzip.wasm || [ -f "$REPO_ROOT/packages/registry/unzip/bin/unzip.wasm" ]; }
 has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/packages/registry/nano/bin/nano.wasm" ]; }
 has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/packages/registry/nethack/bin/nethack.wasm" ]; }
-has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || { [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ] && [ -f "$REPO_ROOT/packages/registry/fbdoom/doom1.wad" ]; }; }
+has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ]; }
 has_vim()           { pkg_has_output vim vim.wasm || [ -f "$REPO_ROOT/packages/registry/vim/bin/vim.wasm" ]; }
 has_git()           { pkg_has_output git git.wasm || [ -f "$REPO_ROOT/packages/registry/git/bin/git.wasm" ]; }
 has_perl()          { pkg_has_output perl perl.wasm || [ -f "$REPO_ROOT/packages/registry/perl/bin/perl.wasm" ]; }
@@ -739,6 +750,7 @@ build_nethack_zip() {
 
 build_shell_vfs() {
     if ! has_shell_vfs; then
+        build_fbdoom
         step "Building Shell VFS image"
         bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
         info "Shell VFS image built"
@@ -1709,6 +1721,7 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/fbdoom/fbdoom-src" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom.wasm" \
                   "$REPO_ROOT/packages/registry/fbdoom/doom1.wad" \
                   "$REPO_ROOT/packages/registry/fbdoom/COPYING.txt" \
                   "$REPO_ROOT/packages/registry/fbdoom/CREDITS.txt" \
@@ -1911,9 +1924,7 @@ cmd_fetch() {
     "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}" "$@"
 }
 
-cmd_browser() {
-    local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
-
+cmd_prepare_browser() {
     # Fetch the per-package binaries for enabled browser demos first.
     # The resolver-aware has_X
     # guards below then treat fetched binaries as "already built", so
@@ -1924,6 +1935,12 @@ cmd_browser() {
     fetch_browser_binaries
 
     build_browser
+}
+
+cmd_browser() {
+    local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
+
+    cmd_prepare_browser
 
     # Install browser deps if needed (re-run if package.json is newer than node_modules)
     if [ ! -d "$BROWSER_DIR/node_modules" ] || [ "$BROWSER_DIR/package.json" -nt "$BROWSER_DIR/node_modules" ]; then
@@ -2126,6 +2143,7 @@ cmd_list() {
     echo "  ./run.sh run dlopen                  dlopen shared library demo"
     echo ""
     echo "${BOLD}Browser:${RESET}"
+    echo "  ./run.sh prepare-browser             Fetch/build browser demo assets"
     echo "  ./run.sh browser                     Start Vite dev server for browser demos"
     echo ""
     echo "${BOLD}Test suites:${RESET}"
@@ -2151,6 +2169,7 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     fetch)    cmd_fetch "${@:2}" ;;
+    prepare-browser) cmd_prepare_browser ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;
     test)     cmd_test "${@:2}" ;;

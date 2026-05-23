@@ -295,7 +295,13 @@ if (typeof window !== "undefined") {
   // --- CORS proxy URL (injected at build time, empty string in dev) ---
   var CORS_PROXY_URL = "__CORS_PROXY_URL__";
   // In dev mode the placeholder is not replaced — treat as unconfigured
-  if (CORS_PROXY_URL.indexOf("__") === 0) CORS_PROXY_URL = "";
+  if (CORS_PROXY_URL.indexOf("__") === 0) {
+    CORS_PROXY_URL =
+      self.location.hostname === "127.0.0.1" ||
+      self.location.hostname === "localhost"
+        ? "/cors-proxy?url="
+        : "";
+  }
 
   /**
    * Check if a URL is cross-origin relative to the service worker's origin.
@@ -398,18 +404,51 @@ if (typeof window !== "undefined") {
    * Fetch a cross-origin URL, routing through the CORS proxy if configured.
    * Returns a Response with CORP headers added so COEP: require-corp is satisfied.
    */
+  function corsSafeResponseHeaders(response) {
+    var headers = new Headers();
+    [
+      "Accept-Ranges",
+      "Cache-Control",
+      "Content-Length",
+      "Content-Range",
+      "Content-Type",
+      "ETag",
+      "Expires",
+      "Last-Modified",
+    ].forEach(function (name) {
+      var value = response.headers.get(name);
+      if (value) headers.set(name, value);
+    });
+
+    // The page is cross-origin isolated. Cross-origin fetch() requests are
+    // allowed by COEP when they pass CORS, and this synthetic response is the
+    // response the page sees. Do not depend on the proxy or upstream server to
+    // provide these policy headers.
+    headers.set("Access-Control-Allow-Origin", self.location.origin);
+    headers.set("Access-Control-Allow-Credentials", "true");
+    headers.set("Access-Control-Expose-Headers", [
+      "Accept-Ranges",
+      "Content-Length",
+      "Content-Range",
+      "Content-Type",
+      "ETag",
+      "Last-Modified",
+      "X-Playground-Cors-Proxy",
+    ].join(", "));
+    headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+    headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+    headers.append("Vary", "Origin");
+    return headers;
+  }
+
   function fetchCrossOrigin(request) {
     var targetUrl = request.url;
 
     // If we have a CORS proxy, route through it
     if (CORS_PROXY_URL) {
-      var proxyUrl = CORS_PROXY_URL + targetUrl;
-      return fetch(proxyUrl).then(function (response) {
-        var headers = new Headers(response.headers);
-        headers.set("Cross-Origin-Resource-Policy", "cross-origin");
-        if (!headers.has("Cross-Origin-Embedder-Policy")) {
-          headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-        }
+      var proxyUrl = CORS_PROXY_URL + encodeURIComponent(targetUrl);
+      return fetch(proxyUrl, { credentials: "omit", mode: "cors" }).then(function (response) {
+        var headers = corsSafeResponseHeaders(response);
         return new Response(response.body, {
           status: response.status,
           statusText: response.statusText,
@@ -423,10 +462,7 @@ if (typeof window !== "undefined") {
       if (response.type === "opaque" || response.type === "opaqueredirect") {
         return response;
       }
-      var headers = new Headers(response.headers);
-      if (!headers.has("Cross-Origin-Resource-Policy")) {
-        headers.set("Cross-Origin-Resource-Policy", "cross-origin");
-      }
+      var headers = corsSafeResponseHeaders(response);
       return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
@@ -563,6 +599,10 @@ if (typeof window !== "undefined") {
           headers[key] = value;
         });
         headers["host"] = url.host;
+        headers["x-forwarded-host"] = url.host;
+        headers["x-forwarded-prefix"] = appRootPath();
+        headers["x-forwarded-proto"] = url.protocol.replace(":", "");
+        headers["x-forwarded-uri"] = url.pathname + url.search;
 
         // Inject cookies from our jar
         var cookiePath = hasAppPrefix
@@ -634,13 +674,26 @@ if (typeof window !== "undefined") {
                 if (!locUrl.pathname.startsWith(appPrefix)) {
                   locUrl.pathname = appPrefix.slice(0, -1) + locUrl.pathname;
                 }
-                respHeaders.set("Location", locUrl.toString());
               }
+              var redirectStatus = bridgeResp.status;
+              if (
+                (redirectStatus === 301 || redirectStatus === 302) &&
+                request.method !== "GET" &&
+                request.method !== "HEAD"
+              ) {
+                redirectStatus = 303;
+              }
+              respHeaders.set("Location", locUrl.toString());
+              return new Response(null, {
+                status: redirectStatus,
+                headers: respHeaders,
+              });
             } catch (e) {
               /* leave as-is */
             }
           }
         }
+        rewriteAppUrlHeader(respHeaders, "Link", url);
 
         // COEP/CORP for cross-origin isolation
         if (!respHeaders.has("Cross-Origin-Embedder-Policy")) {
@@ -650,7 +703,17 @@ if (typeof window !== "undefined") {
           respHeaders.set("Cross-Origin-Resource-Policy", "same-origin");
         }
 
-        return new Response(bridgeResp.body, {
+        var body = bridgeResp.body;
+        if (shouldRewriteAppResponseBody(respHeaders)) {
+          var text = new TextDecoder().decode(body);
+          var rewritten = rewriteSameHostAppUrls(text, url);
+          if (rewritten !== text) {
+            body = new TextEncoder().encode(rewritten);
+            respHeaders.delete("Content-Length");
+          }
+        }
+
+        return new Response(body, {
           status: bridgeResp.status,
           headers: respHeaders,
         });
@@ -664,5 +727,71 @@ if (typeof window !== "undefined") {
         });
       }
     })();
+  }
+
+  function shouldRewriteAppResponseBody(headers) {
+    if (headers.has("Content-Encoding")) return false;
+    var contentType = (headers.get("Content-Type") || "").toLowerCase();
+    return (
+      contentType.indexOf("text/html") === 0 ||
+      contentType.indexOf("text/css") === 0 ||
+      contentType.indexOf("text/javascript") === 0 ||
+      contentType.indexOf("application/javascript") === 0 ||
+      contentType.indexOf("application/x-javascript") === 0 ||
+      contentType.indexOf("application/json") === 0 ||
+      contentType.indexOf("+json") !== -1 ||
+      contentType.indexOf("application/xml") === 0 ||
+      contentType.indexOf("text/xml") === 0 ||
+      contentType.indexOf("+xml") !== -1 ||
+      contentType.indexOf("image/svg+xml") === 0
+    );
+  }
+
+  function rewriteAppUrlHeader(headers, name, requestUrl) {
+    var value = headers.get(name);
+    if (!value) return;
+    var rewritten = rewriteSameHostAppUrls(value, requestUrl);
+    if (rewritten !== value) {
+      headers.set(name, rewritten);
+    }
+  }
+
+  function rewriteSameHostAppUrls(text, requestUrl) {
+    var rootPath = appRootPath();
+    var publicOrigin = requestUrl.protocol + "//" + requestUrl.host + "/";
+    var publicBase = requestUrl.protocol + "//" + requestUrl.host + rootPath + "/";
+    var hostPattern = escapeRegExp(requestUrl.host);
+    var appPathPattern = escapeRegExp(rootPath.slice(1));
+    var plain = new RegExp(
+      "http://" + hostPattern + "/(?!" + appPathPattern + "(?:/|$))",
+      "g",
+    );
+    var escapedAppPathPattern = appPathPattern.replace(/\//g, "\\\\/");
+    var escaped = new RegExp(
+      "http:\\\\/\\\\/" + hostPattern + "\\\\/(?!" + escapedAppPathPattern + "(?:\\\\/|$))",
+      "g",
+    );
+    var encodedAppPathPattern = appPathPattern.replace(/\//g, "%2F");
+    var encoded = new RegExp(
+      "http%3A%2F%2F" + hostPattern + "%2F(?!" + encodedAppPathPattern + "(?:%2F|$))",
+      "gi",
+    );
+    return text
+      .replace(plain, publicBase)
+      .replace(escaped, publicBase.replace(/\//g, "\\/"))
+      .replace(encoded, encodeURIComponent(publicBase))
+      .replace(new RegExp("http://" + hostPattern + "/", "g"), publicOrigin)
+      .replace(
+        new RegExp("http:\\\\/\\\\/" + hostPattern + "\\\\/", "g"),
+        publicOrigin.replace(/\//g, "\\/"),
+      )
+      .replace(
+        new RegExp("http%3A%2F%2F" + hostPattern + "%2F", "gi"),
+        encodeURIComponent(publicOrigin),
+      );
+  }
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 }

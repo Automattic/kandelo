@@ -20,6 +20,11 @@ import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
+import {
+  webPresentation,
+  writeKandeloDemoConfig,
+} from "./kandelo-demo-config";
+import { nginxPhpGuide } from "./kandelo-demo-guides";
 
 const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php.vfs.zst");
 const PHP_FPM_WORKERS = 6;
@@ -264,6 +269,15 @@ async function main() {
       restart: false,
     },
   ]);
+  writeKandeloDemoConfig(fs, {
+    version: 1,
+    profiles: {
+      "nginx-php": {
+        presentation: webPresentation(),
+        guide: nginxPhpGuide(),
+      },
+    },
+  });
 
   await saveImage(fs, OUT_FILE);
 }

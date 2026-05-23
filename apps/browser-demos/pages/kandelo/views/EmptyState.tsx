@@ -7,7 +7,7 @@
 
 import * as React from "react";
 import markUrl from "../assets/kandelo-mark.png";
-import { useKernelHost } from "../kernel-host/react";
+import { useGalleryItems } from "../kernel-host/react";
 import { decodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
   BootDescriptor, GalleryItem,
@@ -25,20 +25,10 @@ export interface EmptyStateProps {
 export const EmptyState: React.FC<EmptyStateProps> = ({
   onLaunchItem, onBrowseAll, onApplyDescriptor,
 }) => {
-  const host = useKernelHost();
   const [door, setDoor] = React.useState<Door>(null);
   const [pasteUrl, setPasteUrl] = React.useState("");
   const [pasteError, setPasteError] = React.useState<string | null>(null);
-  const [presets, setPresets] = React.useState<GalleryItem[]>([]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    void host.galleryQuery({ tab: "presets" }).then(
-      (items) => { if (!cancelled) setPresets(items); },
-      () => { if (!cancelled) setPresets([]); },
-    );
-    return () => { cancelled = true; };
-  }, [host]);
+  const { items: presets } = useGalleryItems("presets");
 
   const featured = presets.slice(0, 6);
 

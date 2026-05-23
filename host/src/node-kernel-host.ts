@@ -25,6 +25,9 @@ import type {
   ResolveExecRequestMessage,
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
+import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+
+export type { HttpRequest, HttpResponse };
 
 function currentModuleDir(): string {
   if (typeof __dirname !== "undefined") return __dirname;
@@ -208,6 +211,29 @@ export class NodeKernelHost {
   /** Resize the PTY for a process */
   ptyResize(pid: number, rows: number, cols: number): void {
     this.sendToWorker({ type: "pty_resize", pid, rows, cols });
+  }
+
+  /**
+   * Send an HTTP request to a server running inside the kernel and return
+   * the parsed response. Bypasses real TCP by using the kernel's injected
+   * connection path directly. Prototype API.
+   *
+   * The in-kernel server must already be listening on `port`. Each call
+   * opens a fresh injected connection.
+   */
+  async fetchInKernel(
+    port: number,
+    request: HttpRequest,
+    options?: { timeoutMs?: number },
+  ): Promise<HttpResponse> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "http_request",
+      requestId,
+      port,
+      request,
+      timeoutMs: options?.timeoutMs,
+    }) as Promise<HttpResponse>;
   }
 
   /**

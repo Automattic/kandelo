@@ -7,6 +7,13 @@ import react from "@vitejs/plugin-react";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
+const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
+
+const crossOriginIsolationHeaders = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Service-Worker-Allowed": "/",
+};
 
 /**
  * Vite plugin: resolve `@kernel-wasm` and `@rootfs-vfs` lazily.
@@ -104,7 +111,7 @@ function resolveBinariesAlias(): Plugin {
 /**
  * Vite plugin: rewrite absolute nav links in HTML to include the base path.
  * In dev mode (base="/") this is a no-op. In production with a custom base
- * (e.g. "/wasm-posix-kernel/"), it rewrites href="/" → href="/wasm-posix-kernel/".
+ * (e.g. "/kandelo/"), it rewrites href="/" → href="/kandelo/".
  */
 function rewriteNavLinks(): Plugin {
   let base = "/";
@@ -329,7 +336,7 @@ function injectCorsProxyUrl(): Plugin {
   return {
     name: "inject-cors-proxy-url",
     configResolved() {
-      corsProxyUrl = process.env.VITE_CORS_PROXY_URL || "";
+      corsProxyUrl = process.env.VITE_CORS_PROXY_URL ?? DEFAULT_CORS_PROXY_URL;
     },
     writeBundle(_, bundle) {
       // service-worker.js is in public/ and gets copied as-is to dist/
@@ -361,14 +368,13 @@ export default defineConfig({
     injectCorsProxyUrl(),
   ],
   server: {
-    headers: {
-      "Cross-Origin-Opener-Policy": "same-origin",
-      "Cross-Origin-Embedder-Policy": "require-corp",
-      "Service-Worker-Allowed": "/",
-    },
+    headers: crossOriginIsolationHeaders,
     fs: {
       allow: [repoRoot],
     },
+  },
+  preview: {
+    headers: crossOriginIsolationHeaders,
   },
   build: {
     // Use terser instead of esbuild for minification. esbuild's minifier
@@ -405,5 +411,5 @@ export default defineConfig({
   worker: {
     format: "es",
   },
-  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst"],
+  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst", "**/*.zip"],
 });

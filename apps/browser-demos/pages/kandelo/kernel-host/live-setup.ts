@@ -2,13 +2,24 @@
 // kandelo page is loaded (use `?mock=1` for MockKernelHost).
 
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { initServiceWorkerBridge } from "../../../lib/init/service-worker-bridge";
+import {
+  ensureServiceWorkerReady,
+  initServiceWorkerBridge,
+} from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
 import {
   COREUTILS_NAMES,
   populateShellBinaries,
   type BinaryDef,
 } from "../../../lib/init/shell-binaries";
+import { fetchSize } from "../../../lib/init/fetch-size";
+import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
+import {
+  WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_URL_MU_PLUGIN,
+  wordpressConfigTemplate,
+  type WordPressDatabaseKind,
+} from "../../../lib/init/wordpress-runtime-config";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -22,6 +33,15 @@ import {
   type DemoPresentation,
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import {
+  KANDELO_DEMO_CONFIG_PATH,
+  parseKandeloDemoConfig,
+  resolveDemoAssets,
+  resolveDemoGuide,
+  resolveDemoPresentation,
+  type DemoAssetConfig,
+  type KandeloDemoConfig,
+} from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { PRESET_LIBRARY } from "../fixtures";
 
 import kernelWasmUrl from "@kernel-wasm?url";
@@ -56,7 +76,6 @@ import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
-import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 
 const DEFAULT_SOFTWARE_MANIFEST_URLS = [
   "https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v11/gallery.json",
@@ -113,23 +132,142 @@ type SoftwareProfile = {
 
 const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
+const HTTP_PORT = 8080;
 
-type LiveDemoId =
+class BootSuperseded extends Error {
+  constructor() {
+    super("boot superseded");
+  }
+}
+
+type LiveVfsImage =
   | "shell"
   | "node"
   | "nginx"
   | "nginx-php"
-  | "wordpress-sqlite"
-  | "wordpress-mariadb"
-  | "doom";
+  | "wordpress"
+  | "lamp";
+
+type ShellProfile = "default" | "node";
+type InitEnvProfile = "service" | "wordpress";
+
+interface LiveProfileSpec {
+  image: LiveVfsImage;
+  shell?: ShellProfile;
+  includeNodeUtility?: boolean;
+  memoryPages?: number;
+  maxVfsByteLength?: number;
+  network?: boolean;
+  features?: string[];
+  init?: {
+    argv: string[];
+    env?: InitEnvProfile;
+    cwd?: string;
+    maxWorkers?: number;
+    maxMemoryPages?: number;
+    web?: { requiredPorts: number[] };
+  };
+}
+
+const VFS_URLS: Record<LiveVfsImage, string> = {
+  shell: shellVfsUrl,
+  node: nodeVfsUrl,
+  nginx: nginxVfsUrl,
+  "nginx-php": nginxPhpVfsUrl,
+  wordpress: wordpressVfsUrl,
+  lamp: lampVfsUrl,
+};
+
+const DINIT_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"];
+
+const LIVE_DEMO_IDS = [
+  "shell",
+  "node",
+  "nginx",
+  "nginx-php",
+  "wordpress-sqlite",
+  "wordpress-mariadb",
+  "doom",
+] as const;
+
+type LiveDemoId = typeof LIVE_DEMO_IDS[number];
+
+const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
+  shell: {
+    image: "shell",
+  },
+  node: {
+    image: "node",
+    shell: "node",
+    includeNodeUtility: true,
+    memoryPages: 4096,
+    network: true,
+  },
+  nginx: {
+    image: "nginx",
+    network: true,
+    init: {
+      argv: DINIT_ARGV,
+      env: "service",
+      maxWorkers: 6,
+      web: { requiredPorts: [HTTP_PORT] },
+    },
+  },
+  "nginx-php": {
+    image: "nginx-php",
+    network: true,
+    init: {
+      argv: DINIT_ARGV,
+      env: "service",
+      maxWorkers: 8,
+      web: { requiredPorts: [HTTP_PORT] },
+    },
+  },
+  "wordpress-sqlite": {
+    image: "wordpress",
+    network: true,
+    init: {
+      argv: DINIT_ARGV,
+      env: "wordpress",
+      maxWorkers: 8,
+      maxMemoryPages: 4096,
+      web: { requiredPorts: [HTTP_PORT] },
+    },
+  },
+  "wordpress-mariadb": {
+    image: "lamp",
+    memoryPages: 4096,
+    maxVfsByteLength: 512 * 1024 * 1024,
+    network: true,
+    init: {
+      argv: DINIT_ARGV,
+      env: "wordpress",
+      maxWorkers: 10,
+      maxMemoryPages: 4096,
+      web: { requiredPorts: [HTTP_PORT, 3306] },
+    },
+  },
+  doom: {
+    image: "shell",
+    features: ["framebuffer"],
+  },
+};
+
+const DEMO_ALIASES: Record<string, LiveDemoId> = {
+  wordpress: "wordpress-sqlite",
+  lamp: "wordpress-mariadb",
+};
 
 interface LiveProfile {
-  id: LiveDemoId;
+  id: string;
   vfsUrl: string;
   software?: SoftwareProfile;
   descriptor: BootDescriptor;
-  presentation: DemoPresentation;
+  shell: ShellProfile;
+  includeNodeUtility: boolean;
+  maxVfsByteLength: number;
   autoCommand?: string;
+  fallbackPresentation?: DemoPresentation;
   init?: {
     argv: string[];
     env?: string[];
@@ -138,7 +276,7 @@ interface LiveProfile {
     maxMemoryPages?: number;
     web?: { label: string; requiredPorts: number[] };
   };
-  framebuffer?: "doom" | "test";
+  framebufferTest: boolean;
 }
 
 interface WebReadinessState {
@@ -150,8 +288,7 @@ const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
-const HTTP_PORT = 8080;
-const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
+const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
@@ -208,9 +345,17 @@ const SERVICE_ENV: string[] = [
   "SSL_CERT_DIR=/etc/ssl/certs",
 ];
 
-const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
+const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
+  default: { env: SHELL_ENV, cwd: "/home" },
+  node: { env: NODE_SHELL_ENV, cwd: "/work" },
+};
 
-export type FbDemo = "none" | "test" | "doom";
+const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
+  service: () => SERVICE_ENV,
+  wordpress: () => [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
+};
+
+export type FbDemo = "none" | "test";
 
 export interface CreateLiveHostOptions {
   demo?: string | null;
@@ -220,31 +365,98 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<LiveKernelHost> {
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
-  const galleryItems = await loadLiveGalleryItems();
+  let serviceWorkerReady: Promise<ServiceWorker> | null = null;
+  const localGalleryItems = liveGalleryItems();
 
   const host = new LiveKernelHost({
     status: "booting",
     descriptor: descriptorFor("shell"),
-    galleryItems,
+    galleryItems: localGalleryItems,
     applyBootDescriptor: async (desc, h) => {
-      const seq = ++bootSeq;
-      try {
-        if (currentKernel) {
-          await currentKernel.destroy().catch(() => {});
-          currentKernel = null;
-        }
-        currentKernel = await bootProfile(h, profileFor(desc.id, "none"), desc, seq);
-      } catch (err) {
-        currentKernel = null;
-        h.detachKernel();
-        showBootError(h, desc, err);
-      }
+      await startBoot(h, profileFor(desc.id, "none"), desc);
     },
   });
 
-  const initialId = normalizeDemoId(opts.demo) ?? (opts.fb === "doom" ? "doom" : "shell");
-  currentKernel = await bootProfile(host, profileFor(initialId, opts.fb), descriptorFor(initialId), ++bootSeq);
+  const requireServiceWorker = (tick?: (msg: string) => void) => {
+    if (!serviceWorkerReady) {
+      tick?.("preparing service worker...");
+      serviceWorkerReady = ensureServiceWorkerReady(SW_URL)
+        .then(async (controller) => {
+          if (window.crossOriginIsolated) {
+            sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+            return controller;
+          }
+
+          if (sessionStorage.getItem(COI_RELOAD_SESSION_KEY) === "1") {
+            sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+            throw new Error(
+              "Kandelo could not enable cross-origin isolation after the service worker became active. " +
+              "Reload the page; if this persists, clear site data for this site and check whether a browser extension is blocking service workers or COOP/COEP headers.",
+            );
+          }
+
+          sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
+          tick?.("service worker active; reloading to enable cross-origin isolation...");
+          window.location.reload();
+          await new Promise<never>((_, reject) => {
+            window.setTimeout(() => {
+              reject(new Error(
+                "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
+              ));
+            }, 5_000);
+          });
+        })
+        .catch((err) => {
+          serviceWorkerReady = null;
+          throw err;
+        });
+    }
+    return serviceWorkerReady;
+  };
+
+  const initialId = normalizeDemoId(opts.demo) ?? "shell";
+  void startBoot(host, profileFor(initialId, opts.fb), descriptorFor(initialId));
+  void requireServiceWorker()
+    .then(() => refreshSoftwareGallery(host, localGalleryItems))
+    .catch((err) => {
+      console.warn("Service worker gate failed before gallery refresh:", err);
+      host.setGalleryItems(localGalleryItems);
+    });
   return host;
+
+  async function startBoot(
+    h: LiveKernelHost,
+    profile: LiveProfile,
+    descriptor: BootDescriptor,
+  ): Promise<void> {
+    const seq = ++bootSeq;
+    const previousKernel = currentKernel;
+    currentKernel = null;
+    if (previousKernel) {
+      await previousKernel.destroy().catch(() => {});
+    }
+    h.detachKernel();
+
+    try {
+      const kernel = await bootProfile(
+        h,
+        profile,
+        descriptor,
+        () => seq === bootSeq,
+        requireServiceWorker,
+      );
+      if (seq !== bootSeq) {
+        await kernel.destroy().catch(() => {});
+        return;
+      }
+      currentKernel = kernel;
+    } catch (err) {
+      if (err instanceof BootSuperseded || seq !== bootSeq) return;
+      currentKernel = null;
+      h.detachKernel();
+      showBootError(h, descriptor, err);
+    }
+  }
 }
 
 function showBootError(
@@ -255,6 +467,7 @@ function showBootError(
   const message = err instanceof Error ? err.message : String(err);
   host.clearDmesg();
   host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setDescriptor(descriptor);
   host.setPresentation({
     bootPrimary: "syslog",
@@ -294,106 +507,69 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       vfsUrl: software.vfsArchiveUrl,
       software,
       descriptor: desc,
-      presentation: software.presentation ?? {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer",
-      },
+      shell: "default",
+      includeNodeUtility: false,
+      maxVfsByteLength: 256 * 1024 * 1024,
       autoCommand: software.autoCommand,
+      fallbackPresentation: software.presentation,
       init: software.init,
+      framebufferTest: false,
     };
   }
 
   const normalized = normalizeDemoId(id) ?? "shell";
+  const spec = LIVE_PROFILE_SPECS[normalized];
   const desc = descriptorFor(normalized);
-  const presentation = presentationFor(normalized);
-  const dinit = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"];
-  switch (normalized) {
-    case "node":
-      return {
-        id: "node",
-        vfsUrl: nodeVfsUrl,
-        descriptor: desc,
-        presentation,
-      };
-    case "nginx":
-      return {
-        id: "nginx",
-        vfsUrl: nginxVfsUrl,
-        descriptor: desc,
-        presentation,
-        init: {
-          argv: dinit,
-          env: SERVICE_ENV,
-          maxWorkers: 6,
-          web: { label: "nginx", requiredPorts: [HTTP_PORT] },
-        },
-      };
-    case "nginx-php":
-      return {
-        id: "nginx-php",
-        vfsUrl: nginxPhpVfsUrl,
-        descriptor: desc,
-        presentation,
-        init: {
-          argv: dinit,
-          env: SERVICE_ENV,
-          maxWorkers: 12,
-          maxMemoryPages: 4096,
-          web: { label: "nginx + PHP", requiredPorts: [HTTP_PORT] },
-        },
-      };
-    case "wordpress-sqlite":
-      return {
-        id: "wordpress-sqlite",
-        vfsUrl: wordpressVfsUrl,
-        descriptor: desc,
-        presentation,
-        init: {
-          argv: dinit,
-          env: [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
-          maxWorkers: 12,
-          maxMemoryPages: 4096,
-          web: { label: "WordPress SQLite", requiredPorts: [HTTP_PORT] },
-        },
-      };
-    case "wordpress-mariadb":
-      return {
-        id: "wordpress-mariadb",
-        vfsUrl: lampVfsUrl,
-        descriptor: desc,
-        presentation,
-        init: {
-          argv: dinit,
-          env: [...SERVICE_ENV, `WP_APP_PATH=${APP_PATH}`, `WP_PROTO=${PROTO}`],
-          maxWorkers: 16,
-          maxMemoryPages: 4096,
-          web: { label: "WordPress MariaDB", requiredPorts: [HTTP_PORT, 3306] },
-        },
-      };
-    case "doom":
-      return { id: "doom", vfsUrl: shellVfsUrl, descriptor: desc, presentation, framebuffer: "doom" };
-    case "shell":
-    default:
-      return {
-        id: "shell",
-        vfsUrl: shellVfsUrl,
-        descriptor: desc,
-        presentation,
-        framebuffer: fb === "test" ? "test" : undefined,
-      };
-  }
+  return {
+    id: normalized,
+    vfsUrl: VFS_URLS[spec.image],
+    descriptor: desc,
+    shell: spec.shell ?? "default",
+    includeNodeUtility: spec.includeNodeUtility ?? false,
+    maxVfsByteLength: spec.maxVfsByteLength ?? 256 * 1024 * 1024,
+    init: spec.init && {
+      argv: spec.init.argv.slice(),
+      env: initEnv(spec.init.env),
+      cwd: spec.init.cwd,
+      maxWorkers: spec.init.maxWorkers,
+      maxMemoryPages: spec.init.maxMemoryPages,
+      web: spec.init.web && {
+        label: desc.title,
+        requiredPorts: spec.init.web.requiredPorts.slice(),
+      },
+    },
+    framebufferTest: fb === "test",
+  };
+}
+
+function initEnv(profile: InitEnvProfile | undefined): string[] | undefined {
+  if (!profile) return undefined;
+  return INIT_ENV_PROFILES[profile]();
+}
+
+function shellEnvFor(profile: ShellProfile): string[] {
+  return SHELL_PROFILES[profile].env;
+}
+
+function shellCwdFor(profile: ShellProfile): string {
+  return SHELL_PROFILES[profile].cwd;
 }
 
 async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
   requestedDescriptor: BootDescriptor,
-  seq: number,
+  isCurrent: () => boolean,
+  requireServiceWorker: (tick?: (msg: string) => void) => Promise<ServiceWorker>,
 ): Promise<BrowserKernel> {
+  const assertCurrent = () => {
+    if (!isCurrent()) throw new BootSuperseded();
+  };
+
+  assertCurrent();
   host.clearDmesg();
   host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setDescriptor({
     ...profile.descriptor,
     title: requestedDescriptor.title || profile.descriptor.title,
@@ -401,27 +577,32 @@ async function bootProfile(
       ? requestedDescriptor.packages
       : profile.descriptor.packages,
   });
-  host.setPresentation(profile.presentation);
   host.setStatus("booting");
 
   let t = 0;
   const tick = (msg: string) => {
+    if (!isCurrent()) return;
     host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
   };
 
+  await requireServiceWorker(tick);
+  assertCurrent();
+
+  tick("service worker active and cross-origin isolated");
   tick(`loading ${profile.id} profile...`);
   const [kernelBytes, vfsBytes, bashBytes, dashBytes, lazyBinaries, softwareBinaries] = await Promise.all([
     fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((r) => r.arrayBuffer()),
     loadVfsImageBytes(profile),
     fetch(bashWasmUrl).then(failOn("bash.wasm")).then((r) => r.arrayBuffer()),
     fetch(dashWasmUrl).then(failOn("dash.wasm")).then((r) => r.arrayBuffer()),
-    loadShellUtilityDefs(profile.id === "node"),
+    loadShellUtilityDefs(profile.includeNodeUtility),
     loadSoftwareBinaries(profile.software),
   ]);
+  assertCurrent();
 
   tick(`kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`);
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
-    maxByteLength: profile.id === "wordpress-mariadb" ? 512 * 1024 * 1024 : 256 * 1024 * 1024,
+    maxByteLength: profile.maxVfsByteLength,
   });
   if (
     profile.id === "nginx-php" ||
@@ -430,131 +611,119 @@ async function bootProfile(
   ) {
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
   }
-  memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+  if (profile.id === "wordpress-sqlite") {
+    patchWordPressRuntimeConfig(memfs, "sqlite");
+  } else if (profile.id === "wordpress-mariadb") {
+    patchWordPressRuntimeConfig(memfs, "mariadb");
+  }
+  memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
+  const imageConfig = readImageConfig(memfs);
+  const presentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
+    ?? profile.fallbackPresentation
+    ?? null;
+  if (presentation) host.setPresentation(presentation);
+  host.setDemoGuide(imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null);
+  const assets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
+  await stageConfiguredAssets(memfs, assets, tick);
+  assertCurrent();
 
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
   const webReadiness: WebReadinessState = { ready: false, probing: false };
-  const kernel = new BrowserKernel({
-    memfs,
-    maxWorkers: profile.init?.maxWorkers ?? 4,
-    maxMemoryPages: profile.init?.maxMemoryPages,
-    onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
-    onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
-    onProcessEvent: (event) => host.emitProcessEvent(event),
-    onListenTcp: (_pid, _fd, port) => {
-      seenPorts.add(port);
-      tick(`service listening on :${port}`);
-      maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
-    },
-  });
-  await kernel.init(kernelBytes);
-
-  tick("staging shell utilities...");
-  stageShellUtilities(kernel, dashBytes, bashBytes, lazyBinaries);
-  stageSoftwareBinaries(kernel, softwareBinaries);
-  await registerFbPrograms(kernel);
-  host.attachKernel(kernel);
-  const shellEnv = profile.software?.shellEnv ?? (profile.id === "node" ? NODE_SHELL_ENV : SHELL_ENV);
-  host.setDefaultShell({
-    programBytes: bashBytes,
-    argv: ["bash", "-l", "-i"],
-    env: shellEnv,
-    cwd: profile.id === "node" ? "/work" : "/home",
-  });
-
-  if (profile.init?.web) {
-    tick("initializing HTTP bridge...");
-    host.setWebPreview({
-      label: profile.init.web.label,
-      url: APP_PREFIX,
-      status: "starting",
-      message: "Waiting for service ports",
+  let kernel: BrowserKernel | null = null;
+  try {
+    kernel = new BrowserKernel({
+      memfs,
+      maxWorkers: profile.init?.maxWorkers ?? 4,
+      maxMemoryPages: profile.init?.maxMemoryPages,
+      onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
+      onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
+      onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
+      onListenTcp: (_pid, _fd, port) => {
+        if (!isCurrent()) return;
+        seenPorts.add(port);
+        tick(`service listening on :${port}`);
+        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+      },
     });
-    const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
-    if (!swBridge) {
+    await kernel.init(kernelBytes);
+    assertCurrent();
+
+    tick("staging shell utilities...");
+    stageShellUtilities(kernel, dashBytes, bashBytes, lazyBinaries);
+    stageSoftwareBinaries(kernel, softwareBinaries);
+    await registerFramebufferTestProgram(kernel);
+    assertCurrent();
+    host.attachKernel(kernel);
+    const shellEnv = profile.software?.shellEnv ?? shellEnvFor(profile.shell);
+    host.setDefaultShell({
+      programBytes: bashBytes,
+      argv: ["bash", "-l", "-i"],
+      env: shellEnv,
+      cwd: shellCwdFor(profile.shell),
+    });
+
+    if (profile.init?.web) {
+      tick("initializing HTTP bridge...");
       host.setWebPreview({
         label: profile.init.web.label,
         url: APP_PREFIX,
-        status: "error",
-        message: "Service workers unavailable",
+        status: "starting",
+        message: "Waiting for service ports",
       });
-    } else {
-      kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
-      bridgeSent = true;
-      setupBridgeRestoreListener(kernel, HTTP_PORT, tick);
+      const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
+      assertCurrent();
+      if (!swBridge) {
+        host.setWebPreview({
+          label: profile.init.web.label,
+          url: APP_PREFIX,
+          status: "error",
+          message: "Service workers unavailable",
+        });
+      } else {
+        kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
+        bridgeSent = true;
+        setupBridgeRestoreListener(kernel, HTTP_PORT, tick);
+      }
     }
-  }
 
-  if (profile.init) {
-    const initBytes = readVfsFile(memfs, profile.init.argv[0]);
-    tick(`spawning ${profile.init.argv[0]}...`);
-    void kernel.spawn(initBytes, profile.init.argv, {
-      env: profile.init.env,
-      cwd: profile.init.cwd ?? "/",
-    }).then(
-      (code) => tick(`${profile.init?.argv[0] ?? "init"} exited with code ${code}`),
-      (err) => tick(`init failed: ${err instanceof Error ? err.message : String(err)}`),
-    );
-  }
+    if (profile.init) {
+      const initBytes = readVfsFile(memfs, profile.init.argv[0]);
+      tick(`spawning ${profile.init.argv[0]}...`);
+      void kernel.spawn(initBytes, profile.init.argv, {
+        env: profile.init.env,
+        cwd: profile.init.cwd ?? "/",
+      }).then(
+        (code) => tick(`${profile.init?.argv[0] ?? "init"} exited with code ${code}`),
+        (err) => tick(`init failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }
 
-  if (profile.framebuffer === "doom") {
-    await stageDoomWad(kernel, tick);
-  }
-
-  if (seq >= 0) {
     host.setStatus("running");
-  }
-  maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
 
-  if (profile.framebuffer === "test") {
-    void spawnLazy(kernel, "/usr/local/bin/fbtest", ["fbtest"], tick);
-  } else if (profile.framebuffer === "doom") {
-    tick("starting Doom from bash...");
-    void host.runShellCommand(profile.presentation.autoCommand ?? DOOM_COMMAND).catch((err) => {
-      tick(`doom command failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  } else if (profile.autoCommand) {
-    tick(`running ${profile.autoCommand}...`);
-    void host.runShellCommand(profile.autoCommand).catch((err) => {
-      tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }
+    if (profile.framebufferTest) {
+      void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
+    } else if (presentation?.autoCommand) {
+      tick("starting configured command from bash...");
+      void host.runShellCommand(presentation.autoCommand).catch((err) => {
+        tick(`configured command failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    } else if (profile.autoCommand) {
+      tick(`running ${profile.autoCommand}...`);
+      void host.runShellCommand(profile.autoCommand).catch((err) => {
+        tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
 
-  tick("ready");
-  return kernel;
-}
-
-function presentationFor(id: LiveDemoId): DemoPresentation {
-  switch (id) {
-    case "doom":
-      return {
-        bootPrimary: "syslog",
-        runningPrimary: ["framebuffer", "terminal", "syslog"],
-        terminalAccess: "drawer",
-        internalsAccess: "drawer",
-        autoCommand: DOOM_COMMAND,
-      };
-    case "nginx":
-    case "nginx-php":
-    case "wordpress-sqlite":
-    case "wordpress-mariadb":
-      return {
-        bootPrimary: "syslog",
-        runningPrimary: ["web", "terminal", "syslog"],
-        terminalAccess: "drawer",
-        internalsAccess: "drawer",
-      };
-    case "shell":
-    case "node":
-    default:
-      return {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer",
-      };
+    tick("ready");
+    return kernel;
+  } catch (err) {
+    if (kernel && !isCurrent()) {
+      await kernel.destroy().catch(() => {});
+    }
+    throw err;
   }
 }
 
@@ -572,6 +741,20 @@ function stageShellUtilities(
   try { kernel.fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
 }
 
+function patchWordPressRuntimeConfig(
+  fs: MemoryFileSystem,
+  kind: WordPressDatabaseKind,
+): void {
+  writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
+  writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate(kind));
+  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
+    WORDPRESS_URL_MU_PLUGIN,
+  );
+}
+
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
   if (!profile.software) {
     return fetch(profile.vfsUrl).then(failOn(`${profile.id}.vfs.zst`)).then((r) => r.arrayBuffer());
@@ -580,10 +763,9 @@ async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
     profile.software.vfsArchiveUrl,
     profile.software.vfsArtifactPath,
   );
-  return vfsImage.buffer.slice(
-    vfsImage.byteOffset,
-    vfsImage.byteOffset + vfsImage.byteLength,
-  );
+  const copy = new Uint8Array(vfsImage.byteLength);
+  copy.set(vfsImage);
+  return copy.buffer;
 }
 
 async function loadSoftwareBinaries(
@@ -687,11 +869,8 @@ async function loadShellUtilityDefs(includeNode: boolean): Promise<BinaryDef[]> 
     .filter((d) => d.size > 0);
 }
 
-async function registerFbPrograms(kernel: BrowserKernel): Promise<void> {
-  const probes = [
-    { path: "/usr/local/bin/fbdoom", url: fbdoomWasmUrl },
-    { path: "/usr/local/bin/fbtest", url: fbtestWasmUrl },
-  ];
+async function registerFramebufferTestProgram(kernel: BrowserKernel): Promise<void> {
+  const probes = [{ path: "/usr/local/bin/fbtest", url: fbtestWasmUrl }];
   ensureDirRecursive(kernel.fs, "/usr/local/bin");
   const sizes = await Promise.all(probes.map((p) => fetchSize(p.url)));
   const entries = probes
@@ -700,38 +879,51 @@ async function registerFbPrograms(kernel: BrowserKernel): Promise<void> {
   if (entries.length > 0) kernel.registerLazyFiles(entries);
 }
 
-async function stageDoomWad(kernel: BrowserKernel, tick: (msg: string) => void): Promise<void> {
-  tick("staging /doom1.wad...");
-  try {
-    const url = import.meta.env.DEV
-      ? `/cors-proxy?url=${encodeURIComponent(DOOM_WAD_URL)}`
-      : DOOM_WAD_URL;
-    const wadBytes = await fetch(url).then(failOn("doom1.wad")).then((r) => r.arrayBuffer());
-    writeVfsBinary(kernel.fs, "/doom1.wad", new Uint8Array(wadBytes), 0o644);
-  } catch (err) {
-    tick(`doom1.wad stage failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
 async function spawnLazy(
   kernel: BrowserKernel,
   path: string,
+  url: string,
   argv: string[],
   tick: (msg: string) => void,
 ): Promise<void> {
-  const fetchUrl = path === "/usr/local/bin/fbdoom" ? fbdoomWasmUrl
-    : path === "/usr/local/bin/fbtest" ? fbtestWasmUrl
-    : "";
-  if (!fetchUrl) return;
   try {
     tick(`fetching ${argv[0]}...`);
-    const bytes = await fetch(fetchUrl).then(failOn(argv[0])).then((r) => r.arrayBuffer());
+    const bytes = await fetch(url).then(failOn(argv[0])).then((r) => r.arrayBuffer());
     tick(`spawning ${argv[0]}...`);
     await kernel.spawn(bytes, argv, { env: SHELL_ENV });
     tick(`${argv[0]} exited`);
   } catch (err) {
     tick(`${argv[0]} failed: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+async function stageConfiguredAssets(
+  fs: MemoryFileSystem,
+  assets: DemoAssetConfig[],
+  tick: (msg: string) => void,
+): Promise<void> {
+  for (const asset of assets) {
+    tick(`staging ${asset.path}...`);
+    const url = asset.devCorsProxy && import.meta.env.DEV
+      ? `/cors-proxy?url=${encodeURIComponent(asset.url)}`
+      : asset.url;
+    const buffer: ArrayBuffer = await fetch(url).then(failOn(asset.path)).then((r) => r.arrayBuffer());
+    const bytes = new Uint8Array(buffer);
+    if (asset.sha256) {
+      const digest = await sha256Hex(buffer);
+      if (digest !== asset.sha256) {
+        throw new Error(`${asset.path} sha256 mismatch: expected ${asset.sha256}, got ${digest}`);
+      }
+    }
+    writeVfsBinary(fs, asset.path, bytes, asset.mode ?? 0o644);
+  }
+}
+
+async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function maybeMarkWebReady(
@@ -847,11 +1039,15 @@ function setupBridgeRestoreListener(
   });
 }
 
-function descriptorFor(id: LiveDemoId): BootDescriptor {
-  const item = SOFTWARE_PROFILES.has(id)
-    ? liveGalleryItems().find((p) => p.id === "shell")!
-    : liveGalleryItems().find((p) => p.id === id) ?? liveGalleryItems()[0];
+function descriptorFor(id: string): BootDescriptor {
   const software = SOFTWARE_PROFILES.get(id);
+  const normalized = software ? "shell" : normalizeDemoId(id) ?? "shell";
+  const spec = LIVE_PROFILE_SPECS[normalized];
+  const item = software
+    ? liveGalleryItems().find((p) => p.id === "shell")!
+    : liveGalleryItems().find((p) => p.id === normalized) ?? liveGalleryItems()[0];
+  const shell = spec.shell ?? "default";
+  const network = software ? false : spec.network ?? false;
   return {
     version: 1,
     id: software?.id ?? item.id,
@@ -860,8 +1056,13 @@ function descriptorFor(id: LiveDemoId): BootDescriptor {
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
-      memoryPages: id === "wordpress-mariadb" || id === "node" || software ? 4096 : 2048,
-      features: ["shared-array-buffer", "pty", ...(item.id === "doom" ? ["framebuffer"] : []), ...(item.id === "shell" || item.id === "doom" || software ? [] : ["tcp-bridge"])],
+      memoryPages: software ? 4096 : spec.memoryPages ?? 2048,
+      features: [
+        "shared-array-buffer",
+        "pty",
+        ...(spec.features ?? []),
+        ...(network ? ["tcp-bridge"] : []),
+      ],
       time: "real",
     },
     packages: software ? [] : item.packages,
@@ -871,13 +1072,13 @@ function descriptorFor(id: LiveDemoId): BootDescriptor {
     ],
     boot: {
       argv: software ? ["bash", "-l", "-i"] : item.bootCommand,
-      cwd: item.id === "node" ? "/work" : "/home",
-      env: Object.fromEntries((software?.shellEnv ?? (item.id === "node" ? NODE_SHELL_ENV : SHELL_ENV)).map((kv) => {
+      cwd: shellCwdFor(shell),
+      env: Object.fromEntries((software?.shellEnv ?? shellEnvFor(shell)).map((kv) => {
         const idx = kv.indexOf("=");
         return [kv.slice(0, idx), kv.slice(idx + 1)];
       })),
     },
-    caps: { network: item.id !== "shell" && item.id !== "doom" && !software },
+    caps: { network },
   };
 }
 
@@ -895,13 +1096,16 @@ function liveGalleryItems(): GalleryItem[] {
   }));
 }
 
-async function loadLiveGalleryItems(): Promise<GalleryItem[]> {
-  const localItems = liveGalleryItems();
+async function refreshSoftwareGallery(
+  host: LiveKernelHost,
+  localItems: GalleryItem[],
+): Promise<void> {
   try {
-    return [...localItems, ...await loadKandeloSoftwareGalleryItems()];
+    const softwareItems = await loadKandeloSoftwareGalleryItems();
+    host.setGalleryItems([...localItems, ...softwareItems]);
   } catch (err) {
     console.warn("Could not load kandelo-software gallery entries:", err);
-    return localItems;
+    host.setGalleryItems(localItems);
   }
 }
 
@@ -1235,22 +1439,42 @@ function glyphForSoftwareEntry(entry: SoftwareGalleryEntry): string {
 }
 
 function normalizeDemoId(id: string | null | undefined): LiveDemoId | null {
-  switch (id) {
-    case "shell":
-    case "node":
-    case "nginx":
-    case "nginx-php":
-    case "wordpress-sqlite":
-    case "wordpress-mariadb":
-    case "doom":
-      return id;
-    case "wordpress":
-      return "wordpress-sqlite";
-    case "lamp":
-      return "wordpress-mariadb";
-    default:
-      return null;
+  if (!id) return null;
+  const normalized = DEMO_ALIASES[id] ?? id;
+  return isLiveDemoId(normalized) ? normalized : null;
+}
+
+function isLiveDemoId(id: string): id is LiveDemoId {
+  return Object.hasOwn(LIVE_PROFILE_SPECS, id);
+}
+
+function readImageConfig(fs: MemoryFileSystem): KandeloDemoConfig | null {
+  const json = readOptionalVfsText(fs, KANDELO_DEMO_CONFIG_PATH);
+  if (json === null) return null;
+  const config = parseKandeloDemoConfig(json);
+  if (!config) {
+    throw new Error(`VFS image has unsupported ${KANDELO_DEMO_CONFIG_PATH} version`);
   }
+  return config;
+}
+
+function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null {
+  try {
+    return new TextDecoder().decode(new Uint8Array(readVfsFile(fs, path)));
+  } catch (err) {
+    if (isMissingVfsPath(err)) return null;
+    throw err;
+  }
+}
+
+function isMissingVfsPath(err: unknown): boolean {
+  if (typeof err === "object" && err !== null) {
+    const code = (err as { code?: unknown }).code;
+    if (code === -2 || code === "ENOENT") return true;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  if (/\bENOENT\b/.test(message)) return true;
+  return message.includes("No such file or directory");
 }
 
 function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
@@ -1267,16 +1491,6 @@ function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
     return out.buffer.slice(out.byteOffset, out.byteOffset + off);
   } finally {
     fs.close(fd);
-  }
-}
-
-async function fetchSize(url: string): Promise<number> {
-  try {
-    const resp = await fetch(url, { method: "HEAD" });
-    if (!resp.ok) return 0;
-    return Number(resp.headers.get("content-length") ?? 0) || 0;
-  } catch {
-    return 0;
   }
 }
 

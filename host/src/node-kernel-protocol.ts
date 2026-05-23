@@ -5,7 +5,14 @@
  * - No SharedArrayBuffer VFS (Node uses real filesystem via NodePlatformIO)
  * - No worker entry URLs (Node uses NodeWorkerAdapter)
  * - No pipe/inject/bridge operations (TCP bridging is automatic via NodePlatformIO)
+ *
+ * The `http_request` message is a host-driven HTTP request injected
+ * straight into an in-kernel server's accept queue, bypassing real TCP.
+ * See docs/plans/2026-04-30-external-kernel-http-request-interface.md.
  */
+import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+
+export type { HttpRequest, HttpResponse };
 
 // ── Main Thread → Kernel Worker ──
 
@@ -133,6 +140,19 @@ export interface DrainSyscallTraceMessage {
   requestId: number;
 }
 
+/** Send an HTTP request to a server running in the kernel and wait for the
+ *  response. Reply arrives as a `response` message whose `result` is an
+ *  {@link HttpResponse}, or with `error` set if no listener was found. */
+export interface HttpRequestMessage {
+  type: "http_request";
+  requestId: number;
+  /** Port the in-kernel server is listening on. */
+  port: number;
+  request: HttpRequest;
+  /** Optional timeout in ms (default 60_000). */
+  timeoutMs?: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -147,7 +167,8 @@ export type MainToKernelMessage =
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
-  | DrainSyscallTraceMessage;
+  | DrainSyscallTraceMessage
+  | HttpRequestMessage;
 
 // ── Kernel Worker → Main Thread ──
 

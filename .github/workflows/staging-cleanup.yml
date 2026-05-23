@@ -3,7 +3,9 @@ name: Staging cleanup
 # Deletes pr-<NNN>-staging pre-releases when the corresponding PR
 # closes (merged or abandoned), and deletes same-repo branches for
 # merged `ready-to-ship` PRs. A daily cron + manual dispatch sweep up
-# orphans (webhook misses, workflow failures during the close event).
+# orphans (webhook misses, workflow failures during the close event,
+# and PRs merged by GITHUB_TOKEN actions whose follow-on events are
+# intentionally suppressed by GitHub Actions).
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.3.
 
@@ -21,7 +23,7 @@ jobs:
     permissions:
       contents: write
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Delete pr-${{ github.event.pull_request.number }}-staging
         run: |
@@ -64,6 +66,9 @@ jobs:
             exit 0
           fi
 
+          git init --quiet "$RUNNER_TEMP/branch-cleanup"
+          cd "$RUNNER_TEMP/branch-cleanup"
+
           REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           remote_sha=$(git ls-remote "$REMOTE" "refs/heads/$HEAD_REF" | awk '{print $1}')
           if [ -n "$remote_sha" ]; then
@@ -88,7 +93,7 @@ jobs:
       contents: write
       pull-requests: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Sweep orphan pr-*-staging tags
         run: |
@@ -118,6 +123,9 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          git init --quiet "$RUNNER_TEMP/branch-cleanup"
+          cd "$RUNNER_TEMP/branch-cleanup"
+
           REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
           delete_branch() {
