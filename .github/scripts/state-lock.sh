@@ -35,8 +35,27 @@ ref_for_subject() {
   echo "refs/heads/github-actions/state-lock/$1"
 }
 
+git_auth_header() {
+  local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [ -z "$token" ]; then
+    return 1
+  fi
+
+  printf 'AUTHORIZATION: basic %s' \
+    "$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
+}
+
+git_remote() {
+  local header
+  if header="$(git_auth_header 2>/dev/null)"; then
+    git -c "http.https://github.com/.extraheader=$header" "$@"
+  else
+    git "$@"
+  fi
+}
+
 remote_lock_sha() {
-  git ls-remote origin "$LOCK_REF" | awk '{print $1}'
+  git_remote ls-remote origin "$LOCK_REF" | awk '{print $1}'
 }
 
 state_file_path() {
@@ -114,7 +133,7 @@ load_lock_state() {
 
 delete_lock_if_unchanged() {
   local expected_sha="$1"
-  git push \
+  git_remote push \
     --force-with-lease="$LOCK_REF:$expected_sha" \
     origin ":$LOCK_REF" >/dev/null 2>&1
 }
@@ -130,7 +149,7 @@ probe_push_access() {
     lease="--force-with-lease=$LOCK_REF:"
   fi
 
-  if output="$(git push --dry-run "$lease" origin "$probe_sha:$LOCK_REF" 2>&1)"; then
+  if output="$(git_remote push --dry-run "$lease" origin "$probe_sha:$LOCK_REF" 2>&1)"; then
     return 0
   fi
 
@@ -147,7 +166,7 @@ probe_push_access() {
 
 lock_message_for() {
   local lock_sha="$1"
-  git fetch --no-tags --depth=1 origin "$LOCK_REF" >/dev/null 2>&1
+  git_remote fetch --no-tags --depth=1 origin "$LOCK_REF" >/dev/null 2>&1
   git log -1 --format=%B "$lock_sha"
 }
 
@@ -233,7 +252,7 @@ acquire() {
     local lock_sha
     lock_sha="$(create_lock_commit)"
 
-    if git push origin "$lock_sha:$LOCK_REF" >/dev/null 2>&1; then
+    if git_remote push origin "$lock_sha:$LOCK_REF" >/dev/null 2>&1; then
       write_lock_state "$LOCK_REF" "$lock_sha"
       echo "Acquired state lock $LOCK_REF (subject=$SUBJECT) at $lock_sha."
       return 0
