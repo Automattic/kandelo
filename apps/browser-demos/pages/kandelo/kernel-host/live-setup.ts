@@ -12,6 +12,14 @@ import {
   populateShellBinaries,
   type BinaryDef,
 } from "../../../lib/init/shell-binaries";
+import { fetchSize } from "../../../lib/init/fetch-size";
+import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
+import {
+  WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_URL_MU_PLUGIN,
+  wordpressConfigTemplate,
+  type WordPressDatabaseKind,
+} from "../../../lib/init/wordpress-runtime-config";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -603,7 +611,12 @@ async function bootProfile(
   ) {
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
   }
-  memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+  if (profile.id === "wordpress-sqlite") {
+    patchWordPressRuntimeConfig(memfs, "sqlite");
+  } else if (profile.id === "wordpress-mariadb") {
+    patchWordPressRuntimeConfig(memfs, "mariadb");
+  }
+  memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
   const imageConfig = readImageConfig(memfs);
   const presentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
     ?? profile.fallbackPresentation
@@ -726,6 +739,20 @@ function stageShellUtilities(
   populateShellBinaries(kernel, dashBytes, lazyBinaries);
   writeVfsBinary(kernel.fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
   try { kernel.fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
+}
+
+function patchWordPressRuntimeConfig(
+  fs: MemoryFileSystem,
+  kind: WordPressDatabaseKind,
+): void {
+  writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
+  writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate(kind));
+  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
+    WORDPRESS_URL_MU_PLUGIN,
+  );
 }
 
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
@@ -1464,16 +1491,6 @@ function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
     return out.buffer.slice(out.byteOffset, out.byteOffset + off);
   } finally {
     fs.close(fd);
-  }
-}
-
-async function fetchSize(url: string): Promise<number> {
-  try {
-    const resp = await fetch(url, { method: "HEAD" });
-    if (!resp.ok) return 0;
-    return Number(resp.headers.get("content-length") ?? 0) || 0;
-  } catch {
-    return 0;
   }
 }
 
