@@ -28,6 +28,7 @@ import {
   STRUCT_SIZE_WASM_STAT,
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
+  SYSCALL_ARGS,
 } from "../src/generated/abi";
 
 const snapshot = JSON.parse(
@@ -105,5 +106,7 @@ describe("generated host ABI bindings", () => {
     expect(STRUCT_SIZE_WASM_TIMESPEC).toBe(snapshot.marshalled_structs.WasmTimespec.size);
     expect(STRUCT_SIZE_WASM_POLL_FD).toBe(snapshot.marshalled_structs.WasmPollFd.size);
     expect(STRUCT_SIZE_WASM_STATFS).toBe(snapshot.marshalled_structs.WasmStatfs.size);
+
+    expect(SYSCALL_ARGS).toEqual(snapshot.syscall_arg_descriptors);
   });
 });

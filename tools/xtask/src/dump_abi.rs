@@ -10,6 +10,8 @@
 //!   * Marshalled repr(C) structs — offsets via `core::mem::offset_of!`
 //!   * [`wasm_posix_shared::abi`] — expected process globals, export
 //!     deny-lists, custom-section name
+//!   * [`wasm_posix_shared::host_abi`] — host adapter syscall marshalling
+//!     descriptors
 //!
 //! When `--kernel-wasm <path>` is provided, the snapshot also covers
 //! every export in the built kernel `.wasm` (after filtering through
@@ -331,9 +333,83 @@ fn render_ts_module() -> String {
             out.push_str(&format!("  {syscall:?}: {n},\n"));
         }
     }
-    out.push_str("} as const;\n");
+    out.push_str("} as const;\n\n");
+
+    out.push_str("export type SyscallArgDirection = \"in\" | \"out\" | \"inout\";\n\n");
+    out.push_str("export type SyscallArgSizeSpec =\n");
+    out.push_str("  | { type: \"cstring\" }\n");
+    out.push_str("  | { type: \"arg\"; argIndex: number; multiplier?: number; add?: number }\n");
+    out.push_str("  | { type: \"deref\"; argIndex: number }\n");
+    out.push_str("  | { type: \"fixed\"; size: number };\n\n");
+    out.push_str("export interface SyscallArgDesc {\n");
+    out.push_str("  argIndex: number;\n");
+    out.push_str("  direction: SyscallArgDirection;\n");
+    out.push_str("  size: SyscallArgSizeSpec;\n");
+    out.push_str("  copyRetvalAdd?: number;\n");
+    out.push_str("}\n\n");
+
+    out.push_str("export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {\n");
+    for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS {
+        out.push_str(&format!("  {}: [\n", entry.syscall_number));
+        for desc in entry.args {
+            out.push_str(&format!("    {},\n", ts_syscall_arg_desc(desc)));
+        }
+        out.push_str("  ],\n");
+    }
+    out.push_str("};\n");
 
     out
+}
+
+fn ts_syscall_arg_desc(desc: &shared::host_abi::SyscallArgDesc) -> String {
+    let mut s = format!(
+        "{{ argIndex: {}, direction: {:?}, size: {}",
+        desc.arg_index,
+        syscall_arg_direction_name(desc.direction),
+        ts_syscall_arg_size(desc.size)
+    );
+    if desc.copy_retval_add != 0 {
+        s.push_str(&format!(", copyRetvalAdd: {}", desc.copy_retval_add));
+    }
+    s.push_str(" }");
+    s
+}
+
+fn ts_syscall_arg_size(size: shared::host_abi::SyscallArgSize) -> String {
+    use shared::host_abi::SyscallArgSize;
+
+    match size {
+        SyscallArgSize::CString => "{ type: \"cstring\" }".into(),
+        SyscallArgSize::Arg {
+            arg_index,
+            multiplier,
+            add,
+        } => {
+            let mut s = format!("{{ type: \"arg\", argIndex: {arg_index}");
+            if multiplier != 1 {
+                s.push_str(&format!(", multiplier: {multiplier}"));
+            }
+            if add != 0 {
+                s.push_str(&format!(", add: {add}"));
+            }
+            s.push_str(" }");
+            s
+        }
+        SyscallArgSize::Deref { arg_index } => {
+            format!("{{ type: \"deref\", argIndex: {arg_index} }}")
+        }
+        SyscallArgSize::Fixed { size } => format!("{{ type: \"fixed\", size: {size} }}"),
+    }
+}
+
+fn syscall_arg_direction_name(direction: shared::host_abi::SyscallArgDirection) -> &'static str {
+    use shared::host_abi::SyscallArgDirection;
+
+    match direction {
+        SyscallArgDirection::In => "in",
+        SyscallArgDirection::Out => "out",
+        SyscallArgDirection::InOut => "inout",
+    }
 }
 
 /// Collect per-field (name, offset) from a repr(C) struct using
@@ -390,6 +466,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "host_intercepted_syscalls".into(),
         host_intercepted_syscalls(),
     );
+    root.insert("syscall_arg_descriptors".into(), syscall_arg_descriptors());
     root.insert("channel_status_codes".into(), channel_status_codes());
     root.insert("custom_sections".into(), custom_sections());
     root.insert(
@@ -672,6 +749,63 @@ fn host_intercepted_syscalls() -> Value {
     Value::Array(list)
 }
 
+fn syscall_arg_descriptors() -> Value {
+    let mut descriptors: JsonMap = BTreeMap::new();
+    for entry in shared::host_abi::SYSCALL_ARG_DESCRIPTORS {
+        let args = entry.args.iter().map(syscall_arg_desc_json).collect();
+        descriptors.insert(entry.syscall_number.to_string(), Value::Array(args));
+    }
+    Value::Object(descriptors.into_iter().collect())
+}
+
+fn syscall_arg_desc_json(desc: &shared::host_abi::SyscallArgDesc) -> Value {
+    let mut m: JsonMap = BTreeMap::new();
+    m.insert("argIndex".into(), json!(desc.arg_index));
+    m.insert(
+        "direction".into(),
+        json!(syscall_arg_direction_name(desc.direction)),
+    );
+    m.insert("size".into(), syscall_arg_size_json(desc.size));
+    if desc.copy_retval_add != 0 {
+        m.insert("copyRetvalAdd".into(), json!(desc.copy_retval_add));
+    }
+    Value::Object(m.into_iter().collect())
+}
+
+fn syscall_arg_size_json(size: shared::host_abi::SyscallArgSize) -> Value {
+    use shared::host_abi::SyscallArgSize;
+
+    let mut m: JsonMap = BTreeMap::new();
+    match size {
+        SyscallArgSize::CString => {
+            m.insert("type".into(), json!("cstring"));
+        }
+        SyscallArgSize::Arg {
+            arg_index,
+            multiplier,
+            add,
+        } => {
+            m.insert("type".into(), json!("arg"));
+            m.insert("argIndex".into(), json!(arg_index));
+            if multiplier != 1 {
+                m.insert("multiplier".into(), json!(multiplier));
+            }
+            if add != 0 {
+                m.insert("add".into(), json!(add));
+            }
+        }
+        SyscallArgSize::Deref { arg_index } => {
+            m.insert("type".into(), json!("deref"));
+            m.insert("argIndex".into(), json!(arg_index));
+        }
+        SyscallArgSize::Fixed { size } => {
+            m.insert("type".into(), json!("fixed"));
+            m.insert("size".into(), json!(size));
+        }
+    }
+    Value::Object(m.into_iter().collect())
+}
+
 fn channel_status_codes() -> Value {
     use shared::ChannelStatus::*;
     let mut list = Vec::new();
@@ -925,16 +1059,29 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 
     for key in old_obj.keys() {
         if !new_obj.contains_key(key) {
-            report.breaking.push(format!("removed top-level section {key:?}"));
+            report
+                .breaking
+                .push(format!("removed top-level section {key:?}"));
         }
     }
     for key in new_obj.keys() {
         if !old_obj.contains_key(key) {
-            report.breaking.push(format!("added top-level section {key:?}"));
+            if additive_top_level_section(key) {
+                report
+                    .additive
+                    .push(format!("added top-level section {key:?}"));
+            } else {
+                report
+                    .breaking
+                    .push(format!("added top-level section {key:?}"));
+            }
         }
     }
 
-    let mut keys: Vec<&String> = old_obj.keys().filter(|key| new_obj.contains_key(*key)).collect();
+    let mut keys: Vec<&String> = old_obj
+        .keys()
+        .filter(|key| new_obj.contains_key(*key))
+        .collect();
     keys.sort();
 
     for key in keys {
@@ -950,6 +1097,9 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "marshalled_structs" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            "syscall_arg_descriptors" => {
+                classify_additive_object_by_key(key, old_value, new_value, &mut report)?
+            }
             _ if old_value != new_value => {
                 report
                     .breaking
@@ -960,6 +1110,10 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
     }
 
     Ok(report)
+}
+
+fn additive_top_level_section(section: &str) -> bool {
+    matches!(section, "syscall_arg_descriptors")
 }
 
 fn classify_additive_object_by_key(
@@ -978,13 +1132,19 @@ fn classify_additive_object_by_key(
     for key in old_obj.keys() {
         match new_obj.get(key) {
             Some(new_value) if new_value == &old_obj[key] => {}
-            Some(_) => report.breaking.push(format!("changed {section} entry {key:?}")),
-            None => report.breaking.push(format!("removed {section} entry {key:?}")),
+            Some(_) => report
+                .breaking
+                .push(format!("changed {section} entry {key:?}")),
+            None => report
+                .breaking
+                .push(format!("removed {section} entry {key:?}")),
         }
     }
     for key in new_obj.keys() {
         if !old_obj.contains_key(key) {
-            report.additive.push(format!("added {section} entry {key:?}"));
+            report
+                .additive
+                .push(format!("added {section} entry {key:?}"));
         }
     }
 
@@ -1050,7 +1210,9 @@ where
     }
     for key in new_entries.keys() {
         if !old_entries.contains_key(key) {
-            report.additive.push(format!("added {section} entry {key:?}"));
+            report
+                .additive
+                .push(format!("added {section} entry {key:?}"));
         }
     }
 
@@ -1100,7 +1262,16 @@ mod tests {
             "syscalls": [
                 {"number": 1, "name": "Open"},
                 {"number": 2, "name": "Close"}
-            ]
+            ],
+            "syscall_arg_descriptors": {
+                "1": [
+                    {
+                        "argIndex": 0,
+                        "direction": "in",
+                        "size": {"type": "cstring"}
+                    }
+                ]
+            }
         })
     }
 
@@ -1125,10 +1296,33 @@ mod tests {
             "size": 16,
             "fields": []
         });
+        new["syscall_arg_descriptors"]["3"] = json!([
+            {
+                "argIndex": 1,
+                "direction": "out",
+                "size": {"type": "arg", "argIndex": 2}
+            }
+        ]);
 
         let report = classify_compat_change(&old, &new).unwrap();
         assert!(report.breaking.is_empty(), "{report:?}");
-        assert_eq!(report.additive.len(), 4);
+        assert_eq!(report.additive.len(), 5);
+    }
+
+    #[test]
+    fn adding_syscall_arg_descriptor_section_is_compatible() {
+        let mut old = base_snapshot();
+        old.as_object_mut()
+            .unwrap()
+            .remove("syscall_arg_descriptors");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"syscall_arg_descriptors\""]
+        );
     }
 
     #[test]
@@ -1152,6 +1346,19 @@ mod tests {
 
         let report = classify_compat_change(&old, &new).unwrap();
         assert_eq!(report.breaking, vec!["changed syscalls entry \"2\""]);
+    }
+
+    #[test]
+    fn changed_syscall_arg_descriptor_is_breaking() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["syscall_arg_descriptors"]["1"][0]["direction"] = json!("out");
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["changed syscall_arg_descriptors entry \"1\""]
+        );
     }
 
     #[test]

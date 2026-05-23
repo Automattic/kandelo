@@ -22,6 +22,9 @@ Anything that could make an old compiled binary misbehave against a new
 kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 
 - Removing, renaming, or reassigning a syscall number.
+- Changing an existing syscall argument descriptor used by the host for
+  pointer marshalling, including direction, size source, multipliers,
+  fixed byte lengths, or return-value copy adjustments.
 - Changing the channel header layout (field offsets or sizes in
   [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs)
   `channel` module).
@@ -56,6 +59,8 @@ not require an `ABI_VERSION` bump:
   kind, signature, type, mutability, and tracked value unchanged.
 - Adding a new marshalled struct name while leaving every existing
   marshalled struct layout unchanged.
+- Adding a syscall argument descriptor for a syscall that previously had
+  no descriptor, while leaving every existing descriptor unchanged.
 
 These additions still require regenerating and committing
 `abi/snapshot.json`. They do not permit older kernels to run newer
@@ -81,6 +86,9 @@ captures:
   layout shift.
 - `syscalls` — every syscall number for which `Syscall::from_u32`
   returns a named variant.
+- `syscall_arg_descriptors` — host marshalling descriptors for pointer
+  arguments, including direction, size source, size multipliers/additions,
+  fixed byte lengths, and any return-value-based copy-back adjustment.
 - `custom_sections` — names of wasm custom sections that participate in
   the ABI (currently `wasm-posix-abi` for the per-binary version).
 - `process_expected_globals` — globals every user process instance is

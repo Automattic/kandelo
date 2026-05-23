@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod host_abi;
+
 /// Kernel ABI version.
 ///
 /// This number is baked into every compiled user program (wasm custom section
