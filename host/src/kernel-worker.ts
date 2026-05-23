@@ -113,6 +113,12 @@ const SYS_WAITID = 288;
  * See libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
 const SYS_THREAD_CANCEL = 415;
 
+function exitCodeFromWaitStatus(waitStatus: number): number {
+  const signal = waitStatus & 0x7f;
+  if (signal !== 0) return 128 + signal;
+  return (waitStatus >> 8) & 0xff;
+}
+
 /** waitpid options */
 const WNOHANG = 1;
 const WNOWAIT = 0x1000000;
@@ -2561,9 +2567,9 @@ export class CentralizedKernelWorker {
       .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
     if (getExitStatus) {
       const exitStatus = getExitStatus(channel.pid);
-      if (exitStatus >= 0) {
-        const signum = exitStatus >= 128 ? exitStatus - 128 : 0;
-        const waitStatus = signum > 0 ? (signum & 0x7f) : ((exitStatus & 0xff) << 8);
+      if (exitStatus >= 128) {
+        const signum = exitStatus - 128;
+        const waitStatus = signum & 0x7f;
         this.handleProcessTerminated(channel, waitStatus);
         return;
       }
@@ -3890,11 +3896,11 @@ export class CentralizedKernelWorker {
       .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
     if (getExitStatus) {
       const exitStatus = getExitStatus(channel.pid);
-      if (exitStatus >= 0) {
+      if (exitStatus >= 128) {
         // Process was killed by a signal — encode as signal death wait status.
         // Exit status from deliver_pending_signals is 128+signum.
-        const signum = exitStatus >= 128 ? exitStatus - 128 : 0;
-        const waitStatus = signum > 0 ? (signum & 0x7f) : ((exitStatus & 0xff) << 8);
+        const signum = exitStatus - 128;
+        const waitStatus = signum & 0x7f;
         this.handleProcessTerminated(channel, waitStatus);
         return;
       }
@@ -6351,8 +6357,7 @@ export class CentralizedKernelWorker {
     // and waking it would cause the C code to continue executing.
     // onExit will terminate the worker.
     if (this.callbacks.onExit) {
-      const exitCode = waitStatus > 0xff ? (waitStatus >> 8) & 0xff : 128 + (waitStatus & 0x7f);
-      this.callbacks.onExit(exitingPid, exitCode);
+      this.callbacks.onExit(exitingPid, exitCodeFromWaitStatus(waitStatus));
     }
   }
 
@@ -6423,13 +6428,11 @@ export class CentralizedKernelWorker {
     const pids = Array.from(this.processes.keys());
     for (const pid of pids) {
       const status = getExitStatus(pid);
-      if (status < 0) continue;             // still alive
+      if (status < 128) continue;           // still alive, or normally exiting via SYS_EXIT
       if (this.hostReaped.has(pid)) continue; // already reaped this generation
 
-      const sigKilled = status >= 128 ? status - 128 : 0;
-      const waitStatus = sigKilled > 0
-        ? (sigKilled & 0x7f)
-        : ((status & 0xff) << 8);
+      const sigKilled = status - 128;
+      const waitStatus = sigKilled & 0x7f;
 
       // Cancel any pending blocking-syscall timers — the process is gone.
       const ps = this.pendingSleeps.get(pid);

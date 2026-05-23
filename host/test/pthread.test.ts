@@ -7,6 +7,8 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pthreadBinary = join(__dirname, "../../examples/test-pthread.wasm");
 const hasBinary = existsSync(pthreadBinary);
+const threadExitGroupBinary = join(__dirname, "../../examples/thread-exit-group.wasm");
+const hasThreadExitGroupBinary = existsSync(threadExitGroupBinary);
 
 describe.skipIf(!hasBinary)("pthread", () => {
   it("creates a thread that modifies shared state and returns a value", async () => {
@@ -19,5 +21,20 @@ describe.skipIf(!hasBinary)("pthread", () => {
     expect(stdout).toContain("joining thread");
     expect(stdout).toContain("PASS");
     expect(exitCode).toBe(0);
+  }, 30_000);
+});
+
+describe.skipIf(!hasThreadExitGroupBinary)("thread process exit", () => {
+  it("preserves exit(0) from a non-main thread while the main thread is blocked", async () => {
+    for (let i = 0; i < 10; i++) {
+      const { exitCode, stderr } = await runCentralizedProgram({
+        programPath: threadExitGroupBinary,
+        argv: ["thread-exit-group"],
+        timeout: 10_000,
+      });
+
+      expect(stderr).toBe("");
+      expect(exitCode).toBe(0);
+    }
   }, 30_000);
 });
