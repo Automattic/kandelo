@@ -48,7 +48,10 @@ git_auth_header() {
 git_remote() {
   local header
   if header="$(git_auth_header 2>/dev/null)"; then
-    git -c "http.https://github.com/.extraheader=$header" "$@"
+    git \
+      -c "http.https://github.com/.extraheader=" \
+      -c "http.https://github.com/.extraheader=$header" \
+      "$@"
   else
     git "$@"
   fi
