@@ -53,6 +53,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v13
         with:
           use-gha-cache: false
+          use-flakehub: false
 
       - name: Install Erlang/OTP for Erlang package builds
         uses: erlef/setup-beam@v1

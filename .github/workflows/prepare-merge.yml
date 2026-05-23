@@ -408,6 +408,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v13
         with:
           use-gha-cache: false
+          use-flakehub: false
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
@@ -636,6 +637,9 @@ jobs:
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Compute cache key
         # Mirrors `staging-build.yml`'s `toolchain-cache.key` formula
@@ -857,6 +861,9 @@ jobs:
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -1028,6 +1035,9 @@ jobs:
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -1222,6 +1232,9 @@ jobs:
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4

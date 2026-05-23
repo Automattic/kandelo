@@ -81,6 +81,7 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@v13
         with:
           use-gha-cache: false
+          use-flakehub: false
 
       - name: Prepare browser demo assets
         run: bash scripts/dev-shell.sh ./run.sh prepare-browser --allow-stale
