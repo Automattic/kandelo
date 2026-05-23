@@ -13,8 +13,11 @@
 # `--keep` preserves only the specific env vars CI workflows and
 # interactive use need. `HOME` is required because cargo/npm/git
 # all stash state under `~/`. The `INPUT_*` and `GITHUB_*` lists
-# carry workflow-context vars through (auth tokens, dispatch
-# inputs, ref/sha names). `CI`, `LOGNAME`, `USER` carry GHA-runner
+# carry workflow-context vars through (dispatch inputs, ref/sha names).
+# `GH_TOKEN` is kept for the GitHub CLI, while `GITHUB_TOKEN` is
+# intentionally not kept so Nix does not treat a repo-scoped Actions
+# token as a general-purpose token for public GitHub flake inputs.
+# `CI`, `LOGNAME`, `USER` carry GHA-runner
 # identity through to test scripts: `run-sortix-tests.sh` checks
 # `${CI:-}` to skip flaky tests, and musl's `getlogin()` reads
 # `LOGNAME`/`USER` (the os-test getlogin probe expects either a
@@ -54,7 +57,6 @@ exec nix develop \
     --keep INPUT_SKIP_TESTS \
     --keep INPUT_BUMP_LOCKFILE \
     --keep GH_TOKEN \
-    --keep GITHUB_TOKEN \
     --keep GITHUB_REPOSITORY \
     --keep GITHUB_REF \
     --keep GITHUB_REF_NAME \
