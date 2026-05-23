@@ -18,11 +18,12 @@ name: Staging build
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Serialize concurrent runs on the same PR so a slow build doesn't
-# step on a fresher push's run. cancel-in-progress: true means a new
-# push aborts an in-flight run — fine, the overlay is content-keyed.
+# step on a fresher push or label state. cancel-in-progress: true means
+# a new push/label event aborts an in-flight run — fine, the overlay is
+# content-keyed.
 concurrency:
   group: staging-build-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -55,11 +56,22 @@ jobs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
+      skip_staging_tests: ${{ steps.skip.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      - name: Detect staging test skip label
+        id: skip
+        run: |
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'skip-staging-tests') }}" = "true" ]; then
+            echo "skip_staging_tests=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::skip-staging-tests label present; staging-build will materialize artifacts and defer expensive tests to prepare-merge."
+          else
+            echo "skip_staging_tests=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Detect package staging scope
         id: scope
@@ -316,7 +328,8 @@ jobs:
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
       needs.change-scope.outputs.package_staging_required == 'false' &&
-      needs.change-scope.outputs.kernel == 'false'
+      needs.change-scope.outputs.kernel == 'false' &&
+      needs.change-scope.outputs.skip_staging_tests != 'true'
     runs-on: ubuntu-latest
     permissions:
       statuses: write
@@ -802,6 +815,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+      SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -876,7 +890,15 @@ jobs:
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
 
+      - name: Skip staging test suites
+        if: env.SKIP_STAGING_TESTS == 'true'
+        run: |
+          echo "skip-staging-tests label is present on this PR."
+          echo "staging-build validated preflight, toolchain cache, package matrix/builds, and binary materialization."
+          echo "Kernel/test program build, cargo tests, fork-instrument tests, vitest, libc-test, POSIX, and Sortix are deferred to prepare-merge."
+
       - name: Build kernel + test programs + install host deps
+        if: env.SKIP_STAGING_TESTS != 'true'
         # Test prereqs not shipped in the release archives: kernel.wasm
         # is built fresh (and copied into local-binaries/ where the
         # resolver finds it ahead of binaries/), as are programs/*.wasm
@@ -901,7 +923,9 @@ jobs:
           '
 
       - name: Run cargo tests (kernel unit tests)
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -909,7 +933,9 @@ jobs:
           '
 
       - name: Run fork-instrument tests
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -917,28 +943,36 @@ jobs:
           '
 
       - name: Run vitest (host integration tests)
+        if: env.SKIP_STAGING_TESTS != 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             cd host && npx vitest run
           '
 
       - name: Run libc-test conformance suite
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
-        if: needs.change-scope.outputs.kernel == 'true'
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
 
       - name: Post merge-gate success for kernel-only staging
         if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
           needs.change-scope.outputs.package_staging_required == 'false' &&
           needs.change-scope.outputs.kernel == 'true'
         run: |
