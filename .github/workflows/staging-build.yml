@@ -18,11 +18,12 @@ name: Staging build
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 # Serialize concurrent runs on the same PR so a slow build doesn't
-# step on a fresher push's run. cancel-in-progress: true means a new
-# push aborts an in-flight run — fine, the overlay is content-keyed.
+# step on a fresher push or label state. cancel-in-progress: true means
+# a new push/label event aborts an in-flight run — fine, the overlay is
+# content-keyed.
 concurrency:
   group: staging-build-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -51,13 +52,26 @@ jobs:
     permissions:
       contents: read
     outputs:
+      kernel: ${{ steps.scope.outputs.kernel }}
+      docs_only: ${{ steps.scope.outputs.docs_only }}
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
+      skip_staging_tests: ${{ steps.skip.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      - name: Detect staging test skip label
+        id: skip
+        run: |
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'skip-staging-tests') }}" = "true" ]; then
+            echo "skip_staging_tests=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::skip-staging-tests label present; staging-build will materialize artifacts and defer expensive tests to prepare-merge."
+          else
+            echo "skip_staging_tests=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Detect package staging scope
         id: scope
@@ -313,7 +327,9 @@ jobs:
     needs: [change-scope]
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.change-scope.outputs.package_staging_required == 'false'
+      needs.change-scope.outputs.package_staging_required == 'false' &&
+      needs.change-scope.outputs.kernel == 'false' &&
+      needs.change-scope.outputs.skip_staging_tests != 'true'
     runs-on: ubuntu-latest
     permissions:
       statuses: write
@@ -336,7 +352,8 @@ jobs:
     needs: [change-scope]
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
-      needs.change-scope.outputs.package_staging_required == 'true'
+      (needs.change-scope.outputs.package_staging_required == 'true' ||
+       needs.change-scope.outputs.kernel == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -758,11 +775,10 @@ jobs:
             || true
 
   test-gate:
-    # Runs the 5 test suites against the union of (matrix-built archives
-    # + durable release fallback). This is the test-before-publish
-    # safety property the legacy `build` job preserves today, hoisted up
-    # to the matrix level: a green test-gate is what blesses the
-    # subsequent publish (Task 6) of the matrix archives.
+    # Runs vitest against the union of (matrix-built archives + durable
+    # release fallback). Kernel/runtime changes also run the slow native
+    # and conformance suites; package-only changes skip those suites but
+    # still validate package behavior through vitest.
     #
     # Run even when some matrix entries failed. Per the design doc,
     # partial-matrix-failure is a real scenario the consumer side
@@ -775,18 +791,31 @@ jobs:
     # legitimately hit all package archives in pr-<N>-staging (because
     # the previous run published them) while still needing to validate
     # the gate itself, especially after workflow/test-gate fixes.
-    needs: [preflight, toolchain-cache, lib-matrix-build, matrix-build]
+    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build]
     if: |
       !cancelled() &&
-      needs.preflight.result == 'success' &&
       needs.toolchain-cache.result == 'success' &&
-      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+      (
+        (
+          needs.change-scope.outputs.package_staging_required == 'true' &&
+          needs.preflight.result == 'success' &&
+          (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+          (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+        ) ||
+        (
+          needs.change-scope.outputs.package_staging_required == 'false' &&
+          needs.change-scope.outputs.kernel == 'true'
+        )
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      statuses: write
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+      SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -822,7 +851,7 @@ jobs:
         # Each matrix entry uploaded one artifact named "<pkg>-<arch>"
         # containing one .tar.zst. The pattern excludes the
         # toolchain-sysroots helper artifact uploaded by toolchain-cache.
-        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
+        if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
         uses: actions/download-artifact@v4
         with:
           pattern: '*-wasm*'
@@ -840,24 +869,36 @@ jobs:
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
-      - name: Materialize binaries (per-package package.pr.toml overlay)
+      - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
-        # Walk the downloaded matrix artifacts (lib + prog) and write
-        # packages/registry/<pkg>/package.pr.toml file:// pointers via the
-        # shared scripts/materialize-pr-overlays.sh. Then run
-        # fetch-binaries to populate binaries/ symlinks for every
-        # package (matrix-built via overlay; durable release via
-        # package.toml's https:// for anything skipped by D3).
+        # Package-staging runs resolve against the PR staging release plus
+        # local file:// overlays for matrix-built archives. Kernel-only runs
+        # skip overlays entirely and resolve every package from the durable
+        # ABI release; the fresh kernel built below shadows kernel.wasm via
+        # local-binaries/.
         run: |
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
+          set -euo pipefail
+          if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
+            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
-            bash scripts/fetch-binaries.sh --allow-stale
-          '
+          else
+            ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
+            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
+          fi
+          echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+
+      - name: Skip staging test suites
+        if: env.SKIP_STAGING_TESTS == 'true'
+        run: |
+          echo "skip-staging-tests label is present on this PR."
+          echo "staging-build validated preflight, toolchain cache, package matrix/builds, and binary materialization."
+          echo "Kernel/test program build, cargo tests, fork-instrument tests, vitest, libc-test, POSIX, and Sortix are deferred to prepare-merge."
 
       - name: Build kernel + test programs + install host deps
+        if: env.SKIP_STAGING_TESTS != 'true'
         # Test prereqs not shipped in the release archives: kernel.wasm
         # is built fresh (and copied into local-binaries/ where the
         # resolver finds it ahead of binaries/), as are programs/*.wasm
@@ -882,6 +923,9 @@ jobs:
           '
 
       - name: Run cargo tests (kernel unit tests)
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -889,6 +933,9 @@ jobs:
           '
 
       - name: Run fork-instrument tests
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
@@ -896,22 +943,46 @@ jobs:
           '
 
       - name: Run vitest (host integration tests)
+        if: env.SKIP_STAGING_TESTS != 'true'
         run: |
           bash scripts/dev-shell.sh bash -c '
             cd host && npx vitest run
           '
 
       - name: Run libc-test conformance suite
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
 
       - name: Run Open POSIX Test Suite
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
 
       - name: Run Sortix os-test suite
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.kernel == 'true'
         run: |
           bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
+
+      - name: Post merge-gate success for kernel-only staging
+        if: |
+          env.SKIP_STAGING_TESTS != 'true' &&
+          needs.change-scope.outputs.package_staging_required == 'false' &&
+          needs.change-scope.outputs.kernel == 'true'
+        run: |
+          gh api -X POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
+            -f state=success \
+            -f context=merge-gate \
+            -f description="Kernel tests passed; package staging skipped." \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # publish / generate-index — REMOVED.
   #

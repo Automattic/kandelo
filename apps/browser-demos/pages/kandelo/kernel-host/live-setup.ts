@@ -2,13 +2,24 @@
 // kandelo page is loaded (use `?mock=1` for MockKernelHost).
 
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { initServiceWorkerBridge } from "../../../lib/init/service-worker-bridge";
+import {
+  ensureServiceWorkerReady,
+  initServiceWorkerBridge,
+} from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
 import {
   COREUTILS_NAMES,
   populateShellBinaries,
   type BinaryDef,
 } from "../../../lib/init/shell-binaries";
+import { fetchSize } from "../../../lib/init/fetch-size";
+import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
+import {
+  WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_URL_MU_PLUGIN,
+  wordpressConfigTemplate,
+  type WordPressDatabaseKind,
+} from "../../../lib/init/wordpress-runtime-config";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -26,6 +37,7 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
   resolveDemoAssets,
+  resolveDemoGuide,
   resolveDemoPresentation,
   type DemoAssetConfig,
   type KandeloDemoConfig,
@@ -276,6 +288,7 @@ const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
@@ -352,6 +365,7 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<LiveKernelHost> {
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
+  let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const localGalleryItems = liveGalleryItems();
 
   const host = new LiveKernelHost({
@@ -363,10 +377,51 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     },
   });
 
-  void refreshSoftwareGallery(host, localGalleryItems);
+  const requireServiceWorker = (tick?: (msg: string) => void) => {
+    if (!serviceWorkerReady) {
+      tick?.("preparing service worker...");
+      serviceWorkerReady = ensureServiceWorkerReady(SW_URL)
+        .then(async (controller) => {
+          if (window.crossOriginIsolated) {
+            sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+            return controller;
+          }
+
+          if (sessionStorage.getItem(COI_RELOAD_SESSION_KEY) === "1") {
+            sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+            throw new Error(
+              "Kandelo could not enable cross-origin isolation after the service worker became active. " +
+              "Reload the page; if this persists, clear site data for this site and check whether a browser extension is blocking service workers or COOP/COEP headers.",
+            );
+          }
+
+          sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
+          tick?.("service worker active; reloading to enable cross-origin isolation...");
+          window.location.reload();
+          await new Promise<never>((_, reject) => {
+            window.setTimeout(() => {
+              reject(new Error(
+                "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
+              ));
+            }, 5_000);
+          });
+        })
+        .catch((err) => {
+          serviceWorkerReady = null;
+          throw err;
+        });
+    }
+    return serviceWorkerReady;
+  };
 
   const initialId = normalizeDemoId(opts.demo) ?? "shell";
   void startBoot(host, profileFor(initialId, opts.fb), descriptorFor(initialId));
+  void requireServiceWorker()
+    .then(() => refreshSoftwareGallery(host, localGalleryItems))
+    .catch((err) => {
+      console.warn("Service worker gate failed before gallery refresh:", err);
+      host.setGalleryItems(localGalleryItems);
+    });
   return host;
 
   async function startBoot(
@@ -383,7 +438,13 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     h.detachKernel();
 
     try {
-      const kernel = await bootProfile(h, profile, descriptor, () => seq === bootSeq);
+      const kernel = await bootProfile(
+        h,
+        profile,
+        descriptor,
+        () => seq === bootSeq,
+        requireServiceWorker,
+      );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
         return;
@@ -406,6 +467,7 @@ function showBootError(
   const message = err instanceof Error ? err.message : String(err);
   host.clearDmesg();
   host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setDescriptor(descriptor);
   host.setPresentation({
     bootPrimary: "syslog",
@@ -498,6 +560,7 @@ async function bootProfile(
   profile: LiveProfile,
   requestedDescriptor: BootDescriptor,
   isCurrent: () => boolean,
+  requireServiceWorker: (tick?: (msg: string) => void) => Promise<ServiceWorker>,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -506,6 +569,7 @@ async function bootProfile(
   assertCurrent();
   host.clearDmesg();
   host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setDescriptor({
     ...profile.descriptor,
     title: requestedDescriptor.title || profile.descriptor.title,
@@ -521,6 +585,10 @@ async function bootProfile(
     host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
   };
 
+  await requireServiceWorker(tick);
+  assertCurrent();
+
+  tick("service worker active and cross-origin isolated");
   tick(`loading ${profile.id} profile...`);
   const [kernelBytes, vfsBytes, bashBytes, dashBytes, lazyBinaries, softwareBinaries] = await Promise.all([
     fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((r) => r.arrayBuffer()),
@@ -543,12 +611,18 @@ async function bootProfile(
   ) {
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
   }
-  memfs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+  if (profile.id === "wordpress-sqlite") {
+    patchWordPressRuntimeConfig(memfs, "sqlite");
+  } else if (profile.id === "wordpress-mariadb") {
+    patchWordPressRuntimeConfig(memfs, "mariadb");
+  }
+  memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
   const imageConfig = readImageConfig(memfs);
   const presentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
     ?? profile.fallbackPresentation
     ?? null;
   if (presentation) host.setPresentation(presentation);
+  host.setDemoGuide(imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null);
   const assets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
   await stageConfiguredAssets(memfs, assets, tick);
   assertCurrent();
@@ -665,6 +739,20 @@ function stageShellUtilities(
   populateShellBinaries(kernel, dashBytes, lazyBinaries);
   writeVfsBinary(kernel.fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
   try { kernel.fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
+}
+
+function patchWordPressRuntimeConfig(
+  fs: MemoryFileSystem,
+  kind: WordPressDatabaseKind,
+): void {
+  writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
+  writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate(kind));
+  ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
+    WORDPRESS_URL_MU_PLUGIN,
+  );
 }
 
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
@@ -1403,16 +1491,6 @@ function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
     return out.buffer.slice(out.byteOffset, out.byteOffset + off);
   } finally {
     fs.close(fd);
-  }
-}
-
-async function fetchSize(url: string): Promise<number> {
-  try {
-    const resp = await fetch(url, { method: "HEAD" });
-    if (!resp.ok) return 0;
-    return Number(resp.headers.get("content-length") ?? 0) || 0;
-  } catch {
-    return 0;
   }
 }
 

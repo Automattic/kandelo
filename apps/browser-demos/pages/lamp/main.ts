@@ -16,8 +16,14 @@ import { initServiceWorkerBridge } from "../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../lib/http-bridge";
 import { TerminalPanel } from "../../lib/init";
 import { PtyTerminal } from "../../lib/pty-terminal";
+import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
+import {
+  WORDPRESS_CONFIG_INIT_SCRIPT,
+  WORDPRESS_URL_MU_PLUGIN,
+  wordpressConfigTemplate,
+} from "../../lib/init/wordpress-runtime-config";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
+import { ensureDirRecursive, writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import "../../lib/terminal-panel.css";
@@ -289,10 +295,17 @@ async function start() {
     writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", PATCHED_BOOTSTRAP_SH);
     writeVfsFile(fs, "/etc/nginx/nginx.conf", PATCHED_NGINX_CONF);
     writeVfsFile(fs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+    writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
+    writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
+    ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
+    writeVfsFile(
+      fs,
+      "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
+      WORDPRESS_URL_MU_PLUGIN,
+    );
     // vim.zip + nethack.zip lazy archives store bare filenames as URLs;
-    // prepend the deployed base URL so fetch() resolves them on hosted
-    // builds (and at the dev server's base).
-    fs.rewriteLazyArchiveUrls((url) => import.meta.env.BASE_URL + url);
+    // map them to Vite-emitted asset URLs so hosted builds do not 404.
+    fs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
     const vfsImage = await fs.saveImage();
 
     appendLog("Initializing service worker bridge...\n", "info");

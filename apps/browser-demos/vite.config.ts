@@ -7,6 +7,7 @@ import react from "@vitejs/plugin-react";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
+const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
 
 const crossOriginIsolationHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -335,7 +336,7 @@ function injectCorsProxyUrl(): Plugin {
   return {
     name: "inject-cors-proxy-url",
     configResolved() {
-      corsProxyUrl = process.env.VITE_CORS_PROXY_URL || "";
+      corsProxyUrl = process.env.VITE_CORS_PROXY_URL ?? DEFAULT_CORS_PROXY_URL;
     },
     writeBundle(_, bundle) {
       // service-worker.js is in public/ and gets copied as-is to dist/
@@ -410,5 +411,5 @@ export default defineConfig({
   worker: {
     format: "es",
   },
-  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst"],
+  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst", "**/*.zip"],
 });

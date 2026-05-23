@@ -210,6 +210,47 @@ Any extra files needed by an image-declared `autoCommand` can be declared in
 `assets`; the loader stages those paths generically and hash-verifies them when
 `sha256` is provided.
 
+Images can also declare an optional `guide`. When `guide` is absent, Kandelo
+does not render a demo panel; this is the intended shape for demos where the
+primary surface is enough, such as WordPress and Doom. A guide can contain
+button groups, an editable shell script, and optional companion HTML:
+
+```json
+{
+  "version": 1,
+  "profiles": {
+    "node": {
+      "guide": {
+        "title": "Node.js demo",
+        "groups": [{
+          "title": "REPL",
+          "actions": [
+            {
+              "id": "enter-repl",
+              "label": "Open REPL",
+              "kind": "terminal.run",
+              "payload": "node"
+            },
+            {
+              "id": "send-expression",
+              "label": "Send expr",
+              "kind": "terminal.write",
+              "payload": "process.version\n"
+            }
+          ]
+        }]
+      }
+    }
+  }
+}
+```
+
+`terminal.run` sends a command through the persistent PTY-backed shell.
+`terminal.write` sends raw text to that PTY, which is useful for entering input
+into an already-running REPL. `guide.companion.srcDoc` runs in a sandboxed
+iframe and has no direct kernel access; it can only request parent-approved
+actions by posting `{ type: "kandelo.demoAction", actionId }`.
+
 When changing metadata for an existing package-backed image, bump that
 package's `build.toml` `revision` so published/fetched binaries are rebuilt.
 For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.

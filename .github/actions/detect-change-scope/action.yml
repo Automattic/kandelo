@@ -21,8 +21,9 @@ description: |
 
     package_staging_required — at least one changed file can affect
       package archive outputs or the package staging/publish machinery.
-      Browser demo app, CI workflow/action-only, and docs-only changes
-      do not set this flag.
+      Ordinary kernel/runtime changes do not set this flag unless they
+      bump `ABI_VERSION` or update committed ABI artifacts. Browser demo
+      app, CI workflow/action-only, and docs-only changes do not set it.
 
   vitest gates on `!docs_only` rather than on `kernel` — its 51 test
   files exercise built packages (dash, bash, nginx, erlang, php,
@@ -96,17 +97,24 @@ runs:
           fi
         fi
 
-        if ! files=$(git diff --name-only "$BASE_REF"...HEAD 2>/tmp/detect-change-scope.diff.err); then
+        diff_range="$BASE_REF...HEAD"
+        if ! files=$(git diff --name-only "$diff_range" 2>/tmp/detect-change-scope.diff.err); then
           echo "::warning::three-dot diff against $BASE_REF failed; falling back to two-dot diff"
           cat /tmp/detect-change-scope.diff.err >&2 || true
-          files=$(git diff --name-only "$BASE_REF"..HEAD)
+          diff_range="$BASE_REF..HEAD"
+          files=$(git diff --name-only "$diff_range")
         fi
         echo "Changed files vs $BASE_REF:"
         echo "$files" | sed 's/^/  /'
 
         action_dir="${GITHUB_ACTION_PATH:-.github/actions/detect-change-scope}"
         . "$action_dir/package-staging-paths.sh"
-        package_files=$(echo "$files" | package_staging_changed_files)
+        package_files=$(printf '%s\n' "$files" | package_staging_changed_files)
+        if printf '%s\n' "$files" | grep -qx 'crates/shared/src/lib.rs' &&
+           git diff -U0 "$diff_range" -- crates/shared/src/lib.rs \
+             | grep -E '^[+-][[:space:]]*pub const ABI_VERSION: u32 = [0-9]+' >/dev/null; then
+          package_files=$(printf '%s\n%s\n' "$package_files" 'crates/shared/src/lib.rs (ABI_VERSION)' | sed '/^$/d')
+        fi
         if [ -z "$files" ]; then
           echo 'package_staging_required=true' >> "$GITHUB_OUTPUT"
           echo 'package_staging_reason=Empty diff; package staging required as a fail-safe.' >> "$GITHUB_OUTPUT"

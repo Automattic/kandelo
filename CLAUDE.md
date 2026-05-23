@@ -328,6 +328,19 @@ Every PR that adds or changes user-facing features, APIs, or behavior must inclu
 
 Do not skip documentation. If a feature is worth implementing, it is worth documenting.
 
+### Kandelo Demo Metadata
+
+Built-in Kandelo demo presentation preferences belong in the VFS image, not in
+the Kandelo app loader. Write `/etc/kandelo/demo.json` with
+`writeKandeloDemoConfig()` from `images/vfs/scripts/kandelo-demo-config.ts` for
+preferred surfaces, `autoCommand`, and image-declared assets.
+
+It is OK for `demo.json` to be absent. The Kandelo app should use generic
+defaults in that case, not demo-specific fallbacks or conditionals. When
+changing metadata for an existing package-backed image, bump that package's
+`build.toml` `revision` so the image is rebuilt. See
+`docs/browser-support.md#kandelo-demo-metadata`.
+
 ## Key Directories
 
 - `crates/kernel/` — Rust kernel (no_std on wasm32)
