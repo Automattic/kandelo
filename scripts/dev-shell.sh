@@ -44,7 +44,8 @@ if [ $# -eq 0 ]; then
     exit 2
 fi
 
-exec nix develop \
+nix_develop=(
+    nix develop
     --ignore-environment \
     --keep HOME \
     --keep TERM \
@@ -86,3 +87,41 @@ exec nix develop \
     --keep WASM_POSIX_LLVM_DIR \
     --accept-flake-config \
     --command "$@"
+)
+
+is_transient_nix_fetch_failure() {
+    local log_file="$1"
+
+    # Nix already retries individual downloads quickly. Wrap the whole
+    # shell entry with slower backoff for short GitHub archive outages.
+    grep -Eq "unable to download 'https://(api\\.)?github\\.com/" "$log_file" &&
+        grep -Eq 'HTTP error 5[0-9][0-9]|This page is taking too long to load|Bad Gateway|Service Unavailable' "$log_file"
+}
+
+attempt=1
+max_attempts="${WASM_POSIX_DEV_SHELL_ATTEMPTS:-3}"
+delay=5
+
+while true; do
+    log_file="$(mktemp)"
+    set +e
+    "${nix_develop[@]}" 2>&1 | tee "$log_file"
+    rc="${PIPESTATUS[0]}"
+    set -e
+
+    if [ "$rc" -eq 0 ]; then
+        rm -f "$log_file"
+        exit 0
+    fi
+
+    if [ "$attempt" -ge "$max_attempts" ] || ! is_transient_nix_fetch_failure "$log_file"; then
+        rm -f "$log_file"
+        exit "$rc"
+    fi
+
+    echo "dev-shell.sh: transient GitHub flake fetch failure; retrying nix develop in ${delay}s (attempt ${attempt}/${max_attempts})." >&2
+    rm -f "$log_file"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+done
