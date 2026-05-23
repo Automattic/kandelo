@@ -214,6 +214,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
+      actions: read          # gh run list/watch for staging-build
+      checks: read           # gh pr checks reads check runs
+      contents: read         # gh pr view/checks repository metadata
       pull-requests: write     # drop label / comment on failure
       statuses: read
     env:
@@ -224,6 +227,44 @@ jobs:
       - name: Verify PR review state + required checks green
         id: gate
         run: |
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
           # reviewDecision values:
           #   APPROVED          — at least one approving review, branch
           #                       protection requires reviews
@@ -240,21 +281,21 @@ jobs:
           # Required-check failures are NEVER bypassable here — those
           # gate on objective signals.
           LABELER="${{ github.event.sender.login }}"
-          PERM=$(gh api "/repos/${{ github.repository }}/collaborators/${LABELER}/permission" -q .permission 2>/dev/null || echo "")
+          PERM=$(gh_retry gh api "/repos/${{ github.repository }}/collaborators/${LABELER}/permission" -q .permission)
           MAINTAINER=0
           case "$PERM" in
             admin|maintain) MAINTAINER=1 ;;
           esac
           echo "labeler=$LABELER permission=$PERM maintainer=$MAINTAINER"
 
-          REVIEW=$(gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
+          REVIEW=$(gh_retry gh pr view "$PR_NUMBER" --repo ${{ github.repository }} --json reviewDecision -q .reviewDecision)
           case "$REVIEW" in
             REVIEW_REQUIRED|CHANGES_REQUESTED)
               if [ "$MAINTAINER" = "1" ]; then
                 echo "::notice::review state $REVIEW; bypassed by maintainer ${LABELER}"
               else
-                gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-                gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}. (A maintainer — admin/maintain permission — can re-apply \`ready-to-ship\` to override.)"
+                gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+                gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: PR review state is ${REVIEW}. (A maintainer — admin/maintain permission — can re-apply \`ready-to-ship\` to override.)" || true
                 exit 1
               fi
               ;;
@@ -265,10 +306,10 @@ jobs:
           # NOT bypassable, even by maintainers — the workflow's own
           # post-publish tests gate the merge-gate status, and bypassing
           # pre-existing failed checks here would defeat that intent.
-          FAILING=$(gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
+          FAILING=$(gh_retry gh pr checks "$PR_NUMBER" --repo ${{ github.repository }} --json bucket -q '[.[] | select(.bucket == "fail")] | length')
           if [ "$FAILING" -gt 0 ]; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing."
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: $FAILING required check(s) failing." || true
             exit 1
           fi
 
@@ -281,6 +322,44 @@ jobs:
         # whose cache key still matches the selected synthetic merge tree,
         # while rebuilding entries whose merged-tree inputs changed.
         run: |
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
           # The label event can fire before staging-build's run is
           # registered against PR_HEAD_SHA. Retry briefly.
           #
@@ -292,7 +371,7 @@ jobs:
           # commit.
           RUN_ID=""
           for attempt in 1 2 3 4 5 6; do
-            RUN_ID=$(gh run list \
+            RUN_ID=$(gh_retry gh run list \
               --repo ${{ github.repository }} \
               --workflow=staging-build.yml \
               --commit="$PR_HEAD_SHA" \
@@ -304,24 +383,62 @@ jobs:
           done
 
           if [ -z "$RUN_ID" ]; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no non-skipped \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`."
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no non-skipped \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`." || true
             exit 1
           fi
 
           echo "Waiting for staging-build run $RUN_ID on $PR_HEAD_SHA…"
           # --exit-status: non-zero on failure/cancelled conclusion.
-          if ! gh run watch "$RUN_ID" --repo ${{ github.repository }} --exit-status; then
-            gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Re-apply \`ready-to-ship\` once it is green."
+          if ! gh_retry gh run watch "$RUN_ID" --repo ${{ github.repository }} --exit-status; then
+            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Re-apply \`ready-to-ship\` once it is green." || true
             exit 1
           fi
 
       - name: Drop label + comment on gate failure
         if: failure()
         run: |
-          gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge gate failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
+          gh_retry() {
+            local attempt=1
+            local max_attempts=4
+            local delay=2
+            local stdout_file
+            local stderr_file
+
+            stdout_file="$(mktemp)"
+            stderr_file="$(mktemp)"
+
+            while true; do
+              : >"$stdout_file"
+              : >"$stderr_file"
+
+              if "$@" >"$stdout_file" 2>"$stderr_file"; then
+                cat "$stdout_file"
+                rm -f "$stdout_file" "$stderr_file"
+                return 0
+              fi
+
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                cat "$stderr_file" >&2
+                if [ -s "$stdout_file" ]; then
+                  cat "$stdout_file" >&2
+                fi
+                rm -f "$stdout_file" "$stderr_file"
+                return "$rc"
+              fi
+
+              cat "$stderr_file" >&2
+              echo "::warning::GitHub command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+            done
+          }
+
+          gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+          gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge gate failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
 
   # ---------------------------------------------------------------------
   # Per-package matrix flow.
