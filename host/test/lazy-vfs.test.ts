@@ -72,6 +72,21 @@ describe("Lazy VFS files", () => {
     expect(entries.find(e => e.path === "/bin/b")!.size).toBe(200);
   });
 
+  it("rewriteLazyFileUrls updates lazy metadata without changing size", () => {
+    const mfs = createMemfs();
+    mfs.registerLazyFile("/bin/tool", "kandelo-lazy:programs/tool.wasm", 1234);
+
+    mfs.rewriteLazyFileUrls((url, path) => {
+      expect(path).toBe("/bin/tool");
+      return url.replace("kandelo-lazy:", "/assets/");
+    });
+
+    const [entry] = mfs.exportLazyEntries();
+    expect(entry.url).toBe("/assets/programs/tool.wasm");
+    expect(entry.size).toBe(1234);
+    expect(mfs.stat("/bin/tool").size).toBe(1234);
+  });
+
   it("importLazyEntries restores lazy metadata on another instance", () => {
     // Create first instance and register lazy files
     const sab = new SharedArrayBuffer(4 * 1024 * 1024);

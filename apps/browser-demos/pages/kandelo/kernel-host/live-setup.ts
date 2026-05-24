@@ -7,12 +7,7 @@ import {
   initServiceWorkerBridge,
 } from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
-import {
-  COREUTILS_NAMES,
-  populateShellBinaries,
-  type BinaryDef,
-} from "../../../lib/init/shell-binaries";
-import { fetchSize } from "../../../lib/init/fetch-size";
+import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
@@ -26,6 +21,10 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
+import {
+  NODE_LAZY_BINARY_SPEC,
+  shellLazyPlaceholderUrl,
+} from "../../../../../images/vfs/lib/init/shell-binaries";
 import { decompress as decompressZstd } from "fzstd";
 import {
   LiveKernelHost,
@@ -54,27 +53,6 @@ import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
-import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
-import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
-import sedWasmUrl from "@binaries/programs/wasm32/sed.wasm?url";
-import bcWasmUrl from "@binaries/programs/wasm32/bc.wasm?url";
-import fileWasmUrl from "@binaries/programs/wasm32/file/file.wasm?url";
-import lessWasmUrl from "@binaries/programs/wasm32/less.wasm?url";
-import m4WasmUrl from "@binaries/programs/wasm32/m4.wasm?url";
-import makeWasmUrl from "@binaries/programs/wasm32/make.wasm?url";
-import tarWasmUrl from "@binaries/programs/wasm32/tar.wasm?url";
-import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
-import wgetWasmUrl from "@binaries/programs/wasm32/wget.wasm?url";
-import gitWasmUrl from "@binaries/programs/wasm32/git/git.wasm?url";
-import gitRemoteHttpWasmUrl from "@binaries/programs/wasm32/git/git-remote-http.wasm?url";
-import gzipWasmUrl from "@binaries/programs/wasm32/gzip.wasm?url";
-import bzip2WasmUrl from "@binaries/programs/wasm32/bzip2.wasm?url";
-import xzWasmUrl from "@binaries/programs/wasm32/xz.wasm?url";
-import zstdWasmUrl from "@binaries/programs/wasm32/zstd.wasm?url";
-import zipWasmUrl from "@binaries/programs/wasm32/zip.wasm?url";
-import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
-import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
-import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
 
 const DEFAULT_SOFTWARE_MANIFEST_URLS = [
@@ -590,12 +568,11 @@ async function bootProfile(
 
   tick("service worker active and cross-origin isolated");
   tick(`loading ${profile.id} profile...`);
-  const [kernelBytes, vfsBytes, bashBytes, dashBytes, lazyBinaries, softwareBinaries] = await Promise.all([
+  const [kernelBytes, vfsBytes, bashBytes, dashBytes, softwareBinaries] = await Promise.all([
     fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((r) => r.arrayBuffer()),
     loadVfsImageBytes(profile),
     fetch(bashWasmUrl).then(failOn("bash.wasm")).then((r) => r.arrayBuffer()),
     fetch(dashWasmUrl).then(failOn("dash.wasm")).then((r) => r.arrayBuffer()),
-    loadShellUtilityDefs(profile.includeNodeUtility),
     loadSoftwareBinaries(profile.software),
   ]);
   assertCurrent();
@@ -617,6 +594,10 @@ async function bootProfile(
     patchWordPressRuntimeConfig(memfs, "mariadb");
   }
   memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
+  rewriteShellLazyFileUrls(memfs);
+  if (profile.includeNodeUtility) {
+    rewriteNodeLazyFileUrl(memfs);
+  }
   const imageConfig = readImageConfig(memfs);
   const presentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
     ?? profile.fallbackPresentation
@@ -651,9 +632,8 @@ async function bootProfile(
     assertCurrent();
 
     tick("staging shell utilities...");
-    stageShellUtilities(kernel, dashBytes, bashBytes, lazyBinaries);
+    stageShellUtilities(kernel, dashBytes, bashBytes);
     stageSoftwareBinaries(kernel, softwareBinaries);
-    await registerFramebufferTestProgram(kernel);
     assertCurrent();
     host.attachKernel(kernel);
     const shellEnv = profile.software?.shellEnv ?? shellEnvFor(profile.shell);
@@ -731,14 +711,21 @@ function stageShellUtilities(
   kernel: BrowserKernel,
   dashBytes: ArrayBuffer,
   bashBytes: ArrayBuffer,
-  lazyBinaries: BinaryDef[],
 ): void {
   ensureDirRecursive(kernel.fs, "/home");
   ensureDirRecursive(kernel.fs, "/bin");
   ensureDirRecursive(kernel.fs, "/usr/bin");
-  populateShellBinaries(kernel, dashBytes, lazyBinaries);
+  writeVfsBinary(kernel.fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
+  try { kernel.fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
+  try { kernel.fs.symlink("/bin/dash", "/usr/bin/dash"); } catch { /* exists */ }
+  try { kernel.fs.symlink("/bin/dash", "/usr/bin/sh"); } catch { /* exists */ }
   writeVfsBinary(kernel.fs, "/bin/bash", new Uint8Array(bashBytes), 0o755);
   try { kernel.fs.symlink("/bin/bash", "/usr/bin/bash"); } catch { /* exists */ }
+}
+
+function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
+  const placeholder = shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC);
+  fs.rewriteLazyFileUrls((url) => url === placeholder ? nodeWasmUrl : url);
 }
 
 function patchWordPressRuntimeConfig(
@@ -832,51 +819,6 @@ function extractTarFile(tarBytes: Uint8Array, wantedPath: string): Uint8Array | 
 
 function tarString(block: Uint8Array, offset: number, length: number): string {
   return tarDecoder.decode(block.subarray(offset, offset + length)).replace(/\0.*$/, "");
-}
-
-async function loadShellUtilityDefs(includeNode: boolean): Promise<BinaryDef[]> {
-  const defs: Array<Omit<BinaryDef, "size">> = [
-    ...(includeNode ? [{
-      url: nodeWasmUrl,
-      path: "/usr/bin/node",
-      symlinks: ["/bin/node", "/usr/local/bin/node"],
-    }] : []),
-    { url: coreutilsWasmUrl, path: "/bin/coreutils", symlinks: [...COREUTILS_NAMES, "["].flatMap((n) => [`/bin/${n}`, `/usr/bin/${n}`]) },
-    { url: grepWasmUrl, path: "/usr/bin/grep", symlinks: ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"] },
-    { url: sedWasmUrl, path: "/usr/bin/sed", symlinks: ["/bin/sed"] },
-    { url: bcWasmUrl, path: "/usr/bin/bc", symlinks: ["/bin/bc"] },
-    { url: fileWasmUrl, path: "/usr/bin/file", symlinks: ["/bin/file"] },
-    { url: lessWasmUrl, path: "/usr/bin/less", symlinks: ["/bin/less"] },
-    { url: m4WasmUrl, path: "/usr/bin/m4", symlinks: ["/bin/m4"] },
-    { url: makeWasmUrl, path: "/usr/bin/make", symlinks: ["/bin/make"] },
-    { url: tarWasmUrl, path: "/usr/bin/tar", symlinks: ["/bin/tar"] },
-    { url: curlWasmUrl, path: "/usr/bin/curl", symlinks: ["/bin/curl"] },
-    { url: wgetWasmUrl, path: "/usr/bin/wget", symlinks: ["/bin/wget"] },
-    { url: gitWasmUrl, path: "/usr/bin/git", symlinks: ["/bin/git"] },
-    { url: gitRemoteHttpWasmUrl, path: "/usr/bin/git-remote-http", symlinks: ["/usr/bin/git-remote-https", "/usr/bin/git-remote-ftp", "/usr/bin/git-remote-ftps"] },
-    { url: gzipWasmUrl, path: "/usr/bin/gzip", symlinks: ["/bin/gzip", "/usr/bin/gunzip", "/bin/gunzip", "/usr/bin/zcat", "/bin/zcat"] },
-    { url: bzip2WasmUrl, path: "/usr/bin/bzip2", symlinks: ["/bin/bzip2", "/usr/bin/bunzip2", "/bin/bunzip2", "/usr/bin/bzcat", "/bin/bzcat"] },
-    { url: xzWasmUrl, path: "/usr/bin/xz", symlinks: ["/bin/xz", "/usr/bin/unxz", "/bin/unxz", "/usr/bin/xzcat", "/bin/xzcat", "/usr/bin/lzma", "/bin/lzma", "/usr/bin/unlzma", "/bin/unlzma", "/usr/bin/lzcat", "/bin/lzcat"] },
-    { url: zstdWasmUrl, path: "/usr/bin/zstd", symlinks: ["/bin/zstd", "/usr/bin/unzstd", "/bin/unzstd", "/usr/bin/zstdcat", "/bin/zstdcat"] },
-    { url: zipWasmUrl, path: "/usr/bin/zip", symlinks: ["/bin/zip"] },
-    { url: unzipWasmUrl, path: "/usr/bin/unzip", symlinks: ["/bin/unzip", "/usr/bin/zipinfo", "/bin/zipinfo", "/usr/bin/funzip", "/bin/funzip"] },
-    { url: lsofWasmUrl, path: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
-    { url: nanoWasmUrl, path: "/usr/bin/nano", symlinks: ["/bin/nano"] },
-  ];
-  const sizes = await Promise.all(defs.map((d) => fetchSize(d.url)));
-  return defs
-    .map((d, i) => ({ ...d, size: sizes[i] }))
-    .filter((d) => d.size > 0);
-}
-
-async function registerFramebufferTestProgram(kernel: BrowserKernel): Promise<void> {
-  const probes = [{ path: "/usr/local/bin/fbtest", url: fbtestWasmUrl }];
-  ensureDirRecursive(kernel.fs, "/usr/local/bin");
-  const sizes = await Promise.all(probes.map((p) => fetchSize(p.url)));
-  const entries = probes
-    .map((p, i) => ({ ...p, size: sizes[i], mode: 0o755 }))
-    .filter((e) => e.size > 0);
-  if (entries.length > 0) kernel.registerLazyFiles(entries);
 }
 
 async function spawnLazy(

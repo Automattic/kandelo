@@ -299,6 +299,20 @@ export class MemoryFileSystem implements FileSystemBackend {
   }
 
   /**
+   * Rewrite the URL of every registered lazy file. Useful when a VFS image
+   * was built with placeholder URLs and the browser runtime needs to replace
+   * them with bundler-produced asset URLs.
+   */
+  rewriteLazyFileUrls(transform: (url: string, path: string) => string): void {
+    for (const [ino, entry] of this.lazyFiles) {
+      this.lazyFiles.set(ino, {
+        ...entry,
+        url: transform(entry.url, entry.path),
+      });
+    }
+  }
+
+  /**
    * Register a lazy archive group: creates stubs in SharedFS for every file
    * entry and records metadata so that accessing any one of them triggers a
    * single archive fetch that materializes all files in the group.

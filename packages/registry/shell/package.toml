@@ -6,6 +6,9 @@ kernel_abi = 7
 # build-{vim,nethack}-zip.sh helpers it drives:
 #
 #   - dash.wasm via `resolveBinary("programs/dash.wasm")`.
+#   - utility wasm files via SHELL_LAZY_BINARY_SPECS; the shell image
+#     stores lazy-file stubs and their final sizes so browser boot does
+#     not need runtime HEAD probes.
 #   - magic.lite via `cargo xtask build-deps resolve file` →
 #     `<file-cache-canonical>/magic.lite`. file's package.toml declares
 #     `magic.lite` as an output and build-file.sh stages it into
@@ -19,16 +22,41 @@ kernel_abi = 7
 #   - fbdoom.wasm via `resolveBinary("programs/fbdoom.wasm")`.
 #
 # Folding each dep's cache_key into ours via depends_on guarantees a
-# fresh shell archive whenever any of these inputs changes. The
+# fresh shell archive whenever any lazy binary or runtime input changes. The
 # build-{vim,nethack}-zip.sh helpers produce vim.zip and nethack.zip
 # on-the-fly during shell's source build using the resolver-provided
 # cache paths; those zips aren't published as part of vim/nethack's
 # release archives.
-depends_on = ["dash@0.5.12", "file@5.45", "vim@9.1.0900", "nethack@3.6.7", "fbdoom@0.1.0"]
+depends_on = [
+  "dash@0.5.12",
+  "coreutils@9.6",
+  "grep@3.11",
+  "sed@4.9",
+  "bc@1.07.1",
+  "file@5.45",
+  "less@668",
+  "m4@1.4.19",
+  "make@4.4.1",
+  "tar@1.35",
+  "curl@8.11.1",
+  "wget@1.25.0",
+  "git@2.47.1",
+  "gzip@1.13",
+  "bzip2@1.0.8",
+  "xz@5.6.2",
+  "zstd@1.5.6",
+  "zip@3.0",
+  "unzip@6.0",
+  "lsof@0.1.0",
+  "nano@8.0",
+  "vim@9.1.0900",
+  "nethack@3.6.7",
+  "fbdoom@0.1.0"
+]
 
 # Composite VFS image for the browser shell demo: dash binary,
-# coreutils/grep/sed symlinks, /etc system configs, magic database,
-# lazy-archive reference for vim. Built by
+# utility lazy-file stubs + symlinks, /etc system configs, magic database,
+# lazy-archive references for vim and nethack. Built by
 # images/vfs/scripts/build-shell-vfs-image.ts. The .vfs file is
 # wrapped (not double-compressed) inside the package-system .tar.zst
 # archive at archive-stage time.
