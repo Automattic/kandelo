@@ -1719,6 +1719,18 @@ pub mod oss {
     pub const SNDCTL_DSP_GETFMTS: u32 = 0x8004500b;
     /// `SNDCTL_DSP_SETFRAGMENT` — fragment-size hint. inout: i32.
     pub const SNDCTL_DSP_SETFRAGMENT: u32 = 0xc004500a;
+    /// `SNDCTL_DSP_GETOSPACE` — output buffer status. out: audio_buf_info.
+    pub const SNDCTL_DSP_GETOSPACE: u32 = 0x8010500c;
+    /// `SNDCTL_DSP_GETISPACE` — input buffer status. out: audio_buf_info.
+    pub const SNDCTL_DSP_GETISPACE: u32 = 0x8010500d;
+    /// `SNDCTL_DSP_GETCAPS` — device capability bitmask. out: i32.
+    pub const SNDCTL_DSP_GETCAPS: u32 = 0x8004500f;
+    /// `SNDCTL_DSP_GETTRIGGER` — active input/output triggers. out: i32.
+    pub const SNDCTL_DSP_GETTRIGGER: u32 = 0x80045010;
+    /// `SNDCTL_DSP_SETTRIGGER` — active input/output triggers. in: i32.
+    pub const SNDCTL_DSP_SETTRIGGER: u32 = 0x40045010;
+    /// `SNDCTL_DSP_SETDUPLEX` — enable duplex mode. No argument.
+    pub const SNDCTL_DSP_SETDUPLEX: u32 = 0x00005016;
 
     /// `AFMT_S16_LE` — signed 16-bit little-endian. The only format we accept.
     pub const AFMT_S16_LE: u32 = 0x10;

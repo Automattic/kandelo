@@ -6,6 +6,8 @@ export class EagainError extends Error {
   constructor() { super("EAGAIN"); }
 }
 
+const MSG_PEEK = 0x2;
+
 interface ConnectionState {
   hostname: string;
   ip: Uint8Array;
@@ -150,7 +152,7 @@ export class FetchNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  recv(handle: number, maxLen: number, _flags: number): Uint8Array {
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
 
@@ -171,7 +173,9 @@ export class FetchNetworkBackend implements NetworkIO {
     if (len === 0) return new Uint8Array(0);
 
     const result = conn.responseBuf.slice(conn.responseOffset, conn.responseOffset + len);
-    conn.responseOffset += len;
+    if ((flags & MSG_PEEK) === 0) {
+      conn.responseOffset += len;
+    }
     return result;
   }
 

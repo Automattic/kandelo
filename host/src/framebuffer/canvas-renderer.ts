@@ -92,8 +92,8 @@ export function attachCanvas(
 }
 
 /**
- * BGRA → RGBA channel swap. ~1MB per frame at 640×400 BGRA32; trivial
- * cost on any modern device. If profiling ever shows it's a bottleneck
+ * BGRA → RGBA channel swap. A 1280x960 BGRA32 frame is ~5MB; still modest
+ * for browser canvas presentation. If profiling ever shows it's a bottleneck
  * (it won't), upgrade to a WebGL texture upload that consumes BGRA
  * directly.
  */
