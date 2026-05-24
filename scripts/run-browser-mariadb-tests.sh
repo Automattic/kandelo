@@ -4,18 +4,18 @@ set -euo pipefail
 # Run MariaDB mysql-test suite in a headless browser via Playwright.
 #
 # Prerequisites:
-#   bash examples/libs/mariadb/build-mariadb.sh   # builds mariadbd + mysqltest
+#   bash packages/registry/mariadb/build-mariadb.sh   # builds mariadbd + mysqltest
 #   bash build.sh                                  # builds kernel wasm
-#   bash examples/browser/scripts/build-mariadb-test-vfs-image.sh  # builds test VFS image
+#   bash images/vfs/scripts/build-mariadb-test-vfs-image.sh  # builds test VFS image
 #
 # Usage:
 #   scripts/run-browser-mariadb-tests.sh              # run curated tests
 #   scripts/run-browser-mariadb-tests.sh test1 test2   # run specific tests
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-INSTALL_DIR="$REPO_ROOT/examples/libs/mariadb/mariadb-install"
+INSTALL_DIR="$REPO_ROOT/packages/registry/mariadb/mariadb-install"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
-VFS_IMAGE="$REPO_ROOT/examples/browser/public/mariadb-test.vfs"
+VFS_IMAGE="$REPO_ROOT/apps/browser-demos/public/mariadb-test.vfs.zst"
 RUNNER="$REPO_ROOT/scripts/browser-mariadb-test-runner.ts"
 
 # ── Curated tests (from full browser triage of all 1184 tests) ──
@@ -105,12 +105,12 @@ check_prereqs() {
     local missing=0
 
     if [ ! -f "$INSTALL_DIR/bin/mariadbd" ]; then
-        echo "ERROR: mariadbd not found. Run: bash examples/libs/mariadb/build-mariadb.sh" >&2
+        echo "ERROR: mariadbd not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
         missing=1
     fi
 
     if [ ! -f "$INSTALL_DIR/bin/mysqltest.wasm" ]; then
-        echo "ERROR: mysqltest.wasm not found. Run: bash examples/libs/mariadb/build-mariadb.sh" >&2
+        echo "ERROR: mysqltest.wasm not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
         missing=1
     fi
 
@@ -157,7 +157,7 @@ check_prereqs
 # Build test VFS image if missing
 if [ ! -f "$VFS_IMAGE" ]; then
     echo "Building test VFS image..."
-    bash "$REPO_ROOT/examples/browser/scripts/build-mariadb-test-vfs-image.sh"
+    bash "$REPO_ROOT/images/vfs/scripts/build-mariadb-test-vfs-image.sh"
 fi
 
 # Use curated tests if none specified

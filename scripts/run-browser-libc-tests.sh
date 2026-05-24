@@ -13,9 +13,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
-LIBC_TEST="$REPO_ROOT/libc-test"
-BUILD_DIR="$REPO_ROOT/libc-test/build"
+GLUE_DIR="$REPO_ROOT/libc/glue"
+LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
+BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures (same as Node.js version) ──────────────────
@@ -95,7 +95,7 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
+    -mllvm -wasm-use-legacy-eh=false
     -D_GNU_SOURCE
 )
 CFLAGS=("${CFLAGS_BASE[@]}" -I"$LIBC_TEST/src/common")
@@ -131,15 +131,13 @@ LINK_FLAGS=(
     -Wl,--export=__wasm_thread_init
 )
 
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
-asyncify_wasm() {
+instrument_wasm() {
     local wasm="$1"
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
+            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
     fi
 }
 
@@ -181,7 +179,7 @@ build_functional() {
     "$CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 build_regression() {
@@ -193,7 +191,7 @@ build_regression() {
     "$CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 build_math() {
@@ -208,7 +206,7 @@ build_math() {
         "$LIBC_TEST/src/common/mtest.c" \
         "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 # ── Main ───────────────────────────────────────────────────────────

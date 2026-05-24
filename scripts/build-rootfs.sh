@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build the canonical rootfs.vfs image from the top-level MANIFEST +
+# images/rootfs/ source tree, using the mkrootfs CLI under tools/mkrootfs/.
+# Output: host/wasm/rootfs.vfs (gitignored — built artifact).
+#
+# This is a Node.js/TypeScript invocation, not a wasm cross-compile,
+# so it does not need scripts/dev-shell.sh — only `node` and `npx`
+# from PATH (npx pulls tsx via the host package's devDeps).
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO_ROOT"
+
+# mkrootfs depends on the host package (file:../../host) for its VFS
+# writer + fzstd; install both trees if missing.
+if [ ! -d host/node_modules ]; then
+    echo "==> Installing host/ dependencies (needed by mkrootfs)..."
+    (cd host && npm install --prefer-offline --silent)
+fi
+if [ ! -d tools/mkrootfs/node_modules ]; then
+    echo "==> Installing tools/mkrootfs/ dependencies..."
+    (cd tools/mkrootfs && npm install --prefer-offline --silent)
+fi
+
+OUT="host/wasm/rootfs.vfs"
+mkdir -p "$(dirname "$OUT")"
+ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs)"
+if [ -z "$ABI_VERSION" ]; then
+    echo "ERROR: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    exit 1
+fi
+
+echo "==> Building rootfs.vfs from MANIFEST + images/rootfs/..."
+node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
+    -o "$OUT" \
+    --repo-root "$REPO_ROOT" \
+    --kernel-abi "$ABI_VERSION"
+
+SIZE=$(wc -c < "$OUT" | tr -d ' ')
+echo "==> Built $OUT ($SIZE bytes)"

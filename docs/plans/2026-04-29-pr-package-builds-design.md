@@ -8,7 +8,7 @@ Worktree: `.superset/worktrees/wasm-posix-kernel/package-management-for-pr-workf
 
 The package management system landed in PR #365 (and follow-ups #341, #347, #348, #352–#360, #361, #362). It publishes built `.tar.zst` archives to a single `binaries-abi-v<N>-YYYY-MM-DD` GitHub release; consumers pin via a top-level `binaries.lock` (release tag + manifest sha256). Today's release flow is human-driven:
 
-1. A PR bumps a package in `examples/libs/<name>/deps.toml` and merges to main (e.g. PR #371 publishing dinit).
+1. A PR bumps a package in `packages/registry/<name>/deps.toml` and merges to main (e.g. PR #371 publishing dinit).
 2. A maintainer manually runs `scripts/stage-release.sh` + `scripts/publish-release.sh` to cut a fresh `binaries-abi-v<N>-YYYY-MM-DD` release.
 3. A second PR bumps `binaries.lock` to the new release (e.g. PR #372).
 
@@ -64,7 +64,7 @@ The overlay is sparse: it lists only the package entries whose `cache_key_sha` d
 
 - `binaries.lock` schema is unchanged. It still pins `abi_version` + `release_tag` + `manifest_sha256`.
 - The release manifest (`manifest.json`) schema is unchanged. Staging manifests are valid release manifests; the staging release just happens to contain a subset of entries.
-- `examples/libs/<name>/deps.toml` is unchanged.
+- `packages/registry/<name>/deps.toml` is unchanged.
 
 ### §3.3 `.gitignore` addition
 
@@ -163,7 +163,7 @@ Daily sweep:
 
 ### §5.1 Author
 
-1. Edits `examples/libs/dinit/deps.toml` (bump version, swap source URL/sha) and any associated build script. Maybe edits code/tests in the same PR.
+1. Edits `packages/registry/dinit/deps.toml` (bump version, swap source URL/sha) and any associated build script. Maybe edits code/tests in the same PR.
 2. Locally: `cargo xtask build-deps build dinit` — resolver source-builds the new version into the local cache. Tests pass.
 3. Does **not** touch `binaries.lock` or `binaries.lock.pr`.
 4. Pushes to a same-repo branch and opens the PR.

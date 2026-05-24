@@ -1,4 +1,4 @@
-import type { StatResult } from "../types";
+import type { StatResult, StatfsResult } from "../types";
 
 export interface DirEntry {
   name: string;
@@ -22,6 +22,7 @@ export interface FileSystemBackend {
   // Path operations (paths are mount-relative, already resolved)
   stat(path: string): StatResult;
   lstat(path: string): StatResult;
+  statfs(path: string): StatfsResult;
   mkdir(path: string, mode: number): void;
   rmdir(path: string): void;
   unlink(path: string): void;

@@ -16,7 +16,7 @@ Add the missing errno value and new syscall enum variant to the shared types.
 
 **Files:**
 - Modify: `crates/shared/src/lib.rs`
-- Modify: `musl-overlay/arch/wasm32posix/bits/syscall.h.in`
+- Modify: `libc/musl-overlay/arch/wasm32posix/bits/syscall.h.in`
 
 **Changes to `crates/shared/src/lib.rs`:**
 
@@ -50,7 +50,7 @@ Add the missing errno value and new syscall enum variant to the shared types.
             140 => Some(Syscall::Getaddrinfo),
 ```
 
-**Changes to `musl-overlay/arch/wasm32posix/bits/syscall.h.in`:**
+**Changes to `libc/musl-overlay/arch/wasm32posix/bits/syscall.h.in`:**
 
 Add after the `__NR_fchdir` line (around line 296):
 
@@ -480,10 +480,10 @@ cargo test -p wasm-posix-kernel --target aarch64-apple-darwin
 Wire up the C glue layer to dispatch the new getaddrinfo syscall.
 
 **Files:**
-- Modify: `glue/syscall_glue.c`
-- Modify: `glue/syscall_imports.h`
+- Modify: `libc/glue/syscall_glue.c`
+- Modify: `libc/glue/syscall_imports.h`
 
-**Changes to `glue/syscall_imports.h`:**
+**Changes to `libc/glue/syscall_imports.h`:**
 
 Add in the Socket operations section:
 
@@ -493,7 +493,7 @@ int32_t kernel_getaddrinfo(const uint8_t *name_ptr, uint32_t name_len,
                            uint8_t *result_ptr);
 ```
 
-**Changes to `glue/syscall_glue.c`:**
+**Changes to `libc/glue/syscall_glue.c`:**
 
 Add the define:
 

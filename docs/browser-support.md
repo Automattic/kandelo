@@ -1,8 +1,10 @@
 # Browser Support
 
+> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**. See [`CLAUDE.md`](../CLAUDE.md#two-hosts-browser-and-nodejs--dual-host-parity-is-load-bearing) for the hard requirements. PR #388 (brk-base) and PR #410 (worker exit message) both shipped one-sided fixes that left the browser demo broken for users; those are the failure modes this rule exists to prevent.
+
 ## Overview
 
-The wasm-posix-kernel runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The centralized kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
+Kandelo runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The centralized kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
 
 ## Required HTTP Headers
 
@@ -38,12 +40,12 @@ Service Worker ──MessagePort──> Kernel Worker       │
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `BrowserKernel` | Main thread | Thin proxy — sends messages to kernel worker |
-| `kernel-worker-entry.ts` | Kernel worker | Hosts CentralizedKernelWorker, process lifecycle |
+| `BrowserKernel` | `host/src/browser-kernel-host.ts` | Main-thread proxy that sends messages to the browser kernel worker |
+| Browser kernel worker entry | `host/src/browser-kernel-worker-entry.ts` | Hosts CentralizedKernelWorker and owns process lifecycle |
 | `CentralizedKernelWorker` | Kernel worker | Kernel instance, handles all syscalls |
 | Process Workers | Sub-workers of kernel worker | One per process, communicates via SharedArrayBuffer + Atomics |
-| Service Worker | Separate | Intercepts HTTP for nginx/WordPress demos |
-| Connection pump | Kernel worker | Bridges HTTP requests to kernel TCP pipes |
+| Service Worker | `apps/browser-demos/public/service-worker.js` | Intercepts HTTP for nginx/WordPress demos |
+| Connection pump | `host/src/browser-kernel-worker-entry.ts` | Bridges HTTP requests to kernel TCP pipes |
 
 ### Key Design Decisions
 
@@ -51,7 +53,7 @@ Service Worker ──MessagePort──> Kernel Worker       │
 - **Kernel-owned VFS** (preferred path, `kernelOwnedFs: true` + `kernel.boot()`): the kernel worker restores a pre-built VFS image and exec()s `argv[0]` as the first process. The main thread never instantiates a `MemoryFileSystem` and is not in the FS hot path. Service-supervised demos run dinit (PID 1) inside this image; single-program demos exec the language interpreter directly.
 - **Legacy shared VFS** (`memfs:` constructor option + `kernel.spawn()`): main thread holds a `MemoryFileSystem` and shares the SAB with the kernel worker. Used by demos that fetch transient binaries at runtime (test runners, REPLs that load arbitrary user code, benchmark suites). Kept in place until the kernel grows a "spawn-into-running-kernel" path that doesn't need a main-thread pid.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel-side `MemoryFileSystem`. Programs are baked into the VFS image at build time (or written by the page in the legacy path before spawning). Symlinks are used for multicall binaries (e.g., coreutils).
-- **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`examples/browser/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
+- **dinit (PID 1) for service supervision**: Multi-process demos (nginx, redis, mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and per-service files under `/etc/dinit.d/` into the VFS image via `addDinitInit()` (`images/vfs/scripts/dinit-image-helpers.ts`). dinit handles SIGCHLD reaping, `depends-on` ordering, and bootstrap-then-daemon chains. Page code waits for service-ready via `onListenTcp` (port-bind) callbacks, then starts driving the demo over kernel-loopback TCP or the HTTP bridge.
 - **Connection pump in kernel worker**: HTTP↔TCP bridge runs inside the kernel worker with synchronous pipe I/O (direct Wasm export calls). Service worker transfers a MessagePort to the kernel worker for HTTP request delivery.
 - **App clients on main thread**: MySQL and Redis wire protocol clients stay on the main thread and use async pipe operations via the message protocol.
 
@@ -76,7 +78,7 @@ Browser fetch → Service Worker intercepts
 ## Capabilities
 
 ### Multi-Process
-- `fork()` via Asyncify snapshot/restore — child runs in new sub-worker with copied memory
+- `fork()` via `wasm-fork-instrument` snapshot/restore — child runs in new sub-worker with copied memory
 - `exec()` reads program binary from the shared filesystem, replaces process
 - `posix_spawn()` — fork+exec with file actions (addchdir, addfchdir, addclose, adddup2)
 - Process groups, wait/waitpid, cross-process signals, pipes
@@ -105,11 +107,24 @@ Browser fetch → Service Worker intercepts
 - The pixel buffer lives in the process's `WebAssembly.Memory` (a `SharedArrayBuffer`); the kernel notifies the host of `(pid, addr, len, w, h, stride, fmt)` on `mmap`, and the host renders via `requestAnimationFrame` + a 2D-canvas `putImageData` per frame.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps browser `KeyboardEvent.code` to AT-set-1 scancodes and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software (which puts the tty into MEDIUMRAW mode) decodes those bytes as scancodes.
-- Limitations: no audio (`/dev/dsp`); no mouse; `fork` does not auto-bind the child; multi-buffering / vsync via `FBIOPAN_DISPLAY` is a no-op.
+- Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via `FBIOPAN_DISPLAY` is a no-op.
+
+### Mouse input (`/dev/input/mice`)
+- Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
+- **Pointer Lock recommended.** The DOOM demo calls `canvas.requestPointerLock()` on first click so the browser delivers unbounded relative motion (`MouseEvent.movementX/Y`). Without pointer lock, `clientX/Y` deltas clamp at the canvas edges and feel sluggish for first-person controls. Press `Esc` to release the lock.
+- Browser `deltaY` is positive-down; the demo inverts it before injection so the kernel queue holds canonical PS/2 (positive-up) deltas.
+- Browser `MouseEvent.button` (0=L, 1=M, 2=R) is mapped to PS/2 button bits (bit0=L, bit1=R, bit2=M). Right-click suppresses the browser context menu via `contextmenu` `preventDefault()`.
+- Single-owner device (one process can hold `/dev/input/mice` open at a time; second open from another pid returns `EBUSY`).
+
+### Audio output (`/dev/dsp`)
+- The kernel exposes an OSS-style `/dev/dsp` character device. User programs `open(O_WRONLY)`, configure rate / channels / format via `SNDCTL_DSP_*` ioctls, and `write()` interleaved 16-bit-LE PCM. The kernel buffers samples in a 256 KiB ring (~1.5 s of stereo S16 @ 44.1 kHz). On overflow the *oldest* whole frame drops — same trade-off real OSS hardware makes under hardware overrun.
+- Demo pages drive a `setInterval` loop (~50 ms cadence) that calls `BrowserKernel.drainAudio(maxBytes)`. The kernel-worker drains the ring via the `kernel_drain_audio` wasm export (which respects whole-frame boundaries so stereo L/R never tear) and posts the bytes back. Main thread converts S16 → Float32, builds an `AudioBuffer`, and schedules an `AudioBufferSourceNode` on the `AudioContext` clock with a small lookahead so brief drain hiccups don't underrun.
+- Single-owner device. Owner is released on close-of-last-fd / `execve` / `exit`; the ring is flushed at the same time so a successor open starts from silence. Format must be `AFMT_S16_LE`; other formats are `EINVAL`.
+- **AudioContext gesture requirement.** `new AudioContext()` starts suspended in modern browsers and only resumes after a user gesture. The DOOM demo creates the context immediately after the user's "Start" click (which is itself a gesture), so `audioCtx.resume()` succeeds without a separate prompt.
 
 ## Browser Demos
 
-Located in `examples/browser/pages/`:
+Located in `apps/browser-demos/pages/`:
 
 | Demo | Software | Boot pattern | Features |
 |------|----------|--------------|----------|
@@ -119,6 +134,7 @@ Located in `examples/browser/pages/`:
 | perl | Perl 5.40 | `kernel.boot` | REPL + script runner |
 | php | PHP CLI | `kernel.boot` | Script execution |
 | ruby | Ruby 3.3 | `kernel.boot` | REPL + script runner |
+| node | QuickJS-NG (Node-compat) + npm 10.9.2 | `kernel.boot` | xterm REPL; `npm install` reaches the real registry via the host fetch |
 | erlang | OTP 28 BEAM | legacy spawn | Erlang VM, message passing |
 | nginx | nginx | dinit | Static file serving via service worker |
 | nginx-php | nginx + PHP-FPM | dinit | FastCGI, fork workers |
@@ -128,7 +144,7 @@ Located in `examples/browser/pages/`:
 | lamp | MariaDB + nginx + PHP-FPM + WP | dinit | Full LAMP stack |
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
-| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin |
+| doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a Linux-distro mirror (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.
@@ -136,7 +152,7 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
 - **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary.
 
-Run demos: `cd examples/browser && npx vite --port 5198`
+Run demos: `cd apps/browser-demos && npx vite --port 5198`
 
 ## VFS Images
 
@@ -144,8 +160,8 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
 
 ### How it works
 
-1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a `.vfs` binary file.
-2. **Runtime**: The demo page fetches the `.vfs` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` to restore it, and passes the resulting filesystem to `BrowserKernel({ memfs })`.
+1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download.
+2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`.
 
 ```typescript
 // Typical demo pattern
@@ -162,17 +178,95 @@ const memfs = MemoryFileSystem.fromImage(
 const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 ```
 
+### Kandelo demo metadata
+
+VFS images can also carry UI presentation metadata at `/etc/kandelo/demo.json`.
+The Kandelo live loader reads this file immediately after restoring the image,
+before kernel instantiation, and uses it to decide which surface should be
+primary during boot and after the demo is ready. This keeps demo-specific UI
+preferences with the image instead of hardcoding them in the page loader.
+
+```json
+{
+  "version": 1,
+  "profiles": {
+    "wordpress-sqlite": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["web", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    }
+  }
+}
+```
+
+Use `writeKandeloDemoConfig()` from
+`images/vfs/scripts/kandelo-demo-config.ts` in VFS build scripts. Images
+without this file still boot with Kandelo's generic presentation defaults, but
+the Kandelo app does not carry demo-specific presentation fallbacks.
+Any extra files needed by an image-declared `autoCommand` can be declared in
+`assets`; the loader stages those paths generically and hash-verifies them when
+`sha256` is provided.
+
+Images can also declare an optional `guide`. When `guide` is absent, Kandelo
+does not render a demo panel; this is the intended shape for demos where the
+primary surface is enough, such as WordPress and Doom. A guide can contain
+button groups, an editable shell script, and optional companion HTML:
+
+```json
+{
+  "version": 1,
+  "profiles": {
+    "node": {
+      "guide": {
+        "title": "Node.js demo",
+        "groups": [{
+          "title": "REPL",
+          "actions": [
+            {
+              "id": "enter-repl",
+              "label": "Open REPL",
+              "kind": "terminal.run",
+              "payload": "node"
+            },
+            {
+              "id": "send-expression",
+              "label": "Send expr",
+              "kind": "terminal.write",
+              "payload": "process.version\n"
+            }
+          ]
+        }]
+      }
+    }
+  }
+}
+```
+
+`terminal.run` sends a command through the persistent PTY-backed shell.
+`terminal.write` sends raw text to that PTY, which is useful for entering input
+into an already-running REPL. `guide.companion.srcDoc` runs in a sandboxed
+iframe and has no direct kernel access; it can only request parent-approved
+actions by posting `{ type: "kandelo.demoAction", actionId }`.
+
+When changing metadata for an existing package-backed image, bump that
+package's `build.toml` `revision` so published/fetched binaries are rebuilt.
+For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
+
 ### VFS images per demo
 
 | Demo | Image | Build command | What's inside |
 |------|-------|--------------|---------------|
-| Python | `python.vfs` | `bash examples/browser/scripts/build-python-vfs-image.sh` | CPython stdlib |
-| Erlang | `erlang.vfs` | `bash examples/browser/scripts/build-erlang-vfs-image.sh` | OTP runtime |
-| Perl | `perl.vfs` | `bash examples/browser/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs` | `bash examples/browser/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
-| WordPress | `wordpress.vfs` | `bash examples/browser/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
-| LAMP | `lamp.vfs` | `bash examples/browser/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
-| MariaDB test | `mariadb-test.vfs` | `bash examples/browser/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
+| Python | `python.vfs.zst` | `bash images/vfs/scripts/build-python-vfs-image.sh` | CPython stdlib |
+| Erlang | `erlang.vfs.zst` | `bash images/vfs/scripts/build-erlang-vfs-image.sh` | OTP runtime |
+| Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
+| Shell | `shell.vfs.zst` | `bash images/vfs/scripts/build-shell-vfs-image.sh` | dash, symlinks, vim runtime |
+| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
+| WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
+| LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
+| MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |
 
 VFS images are `.gitignore`d and must be built locally. The `run.sh` script handles this automatically (e.g., `./run.sh browser` builds any missing VFS images before starting the dev server).
 
@@ -188,10 +282,11 @@ Each build script requires the corresponding software to be compiled first (e.g.
 
 ### Adding a new VFS image
 
-1. Create `examples/browser/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
-2. Create `examples/browser/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
-3. Update the demo's `main.ts` to fetch the `.vfs` file and use `MemoryFileSystem.fromImage()`
-4. Add a build target in `run.sh`
+1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
+2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
+3. If the image is consumed by Kandelo, write `/etc/kandelo/demo.json` via `writeKandeloDemoConfig()`
+4. Update the demo's `main.ts` to fetch the `.vfs.zst` file and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
+5. Add a build target in `run.sh`
 
 The shared helpers in `vfs-image-helpers.ts` provide:
 - `writeVfsFile(fs, path, content)` / `writeVfsBinary(fs, path, data)` — write files
@@ -224,3 +319,6 @@ Browser sandbox prevents listening on ports. nginx/PHP-FPM demos use a service w
 
 ### Memory per process
 Each process gets `WebAssembly.Memory(shared: true, initial: maxPages, max: maxPages)`. Shared memory reserves the full virtual address space at construction time, so `maxMemoryPages` should be tuned for multi-process demos (e.g., 4096 pages = 256MB for WordPress with 5+ processes).
+
+### npm registry access in the browser
+The node demo's `npm install` cannot speak HTTPS to `registry.npmjs.org` directly: the in-JS TLS-MITM backend triggers a QuickJS-NG cycle-GC bug on large packuments. Instead, the page sets `--registry=http://proxy.local/`, the kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the plaintext path. The QuickJS-NG fix that makes the TLS path safe in principle is in `packages/registry/quickjs/patches/0001-fix-mapped-arguments-mark-attached-var-refs.patch`.

@@ -2,7 +2,7 @@
 
 How we declare, build, cache, and publish the artifacts the project
 produces — static libraries (zlib, ncurses, openssl, libcurl,
-libxml2, libpng, sqlite, …), ported programs (vim, git, php, …),
+libxml2, libpng, sqlite, libcxx, …), ported programs (vim, git, php, …),
 source trees that consumer builds reach into (PCRE2 for MariaDB,
 …), and the host-tool requirements that gate them all.
 
@@ -18,17 +18,43 @@ audiences:
   GitHub release.
 
 **Scope**: static-library artifacts (`.a` + headers + pkgconfig),
-ported program binaries (`.wasm`), composite VFS images (`.vfs`),
+ported program binaries (`.wasm`), composite VFS images (`.vfs.zst`),
 and source-tree extracts. Programs continue to statically link;
 this work caches the build outputs, not the linker step. Runtime
 `.so` loading is out of scope (see "Out of scope" below).
+
+## Quick reference (jump-table)
+
+Most readers want one of these. Detailed sections follow further down.
+
+| I want to… | Look at |
+|---|---|
+| Pull pre-built binaries without compiling | [`scripts/fetch-binaries.sh`](#release-archives) — walks every `package.toml`, calls the resolver. Run with `--allow-stale` in CI. |
+| Add a new package to the registry | [Schema: `package.toml`](#schema-packagetoml) + [docs/porting-guide.md](porting-guide.md#adding-a-new-package-to-the-registry) for the end-to-end workflow. |
+| Resolve one package on demand | `cargo xtask build-deps resolve <name>` — handles fetch/source-build, populates the cache. |
+| Find where an output lands | `cargo xtask build-deps output-path <name> <wasm-basename>` — single source of truth for the layout convention (flat for 1-output packages, nested under `<pkg>/` for ≥2-output packages). |
+| Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern. |
+| Override a published archive locally | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these. |
+| Override an archive in a PR for testing | The matrix-build flow handles this automatically: per-PR builds publish to `pr-<N>-staging` tags (separate state-lock subject from the durable release), and the resolver picks up the staging index via the same `build.toml.index_url` template. For a local override write `packages/registry/<pkg>/package.pr.toml` with `[binary.<arch>]` — the legacy overlay path still injects into the in-memory `DepsManifest`. |
+| Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
+| Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
+| Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
+| Publish packages from another repository | [docs/package-sources.md](package-sources.md) — package-source layout, reusable workflow, and browser-gallery contract. |
+| Trace an ABI mismatch | [docs/abi-versioning.md](abi-versioning.md). |
+| See what's missing | [docs/package-management-future-work.md](package-management-future-work.md). |
+
+The rest of this doc is the reference manual: schema details, cache-key
+hashing, resolver ordering, the consumer-side migration pattern, and
+release semantics.
 
 ## Why
 
 The previous state: each program's `build-<prog>.sh` called its
 prerequisite lib build scripts explicitly, everything installed into
 `sysroot/`, and rebuilding one program re-ran every dep from source.
-That worked when we had two or three libs. Now that 7+ libs back 20+
+That worked when we had two or three libs. Now that 8+ libs (including
+the libcxx package, which builds libc++/libc++abi and statically bundles
+LLVM libunwind so C++ programs can throw exceptions) back 20+
 programs, we need:
 
 - rebuilding one program not to rebuild its deps from source;
@@ -40,22 +66,37 @@ programs, we need:
 - rebuild-in-progress in one worktree not to corrupt a sibling
   worktree's read of the same cached lib.
 
-## Schema: `package.toml`
+## Schema: `package.toml` (recipe) + `build.toml` (project view)
 
-Every library declares one `package.toml` file, next to its build script:
+Every package ships TWO TOML files in `packages/registry/<name>/`:
 
 ```
-examples/libs/zlib/
-    package.toml              ← declares the lib
-    build-zlib.sh          ← builds it (invoked by the resolver)
+packages/registry/zlib/
+    package.toml              ← the recipe (project-agnostic)
+    build.toml                ← project's build + publish state
+    build-zlib.sh             ← builds it (invoked by the resolver)
 ```
+
+The split is load-bearing post the
+[binary-resolution-via-index-ledger migration](plans/2026-05-13-binary-resolution-via-index-ledger-design.md):
+
+- **`package.toml`** carries identity-and-constraints: who the
+  package is, what it depends on, where its source comes from,
+  what license it ships under. **Project-agnostic** — the exact
+  same `package.toml` would work in any project that wants to
+  consume this package.
+- **`build.toml`** carries this project's view: which commit built
+  it, where the binary is published, what publish-time revision
+  it's at. **Project-specific** — every fork or downstream
+  consumer gets its own `build.toml`.
+
+### `package.toml`
 
 Required fields:
 
 ```toml
 name = "zlib"              # logical library name
 version = "1.3.1"          # upstream version
-revision = 1               # our build revision; bump when build/config changes
 depends_on = []            # ["zlib@1.3.1", ...] — exact versions, no ranges
 
 [source]
@@ -70,10 +111,11 @@ url = "https://github.com/madler/zlib/blob/v1.3.1/LICENSE"  # optional
 Optional sections:
 
 ```toml
+kernel_abi = 11            # required when a [build] block is present
 arches = ["wasm32"]        # opt-in target arches; default: ["wasm32"]
 
 [build]
-script = "build-zlib.sh"   # default: build-<name>.sh in this directory
+script_path = "packages/registry/zlib/build-zlib.sh"
 
 [outputs]
 libs = ["lib/libz.a"]                            # must exist post-build
@@ -81,13 +123,54 @@ headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
 ```
 
+`package.toml` **must NOT** carry `revision`, `[binary]`,
+`[build].repo_url`, or `[build].commit`. Those moved to `build.toml`
+during the binary-resolution-via-index-ledger migration;
+`validate_source` rejects them with a clear error message pointing
+at the new home. (Archived `manifest.toml` bytes inside historical
+`.tar.zst` archives still carry the legacy shape;
+`validate_archived` keeps accepting them for back-compat.)
+
+### `build.toml`
+
+Required (unless the package is `kind = "source"` with no `[build]`
+block — those packages don't publish a binary):
+
+```toml
+script_path = "packages/registry/zlib/build-zlib.sh"   # mirrors package.toml
+repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+commit      = "<commit at last successful build>"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+```
+
+- `script_path` typically equals `package.toml`'s `[build].script_path`;
+  a project that monkey-patches a recipe sets its own override.
+- `repo_url` + `commit` record the project's recipe provenance.
+- `revision` is the publish-time counter the resolver hashes into
+  the cache-key. Bump when output bytes legitimately change (build
+  flag tweaks, asyncify pass, etc.). Don't bump for doc-only
+  changes — it triggers a needless rebuild across the matrix.
+- `[binary]` declares where binaries are published. Two forms,
+  exactly one of which must be present:
+
+| Form | Example | Resolver behavior |
+|---|---|---|
+| Indexed (typical) | `index_url = "https://.../binaries-abi-v{abi}/index.toml"` | Fetch the index, look up `(name, version, arch)`, fetch the entry's `archive_url`. `{abi}` is substituted with `ABI_VERSION` at resolve time. |
+| Direct | `url = "https://.../foo.tar.zst"` + `sha256 = "..."` | Fetch the inline URL directly; verify against the inline sha. No index. |
+
+The resolver picks the form by structural deserialization — mixing
+forms in one `[binary]` block is a parse error.
+
 ### `arches`
 
 `arches = ["wasm32", "wasm64"]` declares which target architectures
-the manifest opts into. Read by `xtask stage-release`: any
-`(manifest, arch)` pair where `arch` isn't listed is silently
-skipped and no archive is staged. Defaults to `["wasm32"]` when
-omitted.
+the manifest opts into. Read by the matrix flow's preflight (which
+generates one `(package, arch)` entry per declared arch) and by
+`scripts/fetch-binaries.sh` (one `xtask build-deps resolve` call per
+declared arch). Defaults to `["wasm32"]` when omitted.
 
 The default reflects the project's wasm64 build policy: the kernel
 is wasm64, but most ported user-space programs (dash, vim, perl,
@@ -106,37 +189,6 @@ into a release archive. A locally-built wasm64 artifact still
 populates `local-binaries/programs/wasm64/...` regardless of what
 the manifest declares.
 
-### `[binary]` — per-arch remote-fetch pointers
-
-The optional `[binary]` block tells the resolver where to download
-a prebuilt archive when the cache misses. Two equivalent shapes:
-
-```toml
-# Single-arch (most packages — implicit wasm32):
-[binary]
-archive_url    = "https://.../foo-wasm32-<sha>.tar.zst"
-archive_sha256 = "<64 hex>"
-
-# Multi-arch (mariadb, php, and their deps):
-[binary.wasm32]
-archive_url    = "https://.../foo-wasm32-<sha>.tar.zst"
-archive_sha256 = "<64 hex>"
-[binary.wasm64]
-archive_url    = "https://.../foo-wasm64-<sha>.tar.zst"
-archive_sha256 = "<64 hex>"
-```
-
-The bare form is an alias for `[binary.wasm32]`; mixing both forms
-in one manifest is a parse error. When `xtask build-deps resolve
-<pkg> --arch <arch>` runs, the resolver looks up
-`[binary.<arch>]`. If no entry exists for the requested arch, it
-falls through to a source build — same behavior as no `[binary]`
-block at all.
-
-`fetch-binaries.sh` doesn't read `[binary]` at all — it walks
-`manifest.json` and downloads every entry the manifest catalogs.
-`[binary]` is the entry point for direct, single-package fetches.
-
 **Keep top-level arrays (`depends_on`, etc.) above the first `[section]`.**
 TOML binds a bare key inside whatever section most recently opened; a
 key placed after `[license]` ends up as `license.depends_on`, which
@@ -152,21 +204,26 @@ same lib, we revisit. Noted as future work; not a near-term priority.
 ## Cache-key hashing
 
 The cache-key sha for a library is computed over
-`(name, version, revision, source.url, source.sha256, sorted
-transitive dep cache-key shas)`. That means:
+`(name, version, revision, source.url, source.sha256, target_arch,
+abi_version, sorted transitive dep cache-key shas)`, where
+`revision` is read from `build.toml` (overlaid onto the parsed
+`DepsManifest` at load time) and defaults to 1 when `build.toml`
+omits it or is absent.
+
+That means:
 
 - Same inputs → same sha → same cache path → shared artifact.
 - Any change in the tree (including a distant transitive dep) invalidates
   every downstream consumer. No silent staleness.
 - `revision` is the knob for "same upstream, different flags": bump
-  it when the build script or cross-compile config changes in a way
-  that affects the output.
+  it in `build.toml` when the build script or cross-compile config
+  changes in a way that affects the output.
 
 Inspect:
 
 ```bash
-cargo xtask build-deps sha     zlib   # → 9acb9405ef818905a193…
-cargo xtask build-deps path    zlib   # → ~/.cache/wasm-posix-kernel/libs/zlib-1.3.1-rev1-9acb9405
+cargo xtask build-deps sha     zlib   # → e33c5e9a4383afdd…
+cargo xtask build-deps path    zlib   # → ~/.cache/wasm-posix-kernel/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a
 cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
@@ -179,11 +236,22 @@ in turn, it checks:
 1. **`<repo>/local-libs/<name>/build/`** — hand-patched, in-progress.
    Returned as-is; the build script never runs. Per-worktree,
    gitignored. Mirrors `local-binaries/`.
-2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<shortsha>/`** — canonical
-   cache. Trusted by presence: users invalidate by deleting the
-   directory or bumping `revision`.
-3. **Build from source** — run the declared `build.script`, validate
-   declared outputs, atomically install into the canonical cache.
+2. **`<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<shortsha>/`** —
+   canonical cache. Trusted by presence: users invalidate by
+   deleting the directory or bumping `revision`.
+3. **Index-based remote fetch** — load `build.toml`, resolve its
+   `[binary]` block (typically to an `index_url`), fetch
+   `index.toml` from that URL (with offline cache fallback at
+   `~/.cache/wasm-posix-kernel/indexes/`), look up
+   `(name, version, arch)`. For `status = success` entries fetch
+   `archive_url`; for `status = failed/pending/building` with a
+   `fallback_archive_url` use the last-green fallback. Verify
+   archive sha256 + internal `[compatibility]` block
+   (target_arch, abi_versions, cache_key_sha). Any verification
+   failure logs a warning and falls through to step 4.
+4. **Build from source** — run the declared `build.script_path`,
+   validate declared outputs, atomically install into the
+   canonical cache.
 
 `cache_root` is `$XDG_CACHE_HOME/wasm-posix-kernel` if set, else
 `$HOME/.cache/wasm-posix-kernel`.
@@ -198,7 +266,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_OUT_DIR` | Temp dir the script must install into. Layout matches `outputs.libs` / `outputs.headers` / `outputs.pkgconfig` relative paths. |
 | `WASM_POSIX_DEP_NAME` | `name` from package.toml. |
 | `WASM_POSIX_DEP_VERSION` | `version` from package.toml. |
-| `WASM_POSIX_DEP_REVISION` | `revision` from package.toml. |
+| `WASM_POSIX_DEP_REVISION` | Effective package revision after `build.toml` is overlaid. |
 | `WASM_POSIX_DEP_SOURCE_URL` | Upstream tarball URL (`source.url` from package.toml). |
 | `WASM_POSIX_DEP_SOURCE_SHA256` | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch. |
 | `WASM_POSIX_DEP_<UPPER>_DIR` | For each *direct* dep, the resolved path to that dep's build output. `<UPPER>` is the dep name upper-cased, with `-` → `_` (e.g. `zlib-ng` → `ZLIB_NG`). Transitive deps are not surfaced — scripts that need them should declare them in `depends_on`. |
@@ -362,13 +430,12 @@ D.5): MariaDB's CMake expects to compile PCRE2 against its own
 internal headers and link the result statically into `mariadbd`,
 so a generic `libpcre2.a` would not satisfy it.
 
-The pcre2-source manifest (`examples/libs/pcre2-source/package.toml`):
+The pcre2-source manifest (`packages/registry/pcre2-source/package.toml`):
 
 ```toml
 kind = "source"
 name = "pcre2-source"
 version = "10.44"
-revision = 1
 
 [source]
 url = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.gz"
@@ -378,18 +445,18 @@ sha256 = "86b9cb0aa3bcb7994faa88018292bc704cdbb708e785f7c74352ff6ea7d3175b"
 spdx = "BSD-3-Clause"
 ```
 
-No `[outputs]`, no `[build].script` — the resolver fetches and
+No `[outputs]`, no `[build].script_path` — the resolver fetches and
 extracts in-place into
 `<cache_root>/sources/pcre2-source-10.44-rev1-<sha>/`. No
 `<arch>` segment because source trees are arch-agnostic.
 
-The MariaDB manifest (`examples/libs/mariadb/package.toml`):
+The MariaDB manifest (`packages/registry/mariadb/package.toml`):
 
 ```toml
 depends_on = ["pcre2-source@10.44"]
 ```
 
-The MariaDB build script (`examples/libs/mariadb/build-mariadb.sh`,
+The MariaDB build script (`packages/registry/mariadb/build-mariadb.sh`,
 abridged):
 
 ```bash
@@ -487,7 +554,7 @@ porting their build script:
   initialization of structs that hold shadow-stack pointers,
   breaking ESTACK iodata traversal. Adding `fprintf` inside the
   function changes code layout enough to mask the bug, hence the
-  Heisenbug character. See `examples/libs/erlang/build-erlang.sh`
+  Heisenbug character. See `packages/registry/erlang/build-erlang.sh`
   comments.
 - **Redis `tls.c`** — at `-O1` and above, LLVM 21.1.8 crashes
   inside `llvm::AsmPrinter::emitGlobalVariable`. Currently the
@@ -514,57 +581,97 @@ canonical cache path with no source build.
 
 ### Producer / consumer round-trip
 
-Two `xtask` subcommands bracket the pipeline. Both accept
-`--abi <N>` (defaults to the kernel's current `ABI_VERSION`)
-and emit machine-readable progress on stderr.
+The pipeline is **per-package + index-ledger**. There is no central
+manifest in-tree; instead, every release tag carries a single
+`index.toml` ledger that records every published archive's URL +
+sha + cache-key. Each `packages/registry/<pkg>/build.toml` points its
+`[binary]` entry at that ledger (typically via `index_url` with a
+`{abi}` placeholder). The matrix flow uploads one `.tar.zst` per
+`(package, arch)` entry AND atomically updates that package's
+entry in `index.toml` under a state-lock, so consumers see a
+consistent ledger after every per-package publish.
 
-**Producer — `cargo xtask stage-release`:**
+See [docs/binary-releases.md](binary-releases.md) for the
+release-side perspective and
+[docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md](plans/2026-05-13-binary-resolution-via-index-ledger-design.md)
+for the design rationale.
+
+**Producer — `cargo xtask archive-stage`:**
 
 ```bash
-cargo xtask stage-release \
-    --staging /tmp/release-staging \
-    --abi 4 \
-    --tag binaries-abi-v4-2026-04-26 \
-    --arch wasm32 --arch wasm64 \
+cargo xtask archive-stage \
+    --package packages/registry/zlib \
+    --arch wasm32 \
+    --out /tmp/archives \
     --build-timestamp 2026-04-26T10:00:00Z \
-    --build-host darwin-arm64
+    --build-host github.com/foo/bar@<sha>
 ```
 
-It walks the registry (`Registry::walk_all`), filters to
-`kind=library` and `kind=program` manifests, fans out across
-the requested arches, calls `ensure_built` to populate the
-resolver cache when needed, then `archive_stage` to pack each
+It loads the package manifest, calls `ensure_built` to populate
+the resolver cache when needed, then `archive_stage` to pack the
 cache tree into
 
 ```
-<staging>/{libs,programs}/<name>-<version>-rev<N>-<arch>-<shortsha>.tar.zst
+/tmp/archives/<name>-<version>-rev<N>-abi<N>-<arch>-<shortsha>.tar.zst
 ```
 
-Finally it delegates to `build-manifest` to emit
-`<staging>/manifest.json` covering both legacy single-asset (kernel, userspace,
-test programs) and archive (libs + programs) entries.
-
-**Consumer — `cargo xtask install-release`:**
+Each matrix entry then publishes via `scripts/index-update.sh`:
 
 ```bash
-cargo xtask install-release \
-    --manifest /path/to/manifest.json \
-    --archive-base https://github.com/.../releases/download/<tag>
+bash scripts/index-update.sh \
+    --target-tag binaries-abi-v11 \
+    --package zlib --version 1.3.1 --revision 1 --arch wasm32 \
+    --status success \
+    --archive-path /tmp/archives/zlib-...-wasm32-e33c5e9a.tar.zst \
+    --archive-name zlib-1.3.1-rev1-abi11-wasm32-e33c5e9a.tar.zst \
+    --cache-key-sha e33c5e9a...
 ```
 
-It iterates manifest entries that carry `archive_name` (archive
-shape) and dispatches each one through `remote_fetch`, which
-handles fetch + verify + install. `--archive-base` accepts both
-`https://…` and `file://…/…` (the round-trip test uses the
-latter); a relative path is rejected. Library entries land in
-`<cache>/libs/<canonical>/`; program entries land in both the
-cache and `local-binaries/programs/<name>/` so subsequent
-program builds short-circuit through the same lookup path
-hand-built programs use.
+The wrapper acquires the workflow-level state-lock for the target
+tag, downloads the current `index.toml`, mutates this package's
+entry via `xtask index-update`, uploads the archive + new
+`index.toml` with `--clobber`, and releases the lock. Different
+tags (durable `binaries-abi-v<N>` vs `pr-<N>-staging`) use
+different lock subjects, so independent rebuilds don't block each
+other.
+
+**Consumer — `cargo xtask build-deps resolve <pkg>`** (called once
+per package by `scripts/fetch-binaries.sh`):
+
+```bash
+cargo run -p xtask -- build-deps --arch wasm32 \
+    --binaries-dir <repo>/binaries \
+    resolve zlib
+```
+
+The resolver:
+
+1. Reads `packages/registry/zlib/package.toml` (recipe) +
+   `packages/registry/zlib/build.toml` (project view); overlays
+   `revision` from build.toml onto the parsed manifest. If
+   `package.pr.toml` exists alongside, applies it as an overlay
+   (injects `[binary.<arch>]` entries into the in-memory manifest;
+   legacy mechanism, still functional).
+2. Resolves `build.toml`'s `[binary]` block:
+   - Indexed form: substitutes `{abi}` in `index_url`, fetches
+     `index.toml` (with offline cache fallback at
+     `~/.cache/wasm-posix-kernel/indexes/`), looks up
+     `(name, version, arch)`. For `status = success` uses
+     `archive_url`; for `status = failed/pending/building` with a
+     `fallback_archive_url` uses the last-green fallback.
+   - Direct form: uses the inline `url` + `sha256`.
+3. Fetches the archive via `remote_fetch::fetch_and_install_direct`,
+   which handles fetch + verify + install. Both `https://` and
+   `file://` URLs are accepted (the latter is what tests use to
+   pin runner-local archives).
+4. Library entries land in `<cache>/libs/<canonical>/`; program
+   entries land in both the cache and
+   `binaries/programs/<arch>/<output>.wasm` (a symlink into the
+   cache) so browser/Node demos load by relative path.
 
 ### The injected `[compatibility]` block
 
-`stage-release` reads each consumer's source `package.toml`,
+`archive-stage` reads each package's source `package.toml`,
 appends a `[compatibility]` block, and writes the result as
 `manifest.toml` at the root of the archive (alongside an
 `artifacts/` subtree carrying the built files). The block
@@ -573,7 +680,7 @@ carries five fields:
 ```toml
 [compatibility]
 target_arch = "wasm32"        # required: wasm32 | wasm64
-abi_versions = [4]            # required: list of integers ≥ 1
+abi_versions = [11]           # required: list of integers ≥ 1
 cache_key_sha = "9acb9405…"   # required: 64-char lowercase hex
 build_timestamp = "2026-04-26T10:00:00Z"   # optional, informational
 build_host = "darwin-arm64"                # optional, informational
@@ -614,13 +721,11 @@ sha — say `b1773def…`. `remote_fetch` walks its 4-axis chain:
 4. The consumer's ABI is in `abi_versions`. Pass.
 5. `cache_key_sha` matches the locally-computed sha. **Fail.**
 
-`remote_fetch` returns the cache-key-mismatch error, and
-`install-release` errors hard (a manual install is an explicit
-"trust this archive" gesture; falling back to source build
-silently would defeat the point). In the implicit `resolve`
-codepath that `build-deps` hits during a normal build, the same
-rejection causes the resolver to fall through to source build
-— same outcome as if no archive had been published.
+`remote_fetch` returns the cache-key-mismatch error, the
+resolver logs a warning, and falls through to source build —
+same outcome as if no archive had been published. This makes
+ABI bumps and rev bumps non-fatal: stale archives just slow the
+first run.
 
 That is the strict-equivalence check the design relies on:
 the archive is honored if and only if its source-side inputs
@@ -628,69 +733,43 @@ hash to exactly what this checkout would produce.
 
 ### Iterating on a package locally
 
-When you edit an `examples/libs/<name>/package.toml` (or any input
+When you edit an `packages/registry/<name>/package.toml` (or any input
 that changes the package's `cache_key_sha` — `revision`,
 `source.url`, `source.sha256`, transitive deps), the published
-release manifest goes stale relative to your local state. By
-default, `./run.sh fetch` and `./run.sh browser` then abort with:
+archive goes stale relative to your local state. The resolver
+detects the mismatch via the `[compatibility]` block, logs a
+warning, and falls through to a source build (`build-<name>.sh`).
+No `--allow-stale` flag is needed: stale archives just slow the
+first run.
 
-```
-xtask install-release: <name> (<arch>): manifest.json cache_key_sha
-"<published>" does not match locally-computed "<local>" — the
-manifest is stale relative to this consumer's package.toml
-```
+The primary remedy is the per-PR staging-tag flow — push your
+branch, let `staging-build.yml` rebuild the touched packages, and
+each matrix entry's `scripts/index-update.sh` invocation publishes
+its archive + index entry to the PR's `pr-<NNN>-staging` release
+atomically. The resolver picks up the staging index automatically
+when `build.toml.index_url` templates `{abi}` against the
+staging-tag's ABI (or you point a local `build.toml` override at
+the staging tag temporarily). That works for any `package.toml`
+or `build.toml` change pushed to a PR with CI write access, and is
+the path code-review and merge both use.
 
-That is the "Why `cache_key_sha` is the strict equivalence
-check" rejection above, surfaced at the install-release seam.
-
-The primary remedy is the per-PR overlay flow — push your
-branch, let `staging-build.yml` rebuild the touched packages,
-and `fetch-binaries.sh` will auto-detect the open PR and pull
-its `pr-<NNN>-staging` archives via `binaries.lock.pr` (see
-[binary-releases.md](binary-releases.md) "Per-PR staging
-overlay"). That works for any `package.toml` change pushed to a
-PR with CI write access, and is the path code-review and merge
-both use.
-
-`--allow-stale` is the escape hatch for the cases the overlay
-flow doesn't cover:
-
-- pre-push iteration before any commit lands on the branch,
-- fork PRs that lack write access to publish staging releases,
-- `WIP:` commits where the staging build hasn't completed (or
-  failed) and you want to see the demo locally,
-- local edits past the last CI build on your own PR.
-
-Pass it instead of waiting for the overlay:
-
-```bash
-./run.sh browser --allow-stale          # one-shot
-./run.sh fetch   --allow-stale          # also works for any subcommand
-WASM_POSIX_ALLOW_STALE=1 ./run.sh ...   # sticky for the shell session
-```
-
-With the flag set, `install-release` skips the mismatched
-manifest entries (a one-line diagnostic per skip) and continues
-with the rest of the manifest. The skipped packages then fall
-through the resolver chain on the next `cargo xtask build-deps
-resolve <name>` — `local-libs/` first, then the content-addressed
-cache, then a source build via `build-<name>.sh`. Outputs land
-under `local-binaries/programs/<arch>/`, which the Vite resolver
-and `scripts/resolve-binary.sh` already prefer over `binaries/`.
-
-`binaries/` itself stays release-pure regardless of the flag —
-the entries it gets are the ones the manifest agreed on. CI does
-not pass `--allow-stale` and remains strict-by-construction.
+For pre-push iteration on packages whose source build is fast,
+just rely on the resolver's fall-through: edit `package.toml`,
+run `./run.sh browser`, and accept a one-time source build for
+the touched package. Outputs land under
+`local-binaries/programs/<arch>/`, which the Vite resolver and
+`scripts/resolve-binary.sh` already prefer over `binaries/`.
 
 ### Worked example: zlib
 
-Source manifest at `examples/libs/zlib/package.toml`:
+Source manifest at `packages/registry/zlib/package.toml` (recipe):
 
 ```toml
 kind = "library"
 name = "zlib"
 version = "1.3.1"
-revision = 1
+kernel_abi = 11
+arches = ["wasm32", "wasm64"]
 depends_on = []
 
 [source]
@@ -700,98 +779,92 @@ sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
 [license]
 spdx = "Zlib"
 
+[build]
+script_path = "packages/registry/zlib/build-zlib.sh"
+
 [outputs]
 libs = ["lib/libz.a"]
 headers = ["include/zlib.h", "include/zconf.h"]
 pkgconfig = ["lib/pkgconfig/zlib.pc"]
 ```
 
-After `stage-release --arch wasm32`, one staged archive lands
-as
+And the sibling `packages/registry/zlib/build.toml` (project view):
+
+```toml
+script_path = "packages/registry/zlib/build-zlib.sh"
+repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+commit      = "<commit>"
+revision    = 1
+
+[binary]
+index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+```
+
+After `xtask archive-stage --package packages/registry/zlib --arch wasm32`,
+one archive lands as
 
 ```
-<staging>/libs/zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst
+<out>/zlib-1.3.1-rev1-abi11-wasm32-e33c5e9a.tar.zst
 ```
 
-(short sha `9acb9405` is the first 8 chars of the cache-key sha
+(short sha `e33c5e9a` is the first 8 chars of the cache-key sha
 for this manifest, identical to the canonical cache directory
 suffix — `cargo xtask build-deps sha zlib` prints the full
-form). `manifest.json` carries the entry:
+form).
 
-```json
-{
-  "name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
-  "program": "zlib",
-  "kind": "library",
-  "arch": "wasm32",
-  "upstream_version": "1.3.1",
-  "revision": 1,
-  "size": 12345,
-  "sha256": "<bytes-sha>",
-  "archive_name": "zlib-1.3.1-rev1-wasm32-9acb9405.tar.zst",
-  "archive_sha256": "<bytes-sha>",
-  "compatibility": {
-    "target_arch": "wasm32",
-    "abi_versions": [4],
-    "cache_key_sha": "9acb9405ef818905a193…"
-  },
-  "source": {
-    "url": "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
-    "sha256": "9a93b2b7…"
-  },
-  "license": { "spdx": "Zlib" },
-  "advisories": []
-}
+After publish, the matrix flow's `scripts/index-update.sh`
+invocation has added an entry to the release's `index.toml`:
+
+```toml
+[[packages]]
+name     = "zlib"
+version  = "1.3.1"
+revision = 1
+
+[packages.binary.wasm32]
+status         = "success"
+archive_url    = "zlib-1.3.1-rev1-abi11-wasm32-e33c5e9a.tar.zst"
+archive_sha256 = "<64-hex>"
+cache_key_sha  = "e33c5e9a..."
+built_at       = "2026-05-13T..."
+built_by       = "https://github.com/.../actions/runs/<id>"
 ```
 
-On the consumer side, `install-release` fetches that archive,
-verifies bytes against `archive_sha256`, runs the 4-axis check
-above, then unpacks `artifacts/lib/libz.a`,
-`artifacts/include/{zlib.h,zconf.h}`, and
-`artifacts/lib/pkgconfig/zlib.pc` into
+`build.toml` is **NOT** rewritten — no bot-PR amend. The
+ledger on the release IS the consumer-visible state.
+
+On the consumer side, `xtask build-deps resolve zlib` reads
+`package.toml` + `build.toml`, substitutes `{abi}` in the
+index_url, fetches `index.toml`, looks up `(zlib, 1.3.1, wasm32)`,
+fetches the entry's `archive_url`, verifies bytes against
+`archive_sha256`, runs the compatibility check, then unpacks
+`artifacts/lib/libz.a`, `artifacts/include/{zlib.h,zconf.h}`,
+and `artifacts/lib/pkgconfig/zlib.pc` into
 
 ```
-<cache_root>/libs/zlib-1.3.1-rev1-9acb9405/
+<cache_root>/libs/zlib-1.3.1-rev1-wasm32-9acb9405/
 ```
 
 A subsequent `cargo xtask build-deps resolve zlib` finds the
 canonical path populated and returns it without re-running
 `build-zlib.sh`.
 
-### Shell-script wrappers
+### Shell-script wrapper
 
-For the per-PR staging flow (single-PR-with-package-bumps,
-auto-merge after a `ready-to-ship` label), see
-[`docs/binary-releases.md`](binary-releases.md#pr-package-builds).
+`scripts/fetch-binaries.sh` walks every
+`packages/registry/<pkg>/package.toml` that has a sibling `build.toml`
+with a `[binary]` block and
+calls `xtask build-deps --binaries-dir <repo>/binaries resolve
+<pkg>` once per declared arch. Packages without a `[binary]`
+block (kernel, userspace, source-only, and metadata-only entries)
+are skipped silently — those are local-build-only and the resolver's
+fall-through to source build covers them on demand.
 
-`scripts/stage-release.sh` and `scripts/fetch-binaries.sh` wrap
-the xtask subcommands with the rest of the legacy release flow:
-
-- `stage-release.sh` first stages legacy entries (kernel,
-  userspace, hand-bundled test programs) via `xtask
-  bundle-program --plain-wasm`, then delegates to `xtask
-  stage-release` for the lib + program archives. Both halves
-  land in the same flat staging directory with one combined
-  `manifest.json`.
-- `fetch-binaries.sh` reads `binaries.lock`, downloads
-  `manifest.json`, and dispatches archive entries (those with
-  `archive_name`) to `xtask install-release`. legacy entries
-  continue through the existing bash `place`/`extract_flat_zip`
-  codepaths into `binaries/`. The two halves coexist in one
-  release with no schema-level separation; the `archive_name`
-  field is the per-entry discriminator.
-
-### Round-trip test
-
-`host/test/release-roundtrip.test.ts` exercises the full
-producer/consumer loop end-to-end with synthetic fixtures and
-`file://` URLs. It stages a synthetic library + program,
-installs back via `install-release`, then re-runs `xtask
-build-deps resolve` against the populated cache and asserts
-the consumer's build script does **not** run a second time
-(verified via a sentinel file the script writes per
-invocation). The whole suite skips on machines without `rustc`
-on `PATH`, mirroring the existing host-tool skip pattern.
+The matrix flow's CI workflows (staging-build, prepare-merge,
+force-rebuild) all use the same per-package shape: one matrix
+entry produces one `archive-stage` archive and atomically uploads
+that archive plus the mutated release `index.toml`. There is no
+bot rewrite of `package.toml` or `build.toml`.
 
 ## Atomic cache install
 
@@ -812,10 +885,10 @@ pruned. A future `xtask clean-deps` subcommand can sweep them.
 
 ## Registry search path
 
-By default the resolver looks in `<repo>/examples/libs/`. Override:
+By default the resolver looks in `<repo>/packages/registry/`. Override:
 
 ```bash
-WASM_POSIX_DEPS_REGISTRY="./examples/libs:~/my-wasm-packages" \
+WASM_POSIX_DEPS_REGISTRY="./packages/registry:~/my-wasm-packages" \
     cargo xtask build-deps sha vim
 ```
 
@@ -823,6 +896,20 @@ Colon-separated. First hit wins — later entries have lower priority,
 like `$PATH`. This is how third parties bring their own packages
 without patching the repo: they drop a `<lib>/package.toml` into their
 own directory tree and prepend it to the registry path.
+
+The first external package source using this pattern is
+[`brandonpayton/kandelo-software`](https://github.com/brandonpayton/kandelo-software):
+it keeps package recipes under `packages/<name>/`, overlays them into a
+Kandelo checkout for source builds, and publishes an ABI-scoped
+`binaries-abi-v<N>/index.toml` from GitHub Actions. See
+[docs/package-sources.md](package-sources.md) for the reusable workflow
+and script contract.
+
+`kandelo-software` also publishes `gallery.json` beside the release
+index. The browser gallery treats that file as presentation metadata
+and the release `index.toml` as the source of truth: a third-party VFS
+entry is shown only when all packages listed for that entry have
+successful wasm32 records in the ABI-matching index.
 
 ## Source-kind manifests
 
@@ -847,13 +934,13 @@ unpacked source trees, not built artifacts.
 
 Required:
 - `kind = "source"`
-- `name`, `version`, `revision`
+- `name`, `version`
 - `[source].url`, `[source].sha256`
 - `[license].spdx`
 
 Optional:
 - `depends_on` — same syntax as library/program manifests.
-- `[build].script` — see "Override" below.
+- `[build].script_path` — see "Override" below.
 - `[[host_tools]]` — see the Host-tool requirements section below.
 
 Rejected at parse time (the parser surfaces a clear error):
@@ -864,7 +951,7 @@ Rejected at parse time (the parser surfaces a clear error):
 
 **Default fetch+extract behavior**
 
-When `[build].script` is absent, the resolver fetches `source.url`,
+When `[build].script_path` is absent, the resolver fetches `source.url`,
 verifies `source.sha256`, and extracts in-place. Format detection
 is by URL extension: `.tar.gz` / `.tgz`, `.tar.xz` / `.txz`,
 `.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.zip`, and
@@ -876,7 +963,7 @@ If the archive contains a single top-level directory (the
 directory's contents are the contents of that single top-level
 directory. Multi-top-level archives are kept as-is.
 
-**Override `[build].script`**
+**Override `[build].script_path`**
 
 When the default extract is not enough (patches, code generation,
 in-tree configure), declare a script. The contract is the same as
@@ -1006,5 +1093,11 @@ contract) in `docs/plans/2026-04-22-deps-management-v2-design.md`.
 - **Semver ranges**: exact-pinning only. Adding a resolver that picks
   one version per lib across the overall graph is real work; we punt
   until two consumers actually conflict.
-- **CI-driven dep builds**: deps are built manually and published
-  manually via `publish-release.sh`.
+- **CI-driven dep builds**: the matrix flow in
+  `.github/workflows/staging-build.yml` builds every changed
+  `(package, arch)` entry on PR push and uploads each archive
+  per-package. Merging via the `ready-to-ship` label runs the same
+  matrix against the durable `binaries-abi-v<N>` tag and amends
+  every `[binary.<arch>]` block in-tree on a bot PR. See
+  [docs/binary-releases.md](binary-releases.md) for the producer-
+  side flow.

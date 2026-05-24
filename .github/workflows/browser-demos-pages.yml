@@ -1,0 +1,101 @@
+name: Deploy browser demos
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/browser-demos-pages.yml"
+      - ".github/actions/fetch-submodules/**"
+      - ".gitmodules"
+      - "MANIFEST"
+      - "apps/browser-demos/**"
+      - "benchmarks/**"
+      - "examples/**"
+      - "host/package.json"
+      - "host/package-lock.json"
+      - "host/src/**"
+      - "web-libs/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "flake.lock"
+      - "flake.nix"
+      - "libc/**"
+      - "package.json"
+      - "package-lock.json"
+      - "packages/registry/**/package.toml"
+      - "packages/registry/**/build.toml"
+      - "programs/**"
+      - "rust-toolchain.toml"
+      - "images/rootfs/**"
+      - "images/vfs/**"
+      - "run.sh"
+      - "scripts/build-musl.sh"
+      - "scripts/build-programs.sh"
+      - "scripts/build-rootfs.sh"
+      - "scripts/dev-shell.sh"
+      - "scripts/fetch-binaries.sh"
+      - "scripts/install-overlay-headers.sh"
+      - "scripts/install-local-binary.sh"
+      - "scripts/resolve-binary.sh"
+      - "sdk/**"
+      - "tools/mkrootfs/**"
+      - "tools/xtask/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Fetch musl submodule
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            apps/browser-demos/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install browser demo dependencies
+        working-directory: apps/browser-demos
+        run: npm ci --no-audit --no-fund
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Prepare browser demo assets
+        run: bash scripts/dev-shell.sh ./run.sh prepare-browser --allow-stale
+
+      - name: Build browser demos for GitHub Pages
+        working-directory: apps/browser-demos
+        env:
+          VITE_BASE: /kandelo/
+          VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
+        run: npm run build
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4.1.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: apps/browser-demos/dist
+          keep_files: true

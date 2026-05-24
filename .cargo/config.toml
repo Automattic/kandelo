@@ -11,6 +11,18 @@ rustflags = ["-C", "target-feature=+atomics,+bulk-memory,+mutable-globals"]
 [target.wasm64-unknown-unknown]
 rustflags = [
   "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+  # Current nightly turned `panic_immediate_abort` from a build-std-feature
+  # into a real panic strategy. Configured here (rather than via a RUSTFLAGS
+  # env var in the build scripts) because RUSTFLAGS env values override the
+  # entire target.<triple>.rustflags array, which would silently drop the
+  # link-args below — so `--import-memory` etc. would never reach lld.
+  "-Zunstable-options",
+  "-C", "panic=immediate-abort",
+  # --import-memory is required: starting with nightly-2025-10-03, rustc/lld
+  # stopped auto-injecting it when --shared-memory is set, so without it the
+  # kernel allocates a private internal memory and the host's
+  # SharedArrayBuffer is unreachable (channel handshake silently no-ops).
+  "-C", "link-arg=--import-memory",
   "-C", "link-arg=--export-memory",
   "-C", "link-arg=--shared-memory",
   "-C", "link-arg=--max-memory=1073741824",

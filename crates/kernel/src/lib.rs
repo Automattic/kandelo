@@ -5,23 +5,26 @@
 extern crate alloc;
 extern crate wasm_posix_shared;
 
+pub mod audio;
 pub mod devfs;
 pub mod fd;
 pub mod fork;
+pub mod ipc;
 pub mod lock;
 pub mod memory;
+pub mod mouse;
 pub mod mqueue;
-pub mod ipc;
 pub mod ofd;
 pub mod path;
 pub mod pipe;
-pub mod procfs;
 pub mod process;
-pub mod pshared;
 pub mod process_table;
+pub mod procfs;
+pub mod pshared;
 pub mod pty;
 pub mod signal;
 pub mod socket;
+pub mod spawn;
 pub mod syscalls;
 pub mod terminal;
 pub mod unix_socket;
@@ -40,7 +43,9 @@ pub fn debug_log(msg: &str) {
     unsafe extern "C" {
         fn host_debug_log(ptr: *const u8, len: u32);
     }
-    unsafe { host_debug_log(msg.as_ptr(), msg.len() as u32); }
+    unsafe {
+        host_debug_log(msg.as_ptr(), msg.len() as u32);
+    }
 }
 
 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
@@ -61,7 +66,9 @@ pub fn current_time_secs() -> i64 {
         }
         let mut sec: i64 = 0;
         let mut nsec: i64 = 0;
-        unsafe { host_clock_gettime(0, &mut sec as *mut i64, &mut nsec as *mut i64); }
+        unsafe {
+            host_clock_gettime(0, &mut sec as *mut i64, &mut nsec as *mut i64);
+        }
         sec
     }
     #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
@@ -128,17 +135,25 @@ mod wasm {
     #[inline(always)]
     fn wasm_memory_size() -> usize {
         #[cfg(target_arch = "wasm32")]
-        { core::arch::wasm32::memory_size(0) }
+        {
+            core::arch::wasm32::memory_size(0)
+        }
         #[cfg(target_arch = "wasm64")]
-        { core::arch::wasm64::memory_size(0) }
+        {
+            core::arch::wasm64::memory_size(0)
+        }
     }
 
     #[inline(always)]
     fn wasm_memory_grow(pages: usize) -> usize {
         #[cfg(target_arch = "wasm32")]
-        { core::arch::wasm32::memory_grow(0, pages) }
+        {
+            core::arch::wasm32::memory_grow(0, pages)
+        }
         #[cfg(target_arch = "wasm64")]
-        { core::arch::wasm64::memory_grow(0, pages) }
+        {
+            core::arch::wasm64::memory_grow(0, pages)
+        }
     }
 
     unsafe impl GlobalAlloc for BumpAlloc {
@@ -152,9 +167,9 @@ mod wasm {
                 // Lazy-init: set cursor to __heap_base on first allocation
                 if cur == 0 {
                     let base = unsafe { &__heap_base as *const u8 as usize };
-                    let _ = self.cursor.compare_exchange(
-                        0, base, Ordering::Relaxed, Ordering::Relaxed,
-                    );
+                    let _ =
+                        self.cursor
+                            .compare_exchange(0, base, Ordering::Relaxed, Ordering::Relaxed);
                     cur = self.cursor.load(Ordering::Relaxed);
                 }
 

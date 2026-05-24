@@ -1,0 +1,9 @@
+{
+  "name": "wasm-posix-libcxx",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build-libcxx": "bash build-libcxx.sh"
+  }
+}

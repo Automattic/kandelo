@@ -3,9 +3,9 @@
 > **For Claude:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development`
 > to execute this plan task-by-task.
 
-**Goal:** Retire `abi/program-metadata.toml` + `xtask/src/program_metadata.rs`.
+**Goal:** Retire `abi/program-metadata.toml` + `tools/xtask/src/program_metadata.rs`.
 Every shipped program migrates to its own per-dir
-`examples/libs/<name>/deps.toml` with `kind = "program"`. Multi-output
+`packages/registry/<name>/deps.toml` with `kind = "program"`. Multi-output
 programs use `[[outputs]]` array-of-tables. `bundle-program` and
 `build-manifest` rewired to read the per-dir registry filtered by
 `kind = "program"`.
@@ -39,12 +39,12 @@ user is holding all V2 PRs until V2 is fully done.
 ## Acceptance criteria
 
 - Every entry from `abi/program-metadata.toml` migrated to a per-dir
-  `examples/libs/<name>/deps.toml` with `kind = "program"`. Each
+  `packages/registry/<name>/deps.toml` with `kind = "program"`. Each
   manifest includes `[source].sha256` (programs were git-ref-addressed
   in V1; V2 requires content-addressed sources).
 - Multi-output programs use `[[outputs]]` array-of-tables. Single-output
   programs may use a length-1 array OR a single `[[outputs]]` block.
-- `xtask/src/program_metadata.rs` and `abi/program-metadata.toml`
+- `tools/xtask/src/program_metadata.rs` and `abi/program-metadata.toml`
   deleted.
 - `xtask::bundle_program::run` and `xtask::build_manifest::run` consume
   the per-dir registry filtered by `kind = "program"` instead of the
@@ -147,8 +147,8 @@ failures (libc-test `regression/daemon-failure` is known per memory).
 ### Task B.1: Extend `DepsManifest` schema for `kind = "program"`
 
 **Files:**
-- Modify: `xtask/src/deps_manifest.rs`
-- Test: `xtask/src/deps_manifest.rs` (existing `mod tests`)
+- Modify: `tools/xtask/src/deps_manifest.rs`
+- Test: `tools/xtask/src/deps_manifest.rs` (existing `mod tests`)
 
 **What changes:**
 
@@ -180,7 +180,7 @@ fields (the empty table parses cleanly). So `Raw` keeps `outputs` as
 
 **Step 1: Write failing tests**
 
-Append to the `mod tests` block in `xtask/src/deps_manifest.rs`:
+Append to the `mod tests` block in `tools/xtask/src/deps_manifest.rs`:
 
 ```rust
 const PROGRAM_EXAMPLE: &str = r#"
@@ -318,7 +318,7 @@ Expected: compile error or runtime fail (`program_outputs` field missing).
 
 **Step 3: Implement**
 
-In `xtask/src/deps_manifest.rs`:
+In `tools/xtask/src/deps_manifest.rs`:
 
 1. Add the `ProgramOutput` struct (above).
 2. Change `Raw.outputs` from `Outputs` to `toml::Value`:
@@ -361,7 +361,7 @@ library tests (no regressions).
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/deps_manifest.rs
+git add tools/xtask/src/deps_manifest.rs
 git commit -m "feat: extend DepsManifest schema for kind=\"program\" with [[outputs]]
 
 [[outputs]] array-of-tables: each entry has name + wasm. Library
@@ -377,9 +377,9 @@ between kind and outputs shape is rejected at parse time."
 ### Task B.2: Resolver path for `kind = "program"`
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` — `canonical_path`,
+- Modify: `tools/xtask/src/build_deps.rs` — `canonical_path`,
   `validate_outputs`.
-- Test: `xtask/src/build_deps.rs` (existing test module).
+- Test: `tools/xtask/src/build_deps.rs` (existing test module).
 
 **What changes:**
 
@@ -513,7 +513,7 @@ Tests fail to compile (no `write_program` helper) or fail at runtime.
 
 **Step 3: Implement**
 
-In `xtask/src/build_deps.rs`:
+In `tools/xtask/src/build_deps.rs`:
 
 1. Modify `canonical_path` to dispatch on `m.kind`:
    ```rust
@@ -583,7 +583,7 @@ cargo test -p xtask --target aarch64-apple-darwin
 **Step 5: Commit**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat: resolver kind=\"program\" path — programs/ subdir + wasm output validation
 
 canonical_path dispatches on kind; validate_outputs walks
@@ -596,15 +596,15 @@ kind-agnostic."
 
 ---
 
-### Task B.3: Migrate the test-program bundle to one `examples` manifest
+### Task B.3: Migrate the test-program bundle to one `kernel-test-programs` manifest
 
 **Files:**
-- Create: `examples/libs/examples/deps.toml`
+- Create: `packages/registry/kernel-test-programs/deps.toml`
 
 **What:**
 
 Per design decision 8 (multi-output) + decision 7 (no aliases): the V1
-`[examples]` canonical entry plus its 7 aliases (`exec-caller`,
+`[kernel-test-programs]` canonical entry plus its 7 aliases (`exec-caller`,
 `exec-child`, `fork-exec`, `ifhwaddr`, `mmap_shared_test`, `hello`,
 `hello64`) collapse into a single program manifest with multiple
 `[[outputs]]`. The "source" is the repo itself; the build script doesn't
@@ -633,7 +633,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 ```
 
 This passes parse (64-char lowercase hex). The cache-key sha will
-include this 0-string but no caching is invoked for `examples` outputs
+include this 0-string but no caching is invoked for `kernel-test-programs` outputs
 (stage-release.sh feeds binaries directly to bundle-program). When
 Chunk E switches to resolver-driven staging, the sha gets a real value.
 
@@ -641,7 +641,7 @@ Chunk E switches to resolver-driven staging, the sha gets a real value.
 
 ```toml
 kind = "program"
-name = "examples"
+name = "kernel-test-programs"
 version = "0.1.0"
 revision = 1
 
@@ -685,7 +685,7 @@ wasm = "hello64.wasm"
 **Step 3: Verify parse**
 
 ```bash
-cargo run -p xtask --target aarch64-apple-darwin -- build-deps parse examples
+cargo run -p xtask --target aarch64-apple-darwin -- build-deps parse kernel-test-programs
 ```
 
 Expected: prints normalised manifest with 7 outputs.
@@ -693,10 +693,10 @@ Expected: prints normalised manifest with 7 outputs.
 **Step 4: Commit**
 
 ```bash
-git add examples/libs/examples/deps.toml
-git commit -m "feat: add examples program manifest (7 outputs)
+git add packages/registry/kernel-test-programs/deps.toml
+git commit -m "feat: add kernel test program manifest (7 outputs)
 
-Replaces the V1 [examples] canonical entry plus its alias entries
+Replaces the V1 [kernel-test-programs] canonical entry plus its alias entries
 (exec-caller, exec-child, fork-exec, ifhwaddr, mmap_shared_test,
 hello, hello64) with a single multi-output manifest. Per design
 decision 8 (multi-output) + 7 (no aliases)."
@@ -709,7 +709,7 @@ decision 8 (multi-output) + 7 (no aliases)."
 
 ### Task B.4: Migrate single-output ported programs (batch 1: GNU/coreutils-style)
 
-**Files:** create one `examples/libs/<name>/deps.toml` per program in
+**Files:** create one `packages/registry/<name>/deps.toml` per program in
 the batch.
 
 **Programs in this batch (from `abi/program-metadata.toml`):**
@@ -754,7 +754,7 @@ curl -sL "$url" | shasum -a 256 | awk '{print $1}'
 Append the result to `/tmp/program-shas.txt`.
 
 **Step 2: Write the manifest** at
-`examples/libs/<name>/deps.toml`. Use the template above.
+`packages/registry/<name>/deps.toml`. Use the template above.
 
 **Step 3: Verify parse** for each manifest:
 
@@ -766,7 +766,7 @@ cargo run -p xtask --target aarch64-apple-darwin -- build-deps parse <name>
 the manifests are independent and trivial; no harm batching):
 
 ```bash
-git add examples/libs/{bc,bzip2,coreutils,dash,file,gawk,grep,gzip,less,m4,make,nano,sed,tar,xz}/deps.toml
+git add packages/registry/{bc,bzip2,coreutils,dash,file,gawk,grep,gzip,less,m4,make,nano,sed,tar,xz}/deps.toml
 git commit -m "feat: per-dir deps.toml for batch-1 single-output programs
 
 15 manifests (bc, bzip2, coreutils, dash, file, gawk, grep, gzip,
@@ -789,8 +789,8 @@ entry."
 
 Plus the `curl` PROGRAM (separate from the `libcurl` library
 introduced in A.11): per design decision 15, the program lives at
-`examples/libs/curl/` (dir is now empty after A.11's rename of the
-library's contents to `examples/libs/libcurl/`). The program manifest
+`packages/registry/curl/` (dir is now empty after A.11's rename of the
+library's contents to `packages/registry/libcurl/`). The program manifest
 needs:
 
 ```toml
@@ -813,7 +813,7 @@ wasm = "curl.wasm"
 
 For sqlite: the V2 program is `sqlite-cli` per design decision 15
 ("dual-output upstream sources... program suffixes -cli"). New dir:
-`examples/libs/sqlite-cli/`. The library `examples/libs/sqlite/`
+`packages/registry/sqlite-cli/`. The library `packages/registry/sqlite/`
 manifest is unchanged. Note: `stage-release.sh` line 145 today bundles
 this as program `sqlite` — Task B.10 will switch it to `sqlite-cli`.
 
@@ -844,7 +844,7 @@ this as program `sqlite` — Task B.10 will switch it to `sqlite-cli`.
 **Step 4: Commit:**
 
 ```bash
-git add examples/libs/{cpython,erlang,lsof,nginx,perl,quickjs,ruby,sqlite-cli,tcl,vim,wget,zip,unzip,zstd,curl}/deps.toml
+git add packages/registry/{cpython,erlang,lsof,nginx,perl,quickjs,ruby,sqlite-cli,tcl,vim,wget,zip,unzip,zstd,curl}/deps.toml
 git commit -m "feat: per-dir deps.toml for batch-2 single-output programs
 
 curl (program; library is libcurl per A.11), cpython (python.wasm),
@@ -907,7 +907,7 @@ cargo run -p xtask --target aarch64-apple-darwin -- build-deps parse git
 **Step 4: Commit:**
 
 ```bash
-git add examples/libs/{git,php,diffutils,findutils,redis,mariadb}/deps.toml
+git add packages/registry/{git,php,diffutils,findutils,redis,mariadb}/deps.toml
 git commit -m "feat: per-dir deps.toml for multi-output programs
 
 git (2 outputs), php (php + php-fpm), diffutils (4), findutils (2),
@@ -938,7 +938,7 @@ invoked for them. They exist purely so `bundle-program` can satisfy
 its lookup for source+license metadata. Output names match what
 stage-release ships.
 
-Example `examples/libs/kernel/deps.toml`:
+Example `packages/registry/kernel/deps.toml`:
 
 ```toml
 kind = "program"
@@ -965,7 +965,7 @@ The placeholder sha256 is documented in B.3 — same rationale.
 The `wasm` value is moot (it's a VFS image, not a wasm), but the
 schema requires it to be non-empty. Use `wordpress.vfs.zst` to match
 the convention build-manifest already understands (see
-`xtask/src/build_manifest.rs:261` — `.vfs.zst` is a recognised
+`tools/xtask/src/build_manifest.rs:261` — `.vfs.zst` is a recognised
 multi-extension).
 
 Verify each entry against `stage-release.sh` to confirm exact
@@ -973,21 +973,21 @@ filename conventions; adjust `wasm` accordingly.
 
 **Step 1: Write 6 manifests:**
 
-- `examples/libs/kernel/deps.toml` (output `wasm_posix_kernel.wasm`)
-- `examples/libs/userspace/deps.toml` (output `wasm_posix_userspace.wasm`)
-- `examples/libs/shell/deps.toml` (output `shell.vfs.zst`)
-- `examples/libs/lamp/deps.toml` (output `lamp.vfs.zst`)
-- `examples/libs/node/deps.toml` (output `node.wasm` — see
+- `packages/registry/kernel/deps.toml` (output `wasm_posix_kernel.wasm`)
+- `packages/registry/userspace/deps.toml` (output `wasm_posix_userspace.wasm`)
+- `packages/registry/shell/deps.toml` (output `shell.vfs.zst`)
+- `packages/registry/lamp/deps.toml` (output `lamp.vfs.zst`)
+- `packages/registry/node/deps.toml` (output `node.wasm` — see
   program-metadata.toml: it's QuickJS-NG with bootstrap, runtime is
   wasm.)
-- `examples/libs/wordpress/deps.toml` (output `wordpress.vfs.zst`)
+- `packages/registry/wordpress/deps.toml` (output `wordpress.vfs.zst`)
 
 **Step 2: Verify each parses.**
 
 **Step 3: Commit:**
 
 ```bash
-git add examples/libs/{kernel,userspace,shell,lamp,node,wordpress}/deps.toml
+git add packages/registry/{kernel,userspace,shell,lamp,node,wordpress}/deps.toml
 git commit -m "feat: per-dir deps.toml for kernel/userspace + composite VFS bundles
 
 kernel, userspace, shell, lamp, node, wordpress as kind=\"program\"
@@ -1005,10 +1005,10 @@ in-repo Rust crates (kernel, userspace) or demo VFS builders
 ### Task B.8: Drop sh/python/tclsh aliases — confirm VFS-builders already place real binaries
 
 **Files:**
-- Verify (no edits): `examples/browser/scripts/build-shell-vfs-image.ts`,
-  `examples/browser/scripts/build-lamp-vfs-image.ts`,
-  `examples/browser/scripts/build-mariadb-vfs-image.ts`,
-  `examples/browser/scripts/build-wp-vfs-image.ts`.
+- Verify (no edits): `images/vfs/scripts/build-shell-vfs-image.ts`,
+  `images/vfs/scripts/build-lamp-vfs-image.ts`,
+  `images/vfs/scripts/build-mariadb-vfs-image.ts`,
+  `images/vfs/scripts/build-wp-vfs-image.ts`.
 - Modify: `scripts/stage-release.sh` — drop the `sh` bundle entry
   (lines 86–95: bundles dash.wasm under name `sh`).
 
@@ -1019,14 +1019,14 @@ Per design decision 7 (no aliases in package system):
   separate `sh.wasm` is needed at runtime; the V1 alias was purely a
   release-manifest convenience.
 - `python → cpython`: already works because demos use `cpython.wasm`
-  directly (e.g. `examples/browser/pages/python/main.ts:11`).
+  directly (e.g. `apps/browser-demos/pages/python/main.ts:11`).
 - `tclsh → tcl`: tcl's wasm is named `tclsh.wasm`; consumers already
   refer to it directly.
 
 **Step 1: Confirm VFS-builders use real binaries.** Run grep:
 
 ```bash
-grep -rn 'sh.wasm\|tclsh.wasm\|python.wasm\|cpython.wasm' examples/browser/ | grep -v node_modules
+grep -rn 'sh.wasm\|tclsh.wasm\|python.wasm\|cpython.wasm' apps/browser-demos/ | grep -v node_modules
 ```
 
 Already verified by the planning agent: shell/lamp/wordpress builders
@@ -1047,7 +1047,7 @@ this step is documentation.
 #         --program sh \
 #         --upstream-version 0.5.12 \
 #         --revision 1 \
-#         --binary examples/libs/dash/bin/dash.wasm \
+#         --binary packages/registry/dash/bin/dash.wasm \
 #         --out-dir "$STAGING"
 ```
 
@@ -1074,8 +1074,8 @@ and tclsh.wasm directly."
 ### Task B.9: Add `Registry::all_programs()` + per-dir program-metadata loader
 
 **Files:**
-- Modify: `xtask/src/build_deps.rs` — extend `Registry` impl.
-- Test: `xtask/src/build_deps.rs`.
+- Modify: `tools/xtask/src/build_deps.rs` — extend `Registry` impl.
+- Test: `tools/xtask/src/build_deps.rs`.
 
 **What:**
 
@@ -1165,7 +1165,7 @@ fn programs_by_name_filters_to_program_kind() {
 **Step 3: Commit:**
 
 ```bash
-git add xtask/src/build_deps.rs
+git add tools/xtask/src/build_deps.rs
 git commit -m "feat: Registry::walk_all + programs_by_name for kind=\"program\" filter
 
 Used by bundle-program + build-manifest in subsequent tasks to
@@ -1182,7 +1182,7 @@ deterministic (BTreeMap by name)."
 ### Task B.10: Rewire `bundle-program` to use per-dir registry
 
 **Files:**
-- Modify: `xtask/src/bundle_program.rs`.
+- Modify: `tools/xtask/src/bundle_program.rs`.
 
 **What:**
 
@@ -1193,7 +1193,7 @@ The check is the same: "is this name registered as a program?"; the
 data shape change matters only when `build-manifest` decorates entries
 (B.11).
 
-**Step 1: Edit `xtask/src/bundle_program.rs`:**
+**Step 1: Edit `tools/xtask/src/bundle_program.rs`:**
 
 Replace:
 
@@ -1219,7 +1219,7 @@ let registry = Registry::from_env(&repo_root());
 let progs = programs_by_name(&registry)?;
 if !progs.contains_key(&program) {
     return Err(format!(
-        "program {program:?} has no examples/libs/{program}/deps.toml \
+        "program {program:?} has no packages/registry/{program}/deps.toml \
          with kind = \"program\" — add a manifest before bundling"
     ));
 }
@@ -1238,25 +1238,25 @@ cargo test -p xtask --target aarch64-apple-darwin
 mkdir -p /tmp/bundle-smoke
 cargo run -p xtask --target aarch64-apple-darwin -- bundle-program \
     --plain-wasm --program dash --upstream-version 0.5.12 --revision 1 \
-    --binary examples/libs/dash/bin/dash.wasm \
+    --binary packages/registry/dash/bin/dash.wasm \
     --out-dir /tmp/bundle-smoke
 ls /tmp/bundle-smoke/
 # Expected: dash-0.5.12-rev1-<hash>.wasm
 ```
 
-If `examples/libs/dash/bin/dash.wasm` doesn't exist on this branch,
+If `packages/registry/dash/bin/dash.wasm` doesn't exist on this branch,
 substitute any built wasm; the test is whether the lookup succeeds, not
 whether the binary is real.
 
 **Step 4: Commit:**
 
 ```bash
-git add xtask/src/bundle_program.rs
+git add tools/xtask/src/bundle_program.rs
 git commit -m "feat: bundle-program reads kind=\"program\" manifests from per-dir registry
 
 Replaces load_program_metadata() with programs_by_name(). The check
 shape is unchanged — \"is this name registered as a program?\" —
-but the source of truth is now examples/libs/<name>/deps.toml
+but the source of truth is now packages/registry/<name>/deps.toml
 instead of abi/program-metadata.toml."
 ```
 
@@ -1268,7 +1268,7 @@ instead of abi/program-metadata.toml."
 ### Task B.11: Rewire `build-manifest` to decorate entries from per-dir registry
 
 **Files:**
-- Modify: `xtask/src/build_manifest.rs`.
+- Modify: `tools/xtask/src/build_manifest.rs`.
 
 **What:**
 
@@ -1319,7 +1319,7 @@ grep -rn 'entry.source.ref\|"ref":' --include='*.ts' --include='*.sh' --include=
 If grep finds anything beyond program-metadata files, fall back to the
 "emit both" approach.
 
-**Step 2: Edit `xtask/src/build_manifest.rs`:**
+**Step 2: Edit `tools/xtask/src/build_manifest.rs`:**
 
 Replace:
 
@@ -1392,7 +1392,7 @@ cargo test -p xtask --target aarch64-apple-darwin
 ```bash
 mkdir -p /tmp/manifest-smoke
 # Stage one fake program file so build-manifest has something to walk.
-cp examples/libs/dash/bin/dash.wasm /tmp/manifest-smoke/dash-0.5.12-rev1-deadbeef.wasm 2>/dev/null \
+cp packages/registry/dash/bin/dash.wasm /tmp/manifest-smoke/dash-0.5.12-rev1-deadbeef.wasm 2>/dev/null \
   || dd if=/dev/urandom of=/tmp/manifest-smoke/dash-0.5.12-rev1-deadbeef.wasm bs=1024 count=1
 # Hash actually has to match. Compute the right hash and rename.
 sha=$(shasum -a 256 /tmp/manifest-smoke/dash-0.5.12-rev1-deadbeef.wasm | awk '{print $1}' | cut -c1-8)
@@ -1410,7 +1410,7 @@ cat /tmp/manifest-smoke/manifest.json | head -30
 **Step 6: Commit:**
 
 ```bash
-git add xtask/src/build_manifest.rs
+git add tools/xtask/src/build_manifest.rs
 git commit -m "feat: build-manifest decorates entries from per-dir registry
 
 Replaces load_program_metadata() with programs_by_name() walk.
@@ -1427,9 +1427,9 @@ shape (spdx + optional url) unchanged."
 ### Task B.12: Delete `program_metadata.rs` + `abi/program-metadata.toml`
 
 **Files:**
-- Delete: `xtask/src/program_metadata.rs`
+- Delete: `tools/xtask/src/program_metadata.rs`
 - Delete: `abi/program-metadata.toml`
-- Modify: `xtask/src/main.rs` — remove `mod program_metadata;`
+- Modify: `tools/xtask/src/main.rs` — remove `mod program_metadata;`
 
 **Step 1: Verify no remaining callers:**
 
@@ -1437,14 +1437,14 @@ shape (spdx + optional url) unchanged."
 grep -rn 'load_program_metadata\|program_metadata' --include='*.rs' --include='*.ts' --include='*.sh' --include='*.toml' . 2>/dev/null | grep -v node_modules | grep -v target/
 ```
 
-Expected: only the lines we're about to delete (`xtask/src/main.rs`'s
+Expected: only the lines we're about to delete (`tools/xtask/src/main.rs`'s
 `mod program_metadata;`, the file itself, the toml file, and possibly
 stale comments). If any other code references either, surface to the
 plan author — that's a B.10 / B.11 regression.
 
 **Step 2: Remove the references:**
 
-In `xtask/src/main.rs`, delete the line:
+In `tools/xtask/src/main.rs`, delete the line:
 
 ```rust
 mod program_metadata;
@@ -1453,7 +1453,7 @@ mod program_metadata;
 **Step 3: Delete the files:**
 
 ```bash
-git rm xtask/src/program_metadata.rs
+git rm tools/xtask/src/program_metadata.rs
 git rm abi/program-metadata.toml
 ```
 
@@ -1471,7 +1471,7 @@ Expected: clean compile, all tests green.
 git commit -m "feat: delete abi/program-metadata.toml + xtask program_metadata module
 
 The central per-program metadata table is replaced by per-dir
-examples/libs/<name>/deps.toml manifests with kind = \"program\".
+packages/registry/<name>/deps.toml manifests with kind = \"program\".
 bundle-program and build-manifest now read from the registry walk;
 nothing else in the repo references the deleted file."
 ```
@@ -1494,9 +1494,9 @@ sqlite-vs-sqlite-cli rename. Sweep:
 2. Line 126's comment about "version taken from
    `abi/program-metadata.toml`'s source.ref" is stale — the source of
    truth is now per-dir manifests.
-3. Line 145: `simple sqlite 3.45.0 examples/libs/sqlite/sqlite-install/bin/sqlite3.wasm`
+3. Line 145: `simple sqlite 3.45.0 packages/registry/sqlite/sqlite-install/bin/sqlite3.wasm`
    needs to become `simple sqlite-cli 3.45.0
-   examples/libs/sqlite/sqlite-install/bin/sqlite3.wasm` (the program
+   packages/registry/sqlite/sqlite-install/bin/sqlite3.wasm` (the program
    is `sqlite-cli`; the library is `sqlite`).
 
 The version arguments to `simple` / `bundle-program` lines are
@@ -1520,7 +1520,7 @@ git add scripts/stage-release.sh
 git commit -m "feat: stage-release.sh — refresh comments + rename sqlite to sqlite-cli
 
 V2 source of truth for program metadata is per-dir
-examples/libs/<name>/deps.toml. Comments updated to remove stale
+packages/registry/<name>/deps.toml. Comments updated to remove stale
 abi/program-metadata.toml references. The sqlite program (CLI)
 publishes as sqlite-cli; the sqlite library is unchanged. Version
 strings remain hardcoded in the script — Chunk E will switch to
@@ -1576,9 +1576,9 @@ gh pr create --base deps-cache-v2-schema-foundation --title "deps V2: chunk B �
 ## Summary
 
 Chunk B of the V2 dependency-management migration. Retires
-`abi/program-metadata.toml` + `xtask/src/program_metadata.rs`. Every
+`abi/program-metadata.toml` + `tools/xtask/src/program_metadata.rs`. Every
 shipped program now declares itself via a per-dir
-`examples/libs/<name>/deps.toml` with `kind = "program"`.
+`packages/registry/<name>/deps.toml` with `kind = "program"`.
 
 See:
 - `docs/plans/2026-04-22-deps-management-v2-design.md` (locked
@@ -1599,7 +1599,7 @@ See:
 
 - ~30 programs migrated; multi-output: git, php, diffutils,
   findutils, redis, mariadb. Composite VFS / in-repo: kernel,
-  userspace, examples, shell, lamp, node, wordpress.
+  userspace, kernel-test-programs, shell, lamp, node, wordpress.
 - Aliases retired: `sh`, `python`, `tclsh`. VFS demos already
   install the real binary at the desired path.
 - `curl` (program) and `libcurl` (library) are now distinct
@@ -1657,7 +1657,7 @@ gains a Chunk-B-shipped entry.
 | B.0  | 30 min — compute shas | none |
 | B.1  | 1.5–2 h — schema + tests | spec + quality |
 | B.2  | 1 h — resolver dispatch | spec + quality |
-| B.3  | 15 min — examples manifest | none |
+| B.3  | 15 min — kernel test program manifest | none |
 | B.4  | 1 h — 15 manifests + sha lookups | none |
 | B.5  | 1 h — 15 manifests | none |
 | B.6  | 30 min — 6 multi-output manifests | none |

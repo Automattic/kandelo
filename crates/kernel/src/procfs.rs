@@ -44,25 +44,28 @@ fn procfs_buf_handle(idx: usize) -> i64 {
 /// A parsed procfs path entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcfsEntry {
-    Root,                    // /proc
-    SelfLink,               // /proc/self (symlink → /proc/<pid>)
-    ThreadSelfLink,         // /proc/thread-self (symlink)
-    PidDir(u32),             // /proc/<pid>
-    FdDir(u32),              // /proc/<pid>/fd
-    FdLink(u32, i32),        // /proc/<pid>/fd/<N> (symlink)
-    FdInfoDir(u32),          // /proc/<pid>/fdinfo
-    FdInfo(u32, i32),        // /proc/<pid>/fdinfo/<N>
-    Stat(u32),               // /proc/<pid>/stat
-    Status(u32),             // /proc/<pid>/status
-    Cmdline(u32),            // /proc/<pid>/cmdline
-    Environ(u32),            // /proc/<pid>/environ
-    Maps(u32),               // /proc/<pid>/maps
-    Cwd(u32),                // /proc/<pid>/cwd (symlink)
-    Exe(u32),                // /proc/<pid>/exe (symlink)
-    Root_(u32),              // /proc/<pid>/root (symlink)
-    NetDir,                  // /proc/net
-    NetTcp,                  // /proc/net/tcp
-    NetUnix,                 // /proc/net/unix
+    Root,              // /proc
+    Mounts,            // /proc/mounts
+    SelfLink,          // /proc/self (symlink → /proc/<pid>)
+    ThreadSelfLink,    // /proc/thread-self (symlink)
+    PidDir(u32),       // /proc/<pid>
+    PidMounts(u32),    // /proc/<pid>/mounts
+    PidMountinfo(u32), // /proc/<pid>/mountinfo
+    FdDir(u32),        // /proc/<pid>/fd
+    FdLink(u32, i32),  // /proc/<pid>/fd/<N> (symlink)
+    FdInfoDir(u32),    // /proc/<pid>/fdinfo
+    FdInfo(u32, i32),  // /proc/<pid>/fdinfo/<N>
+    Stat(u32),         // /proc/<pid>/stat
+    Status(u32),       // /proc/<pid>/status
+    Cmdline(u32),      // /proc/<pid>/cmdline
+    Environ(u32),      // /proc/<pid>/environ
+    Maps(u32),         // /proc/<pid>/maps
+    Cwd(u32),          // /proc/<pid>/cwd (symlink)
+    Exe(u32),          // /proc/<pid>/exe (symlink)
+    Root_(u32),        // /proc/<pid>/root (symlink)
+    NetDir,            // /proc/net
+    NetTcp,            // /proc/net/tcp
+    NetUnix,           // /proc/net/unix
 }
 
 impl ProcfsEntry {
@@ -91,6 +94,17 @@ impl ProcfsEntry {
         )
     }
 }
+
+/// Minimal kernel-owned mount table for tools such as GNU coreutils `df`.
+///
+/// The current kernel has no runtime mount/umount path and does not yet receive
+/// the host VFS mount router's table. Keep this to filesystems owned directly
+/// by the Rust kernel: the root view plus its procfs/devfs virtual filesystems.
+pub const MOUNTS_CONTENT: &[u8] =
+    b"kandelo-root / kandelo-vfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\ndevfs /dev devfs rw,nosuid 0 0\n";
+
+const MOUNTINFO_CONTENT: &[u8] =
+    b"1 0 0:1 / / rw - kandelo-vfs kandelo-root rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw,nosuid,nodev,noexec\n3 1 0:3 / /dev rw,nosuid - devfs devfs rw,nosuid\n";
 
 /// Extract the pid from a ProcfsEntry (0 for root/net entries).
 pub fn entry_pid(entry: &ProcfsEntry) -> u32 {
@@ -139,6 +153,10 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
     }
     let rest = &rest[1..]; // after "/proc/"
 
+    if rest == b"mounts" {
+        return Some(ProcfsEntry::Mounts);
+    }
+
     // /proc/self/... → resolve to current pid
     // /proc/thread-self/... → resolve to current pid (simplified)
     let (pid, remainder) = if rest.starts_with(b"self") {
@@ -178,7 +196,11 @@ fn match_pid_path(rest: &[u8]) -> (u32, &[u8]) {
     let end = rest.iter().position(|&b| b == b'/').unwrap_or(rest.len());
     let pid_bytes = &rest[..end];
     if let Some(pid) = parse_u32(pid_bytes) {
-        let remainder = if end < rest.len() { &rest[end + 1..] } else { b"" };
+        let remainder = if end < rest.len() {
+            &rest[end + 1..]
+        } else {
+            b""
+        };
         (pid, remainder)
     } else {
         // Not a valid pid — return sentinel that won't match anything
@@ -208,6 +230,8 @@ fn match_pid_subpath(pid: u32, remainder: &[u8]) -> Option<ProcfsEntry> {
         b"cmdline" => Some(ProcfsEntry::Cmdline(pid)),
         b"environ" => Some(ProcfsEntry::Environ(pid)),
         b"maps" => Some(ProcfsEntry::Maps(pid)),
+        b"mounts" => Some(ProcfsEntry::PidMounts(pid)),
+        b"mountinfo" => Some(ProcfsEntry::PidMountinfo(pid)),
         b"cwd" => Some(ProcfsEntry::Cwd(pid)),
         b"exe" => Some(ProcfsEntry::Exe(pid)),
         b"root" => Some(ProcfsEntry::Root_(pid)),
@@ -263,13 +287,7 @@ pub fn generate_stat(proc: &Process) -> Vec<u8> {
     // priority nice num_threads itrealvalue starttime vsize rss ...
     let line = format!(
         "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-        proc.pid,
-        name,
-        state,
-        proc.ppid,
-        proc.pgid,
-        proc.sid,
-        proc.nice,
+        proc.pid, name, state, proc.ppid, proc.pgid, proc.sid, proc.nice,
     );
     line.into_bytes()
 }
@@ -308,8 +326,14 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         proc.pid,
         proc.pid,
         proc.ppid,
-        proc.uid, proc.euid, proc.euid, proc.euid,
-        proc.gid, proc.egid, proc.egid, proc.egid,
+        proc.uid,
+        proc.euid,
+        proc.euid,
+        proc.euid,
+        proc.gid,
+        proc.egid,
+        proc.egid,
+        proc.egid,
         count_open_fds(&proc.fd_table),
         1 + proc.threads.len(), // main thread + spawned threads
         proc.signals.pending_mask(),
@@ -408,9 +432,12 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_uid: 0,
             st_gid: 0,
             st_size: 0,
-            st_atime_sec: 0, st_atime_nsec: 0,
-            st_mtime_sec: 0, st_mtime_nsec: 0,
-            st_ctime_sec: 0, st_ctime_nsec: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
             _pad: 0,
         };
     }
@@ -425,9 +452,12 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
             st_uid: 0,
             st_gid: 0,
             st_size: 0,
-            st_atime_sec: 0, st_atime_nsec: 0,
-            st_mtime_sec: 0, st_mtime_nsec: 0,
-            st_ctime_sec: 0, st_ctime_nsec: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
             _pad: 0,
         };
     }
@@ -442,9 +472,12 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
         st_uid: 0,
         st_gid: 0,
         st_size: content_size,
-        st_atime_sec: 0, st_atime_nsec: 0,
-        st_mtime_sec: 0, st_mtime_nsec: 0,
-        st_ctime_sec: 0, st_ctime_nsec: 0,
+        st_atime_sec: 0,
+        st_atime_nsec: 0,
+        st_mtime_sec: 0,
+        st_mtime_nsec: 0,
+        st_ctime_sec: 0,
+        st_ctime_nsec: 0,
         _pad: 0,
     }
 }
@@ -453,24 +486,27 @@ pub fn procfs_stat(entry: &ProcfsEntry, content_size: u64, follow_symlinks: bool
 fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
     match entry {
         ProcfsEntry::Root => (0, 0),
-        ProcfsEntry::SelfLink => (0, 1),
-        ProcfsEntry::ThreadSelfLink => (0, 2),
-        ProcfsEntry::PidDir(pid) => (*pid, 3),
-        ProcfsEntry::FdDir(pid) => (*pid, 4),
-        ProcfsEntry::FdLink(pid, _) => (*pid, 5),
-        ProcfsEntry::FdInfoDir(pid) => (*pid, 6),
-        ProcfsEntry::FdInfo(pid, _) => (*pid, 7),
-        ProcfsEntry::Stat(pid) => (*pid, 8),
-        ProcfsEntry::Status(pid) => (*pid, 9),
-        ProcfsEntry::Cmdline(pid) => (*pid, 10),
-        ProcfsEntry::Environ(pid) => (*pid, 11),
-        ProcfsEntry::Maps(pid) => (*pid, 12),
-        ProcfsEntry::Cwd(pid) => (*pid, 13),
-        ProcfsEntry::Exe(pid) => (*pid, 14),
-        ProcfsEntry::Root_(pid) => (*pid, 15),
-        ProcfsEntry::NetDir => (0, 16),
-        ProcfsEntry::NetTcp => (0, 17),
-        ProcfsEntry::NetUnix => (0, 18),
+        ProcfsEntry::Mounts => (0, 1),
+        ProcfsEntry::SelfLink => (0, 2),
+        ProcfsEntry::ThreadSelfLink => (0, 3),
+        ProcfsEntry::PidDir(pid) => (*pid, 4),
+        ProcfsEntry::PidMounts(pid) => (*pid, 5),
+        ProcfsEntry::PidMountinfo(pid) => (*pid, 6),
+        ProcfsEntry::FdDir(pid) => (*pid, 7),
+        ProcfsEntry::FdLink(pid, _) => (*pid, 8),
+        ProcfsEntry::FdInfoDir(pid) => (*pid, 9),
+        ProcfsEntry::FdInfo(pid, _) => (*pid, 10),
+        ProcfsEntry::Stat(pid) => (*pid, 11),
+        ProcfsEntry::Status(pid) => (*pid, 12),
+        ProcfsEntry::Cmdline(pid) => (*pid, 13),
+        ProcfsEntry::Environ(pid) => (*pid, 14),
+        ProcfsEntry::Maps(pid) => (*pid, 15),
+        ProcfsEntry::Cwd(pid) => (*pid, 16),
+        ProcfsEntry::Exe(pid) => (*pid, 17),
+        ProcfsEntry::Root_(pid) => (*pid, 18),
+        ProcfsEntry::NetDir => (0, 19),
+        ProcfsEntry::NetTcp => (0, 20),
+        ProcfsEntry::NetUnix => (0, 21),
     }
 }
 
@@ -489,19 +525,26 @@ pub fn procfs_open(
 ) -> Result<i32, Errno> {
     use crate::fd::OpenFileDescRef;
     use crate::ofd::FileType;
-    use wasm_posix_shared::flags::{O_WRONLY, O_RDWR, O_CLOEXEC, O_CLOFORK, O_CREAT, O_EXCL, O_TRUNC, O_DIRECTORY, O_NOFOLLOW};
     use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
+    use wasm_posix_shared::flags::{
+        O_CLOEXEC, O_CLOFORK, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDWR, O_TRUNC, O_WRONLY,
+    };
 
     // Procfs is read-only
     if oflags & (O_WRONLY | O_RDWR) != 0 {
         return Err(Errno::EACCES);
     }
 
-    let creation_flags = O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_CLOFORK | O_DIRECTORY | O_NOFOLLOW;
+    let creation_flags =
+        O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC | O_CLOFORK | O_DIRECTORY | O_NOFOLLOW;
     let status_flags = oflags & !creation_flags;
     let mut fd_flags = 0u32;
-    if oflags & O_CLOEXEC != 0 { fd_flags |= FD_CLOEXEC; }
-    if oflags & O_CLOFORK != 0 { fd_flags |= FD_CLOFORK; }
+    if oflags & O_CLOEXEC != 0 {
+        fd_flags |= FD_CLOEXEC;
+    }
+    if oflags & O_CLOFORK != 0 {
+        fd_flags |= FD_CLOFORK;
+    }
 
     if entry.is_symlink() {
         // Opening a symlink with O_NOFOLLOW should fail with ELOOP.
@@ -538,12 +581,9 @@ pub fn procfs_open(
     let buf_idx = alloc_procfs_buf(proc, content);
     let host_handle = procfs_buf_handle(buf_idx);
 
-    let ofd_idx = proc.ofd_table.create(
-        FileType::Regular,
-        status_flags,
-        host_handle,
-        resolved_path,
-    );
+    let ofd_idx =
+        proc.ofd_table
+            .create(FileType::Regular, status_flags, host_handle, resolved_path);
     let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
     Ok(fd)
 }
@@ -580,6 +620,15 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
                 { let _ = fd; Err(Errno::ENOENT) }
             }
+        }
+        ProcfsEntry::Mounts => Ok(MOUNTS_CONTENT.to_vec()),
+        ProcfsEntry::PidMounts(pid) => {
+            validate_pid(proc, *pid)?;
+            Ok(MOUNTS_CONTENT.to_vec())
+        }
+        ProcfsEntry::PidMountinfo(pid) => {
+            validate_pid(proc, *pid)?;
+            Ok(MOUNTINFO_CONTENT.to_vec())
         }
         ProcfsEntry::NetTcp => {
             Ok(b"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n".to_vec())
@@ -640,7 +689,9 @@ pub fn procfs_readlink(
             let s = format!("{}/task/{}", proc.pid, proc.pid);
             s.into_bytes()
         }
-        ProcfsEntry::FdLink(pid, _) | ProcfsEntry::Cwd(pid) | ProcfsEntry::Exe(pid)
+        ProcfsEntry::FdLink(pid, _)
+        | ProcfsEntry::Cwd(pid)
+        | ProcfsEntry::Exe(pid)
         | ProcfsEntry::Root_(pid) => {
             if *pid != proc.pid {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
@@ -737,7 +788,9 @@ pub fn procfs_getdents64(
         let ino = procfs_ino(0, 0);
         let written = write_dirent64(buf, pos, ino, 1, DT_DIR, b".");
         if written == 0 {
-            if pos == 0 { return Err(Errno::EINVAL); }
+            if pos == 0 {
+                return Err(Errno::EINVAL);
+            }
             return Ok((pos, current as i64, false));
         }
         pos += written;
@@ -782,28 +835,31 @@ fn dir_entries(
 
     match entry {
         ProcfsEntry::Root => {
-            // /proc: self (symlink), numeric PIDs (dirs), net (dir)
-            entries.push((b"self".to_vec(), DT_LNK, procfs_ino(0, 1)));
-            entries.push((b"thread-self".to_vec(), DT_LNK, procfs_ino(0, 2)));
+            // /proc: self (symlink), numeric PIDs (dirs), mounts (file), net (dir)
+            entries.push((b"mounts".to_vec(), DT_REG, procfs_ino(0, 1)));
+            entries.push((b"self".to_vec(), DT_LNK, procfs_ino(0, 2)));
+            entries.push((b"thread-self".to_vec(), DT_LNK, procfs_ino(0, 3)));
             for &pid in pids {
                 let name = format!("{}", pid).into_bytes();
-                entries.push((name, DT_DIR, procfs_ino(pid, 3)));
+                entries.push((name, DT_DIR, procfs_ino(pid, 4)));
             }
-            entries.push((b"net".to_vec(), DT_DIR, procfs_ino(0, 16)));
+            entries.push((b"net".to_vec(), DT_DIR, procfs_ino(0, 19)));
         }
         ProcfsEntry::PidDir(pid) => {
-            // /proc/<pid>/: fd, fdinfo (dirs), stat, status, cmdline, environ, maps (files), cwd, exe (symlinks)
-            entries.push((b"fd".to_vec(), DT_DIR, procfs_ino(pid, 4)));
-            entries.push((b"fdinfo".to_vec(), DT_DIR, procfs_ino(pid, 6)));
-            entries.push((b"stat".to_vec(), DT_REG, procfs_ino(pid, 8)));
-            entries.push((b"status".to_vec(), DT_REG, procfs_ino(pid, 9)));
-            entries.push((b"cmdline".to_vec(), DT_REG, procfs_ino(pid, 10)));
-            entries.push((b"environ".to_vec(), DT_REG, procfs_ino(pid, 11)));
-            entries.push((b"maps".to_vec(), DT_REG, procfs_ino(pid, 12)));
-            entries.push((b"cwd".to_vec(), DT_LNK, procfs_ino(pid, 13)));
-            entries.push((b"exe".to_vec(), DT_LNK, procfs_ino(pid, 14)));
-            entries.push((b"root".to_vec(), DT_LNK, procfs_ino(pid, 15)));
-            entries.push((b"net".to_vec(), DT_DIR, procfs_ino(pid, 16)));
+            // /proc/<pid>/: fd, fdinfo (dirs), status files, mount tables, cwd/exe/root symlinks
+            entries.push((b"fd".to_vec(), DT_DIR, procfs_ino(pid, 7)));
+            entries.push((b"fdinfo".to_vec(), DT_DIR, procfs_ino(pid, 9)));
+            entries.push((b"stat".to_vec(), DT_REG, procfs_ino(pid, 11)));
+            entries.push((b"status".to_vec(), DT_REG, procfs_ino(pid, 12)));
+            entries.push((b"cmdline".to_vec(), DT_REG, procfs_ino(pid, 13)));
+            entries.push((b"environ".to_vec(), DT_REG, procfs_ino(pid, 14)));
+            entries.push((b"maps".to_vec(), DT_REG, procfs_ino(pid, 15)));
+            entries.push((b"mounts".to_vec(), DT_REG, procfs_ino(pid, 5)));
+            entries.push((b"mountinfo".to_vec(), DT_REG, procfs_ino(pid, 6)));
+            entries.push((b"cwd".to_vec(), DT_LNK, procfs_ino(pid, 16)));
+            entries.push((b"exe".to_vec(), DT_LNK, procfs_ino(pid, 17)));
+            entries.push((b"root".to_vec(), DT_LNK, procfs_ino(pid, 18)));
+            entries.push((b"net".to_vec(), DT_DIR, procfs_ino(pid, 19)));
         }
         ProcfsEntry::FdDir(pid) => {
             // /proc/<pid>/fd/: one symlink per open fd
@@ -828,8 +884,8 @@ fn dir_entries(
             }
         }
         ProcfsEntry::NetDir => {
-            entries.push((b"tcp".to_vec(), DT_REG, procfs_ino(0, 17)));
-            entries.push((b"unix".to_vec(), DT_REG, procfs_ino(0, 18)));
+            entries.push((b"tcp".to_vec(), DT_REG, procfs_ino(0, 20)));
+            entries.push((b"unix".to_vec(), DT_REG, procfs_ino(0, 21)));
         }
         _ => return Err(Errno::ENOTDIR),
     }
@@ -875,7 +931,6 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
     count
 }
 
-
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -895,6 +950,14 @@ mod tests {
         assert_eq!(
             match_procfs(b"/proc/self/stat", 42),
             Some(ProcfsEntry::Stat(42))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/self/mounts", 42),
+            Some(ProcfsEntry::PidMounts(42))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/self/mountinfo", 42),
+            Some(ProcfsEntry::PidMountinfo(42))
         );
         assert_eq!(
             match_procfs(b"/proc/self/fd/3", 5),
@@ -925,6 +988,14 @@ mod tests {
             match_procfs(b"/proc/42/maps", 1),
             Some(ProcfsEntry::Maps(42))
         );
+        assert_eq!(
+            match_procfs(b"/proc/42/mounts", 1),
+            Some(ProcfsEntry::PidMounts(42))
+        );
+        assert_eq!(
+            match_procfs(b"/proc/42/mountinfo", 1),
+            Some(ProcfsEntry::PidMountinfo(42))
+        );
         assert_eq!(match_procfs(b"/proc/42/cwd", 1), Some(ProcfsEntry::Cwd(42)));
         assert_eq!(match_procfs(b"/proc/42/exe", 1), Some(ProcfsEntry::Exe(42)));
         assert_eq!(
@@ -947,6 +1018,7 @@ mod tests {
 
     #[test]
     fn test_match_procfs_net() {
+        assert_eq!(match_procfs(b"/proc/mounts", 1), Some(ProcfsEntry::Mounts));
         assert_eq!(match_procfs(b"/proc/net", 1), Some(ProcfsEntry::NetDir));
         assert_eq!(match_procfs(b"/proc/net/tcp", 1), Some(ProcfsEntry::NetTcp));
         assert_eq!(
@@ -988,6 +1060,22 @@ mod tests {
         assert!(status_str.contains("Name:\tinit\n"));
         assert!(status_str.contains("Pid:\t1\n"));
         assert!(status_str.contains("Umask:\t0022\n"));
+    }
+
+    #[test]
+    fn test_generate_mounts_content() {
+        let proc = Process::new(1);
+        let mounts = generate_content(&proc, &ProcfsEntry::Mounts).unwrap();
+        let mounts_str = core::str::from_utf8(&mounts).unwrap();
+        assert!(mounts_str.contains("kandelo-root / kandelo-vfs rw 0 0"));
+        assert!(mounts_str.contains("proc /proc proc rw,nosuid,nodev,noexec 0 0"));
+        assert!(mounts_str.contains("devfs /dev devfs rw,nosuid 0 0"));
+
+        let mountinfo = generate_content(&proc, &ProcfsEntry::PidMountinfo(1)).unwrap();
+        let mountinfo_str = core::str::from_utf8(&mountinfo).unwrap();
+        assert!(mountinfo_str.contains(" - kandelo-vfs kandelo-root "));
+        assert!(mountinfo_str.contains(" - proc proc "));
+        assert!(mountinfo_str.contains(" - devfs devfs "));
     }
 
     #[test]
@@ -1098,8 +1186,8 @@ mod tests {
             procfs_getdents64(&proc, b"/proc", &mut buf, 0, &pids).unwrap();
         assert!(bytes > 0);
         assert!(exhausted);
-        // Should have: . , .. , self, thread-self, 1, net = 6 entries
-        assert_eq!(offset, 6);
+        // Should have: . , .. , mounts, self, thread-self, 1, net = 7 entries
+        assert_eq!(offset, 7);
     }
 
     #[test]
@@ -1110,8 +1198,9 @@ mod tests {
             procfs_getdents64(&proc, b"/proc/1", &mut buf, 0, &[1]).unwrap();
         assert!(bytes > 0);
         assert!(exhausted);
-        // . , .. , fd, fdinfo, stat, status, cmdline, environ, maps, cwd, exe, root, net = 13
-        assert_eq!(offset, 13);
+        // . , .. , fd, fdinfo, stat, status, cmdline, environ, maps,
+        // mounts, mountinfo, cwd, exe, root, net = 15
+        assert_eq!(offset, 15);
     }
 
     #[test]

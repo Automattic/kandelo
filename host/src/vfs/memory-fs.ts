@@ -1,4 +1,6 @@
-import type { StatResult } from "../types";
+import { decompress as zstdDecompress } from "fzstd";
+import type { StatResult, StatfsResult } from "../types";
+import { SFFS_SUPER_MAGIC } from "../statfs";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
   SharedFS,
@@ -55,17 +57,171 @@ export interface VfsImageOptions {
    * If false (default), lazy file metadata is preserved as-is.
    */
   materializeAll?: boolean;
+  /**
+   * Optional image-level metadata. `undefined` preserves any metadata loaded
+   * from the source image; `null` clears it.
+   */
+  metadata?: VfsImageMetadata | null;
 }
+
+/** Versioned, image-level declarations carried outside the guest file tree. */
+export interface VfsImageMetadata {
+  version: 1;
+  /**
+   * Exact kernel ABI this image expects when it carries ABI-bound artifacts
+   * such as wasm-posix user programs. Omit for data-only images.
+   */
+  kernelAbi?: number;
+  /** Free-form builder id, e.g. "mkrootfs 0.1.0" or a package script name. */
+  createdBy?: string;
+  /** Preserve forwards compatibility for future signed/provenance fields. */
+  [key: string]: unknown;
+}
+
+// zstd frame magic (little-endian on the wire: 28 B5 2F FD).
+// fromImage() auto-detects this and decompresses transparently so callers
+// don't have to know whether the bytes came from a `.vfs` or `.vfs.zst`.
+const ZSTD_MAGIC_BYTES = [0x28, 0xb5, 0x2f, 0xfd];
 
 // VFS image binary format constants
 const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
 const VFS_IMAGE_VERSION = 1;
 const VFS_IMAGE_FLAG_HAS_LAZY = 1 << 0;
 const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
+const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
 const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
+const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
+
+function cloneMetadata(metadata: VfsImageMetadata | null): VfsImageMetadata | null {
+  return metadata === null ? null : { ...metadata };
+}
+
+function validateMetadata(metadata: VfsImageMetadata): VfsImageMetadata {
+  if (!metadata || typeof metadata !== "object") {
+    throw new Error("VFS image metadata must be an object");
+  }
+  if (metadata.version !== 1) {
+    throw new Error(`Unsupported VFS image metadata version: ${String(metadata.version)}`);
+  }
+  if (
+    metadata.kernelAbi !== undefined &&
+    (!Number.isInteger(metadata.kernelAbi) || metadata.kernelAbi < 0)
+  ) {
+    throw new Error(`VFS image metadata kernelAbi must be a non-negative integer`);
+  }
+  if (metadata.createdBy !== undefined && typeof metadata.createdBy !== "string") {
+    throw new Error("VFS image metadata createdBy must be a string");
+  }
+  return { ...metadata };
+}
+
+function decodeMetadata(bytes: Uint8Array): VfsImageMetadata {
+  if (bytes.byteLength > VFS_IMAGE_MAX_METADATA_BYTES) {
+    throw new Error(
+      `VFS image metadata exceeds ${VFS_IMAGE_MAX_METADATA_BYTES} bytes`,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`Invalid VFS image metadata JSON: ${msg}`);
+  }
+  return validateMetadata(parsed as VfsImageMetadata);
+}
+
+function encodeMetadata(metadata: VfsImageMetadata | null): Uint8Array {
+  if (metadata === null) return new Uint8Array(0);
+  const normalized = validateMetadata(metadata);
+  const bytes = new TextEncoder().encode(JSON.stringify(normalized));
+  if (bytes.byteLength > VFS_IMAGE_MAX_METADATA_BYTES) {
+    throw new Error(
+      `VFS image metadata exceeds ${VFS_IMAGE_MAX_METADATA_BYTES} bytes`,
+    );
+  }
+  return bytes;
+}
+
+function maybeDecompressImage(image: Uint8Array): Uint8Array {
+  if (
+    image.byteLength >= ZSTD_MAGIC_BYTES.length &&
+    image[0] === ZSTD_MAGIC_BYTES[0] &&
+    image[1] === ZSTD_MAGIC_BYTES[1] &&
+    image[2] === ZSTD_MAGIC_BYTES[2] &&
+    image[3] === ZSTD_MAGIC_BYTES[3]
+  ) {
+    return decompressZstd(image);
+  }
+  return image;
+}
+
+interface ParsedImageHeader {
+  image: Uint8Array;
+  view: DataView;
+  flags: number;
+  sabLen: number;
+}
+
+function parseImageHeader(input: Uint8Array): ParsedImageHeader {
+  const image = maybeDecompressImage(input);
+
+  if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
+    throw new Error("VFS image too small");
+  }
+
+  const view = new DataView(
+    image.buffer,
+    image.byteOffset,
+    image.byteLength,
+  );
+  const magic = view.getUint32(0, true);
+  if (magic !== VFS_IMAGE_MAGIC) {
+    throw new Error(
+      `Bad VFS image magic: 0x${magic.toString(16)} (expected 0x${VFS_IMAGE_MAGIC.toString(16)})`,
+    );
+  }
+  const version = view.getUint32(4, true);
+  if (version !== VFS_IMAGE_VERSION) {
+    throw new Error(
+      `Unsupported VFS image version: ${version} (expected ${VFS_IMAGE_VERSION})`,
+    );
+  }
+  const flags = view.getUint32(8, true);
+  const sabLen = view.getUint32(12, true);
+
+  if (image.byteLength < VFS_IMAGE_HEADER_SIZE + sabLen + 4) {
+    throw new Error("VFS image truncated");
+  }
+
+  return { image, view, flags, sabLen };
+}
+
+function sectionOffsetAfterArchives(
+  image: Uint8Array,
+  view: DataView,
+  flags: number,
+  sabLen: number,
+): { lazyLen: number; archiveOffset: number; metadataOffset: number } {
+  const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
+  const lazyLen = view.getUint32(lazyOffset, true);
+  const archiveOffset = lazyOffset + 4 + lazyLen;
+  let metadataOffset = archiveOffset;
+
+  if (flags & VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES) {
+    if (image.byteLength < archiveOffset + 4) {
+      throw new Error("VFS image truncated (lazy archive section)");
+    }
+    const archiveLen = view.getUint32(archiveOffset, true);
+    metadataOffset = archiveOffset + 4 + archiveLen;
+  }
+
+  return { lazyLen, archiveOffset, metadataOffset };
+}
 
 export class MemoryFileSystem implements FileSystemBackend {
   private fs: SharedFS;
+  private imageMetadata: VfsImageMetadata | null;
   /** Lazy files: inode → { path, url, size }. Cleared per-inode after materialization. */
   private lazyFiles = new Map<number, { path: string; url: string; size: number }>();
   /** Lazy archive groups (bundle of files backed by one zip URL). */
@@ -73,8 +229,9 @@ export class MemoryFileSystem implements FileSystemBackend {
   /** Fast lookup: inode → group it belongs to. Cleared per-group after materialization. */
   private lazyArchiveInodes = new Map<number, LazyArchiveGroup>();
 
-  private constructor(fs: SharedFS) {
+  private constructor(fs: SharedFS, metadata: VfsImageMetadata | null = null) {
     this.fs = fs;
+    this.imageMetadata = metadata;
   }
 
   /** Return the underlying SharedArrayBuffer (for sharing with workers). */
@@ -88,6 +245,16 @@ export class MemoryFileSystem implements FileSystemBackend {
 
   static fromExisting(sab: SharedArrayBuffer): MemoryFileSystem {
     return new MemoryFileSystem(SharedFS.mount(sab));
+  }
+
+  /** Return a copy of image-level metadata, or null if the image did not declare any. */
+  getImageMetadata(): VfsImageMetadata | null {
+    return cloneMetadata(this.imageMetadata);
+  }
+
+  /** Set or clear image-level metadata for the next saveImage() call. */
+  setImageMetadata(metadata: VfsImageMetadata | null): void {
+    this.imageMetadata = metadata === null ? null : validateMetadata(metadata);
   }
 
   /**
@@ -129,6 +296,20 @@ export class MemoryFileSystem implements FileSystemBackend {
       entries.push({ ino, path, url, size });
     }
     return entries;
+  }
+
+  /**
+   * Rewrite the URL of every registered lazy file. Useful when a VFS image
+   * was built with placeholder URLs and the browser runtime needs to replace
+   * them with bundler-produced asset URLs.
+   */
+  rewriteLazyFileUrls(transform: (url: string, path: string) => string): void {
+    for (const [ino, entry] of this.lazyFiles) {
+      this.lazyFiles.set(ino, {
+        ...entry,
+        url: transform(entry.url, entry.path),
+      });
+    }
   }
 
   /**
@@ -346,11 +527,23 @@ export class MemoryFileSystem implements FileSystemBackend {
       ? new TextEncoder().encode(JSON.stringify(archiveEntries))
       : new Uint8Array(0);
 
-    // Layout: header | sab | u32 lazyLen | lazyJson | u32 archiveLen | archiveJson
-    // archive section is only appended when HAS_LAZY_ARCHIVES flag is set.
+    const metadata = options?.metadata === undefined
+      ? this.imageMetadata
+      : options.metadata;
+    const metadataJson = encodeMetadata(metadata);
+    const hasMetadata = metadataJson.byteLength > 0;
+
+    // Layout: header | sab | u32 lazyLen | lazyJson | u32 archiveLen | archiveJson | u32 metadataLen | metadataJson
+    // Archive and metadata sections are only appended when their flags are set.
     const archiveSectionSize = hasArchives ? 4 + archiveJson.byteLength : 0;
+    const metadataSectionSize = hasMetadata ? 4 + metadataJson.byteLength : 0;
     const totalSize =
-      VFS_IMAGE_HEADER_SIZE + sabBytes.byteLength + 4 + lazyJson.byteLength + archiveSectionSize;
+      VFS_IMAGE_HEADER_SIZE +
+        sabBytes.byteLength +
+        4 +
+        lazyJson.byteLength +
+        archiveSectionSize +
+        metadataSectionSize;
     const image = new Uint8Array(totalSize);
     const view = new DataView(image.buffer);
 
@@ -360,7 +553,8 @@ export class MemoryFileSystem implements FileSystemBackend {
     view.setUint32(
       8,
       (hasLazy ? VFS_IMAGE_FLAG_HAS_LAZY : 0) |
-        (hasArchives ? VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES : 0),
+        (hasArchives ? VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES : 0) |
+        (hasMetadata ? VFS_IMAGE_FLAG_HAS_METADATA : 0),
       true,
     );
     view.setUint32(12, sabBytes.byteLength, true);
@@ -384,7 +578,63 @@ export class MemoryFileSystem implements FileSystemBackend {
       image.set(archiveJson, archiveOffset + 4);
     }
 
+    // Metadata
+    if (hasMetadata) {
+      const metadataOffset = lazyOffset + 4 + lazyJson.byteLength + archiveSectionSize;
+      view.setUint32(metadataOffset, metadataJson.byteLength, true);
+      image.set(metadataJson, metadataOffset + 4);
+    }
+
     return image;
+  }
+
+  /** Read image-level metadata without materializing the filesystem SAB. */
+  static readImageMetadata(image: Uint8Array): VfsImageMetadata | null {
+    const parsed = parseImageHeader(image);
+    if (!(parsed.flags & VFS_IMAGE_FLAG_HAS_METADATA)) return null;
+    const { metadataOffset } = sectionOffsetAfterArchives(
+      parsed.image,
+      parsed.view,
+      parsed.flags,
+      parsed.sabLen,
+    );
+    if (parsed.image.byteLength < metadataOffset + 4) {
+      throw new Error("VFS image truncated (metadata section)");
+    }
+    const metadataLen = parsed.view.getUint32(metadataOffset, true);
+    if (metadataLen > VFS_IMAGE_MAX_METADATA_BYTES) {
+      throw new Error(
+        `VFS image metadata exceeds ${VFS_IMAGE_MAX_METADATA_BYTES} bytes`,
+      );
+    }
+    if (parsed.image.byteLength < metadataOffset + 4 + metadataLen) {
+      throw new Error("VFS image truncated (metadata payload)");
+    }
+    if (metadataLen === 0) return null;
+    return decodeMetadata(
+      parsed.image.subarray(metadataOffset + 4, metadataOffset + 4 + metadataLen),
+    );
+  }
+
+  /**
+   * Validate an image's optional kernel ABI declaration. Images without a
+   * `kernelAbi` declaration are accepted so legacy/data-only images keep
+   * loading; callers that require an explicit declaration should check
+   * `readImageMetadata(image)?.kernelAbi` first.
+   */
+  static assertImageKernelAbi(
+    image: Uint8Array,
+    kernelAbi: number,
+    label = "VFS image",
+  ): void {
+    const metadata = MemoryFileSystem.readImageMetadata(image);
+    const declared = metadata?.kernelAbi;
+    if (declared === undefined) return;
+    if (declared !== kernelAbi) {
+      throw new Error(
+        `${label} requires kernel ABI ${declared}, but the running kernel is ABI ${kernelAbi}`,
+      );
+    }
   }
 
   /**
@@ -395,33 +645,11 @@ export class MemoryFileSystem implements FileSystemBackend {
    * so the filesystem can expand beyond the image's original size.
    */
   static fromImage(image: Uint8Array, options?: { maxByteLength?: number }): MemoryFileSystem {
-    if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
-      throw new Error("VFS image too small");
-    }
-
-    const view = new DataView(
-      image.buffer,
-      image.byteOffset,
-      image.byteLength,
-    );
-    const magic = view.getUint32(0, true);
-    if (magic !== VFS_IMAGE_MAGIC) {
-      throw new Error(
-        `Bad VFS image magic: 0x${magic.toString(16)} (expected 0x${VFS_IMAGE_MAGIC.toString(16)})`,
-      );
-    }
-    const version = view.getUint32(4, true);
-    if (version !== VFS_IMAGE_VERSION) {
-      throw new Error(
-        `Unsupported VFS image version: ${version} (expected ${VFS_IMAGE_VERSION})`,
-      );
-    }
-    const flags = view.getUint32(8, true);
-    const sabLen = view.getUint32(12, true);
-
-    if (image.byteLength < VFS_IMAGE_HEADER_SIZE + sabLen + 4) {
-      throw new Error("VFS image truncated");
-    }
+    const parsed = parseImageHeader(image);
+    image = parsed.image;
+    const view = parsed.view;
+    const flags = parsed.flags;
+    const sabLen = parsed.sabLen;
 
     // Restore SharedArrayBuffer (optionally growable). The 2-arg form is
     // typed via the ES2024.SharedMemory lib (see host/tsconfig.json).
@@ -432,7 +660,12 @@ export class MemoryFileSystem implements FileSystemBackend {
     const sabView = new Uint8Array(sab);
     sabView.set(image.subarray(VFS_IMAGE_HEADER_SIZE, VFS_IMAGE_HEADER_SIZE + sabLen));
 
-    const mfs = MemoryFileSystem.fromExisting(sab);
+    let metadata: VfsImageMetadata | null = null;
+    if (flags & VFS_IMAGE_FLAG_HAS_METADATA) {
+      metadata = MemoryFileSystem.readImageMetadata(image);
+    }
+
+    const mfs = new MemoryFileSystem(SharedFS.mount(sab), metadata);
 
     // Restore lazy entries
     const lazyOffset = VFS_IMAGE_HEADER_SIZE + sabLen;
@@ -475,8 +708,8 @@ export class MemoryFileSystem implements FileSystemBackend {
       ino: s.ino,
       mode: s.mode,
       nlink: s.linkCount,
-      uid: 0,
-      gid: 0,
+      uid: s.uid,
+      gid: s.gid,
       size: s.size,
       atimeMs: s.atime,
       mtimeMs: s.mtime,
@@ -561,7 +794,9 @@ export class MemoryFileSystem implements FileSystemBackend {
   fchmod(handle: number, mode: number): void {
     this.fs.fchmod(handle, mode);
   }
-  fchown(_handle: number, _uid: number, _gid: number): void {}
+  fchown(handle: number, uid: number, gid: number): void {
+    this.fs.fchown(handle, uid, gid);
+  }
 
   stat(path: string): StatResult {
     const result = this.adaptStat(this.fs.stat(path));
@@ -601,6 +836,24 @@ export class MemoryFileSystem implements FileSystemBackend {
       }
     }
     return result;
+  }
+
+  statfs(path: string): StatfsResult {
+    this.fs.stat(path);
+    const stats = this.fs.statfs();
+    return {
+      type: SFFS_SUPER_MAGIC,
+      bsize: stats.blockSize,
+      blocks: stats.totalBlocks,
+      bfree: stats.freeBlocks,
+      bavail: stats.freeBlocks,
+      files: stats.totalInodes,
+      ffree: stats.freeInodes,
+      fsid: 0,
+      namelen: stats.maxName,
+      frsize: stats.blockSize,
+      flags: 0,
+    };
   }
 
   mkdir(path: string, mode: number): void {
@@ -647,7 +900,37 @@ export class MemoryFileSystem implements FileSystemBackend {
   chmod(path: string, mode: number): void {
     this.fs.chmod(path, mode);
   }
-  chown(_path: string, _uid: number, _gid: number): void {}
+  chown(path: string, uid: number, gid: number): void {
+    this.fs.chown(path, uid, gid);
+  }
+  lchown(path: string, uid: number, gid: number): void {
+    this.fs.lchown(path, uid, gid);
+  }
+
+  createFileWithOwner(
+    path: string,
+    mode: number,
+    uid: number,
+    gid: number,
+    content: Uint8Array,
+  ): void {
+    const fd = this.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
+    if (content.length > 0) this.write(fd, content, null, content.length);
+    this.close(fd);
+    this.chown(path, uid, gid);
+    this.chmod(path, mode);
+  }
+
+  mkdirWithOwner(path: string, mode: number, uid: number, gid: number): void {
+    this.mkdir(path, mode);
+    this.chown(path, uid, gid);
+    this.chmod(path, mode);
+  }
+
+  symlinkWithOwner(target: string, path: string, uid: number, gid: number): void {
+    this.symlink(target, path);
+    this.lchown(path, uid, gid);
+  }
 
   // access: check if path exists by stat'ing it (stat throws on error)
   access(path: string, _mode: number): void {
@@ -677,4 +960,18 @@ export class MemoryFileSystem implements FileSystemBackend {
   closedir(handle: number): void {
     this.fs.closedir(handle);
   }
+}
+
+// fzstd is a regular sync static import (see top of file). Earlier we
+// tried lazy-loading it via top-level `await import("fzstd")`, but a
+// top-level await turns this module — and every consumer, including
+// the kernel worker entry — into an async module. `BrowserKernel.boot
+// Worker()` posts its `init` message immediately after `new Worker(url)`,
+// before the worker's async load completes; the message was being
+// dropped before the worker's onmessage handler became reachable. A
+// static import is bundled by Vite for browser pages and resolved by
+// Node for tests + build scripts (host/package.json + apps/browser-demos/
+// package.json both declare fzstd, so it's always installed).
+function decompressZstd(image: Uint8Array): Uint8Array {
+  return zstdDecompress(image);
 }

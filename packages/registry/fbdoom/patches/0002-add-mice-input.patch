@@ -1,0 +1,105 @@
+diff --git a/fbdoom/i_input_tty.c b/fbdoom/i_input_tty.c
+index 95e1b60..0fe7586 100644
+--- a/fbdoom/i_input_tty.c
++++ b/fbdoom/i_input_tty.c
+@@ -255,6 +255,28 @@ static int old_mode = -1;
+ static struct termios old_term;
+ static int kb = -1; /* keyboard file descriptor */
+ 
++/* /dev/input/mice file descriptor + last-known button bitmask. The host
++   canvas listeners push PS/2 packets into the kernel queue; we drain
++   them per-tick from I_GetEvent. */
++static int mice_fd = -1;
++static unsigned int mouse_buttons = 0;
++
++static void mice_init(void)
++{
++    mice_fd = open("/dev/input/mice", O_RDONLY | O_NONBLOCK);
++    if (mice_fd < 0) {
++        printf("Mouse: /dev/input/mice unavailable; mouse disabled.\n");
++    }
++}
++
++static void mice_shutdown(void)
++{
++    if (mice_fd >= 0) {
++        close(mice_fd);
++        mice_fd = -1;
++    }
++}
++
+ void kbd_shutdown(void)
+ {
+     /* Shut down nicely. */
+@@ -271,6 +293,8 @@ void kbd_shutdown(void)
+     if (kb > 3)
+         close(kb);
+ 
++    mice_shutdown();
++
+     exit(0);
+ }
+ 
+@@ -426,6 +450,43 @@ static void UpdateShiftStatus(int pressed, unsigned char key)
+ }
+ 
+ 
++/* Drain queued PS/2 packets from /dev/input/mice and post one coalesced
++   ev_mouse per input poll. DOOM stores mouse motion as a per-tic delta, so
++   posting one event per packet lets later packets in the same tic overwrite
++   earlier motion and makes fast pointer-lock movement feel muted.
++
++   PS/2 byte0 carries L/R/M button bits and sign/overflow flags; bytes 1..2
++   are signed dx/dy with positive-up semantics for dy. The host inverts
++   browser deltaY before injecting, so dy is already in PS/2 (and DOOM) sign
++   convention. */
++static void I_PollMice(void)
++{
++    unsigned char pkt[3];
++    event_t event;
++    int n;
++    int dx = 0;
++    int dy = 0;
++    unsigned int buttons = mouse_buttons;
++
++    if (mice_fd < 0) return;
++
++    while ((n = read(mice_fd, pkt, 3)) == 3)
++    {
++        buttons = pkt[0] & 0x07;
++        dx += (signed char)pkt[1];
++        dy += (signed char)pkt[2];
++    }
++
++    if (dx == 0 && dy == 0 && buttons == mouse_buttons) return;
++
++    mouse_buttons = buttons;
++    event.type  = ev_mouse;
++    event.data1 = mouse_buttons;
++    event.data2 = dx;
++    event.data3 = dy;
++    D_PostEvent(&event);
++}
++
+ void I_GetEvent(void)
+ {
+     event_t event;
+@@ -433,7 +494,9 @@ void I_GetEvent(void)
+     unsigned char key;
+ 
+     // put event-grabbing stuff in here
+-    
++
++    I_PollMice();
++
+     while (kbd_read(&pressed, &key))
+     {
+         if (key == 0x0E) {
+@@ -494,6 +557,7 @@ void I_GetEvent(void)
+ void I_InitInput(void)
+ {
+     kbd_init();
++    mice_init();
+ 
+     //UpdateFocus();
+ }

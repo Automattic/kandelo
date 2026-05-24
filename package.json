@@ -1,19 +1,26 @@
 {
+  "name": "wasm-posix-kernel",
   "private": true,
   "type": "module",
   "scripts": {
-    "wordpress:build": "bash examples/wordpress/build.sh",
-    "wordpress:serve": "npx tsx examples/wordpress/serve.ts",
-    "wordpress:benchmark": "npx tsx examples/wordpress/perf/benchmark.ts",
+    "wordpress:build": "bash packages/registry/wordpress/demo/build.sh",
+    "wordpress:serve": "npx tsx packages/registry/wordpress/demo/serve.ts",
+    "wordpress:benchmark": "npx tsx packages/registry/wordpress/demo/perf/benchmark.ts",
     "bench": "npx tsx benchmarks/run.ts",
     "bench:browser": "npx tsx benchmarks/run.ts --host browser",
-    "bench:compare": "npx tsx benchmarks/compare.ts"
+    "bench:compare": "npx tsx benchmarks/compare.ts",
+    "pack:host": "npm --prefix host pack",
+    "pack:sdk": "npm --prefix sdk pack",
+    "pack:packages": "npm run pack:host && npm run pack:sdk"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "playwright": "^1.59.1",
     "tsx": "^4.21.0"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
+    "fzstd": "^0.1.1",
     "vite": "^8.0.3"
   }
 }

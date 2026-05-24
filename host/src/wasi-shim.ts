@@ -14,57 +14,64 @@
  * bootstrap path.
  */
 
-// --- Channel layout (must match crates/shared/src/lib.rs + glue/channel_syscall.c) ---
-const CH_STATUS = 0;
-const CH_SYSCALL = 4;
-const CH_ARGS = 8;
-const CH_ARG_SIZE = 8;  // each arg is i64 (8 bytes)
-const CH_RETURN = 56;
-const CH_ERRNO = 64;
-const CH_DATA = 72;
-const CH_DATA_SIZE = 65536;
+import {
+  ABI_SYSCALLS,
+  CHANNEL_STATUS_IDLE,
+  CHANNEL_STATUS_PENDING,
+  CH_ARG_SIZE,
+  CH_ARGS,
+  CH_DATA,
+  CH_DATA_SIZE,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_STATUS,
+  CH_SYSCALL,
+  STRUCT_SIZE_WASM_STAT,
+} from "./generated/abi";
+
+// --- Channel layout (must match crates/shared/src/lib.rs + libc/glue/channel_syscall.c) ---
 
 // Channel status values
-const CH_IDLE = 0;
-const CH_PENDING = 1;
+const CH_IDLE = CHANNEL_STATUS_IDLE;
+const CH_PENDING = CHANNEL_STATUS_PENDING;
 
-// --- Syscall numbers (from musl/arch/wasm32posix/bits/syscall.h.in) ---
-const SYS_CLOSE = 2;
-const SYS_READ = 3;
-const SYS_WRITE = 4;
-const SYS_LSEEK = 5;
-const SYS_FSTAT = 6;
-const SYS_FCNTL = 10;
-const SYS_GETPID = 28;
-const SYS_EXIT = 34;
-const SYS_KILL = 35;
-const SYS_CLOCK_GETTIME = 40;
-const SYS_POLL = 60;
-const SYS_SENDTO = 62;
-const SYS_RECVFROM = 63;
-const SYS_PREAD = 64;
-const SYS_PWRITE = 65;
-const SYS_OPENAT = 69;
-const SYS_FTRUNCATE = 79;
-const SYS_FSYNC = 80;
-const SYS_WRITEV = 81;
-const SYS_READV = 82;
-const SYS_FDATASYNC = 86;
-const SYS_FSTATAT = 93;
-const SYS_UNLINKAT = 94;
-const SYS_MKDIRAT = 95;
-const SYS_RENAMEAT = 96;
-const SYS_LINKAT = 100;
-const SYS_SYMLINKAT = 101;
-const SYS_READLINKAT = 102;
+// --- Syscall numbers (from libc/musl/arch/wasm32posix/bits/syscall.h.in) ---
+const SYS_CLOSE = ABI_SYSCALLS.Close;
+const SYS_READ = ABI_SYSCALLS.Read;
+const SYS_WRITE = ABI_SYSCALLS.Write;
+const SYS_LSEEK = ABI_SYSCALLS.Seek;
+const SYS_FSTAT = ABI_SYSCALLS.Fstat;
+const SYS_FCNTL = ABI_SYSCALLS.Fcntl;
+const SYS_GETPID = ABI_SYSCALLS.Getpid;
+const SYS_EXIT = ABI_SYSCALLS.Exit;
+const SYS_KILL = ABI_SYSCALLS.Kill;
+const SYS_CLOCK_GETTIME = ABI_SYSCALLS.ClockGettime;
+const SYS_POLL = ABI_SYSCALLS.Poll;
+const SYS_SENDTO = ABI_SYSCALLS.Sendto;
+const SYS_RECVFROM = ABI_SYSCALLS.Recvfrom;
+const SYS_PREAD = ABI_SYSCALLS.Pread;
+const SYS_PWRITE = ABI_SYSCALLS.Pwrite;
+const SYS_OPENAT = ABI_SYSCALLS.Openat;
+const SYS_FTRUNCATE = ABI_SYSCALLS.Ftruncate;
+const SYS_FSYNC = ABI_SYSCALLS.Fsync;
+const SYS_WRITEV = ABI_SYSCALLS.Writev;
+const SYS_READV = ABI_SYSCALLS.Readv;
+const SYS_FDATASYNC = ABI_SYSCALLS.Fdatasync;
+const SYS_FSTATAT = ABI_SYSCALLS.Fstatat;
+const SYS_UNLINKAT = ABI_SYSCALLS.Unlinkat;
+const SYS_MKDIRAT = ABI_SYSCALLS.Mkdirat;
+const SYS_RENAMEAT = ABI_SYSCALLS.Renameat;
+const SYS_LINKAT = ABI_SYSCALLS.Linkat;
+const SYS_SYMLINKAT = ABI_SYSCALLS.Symlinkat;
+const SYS_READLINKAT = ABI_SYSCALLS.Readlinkat;
 const SYS_GETRANDOM = 120;
-const SYS_GETDENTS64 = 122;
-const SYS_CLOCK_GETRES = 123;
-const SYS_UTIMENSAT = 125;
+const SYS_GETDENTS64 = ABI_SYSCALLS.Getdents64;
+const SYS_CLOCK_GETRES = ABI_SYSCALLS.ClockGetres;
+const SYS_UTIMENSAT = ABI_SYSCALLS.Utimensat;
 const SYS_SCHED_YIELD = 229;
 const SYS_FALLOCATE = 308;
-const SYS_DUP2 = 8;
-const SYS_SHUTDOWN = 57;
+const SYS_DUP2 = ABI_SYSCALLS.Dup2;
+const SYS_SHUTDOWN = ABI_SYSCALLS.Shutdown;
 
 // --- POSIX flags (from crates/shared/src/lib.rs) ---
 const O_RDONLY = 0;
@@ -101,7 +108,7 @@ const S_IFSOCK = 0o140000;
 const S_IFMT = 0o170000;
 
 // Stat struct size written by kernel
-const WASM_STAT_SIZE = 88;
+const WASM_STAT_SIZE = STRUCT_SIZE_WASM_STAT;
 
 // --- WASI errno values ---
 const WASI_ESUCCESS = 0;

@@ -79,6 +79,10 @@ export interface RunProgramOptions {
   /** Custom PlatformIO (defaults to NodePlatformIO).
    *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
+  /** Attach `TcpNetworkBackend` inside the kernel worker_thread so wasm
+   *  programs can dial external hosts via real Node sockets. Worker-thread
+   *  mode only — incompatible with `io`. */
+  enableTcpNetwork?: boolean;
   /** Map of virtual path → .wasm file path for exec targets */
   execPrograms?: Map<string, string>;
   /** Data to provide on stdin (process will see EOF after this data) */
@@ -88,6 +92,12 @@ export interface RunProgramOptions {
   /** Callback invoked after the process starts.
    *  Use this to call appendStdinData() for interactive stdin testing. */
   onStarted?: (kernelProxy: KernelStdinProxy, pid: number) => void | Promise<void>;
+  /** If `true`, the helper queries `kernel_get_fork_count(pid)` after the
+   *  program exits and surfaces the value on `RunProgramResult.forkCount`.
+   *  Used by the non-forking-spawn regression tests. Worker-thread mode
+   *  only (NodeKernelHost.getForkCount); main-thread mode falls back to
+   *  reading from the kernel instance directly. */
+  captureForkCount?: boolean;
 }
 
 export interface RunProgramResult {
@@ -96,6 +106,10 @@ export interface RunProgramResult {
   stderr: string;
   /** Raw stdout bytes (for binary output like compressed data) */
   stdoutBytes: Uint8Array;
+  /** Per-process fork counter for the spawned process, captured immediately
+   *  before the kernel is destroyed. Only populated when
+   *  `captureForkCount: true` is set on the run options. */
+  forkCount?: bigint;
 }
 
 /**
@@ -143,9 +157,15 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     stdinData = new TextEncoder().encode(options.stdin);
   }
 
+  // Default to mount-based VFS (rootfs.vfs at /, scratch dirs at /tmp etc.).
+  // Tests that need raw host filesystem access opt out by passing
+  // `io: new NodePlatformIO()` (which routes through `runOnMainThread` and
+  // does not engage NodeKernelHost at all).
   const host = new NodeKernelHost({
     maxWorkers: 4,
     execPrograms,
+    rootfsImage: "default",
+    enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);
       stdoutChunks.push(new Uint8Array(data));
@@ -157,30 +177,44 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
 
   await host.init();
 
+  // Capture the spawned pid so we can read kernel-side fork_count before
+  // destroy. The user-supplied onStarted (if any) still runs.
+  let capturedPid: number | undefined;
+  const onStartedWrapper = (pid: number) => {
+    capturedPid = pid;
+    if (!options.onStarted) return;
+    const proxy: KernelStdinProxy = {
+      appendStdinData(stdinPid: number, data: Uint8Array) {
+        host.appendStdinData(stdinPid, data);
+      },
+    };
+    return options.onStarted(proxy, pid);
+  };
+
   const exitPromise = host.spawn(programBytes, options.argv ?? [options.programPath], {
     env: options.env,
     stdin: stdinData,
-    onStarted: options.onStarted
-      ? async (pid: number) => {
-          const proxy: KernelStdinProxy = {
-            appendStdinData(stdinPid: number, data: Uint8Array) {
-              host.appendStdinData(stdinPid, data);
-            },
-          };
-          await options.onStarted!(proxy, pid);
-        }
-      : undefined,
+    onStarted: onStartedWrapper,
   });
 
   // Race spawn exit against timeout
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`Program timed out after ${timeout}ms`)), timeout);
+    timeoutId = setTimeout(
+      () => reject(new Error(`Program timed out after ${timeout}ms`)),
+      timeout,
+    );
   });
 
   let exitCode: number;
+  let forkCount: bigint | undefined;
   try {
     exitCode = await Promise.race([exitPromise, timeoutPromise]);
+    if (options.captureForkCount && capturedPid !== undefined) {
+      forkCount = await host.getForkCount(capturedPid);
+    }
   } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
     await host.destroy().catch(() => {});
   }
 
@@ -192,7 +226,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     offset += chunk.length;
   }
 
-  return { exitCode, stdout, stderr, stdoutBytes };
+  return { exitCode, stdout, stderr, stdoutBytes, forkCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +275,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true, ptrWidth });
 
-        const ASYNCIFY_BUF_SIZE = 16384;
-        const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+        const FORK_BUF_SIZE = 16384;
+        const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 
@@ -254,7 +288,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           memory: childMemory,
           channelOffset: childChannelOffset,
           isForkChild: true,
-          asyncifyBufAddr,
+          forkBufAddr,
           ptrWidth,
         };
 

@@ -8,7 +8,7 @@ This project uses a split license model, similar to Linux kernel + musl libc:
     (GPL-2.0-or-later). See COPYING for the full text.
 
   - The runtime library components that are linked into user programs
-    (musl-overlay/ and glue/) are licensed under the MIT License.
+    (libc/musl-overlay/ and libc/glue/) are licensed under the MIT License.
     See COPYING.runtime for the full text.
 
 This means you can compile and run your own programs — including proprietary
@@ -32,16 +32,16 @@ GPL-2.0-or-later:
   examples/        Example programs and browser demos
 
 MIT:
-  musl-overlay/    Architecture overlay for musl libc (matches musl's license)
-  glue/            Syscall glue compiled into user programs
+  libc/musl-overlay/    Architecture overlay for musl libc (matches musl's license)
+  libc/glue/            Syscall glue compiled into user programs
 
 
 Third-Party Software
 --------------------
 
 musl libc — Copyright (c) 2005-2020 Rich Felker, et al.
-Licensed under the MIT License. See musl/COPYRIGHT for full details.
+Licensed under the MIT License. See libc/musl/COPYRIGHT for full details.
 
-The examples/libs/ directory contains source trees of third-party software
+The packages/registry/ directory contains source trees of third-party software
 (nginx, PHP, MariaDB, Redis, CPython, Git, GNU coreutils, etc.) which retain
 their original licenses. See the license files within each subdirectory.

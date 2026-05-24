@@ -1,12 +1,15 @@
 // Browser-compatible exports (zero Node.js dependencies)
 export { WasmPosixKernel } from "./kernel";
 export type { KernelCallbacks } from "./kernel";
+export { CentralizedKernelWorker } from "./kernel-worker";
+export type { CentralizedKernelCallbacks, ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
+export { SYSCALL_NAMES } from "./kernel-worker";
 export { SyscallChannel, ChannelStatus } from "./channel";
 export { SharedPipeBuffer } from "./shared-pipe-buffer";
 export { BrowserWorkerAdapter } from "./worker-adapter-browser";
-export { centralizedWorkerMain } from "./worker-main";
+export { centralizedWorkerMain, centralizedThreadWorkerMain, patchWasmForThread } from "./worker-main";
 export type { MessagePort as WorkerMessagePort } from "./worker-main";
-export type { KernelConfig, PlatformIO, StatResult } from "./types";
+export type { KernelConfig, PlatformIO, StatResult, StatfsResult } from "./types";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type {
   HostToWorkerMessage, WorkerToHostMessage,

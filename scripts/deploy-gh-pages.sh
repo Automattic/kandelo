@@ -12,7 +12,7 @@ REPO_NAME="${1:-wasm-posix-kernel}"
 CORS_PROXY="${VITE_CORS_PROXY_URL:-https://wordpress-playground-cors-proxy.net/?}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BROWSER_DIR="$ROOT_DIR/examples/browser"
+BROWSER_DIR="$ROOT_DIR/apps/browser-demos"
 
 echo "=== Building browser demos for /${REPO_NAME}/ ==="
 echo "    CORS proxy: ${CORS_PROXY}"
@@ -32,6 +32,10 @@ if [ ! -f dist/service-worker.js ]; then
 fi
 if ! grep -q "service-worker.js" dist/index.html; then
   echo "ERROR: COI script tag not found in dist/index.html"
+  exit 1
+fi
+if [ -n "$CORS_PROXY" ] && ! grep -Fq "var CORS_PROXY_URL = \"${CORS_PROXY}\";" dist/service-worker.js; then
+  echo "ERROR: CORS proxy URL was not injected into dist/service-worker.js"
   exit 1
 fi
 echo "Verification passed."

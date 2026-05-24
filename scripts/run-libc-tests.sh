@@ -13,9 +13,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
-LIBC_TEST="$REPO_ROOT/libc-test"
-BUILD_DIR="$REPO_ROOT/libc-test/build"
+GLUE_DIR="$REPO_ROOT/libc/glue"
+LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
+BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
@@ -86,7 +86,7 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
+    -mllvm -wasm-use-legacy-eh=false
     -D_GNU_SOURCE
 )
 CFLAGS=("${CFLAGS_BASE[@]}" -I"$LIBC_TEST/src/common")
@@ -122,16 +122,16 @@ LINK_FLAGS=(
     -Wl,--export=__wasm_thread_init
 )
 
-# Asyncify support: instrument wasm so fork() can save/restore call stack
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+# Fork-instrumentation: apply wasm-fork-instrument so fork() can save/restore
+# the call stack across WebAssembly instances. The tool auto-discovers fork
+# paths via call-graph analysis (no onlylist). No-op on programs that don't
+# transitively call kernel.kernel_fork.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
-asyncify_wasm() {
+instrument_wasm() {
     local wasm="$1"
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
     fi
 }
 
@@ -193,7 +193,7 @@ build_functional() {
     "$CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 build_regression() {
@@ -205,7 +205,7 @@ build_regression() {
     "$CC" "${CFLAGS[@]}" \
         "$src" "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 build_math() {
@@ -220,7 +220,7 @@ build_math() {
         "$LIBC_TEST/src/common/mtest.c" \
         "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 build_math-relaxed() {
@@ -231,14 +231,14 @@ build_math-relaxed() {
 
     # Use CFLAGS_BASE (without -I common) so overlay's mtest.h shadows the original
     "$CC" "${CFLAGS_BASE[@]}" \
-        -I"$REPO_ROOT/libc-test-overlay" \
+        -I"$REPO_ROOT/tests/libc/libc-test-overlay" \
         -I"$LIBC_TEST/src/common" \
         -I"$LIBC_TEST/src/math" \
         "$src" \
         "$LIBC_TEST/src/common/mtest.c" \
         "${COMMON_SRCS[@]}" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/libc-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 # ── Run a single test ───────────────────────────────────────
@@ -525,4 +525,9 @@ if $REPORT_MODE; then
         echo "</details>"
     } > "$REPORT"
     echo "Report written to: $REPORT"
+fi
+
+# Exit with error if any unexpected failures
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+    exit 1
 fi

@@ -1,0 +1,17 @@
+name = "core-server"
+description = "Core server stack packages and libraries for Kandelo CI."
+
+packages = [
+  "kernel",
+  "userspace",
+  "nginx",
+  "php",
+  "sqlite",
+  "mariadb",
+  "zlib",
+  "openssl",
+  "libxml2",
+  "pcre2-source",
+  "libcxx",
+  "libcurl",
+]

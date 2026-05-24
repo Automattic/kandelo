@@ -1,4 +1,4 @@
-# wasm-posix-kernel
+# Kandelo
 
 ## Test Verification
 
@@ -34,31 +34,32 @@
    ```bash
    bash scripts/check-abi-version.sh
    ```
-   Expected: exit 0. Rebuilds the kernel wasm, regenerates the structural snapshot (covering channel layout, syscall numbers, marshalled structs, and kernel-wasm exports), and fails if `abi/snapshot.json` drifts from source, or if the snapshot changed vs `origin/main` without a matching `ABI_VERSION` bump in `crates/shared/src/lib.rs`. See [docs/abi-versioning.md](docs/abi-versioning.md).
+   Expected: exit 0. Rebuilds the kernel wasm, regenerates the structural snapshot (covering channel layout, syscall numbers, marshalled structs, and kernel-wasm exports), and fails if `abi/snapshot.json` drifts from source, or if the snapshot changed vs `origin/main` without either a matching `ABI_VERSION` bump in `crates/shared/src/lib.rs` or an additive-compatible ABI diff. See [docs/abi-versioning.md](docs/abi-versioning.md).
 
 6. **Browser demo verification**: When fixing browser demo bugs, run `./run.sh browser` and manually verify the fix in a browser before claiming it works. Code reasoning alone is not sufficient — browser timing, service workers, and Wasm behavior must be observed.
 
-## Kernel ABI stability — DO NOT change without bumping `ABI_VERSION`
+## Kernel ABI stability — DO NOT change incompatibly without bumping `ABI_VERSION`
 
-The kernel's binary interface to user programs is load-bearing: any silent change can corrupt memory in any binary compiled against an older kernel. **Every change to the following requires bumping `ABI_VERSION` in `crates/shared/src/lib.rs` and regenerating `abi/snapshot.json` in the same commit:**
+The kernel's binary interface to user programs is load-bearing: any silent incompatible change can corrupt memory in any binary compiled against an older kernel. **Every incompatible change to the following requires bumping `ABI_VERSION` in `crates/shared/src/lib.rs` and regenerating `abi/snapshot.json` in the same commit:**
 
 - Channel header layout (`shared::channel::*`), channel data buffer, signal-delivery area.
-- Syscall numbers (additions, removals, renames).
-- Marshalled `repr(C)` structs (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`, `WasmStatfs`).
-- Asyncify save slots (`shared::abi::ASYNCIFY_SAVE_SLOTS`).
+- Syscall numbers (removals, renames, reassignments; additions are allowed without a bump if existing entries are unchanged).
+- Existing marshalled `repr(C)` structs (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`, `WasmStatfs`).
 - `shared::abi::*` constants (custom section name, process-expected globals, export filter lists).
-- Kernel-wasm exports (any `kernel_*` function signature change, global type/mutability change, or new/removed export that isn't on the toolchain denylist).
+- The five `wpk_fork_*` export names + save buffer / frame layout emitted by `wasm-fork-instrument` (see [docs/fork-instrumentation.md](docs/fork-instrumentation.md)). The tool hardcodes saved-global offsets at instrument time; changing the layout and re-running old user binaries against a new kernel will corrupt the fork save path.
+- Kernel-wasm exports (any existing `kernel_*` function signature change, global type/mutability change, or removed export that isn't on the toolchain denylist; additions are allowed without a bump if existing entries are unchanged).
 
 **Workflow when you've changed something that might be ABI-affecting:**
 
 ```bash
 bash scripts/check-abi-version.sh update   # regenerate abi/snapshot.json
 git diff abi/snapshot.json                 # inspect — is this actually an ABI change?
-# If yes: bump ABI_VERSION in crates/shared/src/lib.rs and commit both files together.
+# If it changes existing ABI surface: bump ABI_VERSION in crates/shared/src/lib.rs and commit both files together.
+# If it is only additive-compatible: commit the snapshot without bumping ABI_VERSION.
 bash scripts/check-abi-version.sh          # verify
 ```
 
-The script is also run as step 5 of the test suite above. CI refuses to merge a change where the snapshot drifts without a version bump. See [docs/abi-versioning.md](docs/abi-versioning.md) for full policy, including what the structural check does *not* catch (e.g., semantic changes that don't shift offsets — reviewers must flag those).
+The script is also run as step 5 of the test suite above. CI refuses to merge a change where the snapshot drifts from source, or where a no-bump snapshot diff changes existing ABI surface. See [docs/abi-versioning.md](docs/abi-versioning.md) for full policy, including what the structural check does *not* catch (e.g., semantic changes that don't shift offsets — reviewers must flag those).
 
 ## Performance Benchmarks
 
@@ -70,12 +71,12 @@ The script is also run as step 5 of the test suite above. CI refuses to merge a 
 |-------|-----------------|---------------------|
 | `syscall-io` | Pipe/file throughput, syscall latency | `scripts/build-programs.sh` |
 | `process-lifecycle` | fork, exec, clone, cold start | `scripts/build-programs.sh` |
-| `erlang-ring` | BEAM VM message passing (1000 processes) | `bash examples/libs/erlang/build-erlang.sh` |
-| `wordpress` | PHP CLI + WordPress HTTP first response | `bash examples/libs/php/build-php.sh` + WordPress checkout |
-| `mariadb` | SQL bootstrap + query performance | `bash examples/libs/mariadb/build-mariadb.sh` |
+| `erlang-ring` | BEAM VM message passing (1000 processes) | `bash packages/registry/erlang/build-erlang.sh` |
+| `wordpress` | PHP CLI + WordPress HTTP first response | `bash packages/registry/php/build-php.sh` + WordPress checkout |
+| `mariadb` | SQL bootstrap + query performance | `bash packages/registry/mariadb/build-mariadb.sh` |
 
 Application suites require the SDK. The SDK is worktree-local: every
-build script under `examples/libs/*/build-*.sh` sources
+build script under `packages/registry/*/build-*.sh` sources
 `sdk/activate.sh` to put `<worktree>/sdk/bin/` on PATH. No `npm link`
 needed (and explicitly avoided — a global symlink can route a build
 in one worktree to a sibling worktree's SDK source). `npm link` still
@@ -107,19 +108,39 @@ Centralized kernel mode only. One kernel Wasm instance serves all process worker
 
 See [docs/architecture.md](docs/architecture.md) for full architecture details.
 
-## Two hosts: Browser AND Node.js
+## Two hosts: Browser AND Node.js — DUAL-HOST PARITY IS LOAD-BEARING
 
-This project supports **two host runtimes**: Node.js (`host/src/node-kernel-host.ts`, `host/src/node-kernel-worker-entry.ts`, `host/src/worker-adapter.ts`) and Browser (`host/src/browser.ts`, `host/src/worker-adapter-browser.ts`, `host/src/worker-entry-browser.ts`, plus `examples/browser/lib/browser-kernel.ts`).
+**Node.js and the Browser host are equals.** Neither is a primary; neither is a follower. Every fix, feature, and refactor that touches host-runtime behavior MUST land on both — in the **same PR**, not in a follow-up. A "we'll do the browser side later" PR is the bug. PRs that merge a one-sided fix have repeatedly broken production demos for users:
 
-**Every bug fix and feature must be considered for both hosts.** A fix wired only into the Node path leaves the browser broken — the brk-base fix (PR #388) shipped this exact regression because the spawn/exec call sites on the browser side were missed during review.
+- **PR #388 (brk-base fix)** wired Node-only; browser spawn/exec call sites missed → mariadbd hang in the browser demo. Cleanup landed in PR #397 *weeks later*.
+- **PR #410 (a_crash trap + worker exit message)** wired Node-only; browser host had no `{type:"exit"}` message handling on `handleSpawn`/`handleFork` and **no message listener at all on `handleExec`** → silent worker crashes during WordPress LAMP install hung the user's demo with no error indication.
 
-When changing host code:
-- Search both: `grep -rn "<symbol>" host/ examples/browser/`. If the Node path has it, the browser path almost certainly needs it too.
-- The two hosts share `host/src/kernel-worker.ts` (the `CentralizedKernelWorker` class) and `host/src/worker-main.ts` (the process-worker entry). Changes there are cross-cutting — verify both code paths still work.
-- Spawn / fork / exec / clone all have parallel implementations in the Node and Browser host adapters. If you touch one, audit the other.
-- Tests should cover both: vitest tests with `runCentralizedProgram` exercise the Node path; browser-host tests live under `host/test/browser-worker-adapter.test.ts` and `examples/browser/test/`. A Node-only regression test does not protect the browser path.
+These are not edge cases. They are the same failure mode repeated. The cost lands on users running `./run.sh browser`, who see a frozen demo with no error in console.
 
-When reviewing a change, ask explicitly: *what does this look like on the browser host?* If the answer isn't immediately obvious, the change is incomplete.
+### Hard requirements when touching host code
+
+A change is incomplete unless ALL of these hold:
+
+1. **Symmetry check first.** Before writing any host-side change, run `grep -rn "<symbol>" host/ apps/browser-demos/` for every callsite of the affected function. Both trees should show parallel structure; if one is missing handlers the other has, that's the change.
+2. **Both PRs of the wiring land in the same commit.** Don't merge a host-side change with a TODO/follow-up note for the other side. The follow-up will be lost — see PR #388/#397 above.
+3. **Tests cover both paths.** A vitest test (Node) does not protect the browser path. Add a browser test under `packages/registry/<pkg>/test/**/*.spec.ts` (Playwright) or `apps/browser-demos/test/`, OR — at minimum — manually verify the affected demo via `./run.sh browser` per the [Test Verification](#test-verification) checklist (item 6: browser demo verification).
+4. **PR description names both hosts.** The reviewer should not have to ask "what about the browser?" — the answer should be in the PR body, with the diff to prove it. If the answer is "browser doesn't need this," the PR must explain *why* (e.g., "browser uses a different mechanism that already handles this case, see X").
+
+### Where the parallel implementations live
+
+| Concern | Node.js | Browser |
+|---|---|---|
+| Host entry | `host/src/node-kernel-host.ts` | `host/src/browser-kernel-host.ts` |
+| Worker entry / spawn / fork / exec / clone / exit / terminate | `host/src/node-kernel-worker-entry.ts` | `host/src/browser-kernel-worker-entry.ts` |
+| Worker adapter | `host/src/worker-adapter.ts` | `host/src/worker-adapter-browser.ts` |
+| Process-worker entry | shared: `host/src/worker-main.ts` |
+| Kernel | shared: `host/src/kernel-worker.ts` (`CentralizedKernelWorker`) |
+
+`host/src/kernel-worker.ts` and `host/src/worker-main.ts` are shared and cross-cutting — verify both runtimes still work after changes there.
+
+### Reviewer prompt
+
+When reviewing a change touching any of the files above, ask explicitly: ***"What does this look like on the OTHER host?"*** If the answer isn't an obvious diff hunk in the same PR, request changes. Reviewers should treat a one-sided host change as an incomplete PR, not a "ship and follow up."
 
 ## Performance: Do NOT Micro-Optimize the Syscall Hot Path
 
@@ -137,9 +158,24 @@ The real performance lever is the **dedicated worker thread architecture** (`Nod
 ## Build
 
 ```bash
-bash build.sh          # Build kernel wasm + musl sysroot
-scripts/build-programs.sh  # Build test/example C programs
+bash scripts/build-musl.sh   # Build the wasm32 musl sysroot (one-time / on overlay changes)
+bash build.sh                # Build kernel wasm + host TypeScript + programs
+scripts/build-programs.sh    # Re-build test/example C programs
 ```
+
+**`bash build.sh` does NOT rebuild musl.** It rebuilds the kernel
+(`crates/kernel/`), the host TS package (`host/dist/`), and — if
+`programs/*.c` exists — user programs. After editing anything under
+`libc/musl-overlay/` or `libc/glue/channel_syscall.c`, run
+`scripts/build-musl.sh` first; otherwise user programs link against a
+stale `sysroot/lib/libc.a` and the kernel-side and libc-side ABI
+constants can drift silently. Vitest will pick up the stale binary and
+fail with cryptic ESRCH / EINVAL errors.
+
+**Future work:** make `build.sh` detect overlay-source mtime drift and
+trigger a musl rebuild automatically. Tracked here so the next devloop
+gotcha doesn't bite again — last bit during the SYS_SPAWN renumber
+(commit `1da06b2cc`).
 
 ### Always use `scripts/dev-shell.sh`, not bare `nix develop`
 
@@ -170,6 +206,97 @@ correct fix is to add the package to `flake.nix`, not to expand
 `--keep`. `--keep` is for workflow context (auth, dispatch inputs),
 not for tools.
 
+## Package system
+
+Every artifact under `packages/registry/<name>/` is a **package** with two
+TOML files:
+- **`package.toml`** — the **recipe** (project-agnostic): name,
+  version, source pin, license, deps, `[build].script_path`.
+- **`build.toml`** — this project's **build + publish state**:
+  `script_path`, `repo_url`, `commit`, `revision`, and `[binary]`
+  pointing at where binaries are published (typically
+  `index_url = "https://.../binaries-abi-v{abi}/index.toml"`).
+
+Archive URLs are NOT in either of those files. They live in a
+per-release `index.toml` ledger, keyed by `(name, version, arch)`.
+The resolver (`cargo xtask build-deps ...`) fetches the index,
+looks up the entry, downloads the archive, and verifies. No central
+lockfile (no `binaries.lock`, no `manifest.json`). See
+[docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md](docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md)
+for the full design.
+
+**Hard rules:**
+
+- **Never hand-edit `index.toml`.** It's mutated atomically by
+  per-matrix-build jobs running `scripts/index-update.sh` under a
+  workflow-level state-lock. A manual edit will be clobbered by the
+  next matrix run. For a one-shot recovery (composing the initial
+  ledger from existing archives, e.g. during a migration), use
+  `scripts/compose-initial-index.sh <target-tag> <abi>`.
+- **`build.toml.index_url` should template `{abi}`**, not hardcode the
+  ABI generation. The resolver substitutes `{abi}` with `ABI_VERSION`
+  from `crates/shared/src/lib.rs` at fetch time, so a single
+  build.toml survives ABI bumps.
+- **Bumping `build.toml.revision = N` invalidates every cached
+  archive for that package.** Bump only when output bytes
+  legitimately change (build flag tweaks, asyncify pass, etc.).
+  Don't bump for doc-only changes — that triggers a needless
+  rebuild across the matrix. Revision lives in `build.toml`
+  because it's a publish-time counter (project state), not a
+  recipe property — `package.toml` doesn't carry it.
+- **ABI bumps (`ABI_VERSION` in `crates/shared/src/lib.rs`) require
+  a new release tag.** v(N-1) archives don't satisfy v(N)
+  verifications. The matrix flow handles this automatically: each
+  matrix entry publishes its archive + index entry to
+  `binaries-abi-v<N>/` atomically; the v(N-1) release stays as
+  historical state.
+- **Multi-output packages land under `binaries/programs/<arch>/<pkg>/<out>`,
+  single-output under `binaries/programs/<arch>/<out>`.** Never
+  hardcode this convention in scripts; query via
+  `xtask build-deps output-path <pkg> <wasm-basename>` (or in run.sh,
+  use the `pkg_has_output` helper). See `run.sh`'s `has_<pkg>` block
+  for the contract.
+
+**Common tasks:**
+
+| Task | Command |
+|---|---|
+| Resolve a single package (fetch via index or source-build, cache) | `cargo xtask build-deps resolve <name>` |
+| Materialize all consumer-facing symlinks under `binaries/` | `scripts/fetch-binaries.sh --allow-stale` |
+| Where does a package's output land? | `cargo xtask build-deps output-path <name> <wasm-basename>` |
+| Stage a single archive (matrix-build's per-entry step) | `cargo xtask archive-stage --package packages/registry/<name> --arch <arch> --out <dir>` |
+| Force a re-publish of selected packages | dispatch `.github/workflows/force-rebuild.yml` with the comma list |
+| Atomically publish one archive + index entry (matrix-build sequence) | `scripts/index-update.sh --target-tag <tag> --package <p> --version <v> --revision <r> --arch <a> --status success --archive-path <f> --archive-name <n> --cache-key-sha <s>` |
+| Compose initial index.toml from existing archives (migration only) | `scripts/compose-initial-index.sh <target-tag> <abi>` |
+
+**When something looks wrong:**
+
+- Source build firing for a package you expect to be cached →
+  `cargo xtask build-deps resolve <name>` logs the reason. Common
+  causes: cache_key_sha mismatch (recipe drift since the archive was
+  published; bump `build.toml.revision` if intentional, or wait for
+  CI to re-publish), the `index.toml` entry's status is `failed`
+  with no fallback, or the index fetch itself failed (offline /
+  unreachable URL).
+- `fetch-binaries.sh` reports N failures → those packages will
+  source-build on the matrix runners. With `--allow-stale` (CI
+  default) the script still exits 0 since per-target builds gate
+  failures themselves.
+- `has_<pkg>` returns false even though the archive is present →
+  check whether the resolver-driven `pkg_has_output` helper agrees;
+  if it does but `has_<pkg>` doesn't, that's a stale hardcoded path.
+
+**Reference docs (don't reinvent):**
+
+- **`docs/package-management.md`** — schema, resolver, build-script
+  contract, host-tool requirements. The reference manual.
+- **`docs/binary-releases.md`** — operational doc for the release
+  flow + `index.toml` shape + consumer-side fetch behavior.
+- **`docs/abi-versioning.md`** — when `ABI_VERSION` must bump.
+- **`docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md`** —
+  why the index-ledger split (vs the prior `[binary]`-in-package.toml
+  shape), with the four-bug postmortem.
+
 ## Cross-Compilation and Configure Scripts
 
 We cross-compile C libraries for wasm32 using `wasm32posix-cc`. Autoconf `configure` scripts often run feature-detection checks (e.g., `AC_CHECK_FUNCS`) that test against the **host** system's libraries rather than the wasm sysroot. This produces incorrect results — functions like `feenableexcept` may exist on macOS/Linux but not in our musl-based wasm sysroot.
@@ -195,14 +322,31 @@ Every PR that adds or changes user-facing features, APIs, or behavior must inclu
 - **`docs/sdk-guide.md`** — Update when changing SDK tools or compilation workflow
 - **`docs/porting-guide.md`** — Update when changing how software is ported or run
 - **`docs/browser-support.md`** — Update when changing browser capabilities or limitations
+- **`docs/package-management.md`** — Update when changing the package schema, resolver behavior, or build-script contract
+- **`docs/binary-releases.md`** — Update when changing the release flow, `index.toml` shape, or `fetch-binaries.sh` consumer path
 - **`README.md`** — Update when adding major features, new ported software, or changing project structure
 
 Do not skip documentation. If a feature is worth implementing, it is worth documenting.
+
+### Kandelo Demo Metadata
+
+Built-in Kandelo demo presentation preferences belong in the VFS image, not in
+the Kandelo app loader. Write `/etc/kandelo/demo.json` with
+`writeKandeloDemoConfig()` from `images/vfs/scripts/kandelo-demo-config.ts` for
+preferred surfaces, `autoCommand`, and image-declared assets.
+
+It is OK for `demo.json` to be absent. The Kandelo app should use generic
+defaults in that case, not demo-specific fallbacks or conditionals. When
+changing metadata for an existing package-backed image, bump that package's
+`build.toml` `revision` so the image is rebuilt. See
+`docs/browser-support.md#kandelo-demo-metadata`.
 
 ## Key Directories
 
 - `crates/kernel/` — Rust kernel (no_std on wasm32)
 - `host/src/` — TypeScript host runtime
-- `host/test/` — Vitest integration tests
-- `glue/channel_syscall.c` — Syscall glue compiled into every user program
+- `host/test/` — Host and kernel runtime tests
+- `packages/registry/<name>/test/` — Ported package integration tests and fixtures
+- `tests/package-system/` — Package registry and binary-fetching automation tests
+- `libc/glue/channel_syscall.c` — Syscall glue compiled into every user program
 - `scripts/` — Build and test scripts

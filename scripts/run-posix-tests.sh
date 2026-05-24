@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
+GLUE_DIR="$REPO_ROOT/libc/glue"
 POSIX_TEST="$REPO_ROOT/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
@@ -59,7 +59,7 @@ CFLAGS=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
+    -mllvm -wasm-use-legacy-eh=false
     -D_GNU_SOURCE
     -D_POSIX_C_SOURCE=200112L
     -I"$POSIX_TEST/include"
@@ -87,16 +87,13 @@ LINK_FLAGS=(
     -Wl,--export=__wasm_thread_init
 )
 
-# Asyncify for fork()
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+# Fork-instrumentation for fork()
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
-asyncify_wasm() {
+instrument_wasm() {
     local wasm="$1"
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
     fi
 }
 
@@ -150,7 +147,7 @@ build_test() {
     "$CC" "${CFLAGS[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/posix-test-build-err.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 }
 
 run_test() {

@@ -1,0 +1,20 @@
+{
+  "name": "mkrootfs",
+  "version": "0.1.0",
+  "description": "Build and inspect wasm-posix-kernel rootfs VFS images",
+  "private": true,
+  "type": "module",
+  "bin": { "mkrootfs": "./bin/mkrootfs.mjs" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "wasm-posix-kernel": "file:../../host",
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0"
+  }
+}

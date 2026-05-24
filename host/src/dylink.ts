@@ -173,6 +173,29 @@ export interface LoadedSharedLibrary {
 }
 
 /**
+ * Options used when re-instantiating a side module in a fork child.
+ *
+ * Preconditions:
+ *   - Replay must run in the same order as the parent's original dlopens,
+ *     against the same initial table/memory state. `__table_base` is
+ *     captured from `options.table.length` at replay time and must equal
+ *     the parent's value — anything that grows the child's table before
+ *     replay (a future GOT-prealloc pass, an interleaved dlsym, etc.)
+ *     diverges the layout and corrupts call_indirect targets.
+ *   - `options.loadedLibraries` must NOT already contain `name`. Replay
+ *     does not refresh existing entries; a duplicate would be silently
+ *     deduped and return a handle whose memoryBase may not match.
+ *   - The library must have no `dylink.0` NEEDED deps. Dep replay is not
+ *     yet plumbed; `loadSharedLibrarySync` throws if you try.
+ */
+export interface DylinkReplayOptions {
+  /** Memory base returned by the parent's allocator. Data relocations in
+   *  the memcpy'd data section encode (memoryBase + offset); using any
+   *  other base corrupts pointers. */
+  memoryBase: number;
+}
+
+/**
  * Options for loading a shared library.
  */
 export interface LoadSharedLibraryOptions {
@@ -182,8 +205,10 @@ export interface LoadSharedLibraryOptions {
   table: WebAssembly.Table;
   /** Stack pointer global (shared across all modules) */
   stackPointer: WebAssembly.Global;
-  /** Current heap pointer — updated after allocation */
-  heapPointer: { value: number };
+  /** Current heap pointer — updated after allocation when no allocator is supplied */
+  heapPointer?: { value: number };
+  /** Allocate side-module linear-memory data in the process address space */
+  allocateMemory?: (size: number, align: number) => number;
   /** Global symbol table: name → function or WebAssembly.Global */
   globalSymbols: Map<string, Function | WebAssembly.Global>;
   /** GOT entries: symbol name → mutable i32 WebAssembly.Global */
@@ -206,23 +231,46 @@ function instantiateSharedLibrary(
   wasmBytes: Uint8Array,
   metadata: DylinkMetadata,
   options: LoadSharedLibraryOptions,
+  replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
   // Allocate memory region
   const memAlign = 1 << metadata.memoryAlign;
   let memoryBase = 0;
   if (metadata.memorySize > 0) {
-    memoryBase = alignUp(options.heapPointer.value, memAlign);
-    options.heapPointer.value = memoryBase + metadata.memorySize;
+    if (replay) {
+      // Reuse parent's memoryBase: data-reloc'd pointers baked into the
+      // memcpy'd data section already encode (parentMemoryBase + offset).
+      memoryBase = replay.memoryBase;
+    } else if (options.allocateMemory) {
+      memoryBase = options.allocateMemory(metadata.memorySize, memAlign);
+      const end = memoryBase + metadata.memorySize;
+      if (end > options.memory.buffer.byteLength) {
+        throw new Error(
+          `${name}: allocator returned 0x${memoryBase.toString(16)} but memory only covers 0x${options.memory.buffer.byteLength.toString(16)}`,
+        );
+      }
+    } else {
+      if (!options.heapPointer) {
+        throw new Error(`${name}: no side-module memory allocator configured`);
+      }
+      memoryBase = alignUp(options.heapPointer.value, memAlign);
+      options.heapPointer.value = memoryBase + metadata.memorySize;
 
-    // Ensure the memory is large enough
-    const neededPages = Math.ceil(options.heapPointer.value / 65536);
-    const currentPages = options.memory.buffer.byteLength / 65536;
-    if (neededPages > currentPages) {
-      options.memory.grow(neededPages - currentPages);
+      // Ensure the memory is large enough for standalone linker tests and
+      // non-POSIX embedders. Process workers pass allocateMemory so side-module
+      // data is tracked by the guest allocator instead of a host-only pointer.
+      const neededPages = Math.ceil(options.heapPointer.value / 65536);
+      const currentPages = options.memory.buffer.byteLength / 65536;
+      if (neededPages > currentPages) {
+        options.memory.grow(neededPages - currentPages);
+      }
     }
 
-    // Zero-initialize the allocated region
-    new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+    if (!replay) {
+      // Skip zero-init in replay: child memory already holds parent's
+      // post-startup data via fork memcpy.
+      new Uint8Array(options.memory.buffer, memoryBase, metadata.memorySize).fill(0);
+    }
   }
 
   // Allocate table slots
@@ -242,15 +290,60 @@ function instantiateSharedLibrary(
     tableBase,
   );
 
-  // Build GOT proxy for imports
-  const getOrCreateGOTEntry = (symName: string): WebAssembly.Global => {
+  // Build GOT proxy for imports.
+  //
+  // GOT.mem entries hold the *address in linear memory* of a data symbol the
+  // side module imports from the main process. If the main module exports
+  // that symbol as a WebAssembly.Global (typical for `--export-all`), its
+  // value is the address. Without this seeding, side modules read 0 for
+  // any imported global — silent NULL deref (e.g. opcache.so reads
+  // `sapi_module.name` as NULL, accel_find_sapi fails at startup).
+  //
+  // GOT.func entries hold a *table index* — the address-of-function value
+  // a C function pointer stores. Side-module data sections capture function
+  // pointers (e.g. opcache.so's ini_entries[].on_modify == &OnUpdateString
+  // exported from main). For those references to dispatch to the real
+  // function at runtime, the function must live in the shared
+  // indirect_function_table and the GOT entry must hold its index.
+  const tableIndexFor = (fn: Function): number => {
+    const tbl = options.table;
+    for (let i = 0; i < tbl.length; i++) {
+      if (tbl.get(i) === fn) return i;
+    }
+    const idx = tbl.length;
+    tbl.grow(1);
+    tbl.set(idx, fn);
+    return idx;
+  };
+
+  const getOrCreateGOTEntry = (
+    symName: string,
+    kind: "mem" | "func",
+  ): WebAssembly.Global => {
     let entry = options.got.get(symName);
     if (!entry) {
-      entry = new WebAssembly.Global({ value: "i32", mutable: true }, 0);
+      let initial = 0;
+      const sym = options.globalSymbols.get(symName);
+      if (kind === "mem" && sym instanceof WebAssembly.Global) {
+        initial = sym.value as number;
+      } else if (kind === "func" && typeof sym === "function") {
+        initial = tableIndexFor(sym);
+      }
+      entry = new WebAssembly.Global({ value: "i32", mutable: true }, initial);
       options.got.set(symName, entry);
     }
     return entry;
   };
+
+  // Tag imported by side modules compiled with clang's wasm SjLj lowering
+  // (`-mllvm -wasm-enable-sjlj`). The host doesn't actually catch these — the
+  // main process either has its own __c_longjmp tag (LLVM 22) or doesn't use
+  // SjLj (LLVM 21). A stub Tag lets the side module's import type-check and
+  // instantiate; behavior at throw time is undefined but the side module
+  // typically never throws this tag itself.
+  const longjmpTag = (typeof (WebAssembly as any).Tag === "function")
+    ? new (WebAssembly as any).Tag({ parameters: ["i32"] })
+    : undefined;
 
   // Construct imports
   const imports: WebAssembly.Imports = {
@@ -262,6 +355,7 @@ function instantiateSharedLibrary(
           case "__memory_base": return memoryBaseGlobal;
           case "__table_base": return tableBaseGlobal;
           case "__stack_pointer": return options.stackPointer;
+          case "__c_longjmp": return longjmpTag;
         }
         const sym = options.globalSymbols.get(prop);
         if (sym !== undefined) return sym;
@@ -269,18 +363,18 @@ function instantiateSharedLibrary(
       },
       has(_target, prop: string) {
         if (["memory", "__indirect_function_table", "__memory_base",
-             "__table_base", "__stack_pointer"].includes(prop)) return true;
+             "__table_base", "__stack_pointer", "__c_longjmp"].includes(prop)) return true;
         return options.globalSymbols.has(prop);
       },
     }),
     "GOT.mem": new Proxy({} as Record<string, WebAssembly.Global>, {
       get(_target, prop: string) {
-        return getOrCreateGOTEntry(prop);
+        return getOrCreateGOTEntry(prop, "mem");
       },
     }),
     "GOT.func": new Proxy({} as Record<string, WebAssembly.Global>, {
       get(_target, prop: string) {
-        return getOrCreateGOTEntry(prop);
+        return getOrCreateGOTEntry(prop, "func");
       },
     }),
   };
@@ -337,10 +431,14 @@ function instantiateSharedLibrary(
     applyRelocs();
   }
 
-  // Run constructors
-  const ctors = instance.exports.__wasm_call_ctors as Function | undefined;
-  if (ctors) {
-    ctors();
+  if (!replay) {
+    // Skip ctors in replay: parent already ran them and post-startup state
+    // (e.g. opcache accel_globals, registered INI entries) is in the
+    // memcpy'd data; re-running would clobber it.
+    const ctors = instance.exports.__wasm_call_ctors as Function | undefined;
+    if (ctors) {
+      ctors();
+    }
   }
 
   const loaded: LoadedSharedLibrary = {
@@ -360,6 +458,9 @@ function instantiateSharedLibrary(
  * Load a shared library (.so / side module) into a process's address space.
  * Async version — uses async WebAssembly compilation for large modules and
  * supports async dependency resolution.
+ *
+ * Replay is not supported on the async path; fork replays go through
+ * `loadSharedLibrarySync` / `DynamicLinker.dlopenSync`.
  */
 export async function loadSharedLibrary(
   name: string,
@@ -398,6 +499,7 @@ export function loadSharedLibrarySync(
   name: string,
   wasmBytes: Uint8Array,
   options: LoadSharedLibraryOptions,
+  replay?: DylinkReplayOptions,
 ): LoadedSharedLibrary {
   const existing = options.loadedLibraries.get(name);
   if (existing) return existing;
@@ -407,7 +509,19 @@ export function loadSharedLibrarySync(
     throw new Error(`${name}: not a shared library (no dylink.0 section)`);
   }
 
-  // Load dependencies first (sync)
+  // Replay-with-deps would re-allocate the dep at the child's *current*
+  // mmap cursor (not the parent's address) and corrupt the replayed
+  // library's data-relocs, which encode the parent's dep memoryBase.
+  // Fail loudly instead of silently producing wrong addresses.
+  if (replay && metadata.neededDynlibs.length > 0) {
+    throw new Error(
+      `${name}: replay does not yet support NEEDED deps; ` +
+        `each dep would need its own DylinkReplayOptions in a future API extension`,
+    );
+  }
+
+  // Load dependencies first (sync). Replay is not forwarded: dep replay is
+  // out-of-scope (guarded above); the recursive call instantiates deps freshly.
   for (const dep of metadata.neededDynlibs) {
     if (options.loadedLibraries.has(dep)) continue;
     if (!options.resolveLibrarySync) {
@@ -420,7 +534,7 @@ export function loadSharedLibrarySync(
     loadSharedLibrarySync(dep, depBytes, options);
   }
 
-  return instantiateSharedLibrary(name, wasmBytes, metadata, options);
+  return instantiateSharedLibrary(name, wasmBytes, metadata, options, replay);
 }
 
 /**
@@ -437,10 +551,13 @@ export class DynamicLinker {
     this.options = options;
   }
 
-  /** Open a shared library. Returns a handle (>0) or 0 on error. */
-  dlopenSync(name: string, wasmBytes: Uint8Array): number {
+  /** Open a shared library. Returns a handle (>0) or 0 on error.
+   *  When `replay` is provided, behaves as fork-replay: uses the parent's
+   *  saved memoryBase and skips __wasm_call_ctors. See `DylinkReplayOptions`
+   *  for preconditions. */
+  dlopenSync(name: string, wasmBytes: Uint8Array, replay?: DylinkReplayOptions): number {
     try {
-      const lib = loadSharedLibrarySync(name, wasmBytes, this.options);
+      const lib = loadSharedLibrarySync(name, wasmBytes, this.options, replay);
       // Check if already mapped to a handle
       for (const [h, l] of this.handleMap) {
         if (l === lib) return h;

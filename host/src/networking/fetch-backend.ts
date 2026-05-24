@@ -45,6 +45,11 @@ export class FetchNetworkBackend implements NetworkIO {
     });
   }
 
+  // fetch() is deferred to send(); connect always completes synchronously.
+  connectStatus(handle: number): number {
+    return this.connections.has(handle) ? 0 : 107; // 107 = ENOTCONN
+  }
+
   send(handle: number, data: Uint8Array, _flags: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");

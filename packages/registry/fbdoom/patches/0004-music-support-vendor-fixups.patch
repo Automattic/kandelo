@@ -1,0 +1,206 @@
+--- a/fbdoom/opl/opl.c
++++ b/fbdoom/opl/opl.c
+@@ -15,14 +15,14 @@
+ //     OPL interface.
+ //
+ 
+-#include "config.h"
++// wasm-posix-kernel build: no autotools config.h, no SDL. The only
++// driver shipped is opl_kernel.c, which is a pull-model driver suitable
++// for the single-threaded /dev/dsp mixing loop in i_kernel_sound.c.
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+-#include "SDL.h"
+-
+ #include "opl.h"
+ #include "opl_internal.h"
+ 
+@@ -31,18 +31,7 @@
+ 
+ static opl_driver_t *drivers[] =
+ {
+-#if (defined(__i386__) || defined(__x86_64__)) && defined(HAVE_IOPERM)
+-    &opl_linux_driver,
+-#endif
+-#if defined(HAVE_LIBI386) || defined(HAVE_LIBAMD64)
+-    &opl_openbsd_driver,
+-#endif
+-#ifdef _WIN32
+-    &opl_win32_driver,
+-#endif
+-#ifndef DISABLE_SDL2MIXER
+-    &opl_sdl_driver,
+-#endif // DISABLE_SDL2MIXER
++    &opl_kernel_driver,
+     NULL
+ };
+ 
+@@ -441,61 +430,18 @@
+     {
+         driver->unlock_func();
+     }
+-}
+-
+-typedef struct
+-{
+-    int finished;
+-
+-    SDL_mutex *mutex;
+-    SDL_cond *cond;
+-} delay_data_t;
+-
+-static void DelayCallback(void *_delay_data)
+-{
+-    delay_data_t *delay_data = _delay_data;
+-
+-    SDL_LockMutex(delay_data->mutex);
+-    delay_data->finished = 1;
+-
+-    SDL_CondSignal(delay_data->cond);
+-
+-    SDL_UnlockMutex(delay_data->mutex);
+ }
+ 
+ void OPL_Delay(uint64_t us)
+ {
+-    delay_data_t delay_data;
+-
+-    if (driver == NULL)
++    // Single-threaded pull model: there is no audio thread to wake us
++    // up, so the driver advances its emulated clock synchronously and
++    // fires any due callbacks before we return. Used by OPL_Detect's
++    // ~1ms wait for the OPL chip's hardware timer to expire.
++    if (driver != NULL && driver->delay_func != NULL)
+     {
+-        return;
++        driver->delay_func(us);
+     }
+-
+-    // Create a callback that will signal this thread after the
+-    // specified time.
+-
+-    delay_data.finished = 0;
+-    delay_data.mutex = SDL_CreateMutex();
+-    delay_data.cond = SDL_CreateCond();
+-
+-    OPL_SetCallback(us, DelayCallback, &delay_data);
+-
+-    // Wait until the callback is invoked.
+-
+-    SDL_LockMutex(delay_data.mutex);
+-
+-    while (!delay_data.finished)
+-    {
+-        SDL_CondWait(delay_data.cond, delay_data.mutex);
+-    }
+-
+-    SDL_UnlockMutex(delay_data.mutex);
+-
+-    // Clean up.
+-
+-    SDL_DestroyMutex(delay_data.mutex);
+-    SDL_DestroyCond(delay_data.cond);
+ }
+ 
+ void OPL_SetPaused(int paused)
+--- a/fbdoom/opl/opl_internal.h
++++ b/fbdoom/opl/opl_internal.h
+@@ -33,6 +33,7 @@
+ typedef void (*opl_unlock_func)(void);
+ typedef void (*opl_set_paused_func)(int paused);
+ typedef void (*opl_adjust_callbacks_func)(float value);
++typedef void (*opl_delay_func)(uint64_t us);
+ 
+ typedef struct
+ {
+@@ -48,6 +49,11 @@
+     opl_unlock_func unlock_func;
+     opl_set_paused_func set_paused_func;
+     opl_adjust_callbacks_func adjust_callbacks_func;
++    // Synchronous time-advance for OPL_Detect's 1ms wait. The SDL driver
++    // implemented OPL_Delay via a callback signalled from the audio
++    // thread; with no audio thread (single-threaded pull model) the
++    // driver advances its own emulated clock directly.
++    opl_delay_func delay_func;
+ } opl_driver_t;
+ 
+ // Sample rate to use when doing software emulation.
+@@ -55,16 +61,10 @@
+ extern unsigned int opl_sample_rate;
+ 
+ 
+-#if (defined(__i386__) || defined(__x86_64__)) && defined(HAVE_IOPERM)
+-extern opl_driver_t opl_linux_driver;
+-#endif
+-#if defined(HAVE_LIBI386) || defined(HAVE_LIBAMD64)
+-extern opl_driver_t opl_openbsd_driver;
+-#endif
+-#ifdef _WIN32
+-extern opl_driver_t opl_win32_driver;
+-#endif
+-extern opl_driver_t opl_sdl_driver;
++// The wasm-posix-kernel build only ships the kernel pull driver — all
++// SDL/Linux/Win32 hardware drivers are stripped (no SDL in the sysroot,
++// no real OPL chip behind a wasm sandbox).
++extern opl_driver_t opl_kernel_driver;
+ 
+ 
+ #endif /* #ifndef OPL_INTERNAL_H */
+--- a/fbdoom/midifile.c
++++ b/fbdoom/midifile.c
+@@ -26,6 +26,23 @@
+ #include "m_misc.h"
+ #include "midifile.h"
+
++// fbDOOM's i_swap.h doesn't pull in <SDL_endian.h>, so the SDL_SwapBE*
++// calls midifile.c uses to read big-endian MIDI fields are otherwise
++// unresolved. wasm32 is fixed little-endian; an unconditional builtin
++// swap is the cheapest equivalent.
++#define SDL_SwapBE16(x) ((unsigned short) __builtin_bswap16((unsigned short)(x)))
++#define SDL_SwapBE32(x) ((unsigned int)   __builtin_bswap32((unsigned int)(x)))
++
++// fbDOOM's doomtype.h ships PACKEDATTR but not the PACKED_STRUCT
++// wrapper macro chocolate-doom added later.
++#define PACKED_STRUCT(...) struct __VA_ARGS__ PACKEDATTR
++
++// chocolate-doom-3.1.0 introduced I_Realloc (realloc + abort on NULL)
++// in i_system.c, and M_fopen (UTF-8 wrapper, plain fopen on POSIX) in
++// m_misc.c. Neither exists in the fbDOOM tree; map to libc directly.
++#define I_Realloc realloc
++#define M_fopen   fopen
++
+ #define HEADER_CHUNK_ID "MThd"
+ #define TRACK_CHUNK_ID  "MTrk"
+ #define MAX_BUFFER_SIZE 0x10000
+--- a/fbdoom/midifile.h
++++ b/fbdoom/midifile.h
+@@ -78,6 +78,11 @@
+     MIDI_CONTROLLER_POLY_MODE_OFF   = 0x7E,
+     MIDI_CONTROLLER_POLY_MODE_ON    = 0x7F,
+ } midi_controller_t;
++
++// fbDOOM's i_oplmusic.c (forked from a 2014-era chocolate-doom) still
++// uses the older spelling for controller 0x07; chocolate-doom-3.1.0
++// renamed it MSB-explicit. Both spellings refer to the same value.
++#define MIDI_CONTROLLER_MAIN_VOLUME MIDI_CONTROLLER_VOLUME_MSB
+
+ typedef enum
+ {
+--- a/fbdoom/mus2mid.c
++++ b/fbdoom/mus2mid.c
+@@ -23,6 +23,12 @@
+ #include "memio.h"
+ #include "mus2mid.h"
+
++// fbDOOM's doomtype.h ships PACKEDATTR but not the PACKED_STRUCT
++// wrapper macro chocolate-doom added later. mus2mid.c is the only
++// vendored source that uses it, so define it locally rather than
++// touching fbDOOM's doomtype.h.
++#define PACKED_STRUCT(...) struct __VA_ARGS__ PACKEDATTR
++
+ #define NUM_CHANNELS 16
+
+ #define MIDI_PERCUSSION_CHAN 9

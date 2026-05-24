@@ -21,8 +21,11 @@ describe("ABI version marker", () => {
   async function instantiateKernelOnly(
     bytes: Uint8Array,
   ): Promise<WebAssembly.Instance> {
+    // Match host/src/kernel.ts. The kernel wasm grows when we add
+    // synthetic data (e.g. /etc/ssl/cert.pem); 24 pages keeps headroom
+    // without re-tuning per change.
     const memory = new WebAssembly.Memory({
-      initial: 17n,
+      initial: 24n,
       maximum: 16384n,
       shared: true,
       address: "i64",

@@ -1,0 +1,32 @@
+kind = "program"
+name = "diffutils"
+version = "3.10"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://ftpmirror.gnu.org/gnu/diffutils/diffutils-3.10.tar.xz"
+sha256 = "90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://git.savannah.gnu.org/cgit/diffutils.git/tree/COPYING"
+
+[build]
+script_path = "packages/registry/diffutils/build-diffutils.sh"
+
+[[outputs]]
+name = "diff"
+wasm = "diff.wasm"
+
+[[outputs]]
+name = "cmp"
+wasm = "cmp.wasm"
+
+[[outputs]]
+name = "diff3"
+wasm = "diff3.wasm"
+
+[[outputs]]
+name = "sdiff"
+wasm = "sdiff.wasm"

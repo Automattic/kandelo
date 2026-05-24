@@ -1,0 +1,31 @@
+kind = "program"
+name = "dinit"
+version = "0.19.4"
+kernel_abi = 7
+# build-dinit.sh links against libc++/libc++abi from sysroot/lib/.
+# Without this dep the resolver doesn't pre-stage libcxx and the build
+# fails with "libc++.a not found". Mirrors mariadb's libcxx dep.
+depends_on = ["libcxx@21"]
+
+[source]
+url = "https://github.com/davmac314/dinit"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/davmac314/dinit/blob/v0.19.4/LICENSE"
+
+[build]
+script_path = "packages/registry/dinit/build-dinit.sh"
+
+[[outputs]]
+name = "dinit"
+wasm = "dinit.wasm"
+
+[[outputs]]
+name = "dinitctl"
+wasm = "dinitctl.wasm"
+
+[[outputs]]
+name = "dinitcheck"
+wasm = "dinitcheck.wasm"

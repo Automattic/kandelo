@@ -1,9 +1,9 @@
 [submodule "musl"]
-	path = musl
-	url = https://git.musl-libc.org/git/musl
+	path = libc/musl
+	url = https://github.com/ifduyue/musl.git
 [submodule "libc-test"]
-	path = libc-test
+	path = tests/libc/libc-test
 	url = git@github.com:PocketCluster/libc-test.git
 [submodule "os-test"]
-	path = os-test
+	path = tests/sortix/os-test
 	url = https://gitlab.com/sortix/os-test.git

@@ -1,5 +1,7 @@
 #![no_std]
 
+pub mod host_abi;
+
 /// Kernel ABI version.
 ///
 /// This number is baked into every compiled user program (wasm custom section
@@ -11,13 +13,15 @@
 ///
 /// The structural snapshot at `abi/snapshot.json` is the source of truth for
 /// what that contract covers — field offsets of marshalled structs, channel
-/// header layout, syscall numbers, kernel export signatures, and asyncify
-/// save-slot conventions. CI regenerates the snapshot and compares it to
-/// the committed copy; any diff requires bumping `ABI_VERSION` in the same
-/// commit.
+/// header layout, syscall numbers, and kernel export signatures. CI
+/// regenerates the snapshot and compares it to the committed copy; any diff
+/// requires bumping `ABI_VERSION` in the same commit.
 ///
 /// See `docs/abi-versioning.md` for the full policy.
-pub const ABI_VERSION: u32 = 7;
+///
+/// 12: fork-instrument switch-dispatch redesign + wpk_fork_* exports
+///     replace asyncify_* on top of main's ABI 11.
+pub const ABI_VERSION: u32 = 12;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -749,13 +753,13 @@ pub struct WasmDirent {
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct WasmFlock {
-    pub l_type: i16,    // F_RDLCK, F_WRLCK, F_UNLCK (short)
-    pub l_whence: i16,  // SEEK_SET, SEEK_CUR, SEEK_END (short)
-    pub _pad1: u32,     // padding to align l_start to 8 bytes
-    pub l_start: i64,   // offset (off_t = long long on wasm32)
-    pub l_len: i64,     // length (0 = to end of file)
-    pub l_pid: u32,     // process ID (pid_t = int)
-    pub _pad2: u32,     // trailing padding for struct alignment
+    pub l_type: i16,   // F_RDLCK, F_WRLCK, F_UNLCK (short)
+    pub l_whence: i16, // SEEK_SET, SEEK_CUR, SEEK_END (short)
+    pub _pad1: u32,    // padding to align l_start to 8 bytes
+    pub l_start: i64,  // offset (off_t = long long on wasm32)
+    pub l_len: i64,    // length (0 = to end of file)
+    pub l_pid: u32,    // process ID (pid_t = int)
+    pub _pad2: u32,    // trailing padding for struct alignment
 }
 
 /// POSIX signal constants.
@@ -804,11 +808,11 @@ pub mod signal {
     pub const SA_RESTORER: u32 = 0x04000000;
 
     // Default actions
-    pub const SA_DEFAULT_TERM: u32 = 0;   // Terminate
-    pub const SA_DEFAULT_IGN: u32 = 1;    // Ignore
-    pub const SA_DEFAULT_CORE: u32 = 2;   // Core dump (treated as terminate in Wasm)
-    pub const SA_DEFAULT_STOP: u32 = 3;   // Stop (not supported in Wasm)
-    pub const SA_DEFAULT_CONT: u32 = 4;   // Continue (not supported in Wasm)
+    pub const SA_DEFAULT_TERM: u32 = 0; // Terminate
+    pub const SA_DEFAULT_IGN: u32 = 1; // Ignore
+    pub const SA_DEFAULT_CORE: u32 = 2; // Core dump (treated as terminate in Wasm)
+    pub const SA_DEFAULT_STOP: u32 = 3; // Stop (not supported in Wasm)
+    pub const SA_DEFAULT_CONT: u32 = 4; // Continue (not supported in Wasm)
 }
 
 /// Resource limit constants for getrlimit/setrlimit.
@@ -895,44 +899,6 @@ pub struct WasmStatfs {
 /// Any addition, removal, or value change in this module is, by definition,
 /// an ABI change and requires bumping [`ABI_VERSION`].
 pub mod abi {
-    /// A slot, relative to the asyncify buffer base, where the parent
-    /// process serializes register-like state before an asyncify-driven
-    /// fork so the child can restore it on rewind.
-    ///
-    /// Offsets are negative (saved before the buffer). Widths are in bytes.
-    pub struct AsyncifySaveSlot {
-        pub name: &'static str,
-        pub offset_wasm32: i32,
-        pub offset_wasm64: i32,
-        pub width_wasm32: u32,
-        pub width_wasm64: u32,
-        pub meaning: &'static str,
-    }
-
-    /// Save slots used by the asyncify fork path.
-    ///
-    /// These values must agree with the ones read by
-    /// `host/src/worker-main.ts` (`saveParentTls`, the rewind path) and
-    /// anything else that reinstates parent state in a fork child.
-    pub const ASYNCIFY_SAVE_SLOTS: &[AsyncifySaveSlot] = &[
-        AsyncifySaveSlot {
-            name: "__tls_base",
-            offset_wasm32: -4,
-            offset_wasm64: -8,
-            width_wasm32: 4,
-            width_wasm64: 8,
-            meaning: "parent TLS base (__tls_base) saved for child rewind",
-        },
-        AsyncifySaveSlot {
-            name: "__stack_pointer",
-            offset_wasm32: -8,
-            offset_wasm64: -16,
-            width_wasm32: 4,
-            width_wasm64: 8,
-            meaning: "parent shadow-stack pointer (__stack_pointer) saved for child rewind",
-        },
-    ];
-
     /// Name of the wasm custom section in which user programs embed their
     /// ABI version (single little-endian u32). The kernel host rejects
     /// binaries whose value does not match [`crate::ABI_VERSION`].
@@ -944,10 +910,7 @@ pub mod abi {
 
     /// Globals that each user process instance is expected to expose so
     /// the host can thread channel / TLS state through fork and exec.
-    pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &[
-        "__channel_base",
-        "__tls_base",
-    ];
+    pub const PROCESS_EXPECTED_GLOBALS: &[&str] = &["__channel_base", "__tls_base"];
 
     /// Patterns (applied as prefix match) for kernel-wasm exports that
     /// are implementation details of the toolchain, not part of the
@@ -961,6 +924,15 @@ pub mod abi {
         "__wasm_init_",
         "__wasm_apply_",
         "__llvm_",
+        // LLD/wasm-ld emits __tls_align / __tls_base / __tls_size as a
+        // side-effect of TLS-aware codegen. Whether they appear depends
+        // on the toolchain version (newer nightlies optimise them away
+        // when no kernel-internal code references them externally), and
+        // nothing in the host runtime reads them from the kernel module
+        // (host/src/worker-main.ts reads __tls_base only from user-program
+        // instances). Filtering them keeps the snapshot stable across
+        // toolchain churn.
+        "__tls_",
     ];
 
     /// Exact-name variant of [`EXPORT_DENY_PREFIXES`] — exports we
@@ -985,9 +957,36 @@ pub mod abi {
     /// for existence + type, because its value is linker- or
     /// runtime-determined and would churn without encoding real ABI
     /// changes.
-    pub const ABI_VALUE_CAPTURE_PREFIXES: &[&str] = &[
-        "__abi_",
-    ];
+    pub const ABI_VALUE_CAPTURE_PREFIXES: &[&str] = &["__abi_"];
+
+    /// Host-intercepted syscall numbers (caught by `host/src/kernel-worker.ts`
+    /// before reaching the kernel's syscall dispatcher). The kernel never sees
+    /// these on the channel — the host calls the corresponding `kernel_*`
+    /// export directly.
+    ///
+    /// These exist outside the [`crate::Syscall`] enum because that enum is for
+    /// kernel-dispatched syscalls only. Adding/removing a value here is an ABI
+    /// change and requires bumping [`crate::ABI_VERSION`].
+    pub mod host_intercepted {
+        /// Non-forking `posix_spawn` (this kernel's invention; no Linux
+        /// equivalent). Host calls `kernel_spawn_process`. See
+        /// `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`.
+        ///
+        /// Numbered 500 to sit clear of every Linux syscall numbering
+        /// scheme and of our kernel-side dispatch table in `wasm_api.rs`
+        /// (highest used: 415). The original plan picked 214 to neighbour
+        /// SYS_FORK, but 214 collides with the kernel's existing
+        /// SYS_GETPGID handler — host-interception alone wouldn't help
+        /// because every legitimate getpgid call would also be caught.
+        pub const SYS_SPAWN: u32 = 500;
+
+        /// Documented for completeness — also defined in
+        /// `libc/glue/channel_syscall.c` and `host/src/kernel-worker.ts`.
+        pub const SYS_EXECVE: u32 = 211;
+        pub const SYS_FORK: u32 = 212;
+        pub const SYS_VFORK: u32 = 213;
+        pub const SYS_EXECVEAT: u32 = 386;
+    }
 
     /// Decide whether a kernel-wasm export name should appear in the
     /// snapshot. Implementation-detail symbols (per
@@ -1050,36 +1049,36 @@ pub mod fbdev {
     #[derive(Debug, Clone, Copy, Default)]
     #[repr(C)]
     pub struct FbVarScreenInfo {
-        pub xres: u32,                // 0
-        pub yres: u32,                // 4
-        pub xres_virtual: u32,        // 8
-        pub yres_virtual: u32,        // 12
-        pub xoffset: u32,             // 16
-        pub yoffset: u32,             // 20
-        pub bits_per_pixel: u32,      // 24
-        pub grayscale: u32,           // 28
-        pub red: FbBitfield,          // 32 (12)
-        pub green: FbBitfield,        // 44 (12)
-        pub blue: FbBitfield,         // 56 (12)
-        pub transp: FbBitfield,       // 68 (12)
-        pub nonstd: u32,              // 80
-        pub activate: u32,            // 84
-        pub height: u32,              // 88
-        pub width: u32,               // 92
-        pub accel_flags: u32,         // 96
-        pub pixclock: u32,            // 100
-        pub left_margin: u32,         // 104
-        pub right_margin: u32,        // 108
-        pub upper_margin: u32,        // 112
-        pub lower_margin: u32,        // 116
-        pub hsync_len: u32,           // 120
-        pub vsync_len: u32,           // 124
-        pub sync: u32,                // 128
-        pub vmode: u32,               // 132
-        pub rotate: u32,              // 136
-        pub colorspace: u32,          // 140
-        pub reserved: [u32; 4],       // 144 (16)
-                                      // total: 160
+        pub xres: u32,           // 0
+        pub yres: u32,           // 4
+        pub xres_virtual: u32,   // 8
+        pub yres_virtual: u32,   // 12
+        pub xoffset: u32,        // 16
+        pub yoffset: u32,        // 20
+        pub bits_per_pixel: u32, // 24
+        pub grayscale: u32,      // 28
+        pub red: FbBitfield,     // 32 (12)
+        pub green: FbBitfield,   // 44 (12)
+        pub blue: FbBitfield,    // 56 (12)
+        pub transp: FbBitfield,  // 68 (12)
+        pub nonstd: u32,         // 80
+        pub activate: u32,       // 84
+        pub height: u32,         // 88
+        pub width: u32,          // 92
+        pub accel_flags: u32,    // 96
+        pub pixclock: u32,       // 100
+        pub left_margin: u32,    // 104
+        pub right_margin: u32,   // 108
+        pub upper_margin: u32,   // 112
+        pub lower_margin: u32,   // 116
+        pub hsync_len: u32,      // 120
+        pub vsync_len: u32,      // 124
+        pub sync: u32,           // 128
+        pub vmode: u32,          // 132
+        pub rotate: u32,         // 136
+        pub colorspace: u32,     // 140
+        pub reserved: [u32; 4],  // 144 (16)
+                                 // total: 160
     }
 
     /// Linux `struct fb_fix_screeninfo` — fixed screen info (32-bit user-space
@@ -1095,23 +1094,23 @@ pub mod fbdev {
     #[derive(Debug, Clone, Copy, Default)]
     #[repr(C)]
     pub struct FbFixScreenInfo {
-        pub id: [u8; 16],             // 0
-        pub smem_start: u32,          // 16  (always 0 in our model)
-        pub smem_len: u32,            // 20
-        pub fb_type: u32,             // 24  (FB_TYPE_PACKED_PIXELS)
-        pub type_aux: u32,            // 28
-        pub visual: u32,              // 32  (FB_VISUAL_TRUECOLOR)
-        pub xpanstep: u16,            // 36
-        pub ypanstep: u16,            // 38
-        pub ywrapstep: u16,           // 40
-        pub _pad: u16,                // 42
-        pub line_length: u32,         // 44
-        pub mmio_start: u32,          // 48  (always 0)
-        pub mmio_len: u32,            // 52
-        pub accel: u32,               // 56
-        pub capabilities: u16,        // 60
-        pub reserved: [u16; 3],       // 62 (6)
-        pub _pad_to_80: [u8; 12],     // 68 (12) → 80
+        pub id: [u8; 16],         // 0
+        pub smem_start: u32,      // 16  (always 0 in our model)
+        pub smem_len: u32,        // 20
+        pub fb_type: u32,         // 24  (FB_TYPE_PACKED_PIXELS)
+        pub type_aux: u32,        // 28
+        pub visual: u32,          // 32  (FB_VISUAL_TRUECOLOR)
+        pub xpanstep: u16,        // 36
+        pub ypanstep: u16,        // 38
+        pub ywrapstep: u16,       // 40
+        pub _pad: u16,            // 42
+        pub line_length: u32,     // 44
+        pub mmio_start: u32,      // 48  (always 0)
+        pub mmio_len: u32,        // 52
+        pub accel: u32,           // 56
+        pub capabilities: u16,    // 60
+        pub reserved: [u16; 3],   // 62 (6)
+        pub _pad_to_80: [u8; 12], // 68 (12) → 80
     }
 }
 
@@ -1126,4 +1125,44 @@ mod fbdev_tests {
         assert_eq!(size_of::<FbVarScreenInfo>(), 160);
         assert_eq!(size_of::<FbFixScreenInfo>(), 80);
     }
+}
+
+/// OSS (Open Sound System) ABI constants.
+///
+/// These mirror what glibc / musl expose via `<sys/soundcard.h>` to
+/// programs that talk to `/dev/dsp`. We accept the subset fbDOOM (and
+/// most real OSS clients) actually emit during init: speed, channel
+/// count, format, and a couple of accept-and-acknowledge ops.
+///
+/// The numeric values are the standard OSS encoding — the same numbers
+/// real Linux kernels return — so user-space programs that hard-code
+/// these constants (rather than `#include`-ing the header) work
+/// unchanged.
+pub mod oss {
+    // The values below come from the Linux `<sys/soundcard.h>` IOC
+    // encoding — the same ones glibc, musl, and any OSS-targeted DOS
+    // port hard-code. Matching them exactly lets user programs that
+    // skip the header still talk to us.
+
+    /// `SNDCTL_DSP_RESET` — flush + stop. No argument.
+    pub const SNDCTL_DSP_RESET: u32 = 0x00005000;
+    /// `SNDCTL_DSP_SYNC` — block until output drains. No argument.
+    pub const SNDCTL_DSP_SYNC: u32 = 0x00005001;
+    /// `SNDCTL_DSP_SPEED` — get/set sample rate. inout: i32 hz.
+    pub const SNDCTL_DSP_SPEED: u32 = 0xc0045002;
+    /// `SNDCTL_DSP_STEREO` — get/set channel count via boolean. inout: i32 (0=mono, 1=stereo).
+    pub const SNDCTL_DSP_STEREO: u32 = 0xc0045003;
+    /// `SNDCTL_DSP_GETBLKSIZE` — preferred fragment size. out: i32 bytes.
+    pub const SNDCTL_DSP_GETBLKSIZE: u32 = 0xc0045004;
+    /// `SNDCTL_DSP_SETFMT` — get/set sample format. inout: i32 AFMT_*.
+    pub const SNDCTL_DSP_SETFMT: u32 = 0xc0045005;
+    /// `SNDCTL_DSP_CHANNELS` — get/set explicit channel count. inout: i32.
+    pub const SNDCTL_DSP_CHANNELS: u32 = 0xc0045006;
+    /// `SNDCTL_DSP_GETFMTS` — bitmask of supported formats. out: i32 AFMT_* mask.
+    pub const SNDCTL_DSP_GETFMTS: u32 = 0x8004500b;
+    /// `SNDCTL_DSP_SETFRAGMENT` — fragment-size hint. inout: i32.
+    pub const SNDCTL_DSP_SETFRAGMENT: u32 = 0xc004500a;
+
+    /// `AFMT_S16_LE` — signed 16-bit little-endian. The only format we accept.
+    pub const AFMT_S16_LE: u32 = 0x10;
 }

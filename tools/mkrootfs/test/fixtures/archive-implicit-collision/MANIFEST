@@ -1,0 +1,6 @@
+/             d  0755  0  0
+/usr          d  0755  0  0
+/usr/bin      d  0755  0  0
+/usr/bin/vim  f  0755  0  0
+
+archive  url=opt/vim-mini.zip  base=/usr  fmode=0644  dmode=0755

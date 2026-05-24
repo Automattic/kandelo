@@ -69,10 +69,13 @@
             pkgs.git
             pkgs.binaryen
             pkgs.wabt
+            # cbindgen — required by Mozilla's JS/SpiderMonkey configure
+            # path once Rust support is enabled.
+            pkgs.rust-cbindgen
             # System tools that build scripts pull from /usr/bin or
             # /opt/homebrew/bin in non-pure shells. Pinning them via
             # the flake makes `nix develop --ignore-environment` work
-            # (so `bash examples/libs/<pkg>/build-*.sh` reproduces CI
+            # (so `bash packages/registry/<pkg>/build-*.sh` reproduces CI
             # locally) and removes silent host-version drift between
             # darwin dev boxes and the Ubuntu CI runner. Each is
             # invoked by ≥1 build script:
@@ -106,7 +109,7 @@
             # `zip` for build-vim-zip.sh / build-nethack-zip.sh which
             # bundle the vim/nethack runtime trees into the .zip
             # lazy-archives mounted by the shell VFS image. Note: the
-            # `examples/libs/zip/` registry entry builds a wasm32 zip
+            # `packages/registry/zip/` registry entry builds a wasm32 zip
             # binary for user programs — different from the host
             # packager pkgs.zip.
             pkgs.zip
@@ -153,13 +156,13 @@
             # doesn't help — the lib has to come from nixpkgs.
             pkgs.ncurses
             # sqlite3 CLI — host-side test helper. The WordPress
-            # site-editor test (`examples/wordpress/test/wordpress-
+            # site-editor test (`packages/registry/wordpress/test/wordpress-
             # site-editor.test.ts`) polls the WP install's SQLite DB
             # via `execSync("sqlite3 ...")` to detect when WP is
             # ready; without this every poll prints "/bin/sh: 1:
             # sqlite3: not found" and the test eventually times out
             # at 10 minutes. Different from the wasm32 sqlite we
-            # cross-build under examples/libs/sqlite/ — that's the
+            # cross-build under packages/registry/sqlite/ — that's the
             # target binary, this is the host CLI used by tests.
             pkgs.sqlite
           ];

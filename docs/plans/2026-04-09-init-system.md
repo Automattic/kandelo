@@ -13,8 +13,8 @@
 ## Task 1: Service Descriptor Parser
 
 **Files:**
-- Create: `examples/browser/lib/init/service-descriptor.ts`
-- Create: `examples/browser/lib/init/parse-init.ts`
+- Create: `apps/browser-demos/lib/init/service-descriptor.ts`
+- Create: `apps/browser-demos/lib/init/parse-init.ts`
 - Test: `host/test/browser-init-parser.test.ts`
 
 ### Step 1: Write the failing test
@@ -22,7 +22,7 @@
 ```typescript
 // host/test/browser-init-parser.test.ts
 import { describe, it, expect } from "vitest";
-import { parseServiceDescriptor, type ServiceDescriptor } from "../../examples/browser/lib/init/service-descriptor";
+import { parseServiceDescriptor, type ServiceDescriptor } from "../../apps/browser-demos/lib/init/service-descriptor";
 
 describe("parseServiceDescriptor", () => {
   it("parses a daemon service", () => {
@@ -109,7 +109,7 @@ Expected: FAIL — modules don't exist yet.
 ### Step 3: Write the ServiceDescriptor type
 
 ```typescript
-// examples/browser/lib/init/service-descriptor.ts
+// apps/browser-demos/lib/init/service-descriptor.ts
 
 export type ReadyCondition =
   | { kind: "port"; port: number }
@@ -230,7 +230,7 @@ Expected: PASS — all 6 tests green.
 ### Step 5: Commit
 
 ```bash
-git add examples/browser/lib/init/service-descriptor.ts host/test/browser-init-parser.test.ts
+git add apps/browser-demos/lib/init/service-descriptor.ts host/test/browser-init-parser.test.ts
 git commit -m "feat(browser): add /etc/init.d/ service descriptor parser"
 ```
 
@@ -239,13 +239,13 @@ git commit -m "feat(browser): add /etc/init.d/ service descriptor parser"
 ## Task 2: TerminalPanel UI Component
 
 **Files:**
-- Create: `examples/browser/lib/terminal-panel.ts`
-- Create: `examples/browser/lib/terminal-panel.css`
+- Create: `apps/browser-demos/lib/terminal-panel.ts`
+- Create: `apps/browser-demos/lib/terminal-panel.css`
 
 ### Step 1: Write the CSS
 
 ```css
-/* examples/browser/lib/terminal-panel.css */
+/* apps/browser-demos/lib/terminal-panel.css */
 .terminal-panel {
   display: flex;
   flex-direction: column;
@@ -300,7 +300,7 @@ git commit -m "feat(browser): add /etc/init.d/ service descriptor parser"
 ### Step 2: Write the TerminalPanel component
 
 ```typescript
-// examples/browser/lib/terminal-panel.ts
+// apps/browser-demos/lib/terminal-panel.ts
 import "./terminal-panel.css";
 
 export class TerminalPanel {
@@ -376,13 +376,13 @@ export class TerminalPanel {
 
 ### Step 3: Verify it builds
 
-Run: `cd examples/browser && npx vite build --mode development 2>&1 | head -20`
+Run: `cd apps/browser-demos && npx vite build --mode development 2>&1 | head -20`
 Expected: No import errors for new files (they aren't imported yet, so build should be unaffected).
 
 ### Step 4: Commit
 
 ```bash
-git add examples/browser/lib/terminal-panel.ts examples/browser/lib/terminal-panel.css
+git add apps/browser-demos/lib/terminal-panel.ts apps/browser-demos/lib/terminal-panel.css
 git commit -m "feat(browser): add collapsible TerminalPanel component"
 ```
 
@@ -393,18 +393,18 @@ git commit -m "feat(browser): add collapsible TerminalPanel component"
 Extract duplicated code from existing demos into reusable helpers.
 
 **Files:**
-- Create: `examples/browser/lib/init/shell-binaries.ts`
-- Create: `examples/browser/lib/init/service-worker-bridge.ts`
-- Create: `examples/browser/lib/init/nginx-config.ts`
-- Create: `examples/browser/lib/init/php-fpm-config.ts`
-- Create: `examples/browser/lib/init/mariadb-config.ts`
+- Create: `apps/browser-demos/lib/init/shell-binaries.ts`
+- Create: `apps/browser-demos/lib/init/service-worker-bridge.ts`
+- Create: `apps/browser-demos/lib/init/nginx-config.ts`
+- Create: `apps/browser-demos/lib/init/php-fpm-config.ts`
+- Create: `apps/browser-demos/lib/init/mariadb-config.ts`
 
 ### Step 1: Extract shell binary population
 
 Move `populateExecBinaries` from `pages/shell/main.ts` into a shared module. This is the code that writes dash, lazy utility binaries, and symlinks.
 
 ```typescript
-// examples/browser/lib/init/shell-binaries.ts
+// apps/browser-demos/lib/init/shell-binaries.ts
 //
 // Shared helper that populates the VFS with dash + coreutils + utilities.
 // Extracted from pages/shell/main.ts populateExecBinaries().
@@ -518,7 +518,7 @@ function writeFileBinary(fs: MemoryFileSystem, path: string, data: Uint8Array): 
 ### Step 2: Extract service worker bridge init
 
 ```typescript
-// examples/browser/lib/init/service-worker-bridge.ts
+// apps/browser-demos/lib/init/service-worker-bridge.ts
 //
 // Shared helper for registering the service worker and initializing
 // the HTTP bridge. Extracted from the identical initBridge() functions
@@ -563,7 +563,7 @@ export async function initServiceWorkerBridge(
 ### Step 3: Extract nginx config helper
 
 ```typescript
-// examples/browser/lib/init/nginx-config.ts
+// apps/browser-demos/lib/init/nginx-config.ts
 
 import type { MemoryFileSystem } from "../../../../host/src/vfs/shared-fs";
 
@@ -657,7 +657,7 @@ function writeFile(fs: MemoryFileSystem, path: string, content: string): void {
 ### Step 4: Extract PHP-FPM config helper
 
 ```typescript
-// examples/browser/lib/init/php-fpm-config.ts
+// apps/browser-demos/lib/init/php-fpm-config.ts
 
 import type { MemoryFileSystem } from "../../../../host/src/vfs/shared-fs";
 
@@ -764,7 +764,7 @@ function writeFile(fs: MemoryFileSystem, path: string, content: string): void {
 ### Step 5: Extract MariaDB config helper
 
 ```typescript
-// examples/browser/lib/init/mariadb-config.ts
+// apps/browser-demos/lib/init/mariadb-config.ts
 
 import type { MemoryFileSystem } from "../../../../host/src/vfs/shared-fs";
 
@@ -789,7 +789,7 @@ function writeFile(fs: MemoryFileSystem, path: string, content: string): void {
 ### Step 6: Commit
 
 ```bash
-git add examples/browser/lib/init/
+git add apps/browser-demos/lib/init/
 git commit -m "feat(browser): extract shared VFS helpers for init system"
 ```
 
@@ -798,14 +798,14 @@ git commit -m "feat(browser): extract shared VFS helpers for init system"
 ## Task 4: SystemInit Class
 
 **Files:**
-- Create: `examples/browser/lib/init/system-init.ts`
-- Create: `examples/browser/lib/init/index.ts` (barrel export)
+- Create: `apps/browser-demos/lib/init/system-init.ts`
+- Create: `apps/browser-demos/lib/init/index.ts` (barrel export)
 - Test: `host/test/browser-system-init.test.ts`
 
 ### Step 1: Write the SystemInit class
 
 ```typescript
-// examples/browser/lib/init/system-init.ts
+// apps/browser-demos/lib/init/system-init.ts
 
 import type { BrowserKernel } from "../browser-kernel";
 import { PtyTerminal, type PtyTerminalOptions } from "../pty-terminal";
@@ -1156,7 +1156,7 @@ export class SystemInit {
 ### Step 2: Create barrel export
 
 ```typescript
-// examples/browser/lib/init/index.ts
+// apps/browser-demos/lib/init/index.ts
 export { SystemInit, type SystemInitOptions } from "./system-init";
 export { parseServiceDescriptor, type ServiceDescriptor, type ReadyCondition } from "./service-descriptor";
 export { TerminalPanel } from "../terminal-panel";
@@ -1170,7 +1170,7 @@ export { populateMariadbDirs } from "./mariadb-config";
 ### Step 3: Commit
 
 ```bash
-git add examples/browser/lib/init/system-init.ts examples/browser/lib/init/index.ts
+git add apps/browser-demos/lib/init/system-init.ts apps/browser-demos/lib/init/index.ts
 git commit -m "feat(browser): add SystemInit class for /etc/init.d/ boot orchestration"
 ```
 
@@ -1181,13 +1181,13 @@ git commit -m "feat(browser): add SystemInit class for /etc/init.d/ boot orchest
 A small helper used across all config writers and SystemInit to avoid copy-pasting the open/write/close pattern. All the config helpers in Task 3 duplicate this — extract once.
 
 **Files:**
-- Create: `examples/browser/lib/init/vfs-utils.ts`
+- Create: `apps/browser-demos/lib/init/vfs-utils.ts`
 - Modify: All config helpers from Task 3 to import from vfs-utils
 
 ### Step 1: Create vfs-utils
 
 ```typescript
-// examples/browser/lib/init/vfs-utils.ts
+// apps/browser-demos/lib/init/vfs-utils.ts
 
 import type { MemoryFileSystem } from "../../../../host/src/vfs/shared-fs";
 
@@ -1241,7 +1241,7 @@ Replace the local `writeFile` functions in nginx-config.ts, php-fpm-config.ts, m
 ### Step 3: Commit
 
 ```bash
-git add examples/browser/lib/init/vfs-utils.ts
+git add apps/browser-demos/lib/init/vfs-utils.ts
 git commit -m "refactor(browser): extract VFS write utilities for init helpers"
 ```
 
@@ -1252,8 +1252,8 @@ git commit -m "refactor(browser): extract VFS write utilities for init helpers"
 The simplest daemon demo. Proof of concept for the init system.
 
 **Files:**
-- Modify: `examples/browser/pages/nginx/main.ts`
-- Modify: `examples/browser/pages/nginx/index.html` (add terminal panel container)
+- Modify: `apps/browser-demos/pages/nginx/main.ts`
+- Modify: `apps/browser-demos/pages/nginx/index.html` (add terminal panel container)
 
 ### Step 1: Update HTML to support terminal panel
 
@@ -1300,7 +1300,7 @@ pty=true
 
 ### Step 3: Test manually
 
-Run: `cd examples/browser && npx vite dev`
+Run: `cd apps/browser-demos && npx vite dev`
 Navigate to the nginx demo page. Verify:
 - nginx starts and serves the iframe content
 - Terminal panel bar visible at bottom
@@ -1311,7 +1311,7 @@ Navigate to the nginx demo page. Verify:
 ### Step 4: Commit
 
 ```bash
-git add examples/browser/pages/nginx/
+git add apps/browser-demos/pages/nginx/
 git commit -m "refactor(browser): nginx demo uses init system + shell terminal"
 ```
 
@@ -1320,8 +1320,8 @@ git commit -m "refactor(browser): nginx demo uses init system + shell terminal"
 ## Task 7: Refactor nginx-php Demo
 
 **Files:**
-- Modify: `examples/browser/pages/nginx-php/main.ts`
-- Modify: `examples/browser/pages/nginx-php/index.html`
+- Modify: `apps/browser-demos/pages/nginx-php/main.ts`
+- Modify: `apps/browser-demos/pages/nginx-php/index.html`
 
 ### Step 1: Update HTML (same flex layout pattern as Task 6)
 
@@ -1366,7 +1366,7 @@ Verify PHP page loads in iframe, shell works, `cat /etc/init.d/10-php-fpm` shows
 ### Step 4: Commit
 
 ```bash
-git add examples/browser/pages/nginx-php/
+git add apps/browser-demos/pages/nginx-php/
 git commit -m "refactor(browser): nginx-php demo uses init system + shell terminal"
 ```
 
@@ -1375,8 +1375,8 @@ git commit -m "refactor(browser): nginx-php demo uses init system + shell termin
 ## Task 8: Refactor redis Demo
 
 **Files:**
-- Modify: `examples/browser/pages/redis/main.ts`
-- Modify: `examples/browser/pages/redis/index.html`
+- Modify: `apps/browser-demos/pages/redis/main.ts`
+- Modify: `apps/browser-demos/pages/redis/index.html`
 
 ### Step 1: Update HTML
 
@@ -1407,7 +1407,7 @@ The Redis demo also has a custom Redis RESP client UI. This stays in the `#conte
 ### Step 4: Commit
 
 ```bash
-git add examples/browser/pages/redis/
+git add apps/browser-demos/pages/redis/
 git commit -m "refactor(browser): redis demo uses init system + shell terminal"
 ```
 
@@ -1418,8 +1418,8 @@ git commit -m "refactor(browser): redis demo uses init system + shell terminal"
 The MariaDB demo has a two-phase bootstrap: run mariadbd in `--bootstrap` mode (oneshot), then start the server (daemon).
 
 **Files:**
-- Modify: `examples/browser/pages/mariadb/main.ts`
-- Modify: `examples/browser/pages/mariadb/index.html`
+- Modify: `apps/browser-demos/pages/mariadb/main.ts`
+- Modify: `apps/browser-demos/pages/mariadb/index.html`
 
 ### Step 1: Update HTML
 
@@ -1475,7 +1475,7 @@ Add `terminate?: boolean` to ServiceDescriptor. Parse `terminate=true` in the pa
 ### Step 5: Commit
 
 ```bash
-git add examples/browser/pages/mariadb/ examples/browser/lib/init/
+git add apps/browser-demos/pages/mariadb/ apps/browser-demos/lib/init/
 git commit -m "refactor(browser): mariadb demo uses init system + shell terminal"
 ```
 
@@ -1484,8 +1484,8 @@ git commit -m "refactor(browser): mariadb demo uses init system + shell terminal
 ## Task 10: Refactor wordpress Demo
 
 **Files:**
-- Modify: `examples/browser/pages/wordpress/main.ts`
-- Modify: `examples/browser/pages/wordpress/index.html`
+- Modify: `apps/browser-demos/pages/wordpress/main.ts`
+- Modify: `apps/browser-demos/pages/wordpress/index.html`
 
 ### Step 1: Update HTML
 
@@ -1552,7 +1552,7 @@ Add the callback to SystemInitOptions and call it in `bootService()` before star
 ### Step 5: Commit
 
 ```bash
-git add examples/browser/pages/wordpress/ examples/browser/lib/init/
+git add apps/browser-demos/pages/wordpress/ apps/browser-demos/lib/init/
 git commit -m "refactor(browser): wordpress demo uses init system + shell terminal"
 ```
 
@@ -1563,8 +1563,8 @@ git commit -m "refactor(browser): wordpress demo uses init system + shell termin
 The most complex demo: MariaDB bootstrap + server + PHP-FPM + nginx + WordPress bundle.
 
 **Files:**
-- Modify: `examples/browser/pages/lamp/main.ts`
-- Modify: `examples/browser/pages/lamp/index.html`
+- Modify: `apps/browser-demos/pages/lamp/main.ts`
+- Modify: `apps/browser-demos/pages/lamp/index.html`
 
 ### Step 1: Update HTML
 
@@ -1618,7 +1618,7 @@ VFS: mariadbd (eager), php-fpm (lazy), nginx (lazy), shell binaries, all configs
 ### Step 4: Commit
 
 ```bash
-git add examples/browser/pages/lamp/
+git add apps/browser-demos/pages/lamp/
 git commit -m "refactor(browser): lamp demo uses init system + shell terminal"
 ```
 
@@ -1629,7 +1629,7 @@ git commit -m "refactor(browser): lamp demo uses init system + shell terminal"
 The shell demo (`pages/shell/main.ts`) was the source of `populateExecBinaries`. Now that it's extracted to `shell-binaries.ts`, update the shell demo to use the shared helper. This avoids two copies of the same binary population logic drifting apart.
 
 **Files:**
-- Modify: `examples/browser/pages/shell/main.ts`
+- Modify: `apps/browser-demos/pages/shell/main.ts`
 
 ### Step 1: Replace inline populateExecBinaries with import from shared helper
 
@@ -1640,7 +1640,7 @@ Keep the shell demo's existing structure (PtyTerminal without SystemInit, since 
 ### Step 3: Commit
 
 ```bash
-git add examples/browser/pages/shell/
+git add apps/browser-demos/pages/shell/
 git commit -m "refactor(browser): shell demo uses shared shell-binaries helper"
 ```
 
@@ -1651,11 +1651,11 @@ git commit -m "refactor(browser): shell demo uses shared shell-binaries helper"
 Remove the need for manually pre-compiling thread modules. Make the kernel worker lazily compile on first `onClone`.
 
 **Files:**
-- Modify: `examples/browser/lib/kernel-worker-entry.ts`
-- Modify: `examples/browser/lib/browser-kernel.ts` (deprecate `threadModule` option)
-- Modify: `examples/browser/pages/mariadb/main.ts` (remove manual precompilation)
-- Modify: `examples/browser/pages/redis/main.ts` (remove manual precompilation)
-- Modify: `examples/browser/pages/lamp/main.ts` (remove manual precompilation)
+- Modify: `apps/browser-demos/lib/kernel-worker-entry.ts`
+- Modify: `apps/browser-demos/lib/browser-kernel.ts` (deprecate `threadModule` option)
+- Modify: `apps/browser-demos/pages/mariadb/main.ts` (remove manual precompilation)
+- Modify: `apps/browser-demos/pages/redis/main.ts` (remove manual precompilation)
+- Modify: `apps/browser-demos/pages/lamp/main.ts` (remove manual precompilation)
 
 ### Step 1: Add per-process thread module caching to kernel-worker-entry.ts
 
@@ -1676,7 +1676,7 @@ Remove `patchWasmForThread` import and pre-compilation from mariadb, redis, and 
 ### Step 4: Commit
 
 ```bash
-git add examples/browser/lib/kernel-worker-entry.ts examples/browser/lib/browser-kernel.ts examples/browser/pages/mariadb/ examples/browser/pages/redis/ examples/browser/pages/lamp/
+git add apps/browser-demos/lib/kernel-worker-entry.ts apps/browser-demos/lib/browser-kernel.ts apps/browser-demos/pages/mariadb/ apps/browser-demos/pages/redis/ apps/browser-demos/pages/lamp/
 git commit -m "feat(browser): auto thread module compilation on first clone"
 ```
 
@@ -1695,7 +1695,7 @@ scripts/run-posix-tests.sh
 
 ### Step 2: Manual browser verification
 
-Run `cd examples/browser && npx vite dev` and verify each daemon demo:
+Run `cd apps/browser-demos && npx vite dev` and verify each daemon demo:
 - [ ] nginx: static page loads, shell works, `cat /etc/init.d/10-nginx` shows config
 - [ ] nginx-php: PHP page loads, shell works
 - [ ] redis: RESP client connects, shell works

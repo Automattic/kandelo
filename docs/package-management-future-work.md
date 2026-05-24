@@ -14,15 +14,15 @@ None is on a committed schedule — pick up when the use case arrives.
 ### Ship kernel.wasm + userspace.wasm in the release
 
 Today's release excludes the kernel + userspace because their
-manifests at `examples/libs/{kernel,userspace}/` lack build scripts —
-`stage_release` skips manifests without a build script as composite
+manifests at `packages/registry/{kernel,userspace}/` lack build scripts —
+`archive-stage` skips manifests without a build script as composite
 metadata. The browser demos import `binaries/kernel.wasm` and
 `binaries/userspace.wasm` (≈23 sites) at Vite build time; without
 those files Vite errors out unless the user has run `bash build.sh`
 locally to populate `local-binaries/`.
 
 Fix options:
-1. **Add build wrappers** at `examples/libs/{kernel,userspace}/build-*.sh`
+1. **Add build wrappers** at `packages/registry/{kernel,userspace}/build-*.sh`
    that delegate to the `cargo build --release -p wasm-posix-{kernel,userspace}`
    pipeline already in `build.sh`. Manifest output names already match
    the cargo artifact paths. Once added, they ship as regular
@@ -53,7 +53,7 @@ random access; `.tar.zst` is a monolithic compressed stream with no
 per-entry seek.
 
 **Today's workaround** (acceptable for now): the browser demo repacks
-a separate `vim.zip` via `examples/browser/scripts/build-vim-zip.sh`
+a separate `vim.zip` via `images/vfs/scripts/build-vim-zip.sh`
 that includes vim.wasm + the runtime tree. The release ships
 `vim-9.1.0900-...tar.zst` containing only `vim.wasm`. Two parallel
 formats coexist; nothing in the release is consumed directly by
@@ -71,10 +71,10 @@ the lazy-mount VFS.
 
 2. **Mixed formats in the release.** Extend `xtask::archive_stage`
    to take an `archive_format` per manifest (default `.tar.zst`,
-   programs that need lazy-mount specify `.zip`).  `install_release`
-   decompressors handle both. Vim ships as `.zip` directly; demos
-   skip the repack step.  Schema doesn't need a new field — the
-   filename extension is the format hint.
+   programs that need lazy-mount specify `.zip`).  `remote_fetch::
+   fetch_and_install` decompressors handle both. Vim ships as `.zip`
+   directly; demos skip the repack step.  Schema doesn't need a new
+   field — the filename extension is the format hint.
 
 Trigger: when a real consumer wants to fetch a published archive +
 lazy-mount its runtime tree without an intermediate repack step.
@@ -86,21 +86,21 @@ Three browser VFS-image scripts read from a sibling package's local
 source-build tree rather than via the resolver
 (`cargo xtask build-deps resolve <name>` → cache canonical dir):
 
-- `examples/browser/scripts/build-mariadb-vfs-image.ts` (consumed
+- `images/vfs/scripts/build-mariadb-vfs-image.ts` (consumed
   by `mariadb-vfs`) reads
-  `examples/libs/mariadb/mariadb-install{,-64}/{bin/mariadbd.wasm,
+  `packages/registry/mariadb/mariadb-install{,-64}/{bin/mariadbd.wasm,
   share/mysql/mysql_system_tables{,_data}.sql}`.
-- `examples/browser/scripts/build-mariadb-test-vfs-image.ts`
+- `images/vfs/scripts/build-mariadb-test-vfs-image.ts`
   (consumed by `mariadb-test`) additionally reads
-  `examples/libs/mariadb/mariadb-install/mysql-test/`.
-- `examples/browser/scripts/build-lamp-vfs-image.ts` (consumed by
+  `packages/registry/mariadb/mariadb-install/mysql-test/`.
+- `images/vfs/scripts/build-lamp-vfs-image.ts` (consumed by
   `lamp`) reads the same SQL files as mariadb-vfs.
 
 The mariadb v6/v7 release archive only ships
 `{mariadbd,mysqltest}.wasm` at the artifact root. The SQL files
 (~2 MB) and `mysql-test/` (~217 MB uncompressed) aren't bundled.
 So when mariadb is *cache-hit* (archive installed without
-source-build), `examples/libs/mariadb/mariadb-install/` is empty
+source-build), `packages/registry/mariadb/mariadb-install/` is empty
 and any of these three downstream scripts fails on its first
 `readFileSync` / `existsSync`.
 
@@ -115,10 +115,10 @@ of bug, just on a different consumer).
 
 PR #410's shell fix is the symmetric template:
 
-1. `examples/libs/mariadb/build-mariadb.sh` — stage
+1. `packages/registry/mariadb/build-mariadb.sh` — stage
    `share/mysql/` into `$WASM_POSIX_DEP_OUT_DIR/share/mysql/`
    (same pattern build-vim.sh uses for `runtime/`).
-2. `examples/libs/mariadb/package.toml` — add `[[outputs]]` entries
+2. `packages/registry/mariadb/package.toml` — add `[[outputs]]` entries
    for `share/mysql/mysql_system_tables.sql` +
    `mysql_system_tables_data.sql` so the v7 archive is treated
    as stale (`compatibility.cache_key_sha` mismatch) and the
@@ -129,7 +129,7 @@ PR #410's shell fix is the symmetric template:
 3. `build-{mariadb-vfs,mariadb-test,lamp}-vfs-image.ts` — call
    `cargo xtask build-deps resolve mariadb` and read
    `<cache-dir>/{bin,share}/...`, falling back to
-   `examples/libs/mariadb/mariadb-install/` for direct
+   `packages/registry/mariadb/mariadb-install/` for direct
    invocations (mirroring build-{vim,nethack}-zip.sh).
 
 `mysql-test/` (~217 MB) is the awkward part — 50–80 MB zstd'd
@@ -152,7 +152,7 @@ Trigger: a PR ends up source-rebuilding mariadb-vfs /
 mariadb-test / lamp (e.g. a kernel-ABI bump invalidates
 everything, a mariadb revision bump, or a transitive cascade
 similar to PR #410), and staging-build / prepare-merge fails on
-"mariadbd.wasm not found at examples/libs/mariadb/mariadb-install/
+"mariadbd.wasm not found at packages/registry/mariadb/mariadb-install/
 bin/mariadbd.wasm".
 
 ### Multi-arch `[binary]` blocks
@@ -258,10 +258,13 @@ Fork-PR support (§9.1 of the design doc) is the remaining open piece;
 fork PRs continue to fall back to the resolver's source-build path
 locally.
 
-Manual `scripts/stage-release.sh` + `scripts/publish-release.sh` is
-still the path for cutting a release outside the PR flow (e.g.,
-hand-rebuilds, recovery from a CI outage). The `prepare-merge.yml`
-workflow wraps those same two scripts.
+For hand-rebuilds outside the PR flow (e.g., recovery from a CI
+outage), `xtask archive-stage --package <dir> --arch <arch>`
+produces a single archive locally; uploading it via
+`scripts/index-update.sh` (which handles the state-lock, archive
+upload, and atomic `index.toml` mutation in one call) reproduces
+what the matrix flow does in CI. The `force-rebuild.yml` workflow
+automates that path for one or more packages.
 
 ### Hard-coded version strings in build scripts (lint)
 
@@ -311,7 +314,7 @@ engineering scope — defer until at least one of the following lands:
 - Heterogeneous mirror network where archives are hosted on
   infrastructure not controlled by the publisher.
 - A trust-authority concept (e.g. "this manifest must chain to the
-  wasm-posix-kernel root key").
+  Kandelo root key").
 
 The schema reserves no placeholder field; sign-related fields are
 designed properly when the feature lands rather than retrofitted into
@@ -354,132 +357,22 @@ trap.
 
 `abi/manifest.schema.json` currently allows `kind: "library"` or the archive-shape
 `kind: "program"` entries WITHOUT a `compatibility` block.  The
-producer (xtask::archive_stage / build_manifest) injects the block 100%
-of the time so this is unreachable, but the schema doesn't enforce it.
-A `dependentRequired` or `if/then` clause would tighten the contract.
+producer (`xtask::archive_stage`) injects the block 100% of the time
+so this is unreachable, but the schema doesn't enforce it. A
+`dependentRequired` or `if/then` clause would tighten the contract.
 
-### Pre-flight install-release covers only `cache_key_sha`
+### Pre-flight resolver covers only `cache_key_sha`
 
-`xtask install-release` pre-flight verifies the manifest entry's
-`cache_key_sha` matches local computation BEFORE invoking
-`remote_fetch::fetch_and_install`.  The deeper 4-axis chain inside
-`fetch_and_install` covers `target_arch` and `abi_versions`, but the
-pre-flight could also short-circuit on those for clearer errors.
-
-### Memoize failed builds within a stage-release run
-
-`xtask::stage_release` iterates manifests alphabetically and calls
-`stage_one` → `ensure_built` per (manifest, arch). When a manifest
-fails (say, mariadb wasm32) every later dependent (lamp,
-mariadb-test, mariadb-vfs, etc.) re-enters `ensure_built` for the
-same failing dep and re-runs its build script from scratch.
-
-In the force-rebuild run that diagnosed PR #406's six root causes,
-mariadb's host CMake configure ran 6 times for one logical failure
-(once per dependent — confirmed by `grep -c "Step 1: Host build"`
-returning 6 in the run logs). CMake fails fast there
-(~1.5s/attempt → ~9s wasted total), so the symptom was mild — but
-a deeper failure (say, in `make` after 10 minutes of compile)
-compounds into 6 × 10min = 1 hour of duplicate work.
-
-Fix: a process-global `OnceLock<Mutex<BTreeMap<(name, TargetArch),
-String>>>` in `build_deps.rs`. Before invoking the build script,
-check the map; if a prior failure is recorded, return its cached
-error string. After the build attempt, record success-or-failure.
-Survives a single `xtask` process; intentionally NOT persisted
-across runs (a fresh CI run should always retry).
-
-Trigger: any time we observe a long-running build's failure being
-re-attempted by its dependents in stage-release logs.
+The resolver verifies the embedded `manifest.toml`'s `cache_key_sha`
+matches local computation as part of `remote_fetch::fetch_and_install`.
+The deeper 4-axis chain inside `fetch_and_install` covers
+`target_arch` and `abi_versions`, but a pre-flight could also
+short-circuit on those for clearer errors.
 
 ## Workflow
 
-### Convert force-rebuild + staging-build to a tier-based job matrix
-
-The current force-rebuild workflow runs every package source build
-sequentially in one Ubuntu runner. Wall time is ~2 hours;
-diagnostic visibility is poor (a single grep through 80k log lines
-to find which package broke); single-package failures take a
-~2-hour cycle to surface the next. PR #406's iteration history is
-a concrete example: six independent root causes, each separated by
-a multi-hour rebuild attempt.
-
-Sketch:
-
-1. New `xtask plan-tiers` subcommand walks every `package.toml`,
-   topo-sorts by `depends_on`, and emits JSON tier arrays. No
-   manifest changes — the dep graph already exists.
-2. Workflow has four jobs: `plan` (emits tier outputs), `setup`
-   (kernel + sysroot + libc++, uploaded as artifact), `tierN`
-   (matrix per tier, each cell builds one package), and
-   `publish` (collects archives, writes manifest, creates release).
-3. Each `tierN` cell:
-   - Downloads `setup` artifacts (sysroot, kernel.wasm).
-   - Downloads its deps' archives from prior tiers' artifacts and
-     re-populates `~/.cache/wasm-posix-kernel/`.
-   - Runs `cargo xtask build-deps build <package>`.
-   - Uploads its own archive as an artifact.
-
-Wins:
-- Wall time ~30-50 min (vs 2h) — true hardware parallelism per cell.
-- Failure isolation — one bad package marks one cell red; the rest
-  of the matrix still produces archives.
-- Per-package logs are scoped to a single cell, easier to triage.
-- Naturally subsumes the in-process memoization above (each cell
-  builds exactly one package).
-
-Costs:
-- 2-3× compute (more runner-minutes; matters more on paid orgs).
-- ~2-3 min per-cell Nix install + artifact transfer overhead — for
-  a 2-min build, near 100% overhead. Net win because long-tail
-  packages dominate wall time.
-- Free-tier 20-job concurrency cap means tier 1 (~30 packages)
-  queues into ~2 batches.
-- Dynamic matrix needs `outputs:` + `fromJSON()` — non-trivial
-  YAML. ~1-2 days implementation.
-
-Trigger: once the current sequential workflow is durably green, or
-sooner if force-rebuild runs continue to take >1 hour to surface
-the next latent build bug.
-
-### Re-enable TexLive in force-rebuild (currently `--allow-failure`)
-
-PR #406's force-rebuild.yml passes `--allow-failure texlive` to keep
-the workflow green while TexLive's source build is broken. The flag
-downgrades a total-failure for that one package to a warning at the
-stage-release exit-code level — every other package is still gated
-strictly. The package's `package.toml` is intentionally untouched; the
-release-policy decision lives at the call site (workflow YAML).
-
-Re-enable when the underlying gmp.h chain is fixed:
-
-* TexLive's `web2c` Phase-1 host build auto-generates `pmpost`'s C
-  sources from `.w` files (the WEB literate-programming format).
-  `pmpmathbinary.c` and `pmpmathinterval.c` hard-`#include <gmp.h>`
-  regardless of `--disable-mp / --disable-ptex / --disable-uptex /
-  --disable-euptex` — those flags only gate the resulting binary,
-  not the source-file generation pass.
-* The bundled `libs/gmp/native/` sub-configure clobbers `CC=` blank
-  on recurse, autoconf re-detects `${build_alias}-gcc` (= the
-  Nix-wrapped gcc on Linux CI), and the wrapper fails its
-  compile-test because the cmdline `CFLAGS=` blank also strips its
-  required spec injections. Same family of issues lurks under
-  `libs/{mpfi,mpfr,cairo}/`.
-
-The proper fix is most-likely:
-
-1. Add `pkgs.gmp pkgs.mpfr pkgs.cairo` to `flake.nix` so their
-   headers + libs land on the Nix wrapper's auto-included path for
-   the host phase.
-2. Switch the host configure to `--with-system-{gmp,mpfr,cairo}=yes`
-   so TexLive uses the Nix-provided libs instead of trying to build
-   bundled copies.
-3. Phase-2 cross-build also needs these libs targeted at wasm32 —
-   either build wasm32 ports of gmp/mpfr/cairo as new
-   `examples/libs/<name>/` packages, OR keep the Phase-2 path on
-   bundled libs and only fix Phase 1.
-4. Drop `--allow-failure texlive` from `force-rebuild.yml`.
-
-Trigger: when TexLive becomes a blocker for a release, or when
-someone is willing to invest the ~half-day on the gmp/mpfr/cairo
-flake additions and dual-phase wiring.
+No packages are bypassed today. (TexLive's source build was thought
+to be blocked on a `pmpost` → `gmp.h` chain, but that turned out to
+be a stale diagnosis: the bundled `libs/gmp/native/` builds fine
+under `nix develop --ignore-environment` on at least Mac aarch64.
+Dropped from the bypass list along with the diagnosis.)

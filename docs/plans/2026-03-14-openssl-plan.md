@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Enable HTTPS in C programs targeting wasm-posix-kernel by compiling OpenSSL to Wasm and providing a reference TLS-intercepting browser backend.
+**Goal:** Enable HTTPS in C programs targeting Kandelo by compiling OpenSSL to Wasm and providing a reference TLS-intercepting browser backend.
 
-**Architecture:** OpenSSL compiles to static Wasm libraries using the SDK's `wasm32posix-cc`. On Node.js, TLS works natively over raw TCP (TcpNetworkBackend). For browsers, a TLS-intercepting fetch backend (adapted from WordPress Playground's TLS 1.2 library) performs MITM, decrypts to HTTP, and routes through `fetch()`. Everything lives in `examples/libs/openssl/` — not core kernel infrastructure.
+**Architecture:** OpenSSL compiles to static Wasm libraries using the SDK's `wasm32posix-cc`. On Node.js, TLS works natively over raw TCP (TcpNetworkBackend). For browsers, a TLS-intercepting fetch backend (adapted from WordPress Playground's TLS 1.2 library) performs MITM, decrypts to HTTP, and routes through `fetch()`. Everything lives in `packages/registry/openssl/` — not core kernel infrastructure.
 
 **Tech Stack:** OpenSSL 3.3.x, WordPress Playground TLS 1.2 library (vendored), TypeScript, Vitest, Web Crypto API
 
@@ -13,10 +13,10 @@
 ### Task 1: Scaffold Directory Structure
 
 **Files:**
-- Create: `examples/libs/openssl/package.json`
-- Create: `examples/libs/openssl/tsconfig.json`
-- Create: `examples/libs/openssl/vitest.config.ts`
-- Create: `examples/libs/openssl/.gitignore`
+- Create: `packages/registry/openssl/package.json`
+- Create: `packages/registry/openssl/tsconfig.json`
+- Create: `packages/registry/openssl/vitest.config.ts`
+- Create: `packages/registry/openssl/.gitignore`
 
 **Step 1: Create package.json**
 
@@ -77,13 +77,13 @@ openssl-install/
 
 **Step 5: Install dependencies**
 
-Run: `cd examples/libs/openssl && npm install`
+Run: `cd packages/registry/openssl && npm install`
 
 **Step 6: Commit**
 
 ```bash
-git add examples/libs/openssl/
-git commit -m "feat: scaffold examples/libs/openssl directory"
+git add packages/registry/openssl/
+git commit -m "feat: scaffold packages/registry/openssl directory"
 ```
 
 ---
@@ -91,7 +91,7 @@ git commit -m "feat: scaffold examples/libs/openssl directory"
 ### Task 2: OpenSSL Build Script
 
 **Files:**
-- Create: `examples/libs/openssl/build-openssl.sh`
+- Create: `packages/registry/openssl/build-openssl.sh`
 
 **Context:** OpenSSL uses a Perl-based `Configure` script (not autoconf). We use the `linux-generic32` target and override CC/AR/RANLIB with our SDK tools. After Configure, we patch the Makefile to remove cross-compile guards, then build only `libssl.a` and `libcrypto.a`. This follows the WordPress Playground pattern.
 
@@ -186,14 +186,14 @@ fi
 
 **Step 2: Run the build script**
 
-Run: `cd examples/libs/openssl && bash build-openssl.sh`
+Run: `cd packages/registry/openssl && bash build-openssl.sh`
 
 Expected: Downloads OpenSSL 3.3.2, configures, patches, builds, and installs to `openssl-install/`. This step will likely surface SDK issues — fix them in the SDK before continuing (see Task 2a).
 
 **Step 3: Commit**
 
 ```bash
-git add examples/libs/openssl/build-openssl.sh
+git add packages/registry/openssl/build-openssl.sh
 git commit -m "feat: add OpenSSL build script for Wasm"
 ```
 
@@ -225,7 +225,7 @@ git commit -m "feat: add OpenSSL build script for Wasm"
 ### Task 3: Build Verification Test
 
 **Files:**
-- Create: `examples/libs/openssl/test/ssl_basic.c`
+- Create: `packages/registry/openssl/test/ssl_basic.c`
 
 **Step 1: Write the basic test program**
 
@@ -267,11 +267,11 @@ int main(void)
 Run:
 ```bash
 wasm32posix-cc \
-    -I examples/libs/openssl/openssl-install/include \
-    examples/libs/openssl/test/ssl_basic.c \
-    -L examples/libs/openssl/openssl-install/lib \
+    -I packages/registry/openssl/openssl-install/include \
+    packages/registry/openssl/test/ssl_basic.c \
+    -L packages/registry/openssl/openssl-install/lib \
     -lssl -lcrypto \
-    -o examples/libs/openssl/test/ssl_basic.wasm
+    -o packages/registry/openssl/test/ssl_basic.wasm
 ```
 
 Expected: Produces `ssl_basic.wasm`. If linking fails, debug and fix SDK or build issues.
@@ -283,7 +283,7 @@ Create a quick Node.js runner or use the existing ProgramRunner integration test
 **Step 4: Commit**
 
 ```bash
-git add examples/libs/openssl/test/ssl_basic.c
+git add packages/registry/openssl/test/ssl_basic.c
 git commit -m "test: verify OpenSSL links and SSL_CTX works in Wasm"
 ```
 
@@ -292,7 +292,7 @@ git commit -m "test: verify OpenSSL links and SSL_CTX works in Wasm"
 ### Task 4: HTTPS GET Test Program
 
 **Files:**
-- Create: `examples/libs/openssl/test/https_get.c`
+- Create: `packages/registry/openssl/test/https_get.c`
 
 **Context:** This C program performs a full HTTPS GET request using OpenSSL's API over raw POSIX sockets. It will be used for both Node.js (real TCP) and browser (TLS-intercepting backend) tests.
 
@@ -423,17 +423,17 @@ int main(int argc, char **argv)
 Run:
 ```bash
 wasm32posix-cc \
-    -I examples/libs/openssl/openssl-install/include \
-    examples/libs/openssl/test/https_get.c \
-    -L examples/libs/openssl/openssl-install/lib \
+    -I packages/registry/openssl/openssl-install/include \
+    packages/registry/openssl/test/https_get.c \
+    -L packages/registry/openssl/openssl-install/lib \
     -lssl -lcrypto \
-    -o examples/libs/openssl/test/https_get.wasm
+    -o packages/registry/openssl/test/https_get.wasm
 ```
 
 **Step 3: Commit**
 
 ```bash
-git add examples/libs/openssl/test/https_get.c
+git add packages/registry/openssl/test/https_get.c
 git commit -m "test: add HTTPS GET test program using OpenSSL"
 ```
 
@@ -442,7 +442,7 @@ git commit -m "test: add HTTPS GET test program using OpenSSL"
 ### Task 5: Node.js End-to-End Test
 
 **Files:**
-- Create: `examples/libs/openssl/test/https-node.test.ts`
+- Create: `packages/registry/openssl/test/https-node.test.ts`
 
 **Context:** Run `https_get.wasm` with `TcpNetworkBackend` (real TCP, real DNS). OpenSSL in Wasm does the actual TLS handshake over the real TCP socket. This test requires internet access.
 
@@ -517,14 +517,14 @@ describe("HTTPS via OpenSSL on Node.js (real TCP)", () => {
 
 **Step 2: Run the test**
 
-Run: `cd examples/libs/openssl && npx vitest run test/https-node.test.ts`
+Run: `cd packages/registry/openssl && npx vitest run test/https-node.test.ts`
 
 Expected: PASS — OpenSSL in Wasm performs real TLS over raw TCP.
 
 **Step 3: Commit**
 
 ```bash
-git add examples/libs/openssl/test/https-node.test.ts
+git add packages/registry/openssl/test/https-node.test.ts
 git commit -m "test: Node.js end-to-end HTTPS via OpenSSL over real TCP"
 ```
 
@@ -533,8 +533,8 @@ git commit -m "test: Node.js end-to-end HTTPS via OpenSSL over real TCP"
 ### Task 6: Vendor WordPress Playground TLS Library
 
 **Files:**
-- Create: `examples/libs/openssl/src/tls/` (vendored from WordPress Playground)
-- Create: `examples/libs/openssl/src/tls/utils.ts` (with shims)
+- Create: `packages/registry/openssl/src/tls/` (vendored from WordPress Playground)
+- Create: `packages/registry/openssl/src/tls/utils.ts` (with shims)
 
 **Context:** We vendor WordPress Playground's TLS 1.2 implementation from `packages/php-wasm/web/src/lib/tls/`. The library depends on `@php-wasm/util` (for `concatUint8Arrays`) and `@php-wasm/logger` — we provide trivial shims. The core TLS files are:
 
@@ -591,14 +591,14 @@ const logger = { warn: console.warn };
 
 **Step 4: Verify the vendored library compiles**
 
-Run: `cd examples/libs/openssl && npx tsc --noEmit`
+Run: `cd packages/registry/openssl && npx tsc --noEmit`
 
 Expected: No type errors.
 
 **Step 5: Commit**
 
 ```bash
-git add examples/libs/openssl/src/tls/
+git add packages/registry/openssl/src/tls/
 git commit -m "feat: vendor WordPress Playground TLS 1.2 library"
 ```
 
@@ -607,7 +607,7 @@ git commit -m "feat: vendor WordPress Playground TLS 1.2 library"
 ### Task 7: TLS-Intercepting Fetch Backend
 
 **Files:**
-- Create: `examples/libs/openssl/src/tls-fetch-backend.ts`
+- Create: `packages/registry/openssl/src/tls-fetch-backend.ts`
 
 **Context:** Implements the `NetworkIO` interface. For port 80, behaves like the existing FetchNetworkBackend (parse raw HTTP, route through `fetch()`). For port 443, performs a TLS MITM using the vendored TLS library: generates per-domain certs signed by a built-in CA, completes TLS handshake with the Wasm OpenSSL client, decrypts application data to extract HTTP requests, routes through `fetch()` with `https://`, and re-encrypts responses.
 
@@ -740,7 +740,7 @@ The backend must expose the CA certificate as PEM so it can be written to the Wa
 ```typescript
 export async function createCARootCertificate(): Promise<GeneratedCertificate> {
     return await generateCertificate({
-        subject: { commonName: "Wasm POSIX MITM CA", organizationName: "wasm-posix-kernel" },
+        subject: { commonName: "Kandelo MITM CA", organizationName: "Kandelo" },
         validity: { notBefore: new Date("2020-01-01"), notAfter: new Date("2040-01-01") },
         basicConstraints: { isCA: true },
     });
@@ -749,12 +749,12 @@ export async function createCARootCertificate(): Promise<GeneratedCertificate> {
 
 **Step 3: Verify it compiles**
 
-Run: `cd examples/libs/openssl && npx tsc --noEmit`
+Run: `cd packages/registry/openssl && npx tsc --noEmit`
 
 **Step 4: Commit**
 
 ```bash
-git add examples/libs/openssl/src/tls-fetch-backend.ts
+git add packages/registry/openssl/src/tls-fetch-backend.ts
 git commit -m "feat: add TLS-intercepting fetch backend for browser HTTPS"
 ```
 
@@ -763,7 +763,7 @@ git commit -m "feat: add TLS-intercepting fetch backend for browser HTTPS"
 ### Task 8: Browser Backend End-to-End Test
 
 **Files:**
-- Create: `examples/libs/openssl/test/https-browser.test.ts`
+- Create: `packages/registry/openssl/test/https-browser.test.ts`
 
 **Context:** Run `https_get.wasm` using the TLS-intercepting fetch backend. This runs in Node.js (the vendored TLS library uses Web Crypto which is available in Node.js 20+). We mock `fetch()` to return a canned HTTPS response, avoiding real network dependencies.
 
@@ -839,20 +839,20 @@ describe("HTTPS via OpenSSL with TLS-intercepting fetch backend", () => {
 
 **Step 2: Run the test**
 
-Run: `cd examples/libs/openssl && npx vitest run test/https-browser.test.ts`
+Run: `cd packages/registry/openssl && npx vitest run test/https-browser.test.ts`
 
 Expected: PASS — TLS handshake via MITM, HTTP request extracted, routed through fetch, response encrypted and returned.
 
 **Step 3: Run all tests**
 
-Run: `cd examples/libs/openssl && npx vitest run`
+Run: `cd packages/registry/openssl && npx vitest run`
 
 Expected: All tests pass.
 
 **Step 4: Commit**
 
 ```bash
-git add examples/libs/openssl/test/https-browser.test.ts
+git add packages/registry/openssl/test/https-browser.test.ts
 git commit -m "test: browser HTTPS end-to-end via TLS-intercepting fetch backend"
 ```
 
@@ -873,7 +873,7 @@ cd host && npx vitest run
 cd sdk && npx vitest run
 
 # OpenSSL example tests
-cd examples/libs/openssl && npx vitest run
+cd packages/registry/openssl && npx vitest run
 ```
 
 All should pass.

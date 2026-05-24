@@ -35,10 +35,20 @@ export interface CentralizedWorkerInitMessage {
   argv?: string[];
   /** Optional cwd */
   cwd?: string;
-  /** If true, this is a fork child created via asyncify — do rewind instead of normal _start */
+  /** If true, this is a fork child — drive wpk_fork_rewind_begin instead of normal _start */
   isForkChild?: boolean;
-  /** Address of asyncify data buffer in memory (used for fork child rewind) */
-  asyncifyBufAddr?: number;
+  /** Address of the fork save-buffer in memory (used for fork child rewind) */
+  forkBufAddr?: number;
+  /**
+   * Entry-point override for fork children created by a non-main thread.
+   *
+   * A pthread worker that calls fork() unwinds through its pthread entry
+   * function, not `_start`. The fork child must therefore enter that function
+   * directly before `wpk_fork_rewind_begin` can replay back to the saved fork
+   * site.
+   */
+  forkChildThreadFnPtr?: number;
+  forkChildThreadArgPtr?: number;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;
   /**

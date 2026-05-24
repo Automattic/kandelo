@@ -1,6 +1,12 @@
-# Examples
+# Kernel Examples
 
-C programs demonstrating wasm-posix-kernel capabilities. Each can be compiled with the SDK and run on the TypeScript host.
+C programs demonstrating Kandelo kernel and SDK capabilities. Each can be
+compiled with the SDK and run on the TypeScript host.
+
+Package-specific demo launchers live under each package's
+`packages/registry/<name>/demo/` directory. Package integration test harnesses
+live under `packages/registry/<name>/test/`. Browser-facing demos live under
+[`apps/browser-demos/`](../apps/browser-demos/).
 
 ## Building and Running
 
@@ -48,10 +54,11 @@ See [docs/sdk-guide.md](../docs/sdk-guide.md) for full SDK documentation.
 
 ### Browser Demos
 
-The `browser/` directory contains interactive demos running real software in the browser via Vite:
+The `apps/browser-demos/` app contains interactive demos running real software
+in the browser via Vite:
 
 ```bash
-cd examples/browser
+cd apps/browser-demos
 npm install
 npx vite --port 5198
 ```
@@ -69,29 +76,31 @@ npx vite --port 5198
 | WordPress | `/pages/wordpress/` | nginx + PHP-FPM + SQLite |
 | LAMP | `/pages/lamp/` | MariaDB + nginx + PHP-FPM + WordPress |
 
-Live at: [brandonpayton.github.io/wasm-posix-kernel](https://brandonpayton.github.io/wasm-posix-kernel/)
+Live at: [Kandelo browser demos](https://brandonpayton.github.io/wasm-posix-kernel/)
 
 See [docs/porting-guide.md](../docs/porting-guide.md) for how to create new demos.
 
 ### Ported Software
 
-Build scripts for real-world software are in `libs/`:
+Build scripts for real-world software are in `packages/registry/`. Runnable
+package demos live in `packages/registry/<name>/demo/`, and package integration
+test harnesses live in `packages/registry/<name>/test/`.
 
 | Software | Build script | Binary output |
 |----------|-------------|---------------|
-| dash 0.5.12 | `libs/dash/build-dash.sh` | `libs/dash/bin/dash.wasm` |
-| GNU coreutils 9.6 | `libs/coreutils/build-coreutils.sh` | `libs/coreutils/bin/coreutils.wasm` |
-| GNU grep 3.11 | `libs/grep/build-grep.sh` | `libs/grep/bin/grep.wasm` |
-| GNU sed 4.9 | `libs/sed/build-sed.sh` | `libs/sed/bin/sed.wasm` |
-| PHP 8.4 | `libs/php/build-php.sh` | `libs/php/bin/php.wasm`, `php-fpm.wasm` |
-| MariaDB 10.5 | `libs/mariadb/build-mariadb.sh` | `libs/mariadb/bin/mariadbd.wasm` |
-| Redis 7.2 | `libs/redis/build-redis.sh` | `libs/redis/bin/redis-server.wasm` |
-| CPython 3.13 | `libs/cpython/build-cpython.sh` | `libs/cpython/bin/python.wasm` |
-| nginx 1.27 | via `examples/nginx/` | `examples/nginx/bin/nginx.wasm` |
-| SQLite | `libs/sqlite/build-sqlite.sh` | (library, linked into PHP) |
-| zlib | `libs/zlib/build-zlib.sh` | (library, linked into PHP) |
-| libxml2 | `libs/libxml2/build-libxml2.sh` | (library, linked into PHP) |
-| OpenSSL | `libs/openssl/build-openssl.sh` | (library, linked into PHP) |
+| dash 0.5.12 | `packages/registry/dash/build-dash.sh` | `packages/registry/dash/bin/dash.wasm` |
+| GNU coreutils 9.6 | `packages/registry/coreutils/build-coreutils.sh` | `packages/registry/coreutils/bin/coreutils.wasm` |
+| GNU grep 3.11 | `packages/registry/grep/build-grep.sh` | `packages/registry/grep/bin/grep.wasm` |
+| GNU sed 4.9 | `packages/registry/sed/build-sed.sh` | `packages/registry/sed/bin/sed.wasm` |
+| PHP 8.4 | `packages/registry/php/build-php.sh` | `packages/registry/php/bin/php.wasm`, `php-fpm.wasm` |
+| MariaDB 10.5 | `packages/registry/mariadb/build-mariadb.sh` | `packages/registry/mariadb/bin/mariadbd.wasm` |
+| Redis 7.2 | `packages/registry/redis/build-redis.sh` | `packages/registry/redis/bin/redis-server.wasm` |
+| CPython 3.13 | `packages/registry/cpython/build-cpython.sh` | `packages/registry/cpython/bin/python.wasm` |
+| nginx 1.24 | `packages/registry/nginx/build-nginx.sh` | `packages/registry/nginx/bin/nginx.wasm` |
+| SQLite | `packages/registry/sqlite/build-sqlite.sh` | (library, linked into PHP) |
+| zlib | `packages/registry/zlib/build-zlib.sh` | (library, linked into PHP) |
+| libxml2 | `packages/registry/libxml2/build-libxml2.sh` | (library, linked into PHP) |
+| OpenSSL | `packages/registry/openssl/build-openssl.sh` | (library, linked into PHP) |
 
 ## Pre-compiled Binaries
 

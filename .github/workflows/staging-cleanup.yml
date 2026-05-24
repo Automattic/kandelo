@@ -1,9 +1,11 @@
 name: Staging cleanup
 
 # Deletes pr-<NNN>-staging pre-releases when the corresponding PR
-# closes (merged or abandoned), with a daily cron + manual dispatch
-# fallback to sweep up orphans (webhook misses, workflow failures
-# during the close event).
+# closes (merged or abandoned), and deletes same-repo branches for
+# merged `ready-to-ship` PRs. A daily cron + manual dispatch sweep up
+# orphans (webhook misses, workflow failures during the close event,
+# and PRs merged by GITHUB_TOKEN actions whose follow-on events are
+# intentionally suppressed by GitHub Actions).
 #
 # See docs/plans/2026-04-29-pr-package-builds-design.md §4.3.
 
@@ -21,7 +23,7 @@ jobs:
     permissions:
       contents: write
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Delete pr-${{ github.event.pull_request.number }}-staging
         run: |
@@ -33,6 +35,57 @@ jobs:
             echo "$TAG does not exist; nothing to clean up"
           fi
 
+      - name: Delete merged ready-to-ship PR branch
+        if: |
+          github.event.pull_request.merged == true &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          contains(github.event.pull_request.labels.*.name, 'ready-to-ship')
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$HEAD_REF" ]; then
+            echo "::warning::PR #$PR_NUMBER has no head ref; skipping branch cleanup"
+            exit 0
+          fi
+
+          if [ -z "$PR_HEAD_SHA" ]; then
+            echo "::warning::PR #$PR_NUMBER has no head SHA; skipping branch cleanup"
+            exit 0
+          fi
+
+          if [ "$HEAD_REF" = "$DEFAULT_BRANCH" ]; then
+            echo "::warning::Refusing to delete default branch $HEAD_REF for PR #$PR_NUMBER"
+            exit 0
+          fi
+
+          if ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then
+            echo "::warning::Refusing to delete invalid branch ref $HEAD_REF for PR #$PR_NUMBER"
+            exit 0
+          fi
+
+          git init --quiet "$RUNNER_TEMP/branch-cleanup"
+          cd "$RUNNER_TEMP/branch-cleanup"
+
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          remote_sha=$(git ls-remote "$REMOTE" "refs/heads/$HEAD_REF" | awk '{print $1}')
+          if [ -n "$remote_sha" ]; then
+            if [ "$remote_sha" != "$PR_HEAD_SHA" ]; then
+              echo "::warning::Refusing to delete branch $HEAD_REF for PR #$PR_NUMBER because it now points at $remote_sha, not merged head $PR_HEAD_SHA"
+              exit 0
+            fi
+
+            if git push "$REMOTE" ":refs/heads/$HEAD_REF"; then
+              echo "Deleted merged PR #$PR_NUMBER branch $HEAD_REF"
+            else
+              echo "::warning::Failed to delete merged PR #$PR_NUMBER branch $HEAD_REF"
+            fi
+          else
+            echo "Merged PR #$PR_NUMBER branch $HEAD_REF is already absent"
+          fi
+
   sweep:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -40,7 +93,7 @@ jobs:
       contents: write
       pull-requests: read
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Sweep orphan pr-*-staging tags
         run: |
@@ -64,4 +117,67 @@ jobs:
                 else
                   echo "Keeping $TAG (PR is OPEN)"
                 fi
+              done
+
+      - name: Sweep merged ready-to-ship PR branches
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git init --quiet "$RUNNER_TEMP/branch-cleanup"
+          cd "$RUNNER_TEMP/branch-cleanup"
+
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+
+          delete_branch() {
+            local pr_number="$1"
+            local head_ref="$2"
+            local expected_sha="$3"
+
+            if [ -z "$head_ref" ]; then
+              echo "::warning::PR #$pr_number has no head ref; skipping branch cleanup"
+              return 0
+            fi
+
+            if [ -z "$expected_sha" ]; then
+              echo "::warning::PR #$pr_number has no head SHA; skipping branch cleanup"
+              return 0
+            fi
+
+            if [ "$head_ref" = "$DEFAULT_BRANCH" ]; then
+              echo "::warning::Refusing to delete default branch $head_ref for PR #$pr_number"
+              return 0
+            fi
+
+            if ! git check-ref-format --branch "$head_ref" >/dev/null 2>&1; then
+              echo "::warning::Refusing to delete invalid branch ref $head_ref for PR #$pr_number"
+              return 0
+            fi
+
+            remote_sha=$(git ls-remote "$REMOTE" "refs/heads/$head_ref" | awk '{print $1}')
+            if [ -n "$remote_sha" ]; then
+              if [ "$remote_sha" != "$expected_sha" ]; then
+                echo "::warning::Refusing to delete branch $head_ref for PR #$pr_number because it now points at $remote_sha, not merged head $expected_sha"
+                return 0
+              fi
+
+              if git push "$REMOTE" ":refs/heads/$head_ref"; then
+                echo "Deleted merged PR #$pr_number branch $head_ref"
+              else
+                echo "::warning::Failed to delete merged PR #$pr_number branch $head_ref"
+              fi
+            else
+              echo "Merged PR #$pr_number branch $head_ref is already absent"
+            fi
+          }
+
+          gh pr list \
+              --repo ${{ github.repository }} \
+              --state merged \
+              --base "$DEFAULT_BRANCH" \
+              --label ready-to-ship \
+              --limit 200 \
+              --json number,headRefName,headRefOid,isCrossRepository \
+              -q '.[] | select(.isCrossRepository == false) | [.number, .headRefName, .headRefOid] | @tsv' \
+            | while IFS=$'\t' read -r pr_number head_ref head_sha; do
+                delete_branch "$pr_number" "$head_ref" "$head_sha"
               done

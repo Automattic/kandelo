@@ -1,0 +1,26 @@
+diff --git a/mfbt/Assertions.h b/mfbt/Assertions.h
+--- a/mfbt/Assertions.h
++++ b/mfbt/Assertions.h
+@@ -9,7 +9,7 @@
+ #define mozilla_Assertions_h
+
+ #if (defined(MOZ_HAS_MOZGLUE) || defined(MOZILLA_INTERNAL_API)) && \
+-    !defined(__wasi__)
++    !defined(__wasi__) && !defined(__wasm32__)
+ #  define MOZ_DUMP_ASSERTION_STACK
+ #endif
+ #if defined(XP_WIN) && (defined(DEBUG) || defined(FUZZING))
+diff --git a/mozglue/misc/StackWalk.h b/mozglue/misc/StackWalk.h
+--- a/mozglue/misc/StackWalk.h
++++ b/mozglue/misc/StackWalk.h
+@@ -31,7 +31,11 @@ MOZ_BEGIN_EXTERN_C
+  * (inlining of intermediaries, tail call optimization).
+  */
++#if defined(__wasm32__) && !defined(__EMSCRIPTEN__)
++#  define CallerPC() ((void*)0)
++#else
+ #define CallerPC() __builtin_extract_return_addr(__builtin_return_address(0))
++#endif
+
+ /**
+  * The callback for MozStackWalk and MozStackWalkThread.

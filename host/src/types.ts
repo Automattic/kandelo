@@ -4,6 +4,11 @@ export interface KernelConfig {
   useSharedMemory: boolean;
   /** Log every syscall with decoded args and return values to stderr */
   enableSyscallLog?: boolean;
+  /** Log syscalls only for processes with this ptrWidth (4 or 8). Useful when
+   *  one wasm64 process in a multi-process demo is misbehaving and the rest
+   *  are wasm32 — enabling enableSyscallLog drowns the trace in unrelated
+   *  syscalls. */
+  syscallLogPtrWidth?: 4 | 8;
 }
 
 export interface StatResult {
@@ -17,6 +22,20 @@ export interface StatResult {
   atimeMs: number;
   mtimeMs: number;
   ctimeMs: number;
+}
+
+export interface StatfsResult {
+  type: number;
+  bsize: number;
+  blocks: number;
+  bfree: number;
+  bavail: number;
+  files: number;
+  ffree: number;
+  fsid: number;
+  namelen: number;
+  frsize: number;
+  flags: number;
 }
 
 export interface PlatformIO {
@@ -40,6 +59,7 @@ export interface PlatformIO {
   // Path-based operations
   stat(path: string): StatResult;
   lstat(path: string): StatResult;
+  statfs(path: string): StatfsResult;
   mkdir(path: string, mode: number): void;
   rmdir(path: string): void;
   unlink(path: string): void;
@@ -78,6 +98,8 @@ export interface PlatformIO {
 
 export interface NetworkIO {
   connect(handle: number, addr: Uint8Array, port: number): void;
+  /** 0 = connected, positive errno = failed, -11 = still pending (EAGAIN). */
+  connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
   recv(handle: number, maxLen: number, flags: number): Uint8Array;
   close(handle: number): void;

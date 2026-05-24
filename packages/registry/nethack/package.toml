@@ -1,0 +1,20 @@
+kind = "program"
+name = "nethack"
+version = "3.6.7"
+kernel_abi = 7
+depends_on = ["ncurses@6.5"]
+
+[source]
+url = "https://www.nethack.org/download/3.6.7/nethack-367-src.tgz"
+sha256 = "98cf67df6debf9668a61745aa84c09bcab362e5d33f5b944ec5155d44d2aacb2"
+
+[license]
+spdx = "NGPL"
+url = "https://nethack.org/common/license.html"
+
+[build]
+script_path = "packages/registry/nethack/build-nethack.sh"
+
+[[outputs]]
+name = "nethack"
+wasm = "nethack.wasm"

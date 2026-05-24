@@ -1,8 +1,8 @@
-# wasm-posix-kernel
+# Kandelo
 
-A POSIX-compliant multi-process kernel for WebAssembly. Compile C programs against a real musl libc, run them in the browser or Node.js with syscall-level compatibility.
+Fold a computer into a URL. Kandelo is a POSIX-compatible multi-process kernel for WebAssembly that lets you compile C programs against a real musl libc and run them in the browser or Node.js with syscall-level compatibility.
 
-**Live demo**: [brandonpayton.github.io/wasm-posix-kernel](https://brandonpayton.github.io/wasm-posix-kernel/)
+**Live demo**: [Open Kandelo in the browser](https://brandonpayton.github.io/kandelo/)
 
 ***ATTENTION:*** This repo may contain .wasm binary builds in its history. In the future, history will likely be rewritten to remove these as they are offloaded to a better data store.
 
@@ -24,7 +24,7 @@ Real, unmodified software compiled to WebAssembly:
 | fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |
-| QuickJS-NG | 0.12 | ES2023 JavaScript engine + Node.js compat layer |
+| QuickJS-NG | 0.12 | ES2023 JavaScript engine + Node.js compat layer (`node:crypto` hash + HMAC via OpenSSL, `node:zlib` deflate/inflate/gzip/gunzip via libz, native `JSON.parse` via yyjson). `npm install` works for `lodash`, `express`, and `vite`. |
 | GNU nano | 8.3 | Terminal text editor |
 | dash | 0.5.12 | POSIX shell with pipes, redirects, job control |
 | GNU coreutils | 9.6 | 50+ utilities (ls, cat, sort, wc, etc.) |
@@ -124,10 +124,30 @@ entries are near-instant.
 
 ## Quick Start
 
+### Install published packages
+
+For consumers that do not need to rebuild Kandelo itself, the npm
+packages are the easiest entry point:
+
+```bash
+npm install wasm-posix-host wasm-posix-sdk
+```
+
+`wasm-posix-host` ships the compiled host runtime JS, worker entry
+points, `kernel.wasm`, and `rootfs.vfs`. `wasm-posix-sdk` ships the
+compiler wrappers, musl sysroot, and host glue files used when linking
+your own C/C++ programs. You still need LLVM 21+ on `PATH` (or
+`WASM_POSIX_LLVM_DIR`) because the SDK wraps clang rather than
+bundling a native compiler.
+
+From a source checkout, `npm run pack:packages` builds npm tarballs
+after `bash scripts/build-musl.sh` and `bash build.sh` have produced
+the sysroot, kernel, and rootfs artifacts.
+
 ### 1. Build the kernel
 
 ```bash
-git submodule update --init musl
+git submodule update --init libc/musl
 
 # Build musl sysroot (first time only)
 bash scripts/build-musl.sh
@@ -137,7 +157,7 @@ bash build.sh
 ```
 
 This builds the kernel from source. Library dependencies (zlib, openssl,
-sqlite, etc.) and ported programs (vim, git, php, etc.) are resolved
+sqlite, libcxx, etc.) and ported programs (vim, git, php, etc.) are resolved
 on demand by `cargo xtask build-deps resolve <name>`, which prefers
 the per-user cache, then falls back to the published binary release at
 [`binaries-abi-v<ABI_VERSION>`](https://github.com/brandonpayton/wasm-posix-kernel/releases),
@@ -147,15 +167,15 @@ full schema, resolution order, and release-archive contract.
 
 If you prefer to skip cargo-driven dep resolution and pull every
 pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
-`bash build.sh`. It reads `binaries.lock` and downloads the libraries
-into the resolver cache plus the ported programs into
-`local-binaries/programs/`.
+`bash build.sh`. It walks every `packages/registry/<pkg>/package.toml`
+with a `[binary.<arch>]` block and resolves the archives into the
+content-addressed cache plus `binaries/programs/<arch>/` symlinks.
 
 If you are editing a package's `package.toml` to iterate locally, the
-strict cache-key check will abort fetch with a `manifest.json
-cache_key_sha ... does not match` error. Pass `--allow-stale` (or set
-`WASM_POSIX_ALLOW_STALE=1`) to skip the strict check and source-build
-the modified package — see [Iterating on a package locally](docs/package-management.md#iterating-on-a-package-locally).
+resolver detects the cache-key mismatch, logs a warning, and falls
+through to a source build via the package's `build-<name>.sh` —
+no flag needed. See [Iterating on a package
+locally](docs/package-management.md#iterating-on-a-package-locally).
 
 ### 2. Install the SDK
 
@@ -192,34 +212,34 @@ npx tsx examples/run-example.ts hello
 ./run.sh browser
 
 # Or manually:
-cd examples/browser
+cd apps/browser-demos
 npm install
 npx vite --port 5198
 ```
 
-Open `http://localhost:5198` to try 15 interactive demos — C programs, interactive shell, Python/Perl/Ruby REPLs, nginx, MariaDB, Redis, full WordPress, a LAMP stack, TeX Live, and DOOM — all running in the browser.
+Open `http://localhost:5198` to try 16 interactive demos — C programs, interactive shell, Python/Perl/Ruby/Node REPLs (including in-browser `npm install`), nginx, MariaDB, Redis, full WordPress, a LAMP stack, TeX Live, and DOOM — all running in the browser.
 
 Browser demos use pre-built **VFS images** — binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
 
 ## Porting Software
 
-Build scripts for all ported software are in `examples/libs/`:
+Build scripts for all ported software are in `packages/registry/`:
 
 ```bash
-bash examples/libs/dash/build-dash.sh          # dash shell
-bash examples/libs/coreutils/build-coreutils.sh # GNU coreutils
-bash examples/libs/php/build-php.sh             # PHP 8.4
-bash examples/libs/redis/build-redis.sh         # Redis 7.2
-bash examples/libs/mariadb/build-mariadb.sh     # MariaDB 10.5
-bash examples/libs/cpython/build-cpython.sh     # CPython 3.13
-bash examples/libs/git/build-git.sh             # Git 2.47
-bash examples/libs/vim/build-vim.sh             # Vim 9.1
-bash examples/libs/perl/build-perl.sh           # Perl 5.40
-bash examples/libs/ruby/build-ruby.sh           # Ruby 3.3
-bash examples/libs/quickjs/build-quickjs.sh     # QuickJS-NG + Node.js compat
-bash examples/libs/nano/build-nano.sh           # GNU nano 8.3
-bash examples/libs/curl/build-curl.sh           # curl
-bash examples/libs/make/build-make.sh           # GNU make
+bash packages/registry/dash/build-dash.sh          # dash shell
+bash packages/registry/coreutils/build-coreutils.sh # GNU coreutils
+bash packages/registry/php/build-php.sh             # PHP 8.4
+bash packages/registry/redis/build-redis.sh         # Redis 7.2
+bash packages/registry/mariadb/build-mariadb.sh     # MariaDB 10.5
+bash packages/registry/cpython/build-cpython.sh     # CPython 3.13
+bash packages/registry/git/build-git.sh             # Git 2.47
+bash packages/registry/vim/build-vim.sh             # Vim 9.1
+bash packages/registry/perl/build-perl.sh           # Perl 5.40
+bash packages/registry/ruby/build-ruby.sh           # Ruby 3.3
+bash packages/registry/quickjs/build-quickjs.sh     # QuickJS-NG + Node.js compat
+bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
+bash packages/registry/curl/build-curl.sh           # curl
+bash packages/registry/make/build-make.sh           # GNU make
 ```
 
 See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own software.
@@ -230,7 +250,7 @@ See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own soft
 # Kernel unit tests (700 tests)
 cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
 
-# Host integration tests (276 tests)
+# Host, package, and browser-adjacent integration tests
 cd host && npx vitest run
 
 # musl libc-test suite (0 unexpected failures)
@@ -251,22 +271,50 @@ crates/
   kernel/            Kernel implementation (syscalls, fd table, signals, pipes, sockets, PTY)
   userspace/         User-space stub library
 host/
-  src/               TypeScript host runtime (kernel loader, VFS, networking, workers)
-  test/              Vitest integration tests
+  src/               TypeScript host runtime shared by Node.js and browser hosts
+    node-kernel-host.ts / node-kernel-worker-entry.ts
+                      Node.js host main-thread proxy and kernel worker entry
+    browser-kernel-host.ts / browser-kernel-worker-entry.ts
+                      Browser host main-thread proxy and kernel worker entry
+    worker-main.ts   Shared process-worker runtime used by both hosts
+    vfs/ networking/ framebuffer/
+                      Shared host services used by Node.js, browser, and tests
+  test/              Host/kernel runtime behavior tests
   wasm/              Compiled Wasm binaries
 sdk/
   src/bin/           CLI tool wrappers for LLVM cross-compilation
   src/lib/           Toolchain discovery, compiler flags, arg parsing
-glue/
+apps/
+  browser-demos/     Vite demo/UI app that consumes the browser host runtime
+web-libs/
+  kandelo-session/   Reusable Kandelo session/UI integration contracts
+packages/
+  registry/          Kandelo package manifests and build scripts
+    <name>/test/     Package-owned tests and fixtures
+  sets/              Named package sets for CI and product scenarios
+tests/
+  package-system/    Package registry and binary-fetching automation tests
+  libc/              musl libc-test suite and overlays
+  posix/             Open POSIX test suite
+  sortix/            Sortix os-test suite and overlays
+images/
+  rootfs/            Source tree for the base VFS image
+  vfs/scripts/       VFS image and archive builders
+tools/
+  mkrootfs/          Root filesystem image builder
+  xtask/             Rust package/release automation CLI
+libc/glue/
   channel_syscall.c  Channel-based syscall dispatcher (compiled into every user program)
   compiler_rt.c      Soft-float and 64-bit compiler runtime builtins
-musl/                musl libc (git submodule)
-musl-overlay/        Wasm32-specific architecture patches for musl
-scripts/             Build scripts, test runners (libc-test, POSIX, Sortix)
+libc/musl/                musl libc (git submodule)
+libc/musl-overlay/        Wasm32-specific architecture patches for musl
+tests/
+  libc/              musl libc-test submodule, overlays, and build output
+  posix/             Open POSIX test suite
+  sortix/            Sortix os-test submodule and build output
+scripts/             Build scripts and test runners
 examples/
   *.c / *.wasm       Simple C example programs
-  browser/           Browser demo app (Vite + 15 demo pages)
-  libs/              Build scripts for ported software (36 packages)
 docs/
   architecture.md    Architecture reference
   sdk-guide.md       SDK usage guide
@@ -281,12 +329,15 @@ docs/
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/architecture.md) | Kernel design, syscall flow, multi-process model, memory layout |
+| [Repository Organization](docs/repository-organization.md) | Top-level ownership boundaries and CI-oriented path categories |
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
 | [Porting Guide](docs/porting-guide.md) | How to port software, create Node.js and browser demos |
 | [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |
-| [Package Management](docs/package-management.md) | `examples/libs/<name>/package.toml` schema, resolver, release archives |
+| [Shareable Computer URLs](docs/plans/2026-05-11-shareable-computer-url-design.md) | Boot descriptor design for sharing computer topology, signed bases/packages, mounts, and overlays |
+| [Package Management](docs/package-management.md) | `packages/registry/<name>/package.toml` schema, resolver, release archives |
+| [Package Sources](docs/package-sources.md) | Reusable workflows and scripts for third-party Kandelo package repositories |
 | [Package Management — Future Work](docs/package-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
-| [Binary Releases](docs/binary-releases.md) | `manifest.json` schema, package-system `.tar.zst` archive layout, fetch + verify flow |
+| [Binary Releases](docs/binary-releases.md) | `index.toml` ledger, package-system `.tar.zst` archive layout, fetch + verify flow |
 | [Profiling & Benchmarking](docs/profiling.md) | Syscall profiler, benchmark suite, cross-host comparison |
 | [POSIX Status](docs/posix-status.md) | Syscall-by-syscall implementation status |
 | [Wasm Limitations](docs/wasm-limitations.md) | Fundamental platform constraints |
@@ -310,7 +361,7 @@ docs/
 This project uses a split license model:
 
 - **GPL-2.0-or-later** — The platform (kernel, host runtime, SDK, build scripts, examples)
-- **MIT** — Runtime library components linked into user programs (musl-overlay/ and glue/)
+- **MIT** — Runtime library components linked into user programs (libc/musl-overlay/ and libc/glue/)
 
 You can compile and run your own programs — including proprietary ones — without the GPL applying to your code. The runtime code linked into your program is MIT-licensed, and the kernel communicates via IPC, not linking.
 

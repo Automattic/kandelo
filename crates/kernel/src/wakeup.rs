@@ -38,7 +38,10 @@ pub fn push(pipe_idx: u32, wake_type: u8) {
         return;
     }
     let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
-    events.push(WakeupEvent { pipe_idx, wake_type });
+    events.push(WakeupEvent {
+        pipe_idx,
+        wake_type,
+    });
 }
 
 /// Drain all pending wakeup events, writing them to the output buffer.

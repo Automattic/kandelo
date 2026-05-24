@@ -25,10 +25,12 @@ fi
 rel="$1"
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$repo_root" ]; then
-    # Fall back to walking up from $PWD.
+    # Fall back to walking up from $PWD looking for the workspace
+    # Cargo.toml + abi/snapshot.json (a unique pair only present at
+    # this repo's root).
     dir="$(pwd)"
     while [ "$dir" != "/" ]; do
-        if [ -f "$dir/binaries.lock" ] && [ -f "$dir/abi/manifest.schema.json" ]; then
+        if [ -f "$dir/Cargo.toml" ] && [ -f "$dir/abi/snapshot.json" ]; then
             repo_root="$dir"
             break
         fi

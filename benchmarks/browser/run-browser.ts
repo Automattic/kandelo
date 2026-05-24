@@ -8,30 +8,111 @@
  */
 import { chromium, type Browser, type Page } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
+import { copyFileSync, existsSync, mkdirSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { tryResolveBinary } from "../../host/src/binary-resolver.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const browserDir = resolve(__dirname, "../../examples/browser");
+const browserDir = resolve(__dirname, "../../apps/browser-demos");
 
 /** Suites available in the browser benchmark page. */
 const BROWSER_SUITES = [
-  "syscall-io", "process-lifecycle", "erlang-ring", "wordpress",
+  "syscall-io", "process-lifecycle", "wordpress",
   "mariadb-aria", "mariadb-aria-64",
   "mariadb-innodb", "mariadb-innodb-64",
 ];
+
+const DISABLED_BROWSER_SUITES: Record<string, string> = {
+  "erlang-ring": "disabled while the Erlang benchmark is unstable",
+};
 
 /** Per-suite timeout for page.evaluate (ms). Heavy suites like mariadb need longer. */
 const SUITE_TIMEOUTS: Record<string, number> = {
   "syscall-io": 60_000,
   "process-lifecycle": 60_000,
-  "erlang-ring": 120_000,
   "wordpress": 300_000,
   "mariadb-aria": 600_000,
   "mariadb-aria-64": 600_000,
   "mariadb-innodb": 600_000,
   "mariadb-innodb-64": 600_000,
 };
+
+const REQUIRED_BROWSER_ARTIFACTS = [
+  {
+    label: "kernel.wasm",
+    paths: ["local-binaries/kernel.wasm", "binaries/kernel.wasm"],
+    buildHint: "bash build.sh",
+  },
+  {
+    label: "rootfs.vfs",
+    paths: ["host/wasm/rootfs.vfs"],
+    buildHint: "bash build.sh",
+  },
+  {
+    label: "browser benchmark wasm programs",
+    paths: [
+      "benchmarks/wasm/pipe-throughput.wasm",
+      "benchmarks/wasm/file-throughput.wasm",
+      "benchmarks/wasm/syscall-latency.wasm",
+      "benchmarks/wasm/hello.wasm",
+      "benchmarks/wasm/fork-bench.wasm",
+      "benchmarks/wasm/clone-bench.wasm",
+      "benchmarks/wasm/spawn-bench.wasm",
+    ],
+    buildHint: "scripts/build-programs.sh",
+    all: true,
+  },
+];
+
+function hasAny(paths: string[]): boolean {
+  return paths.some((path) => existsSync(resolve(browserDir, "../..", path)));
+}
+
+function hasAll(paths: string[]): boolean {
+  return paths.every((path) => existsSync(resolve(browserDir, "../..", path)));
+}
+
+function assertBrowserArtifactsAvailable(): void {
+  for (const artifact of REQUIRED_BROWSER_ARTIFACTS) {
+    const found = artifact.all ? hasAll(artifact.paths) : hasAny(artifact.paths);
+    if (!found) {
+      const checked = artifact.paths
+        .map((path) => `  ${resolve(browserDir, "../..", path)}`)
+        .join("\n");
+      throw new Error(
+        `Browser benchmark prerequisite is missing: ${artifact.label}.\n` +
+        `Run: ${artifact.buildHint}\n` +
+        `Checked:\n${checked}`,
+      );
+    }
+  }
+}
+
+function materializePublicAsset(relBinaryPath: string, publicName: string): void {
+  const publicPath = resolve(browserDir, "public", publicName);
+  if (existsSync(publicPath)) return;
+
+  const sourcePath = tryResolveBinary(relBinaryPath);
+  if (!sourcePath || !existsSync(sourcePath)) return;
+
+  mkdirSync(dirname(publicPath), { recursive: true });
+  copyFileSync(sourcePath, publicPath);
+}
+
+function materializeBrowserSuiteAssets(suiteNames: string[]): void {
+  if (suiteNames.includes("wordpress")) {
+    materializePublicAsset("programs/wordpress.vfs.zst", "wordpress.vfs.zst");
+  }
+
+  if (suiteNames.some((suite) => suite === "mariadb-aria" || suite === "mariadb-innodb")) {
+    materializePublicAsset("programs/mariadb-vfs.vfs.zst", "mariadb.vfs.zst");
+  }
+
+  if (suiteNames.some((suite) => suite === "mariadb-aria-64" || suite === "mariadb-innodb-64")) {
+    materializePublicAsset("programs/wasm64/mariadb-vfs.vfs.zst", "mariadb-64.vfs.zst");
+  }
+}
 
 export interface BrowserBenchmarkOptions {
   suites?: string[];
@@ -49,9 +130,33 @@ function median(values: number[]): number {
 export async function runBrowserBenchmarks(
   options: BrowserBenchmarkOptions = {},
 ): Promise<Record<string, Record<string, number>>> {
-  const suiteNames = options.suites ?? BROWSER_SUITES;
+  const requestedSuiteNames = options.suites ?? BROWSER_SUITES;
   const rounds = options.rounds ?? 3;
   const results: Record<string, Record<string, number>> = {};
+  const suiteNames: string[] = [];
+
+  for (const suiteName of requestedSuiteNames) {
+    const disabledReason = DISABLED_BROWSER_SUITES[suiteName];
+    if (disabledReason) {
+      console.warn(`  Suite "${suiteName}" disabled in browser, skipping (${disabledReason})`);
+      results[suiteName] = {};
+      continue;
+    }
+
+    if (!BROWSER_SUITES.includes(suiteName)) {
+      console.warn(`  Suite "${suiteName}" not available in browser, skipping`);
+      continue;
+    }
+
+    suiteNames.push(suiteName);
+  }
+
+  if (suiteNames.length === 0) {
+    return results;
+  }
+
+  assertBrowserArtifactsAvailable();
+  materializeBrowserSuiteAssets(suiteNames);
 
   // Start Vite dev server
   console.log("Starting Vite dev server...");
@@ -64,6 +169,9 @@ export async function runBrowserBenchmarks(
         "Cross-Origin-Opener-Policy": "same-origin",
         "Cross-Origin-Embedder-Policy": "require-corp",
       },
+    },
+    optimizeDeps: {
+      entries: [resolve(browserDir, "pages/benchmark/index.html")],
     },
     logLevel: "warn",
   });
@@ -105,11 +213,6 @@ export async function runBrowserBenchmarks(
 
     // Run each suite
     for (const suiteName of suiteNames) {
-      if (!BROWSER_SUITES.includes(suiteName)) {
-        console.warn(`  Suite "${suiteName}" not available in browser, skipping`);
-        continue;
-      }
-
       console.log(`\n--- ${suiteName} (browser) ---`);
       const roundResults: Record<string, number[]> = {};
 

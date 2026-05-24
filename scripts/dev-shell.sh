@@ -13,8 +13,11 @@
 # `--keep` preserves only the specific env vars CI workflows and
 # interactive use need. `HOME` is required because cargo/npm/git
 # all stash state under `~/`. The `INPUT_*` and `GITHUB_*` lists
-# carry workflow-context vars through (auth tokens, dispatch
-# inputs, ref/sha names). `CI`, `LOGNAME`, `USER` carry GHA-runner
+# carry workflow-context vars through (dispatch inputs, ref/sha names).
+# `GH_TOKEN` is kept for the GitHub CLI, while `GITHUB_TOKEN` is
+# intentionally not kept so Nix does not treat a repo-scoped Actions
+# token as a general-purpose token for public GitHub flake inputs.
+# `CI`, `LOGNAME`, `USER` carry GHA-runner
 # identity through to test scripts: `run-sortix-tests.sh` checks
 # `${CI:-}` to skip flaky tests, and musl's `getlogin()` reads
 # `LOGNAME`/`USER` (the os-test getlogin probe expects either a
@@ -41,7 +44,8 @@ if [ $# -eq 0 ]; then
     exit 2
 fi
 
-exec nix develop \
+nix_develop=(
+    nix develop
     --ignore-environment \
     --keep HOME \
     --keep TERM \
@@ -54,18 +58,73 @@ exec nix develop \
     --keep INPUT_SKIP_TESTS \
     --keep INPUT_BUMP_LOCKFILE \
     --keep GH_TOKEN \
-    --keep GITHUB_TOKEN \
     --keep GITHUB_REPOSITORY \
     --keep GITHUB_REF \
     --keep GITHUB_REF_NAME \
     --keep GITHUB_SHA \
     --keep GITHUB_RUN_ID \
     --keep GITHUB_ACTIONS \
+    --keep GITHUB_OUTPUT \
+    --keep GITHUB_ENV \
+    --keep GITHUB_PATH \
+    --keep GITHUB_STEP_SUMMARY \
+    --keep GITHUB_WORKSPACE \
+    --keep GITHUB_EVENT_NAME \
+    --keep GITHUB_EVENT_PATH \
+    --keep SYNTH_BASE_SHA \
+    --keep SYNTH_HEAD_SHA \
+    --keep SYNTHETIC_MERGE_SHA \
+    --keep RUNNER_TEMP \
+    --keep RUNNER_OS \
+    --keep RUNNER_ARCH \
+    --keep RUNNER_TOOL_CACHE \
+    --keep RUNNER_NAME \
+    --keep RUNNER_DEBUG \
     --keep WASM_POSIX_DEP_TARGET_ARCH \
     --keep WASM_POSIX_DEP_OUT_DIR \
     --keep WASM_POSIX_DEP_NAME \
     --keep WASM_POSIX_DEP_VERSION \
+    --keep WASM_POSIX_BINARY_INDEX_URL \
+    --keep WASM_POSIX_FETCH_SKIP_PKGS \
     --keep WASM_POSIX_SYSROOT \
     --keep WASM_POSIX_LLVM_DIR \
     --accept-flake-config \
     --command "$@"
+)
+
+is_transient_nix_fetch_failure() {
+    local log_file="$1"
+
+    # Nix already retries individual downloads quickly. Wrap the whole
+    # shell entry with slower backoff for short GitHub archive outages.
+    grep -Eq "unable to download 'https://(api\\.)?github\\.com/" "$log_file" &&
+        grep -Eq 'HTTP error 5[0-9][0-9]|This page is taking too long to load|Bad Gateway|Service Unavailable' "$log_file"
+}
+
+attempt=1
+max_attempts="${WASM_POSIX_DEV_SHELL_ATTEMPTS:-3}"
+delay=5
+
+while true; do
+    log_file="$(mktemp)"
+    set +e
+    "${nix_develop[@]}" 2>&1 | tee "$log_file"
+    rc="${PIPESTATUS[0]}"
+    set -e
+
+    if [ "$rc" -eq 0 ]; then
+        rm -f "$log_file"
+        exit 0
+    fi
+
+    if [ "$attempt" -ge "$max_attempts" ] || ! is_transient_nix_fetch_failure "$log_file"; then
+        rm -f "$log_file"
+        exit "$rc"
+    fi
+
+    echo "dev-shell.sh: transient GitHub flake fetch failure; retrying nix develop in ${delay}s (attempt ${attempt}/${max_attempts})." >&2
+    rm -f "$log_file"
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+done

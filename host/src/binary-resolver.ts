@@ -13,28 +13,49 @@
  * See `docs/binary-releases.md` for the layout.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
  * Walk up from the importing file to find the repo root. Markers:
- * `binaries.lock` + `abi/manifest.schema.json`. Both are tracked,
- * both are near the top of the tree — together they're unambiguous.
+ * workspace `Cargo.toml` + `package.json`. Both are tracked at the
+ * top of the tree and together are unambiguous — they distinguish
+ * the repo root from any nested cargo crate or npm subpackage.
+ *
+ * Per-package `packages/registry/<name>/package.toml` files carry the
+ * release-archive metadata directly (URL + sha256 in `[binary]` /
+ * `[binary.<arch>]`); there is no central pinfile for the resolver
+ * to read.
  */
 let cachedRepoRoot: string | null = null;
 
+function currentModuleDir(): string {
+  if (typeof __dirname !== "undefined") return __dirname;
+  return import.meta.url ? dirname(fileURLToPath(import.meta.url)) : process.cwd();
+}
+
+function isRepoRoot(dir: string): boolean {
+  // Workspace Cargo.toml has a [workspace] table; nested crate
+  // Cargo.tomls do not. Cheap check that disambiguates without
+  // having to read+parse every Cargo.toml on the way up.
+  const cargo = join(dir, "Cargo.toml");
+  if (!existsSync(cargo) || !existsSync(join(dir, "package.json"))) {
+    return false;
+  }
+  try {
+    return /^\s*\[workspace\]/m.test(readFileSync(cargo, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
 export function findRepoRoot(startFrom?: string): string {
   if (cachedRepoRoot && !startFrom) return cachedRepoRoot;
-  const here =
-    startFrom ??
-    (import.meta.url ? dirname(fileURLToPath(import.meta.url)) : process.cwd());
+  const here = startFrom ?? currentModuleDir();
   let dir = resolve(here);
   for (let i = 0; i < 20; i++) {
-    if (
-      existsSync(join(dir, "binaries.lock")) &&
-      existsSync(join(dir, "abi/manifest.schema.json"))
-    ) {
+    if (isRepoRoot(dir)) {
       if (!startFrom) cachedRepoRoot = dir;
       return dir;
     }
@@ -43,8 +64,12 @@ export function findRepoRoot(startFrom?: string): string {
     dir = parent;
   }
   throw new Error(
-    "Could not find repo root (expected binaries.lock + abi/manifest.schema.json)"
+    "Could not find repo root (expected workspace Cargo.toml + package.json)"
   );
+}
+
+function packageRoot(): string {
+  return resolve(currentModuleDir(), "..");
 }
 
 /**
@@ -55,7 +80,7 @@ export function findRepoRoot(startFrom?: string): string {
  *   `userspace.wasm`
  *   `programs/vim.zip`               (implicit wasm32 — see below)
  *   `programs/git/git.wasm`          (implicit wasm32)
- *   `programs/wasm64/mariadb-vfs.vfs` (explicit arch)
+ *   `programs/wasm64/mariadb-vfs.vfs.zst` (explicit arch)
  *
  * Per-arch layout: `binaries/programs/` and `local-binaries/programs/`
  * are split into `wasm32/` and `wasm64/` subtrees so multi-arch
@@ -76,18 +101,43 @@ function applyDefaultArch(relPath: string): string {
   return `programs/wasm32/${tail}`;
 }
 
-export function resolveBinary(relPath: string): string {
-  const repo = findRepoRoot();
+function packagedBinaryCandidates(relPath: string): string[] {
+  const root = packageRoot();
   const adjusted = applyDefaultArch(relPath);
-  const local = join(repo, "local-binaries", adjusted);
-  if (existsSync(local)) return local;
-  const fetched = join(repo, "binaries", adjusted);
-  if (existsSync(fetched)) return fetched;
+  const candidates = [join(root, "wasm", adjusted)];
+  if (relPath === "kernel.wasm") {
+    candidates.push(join(root, "wasm", "wasm_posix_kernel.wasm"));
+  } else if (relPath === "userspace.wasm") {
+    candidates.push(join(root, "wasm", "wasm_posix_userspace.wasm"));
+  } else if (relPath === "rootfs.vfs") {
+    candidates.push(join(root, "wasm", "rootfs.vfs"));
+  }
+  return candidates;
+}
+
+export function resolveBinary(relPath: string): string {
+  const adjusted = applyDefaultArch(relPath);
+  const checked: string[] = [];
+  try {
+    const repo = findRepoRoot();
+    const local = join(repo, "local-binaries", adjusted);
+    checked.push(local);
+    if (existsSync(local)) return local;
+    const fetched = join(repo, "binaries", adjusted);
+    checked.push(fetched);
+    if (existsSync(fetched)) return fetched;
+  } catch {
+    // Installed npm consumers do not have a source repo root. Fall
+    // through to packaged assets below.
+  }
+  for (const candidate of packagedBinaryCandidates(relPath)) {
+    checked.push(candidate);
+    if (existsSync(candidate)) return candidate;
+  }
   throw new Error(
     `Binary not found: ${relPath}\n` +
-      `  checked: ${local}\n` +
-      `  checked: ${fetched}\n` +
-      `  Run scripts/fetch-binaries.sh or place a file at local-binaries/${adjusted}.`
+      checked.map((p) => `  checked: ${p}`).join("\n") +
+      `\n  Run scripts/fetch-binaries.sh, place a file at local-binaries/${adjusted}, or install a package that includes wasm/${relPath}.`
   );
 }
 

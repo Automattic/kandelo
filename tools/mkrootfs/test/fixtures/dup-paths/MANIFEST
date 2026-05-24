@@ -1,0 +1,4 @@
+/                 d  0755  0  0
+/etc              d  0755  0  0
+/etc/passwd       f  0644  0  0
+/etc/passwd       f  0600  0  0

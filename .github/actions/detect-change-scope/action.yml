@@ -1,9 +1,10 @@
 name: Detect change scope
 description: |
-  Compute kernel/docs_only flags from the diff vs a base ref. Used by
-  staging-build.yml and prepare-merge.yml to gate test suites.
+  Compute kernel/docs_only/package_staging_required flags from the
+  diff vs a base ref. Used by staging-build.yml and prepare-merge.yml
+  to gate test suites and package staging.
 
-  Two tiers:
+  Scopes:
 
     docs_only — every changed file is in the docs/meta allowlist
       (docs/, top-level *.md, LICENSE, COPYING*, .gitignore et al, the
@@ -18,10 +19,16 @@ description: |
       commit there was gated through prepare-merge with full suites
       green.
 
+    package_staging_required — at least one changed file can affect
+      package archive outputs or the package staging/publish machinery.
+      Ordinary kernel/runtime changes do not set this flag unless they
+      bump `ABI_VERSION` or update committed ABI artifacts. Browser demo
+      app, CI workflow/action-only, and docs-only changes do not set it.
+
   vitest gates on `!docs_only` rather than on `kernel` — its 51 test
   files exercise built packages (dash, bash, nginx, erlang, php,
   quickjs, ...) on top of the kernel, so a PR that only touches
-  examples/libs/php/ must re-validate the PHP test against the new
+  packages/registry/php/ must re-validate the PHP test against the new
   binary.
 
   Filters fail safe: an unknown path outside the docs allowlist
@@ -59,6 +66,16 @@ outputs:
       'true' when every changed path is in the docs/meta allowlist.
       Gates the prereq kernel build + vitest.
     value: ${{ steps.scope.outputs.docs_only }}
+  package_staging_required:
+    description: |
+      'true' when at least one changed path can affect package build
+      outputs or package staging CI logic.
+    value: ${{ steps.scope.outputs.package_staging_required }}
+  package_staging_reason:
+    description: |
+      Human-readable explanation of why package staging is required
+      or why it was skipped.
+    value: ${{ steps.scope.outputs.package_staging_reason }}
 
 runs:
   using: composite
@@ -73,19 +90,58 @@ runs:
 
         if [ "$FETCH_BASE" = 'true' ]; then
           remote_branch="${BASE_REF#origin/}"
-          git fetch origin "$remote_branch" --depth=1
+          if [ "$remote_branch" != "$BASE_REF" ]; then
+            git fetch origin "+refs/heads/$remote_branch:refs/remotes/origin/$remote_branch" --no-tags
+          else
+            git fetch origin "$BASE_REF" --no-tags
+          fi
         fi
 
-        files=$(git diff --name-only "$BASE_REF"...HEAD)
+        diff_range="$BASE_REF...HEAD"
+        if ! files=$(git diff --name-only "$diff_range" 2>/tmp/detect-change-scope.diff.err); then
+          echo "::warning::three-dot diff against $BASE_REF failed; falling back to two-dot diff"
+          cat /tmp/detect-change-scope.diff.err >&2 || true
+          diff_range="$BASE_REF..HEAD"
+          files=$(git diff --name-only "$diff_range")
+        fi
         echo "Changed files vs $BASE_REF:"
         echo "$files" | sed 's/^/  /'
+
+        action_dir="${GITHUB_ACTION_PATH:-.github/actions/detect-change-scope}"
+        . "$action_dir/package-staging-paths.sh"
+        package_files=$(printf '%s\n' "$files" | package_staging_changed_files)
+        if printf '%s\n' "$files" | grep -qx 'crates/shared/src/lib.rs' &&
+           git diff -U0 "$diff_range" -- crates/shared/src/lib.rs \
+             | grep -E '^[+-][[:space:]]*pub const ABI_VERSION: u32 = [0-9]+' >/dev/null; then
+          package_files=$(printf '%s\n%s\n' "$package_files" 'crates/shared/src/lib.rs (ABI_VERSION)' | sed '/^$/d')
+        fi
+        if [ -z "$files" ]; then
+          echo 'package_staging_required=true' >> "$GITHUB_OUTPUT"
+          echo 'package_staging_reason=Empty diff; package staging required as a fail-safe.' >> "$GITHUB_OUTPUT"
+          package_staging_state='will run - empty diff fail-safe'
+        elif [ -n "$package_files" ]; then
+          count=$(echo "$package_files" | sed '/^$/d' | wc -l | tr -d ' ')
+          first_matches=$(echo "$package_files" | sed '/^$/d' | head -n 3 | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+          if [ "$count" -gt 3 ]; then
+            reason="Package-affecting changes: ${first_matches} (+$((count - 3)) more)"
+          else
+            reason="Package-affecting changes: ${first_matches}"
+          fi
+          echo 'package_staging_required=true' >> "$GITHUB_OUTPUT"
+          echo "package_staging_reason=$reason" >> "$GITHUB_OUTPUT"
+          package_staging_state='will run'
+        else
+          echo 'package_staging_required=false' >> "$GITHUB_OUTPUT"
+          echo 'package_staging_reason=No package-affecting changes; package staging skipped.' >> "$GITHUB_OUTPUT"
+          package_staging_state='skip - no package-affecting changes'
+        fi
 
         # Tier B — kernel filter (gates cargo + libc-test + POSIX + sortix).
         # Includes this action's own path so changes to the detection
         # logic re-run the full suite for self-validation, mirroring
         # the way the workflow files themselves are kernel-gated.
         if echo "$files" | grep -E \
-          -e '^(crates|glue|musl-overlay|musl|libc-test|libc-test-overlay|os-test|host|programs|abi)/' \
+          -e '^(crates|libc|tests/libc|tests/posix|tests/sortix|host|programs|abi)/' \
           -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
           -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
           -e '^examples/run-example\.ts$' \
@@ -121,4 +177,4 @@ runs:
           vitest_state='will run'
         fi
 
-        echo "::notice::vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
+        echo "::notice::package staging: $package_staging_state | vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"

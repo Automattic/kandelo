@@ -23,14 +23,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
-OS_TEST="$REPO_ROOT/os-test"
-BUILD_DIR="$REPO_ROOT/os-test/build"
+GLUE_DIR="$REPO_ROOT/libc/glue"
+OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
 # Include tests for headers/features our musl sysroot doesn't provide.
-# Format: "header/symbol" matching the test path under os-test/include/
+# Format: "header/symbol" matching the test path under tests/sortix/os-test/include/
 INCLUDE_EXPECTED_FAIL=(
     "devctl/posix_devctl" "devctl/size_t"      # device control (Sortix/2024, not in musl)
 )
@@ -113,7 +113,7 @@ CFLAGS_BASE=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
+    -mllvm -wasm-use-legacy-eh=false
     # Tell Sortix tests this platform lacks SIGSTOP/SIGCONT and getifaddrs,
     # so they use race-based timing or skip those features instead.
     -D__sortix__
@@ -161,15 +161,12 @@ SO_LINK_FLAGS=(
     -Wl,--allow-undefined
 )
 
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
-asyncify_wasm() {
+instrument_wasm() {
     local wasm="$1"
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
     fi
 }
 
@@ -181,16 +178,16 @@ trap 'rm -rf "$RESULT_DIR"' EXIT
 
 # ── Test discovery ──────────────────────────────────────────
 
-# Discover include tests: os-test/include/<header>/<symbol>.c
+# Discover include tests: tests/sortix/os-test/include/<header>/<symbol>.c
 discover_include() {
     find "$OS_TEST/include" -name "*.c" -type f | sort | while read -r f; do
-        # Path relative to os-test/include, e.g. "unistd/read"
+        # Path relative to tests/sortix/os-test/include, e.g. "unistd/read"
         local rel="${f#$OS_TEST/include/}"
         echo "${rel%.c}"
     done
 }
 
-# Discover basic tests: os-test/basic/<header>/<func>.c
+# Discover basic tests: tests/sortix/os-test/basic/<header>/<func>.c
 discover_basic() {
     find "$OS_TEST/basic" -name "*.c" -type f ! -name "basic.h" | sort | while read -r f; do
         local rel="${f#$OS_TEST/basic/}"
@@ -206,7 +203,7 @@ discover_basic() {
     done
 }
 
-# Discover limits tests: os-test/limits/<constant>.c
+# Discover limits tests: tests/sortix/os-test/limits/<constant>.c
 discover_limits() {
     find "$OS_TEST/limits" -name "*.c" -type f ! -name "suite.h" | sort | while read -r f; do
         local rel="${f#$OS_TEST/limits/}"
@@ -306,7 +303,7 @@ build_runtime_test() {
     "$CC" "${cflags[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
         -o "$wasm" 2>/tmp/sortix-build-err-$$.txt
-    asyncify_wasm "$wasm"
+    instrument_wasm "$wasm"
 
     # If source has #ifdef SHARED, also build as a shared library (.so)
     if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
@@ -575,7 +572,7 @@ _run_runtime_test_worker() {
     [ -n "$so_link" ] && rm -f "$so_link" 2>/dev/null || true
 
     # Sortix convention: if output is empty or exit code >= 2,
-    # append "exit: N" to the output (matches os-test/misc/run.sh)
+    # append "exit: N" to the output (matches tests/sortix/os-test/misc/run.sh)
     if [ -z "$output" ] || [ "$rc" -ge 2 ]; then
         if [ -n "$output" ]; then
             output="$output
@@ -780,7 +777,7 @@ run_suite() {
         echo "  Building $count tests ($PARALLEL parallel)..."
         # Build in parallel using a wrapper that reconstructs arrays
         export REPO_ROOT BUILD_DIR OS_TEST SYSROOT GLUE_DIR
-        export CC WASM_OPT ASYNCIFY_IMPORTS
+        export CC FORK_INSTRUMENT
         export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
         export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
         export SO_CFLAGS_STR="${SO_CFLAGS[*]}"
@@ -796,10 +793,8 @@ run_suite() {
             "$CC" $CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST" \
                 "$src" $LINK_FLAGS_STR \
                 -o "$wasm" 2>/dev/null || return 1
-            if [ -n "$WASM_OPT" ]; then
-                "$WASM_OPT" --asyncify \
-                    --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-                    "$wasm" -o "$wasm" 2>/dev/null || true
+            if [ -x "$FORK_INSTRUMENT" ]; then
+                "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
             fi
             # Build shared library (.so) if source has #ifdef SHARED
             if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
@@ -920,7 +915,7 @@ if [ ! -f "$KERNEL_WASM" ]; then
     exit 1
 fi
 if [ ! -d "$OS_TEST" ]; then
-    echo "Error: os-test not found. Run: git submodule update --init os-test" >&2
+    echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
     exit 1
 fi
 

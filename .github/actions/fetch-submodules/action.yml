@@ -1,0 +1,68 @@
+name: Fetch submodules with retry
+description: |
+  `git submodule update --init --depth 1` with retry. Replaces inline
+  bash blocks across staging-build.yml, prepare-merge.yml,
+  force-rebuild.yml.
+
+  Why this exists: submodule hosts occasionally fail or stall during
+  CI. A one-shot fetch fails the whole job. We retry up to 3 times
+  with a 10s backoff, which is enough to ride out the typical
+  transient.
+
+  The libc-test submodule is on git@github.com: in `.gitmodules`
+  (SSH); rewrite to HTTPS for runner-side anonymous fetch.
+
+inputs:
+  submodules:
+    description: |
+      Whitespace-separated submodule paths to fetch. Common values:
+      `libc/musl`, `libc/musl tests/libc/libc-test tests/sortix/os-test`.
+    required: true
+  attempts:
+    description: Maximum number of attempts before giving up.
+    default: '3'
+  backoff-seconds:
+    description: Sleep between attempts.
+    default: '10'
+  timeout-seconds:
+    description: Maximum runtime for each fetch attempt before retrying.
+    default: '180'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SUBMODULES: ${{ inputs.submodules }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        BACKOFF: ${{ inputs.backoff-seconds }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+      run: |
+        set -eo pipefail
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+        if [[ " $SUBMODULES " == *" musl "* || " $SUBMODULES " == *" libc/musl "* ]]; then
+          # git.musl-libc.org often hangs from GitHub-hosted runners.
+          # This mirror carries the same musl release tags used by the submodule.
+          git config submodule.musl.url "https://github.com/ifduyue/musl.git"
+        fi
+
+        for i in $(seq 1 "$ATTEMPTS"); do
+          status=0
+          timeout "${TIMEOUT_SECONDS}s" git submodule update --init --depth 1 $SUBMODULES || status=$?
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$status" -eq 124 ]; then
+            echo "::warning::submodule fetch timed out after ${TIMEOUT_SECONDS}s (attempt $i/$ATTEMPTS)"
+          else
+            echo "::warning::submodule fetch failed with exit code $status (attempt $i/$ATTEMPTS)"
+          fi
+          rm -f .git/index.lock
+          find .git/modules -type f -name '*.lock' -delete 2>/dev/null || true
+          if [ "$i" -lt "$ATTEMPTS" ]; then
+            echo "::warning::retrying submodule fetch in ${BACKOFF}s"
+            sleep "$BACKOFF"
+          fi
+        done
+        echo "::error::submodule fetch failed after $ATTEMPTS attempts"
+        exit 1

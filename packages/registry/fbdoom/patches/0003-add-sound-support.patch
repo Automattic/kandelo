@@ -1,0 +1,325 @@
+diff --git a/fbdoom/Makefile b/fbdoom/Makefile
+index fb32c7b..b566875 100644
+--- a/fbdoom/Makefile
++++ b/fbdoom/Makefile
+@@ -18,6 +18,7 @@ endif
+ #CFLAGS+=-fsanitize=address
+ OBJS+=$(OBJDIR)/i_video_fbdev.o
+ OBJS+=$(OBJDIR)/i_input_tty.o
++OBJS+=$(OBJDIR)/i_kernel_sound.o
+ 
+ CC=$(CROSS_COMPILE)gcc  # gcc or g++
+ CFLAGS+=-ggdb3 -Os
+diff --git a/fbdoom/i_kernel_sound.c b/fbdoom/i_kernel_sound.c
+new file mode 100644
+index 0000000..082b14b
+--- /dev/null
++++ b/fbdoom/i_kernel_sound.c
+@@ -0,0 +1,285 @@
++/*
++ * i_kernel_sound.c — chocolate-doom sound module talking to /dev/dsp.
++ *
++ * The wasm-posix-kernel exposes an OSS-style /dev/dsp character
++ * device (kernel/audio.rs). This module fills the chocolate-doom
++ * `sound_module_t` shape, opens /dev/dsp once at init, mixes 8-bit
++ * mono SFX from WAD lumps into a 16-bit stereo @ 44.1 kHz mixbuffer,
++ * and `write()`s it to /dev/dsp every tic. The host (browser
++ * AudioContext) drains the kernel ring via the `kernel_drain_audio`
++ * export and feeds it back out as audio.
++ *
++ * No SDL / no ALSA / no resampler library — DOOM SFX sample rate
++ * (11025 Hz mono u8) is upmixed in-place with a 16.16 fixed-point
++ * step. Music (MUS / MIDI) is left to a future patch; this lands
++ * SFX only, which is what the demo most needs.
++ */
++
++#include <fcntl.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++#include "doomtype.h"
++#include "deh_str.h"
++#include "i_sound.h"
++#include "m_misc.h"
++#include "w_wad.h"
++#include "z_zone.h"
++
++/* OSS ioctls — same numeric values the kernel and Linux use. We
++ * hard-code rather than #include <sys/soundcard.h> so the build
++ * doesn't pull additional headers out of the wasm sysroot. */
++#define SNDCTL_DSP_RESET     0x00005000u
++#define SNDCTL_DSP_SPEED     0xc0045002u
++#define SNDCTL_DSP_STEREO    0xc0045003u
++#define SNDCTL_DSP_SETFMT    0xc0045005u
++#define SNDCTL_DSP_GETFMTS   0x8004500bu
++#define AFMT_S16_LE          0x10
++
++/* Output config — must match what the kernel ring is configured for
++ * (kernel auto-rounds to whole frames, so the host AudioContext sees
++ * stereo S16 @ 44100 Hz). */
++#define OUTPUT_RATE      44100
++#define OUTPUT_CHANNELS  2
++#define BYTES_PER_FRAME  (2 * OUTPUT_CHANNELS) /* S16 * stereo */
++
++/* DOOM ticks run at 35 Hz. At 44100 Hz that's exactly 1260 frames
++ * per tic. Match exactly so the producer rate equals the consumer
++ * rate — any mismatch makes the AudioContext queue grow without
++ * bound, sounds desync, and the kernel ring drops fresh SFX on
++ * overflow (most visibly: the pistol shot vanishes after a few s). */
++#define MIX_FRAMES 1260
++#define MIX_BYTES (MIX_FRAMES * BYTES_PER_FRAME)
++
++#define NUM_CHANNELS 8
++
++/* DOOM SFX in WAD lumps are 11025 Hz mono u8. The 8-byte header
++ * encodes (u16 format, u16 sample_rate, u32 sample_count). We skip
++ * it and use the raw samples that follow. */
++#define DOOM_SFX_HEADER_BYTES 8
++#define DOOM_SFX_SAMPLE_RATE  11025
++
++/* 16.16 fixed-point step from DOOM rate to OUTPUT_RATE. */
++#define SAMPLE_STEP ((DOOM_SFX_SAMPLE_RATE * 65536) / OUTPUT_RATE)
++
++typedef struct {
++    int active;
++    int handle;
++    sfxinfo_t *sfxinfo;
++    const uint8_t *data; /* points past the 8-byte SFX header */
++    uint32_t pos_fp;     /* 16.16 fixed-point position in source samples */
++    uint32_t length;     /* total source samples (post-header) */
++    int leftvol;         /* 0..127 */
++    int rightvol;        /* 0..127 */
++} sound_channel_t;
++
++static int dsp_fd = -1;
++static boolean use_sfx_prefix;
++static int16_t mixbuffer[MIX_FRAMES * OUTPUT_CHANNELS];
++static sound_channel_t channels[NUM_CHANNELS];
++
++/* Monotonic id used to distinguish sounds played on the same channel
++ * over time. chocolate-doom's S_StartSoundEx hands the returned
++ * value back to I_StopSound / I_SoundIsPlaying. */
++static int handle_counter = 100;
++
++static int I_KERNEL_GetSfxLumpNum(sfxinfo_t *sfx)
++{
++    char namebuf[9];
++    snprintf(namebuf, sizeof namebuf, "%s%s",
++             use_sfx_prefix ? "ds" : "", sfx->name);
++    return W_GetNumForName(namebuf);
++}
++
++static boolean I_KERNEL_InitSound(boolean _use_sfx_prefix)
++{
++    use_sfx_prefix = _use_sfx_prefix;
++
++    dsp_fd = open("/dev/dsp", O_WRONLY);
++    if (dsp_fd < 0) {
++        fprintf(stderr,
++                "I_KERNEL_InitSound: /dev/dsp unavailable; sound disabled.\n");
++        return false;
++    }
++
++    int speed = OUTPUT_RATE;
++    if (ioctl(dsp_fd, SNDCTL_DSP_SPEED, &speed) < 0) {
++        fprintf(stderr,
++                "I_KERNEL_InitSound: SNDCTL_DSP_SPEED failed; sound disabled.\n");
++        close(dsp_fd);
++        dsp_fd = -1;
++        return false;
++    }
++
++    int stereo = 1; /* 1 = stereo */
++    if (ioctl(dsp_fd, SNDCTL_DSP_STEREO, &stereo) < 0) {
++        fprintf(stderr,
++                "I_KERNEL_InitSound: SNDCTL_DSP_STEREO failed; sound disabled.\n");
++        close(dsp_fd);
++        dsp_fd = -1;
++        return false;
++    }
++
++    int fmt = AFMT_S16_LE;
++    if (ioctl(dsp_fd, SNDCTL_DSP_SETFMT, &fmt) < 0) {
++        fprintf(stderr,
++                "I_KERNEL_InitSound: SNDCTL_DSP_SETFMT(S16_LE) failed; sound disabled.\n");
++        close(dsp_fd);
++        dsp_fd = -1;
++        return false;
++    }
++
++    memset(channels, 0, sizeof channels);
++    return true;
++}
++
++static void I_KERNEL_ShutdownSound(void)
++{
++    if (dsp_fd >= 0) {
++        close(dsp_fd);
++        dsp_fd = -1;
++    }
++}
++
++static void I_KERNEL_UpdateSoundParams(int handle, int vol, int sep)
++{
++    /* chocolate-doom passes the channel index here, not the handle —
++     * but the engine guards calls with SoundIsPlaying first, so a
++     * stale handle just no-ops. */
++    for (int i = 0; i < NUM_CHANNELS; i++) {
++        if (channels[i].active && channels[i].handle == handle) {
++            int s = sep + 1;
++            int leftvol = vol - ((vol * s * s) >> 16);
++            s -= 257;
++            int rightvol = vol - ((vol * s * s) >> 16);
++            channels[i].leftvol  = leftvol < 0 ? 0 :
++                                   (leftvol  > 127 ? 127 : leftvol);
++            channels[i].rightvol = rightvol < 0 ? 0 :
++                                   (rightvol > 127 ? 127 : rightvol);
++            return;
++        }
++    }
++}
++
++static int I_KERNEL_StartSound(sfxinfo_t *sfxinfo, int channel,
++                               int vol, int sep)
++{
++    if (dsp_fd < 0) return -1;
++
++    int lump = I_KERNEL_GetSfxLumpNum(sfxinfo);
++    if (lump < 0) return -1;
++    int size = W_LumpLength(lump);
++    if (size <= DOOM_SFX_HEADER_BYTES) return -1;
++
++    uint8_t *data = (uint8_t *)W_CacheLumpNum(lump, PU_STATIC);
++
++    int slot = channel;
++    if (slot < 0 || slot >= NUM_CHANNELS) {
++        slot = 0;
++        for (int i = 0; i < NUM_CHANNELS; i++) {
++            if (!channels[i].active) { slot = i; break; }
++        }
++    }
++
++    int handle = ++handle_counter;
++    if (handle <= 0) { handle_counter = 100; handle = 100; }
++
++    channels[slot].active   = 1;
++    channels[slot].handle   = handle;
++    channels[slot].sfxinfo  = sfxinfo;
++    channels[slot].data     = data + DOOM_SFX_HEADER_BYTES;
++    channels[slot].pos_fp   = 0;
++    channels[slot].length   = (uint32_t)(size - DOOM_SFX_HEADER_BYTES);
++    /* Default vol/sep until S_UpdateSounds re-tickles us next tic. */
++    channels[slot].leftvol  = vol > 127 ? 127 : (vol < 0 ? 0 : vol);
++    channels[slot].rightvol = channels[slot].leftvol;
++
++    I_KERNEL_UpdateSoundParams(handle, vol, sep);
++    return handle;
++}
++
++static void I_KERNEL_StopSound(int handle)
++{
++    for (int i = 0; i < NUM_CHANNELS; i++) {
++        if (channels[i].active && channels[i].handle == handle) {
++            channels[i].active = 0;
++            return;
++        }
++    }
++}
++
++static boolean I_KERNEL_SoundIsPlaying(int handle)
++{
++    for (int i = 0; i < NUM_CHANNELS; i++) {
++        if (channels[i].active && channels[i].handle == handle) return true;
++    }
++    return false;
++}
++
++static void I_KERNEL_PrecacheSounds(sfxinfo_t *sounds, int num_sounds)
++{
++    /* On-demand load via W_CacheLumpNum in StartSound — no-op here. */
++    (void)sounds; (void)num_sounds;
++}
++
++/* Mix MIX_FRAMES stereo S16 frames and write them to /dev/dsp. Called
++ * once per game tic from S_UpdateSounds → I_UpdateSound. */
++static void I_KERNEL_UpdateSound(void)
++{
++    if (dsp_fd < 0) return;
++
++    memset(mixbuffer, 0, sizeof mixbuffer);
++
++    for (int frame = 0; frame < MIX_FRAMES; frame++) {
++        int dl = 0, dr = 0;
++        for (int c = 0; c < NUM_CHANNELS; c++) {
++            sound_channel_t *ch = &channels[c];
++            if (!ch->active) continue;
++
++            uint32_t idx = ch->pos_fp >> 16;
++            if (idx >= ch->length) { ch->active = 0; continue; }
++
++            /* u8 -> s16 centered at 0; multiply in 8-bit-volume
++             * space then take the low 16 bits as the mixer
++             * contribution. */
++            int sample = ((int)ch->data[idx] - 128) << 8;
++            dl += (sample * ch->leftvol)  / 127;
++            dr += (sample * ch->rightvol) / 127;
++
++            ch->pos_fp += SAMPLE_STEP;
++        }
++        if (dl >  0x7fff) dl =  0x7fff;
++        if (dl < -0x8000) dl = -0x8000;
++        if (dr >  0x7fff) dr =  0x7fff;
++        if (dr < -0x8000) dr = -0x8000;
++        mixbuffer[frame * 2]     = (int16_t)dl;
++        mixbuffer[frame * 2 + 1] = (int16_t)dr;
++    }
++
++    /* The kernel ring drops oldest frames on overflow rather than
++     * blocking, so a slow drain just costs audio — never wedges
++     * the game loop. We never short-write here in practice. */
++    (void)write(dsp_fd, mixbuffer, sizeof mixbuffer);
++}
++
++static snddevice_t sound_kernel_devices[] = {
++    SNDDEVICE_SB,
++};
++
++sound_module_t sound_kernel_module = {
++    sound_kernel_devices,
++    sizeof(sound_kernel_devices) / sizeof(sound_kernel_devices[0]),
++    I_KERNEL_InitSound,
++    I_KERNEL_ShutdownSound,
++    I_KERNEL_GetSfxLumpNum,
++    I_KERNEL_UpdateSound,
++    I_KERNEL_UpdateSoundParams,
++    I_KERNEL_StartSound,
++    I_KERNEL_StopSound,
++    I_KERNEL_SoundIsPlaying,
++    I_KERNEL_PrecacheSounds,
++};
+diff --git a/fbdoom/i_sound.c b/fbdoom/i_sound.c
+index 71947d2..d4b4017 100644
+--- a/fbdoom/i_sound.c
++++ b/fbdoom/i_sound.c
+@@ -89,8 +89,16 @@ static int snd_mport = 0;
+ 
+ // Compiled-in sound modules:
+ 
+-static sound_module_t *sound_modules[] = 
++// /dev/dsp-backed sound module — defined in i_kernel_sound.c. We
++// register it unconditionally (no FEATURE_SOUND gate) because the
++// wasm-posix kernel always exposes /dev/dsp; if the open fails (no
++// AudioContext sink wired up host-side) the module's Init returns
++// false and the dispatcher falls through to silence.
++extern sound_module_t sound_kernel_module;
++
++static sound_module_t *sound_modules[] =
+ {
++    &sound_kernel_module,
+ #ifdef FEATURE_SOUND
+     &sound_sdl_module,
+     &sound_pcsound_module,

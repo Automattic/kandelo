@@ -2,11 +2,11 @@
 
 ## Goal
 
-Enable HTTPS in C programs targeting wasm-posix-kernel by compiling OpenSSL to Wasm and providing a reference TLS-intercepting browser backend.
+Enable HTTPS in C programs targeting Kandelo by compiling OpenSSL to Wasm and providing a reference TLS-intercepting browser backend.
 
 ## Architecture
 
-This work lives in `examples/libs/openssl/` — it is not core kernel/SDK infrastructure. The kernel stays TLS-unaware; it provides raw POSIX sockets, and TLS is the application's and integrator's concern.
+This work lives in `packages/registry/openssl/` — it is not core kernel/SDK infrastructure. The kernel stays TLS-unaware; it provides raw POSIX sockets, and TLS is the application's and integrator's concern.
 
 **Node.js:** OpenSSL compiled to Wasm performs TLS handshakes over raw TCP sockets provided by TcpNetworkBackend. No kernel or backend changes needed.
 
@@ -14,7 +14,7 @@ This work lives in `examples/libs/openssl/` — it is not core kernel/SDK infras
 
 ## Deliverables
 
-### 1. OpenSSL Build Script (`examples/libs/openssl/build.sh`)
+### 1. OpenSSL Build Script (`packages/registry/openssl/build.sh`)
 
 Downloads a pinned OpenSSL 3.x LTS release and builds static libraries using the SDK:
 
@@ -44,7 +44,7 @@ wasm32posix-cc -I openssl-install/include app.c \
 
 Any SDK bugs uncovered during this process get fixed in the SDK proper.
 
-### 2. TLS-Intercepting Fetch Backend (`examples/libs/openssl/tls-fetch-backend.ts`)
+### 2. TLS-Intercepting Fetch Backend (`packages/registry/openssl/tls-fetch-backend.ts`)
 
 A `NetworkIO` implementation for browser environments that handles both HTTP and HTTPS:
 
@@ -64,7 +64,7 @@ A `NetworkIO` implementation for browser environments that handles both HTTP and
 
 **MITM CA trust:** The example includes a CA certificate. Integrators populate `/etc/ssl/certs/` in the VFS so Wasm OpenSSL trusts it. The example documents both VFS pre-population and explicit `SSL_CTX_load_verify_locations()`.
 
-### 3. Tests (`examples/libs/openssl/test/`)
+### 3. Tests (`packages/registry/openssl/test/`)
 
 **Build verification:** OpenSSL compiles and links. A minimal C program calls `SSL_CTX_new()` / `SSL_CTX_free()` to verify the library works.
 
@@ -72,7 +72,7 @@ A `NetworkIO` implementation for browser environments that handles both HTTP and
 
 **Browser backend end-to-end:** Same C test program run with the TLS-intercepting fetch backend in a Node.js test harness (the Playground TLS library works in Node.js). Verifies: MITM CA is trusted, handshake completes, HTTP request is intercepted, response returns through `fetch()`. Mock/proxy the `fetch()` call to avoid network dependencies in CI.
 
-Test program: `examples/libs/openssl/test/https_get.c`.
+Test program: `packages/registry/openssl/test/https_get.c`.
 
 ## Dependencies and Risks
 
@@ -90,4 +90,4 @@ Test program: `examples/libs/openssl/test/https_get.c`.
 
 - **Kernel networking compliance** — `setsockopt`/`getsockopt` forwarding, `shutdown` forwarding to backend, non-blocking + `poll`/`select` for network handles. Valid POSIX compliance work, tracked separately.
 - **TLS 1.3 browser interception** — Requires extending or replacing the TLS 1.2 implementation.
-- **Additional library examples** — zlib, libcurl, etc. following the same `examples/libs/` pattern.
+- **Additional library examples** — zlib, libcurl, etc. following the same `packages/registry/` pattern.

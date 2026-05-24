@@ -351,14 +351,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Goal:** A new xtask subcommand that, given the durable manifest and a target arch, produces a staging directory containing only archives whose `cache_key_sha` differs from the durable, plus a `binaries.lock.pr` overlay file ready to upload.
 
 **Files:**
-- Create: `xtask/src/stage_pr_overlay.rs`
-- Modify: `xtask/src/main.rs` — register the subcommand
-- Modify: `xtask/src/build_deps.rs` — expose any helper internals (only if needed)
+- Create: `tools/xtask/src/stage_pr_overlay.rs`
+- Modify: `tools/xtask/src/main.rs` — register the subcommand
+- Modify: `tools/xtask/src/build_deps.rs` — expose any helper internals (only if needed)
 
 ### Step 1: Read existing `stage_release.rs` to understand the structure
 
-Read `xtask/src/stage_release.rs` end-to-end. Note:
-- How it walks `examples/libs/<name>/deps.toml` via `Registry::walk_all`.
+Read `tools/xtask/src/stage_release.rs` end-to-end. Note:
+- How it walks `packages/registry/<name>/deps.toml` via `Registry::walk_all`.
 - How it produces archives via `archive_stage`.
 - How it generates `manifest.json`.
 
@@ -366,7 +366,7 @@ Read `xtask/src/stage_release.rs` end-to-end. Note:
 
 ### Step 2: Design the command's interface (no implementation yet)
 
-Document the planned interface as a doc comment at the top of `xtask/src/stage_pr_overlay.rs`:
+Document the planned interface as a doc comment at the top of `tools/xtask/src/stage_pr_overlay.rs`:
 
 ```rust
 //! `stage-pr-overlay` — produce a partial staging directory containing
@@ -390,7 +390,7 @@ Document the planned interface as a doc comment at the top of `xtask/src/stage_p
 
 ### Step 3: Write the unit test (failing)
 
-In `xtask/src/stage_pr_overlay.rs`, add a `#[cfg(test)] mod tests` with:
+In `tools/xtask/src/stage_pr_overlay.rs`, add a `#[cfg(test)] mod tests` with:
 
 1. A test that constructs a baseline manifest with two entries (zlib, dinit), runs the command logic against a fixture registry where dinit's deps.toml has been bumped, and asserts only dinit appears in the staging output + the overlay's `overrides` list contains exactly `["dinit"]`.
 2. A test that asserts an unchanged registry produces empty staging and an overlay with empty `overrides`.
@@ -402,7 +402,7 @@ Expect: FAIL — module not registered or function not implemented.
 
 ### Step 4: Wire the subcommand into main.rs
 
-In `xtask/src/main.rs`, add module declaration and dispatch:
+In `tools/xtask/src/main.rs`, add module declaration and dispatch:
 
 ```rust
 mod stage_pr_overlay;
@@ -472,7 +472,7 @@ Expect: empty staging, overlay with empty `overrides`. Validates the no-op path 
 ### Step 8: Commit
 
 ```
-git add xtask/src/stage_pr_overlay.rs xtask/src/main.rs
+git add tools/xtask/src/stage_pr_overlay.rs tools/xtask/src/main.rs
 git commit -m "feat(xtask): stage-pr-overlay command for per-PR staging dirs
 
 Walks the registry, compares each package's cache_key_sha against a
@@ -609,7 +609,7 @@ jobs:
           path: |
             ~/.cache/wasm-posix-kernel
             target
-          key: pr-staging-${{ hashFiles('Cargo.lock', 'examples/libs/**/deps.toml') }}
+          key: pr-staging-${{ hashFiles('Cargo.lock', 'packages/registry/**/deps.toml') }}
 
       - name: Stage PR overlay
         id: stage
@@ -668,7 +668,7 @@ gh workflow view staging-build.yml --ref package-management-for-pr-workflows
 
 ### Step 3: End-to-end test on a real PR
 
-Open a small throwaway PR that touches `examples/libs/<name>/deps.toml`. Confirm:
+Open a small throwaway PR that touches `packages/registry/<name>/deps.toml`. Confirm:
 - Workflow runs.
 - Staging release `pr-<NNN>-staging` is created.
 - Sticky comment appears.

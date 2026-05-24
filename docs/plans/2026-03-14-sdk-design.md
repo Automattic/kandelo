@@ -5,7 +5,7 @@
 
 ## Goal
 
-General-purpose SDK for compiling C/C++ programs to target the wasm-posix-kernel. Supports autoconf-based projects (like PHP) out of the box. Written in TypeScript, run via Node.js native type stripping.
+General-purpose SDK for compiling C/C++ programs to target Kandelo. Supports autoconf-based projects (like PHP) out of the box. Written in TypeScript, run via Node.js native type stripping.
 
 ## CLI Tools
 

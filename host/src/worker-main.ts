@@ -10,7 +10,22 @@ import type {
   CentralizedThreadInitMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
-import { DynamicLinker } from "./dylink";
+import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
+import { extractAbiVersion } from "./constants";
+import {
+  ABI_SYSCALLS,
+  CHANNEL_STATUS_IDLE,
+  CHANNEL_STATUS_PENDING,
+  CH_ARG_SIZE,
+  CH_ARGS,
+  CH_DATA,
+  CH_ERRNO,
+  CH_RETURN,
+  CH_STATUS,
+  CH_SYSCALL,
+  CH_TOTAL_SIZE,
+  HOST_INTERCEPTED_SYSCALLS,
+} from "./generated/abi";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -22,6 +37,14 @@ export interface MessagePort {
   postMessage(msg: unknown, transferList?: unknown[]): void;
   on(event: string, handler: (...args: unknown[]) => void): void;
 }
+
+function alignUp(value: number, align: number): number {
+  return Math.ceil(value / align) * align;
+}
+
+const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
+const PROT_READ_WRITE = 3;
+const MAP_PRIVATE_ANONYMOUS = 0x22;
 
 /**
  * Build kernel.* import stubs for channel-mode Wasm modules.
@@ -36,6 +59,7 @@ function buildKernelImports(
   channelOffset: number,
   argv?: string[],
   envVars?: string[],
+  onKernelExit?: (status: number) => void,
 ): Record<string, WebAssembly.ExportValue> {
   const _argv = argv || [];
   const _envVars = envVars || [];
@@ -80,45 +104,42 @@ function buildKernelImports(
     kernel_exit: (status: number): void => {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
-      view.setBigInt64(base + 8, BigInt(status), true); // arg0 as i64
+      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+      view.setBigInt64(base + CH_ARGS, BigInt(status), true);
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for complete, then trap
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
-      Atomics.store(i32, base / 4, 0);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+      onKernelExit?.(status);
     },
 
     // Clone dispatches through channel (SYS_CLONE)
     kernel_clone: (fnPtr: number | bigint, stackPtr: number | bigint, flags: number,
       arg: number | bigint, ptidPtr: number | bigint, tlsPtr: number | bigint, ctidPtr: number | bigint): number => {
       const SYS_CLONE_NR = 201;
-      const CH_ARG_SIZE = 8;
-      const CH_RETURN = 56;
-      const CH_ERRNO = 64;
-      const CH_DATA = 72;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, SYS_CLONE_NR, true);
-      view.setBigInt64(base + 8 + 0 * CH_ARG_SIZE, BigInt(flags), true);
-      view.setBigInt64(base + 8 + 1 * CH_ARG_SIZE, BigInt(stackPtr), true);
-      view.setBigInt64(base + 8 + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
-      view.setBigInt64(base + 8 + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
-      view.setBigInt64(base + 8 + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
-      view.setBigInt64(base + 8 + 5 * CH_ARG_SIZE, 0n, true);
+      view.setInt32(base + CH_SYSCALL, SYS_CLONE_NR, true);
+      view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(flags), true);
+      view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(stackPtr), true);
+      view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(ptidPtr), true);
+      view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(tlsPtr), true);
+      view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, BigInt(ctidPtr), true);
+      view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
       // Write fn_ptr and arg_ptr to CH_DATA area for handleClone
       view.setUint32(base + CH_DATA, n(fnPtr), true);
       view.setUint32(base + CH_DATA + 4, n(arg), true);
 
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
-      Atomics.store(i32, base / 4, 0);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
       if (err) return -err;
       return result;
@@ -126,23 +147,19 @@ function buildKernelImports(
 
     // Fork dispatches through channel (SYS_FORK)
     kernel_fork: (): number => {
-      const SYS_FORK_NR = 212;
-      const CH_ARG_SIZE = 8;
-      const CH_RETURN = 56;
-      const CH_ERRNO = 64;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, SYS_FORK_NR, true);
-      for (let i = 0; i < 6; i++) view.setBigInt64(base + 8 + i * CH_ARG_SIZE, 0n, true);
+      view.setInt32(base + CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_FORK, true);
+      for (let i = 0; i < 6; i++) view.setBigInt64(base + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
 
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
-      Atomics.store(i32, base / 4, 0);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
       if (err) return -err;
       return result;
@@ -150,25 +167,80 @@ function buildKernelImports(
   };
 }
 
+export interface DlopenSupport {
+  imports: Record<string, WebAssembly.ExportValue>;
+  /** Replay the parent's dlopen list (read from the archive in linear
+   *  memory). No-op if the archive head pointer is 0. Call this in the
+   *  fork-child path AFTER setupChannelBase and BEFORE the asyncify
+   *  rewind into _start. */
+  replayDlopens: () => void;
+}
+
 /**
  * Build dlopen host imports for a process. These are called directly from
- * the user program's dlopen/dlsym/dlclose C stubs (glue/dlopen.c).
+ * the user program's dlopen/dlsym/dlclose C stubs (libc/glue/dlopen.c).
  *
  * The DynamicLinker is lazily created on first use since most programs
  * don't use dlopen.
+ *
+ * Each successful dlopen is also persisted into a per-process archive
+ * (linked list in linear memory, head pointer at a fixed slot below
+ * asyncifyBufAddr) so the fork child can replay them via `replayDlopens`.
  */
 function buildDlopenImports(
   memory: WebAssembly.Memory,
+  channelOffset: number,
   getTable: () => WebAssembly.Table | undefined,
   getStackPointer: () => WebAssembly.Global | undefined,
   getInstance: () => WebAssembly.Instance | undefined,
-): Record<string, WebAssembly.ExportValue> {
+  ptrWidth: 4 | 8,
+): DlopenSupport {
   let linker: DynamicLinker | null = null;
+  const loadedLibraries = new Map<string, LoadedSharedLibrary>();
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
-  // Shared library memory starts at 128MB to avoid conflicting with
-  // the program's malloc heap (which starts at __heap_base, ~1MB).
-  const DYLIB_MEMORY_BASE = 128 * 1024 * 1024;
+  const asyncifyBufAddr = channelOffset - FORK_BUF_SIZE;
+  const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
+  const headSlot = asyncifyBufAddr - headOffset;
+  const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
+
+  const readPtr = (view: DataView, addr: number): number =>
+    ptrWidth === 8 ? Number(view.getBigUint64(addr, true)) : view.getUint32(addr, true);
+  const writePtr = (view: DataView, addr: number, value: number): void => {
+    if (ptrWidth === 8) view.setBigUint64(addr, BigInt(value), true);
+    else view.setUint32(addr, value, true);
+  };
+
+  // The kernel mmap allocator. Shared with the linker, but also used
+  // directly by persistArchiveEntry to obtain blocks for the archive.
+  const allocateMemory = (size: number, align: number): number => {
+    const requested = size + Math.max(align, 1) - 1;
+    const view = new DataView(memory.buffer);
+    const base = channelOffset;
+    view.setInt32(base + CH_SYSCALL, SYS_MMAP_NR, true);
+    view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, 0n, true);
+    view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(requested), true);
+    view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(PROT_READ_WRITE), true);
+    view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(MAP_PRIVATE_ANONYMOUS), true);
+    view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, -1n, true);
+    view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, 0n, true);
+
+    const i32 = new Int32Array(memory.buffer);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+    Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
+    while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* wait for mmap */ }
+
+    const result = Number(view.getBigInt64(base + CH_RETURN, true));
+    const err = view.getUint32(base + CH_ERRNO, true);
+    Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+
+    if (err || result < 0) {
+      throw new Error(`dlopen: mmap(${requested}) failed errno=${err || -result}`);
+    }
+    return alignUp(n(result), Math.max(align, 1));
+  };
 
   const getLinker = (): DynamicLinker => {
     if (linker) return linker;
@@ -176,13 +248,22 @@ function buildDlopenImports(
     const sp = getStackPointer();
     if (!table || !sp) throw new Error("dlopen: program has no table or stack pointer");
 
-    // Register main program's exported functions as global symbols
-    // so shared libraries can resolve references to libc, etc.
+    // Register main program's exported functions and data globals as global
+    // symbols so shared libraries can resolve references to libc, libphp, etc.
+    // Many libc helpers (e.g. __sigsetjmp_save, __errno_location) are __-
+    // prefixed by convention but still need to be visible to side modules.
+    // RESERVED names are handled per-module by the dylink env Proxy and must
+    // not be shadowed by main exports.
+    const RESERVED = new Set([
+      "memory", "__indirect_function_table",
+      "__memory_base", "__table_base", "__stack_pointer",
+    ]);
     const globalSymbols = new Map<string, Function | WebAssembly.Global>();
     const inst = getInstance();
     if (inst) {
       for (const [name, exp] of Object.entries(inst.exports)) {
-        if (typeof exp === "function" && !name.startsWith("__")) {
+        if (RESERVED.has(name)) continue;
+        if (typeof exp === "function" || exp instanceof WebAssembly.Global) {
           globalSymbols.set(name, exp);
         }
       }
@@ -192,28 +273,146 @@ function buildDlopenImports(
       memory,
       table,
       stackPointer: sp,
-      heapPointer: { value: DYLIB_MEMORY_BASE },
+      allocateMemory,
       globalSymbols,
       got: new Map(),
-      loadedLibraries: new Map(),
+      loadedLibraries,
     });
     return linker;
   };
 
-  return {
+  // Append an entry to the linked-list archive in linear memory. Each
+  // entry is one mmap block: struct, then name UTF-8 (padded to 8-byte
+  // alignment), then the side-module wasm bytes. Pointers are absolute
+  // — fork's memcpy preserves the parent's address space.
+  const persistArchiveEntry = (name: string, bytes: Uint8Array, memoryBase: number): void => {
+    const nameBytes = encoder.encode(name);
+    const nameLen = nameBytes.length;
+    const nameAligned = (nameLen + 7) & ~7;
+    const totalSize = entrySize + nameAligned + bytes.length;
+
+    const entry = allocateMemory(totalSize, 8);
+    const namePtr = entry + entrySize;
+    const bytesPtr = namePtr + nameAligned;
+
+    const view = new DataView(memory.buffer);
+    if (ptrWidth === 8) {
+      view.setBigUint64(entry + 0, 0n, true);
+      view.setBigUint64(entry + 8, BigInt(namePtr), true);
+      view.setBigUint64(entry + 16, BigInt(nameLen), true);
+      view.setBigUint64(entry + 24, BigInt(bytesPtr), true);
+      view.setBigUint64(entry + 32, BigInt(bytes.length), true);
+      view.setBigUint64(entry + 40, BigInt(memoryBase), true);
+    } else {
+      view.setUint32(entry + 0, 0, true);
+      view.setUint32(entry + 4, namePtr, true);
+      view.setUint32(entry + 8, nameLen, true);
+      view.setUint32(entry + 12, bytesPtr, true);
+      view.setUint32(entry + 16, bytes.length, true);
+      view.setUint32(entry + 20, memoryBase, true);
+    }
+
+    new Uint8Array(memory.buffer, namePtr, nameLen).set(nameBytes);
+    new Uint8Array(memory.buffer, bytesPtr, bytes.length).set(bytes);
+
+    // Append to tail (preserves insertion order).
+    const head = readPtr(view, headSlot);
+    if (head === 0) {
+      writePtr(view, headSlot, entry);
+      return;
+    }
+    let cursor = head;
+    for (;;) {
+      const next = readPtr(view, cursor);
+      if (next === 0) {
+        writePtr(view, cursor, entry);
+        return;
+      }
+      cursor = next;
+    }
+  };
+
+  const replayDlopens = (): void => {
+    const view = new DataView(memory.buffer);
+    let cursor = readPtr(view, headSlot);
+    if (cursor === 0) return;
+
+    // Force linker creation: it's lazily built on the first C-side
+    // __wasm_dlopen call, which the fork child hasn't made yet. We need
+    // it now to drive replay before _start resumes.
+    const lk = getLinker();
+
+    while (cursor !== 0) {
+      let next: number, namePtr: number, nameLen: number, bytesPtr: number, bytesLen: number, memoryBase: number;
+      if (ptrWidth === 8) {
+        next = Number(view.getBigUint64(cursor + 0, true));
+        namePtr = Number(view.getBigUint64(cursor + 8, true));
+        nameLen = Number(view.getBigUint64(cursor + 16, true));
+        bytesPtr = Number(view.getBigUint64(cursor + 24, true));
+        bytesLen = Number(view.getBigUint64(cursor + 32, true));
+        memoryBase = Number(view.getBigUint64(cursor + 40, true));
+      } else {
+        next = view.getUint32(cursor + 0, true);
+        namePtr = view.getUint32(cursor + 4, true);
+        nameLen = view.getUint32(cursor + 8, true);
+        bytesPtr = view.getUint32(cursor + 12, true);
+        bytesLen = view.getUint32(cursor + 16, true);
+        memoryBase = view.getUint32(cursor + 20, true);
+      }
+
+      // Copy name + bytes out of shared memory before passing to
+      // WebAssembly / TextDecoder — some engines reject SAB-backed
+      // views, and we already pay the bytes copy cost on the parent's
+      // initial dlopen path.
+      const name = decoder.decode(
+        new Uint8Array(new Uint8Array(memory.buffer, namePtr, nameLen)),
+      );
+      const bytesCopy = new Uint8Array(new Uint8Array(memory.buffer, bytesPtr, bytesLen));
+
+      // DynamicLinker.dlopenSync returns 0 on error, >0 on success.
+      const handle = lk.dlopenSync(name, bytesCopy, { memoryBase });
+      if (handle === 0) {
+        throw new Error(`dlopen(${name}): ${lk.dlerror() || "unknown"}`);
+      }
+
+      cursor = next;
+    }
+  };
+
+  const imports: Record<string, WebAssembly.ExportValue> = {
     __wasm_dlopen: (bytesPtr: number, bytesLen: number,
                     namePtr: number, nameLen: number): number => {
       const bytes = new Uint8Array(memory.buffer, bytesPtr, bytesLen);
       // Copy bytes since memory.buffer may detach during Wasm instantiation
       const bytesCopy = new Uint8Array(bytes);
-      const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
-      const name = decoder.decode(nameBytes);
-      return getLinker().dlopenSync(name, bytesCopy);
+      // TextDecoder.decode() rejects views backed by SharedArrayBuffer
+      // in Firefox (and recent Chrome), so copy the name bytes through
+      // a non-shared Uint8Array before decoding. Same shape as
+      // bytesCopy above.
+      const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const nameBytesCopy = new Uint8Array(nameBytesView);
+      const name = decoder.decode(nameBytesCopy);
+      const handle = getLinker().dlopenSync(name, bytesCopy);
+      if (handle > 0) {
+        // The linker just instantiated this — the map MUST contain it.
+        // A miss means the shared-map ref got rewired and replay would
+        // silently see an empty archive after fork; fail loudly here
+        // instead of corrupting the fork child later.
+        const loaded = loadedLibraries.get(name);
+        if (!loaded) {
+          throw new Error(`__wasm_dlopen(${name}): handle=${handle} but loadedLibraries lookup failed`);
+        }
+        persistArchiveEntry(name, bytesCopy, loaded.memoryBase);
+      }
+      return handle;
     },
 
     __wasm_dlsym: (handle: number, namePtr: number, nameLen: number): number => {
-      const nameBytes = new Uint8Array(memory.buffer, namePtr, nameLen);
-      const name = decoder.decode(nameBytes);
+      // See __wasm_dlopen above: copy off the shared buffer before
+      // TextDecoder.decode() touches it.
+      const nameBytesView = new Uint8Array(memory.buffer, namePtr, nameLen);
+      const nameBytesCopy = new Uint8Array(nameBytesView);
+      const name = decoder.decode(nameBytesCopy);
       const result = getLinker().dlsym(handle, name);
       return result === null ? 0 : (result as number);
     },
@@ -225,13 +424,14 @@ function buildDlopenImports(
     __wasm_dlerror: (bufPtr: number, bufMax: number): number => {
       const err = getLinker().dlerror();
       if (!err) return 0;
-      const encoder = new TextEncoder();
       const encoded = encoder.encode(err);
       const len = Math.min(encoded.length, bufMax);
       new Uint8Array(memory.buffer, bufPtr, len).set(encoded.subarray(0, len));
       return len;
     },
   };
+
+  return { imports, replayDlopens };
 }
 
 /**
@@ -261,6 +461,18 @@ function buildImportObject(
       envImports.__channel_base = new WebAssembly.Global({ value: "i64", mutable: true }, BigInt(channelOffset));
     } else {
       envImports.__channel_base = new WebAssembly.Global({ value: "i32", mutable: true }, channelOffset);
+    }
+  }
+
+  // llvm/lld ≥22 emit __c_longjmp as a tag import for setjmp users; instantiation fails silently without it.
+  if (moduleImports.some(i => i.module === "env" && i.name === "__c_longjmp" && (i.kind as string) === "tag")) {
+    const Tag = (
+      WebAssembly as typeof WebAssembly & {
+        Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.ExportValue;
+      }
+    ).Tag;
+    if (Tag) {
+      envImports.__c_longjmp = new Tag({ parameters: ["i32"] });
     }
   }
 
@@ -469,12 +681,21 @@ function buildImportObject(
   return importObject;
 }
 
-/** Size of the asyncify data buffer used for fork stack save/restore */
-const ASYNCIFY_BUF_SIZE = 16384;
+/** Size of the fork save buffer used by wpk_fork_* instrumentation */
+const FORK_BUF_SIZE = 16384;
+
+// Slot below asyncifyBufAddr that stores the head pointer of the dlopen
+// archive linked list. Fork's memcpy carries the parent's archive into
+// the child intact; the child walks it to replay each dlopen before
+// asyncify rewind.
+const DLOPEN_HEAD_OFFSET_WASM32 = 12;
+const DLOPEN_HEAD_OFFSET_WASM64 = 24;
+const DLOPEN_ENTRY_SIZE_WASM32 = 24;
+const DLOPEN_ENTRY_SIZE_WASM64 = 48;
 
 /**
- * Verify that a freshly-instantiated user program was built against an
- * ABI compatible with the running kernel.
+ * Verify that a user program was built against an ABI compatible with the
+ * running kernel.
  *
  * Three outcomes:
  *   - Program exports `__abi_version` matching the kernel: silent pass.
@@ -487,11 +708,13 @@ const ASYNCIFY_BUF_SIZE = 16384;
  *     published binaries carry the marker, this path can be flipped to
  *     a hard error — see docs/abi-versioning.md.
  *
- * Called after instantiation but before any syscall runs, so known
- * mismatches are refused before memory corruption can happen.
+ * Reads the marker directly from the Wasm bytes instead of calling the
+ * `__abi_version` export. LLVM/lld may wrap exported functions with
+ * `__wasm_call_ctors`; invoking the export here would run C++ constructors
+ * before `_start`, which breaks runtimes such as SpiderMonkey.
  */
 function verifyProgramAbi(
-  instance: WebAssembly.Instance,
+  programBytes: ArrayBuffer,
   expected: number | undefined,
   pid: number,
 ): void {
@@ -500,8 +723,8 @@ function verifyProgramAbi(
     // Will be removed once all callers are updated.
     return;
   }
-  const fn = instance.exports.__abi_version as (() => number) | undefined;
-  if (typeof fn !== "function") {
+  const actual = extractAbiVersion(programBytes);
+  if (actual === null) {
     if (!abiMissingWarned) {
       abiMissingWarned = true;
       console.warn(
@@ -513,7 +736,6 @@ function verifyProgramAbi(
     }
     return;
   }
-  const actual = fn();
   if (actual !== expected) {
     throw new Error(
       `pid=${pid}: ABI version mismatch — kernel advertises ${expected}, ` +
@@ -595,8 +817,6 @@ export async function centralizedWorkerMain(
       } catch (e) {
         if (e instanceof WasiExit) {
           exitCode = e.code;
-        } else if (e instanceof Error && e.message.includes("unreachable")) {
-          exitCode = 0;
         } else {
           throw e;
         }
@@ -607,106 +827,85 @@ export async function centralizedWorkerMain(
     }
 
     // --- SDK module path (existing) ---
+    let kernelExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
-      memory, channelOffset, initData.argv || [], initData.env || [],
+      memory,
+      channelOffset,
+      initData.argv || [],
+      initData.env || [],
+      (status) => { kernelExitStatus = status; },
     );
 
-    // Check if the module has asyncify exports (compiled with wasm-opt --asyncify)
+    // Check if the module has wpk_fork_* instrumentation exports
+    // (produced by our wasm-fork-instrument tool).
     const moduleExports = WebAssembly.Module.exports(module);
-    const hasAsyncify = moduleExports.some(e => e.name === "asyncify_get_state");
-    // Asyncify fork state — captured by kernel_fork closure
+    const hasForkInstrumentation = moduleExports.some(e => e.name === "wpk_fork_state");
+    // Fork state — captured by kernel_fork closure
     let forkResult = 0;
-    const asyncifyBufAddr = channelOffset - ASYNCIFY_BUF_SIZE;
+    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
 
-    if (hasAsyncify) {
-      // Override kernel_fork with asyncify-aware version.
+    if (hasForkInstrumentation) {
+      // Override kernel_fork with fork-instrumentation-aware version.
       // Late-bound: processInstance is set after instantiation.
       let processInstance: WebAssembly.Instance | null = null;
 
       kernelImports.kernel_fork = (): number => {
         if (!processInstance) return -38; // ENOSYS
 
-        const getState = processInstance.exports.asyncify_get_state as () => number;
+        const getState = processInstance.exports.wpk_fork_state as () => number;
         const state = getState();
         if (state === 2) {
-          // Rewinding: stop rewind and return the stored fork result
-          (processInstance.exports.asyncify_stop_rewind as () => void)();
+          // Rewinding: end rewind and return the stored fork result
+          (processInstance.exports.wpk_fork_rewind_end as () => void)();
           return forkResult;
         }
 
-        // Normal call: start asyncify unwind to save the call stack.
+        // Normal call: start unwind to save the call stack.
         // SYS_FORK is sent after _start returns (unwind complete).
-        const view = new DataView(memory.buffer);
-        view.setInt32(asyncifyBufAddr, asyncifyBufAddr + 8, true);     // start ptr
-        view.setInt32(asyncifyBufAddr + 4, asyncifyBufAddr + ASYNCIFY_BUF_SIZE, true); // end ptr
-        (processInstance.exports.asyncify_start_unwind as (addr: number) => void)(asyncifyBufAddr);
+        // wpk_fork_unwind_begin self-initializes current_pos and snapshots
+        // saved_globals (including __tls_base and __stack_pointer) into the
+        // buffer — the host no longer pre-seeds the header.
+        (processInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         return 0; // ignored during unwind
       };
 
       // Build import object and instantiate
-      const dlopenImports = buildDlopenImports(
+      const dlopenSupport = buildDlopenImports(
         memory,
+        channelOffset,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
+        ptrWidth,
       );
-      const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
+      const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
         () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
-      verifyProgramAbi(instance, initData.kernelAbiVersion, pid);
+      verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
 
-      // For fork children: fix __tls_base and __stack_pointer after instantiation.
-      // Both globals are reset to defaults by WebAssembly.instantiate() but need
-      // the parent's values for correct operation.
-      if (initData.isForkChild && initData.asyncifyBufAddr != null) {
-        const view = new DataView(memory.buffer);
-
-        // Restore __tls_base: child's __wasm_init_memory skips __wasm_init_tls
-        // because the init flag is already set (copied from parent memory),
-        // leaving __tls_base at 0 instead of the correct TLS segment address.
-        const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
-        if (tlsBaseGlobal) {
-          if (ptrWidth === 8) {
-            const savedBase = Number(view.getBigUint64(initData.asyncifyBufAddr - 8, true));
-            if (savedBase > 0) tlsBaseGlobal.value = BigInt(savedBase);
-          } else {
-            const savedBase = view.getUint32(initData.asyncifyBufAddr - 4, true);
-            if (savedBase > 0) tlsBaseGlobal.value = savedBase;
-          }
-        }
-
-        // Restore __stack_pointer: the child's fresh wasm instance has the
-        // module default __stack_pointer (top of shadow stack). But the parent's
-        // was lower (stack grows down). Asyncify rewind restores wasm locals but
-        // NOT globals. Without this, function calls in the child allocate shadow
-        // stack frames from the wrong base, overlapping the parent function's
-        // locals (corrupting arrays, structs on the shadow stack).
-        const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
-        if (stackPtrGlobal) {
-          if (ptrWidth === 8) {
-            const savedSp = Number(view.getBigUint64(initData.asyncifyBufAddr - 16, true));
-            if (savedSp > 0) stackPtrGlobal.value = BigInt(savedSp);
-          } else {
-            const savedSp = view.getUint32(initData.asyncifyBufAddr - 8, true);
-            if (savedSp > 0) stackPtrGlobal.value = savedSp;
-          }
-        }
+      // For the fork-parent case (initial launch, not a fork child), install
+      // __channel_base now — the parent's __tls_base is already correctly
+      // populated by instantiation, so setupChannelBase can read it.
+      //
+      // For fork children: defer until AFTER wpk_fork_rewind_begin runs
+      // (inside the loop below), because rewind_begin is what restores
+      // the child's __tls_base from the fork save buffer; setupChannelBase
+      // would otherwise see a zeroed __tls_base.
+      if (!initData.isForkChild) {
+        setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
       }
-
-      // Set __channel_base in TLS
-      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 
       // Signal ready
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
-      // Run with asyncify fork support
+      // Run with wpk_fork_* instrumentation
       let exitCode = 0;
       try {
         const start = instance.exports._start as () => void;
-        const getState = instance.exports.asyncify_get_state as () => number;
-        const stopUnwind = instance.exports.asyncify_stop_unwind as () => void;
-        const startRewind = instance.exports.asyncify_start_rewind as (addr: number) => void;
+        const getState = instance.exports.wpk_fork_state as () => number;
+        const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
+        const rewindBegin = instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
 
         // For fork children: start with rewind to resume from fork point
         let needsRewind = !!initData.isForkChild;
@@ -714,38 +913,77 @@ export async function centralizedWorkerMain(
           forkResult = 0; // fork() returns 0 in child
         }
 
-        // Use parent's asyncify buffer address for child rewind
-        const rewindAddr = initData.isForkChild && initData.asyncifyBufAddr != null
-          ? initData.asyncifyBufAddr
-          : asyncifyBufAddr;
+        // Use parent's fork buffer address for child rewind
+        const rewindAddr = initData.isForkChild && initData.forkBufAddr != null
+          ? initData.forkBufAddr
+          : forkBufAddr;
+        let replayedForkChildDlopens = false;
+
+        // Choose entry: normal _start, or — for a fork-from-non-main-thread
+        // child — call the parent thread's thread function directly. _start
+        // is not in the thread's fork-path call chain, so rewinding through
+        // it would never reach the saved fork() call site. The thread
+        // function's instrumented body sees state==REWINDING on entry and
+        // replays the saved frames back to fork().
+        let entry: () => void;
+        if (initData.isForkChild && initData.forkChildThreadFnPtr != null) {
+          const table = instance.exports.__indirect_function_table as WebAssembly.Table | undefined;
+          if (!table) {
+            throw new Error("Fork-from-thread child: no __indirect_function_table export");
+          }
+          const fnIdx = initData.forkChildThreadFnPtr;
+          const tableIdx = ptrWidth === 8 ? (BigInt(fnIdx) as unknown as number) : fnIdx;
+          const threadFn = table.get(tableIdx) as ((arg: number | bigint) => unknown) | null;
+          if (!threadFn) {
+            throw new Error(`Fork-from-thread child: thread function at index ${fnIdx} is null`);
+          }
+          const childArgPtr = initData.forkChildThreadArgPtr ?? 0;
+          const threadArg = ptrWidth === 8 ? BigInt(childArgPtr) : childArgPtr;
+          entry = () => { threadFn(threadArg); };
+        } else {
+          entry = start;
+        }
 
         for (;;) {
           if (needsRewind) {
-            startRewind(rewindAddr);
+            // wpk_fork_rewind_begin restores all saved mutable globals
+            // (including __tls_base and __stack_pointer) from the fork
+            // buffer. Must run before setupChannelBase, which reads
+            // __tls_base to locate the channel-base TLS slot.
+            rewindBegin(rewindAddr);
+            // Now that rewind_begin has restored __tls_base, install
+            // __channel_base for this (child) instance.
+            setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
+            if (initData.isForkChild && !replayedForkChildDlopens) {
+              try {
+                dlopenSupport.replayDlopens();
+              } catch (e) {
+                throw new Error(`fork-replay-dlopen failed: ${e instanceof Error ? e.message : String(e)}`);
+              }
+              replayedForkChildDlopens = true;
+            }
             needsRewind = false;
           }
 
           try {
-            start();
+            entry();
           } catch (e) {
             if (e instanceof Error && e.message.includes("unreachable")) {
-              break; // Normal exit via kernel_exit → unreachable trap
+              if (kernelExitStatus !== null) {
+                exitCode = kernelExitStatus;
+                break; // Normal exit via kernel_exit -> unreachable trap
+              }
             }
             throw e;
           }
 
-          const asyncState = getState();
-          if (asyncState === 1) {
-            // Asyncify unwind completed (fork) — finalize and send SYS_FORK
-            stopUnwind();
+          const forkState = getState();
+          if (forkState === 1) {
+            // Unwind completed (fork) — finalize and send SYS_FORK.
+            unwindEnd();
 
-            // Save TLS data for the fork child before the host copies memory.
-            // The child's WebAssembly.instantiate() will run __wasm_init_memory
-            // which calls __wasm_init_tls, overwriting the TLS area with template
-            // values and resetting __wasm_thread_pointer to 0.
-            saveParentTls(instance, memory, asyncifyBufAddr, ptrWidth);
-
-            // Send SYS_FORK through the channel now that memory has asyncify data
+            // Send SYS_FORK through the channel now that memory has the
+            // fork save buffer populated (saved_globals + frames).
             const childPid = sendForkSyscall(memory, channelOffset);
             if (childPid < 0) {
               throw new Error(`Fork failed: errno=${-childPid}`);
@@ -759,14 +997,16 @@ export async function centralizedWorkerMain(
           break;
         }
       } catch (e) {
-        if (!(e instanceof Error && e.message.includes("unreachable"))) {
+        if (e instanceof Error && e.message.includes("unreachable") && kernelExitStatus !== null) {
+          exitCode = kernelExitStatus;
+        } else {
           throw e;
         }
       }
 
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     } else {
-      // No asyncify — use original channel-based fork (re-execute _start)
+      // No fork instrumentation — use original channel-based fork (re-execute _start)
       // Fork children re-execute _start: first kernel_fork call returns 0
       if (initData.isForkChild) {
         let firstFork = true;
@@ -781,17 +1021,19 @@ export async function centralizedWorkerMain(
       }
 
       let processInstance: WebAssembly.Instance | null = null;
-      const dlopenImports = buildDlopenImports(
+      const dlopenSupport = buildDlopenImports(
         memory,
+        channelOffset,
         () => processInstance?.exports.__indirect_function_table as WebAssembly.Table | undefined,
         () => processInstance?.exports.__stack_pointer as WebAssembly.Global | undefined,
         () => processInstance ?? undefined,
+        ptrWidth,
       );
-      const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenImports,
+      const importObject = buildImportObject(module, memory, kernelImports, channelOffset, dlopenSupport.imports,
         () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
-      verifyProgramAbi(instance, initData.kernelAbiVersion, pid);
+      verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
 
       setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 
@@ -801,10 +1043,16 @@ export async function centralizedWorkerMain(
       try {
         const start = instance.exports._start as (() => void) | undefined;
         if (start) start();
+        if (kernelExitStatus !== null) {
+          exitCode = kernelExitStatus;
+        }
       } catch (e) {
         if (e instanceof Error && e.message.includes("unreachable")) {
-          console.error(`[worker] pid=${pid} _start() hit unreachable trap: ${e.message}`);
-          exitCode = 0;
+          if (kernelExitStatus !== null) {
+            exitCode = kernelExitStatus;
+          } else {
+            throw e;
+          }
         } else {
           throw e;
         }
@@ -814,7 +1062,18 @@ export async function centralizedWorkerMain(
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {
-    const errMsg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
+    let errMsg: string;
+    if (err instanceof Error) {
+      errMsg = `${err.message}\n${err.stack}`;
+    } else if ((WebAssembly as any).Exception && err instanceof (WebAssembly as any).Exception) {
+      // WebAssembly.Exception isn't an Error subclass in V8, so String(err)
+      // produces the useless "[object WebAssembly.Exception]". Surface
+      // anything we can read off it for build-time debugging.
+      const wex = err as { message?: string; stack?: string };
+      errMsg = `WebAssembly.Exception: ${wex.message ?? "<no message>"}\n${wex.stack ?? "<no stack>"}`;
+    } else {
+      errMsg = String(err);
+    }
     port.postMessage({
       type: "error",
       pid: initData.pid,
@@ -939,7 +1198,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
       return tlsOffset;
     }
 
-    // Pattern 3: post-asyncify — global.get <tls_base>; i32/i64.const <offset>; i32/i64.add
+    // Pattern 3: instrumented/optimized — global.get <tls_base>; i32/i64.const <offset>; i32/i64.add
     if (src[pos] === 0x23) {
       let p3 = pos + 1;
       const [, globalIdxBytes] = readLEB128(src, p3); p3 += globalIdxBytes;
@@ -1015,80 +1274,24 @@ function setupChannelBase(
 }
 
 /**
- * Save parent's __tls_base and __stack_pointer before fork so the child can
- * restore them.
- *
- * __tls_base: The child's WebAssembly.instantiate() skips __wasm_init_tls
- * (init flag is set from copied parent memory), leaving __tls_base at 0.
- * Stored at [asyncifyBufAddr - 4].
- *
- * __stack_pointer: The child gets a fresh wasm instance whose __stack_pointer
- * is the module default (top of shadow stack). But the parent's __stack_pointer
- * was lower (stack grows down). After asyncify rewind, wasm locals are restored
- * but __stack_pointer (a global) is NOT. Any function call in the child would
- * allocate its shadow stack frame from the wrong base, overlapping and corrupting
- * the parent function's shadow stack locals (arrays, structs).
- * Stored at [asyncifyBufAddr - 8].
- */
-function saveParentTls(
-  instance: WebAssembly.Instance,
-  memory: WebAssembly.Memory,
-  asyncifyBufAddr: number,
-  ptrWidth: 4 | 8 = 4,
-): void {
-  const view = new DataView(memory.buffer);
-
-  const tlsBaseGlobal = instance.exports.__tls_base as WebAssembly.Global | undefined;
-  if (tlsBaseGlobal) {
-    const tlsBase = Number(tlsBaseGlobal.value);
-    if (tlsBase > 0) {
-      if (ptrWidth === 8) {
-        view.setBigUint64(asyncifyBufAddr - 8, BigInt(tlsBase), true);
-      } else {
-        view.setUint32(asyncifyBufAddr - 4, tlsBase, true);
-      }
-    }
-  }
-
-  const stackPtrGlobal = instance.exports.__stack_pointer as WebAssembly.Global | undefined;
-  if (stackPtrGlobal) {
-    const stackPtr = Number(stackPtrGlobal.value);
-    if (stackPtr > 0) {
-      if (ptrWidth === 8) {
-        view.setBigUint64(asyncifyBufAddr - 16, BigInt(stackPtr), true);
-      } else {
-        view.setUint32(asyncifyBufAddr - 8, stackPtr, true);
-      }
-    }
-  }
-}
-
-/**
  * Send SYS_FORK through the channel and wait for the result.
  * Returns child pid on success, or -errno on failure.
  */
 function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): number {
-  const SYS_FORK_NR = 212;
-  const CH_SYSCALL = 4;
-  const CH_ARGS = 8;
-  const CH_ARG_SIZE = 8; // each arg is i64 (8 bytes)
-  const CH_RETURN = 56;
-  const CH_ERRNO = 64;
-
   const view = new DataView(memory.buffer);
-  view.setInt32(channelOffset + CH_SYSCALL, SYS_FORK_NR, true);
+  view.setInt32(channelOffset + CH_SYSCALL, HOST_INTERCEPTED_SYSCALLS.SYS_FORK, true);
   for (let i = 0; i < 6; i++) {
     view.setBigInt64(channelOffset + CH_ARGS + i * CH_ARG_SIZE, 0n, true);
   }
 
   const i32 = new Int32Array(memory.buffer);
-  Atomics.store(i32, channelOffset / 4, 1); // CH_PENDING
-  Atomics.notify(i32, channelOffset / 4, 1);
-  while (Atomics.wait(i32, channelOffset / 4, 1) === "ok") { /* */ }
+  Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+  Atomics.notify(i32, (channelOffset + CH_STATUS) / 4, 1);
+  while (Atomics.wait(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
 
   const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
   const err = view.getUint32(channelOffset + CH_ERRNO, true);
-  Atomics.store(i32, channelOffset / 4, 0);
+  Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
 
   if (err) return -err;
   return result;
@@ -1108,8 +1311,8 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
  *
  * This function:
  * 1. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
- * 2. Finds the constructor function (by inspecting the first `call` instruction
- *    in any export wrapper) and replaces its body with a no-op.
+ * 2. Finds the constructor function by scanning the known LLVM helper exports
+ *    for their common call target and replaces that function body with a no-op.
  */
 export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
   const src = new Uint8Array(bytes);
@@ -1192,11 +1395,14 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     }
   }
 
-  // Find the constructor function by looking at an export wrapper's first `call`.
-  // In LLVM's shared-memory model, every export wrapper starts with `call $__wasm_call_ctors`.
-  // We find this by locating any exported function's code and reading its first call target.
+  // Find the constructor function by looking at the exported helper wrappers.
+  // Plain lld output puts `call $__wasm_call_ctors` first. After
+  // wasm-fork-instrument, wrappers have a rewind prolog before the original
+  // body, so scan instructions and choose the call target shared by the known
+  // helper exports instead of assuming opcode 0 is the constructor call.
   let ctorFuncIndex = -1;
   let exportedFuncIndices: number[] = [];
+  const exportFuncIndicesByName = new Map<string, number>();
 
   // Collect exported function indices from Export section (id=7)
   for (const sec of sections) {
@@ -1206,49 +1412,171 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
       pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readLEB128(src, pos);
-        pos += nameLenBytes + nameLen;
+        pos += nameLenBytes;
+        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
+        pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);
         pos += idxBytes;
         if (kind === 0) { // function export
           exportedFuncIndices.push(idx);
+          exportFuncIndicesByName.set(name, idx);
         }
       }
       break;
     }
   }
 
-  // Find the Code section and look at an exported function's body
+  function skipLEB(pos: number): number {
+    const [, n] = readLEB128(src, pos);
+    return pos + n;
+  }
+
+  function skipMemArg(pos: number): number {
+    pos = skipLEB(pos); // alignment
+    return skipLEB(pos); // offset
+  }
+
+  function getInstructionStartAndEnd(
+    codeSection: Section,
+    funcIndex: number,
+  ): { start: number; end: number } | null {
+    const codeEntry = funcIndex - numFuncImports;
+    if (codeEntry < 0) return null;
+
+    let pos = codeSection.contentOffset;
+    const [funcCount, funcCountBytes] = readLEB128(src, pos);
+    pos += funcCountBytes;
+    if (codeEntry >= funcCount) return null;
+
+    for (let i = 0; i < codeEntry; i++) {
+      const [bodySize, bodySizeBytes] = readLEB128(src, pos);
+      pos += bodySizeBytes + bodySize;
+    }
+
+    const [bodySize, bodySizeBytes] = readLEB128(src, pos);
+    pos += bodySizeBytes;
+    const bodyEnd = pos + bodySize;
+
+    const [localCount, localCountBytes] = readLEB128(src, pos);
+    pos += localCountBytes;
+    for (let i = 0; i < localCount; i++) {
+      pos = skipLEB(pos); // count
+      pos++; // valtype
+    }
+
+    return { start: pos, end: bodyEnd };
+  }
+
+  function scanCallTargets(codeSection: Section, funcIndex: number): number[] {
+    const bounds = getInstructionStartAndEnd(codeSection, funcIndex);
+    if (!bounds) return [];
+
+    const calls: number[] = [];
+    let pos = bounds.start;
+    while (pos < bounds.end) {
+      const op = src[pos++];
+      if (op === 0x10) { // call
+        const [target, n] = readLEB128(src, pos);
+        pos += n;
+        calls.push(target);
+      } else if (op === 0x11 || op === 0x13) { // call_indirect / return_call_indirect
+        pos = skipLEB(pos);
+        pos = skipLEB(pos);
+      } else if (op === 0x12 || op === 0x14 || op === 0x15) {
+        pos = skipLEB(pos);
+      } else if (op === 0x02 || op === 0x03 || op === 0x04) {
+        // blocktype: empty marker, valtype, or signed type index.
+        pos = src[pos] === 0x40 || src[pos] >= 0x70 ? pos + 1 : skipLEB(pos);
+      } else if (op === 0x0c || op === 0x0d || (op >= 0x20 && op <= 0x26) || op === 0xd0 || op === 0xd2) {
+        pos = skipLEB(pos);
+      } else if (op === 0x0e) { // br_table
+        const [count, n] = readLEB128(src, pos);
+        pos += n;
+        for (let i = 0; i <= count; i++) pos = skipLEB(pos);
+      } else if (op >= 0x28 && op <= 0x3e) {
+        pos = skipMemArg(pos);
+      } else if (op === 0x3f || op === 0x40) {
+        pos++;
+      } else if (op === 0x41 || op === 0x42) {
+        pos = skipLEB(pos);
+      } else if (op === 0x43) {
+        pos += 4;
+      } else if (op === 0x44) {
+        pos += 8;
+      } else if (op === 0xfc) {
+        const [subop, n] = readLEB128(src, pos);
+        pos += n;
+        if (subop === 8 || subop === 10 || subop === 12 || subop === 14) {
+          pos = skipLEB(skipLEB(pos));
+        } else if (subop >= 9 && subop <= 17) {
+          pos = skipLEB(pos);
+        }
+      } else if (op === 0xfe) {
+        pos = skipLEB(pos);
+        pos = skipMemArg(pos);
+      } else if (op === 0xfd) {
+        // SIMD is not expected in the helper wrappers. Stop before treating
+        // SIMD immediates as opcodes and collecting false call targets.
+        break;
+      } else {
+        // Most numeric, parametric, and control opcodes have no immediates.
+      }
+    }
+    return calls;
+  }
+
+  // Find the Code section and identify a call target shared by LLVM helper exports.
   for (const sec of sections) {
     if (sec.id === 10 && exportedFuncIndices.length > 0) {
-      // Use the last exported function (likely a wrapper, not a data export)
-      const targetFunc = exportedFuncIndices[exportedFuncIndices.length - 1];
-      const targetCodeEntry = targetFunc - numFuncImports;
-      if (targetCodeEntry < 0) break;
-
-      let pos = sec.contentOffset;
-      const [, funcCountBytes] = readLEB128(src, pos);
-      pos += funcCountBytes;
-
-      // Skip to the target code entry
-      for (let i = 0; i < targetCodeEntry; i++) {
-        const [bodySize, bodySizeBytes] = readLEB128(src, pos);
-        pos += bodySizeBytes + bodySize;
+      const helperNames = [
+        "__wasm_init_tls",
+        "__abi_version",
+        "__get_channel_base_addr",
+        "_start",
+        "__wasm_thread_init",
+      ];
+      const counts = new Map<number, { count: number; firstOrder: number }>();
+      let order = 0;
+      for (const name of helperNames) {
+        const funcIndex = exportFuncIndicesByName.get(name);
+        if (funcIndex === undefined) continue;
+        const perFunction = new Set(scanCallTargets(sec, funcIndex).filter(target => target >= numFuncImports));
+        for (const target of perFunction) {
+          const entry = counts.get(target);
+          if (entry) {
+            entry.count++;
+          } else {
+            counts.set(target, { count: 1, firstOrder: order++ });
+          }
+        }
       }
 
-      // Read the function body
-      const [bodySize, bodySizeBytes] = readLEB128(src, pos);
-      pos += bodySizeBytes;
-      // Skip locals
-      const [localCount, localCountBytes] = readLEB128(src, pos);
-      pos += localCountBytes;
-      for (let i = 0; i < localCount; i++) {
-        const [, countB] = readLEB128(src, pos); pos += countB;
-        pos++; // valtype
+      let best: { target: number; count: number; firstOrder: number } | null = null;
+      for (const [target, value] of counts) {
+        if (
+          value.count >= 2 &&
+          (!best || value.count > best.count ||
+            (value.count === best.count && value.firstOrder < best.firstOrder))
+        ) {
+          best = { target, count: value.count, firstOrder: value.firstOrder };
+        }
       }
-      // First instruction should be `call N` (opcode 0x10 followed by LEB128 func index)
-      if (src[pos] === 0x10) {
-        [ctorFuncIndex] = readLEB128(src, pos + 1);
+
+      if (best) {
+        ctorFuncIndex = best.target;
+      } else {
+        // Fallback for very small legacy binaries: use the first call in an
+        // exported function whose body starts with that call.
+        for (const funcIndex of exportedFuncIndices) {
+          const bounds = getInstructionStartAndEnd(sec, funcIndex);
+          if (!bounds || src[bounds.start] !== 0x10) continue;
+          const [target] = readLEB128(src, bounds.start + 1);
+          if (target >= numFuncImports) {
+            ctorFuncIndex = target;
+            break;
+          }
+        }
       }
       break;
     }
@@ -1323,6 +1651,11 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
  * 3. Sets the channel base and stack pointer
  * 4. Calls the thread function via the indirect function table
  * 5. On return: performs CLONE_CHILD_CLEARTID (write 0 + futex wake at ctidPtr)
+ *
+ * If the thread function calls fork(), this entry point drives the
+ * `wpk_fork_*` unwind/SYS_FORK/rewind loop just like the main process worker,
+ * but rooted at the pthread function and this thread's channel-local fork
+ * buffer.
  */
 export async function centralizedThreadWorkerMain(
   port: MessagePort,
@@ -1345,7 +1678,27 @@ export async function centralizedThreadWorkerMain(
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
 
+    const moduleExports = WebAssembly.Module.exports(module);
+    const hasForkInstrumentation = moduleExports.some(e => e.name === "wpk_fork_state");
+    const forkBufAddr = channelOffset - FORK_BUF_SIZE;
+    let forkResult = 0;
+
     const kernelImports = buildKernelImports(memory, channelOffset);
+    if (hasForkInstrumentation) {
+      kernelImports.kernel_fork = (): number => {
+        if (!threadInstance) return -38; // ENOSYS
+
+        const getState = threadInstance.exports.wpk_fork_state as () => number;
+        const state = getState();
+        if (state === 2) {
+          (threadInstance.exports.wpk_fork_rewind_end as () => void)();
+          return forkResult;
+        }
+
+        (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
+        return 0;
+      };
+    }
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,
       () => threadInstance, ptrWidth);
     const instance = new WebAssembly.Instance(module, importObject);
@@ -1358,8 +1711,7 @@ export async function centralizedThreadWorkerMain(
     // page-aligned addresses in the thread region, overwriting __channel_base.
     // The channel spill page has 65464 bytes free after the header; we only need 8.
     const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number | bigint) => void) | undefined;
-    const CH_TOTAL = 65608; // CH_HEADER_SIZE (72) + CH_DATA_SIZE (65536)
-    const safeTlsAddr = channelOffset + CH_TOTAL; // inside channel spill page, 4-byte aligned
+    const safeTlsAddr = channelOffset + CH_TOTAL_SIZE; // inside channel spill page, 4-byte aligned
     const tlsBlock = safeTlsAddr;
 
     if (wasmInitTls && tlsBlock > 0) {
@@ -1378,31 +1730,10 @@ export async function centralizedThreadWorkerMain(
       wasmThreadInit(ptrWidth === 8 ? BigInt(tlsPtr) : tlsPtr);
     }
 
-    // Set __channel_base — either via wasm global (new) or TLS memory (legacy).
-    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number | bigint) | undefined;
-    if (getChannelBaseAddr) {
-      const addr = Number(getChannelBaseAddr());
-      if (addr === 0) {
-        // Global-based approach — __channel_base was set at instantiation via
-        // WebAssembly.Global in buildImportObject. Nothing to do.
-      } else {
-        // Legacy TLS-based approach
-        const view = new DataView(memory.buffer);
-        if (ptrWidth === 8) {
-          view.setBigUint64(addr, BigInt(channelOffset), true);
-        } else {
-          view.setUint32(addr, channelOffset, true);
-        }
-      }
-    } else if (tlsBlock > 0) {
-      // Fallback: assume offset 0 (only for programs without the helper)
-      const view = new DataView(memory.buffer);
-      if (ptrWidth === 8) {
-        view.setBigUint64(tlsBlock, BigInt(channelOffset), true);
-      } else {
-        view.setUint32(tlsBlock, channelOffset, true);
-      }
-    }
+    // Set __channel_base without calling the exported helper. lld can prefix
+    // exported functions with __wasm_call_ctors, and thread workers must not
+    // re-run constructors in shared process memory.
+    setupChannelBase(instance, module, memory, channelOffset, initData.programBytes, ptrWidth);
 
     // Call the thread function via indirect function table
     const table = instance.exports.__indirect_function_table as WebAssembly.Table | undefined;
@@ -1417,19 +1748,62 @@ export async function centralizedThreadWorkerMain(
       throw new Error(`Thread function at table index ${fnPtr} is null`);
     }
 
-    let result: number;
-    try {
-      const raw = threadFn(ptrWidth === 8 ? BigInt(argPtr) : argPtr);
-      result = Number(raw);
-    } catch (e) {
-      if (e instanceof Error && e.message.includes("unreachable")) {
-        // Thread exited via kernel_exit → unreachable trap
-        result = 0;
-      } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-        // call_indirect type mismatch — treat as thread crash but don't abort
-        result = 0;
-      } else {
-        throw e;
+    const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
+    let result = 0;
+    if (hasForkInstrumentation) {
+      const getState = instance.exports.wpk_fork_state as () => number;
+      const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
+      const rewindBegin = instance.exports.wpk_fork_rewind_begin as (addr: number) => void;
+      let needsRewind = false;
+
+      for (;;) {
+        if (needsRewind) {
+          rewindBegin(forkBufAddr);
+          needsRewind = false;
+        }
+
+        try {
+          const raw = threadFn(threadArg);
+          result = Number(raw);
+        } catch (e) {
+          if (e instanceof Error && e.message.includes("unreachable")) {
+            result = 0;
+            break;
+          }
+          if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
+            result = 0;
+            break;
+          }
+          throw e;
+        }
+
+        const forkState = getState();
+        if (forkState === 1) {
+          unwindEnd();
+          const childPid = sendForkSyscall(memory, channelOffset);
+          if (childPid < 0) {
+            throw new Error(`Fork failed: errno=${-childPid}`);
+          }
+          forkResult = childPid;
+          needsRewind = true;
+          continue;
+        }
+        break;
+      }
+    } else {
+      try {
+        const raw = threadFn(threadArg);
+        result = Number(raw);
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("unreachable")) {
+          // Thread exited via kernel_exit → unreachable trap
+          result = 0;
+        } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
+          // call_indirect type mismatch — treat as thread crash but don't abort
+          result = 0;
+        } else {
+          throw e;
+        }
       }
     }
 
@@ -1445,14 +1819,14 @@ export async function centralizedThreadWorkerMain(
     {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      view.setInt32(base + 4, 34, true); // SYS_EXIT = 34
-      view.setInt32(base + 8, result ?? 0, true);
+      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+      view.setInt32(base + CH_ARGS, result ?? 0, true);
       const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, base / 4, 1); // CH_PENDING
-      Atomics.notify(i32, base / 4, 1);
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
+      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for kernel to process the exit
-      while (Atomics.wait(i32, base / 4, 1) === "ok") { /* */ }
-      Atomics.store(i32, base / 4, 0);
+      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
+      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
     }
 
     port.postMessage({

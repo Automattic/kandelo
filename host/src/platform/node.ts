@@ -9,8 +9,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { PlatformIO, StatResult } from "../types";
-import { translateOpenFlags } from "../vfs/host-fs";
+import type { PlatformIO, StatResult, StatfsResult } from "../types";
+import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
+import { NativeMetadataOverlay } from "./native-metadata";
 
 export class NodePlatformIO implements PlatformIO {
   private dirHandles = new Map<number, fs.Dir>();
@@ -22,6 +23,7 @@ export class NodePlatformIO implements PlatformIO {
   private readonly _startNs: bigint;
   // /dev/shm replacement directory (macOS has no /dev/shm)
   private readonly _shmDir: string;
+  private readonly metadata = new NativeMetadataOverlay();
 
   constructor() {
     const hrt = process.hrtime.bigint();
@@ -31,7 +33,18 @@ export class NodePlatformIO implements PlatformIO {
     this._shmDir = path.join(os.tmpdir(), "wasm-posix-shm");
   }
 
-  /** Rewrite /dev/shm/ paths to a tmpdir-backed directory (macOS compat). */
+  /**
+   * Adapt POSIX-shaped kernel paths to whatever Node `fs.*` understands
+   * on the host. Two translations live here:
+   *
+   *   - `/dev/shm/...` → tmpdir-backed dir (macOS has no `/dev/shm`).
+   *   - On Windows: `/<letter>/...` → `<letter>:/...`. The kernel is
+   *     POSIX; user programs (musl-libc nginx, php-fpm) reject paths
+   *     that don't start with `/` as relative. Callers shape Windows
+   *     host paths as `/C/Users/...` (matching `@php-wasm/util`'s
+   *     `toPosixPath`); we reverse it here before handing the value
+   *     to Node `fs.*`.
+   */
   private rewritePath(p: string): string {
     if (p.startsWith("/dev/shm/") || p === "/dev/shm") {
       const rel = p.slice("/dev/shm".length); // "" or "/foo"
@@ -40,11 +53,18 @@ export class NodePlatformIO implements PlatformIO {
       fs.mkdirSync(this._shmDir, { recursive: true });
       return target;
     }
+    if (process.platform === "win32") {
+      const winPath = translateWindowsDrivePath(p);
+      if (winPath !== null) return winPath;
+    }
     return p;
   }
 
   open(path: string, flags: number, mode: number): number {
-    const fd = fs.openSync(this.rewritePath(path), translateOpenFlags(flags), mode);
+    const nativePath = this.rewritePath(path);
+    const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
+    const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
+    if (created) this.metadata.chmod(fs.fstatSync(fd), mode);
     this.fdPositions.set(fd, 0);
     return fd;
   }
@@ -112,68 +132,56 @@ export class NodePlatformIO implements PlatformIO {
     return newPos;
   }
 
+  // Normalize uid/gid to match Process::new's default euid (0). The
+  // real macOS/Linux uid of the user running the kernel is not exposed
+  // to guest programs — guest sees host-mounted files as self-owned, so
+  // tools that compare ownership against their own euid (git's
+  // "dubious ownership" check, nginx config ownership, etc.) see a
+  // match. Same policy as HostFileSystem.
   fstat(handle: number): StatResult {
-    const stat = fs.fstatSync(handle);
-    return {
-      dev: stat.dev,
-      ino: stat.ino,
-      mode: stat.mode,
-      nlink: stat.nlink,
-      uid: stat.uid,
-      gid: stat.gid,
-      size: stat.size,
-      atimeMs: stat.atimeMs,
-      mtimeMs: stat.mtimeMs,
-      ctimeMs: stat.ctimeMs,
-    };
+    return this.metadata.toStatResult(fs.fstatSync(handle));
   }
 
   stat(path: string): StatResult {
-    const s = fs.statSync(this.rewritePath(path));
-    return {
-      dev: s.dev,
-      ino: s.ino,
-      mode: s.mode,
-      nlink: s.nlink,
-      uid: s.uid,
-      gid: s.gid,
-      size: s.size,
-      atimeMs: s.atimeMs,
-      mtimeMs: s.mtimeMs,
-      ctimeMs: s.ctimeMs,
-    };
+    return this.metadata.toStatResult(fs.statSync(this.rewritePath(path)));
   }
 
   lstat(path: string): StatResult {
-    const s = fs.lstatSync(this.rewritePath(path));
-    return {
-      dev: s.dev,
-      ino: s.ino,
-      mode: s.mode,
-      nlink: s.nlink,
-      uid: s.uid,
-      gid: s.gid,
-      size: s.size,
-      atimeMs: s.atimeMs,
-      mtimeMs: s.mtimeMs,
-      ctimeMs: s.ctimeMs,
-    };
+    return this.metadata.toStatResult(fs.lstatSync(this.rewritePath(path)));
+  }
+
+  statfs(path: string): StatfsResult {
+    return nativeStatfs(this.rewritePath(path));
   }
 
   mkdir(path: string, mode: number): void {
-    fs.mkdirSync(this.rewritePath(path), { mode });
+    const nativePath = this.rewritePath(path);
+    fs.mkdirSync(nativePath, { mode });
+    this.metadata.chmod(fs.statSync(nativePath), mode);
   }
 
   rmdir(path: string): void {
-    fs.rmdirSync(this.rewritePath(path));
+    const nativePath = this.rewritePath(path);
+    const stat = fs.lstatSync(nativePath);
+    fs.rmdirSync(nativePath);
+    this.metadata.forget(stat);
   }
 
   unlink(path: string): void {
-    fs.unlinkSync(this.rewritePath(path));
+    const nativePath = this.rewritePath(path);
+    const stat = fs.lstatSync(nativePath);
+    fs.unlinkSync(nativePath);
+    if (stat.nlink <= 1) this.metadata.forget(stat);
   }
 
   rename(oldPath: string, newPath: string): void {
-    fs.renameSync(this.rewritePath(oldPath), this.rewritePath(newPath));
+    const nativeNewPath = this.rewritePath(newPath);
+    let replaced: fs.Stats | undefined;
+    try {
+      replaced = fs.lstatSync(nativeNewPath);
+    } catch {}
+    fs.renameSync(this.rewritePath(oldPath), nativeNewPath);
+    if (replaced !== undefined && replaced.nlink <= 1) this.metadata.forget(replaced);
   }
 
   link(existingPath: string, newPath: string): void {
@@ -189,15 +197,15 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   chmod(path: string, mode: number): void {
-    fs.chmodSync(this.rewritePath(path), mode);
+    this.metadata.chmod(fs.statSync(this.rewritePath(path)), mode);
   }
 
   chown(path: string, uid: number, gid: number): void {
-    fs.chownSync(this.rewritePath(path), uid, gid);
+    this.metadata.chown(fs.statSync(this.rewritePath(path)), uid, gid);
   }
 
   access(path: string, mode: number): void {
-    fs.accessSync(this.rewritePath(path), mode);
+    this.metadata.access(fs.statSync(this.rewritePath(path)), mode);
   }
 
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void {
@@ -248,11 +256,11 @@ export class NodePlatformIO implements PlatformIO {
   }
 
   fchmod(handle: number, mode: number): void {
-    fs.fchmodSync(handle, mode);
+    this.metadata.chmod(fs.fstatSync(handle), mode);
   }
 
   fchown(handle: number, uid: number, gid: number): void {
-    fs.fchownSync(handle, uid, gid);
+    this.metadata.chown(fs.fstatSync(handle), uid, gid);
   }
 
   clockGettime(
@@ -282,4 +290,20 @@ export class NodePlatformIO implements PlatformIO {
       Atomics.wait(arr, 0, 0, ms);
     }
   }
+}
+
+/**
+ * Translate a POSIX-shaped path carrying a Windows drive prefix back
+ * to native Windows form: `/C/foo` → `C:/foo`, `/C` → `C:/`.
+ *
+ * Returns `null` if `p` does not begin with `/<letter>` followed by
+ * end-of-string or `/`. Exported for unit tests; callers should
+ * gate on `process.platform === "win32"` themselves.
+ *
+ * Mirrors `@php-wasm/util:toPosixPath` on the CLI side.
+ */
+export function translateWindowsDrivePath(p: string): string | null {
+  const m = p.match(/^\/([A-Za-z])(\/.*)?$/);
+  if (!m) return null;
+  return `${m[1]}:${m[2] ?? "/"}`;
 }

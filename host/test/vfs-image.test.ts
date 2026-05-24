@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { zstdCompressSync } from "node:zlib";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { saveImage } from "../../images/vfs/scripts/vfs-image-helpers";
 
 const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
@@ -241,6 +246,187 @@ describe("VFS image save/restore", () => {
       const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
       const flags = view.getUint32(8, true);
       expect(flags & 1).toBe(1); // lazy flag set
+    });
+  });
+
+  describe("image metadata", () => {
+    it("stores and restores a kernel ABI declaration", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/bin/tool", new Uint8Array([0, 97, 115, 109]), 0o755);
+      mfs.setImageMetadata({
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "vfs-image.test",
+      });
+
+      const image = await mfs.saveImage();
+      const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+      const flags = view.getUint32(8, true);
+      expect(flags & 4).toBe(4); // metadata flag set
+
+      expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "vfs-image.test",
+      });
+
+      const restored = MemoryFileSystem.fromImage(image);
+      expect(restored.getImageMetadata()).toEqual({
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "vfs-image.test",
+      });
+      expect(new TextDecoder().decode(readFile(restored, "/bin/tool")))
+        .toBe("\0asm");
+    });
+
+    it("preserves metadata when a restored image is saved again", async () => {
+      const mfs = createMemfs();
+      const image = await mfs.saveImage({
+        metadata: { version: 1, kernelAbi: 9 },
+      });
+
+      const restored = MemoryFileSystem.fromImage(image);
+      const resaved = await restored.saveImage();
+
+      expect(MemoryFileSystem.readImageMetadata(resaved)).toEqual({
+        version: 1,
+        kernelAbi: 9,
+      });
+    });
+
+    it("can clear metadata on save", async () => {
+      const mfs = createMemfs();
+      const image = await mfs.saveImage({
+        metadata: { version: 1, kernelAbi: 9 },
+      });
+      const restored = MemoryFileSystem.fromImage(image);
+
+      const cleared = await restored.saveImage({ metadata: null });
+      const view = new DataView(cleared.buffer, cleared.byteOffset, cleared.byteLength);
+      const flags = view.getUint32(8, true);
+      expect(flags & 4).toBe(0);
+      expect(MemoryFileSystem.readImageMetadata(cleared)).toBeNull();
+    });
+
+    it("reads metadata from a zstd-wrapped image without materializing callers' fs state", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/data.txt", new TextEncoder().encode("metadata"));
+      const image = await mfs.saveImage({
+        metadata: { version: 1, kernelAbi: 12 },
+      });
+      const compressed = new Uint8Array(zstdCompressSync(image));
+
+      expect(MemoryFileSystem.readImageMetadata(compressed)).toEqual({
+        version: 1,
+        kernelAbi: 12,
+      });
+      expect(MemoryFileSystem.fromImage(compressed).getImageMetadata()).toEqual({
+        version: 1,
+        kernelAbi: 12,
+      });
+    });
+
+    it("rejects malformed metadata declarations", async () => {
+      const mfs = createMemfs();
+      await expect(
+        mfs.saveImage({ metadata: { version: 1, kernelAbi: 1.5 } }),
+      ).rejects.toThrow(/kernelAbi/);
+      await expect(
+        mfs.saveImage({ metadata: { version: 2 as 1, kernelAbi: 11 } }),
+      ).rejects.toThrow(/metadata version/);
+    });
+
+    it("validates a declared kernel ABI against the running ABI supplied by the caller", async () => {
+      const mfs = createMemfs();
+      const image = await mfs.saveImage({
+        metadata: { version: 1, kernelAbi: 11 },
+      });
+
+      expect(() => MemoryFileSystem.assertImageKernelAbi(image, 11)).not.toThrow();
+      expect(() => MemoryFileSystem.assertImageKernelAbi(image, 12, "test image"))
+        .toThrow(/test image requires kernel ABI 11.*running kernel is ABI 12/);
+    });
+  });
+
+  describe("zstd-compressed images", () => {
+    it("fromImage transparently decompresses a zstd-wrapped image", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/hello.txt", new TextEncoder().encode("compressed!"));
+      writeFile(mfs, "/etc/config", new Uint8Array([1, 2, 3, 4]));
+
+      const image = await mfs.saveImage();
+      const compressed = new Uint8Array(zstdCompressSync(image));
+
+      // Sanity-check the zstd magic so we know the test is exercising the path.
+      expect(compressed[0]).toBe(0x28);
+      expect(compressed[1]).toBe(0xb5);
+      expect(compressed[2]).toBe(0x2f);
+      expect(compressed[3]).toBe(0xfd);
+
+      const restored = MemoryFileSystem.fromImage(compressed);
+      expect(new TextDecoder().decode(readFile(restored, "/hello.txt"))).toBe("compressed!");
+      expect(readFile(restored, "/etc/config")).toEqual(new Uint8Array([1, 2, 3, 4]));
+    });
+
+    it("fromImage with maxByteLength still works on zstd-wrapped image", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/data.txt", new TextEncoder().encode("hi"));
+      const compressed = new Uint8Array(zstdCompressSync(await mfs.saveImage()));
+
+      const restored = MemoryFileSystem.fromImage(compressed, {
+        maxByteLength: 16 * 1024 * 1024,
+      });
+      expect(restored.sharedBuffer.maxByteLength).toBe(16 * 1024 * 1024);
+      expect(new TextDecoder().decode(readFile(restored, "/data.txt"))).toBe("hi");
+    });
+
+    it("saveImage writes a .vfs.zst that fromImage can restore", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/etc/hostname", new TextEncoder().encode("wasmbox\n"));
+      // Non-zero pattern so the zstd ratio actually reflects content,
+      // not just the empty SAB tail.
+      const big = new Uint8Array(200 * 1024);
+      for (let i = 0; i < big.length; i++) big[i] = (i * 7) & 0xff;
+      writeFile(mfs, "/usr/lib/libfoo.so", big, 0o755);
+
+      const dir = mkdtempSync(join(tmpdir(), "vfs-zst-"));
+      const out = join(dir, "test.vfs.zst");
+      try {
+        await saveImage(mfs, out);
+
+        // File on disk: starts with zstd magic, smaller than SAB.
+        const onDisk = new Uint8Array(readFileSync(out));
+        expect(onDisk[0]).toBe(0x28);
+        expect(onDisk[1]).toBe(0xb5);
+        expect(onDisk[2]).toBe(0x2f);
+        expect(onDisk[3]).toBe(0xfd);
+        expect(statSync(out).size).toBeLessThan(mfs.sharedBuffer.byteLength);
+
+        // Round-trip through fromImage straight from the on-disk bytes.
+        const restored = MemoryFileSystem.fromImage(onDisk, {
+          maxByteLength: 8 * 1024 * 1024,
+        });
+        expect(new TextDecoder().decode(readFile(restored, "/etc/hostname")))
+          .toBe("wasmbox\n");
+        const restoredBig = readFile(restored, "/usr/lib/libfoo.so");
+        expect(restoredBig.length).toBe(big.length);
+        expect(restoredBig).toEqual(big);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("saveImage rejects a non-.vfs.zst output path", async () => {
+      const mfs = createMemfs();
+      const dir = mkdtempSync(join(tmpdir(), "vfs-zst-"));
+      try {
+        await expect(saveImage(mfs, join(dir, "wrong.vfs"))).rejects.toThrow(
+          /must end in \.vfs\.zst/,
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

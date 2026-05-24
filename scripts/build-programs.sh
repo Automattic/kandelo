@@ -9,8 +9,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/glue"
-# Per-arch output dirs match the layout install_release writes:
+GLUE_DIR="$REPO_ROOT/libc/glue"
+# Per-arch output dirs match the layout the resolver's
+# `place_binaries_symlinks` writes:
 # binaries/programs/<arch>/ and local-binaries/programs/<arch>/.
 # wasm32 and wasm64 builds share program names (e.g. hello64.wasm)
 # so they MUST live in separate trees — a flat OUT_DIR would
@@ -52,7 +53,7 @@ CFLAGS=(
     -matomics -mbulk-memory
     -fno-trapping-math
     -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=true
+    -mllvm -wasm-use-legacy-eh=false
 )
 
 LINK_FLAGS=(
@@ -78,7 +79,11 @@ LINK_FLAGS=(
     -Wl,--export=__abi_version
 )
 
-ASYNCIFY_IMPORTS="kernel.kernel_fork"
+# Phase 7: fork support comes from wasm-fork-instrument (replaces
+# wasm-opt --asyncify). The tool auto-discovers fork-path functions via
+# call-graph analysis from `kernel.kernel_fork`; no onlylist is needed.
+# See docs/fork-instrumentation.md.
+FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
 
 build_program() {
     local src="$1"
@@ -90,24 +95,81 @@ build_program() {
     echo "  Compiling $name..."
     "$CC" "${CFLAGS[@]}" "$src" "${LINK_FLAGS[@]}" -o "$wasm"
 
-    # Asyncify for fork/exec support
-    if [ -n "$WASM_OPT" ]; then
-        "$WASM_OPT" --asyncify \
-            --pass-arg="asyncify-imports@${ASYNCIFY_IMPORTS}" \
-            "$wasm" -o "$wasm" 2>/dev/null || true
+    # Apply fork instrumentation if the program uses fork. The tool is a
+    # no-op for modules without `kernel.kernel_fork`, so it's safe to run
+    # unconditionally on every program. Programs without fork stay
+    # byte-identical except for a small ABI metadata section the tool
+    # always emits (see runtime::inject_runtime).
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
+            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
     fi
 }
+
+# Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
+# injects the toolchain's standard compile + link flags, the channel
+# syscall glue, the C++ runtime stubs (cxxrt.c), and the sysroot path.
+# The default include search includes the sysroot's libc++ headers so
+# no extra -isystem is needed; we only have to supply -lc++ / -lc++abi
+# at link time.
+build_cpp_program() {
+    local src="$1"
+    local out_dir="$2"
+    local name
+    name=$(basename "$src" .cpp)
+    local wasm="$out_dir/${name}.wasm"
+
+    echo "  Compiling $name (C++)..."
+    # -fwasm-exceptions is required for clang to lower C++ try/catch
+    # to wasm-EH `try`/`catch` instructions. Without it clang emits
+    # `__cxa_throw; unreachable` and DCEs the catch handlers, so the
+    # whole exception-propagation chain (libunwind + libc++abi) never
+    # runs.
+    wasm32posix-c++ \
+        -O2 \
+        -fwasm-exceptions \
+        "$src" \
+        -lc++ -lc++abi \
+        -o "$wasm"
+
+    # Phase 7: fork support comes from wasm-fork-instrument. The tool is
+    # a no-op for modules without `kernel.kernel_fork`, so it's safe to
+    # run unconditionally — programs without fork stay byte-identical
+    # except for the ABI metadata section.
+    if [ -x "$FORK_INSTRUMENT" ]; then
+        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
+            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
+    fi
+}
+
+# Resolve libcxx and symlink its outputs into the sysroot if there are
+# any .cpp programs to build. Skip the resolver entirely when libc++.a
+# is already present so repeat runs are fast.
+if ls "$REPO_ROOT/programs/"*.cpp >/dev/null 2>&1; then
+    if [ ! -f "$SYSROOT/lib/libc++.a" ]; then
+        echo "==> Resolving libcxx for C++ programs..."
+        HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
+        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libcxx >/dev/null)
+        LIBCXX_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libcxx)"
+        ln -sf "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
+        ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+        mkdir -p "$SYSROOT/include/c++"
+        rm -rf "$SYSROOT/include/c++/v1"
+        ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
+    fi
+fi
 
 echo "Building user programs..."
 for src in "$REPO_ROOT/programs/"*.c; do
     [ -f "$src" ] || continue
-    # Skip sh.c — host/wasm/sh.wasm is the pre-built full-featured dash binary.
-    # The minimal sh.c was a placeholder; building it overwrites dash with a
-    # shell that lacks eval and other builtins needed by wordexp/popen.
-    [ "$(basename "$src")" = "sh.c" ] && continue
     # Skip hello64.c — built separately with wasm64 toolchain below
     [ "$(basename "$src")" = "hello64.c" ] && continue
     build_program "$src" "$OUT_DIR_32"
+done
+
+for src in "$REPO_ROOT/programs/"*.cpp; do
+    [ -f "$src" ] || continue
+    build_cpp_program "$src" "$OUT_DIR_32"
 done
 
 echo "Building example programs..."
@@ -137,7 +199,7 @@ if [ -f "$SYSROOT64/lib/libc.a" ]; then
         -matomics -mbulk-memory
         -fno-trapping-math
         -mllvm -wasm-enable-sjlj
-        -mllvm -wasm-use-legacy-eh=true
+        -mllvm -wasm-use-legacy-eh=false
     )
 
     LINK_FLAGS64=(

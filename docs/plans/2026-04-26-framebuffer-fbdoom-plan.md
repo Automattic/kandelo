@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Implement Linux `fbdev` (`/dev/fb0`) in the kernel — open, ioctls (`FBIOGET_VSCREENINFO`, `FBIOGET_FSCREENINFO`, `FBIOPAN_DISPLAY`), `mmap` of the pixel buffer — plus host-side canvas rendering, plus an unmodified fbDOOM build running in the browser as `examples/browser/pages/doom/` with keyboard input and session-persistent saves.
+**Goal:** Implement Linux `fbdev` (`/dev/fb0`) in the kernel — open, ioctls (`FBIOGET_VSCREENINFO`, `FBIOGET_FSCREENINFO`, `FBIOPAN_DISPLAY`), `mmap` of the pixel buffer — plus host-side canvas rendering, plus an unmodified fbDOOM build running in the browser as `apps/browser-demos/pages/doom/` with keyboard input and session-persistent saves.
 
 **Architecture:** Pixel buffer lives inside the process's wasm `Memory` SAB. On `mmap` of `/dev/fb0`, the kernel allocates a region in process memory (existing `mmap_anonymous`) and calls a new `HostIO::bind_framebuffer(pid, addr, len, w, h, fmt)` callback. Host caches the process Memory SAB, builds an `ImageData` view over `[addr, addr+len)`, and `putImageData`s every `requestAnimationFrame` tick. No new SABs, no per-frame syscalls. Companion design doc: `docs/plans/2026-04-26-framebuffer-fbdoom-design.md`.
 
@@ -1216,14 +1216,14 @@ git commit -m "host(fbdev): canvas-renderer with BGRA→RGBA swizzle"
 ### Task C2: fbDOOM cross-compile script
 
 **Files:**
-- Create: `examples/libs/fbdoom/build-fbdoom.sh`
-- Possibly: `examples/libs/fbdoom/patches/*.patch` (only if cross-compile hygiene demands it; do NOT patch around platform gaps)
+- Create: `packages/registry/fbdoom/build-fbdoom.sh`
+- Possibly: `packages/registry/fbdoom/patches/*.patch` (only if cross-compile hygiene demands it; do NOT patch around platform gaps)
 
 **Step 1: Write the build script**
 
 ```bash
 #!/usr/bin/env bash
-# examples/libs/fbdoom/build-fbdoom.sh
+# packages/registry/fbdoom/build-fbdoom.sh
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -1255,8 +1255,8 @@ ls -la "$HERE/fbdoom.wasm"
 **Step 2: Run it**
 
 ```bash
-chmod +x examples/libs/fbdoom/build-fbdoom.sh
-examples/libs/fbdoom/build-fbdoom.sh
+chmod +x packages/registry/fbdoom/build-fbdoom.sh
+packages/registry/fbdoom/build-fbdoom.sh
 ```
 
 **Expected pitfalls** (handle whichever surfaces):
@@ -1269,13 +1269,13 @@ examples/libs/fbdoom/build-fbdoom.sh
 Confirm the binary at least imports `__channel_base` and exports the expected symbols:
 
 ```bash
-wasm-objdump -x examples/libs/fbdoom/fbdoom.wasm | grep -E "__channel_base|_start" | head -5
+wasm-objdump -x packages/registry/fbdoom/fbdoom.wasm | grep -E "__channel_base|_start" | head -5
 ```
 
 **Step 4: Commit**
 
 ```bash
-git add examples/libs/fbdoom/
+git add packages/registry/fbdoom/
 git commit -m "examples(fbdoom): cross-compile script for maximevince/fbDOOM"
 ```
 
@@ -1284,12 +1284,12 @@ git commit -m "examples(fbdoom): cross-compile script for maximevince/fbDOOM"
 ### Task C3: WAD bundling via lazy-load
 
 **Files:**
-- Create / modify: `examples/browser/pages/doom/main.ts` (later in C4) — register doom1.wad lazily
-- Asset: `examples/browser/public/assets/doom/doom1.wad` — the freely-redistributable shareware WAD
+- Create / modify: `apps/browser-demos/pages/doom/main.ts` (later in C4) — register doom1.wad lazily
+- Asset: `apps/browser-demos/public/assets/doom/doom1.wad` — the freely-redistributable shareware WAD
 
 **Step 1: Place the WAD**
 
-Download from a known-good shareware mirror (id Software releases the shareware WAD freely). Place at `examples/browser/public/assets/doom/doom1.wad`. Approximate size 4MB.
+Download from a known-good shareware mirror (id Software releases the shareware WAD freely). Place at `apps/browser-demos/public/assets/doom/doom1.wad`. Approximate size 4MB.
 
 **Step 2: Register it lazily**
 
@@ -1298,7 +1298,7 @@ The wiring goes in the demo page (Task C4). Verify the lazy-file path works by a
 **Step 3: Commit (the asset and any infrastructure change)**
 
 ```bash
-git add examples/browser/public/assets/doom/doom1.wad
+git add apps/browser-demos/public/assets/doom/doom1.wad
 git commit -m "examples(fbdoom): bundle doom1.wad shareware (lazy-loaded)"
 ```
 
@@ -1309,20 +1309,20 @@ git commit -m "examples(fbdoom): bundle doom1.wad shareware (lazy-loaded)"
 ### Task C4: DOOM demo page
 
 **Files:**
-- Create: `examples/browser/pages/doom/index.html`
-- Create: `examples/browser/pages/doom/main.ts`
-- Modify: `examples/browser/vite.config.ts` (or whatever registers pages) to include the new page
-- Modify: `examples/browser/package.json` if a script entry is needed
+- Create: `apps/browser-demos/pages/doom/index.html`
+- Create: `apps/browser-demos/pages/doom/main.ts`
+- Modify: `apps/browser-demos/vite.config.ts` (or whatever registers pages) to include the new page
+- Modify: `apps/browser-demos/package.json` if a script entry is needed
 
 **Step 1: HTML**
 
 ```html
-<!-- examples/browser/pages/doom/index.html -->
+<!-- apps/browser-demos/pages/doom/index.html -->
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>DOOM (fbDOOM on wasm-posix-kernel)</title>
+  <title>DOOM (fbDOOM on Kandelo)</title>
   <style>
     body { background: #111; color: #ccc; font-family: monospace; margin: 0; padding: 20px; }
     canvas { image-rendering: pixelated; width: 1280px; height: 800px;
@@ -1343,7 +1343,7 @@ git commit -m "examples(fbdoom): bundle doom1.wad shareware (lazy-loaded)"
 **Step 2: TypeScript**
 
 ```ts
-// examples/browser/pages/doom/main.ts
+// apps/browser-demos/pages/doom/main.ts
 import { BrowserKernel } from '../../lib/browser-kernel.js';
 import { attachCanvas } from '../../../host/src/framebuffer/canvas-renderer.js';
 
@@ -1403,7 +1403,7 @@ startBtn.addEventListener('click', async () => {
 **Step 3: Run dev server**
 
 ```bash
-cd examples/browser && npm run dev
+cd apps/browser-demos && npm run dev
 ```
 
 Open the printed URL, navigate to the DOOM page, click Start, observe the title screen.
@@ -1411,7 +1411,7 @@ Open the printed URL, navigate to the DOOM page, click Start, observe the title 
 **Step 4: Commit**
 
 ```bash
-git add examples/browser/pages/doom/ examples/browser/vite.config.ts
+git add apps/browser-demos/pages/doom/ apps/browser-demos/vite.config.ts
 git commit -m "examples(fbdoom): browser demo page wiring kernel + canvas + keyboard"
 ```
 

@@ -20,7 +20,7 @@ loop works end-to-end against the live GitHub release.
      because Chunk E was host-side tooling only.
 
   2. **Wire.** Backfill `[binary] { archive_url, archive_sha256 }`
-     blocks into every in-tree `examples/libs/<name>/deps.toml` that
+     blocks into every in-tree `packages/registry/<name>/deps.toml` that
      has a corresponding entry in the published manifest. Update
      `binaries.lock` with the new manifest sha so
      `scripts/fetch-binaries.sh` works against the published release.
@@ -63,7 +63,7 @@ user is holding all V2 PRs until V2 is fully done. Chunk F closes V2.
   wasm32; wasm64 partial).
 - Every staged archive's embedded `[compatibility]` block is honored
   by `xtask install-release` end-to-end against the live release.
-- Every in-tree `examples/libs/<name>/deps.toml` whose name appears in
+- Every in-tree `packages/registry/<name>/deps.toml` whose name appears in
   the published `manifest.json` carries a `[binary]` block with the
   correct `archive_url` (pointing at the `binaries-abi-v1` release)
   and `archive_sha256`.
@@ -93,8 +93,8 @@ user is holding all V2 PRs until V2 is fully done. Chunk F closes V2.
   (V1-vintage). Delete that release (and tag) before publishing V2 to
   avoid asset collisions.
 - **xtask requires `--target aarch64-apple-darwin`.** Documented in
-  `xtask/README.md`.
-- **Pre-existing dirty `examples/libs/{...}-src/*` files.** These are
+  `tools/xtask/README.md`.
+- **Pre-existing dirty `packages/registry/{...}-src/*` files.** These are
   build trees, not source modifications. NEVER `git add` them.
 - **Build-host string for `[compatibility].build_host`.** We use
   `darwin-aarch64` (or whatever `<os>-<arch>` returns from
@@ -384,7 +384,7 @@ I recommend option 3 (defer). Rationale:
      [.program, .archive_name, .archive_sha256] | @tsv' \
      "$STAGING/manifest.json" |
    while IFS=$'\t' read -r program archive_name archive_sha; do
-       deps_toml="$REPO_ROOT/examples/libs/$program/deps.toml"
+       deps_toml="$REPO_ROOT/packages/registry/$program/deps.toml"
        if [ ! -f "$deps_toml" ]; then
            echo "skip $program (no deps.toml at $deps_toml)"
            continue
@@ -407,11 +407,11 @@ I recommend option 3 (defer). Rationale:
    done
    ```
 2. Save as `scripts/backfill-binary-blocks.sh`, make executable, run.
-3. Spot-check one or two: `cat examples/libs/zlib/deps.toml` should
+3. Spot-check one or two: `cat packages/registry/zlib/deps.toml` should
    end with the new `[binary]` block.
 4. Commit alongside `binaries.lock` from F.6:
    ```
-   git add examples/libs/*/deps.toml binaries.lock scripts/backfill-binary-blocks.sh
+   git add packages/registry/*/deps.toml binaries.lock scripts/backfill-binary-blocks.sh
    git commit -m "feat(deps): wire [binary] blocks to binaries-abi-v1 release + lock manifest sha"
    ```
 
@@ -445,7 +445,7 @@ prove a clean-cache resolve goes through the remote-fetch path.
    ```
    Note: this requires the zlib build script to write to
    `$WASM_POSIX_LOCAL_SENTINEL_DIR` when set — a hand-edit to
-   `examples/libs/zlib/build-zlib.sh` to match the round-trip test
+   `packages/registry/zlib/build-zlib.sh` to match the round-trip test
    pattern. Skip if the build script doesn't already support this
    (the assertion would then be: `cargo run` completes in <30s, which
    is too fast to have rebuilt zlib from source).
@@ -499,7 +499,7 @@ No commit — this is a verification step.
 3. `docs/architecture.md` updates:
    - Find any reference to `abi/program-metadata.toml` (deleted in B)
      or the V1 cache layout. Update to V2 per-dir manifests under
-     `examples/libs/<name>/deps.toml`.
+     `packages/registry/<name>/deps.toml`.
 
 4. Commit:
    ```

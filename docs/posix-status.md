@@ -2,7 +2,7 @@
 
 **Vision:** A POSIX-compliant kernel for WebAssembly that runs and coordinates multiple Wasm-based processes. The goal is to take existing systems software and run it on this kernel with minimal changes — ideally none. Full POSIX compliance is the default; developers can optionally trade compliance for simplicity or performance.
 
-This document tracks the implementation status of POSIX APIs in the wasm-posix-kernel. It is organized by subsystem and updated as features are implemented.
+This document tracks the implementation status of POSIX APIs in Kandelo. It is organized by subsystem and updated as features are implemented.
 
 **Legend:**
 - **Full** — Fully implemented per POSIX spec
@@ -15,7 +15,7 @@ This document tracks the implementation status of POSIX APIs in the wasm-posix-k
 
 ## Architecture: Centralized Kernel Model
 
-The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm instance holds a `ProcessTable` and serves all process workers via channel IPC (`Atomics.waitAsync`).
+Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds a `ProcessTable` and serves all process workers via channel IPC (`Atomics.waitAsync`).
 
 **Key properties:**
 - **Single kernel instance** with a `ProcessTable` mapping PIDs to `Process` structs
@@ -56,8 +56,8 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `fsync()` | Partial | Host-delegated for regular files. Rejects non-regular fds (pipes, sockets). |
 | `fdatasync()` | Partial | Alias for fsync(). No metadata distinction in Wasm environment. |
 | `truncate()` | Partial | Path-based. Opens file O_WRONLY, calls ftruncate, closes. |
-| `fchmod()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
-| `fchown()` | Partial | Host-delegated for regular files and directories. Rejects pipes/sockets. |
+| `fchmod()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native mode changes after creation. |
+| `fchown()` | Partial | Regular files and directories update VFS metadata. Rejects pipes/sockets. Node host-backed files never receive native ownership changes. |
 | `preadv()` | Full | Scatter-gather read at offset. Iterates iovec entries calling pread for each. Stops on short read or EOF. |
 | `pwritev()` | Full | Scatter-gather write at offset. Iterates iovec entries calling pwrite for each. Stops on short write. |
 | `preadv2()` / `pwritev2()` | Partial | Delegates to preadv/pwritev. Extra flags parameter ignored. |
@@ -99,7 +99,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `fork()` | Full | Centralized mode: kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), host spawns child Worker with copied Memory. Children re-execute from `_start` with fork return value 0. Cross-process pipes, signals, and waitpid all functional. |
+| `fork()` | Full | Centralized mode: kernel serializes full process state (FD/OFD tables, signals, environment, CWD, rlimits, brk, terminal), host spawns child Worker with copied Memory. Child resumes execution at the `fork()` call site with return value 0 via the `wpk_fork_*` instrumentation injected by `wasm-fork-instrument` (Phase 7; see [fork-instrumentation.md](fork-instrumentation.md)) — the call stack, local variables, and `__tls_base`/`__stack_pointer` are preserved across the boundary. Fork from pthread workers is supported by routing the child through the saved pthread entry function and the calling thread's fork buffer. Cross-process pipes, signals, and waitpid all functional. |
 | `exec()` | Full | Kernel-initiated via SYS_EXECVE (syscall 211). Host `handleExec` reads path/argv/envp from process memory, calls `onExec` callback. Replaces process image. Preserves PID, open fds (closes CLOEXEC), environment, CWD, signal mask. **Resets** the program break (POSIX-correct); host then re-installs the new program's `__heap_base` via `kernel_set_brk_base`. |
 | `waitpid()` | Full | Kernel-internal: blocks parent until child exits (WNOHANG supported). Reaps zombie processes. Supports pid>0 (specific child), pid=-1 (any child), pid=0 (same pgid), pid<-1 (specific pgid). Returns status with WIFEXITED/WEXITSTATUS. |
 | `exit()` / `_exit()` | Full | Closes all fds and dir streams, releases all fcntl locks, sets ProcessState::Exited. SIGCHLD delivered to parent. Zombie state maintained until reaped by waitpid. |
@@ -120,8 +120,10 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. In centralized mode, WAIT returns EAGAIN (host retries via Atomics.waitAsync). Thread workers use direct Atomics.wait. |
 | `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
 | `execveat()` | Full | SYS_EXECVEAT (386). Resolves fd path via `kernel_get_fd_path`. Supports AT_EMPTY_PATH for `fexecve()`. Relative paths resolved against process CWD. |
-| `fork()` (syscall) | Full | Centralized mode: glue traps to kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. |
+| `fork()` (syscall) | Full | Centralized mode: glue traps to kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. Continuation across the fork boundary uses `wasm-fork-instrument`'s `wpk_fork_*` exports (Phase 7 replaced Binaryen Asyncify). |
 | `vfork()` | Full | Alias for fork() in centralized mode. |
+| `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host parses the blob, calls `kernel_spawn_process` to allocate a child pid + build the child Process descriptor, then invokes `onSpawn` to launch a fresh Worker. No fork, no `wpk_fork_*` rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
+| `posix_spawnp()` | Full | PATH search lives in libc (`libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
 | `clone()` | Partial | Thread-style clone (CLONE_VM\|CLONE_THREAD) supported. Centralized mode: kernel allocates TID, host spawns thread Worker sharing parent's Memory. Traditional mode: delegates to host_clone. |
 | `personality()` | Stub | Returns 0 (PER_LINUX). |
 | `unshare()` / `setns()` | Stub | Returns EPERM. No namespace support. |
@@ -142,6 +144,8 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `init_module()` / `delete_module()` | Stub | Returns EPERM. No kernel module support. |
 | `ioperm()` / `iopl()` | Stub | Returns EPERM. No I/O port access. |
 | `remap_file_pages()` | Stub | Returns ENOSYS. |
+| `getcontext()` / `setcontext()` / `makecontext()` / `swapcontext()` | Unsupported | Userspace stack-switching primitives, deprecated in POSIX.1-2008, not planned. See the "ucontext API unsupported" row under [Wasm-Inherent gaps](#wasm-inherent--gaps-that-cannot-be-fully-resolved-in-wasm) for rationale. |
+| `fork()` called from a C++/Ruby exception catch handler | Full | B1 stages 1+2 + Phase 6 catch-handler resume machinery (per-arm scratch space in the save buffer, multi-arm rewind dispatch, `$capture`-block emission, rewind-throw stub via `_wpk_fork_exnref_stash`) close fork-from-plain-catch under **modern wasm-EH lowering** (`try_table` / `catch_ref` / `throw_ref`). The fierce-wire mega-PR (PR #307) commit 9 + 2026-05-14 followup flipped the SDK + libcxx (revision 4) to modern EH explicitly (LLVM 21's `-wasm-use-legacy-eh` defaults to `true`, so removing the prior `=true` override silently kept legacy lowering — the explicit `=false` is required). Test coverage in `host/test/fork-instrument-coverage.test.ts`: C-02 fork-in-catch, C-03 multi-arm catch, C-04 throw-from-outside, C-05 modern EH single typed catch, C-06 modern multi-target `*_ref`, C-07 modern multi-arm plain, C-10 fork in both try body + handler, C-11 post-catch fork (SpiderMonkey-spike test (b)), S-08 throw-from-outside + fork-in-catch — all 9 PASS. Combined with C-01 (fork-in-try-body), the catch-handler coverage is comprehensive for both legacy-EH-pattern and modern-EH-pattern C++. Funcref/externref catch operands (A4) remain on the not-yet-supported list — see [docs/fork-instrumentation.md §Not guaranteed](fork-instrumentation.md#not-guaranteed-unsupported-patterns). |
 
 ## Signals
 
@@ -190,7 +194,7 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `link()` / `unlink()` | Partial | Host-delegated. Relative paths resolved via kernel cwd. |
 | `rename()` | Partial | Host-delegated. Both paths resolved via kernel cwd. |
 | `stat()` / `lstat()` | Partial | Host-delegated. stat follows symlinks, lstat does not. |
-| `chmod()` / `chown()` | Partial | Host-delegated. May be no-op in browser environments. |
+| `chmod()` / `chown()` | Partial | VFS metadata updates. Node host-backed files receive native mode only at file/directory creation; later mode changes and all ownership changes stay virtual. Browser memory-backed mounts store metadata in the VFS. |
 | `access()` | Partial | Host-delegated. Checks real filesystem permissions. |
 | `realpath()` | Full | Resolves path against cwd, normalizes `.`/`..`, resolves symlinks via iterative lstat/readlink (ELOOP after 40 resolutions), verifies existence. |
 | `symlink()` / `readlink()` | Partial | Host-delegated. Symlink target stored as-is, linkpath resolved. |
@@ -327,6 +331,8 @@ The wasm-posix-kernel uses a **centralized architecture**: a single kernel Wasm 
 | `/dev/ptmx` | Full | PTY master multiplexer. `open()` allocates a new PTY pair, returns master fd. |
 | `/dev/pts/*` | Full | PTY slave devices. `posix_openpt()` + `grantpt()` + `unlockpt()` + `ptsname()`. Full line discipline, canonical/raw mode, OPOST/ONLCR, 16 terminal ioctls. |
 | `/dev/fb0` | Full | Linux fbdev framebuffer. Single-open (`EBUSY` for second opener). 640×400 BGRA32 packed-pixel. ioctls: `FBIOGET_VSCREENINFO`, `FBIOGET_FSCREENINFO`, `FBIOPAN_DISPLAY` (no-op success), `FBIOPUT_VSCREENINFO` (validates geometry). `mmap` returns a region in process memory and notifies the host (`bind_framebuffer` callback) so the browser canvas can mirror pixels. `munmap`/`close`/`exit`/`exec` clean up. Linux-VT keyboard ioctls (`KDGKBTYPE`/`KDGKBMODE`/`KDSKBMODE`) accepted with sensible defaults so fbDOOM-style software works unmodified. |
+| `/dev/input/mice` | Full | Linux `mousedev` PS/2 mouse stream. Single-open (`EBUSY` for second pid). 3-byte packets: byte0 button bits + sign/overflow flags, bytes 1..2 signed dx/dy with positive-up dy. Host pushes events via `kernel_inject_mouse_event(dx, dy, buttons)`; the kernel buffers up to 4096 packets (whole-packet drop on overflow). `read()` drains queued bytes; returns `EAGAIN` when empty. `poll()` reports `POLLIN` only when bytes are queued. Ownership released on `close`/`exec`/`exit`. No IMPS/2 wheel protocol, no `evdev`/`/dev/input/eventN`. |
+| `/dev/dsp` | Full (write-only) | OSS-style PCM audio sink. Single-open (`EBUSY` for second pid). `write()` accepts interleaved 16-bit-LE PCM and buffers it in a 256 KiB ring; the host drains via the `kernel_drain_audio` wasm export and feeds a Web Audio `AudioContext`. ioctls: `SNDCTL_DSP_RESET`, `SNDCTL_DSP_SYNC`, `SNDCTL_DSP_SPEED` (clamp 4000–192000 Hz), `SNDCTL_DSP_STEREO` / `SNDCTL_DSP_CHANNELS` (1 or 2), `SNDCTL_DSP_SETFMT` (only `AFMT_S16_LE`), `SNDCTL_DSP_GETFMTS`, `SNDCTL_DSP_SETFRAGMENT` (accept-and-acknowledge). On overflow drops the *oldest whole frame* — never tears L/R alignment. Ownership released on close-of-last-fd / `execve` / `exit`; the ring is flushed at the same time. `read()` returns 0 (EOF-like). `poll()` reports `POLLOUT` always, never `POLLIN`. No record path, no `mmap`-based zero-copy; DOOM's mixer is in user space. |
 | `/dev/shm/*` | Not yet | POSIX shared memory — requires cross-process SharedArrayBuffer. |
 
 All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, deterministic inode numbers, and `st_dev=5`. Path interception in kernel before host delegation — no host filesystem changes needed. `access()` returns OK for all virtual devices.
@@ -362,7 +368,9 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 
 ### Critical — Violates POSIX semantics, causes incorrect behavior
 
-(None currently — setitimer/getitimer resolved in Batch 5, signal handler delivery resolved via syscall-boundary checking.)
+| Gap | Subsystem | Description |
+|-----|-----------|-------------|
+| **fork siblings have independent OFD seek positions** | fork / fd | POSIX.1-2017 §2.4.1 requires that fork children's fds refer to the **same** open file description as the parent — meaning seek pointer, status flags, and pending I/O state are SHARED. Our `OfdTable` lives inside `Process`, so fork deep-clones it; each process has independent OFD copies thereafter. A program that forks then both processes append to the same fd expecting interleaved output (cooperative log writers, parallel `make` job-server pipes, etc.) will silently produce garbled output. Tracked as a redesign item in `docs/future-improvements.md` ("Per-process OFD storage breaks POSIX fork OFD-sharing") — fix is to move OFDs to a kernel-global table with `Process` holding `FdTable<OfdRef>`. |
 
 ### High — Missing features that affect common programs
 
@@ -403,6 +411,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
 | **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
+| **ucontext API unsupported** | process | `makecontext()`, `swapcontext()`, `getcontext()`, `setcontext()` are userspace stack-switching primitives. Supporting them would require `wasm-fork-instrument`-style compile-time instrumentation extended to general stack-switching for every program that uses them — we already do this narrowly for `fork()` (see [fork-instrumentation.md](fork-instrumentation.md) and `plans/2026-04-20-fork-instrumentation-design.md`), but generalising the same machinery to ucontext multiplies the instrumentation surface for a feature **deprecated in POSIX.1-2008** and effectively unused in modern code. Programs needing coroutines implement their own at the runtime level (Erlang/BEAM, Ruby fibers, Python `greenlet`). |
 
 ### Future Work — Remaining items
 
@@ -447,7 +456,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 
 | Feature | Node.js | Browser |
 |---------|---------|---------|
-| File I/O | Native `fs` module — full POSIX | OPFS (limited), fetch (read-only), or virtual FS |
+| File I/O | Native `fs` module for data and creation modes; VFS-only post-creation mode/ownership metadata | OPFS (limited), fetch (read-only), or virtual FS |
 | `fork()` | `worker_threads` — feasible | Web Workers — feasible but different API |
 | `Atomics.wait()` on main thread | Works | Throws — must use workers |
 | Network sockets | `net`/`dgram` modules | WebSocket/WebRTC only (no raw sockets) |
@@ -533,7 +542,7 @@ Target use case: hosting PHP-WASM (as used by WordPress Playground) on this kern
 | Gap | Subsystem | Description | Difficulty |
 |-----|-----------|-------------|------------|
 | ~~`connect()` for AF_INET~~ | socket | **Done.** Host-delegated TCP networking. bind/listen/accept/connect/send/recv all functional. Node.js backend uses `net` module; browser backend uses fetch for HTTP. | ~~Hard~~ |
-| ~~`getaddrinfo()` / `gethostbyname()`~~ | DNS | **Done.** Host-delegated via `host_getaddrinfo` import. Returns AF_INET sockaddr_in. Synthetic `/etc/hosts` for localhost resolution. | ~~Medium~~ |
+| ~~`getaddrinfo()` / `gethostbyname()`~~ | DNS | **Done.** Host-delegated via `host_getaddrinfo` import. Returns AF_INET sockaddr_in. `/etc/hosts` is served from the canonical `rootfs.vfs` mount at `/` for localhost resolution. | ~~Medium~~ |
 | ~~`setsockopt()` expansion~~ | socket | **Done.** SO_KEEPALIVE, TCP_NODELAY, SO_REUSEADDR, SO_LINGER, and many more stored. | ~~Easy~~ |
 | ~~Async socket polling bridge~~ | socket | **Done.** poll/select/epoll all work with socket fds. Centralized mode: kernel checks readiness inline. | ~~Medium~~ |
 
@@ -606,3 +615,18 @@ Programs must be linked with two extra flags for signal handler dispatch to work
 
 - `--table-base=3`: Reserves function table indices 0 (SIG_DFL), 1 (SIG_IGN), and 2 (`__main_void` wrapper) so they don't collide with real C function pointers.
 - `--export-table`: Exports `__indirect_function_table` so the host can look up handler functions to call them.
+
+### C++ exception support
+
+C++ programs that throw exceptions work end-to-end (commit `9482326ef`).
+Itanium-EH unwinding uses LLVM `libunwind` statically bundled into
+`libc++abi.a` via the libcxx package (`packages/registry/libcxx/`,
+`LIBCXXABI_USE_LLVM_UNWINDER` + `LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY`),
+so consumers link `-lc++ -lc++abi` and `_Unwind_*` resolves internally —
+no separate `-lunwind`. clang must be invoked with `-fwasm-exceptions`;
+without it catch handlers are dead-code-eliminated and `throw` hangs.
+
+Regression gate: `programs/cpp_throw_test.cpp` exercises throw → catch
+in a single program; `host/test/cpp-throw-test.test.ts` runs it via the
+centralized harness. The gap was first surfaced by the SpiderMonkey EH
+spike (see external `memory/spidermonkey-spike-eh-toolchain-gap.md`).

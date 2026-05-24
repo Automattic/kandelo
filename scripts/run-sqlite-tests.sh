@@ -10,7 +10,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SQLITE3="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/sqlite.wasm 2>/dev/null || true)"
-TESTS_DIR="$REPO_ROOT/examples/sqlite-test/tests"
+TESTS_DIR="$REPO_ROOT/packages/registry/sqlite/test/fixtures"
 
 # Per-test timeout
 TIMEOUT=30
@@ -28,7 +28,7 @@ done
 
 # --- Prerequisites ---
 if [ -z "$SQLITE3" ] || [ ! -f "$SQLITE3" ]; then
-  echo "FAIL: sqlite.wasm not found. Run: scripts/fetch-binaries.sh (or bash examples/libs/sqlite/build-sqlite.sh)"
+  echo "FAIL: sqlite.wasm not found. Run: scripts/fetch-binaries.sh (or bash packages/registry/sqlite/build-sqlite.sh)"
   exit 1
 fi
 if ! "$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm >/dev/null 2>&1; then

@@ -31,6 +31,8 @@ pub enum DevfsEntry {
     MqueueDir,
     /// /dev/fd
     FdDir,
+    /// /dev/input
+    InputDir,
 }
 
 /// Match a resolved path to a devfs directory entry.
@@ -41,6 +43,7 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
         b"/dev/shm" => Some(DevfsEntry::ShmDir),
         b"/dev/mqueue" => Some(DevfsEntry::MqueueDir),
         b"/dev/fd" => Some(DevfsEntry::FdDir),
+        b"/dev/input" => Some(DevfsEntry::InputDir),
         _ => None,
     }
 }
@@ -56,9 +59,12 @@ pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
             st_uid: uid,
             st_gid: gid,
             st_size: 0,
-            st_atime_sec: 0, st_atime_nsec: 0,
-            st_mtime_sec: 0, st_mtime_nsec: 0,
-            st_ctime_sec: 0, st_ctime_nsec: 0,
+            st_atime_sec: 0,
+            st_atime_nsec: 0,
+            st_mtime_sec: 0,
+            st_mtime_nsec: 0,
+            st_ctime_sec: 0,
+            st_ctime_nsec: 0,
             _pad: 0,
         });
     }
@@ -77,12 +83,9 @@ pub fn devfs_open_dir(
 
     let creation_flags = 0o100 | 0o200 | 0o1000; // O_CREAT | O_EXCL | O_TRUNC
     let status_flags = oflags & !creation_flags;
-    let ofd_idx = proc.ofd_table.create(
-        FileType::Directory,
-        status_flags,
-        DEVFS_DIR_HANDLE,
-        path,
-    );
+    let ofd_idx = proc
+        .ofd_table
+        .create(FileType::Directory, status_flags, DEVFS_DIR_HANDLE, path);
     if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
         ofd.dir_host_handle = DEVFS_DIR_HANDLE;
     }
@@ -110,7 +113,9 @@ pub fn devfs_getdents64(
     if current == 0 {
         let written = crate::procfs::write_dirent64(buf, pos, devfs_ino(path), 1, DT_DIR, b".");
         if written == 0 {
-            if pos == 0 { return Err(Errno::EINVAL); }
+            if pos == 0 {
+                return Err(Errno::EINVAL);
+            }
             return Ok((pos, current as i64, false));
         }
         pos += written;
@@ -141,10 +146,7 @@ pub fn devfs_getdents64(
 }
 
 /// Build directory entries for a devfs directory.
-fn dir_entries(
-    proc: &crate::process::Process,
-    entry: &DevfsEntry,
-) -> Vec<(Vec<u8>, u8, u64)> {
+fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u8>, u8, u64)> {
     let mut entries = Vec::new();
 
     match entry {
@@ -159,6 +161,7 @@ fn dir_entries(
             entries.push((b"console".into(), DT_CHR, devfs_ino(b"/dev/console")));
             entries.push((b"ptmx".into(), DT_CHR, devfs_ino(b"/dev/ptmx")));
             entries.push((b"fb0".into(), DT_CHR, devfs_ino(b"/dev/fb0")));
+            entries.push((b"dsp".into(), DT_CHR, devfs_ino(b"/dev/dsp")));
 
             // Symlinks
             entries.push((b"stdin".into(), DT_LNK, devfs_ino(b"/dev/stdin")));
@@ -170,6 +173,12 @@ fn dir_entries(
             entries.push((b"pts".into(), DT_DIR, devfs_ino(b"/dev/pts")));
             entries.push((b"shm".into(), DT_DIR, devfs_ino(b"/dev/shm")));
             entries.push((b"mqueue".into(), DT_DIR, devfs_ino(b"/dev/mqueue")));
+            entries.push((b"input".into(), DT_DIR, devfs_ino(b"/dev/input")));
+        }
+        DevfsEntry::InputDir => {
+            // /dev/input/mice — Linux-compatible PS/2 mouse stream.
+            // No /dev/input/eventN evdev nodes yet (mousedev surface only).
+            entries.push((b"mice".into(), DT_CHR, devfs_ino(b"/dev/input/mice")));
         }
         DevfsEntry::PtsDir => {
             // List active PTY slaves
@@ -252,13 +261,61 @@ mod tests {
         let proc = crate::process::Process::new(1);
         let entries = dir_entries(&proc, &DevfsEntry::Root);
         let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
-        assert!(names.iter().any(|n| *n == b"fb0"),
-                "fb0 missing from /dev listing: {:?}", names);
+        assert!(
+            names.iter().any(|n| *n == b"fb0"),
+            "fb0 missing from /dev listing: {:?}",
+            names
+        );
         // Listed as a character device.
         for (name, dtype, _) in entries.iter() {
             if name == b"fb0" {
                 assert_eq!(*dtype, DT_CHR);
             }
         }
+    }
+
+    #[test]
+    fn input_dir_is_listed_under_dev() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let mut found = false;
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"input" {
+                assert_eq!(*dtype, DT_DIR);
+                found = true;
+            }
+        }
+        assert!(found, "input subdir missing from /dev listing");
+    }
+
+    #[test]
+    fn dsp_is_listed_in_dev_dir() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::Root);
+        let mut found = false;
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"dsp" {
+                assert_eq!(*dtype, DT_CHR);
+                found = true;
+            }
+        }
+        assert!(found, "dsp missing from /dev listing");
+    }
+
+    #[test]
+    fn mice_is_listed_in_dev_input_dir() {
+        let proc = crate::process::Process::new(1);
+        let entries = dir_entries(&proc, &DevfsEntry::InputDir);
+        let mut found = false;
+        for (name, dtype, _) in entries.iter() {
+            if name.as_slice() == b"mice" {
+                assert_eq!(*dtype, DT_CHR);
+                found = true;
+            }
+        }
+        assert!(found, "mice missing from /dev/input listing");
+        // /dev/input itself stats as a directory.
+        let st = match_devfs_stat(b"/dev/input", 0, 0).unwrap();
+        assert_eq!(st.st_mode & 0o170000, S_IFDIR);
     }
 }

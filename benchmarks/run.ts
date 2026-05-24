@@ -5,16 +5,37 @@
  * Usage:
  *   npx tsx benchmarks/run.ts                        # All suites, Node.js
  *   npx tsx benchmarks/run.ts --host=browser         # All suites, browser
- *   npx tsx benchmarks/run.ts --suite=erlang-ring    # Single suite
+ *   npx tsx benchmarks/run.ts --suite=wordpress      # Single suite
  *   npx tsx benchmarks/run.ts --rounds=5             # Multiple rounds (median)
  */
-import { writeFileSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { execFileSync } from "child_process";
+import { createHash } from "crypto";
 import os from "os";
-import type { BenchmarkSuite, BenchmarkOutput } from "./types.js";
+import type {
+  BenchmarkArtifactFile,
+  BenchmarkArtifacts,
+  BenchmarkOutput,
+  ForkBenchSymbolReport,
+  BenchmarkSuite,
+} from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(__dirname, "..");
+
+const BENCHMARK_ARTIFACT_PATHS = [
+  "local-binaries/kernel.wasm",
+  "benchmarks/wasm/pipe-throughput.wasm",
+  "benchmarks/wasm/file-throughput.wasm",
+  "benchmarks/wasm/syscall-latency.wasm",
+  "benchmarks/wasm/hello.wasm",
+  "benchmarks/wasm/fork-bench.wasm",
+  "benchmarks/wasm/exec-bench.wasm",
+  "benchmarks/wasm/clone-bench.wasm",
+  "benchmarks/wasm/spawn-bench.wasm",
+];
 
 function parseArgs(argv: string[]): { host: "node" | "browser"; suite?: string; rounds: number } {
   let host: "node" | "browser" = "node";
@@ -77,6 +98,111 @@ function median(values: number[]): number {
     : sorted[mid];
 }
 
+function runGit(args: string[]): string {
+  try {
+    return execFileSync("git", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+function fingerprintFile(relativePath: string): BenchmarkArtifactFile {
+  const absolutePath = resolve(repoRoot, relativePath);
+  if (!existsSync(absolutePath)) {
+    return { path: relativePath, missing: true };
+  }
+
+  const bytes = readFileSync(absolutePath);
+  return {
+    path: relativePath,
+    sizeBytes: statSync(absolutePath).size,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+function expectedForkBenchSymbols(gitHead: string): ForkBenchSymbolReport["expected"] {
+  const mainHead = runGit(["rev-parse", "origin/main"]);
+  const fierceWireHead = runGit(["rev-parse", "origin/fierce-wire"]);
+  if (gitHead !== "unknown" && gitHead === fierceWireHead) {
+    return "wpk_fork_without_asyncify";
+  }
+  if (gitHead !== "unknown" && gitHead === mainHead) {
+    return "asyncify";
+  }
+  return "unknown";
+}
+
+function inspectForkBench(gitHead: string): ForkBenchSymbolReport {
+  const forkBenchPath = resolve(repoRoot, "benchmarks/wasm/fork-bench.wasm");
+  if (!existsSync(forkBenchPath)) {
+    return {
+      hasWpkForkSymbols: false,
+      hasAsyncifySymbols: false,
+      matchedSymbols: [],
+      expected: expectedForkBenchSymbols(gitHead),
+      passed: null,
+    };
+  }
+
+  const text = readFileSync(forkBenchPath).toString("latin1");
+  const matchedSymbols = Array.from(new Set(
+    text.match(/[A-Za-z0-9_$./:-]*(?:wpk_fork|asyncify)[A-Za-z0-9_$./:-]*/g) ?? [],
+  )).sort();
+  const hasWpkForkSymbols = matchedSymbols.some((symbol) => symbol.includes("wpk_fork"));
+  const hasAsyncifySymbols = matchedSymbols.some((symbol) => symbol.includes("asyncify"));
+  const expected = expectedForkBenchSymbols(gitHead);
+  const passed = expected === "wpk_fork_without_asyncify"
+    ? hasWpkForkSymbols && !hasAsyncifySymbols
+    : expected === "asyncify"
+      ? hasAsyncifySymbols
+      : null;
+
+  return {
+    hasWpkForkSymbols,
+    hasAsyncifySymbols,
+    matchedSymbols,
+    expected,
+    passed,
+  };
+}
+
+function collectArtifacts(): BenchmarkArtifacts {
+  const gitHead = runGit(["rev-parse", "HEAD"]);
+  const gitRef = runGit(["name-rev", "--name-only", "--refs=refs/remotes/origin/*", "HEAD"]);
+  const files = Object.fromEntries(
+    BENCHMARK_ARTIFACT_PATHS.map((path) => [path, fingerprintFile(path)]),
+  );
+
+  return {
+    gitHead,
+    gitRef,
+    files,
+    forkBench: inspectForkBench(gitHead),
+  };
+}
+
+function logArtifacts(artifacts: BenchmarkArtifacts) {
+  console.log("\nArtifact fingerprints:");
+  console.log(`  git HEAD: ${artifacts.gitHead} (${artifacts.gitRef})`);
+  for (const artifact of Object.values(artifacts.files)) {
+    if (artifact.missing) {
+      console.log(`  ${artifact.path}: MISSING`);
+    } else {
+      console.log(`  ${artifact.path}: ${artifact.sizeBytes} bytes sha256=${artifact.sha256}`);
+    }
+  }
+  console.log(
+    `  fork-bench symbols: expected=${artifacts.forkBench.expected} ` +
+    `wpk_fork=${artifacts.forkBench.hasWpkForkSymbols} ` +
+    `asyncify=${artifacts.forkBench.hasAsyncifySymbols} ` +
+    `passed=${artifacts.forkBench.passed}`,
+  );
+}
+
 /** Suite name → module path. Loaded lazily so missing suites don't block others. */
 const SUITE_MODULES: Record<string, string> = {
   "syscall-io": "./suites/syscall-io.js",
@@ -89,14 +215,37 @@ const SUITE_MODULES: Record<string, string> = {
   "mariadb-innodb-64": "./suites/mariadb-innodb-64.js",
 };
 
+const DISABLED_SUITES: Record<string, string> = {
+  "erlang-ring": "disabled while the Erlang benchmark is unstable",
+};
+
 async function loadNodeSuites(filter?: string): Promise<BenchmarkSuite[]> {
-  const names = filter ? [filter] : Object.keys(SUITE_MODULES);
+  const names = filter
+    ? [filter]
+    : Object.keys(SUITE_MODULES).filter((name) => !(name in DISABLED_SUITES));
   const suites: BenchmarkSuite[] = [];
 
   for (const name of names) {
+    const disabledReason = DISABLED_SUITES[name];
+    if (disabledReason) {
+      console.warn(`Skipping suite "${name}" (${disabledReason})`);
+      if (filter) {
+        suites.push({
+          name,
+          async run(): Promise<Record<string, number>> {
+            console.warn(`  Skipping ${name}: ${disabledReason}`);
+            return {};
+          },
+        });
+      }
+      continue;
+    }
+
     const modPath = SUITE_MODULES[name];
     if (!modPath) {
-      console.error(`Suite "${name}" not found. Available: ${Object.keys(SUITE_MODULES).join(", ")}`);
+      const available = Object.keys(SUITE_MODULES)
+        .filter((suiteName) => !(suiteName in DISABLED_SUITES));
+      console.error(`Suite "${name}" not found. Available: ${available.join(", ")}`);
       process.exit(1);
     }
     try {
@@ -152,6 +301,8 @@ async function runSuites(
 
 async function main() {
   const { host, suite: suiteFilter, rounds } = parseArgs(process.argv);
+  const artifacts = collectArtifacts();
+  logArtifacts(artifacts);
 
   if (host === "browser") {
     // Browser execution via Playwright
@@ -166,6 +317,7 @@ async function main() {
       nodeVersion: process.version,
       host: "browser",
       rounds,
+      artifacts,
       suites: results,
     };
 
@@ -195,6 +347,7 @@ async function main() {
     nodeVersion: process.version,
     host: "node",
     rounds,
+    artifacts,
     suites: results,
   };
 

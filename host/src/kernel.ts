@@ -9,14 +9,16 @@
  *   env.host_write(handle: i64, buf_ptr, buf_len) -> i32
  *   env.host_seek(handle: i64, offset_lo, offset_hi, whence) -> i64
  *   env.host_fstat(handle: i64, stat_ptr) -> i32
+ *   env.host_statfs(path_ptr, path_len, statfs_ptr) -> i32
  *
  * IMPORTANT: Wasm i64 values appear as BigInt in JavaScript.
  */
 
-import type { KernelConfig, PlatformIO, StatResult } from "./types";
+import type { KernelConfig, PlatformIO, StatResult, StatfsResult } from "./types";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
+import { STRUCT_SIZE_WASM_DIRENT, STRUCT_SIZE_WASM_STAT } from "./generated/abi";
 
 /**
  * Map filesystem error codes to negative errno values.
@@ -77,10 +79,13 @@ function negErrno(err: unknown): number {
 }
 
 /** Size of the WasmStat struct in bytes (repr(C) layout). */
-const WASM_STAT_SIZE = 88;
+const WASM_STAT_SIZE = STRUCT_SIZE_WASM_STAT;
+
+/** Size of the WasmStatfs struct in bytes (repr(C) layout). */
+const WASM_STATFS_SIZE = 72;
 
 /** Size of the WasmDirent struct: d_ino(u64) + d_type(u32) + d_namlen(u32). */
-const WASM_DIRENT_SIZE = 16;
+const WASM_DIRENT_SIZE = STRUCT_SIZE_WASM_DIRENT;
 
 export interface KernelCallbacks {
   onKill?: (pid: number, signal: number) => number;
@@ -141,6 +146,107 @@ export class WasmPosixKernel {
     this.callbacks = callbacks ?? {};
   }
 
+  /**
+   * Push one PS/2 mouse packet into the kernel's `/dev/input/mice`
+   * queue. Silently dropped if the kernel module hasn't been
+   * instantiated yet — a canvas can fire `mousemove` before the program
+   * registers the device. `dy` is in PS/2 sense (positive-up); the
+   * caller must invert browser deltaY before calling.
+   */
+  injectMouseEvent(dx: number, dy: number, buttons: number): void {
+    const inject = this.instance?.exports?.kernel_inject_mouse_event as
+      | ((dx: number, dy: number, buttons: number) => void)
+      | undefined;
+    if (!inject) return;
+    inject(dx, dy, buttons);
+  }
+
+  // ---------------------------------------------------------------------------
+  // /dev/dsp — host-drained PCM audio
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Lazily-allocated kernel-memory scratch region for audio drains. We
+   * allocate on first use so the kernel module doesn't reserve audio
+   * memory in processes that never play sound. ~64 KiB is comfortably
+   * larger than any single drain call would ask for.
+   */
+  private audioScratchOffset = 0;
+  private static readonly AUDIO_SCRATCH_SIZE = 65536;
+
+  private ensureAudioScratch(): boolean {
+    if (this.audioScratchOffset !== 0) return true;
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const alloc = exports?.kernel_alloc_scratch as
+      | ((size: number) => bigint | number)
+      | undefined;
+    if (!alloc) return false;
+    const off = Number(alloc(WasmPosixKernel.AUDIO_SCRATCH_SIZE));
+    if (off === 0) return false;
+    this.audioScratchOffset = off;
+    return true;
+  }
+
+  /**
+   * Drain up to `out.byteLength` bytes of PCM audio buffered in
+   * `/dev/dsp` into the host-provided buffer. Returns the number of
+   * bytes copied. Reads stop at whole-frame boundaries so the host
+   * never receives a torn L/R pair.
+   *
+   * Returns 0 if the kernel hasn't been instantiated, no scratch
+   * buffer can be allocated, or the ring is empty — the caller doesn't
+   * have to special-case any of those.
+   */
+  drainAudio(out: Uint8Array): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    // Pointer is wasm64 i64 in this build — same shape as
+    // `kernel_drain_wakeup_events`. Always pass a BigInt offset.
+    const drain = exports?.kernel_drain_audio as
+      | ((ptr: bigint, len: number) => number)
+      | undefined;
+    if (!drain || !this.memory || !this.ensureAudioScratch()) return 0;
+    // Cap the request at our scratch size. Typical drain rates
+    // (~22 ms of stereo S16 @ 44.1 kHz = ~7.7 KiB per call) are well
+    // under the cap; callers needing more invoke drainAudio in a loop.
+    const want = Math.min(out.byteLength, WasmPosixKernel.AUDIO_SCRATCH_SIZE);
+    const n = drain(BigInt(this.audioScratchOffset), want);
+    if (n > 0) {
+      const src = new Uint8Array(this.memory.buffer, this.audioScratchOffset, n);
+      out.set(src.subarray(0, n));
+    }
+    return n;
+  }
+
+  /**
+   * Currently-configured `/dev/dsp` sample rate (Hz). 0 if the kernel
+   * isn't instantiated yet.
+   */
+  audioSampleRate(): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const fn = exports?.kernel_audio_sample_rate as (() => number) | undefined;
+    return fn ? fn() : 0;
+  }
+
+  /**
+   * Currently-configured `/dev/dsp` channel count (1 = mono, 2 = stereo).
+   * 0 if the kernel isn't instantiated yet.
+   */
+  audioChannels(): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const fn = exports?.kernel_audio_channels as (() => number) | undefined;
+    return fn ? fn() : 0;
+  }
+
+  /**
+   * Bytes currently buffered in the `/dev/dsp` ring. Lets the host
+   * estimate how much audio is queued ahead of the AudioContext clock.
+   */
+  audioPending(): number {
+    const exports = this.instance?.exports as Record<string, unknown> | undefined;
+    const fn = exports?.kernel_audio_pending as (() => number) | undefined;
+    return fn ? fn() : 0;
+  }
+
   registerSharedPipe(handle: number, sab: SharedArrayBuffer, end: "read" | "write"): void {
     this.sharedPipes.set(handle, { pipe: SharedPipeBuffer.fromSharedBuffer(sab), end });
   }
@@ -177,7 +283,12 @@ export class WasmPosixKernel {
    */
   async init(wasmBytes: BufferSource): Promise<void> {
     const memory = new WebAssembly.Memory({
-      initial: 17n,
+      // 24 pages = 1.5 MiB of initial address space. Must be ≥ the kernel
+      // wasm's declared minimum, which the linker derives from the data
+      // section. The Mozilla CA bundle (~220 KiB at /etc/ssl/cert.pem)
+      // pushes the kernel's minimum to 20 pages; 24 leaves headroom for
+      // future static data without re-tuning this every time.
+      initial: 24n,
       maximum: 16384n,
       shared: true,
       address: "i64",
@@ -231,6 +342,9 @@ export class WasmPosixKernel {
         },
         host_lstat: (pathPtr: bigint, pathLen: number, statPtr: bigint): number => {
           return this.hostLstat(Number(pathPtr), pathLen, Number(statPtr));
+        },
+        host_statfs: (pathPtr: bigint, pathLen: number, statfsPtr: bigint): number => {
+          return this.hostStatfs(Number(pathPtr), pathLen, Number(statfsPtr));
         },
         host_mkdir: (pathPtr: bigint, pathLen: number, mode: number): number => {
           return this.hostMkdir(Number(pathPtr), pathLen, mode);
@@ -366,6 +480,9 @@ export class WasmPosixKernel {
         },
         host_net_recv: (handle: number, bufPtr: bigint, bufLen: number, flags: number): number => {
           return this.hostNetRecv(handle, Number(bufPtr), bufLen, flags);
+        },
+        host_net_connect_status: (handle: number): number => {
+          return this.hostNetConnectStatus(handle);
         },
         host_net_close: (handle: number): number => {
           return this.hostNetClose(handle);
@@ -720,6 +837,33 @@ export class WasmPosixKernel {
     // _pad at offset 84 already zeroed
   }
 
+  private writeStatfsToMemory(ptr: number, statfs: StatfsResult): void {
+    const dv = this.getMemoryDataView();
+    const mem = this.getMemoryBuffer();
+    mem.fill(0, ptr, ptr + WASM_STATFS_SIZE);
+
+    const u32 = (value: number): number => {
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.floor(value)) >>> 0;
+    };
+    const u64 = (value: number): bigint => {
+      if (!Number.isFinite(value) || value <= 0) return 0n;
+      return BigInt(Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER));
+    };
+
+    dv.setUint32(ptr + 0, u32(statfs.type), true);
+    dv.setUint32(ptr + 4, u32(statfs.bsize), true);
+    dv.setBigUint64(ptr + 8, u64(statfs.blocks), true);
+    dv.setBigUint64(ptr + 16, u64(statfs.bfree), true);
+    dv.setBigUint64(ptr + 24, u64(statfs.bavail), true);
+    dv.setBigUint64(ptr + 32, u64(statfs.files), true);
+    dv.setBigUint64(ptr + 40, u64(statfs.ffree), true);
+    dv.setBigUint64(ptr + 48, u64(statfs.fsid), true);
+    dv.setUint32(ptr + 56, u32(statfs.namelen), true);
+    dv.setUint32(ptr + 60, u32(statfs.frsize), true);
+    dv.setUint32(ptr + 64, u32(statfs.flags), true);
+  }
+
   // ---- Phase 2: Path-based and directory host imports ----
 
   /**
@@ -761,6 +905,21 @@ export class WasmPosixKernel {
       const path = this.readPathFromMemory(pathPtr, pathLen);
       const stat = this.io.lstat(path);
       this.writeStatToMemory(statPtr, stat);
+      return 0;
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  private hostStatfs(
+    pathPtr: number,
+    pathLen: number,
+    statfsPtr: number,
+  ): number {
+    try {
+      const path = this.readPathFromMemory(pathPtr, pathLen);
+      const statfs = this.io.statfs(path);
+      this.writeStatfsToMemory(statfsPtr, statfs);
       return 0;
     } catch (e) {
       return negErrno(e);
@@ -1741,6 +1900,17 @@ export class WasmPosixKernel {
     }
   }
 
+  private hostNetConnectStatus(handle: number): number {
+    if (!this.io.network) return -107; // -ENOTCONN
+    try {
+      // Backend returns positive errno on failure; kernel expects negative.
+      const status = this.io.network.connectStatus(handle);
+      return status > 0 ? -status : status;
+    } catch {
+      return -107; // -ENOTCONN
+    }
+  }
+
   private hostNetSend(handle: number, bufPtr: number, bufLen: number, flags: number): number {
     if (!this.io.network) return -107; // -ENOTCONN
     try {
@@ -1794,7 +1964,8 @@ export class WasmPosixKernel {
       if (addr.length > resultLen) return -22; // -EINVAL
       mem.set(addr, resultPtr);
       return addr.length;
-    } catch {
+    } catch (e: any) {
+      if (e?.errno === 11) return -11; // -EAGAIN — kernel-worker retries
       return -2; // -ENOENT
     }
   }

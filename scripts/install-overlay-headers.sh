@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Copy headers from musl-overlay/include/ into a sysroot's include/ tree.
+# Copy headers from libc/musl-overlay/include/ into a sysroot's include/ tree.
 #
 # This is the same install step that scripts/build-musl.sh performs at the
 # end of a full musl build. It's split out so run.sh can re-run it
@@ -19,7 +19,7 @@ fi
 
 SYSROOT="$1"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OVERLAY_DIR="$REPO_ROOT/musl-overlay"
+OVERLAY_DIR="$REPO_ROOT/libc/musl-overlay"
 
 if [ ! -d "$SYSROOT" ]; then
     # Nothing to install into — caller should have built the sysroot first.

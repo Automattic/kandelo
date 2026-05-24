@@ -24,8 +24,18 @@ import type {
   KernelToMainMessage,
   ResolveExecRequestMessage,
 } from "./node-kernel-protocol";
+import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
+import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+export type { HttpRequest, HttpResponse };
+
+function currentModuleDir(): string {
+  if (typeof __dirname !== "undefined") return __dirname;
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+const MODULE_DIR = currentModuleDir();
+const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 
 export interface NodeKernelHostOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -37,17 +47,41 @@ export interface NodeKernelHostOptions {
   dataBufferSize?: number;
   /** Virtual path → host filesystem path for exec resolution inside the worker */
   execPrograms?: Record<string, string>;
+  /** Attach a real-TCP backend in the worker so wasm programs can dial
+   *  external hosts via Node `net.Socket`. */
+  enableTcpNetwork?: boolean;
   /** Called when a process writes to stdout */
   onStdout?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes to stderr */
   onStderr?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes PTY output */
   onPtyOutput?: (pid: number, data: Uint8Array) => void;
+  /** Called when a process is spawned, execs a new program, or exits.
+   *  Used by Inspector-style UIs to refresh their process table without
+   *  polling. */
+  onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
   /**
    * Called when the worker can't resolve an exec path locally.
    * Return the program bytes or null if not found.
    */
   onResolveExec?: (path: string) => ArrayBuffer | null | Promise<ArrayBuffer | null>;
+  /**
+   * Opt in to mount-based VFS for this kernel boot.
+   *
+   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs` and apply
+   *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The worker constructs
+   *     a `VirtualPlatformIO` (rootfs at `/`, host-fs scratch dirs at
+   *     `/tmp` etc.). Throws if the file is missing — callers wanting
+   *     graceful degradation should pre-check or pass explicit bytes.
+   *   - `ArrayBuffer | Uint8Array` — use the supplied image bytes
+   *     instead of reading from disk. Same mount spec applied.
+   *   - `undefined` (default) — use raw `NodePlatformIO` (every host
+   *     path reachable). Preserves the pre-cutover behaviour for the
+   *     direct-host-fs callers (demos, scripts) that haven't migrated
+   *     to a VFS-only world yet.
+   */
+  rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
 }
 
 export interface SpawnOptions {
@@ -55,6 +89,10 @@ export interface SpawnOptions {
   cwd?: string;
   stdin?: Uint8Array;
   pty?: boolean;
+  /** Initial PTY winsize. Applied before the wasm program starts so the
+   *  first TIOCGWINSZ returns the correct cols/rows. */
+  ptyCols?: number;
+  ptyRows?: number;
   /** Limit heap growth to protect thread channel pages */
   maxAddr?: number;
   /** Called after the process has been created and started */
@@ -75,6 +113,7 @@ export class NodeKernelHost {
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
+    const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
 
     this.worker = spawnKernelWorkerThread();
 
@@ -109,6 +148,9 @@ export class NodeKernelHost {
           useSharedMemory: true,
         },
         execPrograms: this.options.execPrograms,
+        rootfsImage: rootfsImage ?? undefined,
+        extraMounts: this.options.extraMounts,
+        enableTcpNetwork: this.options.enableTcpNetwork,
       };
       this.worker.postMessage(initMsg);
     });
@@ -132,6 +174,8 @@ export class NodeKernelHost {
       env: options?.env,
       cwd: options?.cwd,
       pty: options?.pty,
+      ptyCols: options?.ptyCols,
+      ptyRows: options?.ptyRows,
       stdin: options?.stdin,
       maxAddr: options?.maxAddr,
     }) as number;
@@ -139,6 +183,8 @@ export class NodeKernelHost {
     const exitPromise = new Promise<number>((resolve) => {
       this.exitResolvers.set(pid, resolve);
     });
+
+    this.options.onProcessEvent?.({ kind: "spawn", pid });
 
     // Process is now running
     if (options?.onStarted) {
@@ -168,6 +214,131 @@ export class NodeKernelHost {
     this.sendToWorker({ type: "pty_resize", pid, rows, cols });
   }
 
+  /**
+   * Send an HTTP request to a server running inside the kernel and return
+   * the parsed response. Bypasses real TCP by using the kernel's injected
+   * connection path directly. Prototype API.
+   *
+   * The in-kernel server must already be listening on `port`. Each call
+   * opens a fresh injected connection.
+   */
+  async fetchInKernel(
+    port: number,
+    request: HttpRequest,
+    options?: { timeoutMs?: number },
+  ): Promise<HttpResponse> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "http_request",
+      requestId,
+      port,
+      request,
+      timeoutMs: options?.timeoutMs,
+    }) as Promise<HttpResponse>;
+  }
+
+  /**
+   * Read the kernel's per-process fork counter. Used by the spawn
+   * regression tests to assert a SYS_SPAWN call didn't fall back to
+   * fork — `getForkCount(parent)` should return the same value before
+   * and after a `posix_spawn`.
+   *
+   * Returns `u64::MAX` (as `bigint`) if the pid does not exist; callers
+   * should compare against an explicit before-value.
+   */
+  async getForkCount(pid: number): Promise<bigint> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_fork_count",
+      requestId,
+      pid,
+    });
+    return typeof result === "bigint" ? result : BigInt(result as number);
+  }
+
+  /**
+   * Snapshot the kernel's process table — one row per live process. Used
+   * by Kandelo's Inspector → Procs tab. Mirrors `BrowserKernel.enumProcs`.
+   */
+  async enumProcs(): Promise<ProcessSnapshot[]> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "enum_procs",
+      requestId,
+    });
+    return (result as ProcessSnapshot[]) ?? [];
+  }
+
+  /**
+   * Read `/proc/[pid]/maps` for a foreign process. Returns the raw text
+   * (one line per mapping), `""` if the process has no mappings, or
+   * `null` if the pid is gone.
+   */
+  async readProcMaps(pid: number): Promise<string | null> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_proc_maps",
+      requestId,
+      pid,
+    });
+    return (result as string | null) ?? null;
+  }
+
+  /**
+   * Subscribe to the kernel-worker's syscall trace. Returns an
+   * unsubscribe function. Mirrors `BrowserKernel.subscribeSyscalls`.
+   */
+  subscribeSyscalls(cb: (event: SyscallTraceEvent) => void): () => void {
+    this.syscallListeners.add(cb);
+    if (this.syscallListeners.size === 1) {
+      this.sendToWorker({ type: "set_syscall_trace", enabled: true });
+      this.startSyscallPoll();
+    }
+    return () => {
+      this.syscallListeners.delete(cb);
+      if (this.syscallListeners.size === 0) {
+        this.sendToWorker({ type: "set_syscall_trace", enabled: false });
+        this.stopSyscallPoll();
+      }
+    };
+  }
+
+  private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
+  private syscallPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  private startSyscallPoll(): void {
+    if (this.syscallPollTimer !== null) return;
+    this.syscallPollTimer = setInterval(() => {
+      void this.drainAndFanSyscalls();
+    }, 250);
+  }
+
+  private stopSyscallPoll(): void {
+    if (this.syscallPollTimer === null) return;
+    clearInterval(this.syscallPollTimer);
+    this.syscallPollTimer = null;
+  }
+
+  private async drainAndFanSyscalls(): Promise<void> {
+    if (this.syscallListeners.size === 0) return;
+    const requestId = this._nextRequestId++;
+    let events: SyscallTraceEvent[] = [];
+    try {
+      const result = await this.request(requestId, {
+        type: "drain_syscall_trace",
+        requestId,
+      });
+      events = (result as SyscallTraceEvent[]) ?? [];
+    } catch {
+      return;
+    }
+    for (const event of events) {
+      for (const cb of this.syscallListeners) {
+        try { cb(event); } catch { /* listener errors don't break the loop */ }
+      }
+    }
+  }
+
   /** Terminate a specific process */
   async terminateProcess(pid: number, status = -1): Promise<void> {
     const requestId = this._nextRequestId++;
@@ -185,12 +356,20 @@ export class NodeKernelHost {
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     const requestId = this._nextRequestId++;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
-      await this.request(requestId, { type: "destroy", requestId });
+      await Promise.race([
+        this.request(requestId, { type: "destroy", requestId }),
+        new Promise((resolve) => {
+          timeoutId = setTimeout(resolve, DESTROY_REQUEST_TIMEOUT_MS);
+        }),
+      ]);
     } catch {
       // Worker may have already exited
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
-    this.worker.terminate();
+    await this.worker.terminate();
     this.exitResolvers.clear();
     this.pendingRequests.clear();
   }
@@ -228,6 +407,14 @@ export class NodeKernelHost {
           this.exitResolvers.delete(msg.pid);
           resolver(msg.status);
         }
+        this.options.onProcessEvent?.({ kind: "exit", pid: msg.pid, exitStatus: msg.status });
+        break;
+      }
+      case "proc_event": {
+        // Kernel-internal fork / exec / posix_spawn. The host doesn't
+        // see these via NodeKernelHost.spawn (forks happen inside the
+        // wasm kernel without going through the request/response loop).
+        this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
         break;
       }
       case "stdout":
@@ -265,10 +452,40 @@ function loadKernelWasm(): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+/**
+ * Materialise the rootfs image bytes the worker will mount at `/`.
+ * Returns `null` when the caller hasn't opted in; the worker then
+ * falls back to raw `NodePlatformIO` (legacy host-fs passthrough).
+ */
+function resolveRootfsImage(
+  override: "default" | ArrayBuffer | Uint8Array | undefined,
+): ArrayBuffer | null {
+  if (override === undefined) return null;
+  if (override === "default") {
+    const path = resolveBinary("rootfs.vfs");
+    if (!existsSync(path)) {
+      throw new Error(
+        `rootfsImage:"default" requested but ${path} is missing — ` +
+          `run scripts/build-rootfs.sh, or pass explicit bytes / omit the option.`,
+      );
+    }
+    const buf = readFileSync(path);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  }
+  if (override instanceof Uint8Array) {
+    // Copy into a fresh ArrayBuffer — the source might live in a
+    // SharedArrayBuffer, which the worker init protocol doesn't accept.
+    const out = new ArrayBuffer(override.byteLength);
+    new Uint8Array(out).set(override);
+    return out;
+  }
+  return override;
+}
+
 /** Spawn a worker_thread running node-kernel-worker-entry.ts */
 function spawnKernelWorkerThread(): NodeThreadWorker {
-  const entryTs = join(__dirname, "node-kernel-worker-entry.ts");
-  const entryJs = join(__dirname, "node-kernel-worker-entry.js");
+  const entryTs = join(MODULE_DIR, "node-kernel-worker-entry.ts");
+  const entryJs = join(MODULE_DIR, "node-kernel-worker-entry.js");
   const distJs = entryTs.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js");
 
   // Check for compiled .js version first (much faster startup)
@@ -280,7 +497,7 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
   }
 
   // Fallback: tsx eval bootstrap
-  const require = createRequire(import.meta.url);
+  const require = createRequire(pathToFileURL(join(MODULE_DIR, "node-kernel-host.js")).href);
   const tsxApiPath = require.resolve("tsx/esm/api");
   const tsxApiUrl = pathToFileURL(tsxApiPath).href;
   const entryUrl = pathToFileURL(entryTs).href;

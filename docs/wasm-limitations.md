@@ -1,6 +1,6 @@
 # Fundamental WebAssembly Limitations
 
-The wasm-posix-kernel aims to run existing systems software on WebAssembly with minimal changes (see [posix-status.md](posix-status.md) for project vision). The limitations below are inherent to the WebAssembly platform, not design choices — they represent the boundaries of what Wasm can express today.
+Kandelo aims to run existing systems software on WebAssembly with minimal changes (see [posix-status.md](posix-status.md) for project vision). The limitations below are inherent to the WebAssembly platform, not design choices — they represent the boundaries of what Wasm can express today.
 
 ## 1. No Guest-Initiated Thread Creation
 
@@ -69,7 +69,7 @@ Until one of those ships, this remains a fundamental wasm limitation. The kernel
 
 | Feature | Status |
 |---------|--------|
-| `fork()` | Asyncify-based, fully working (PR #81) |
+| `fork()` | `wasm-fork-instrument`-based, fully working |
 | `sigaltstack` | Shadow stack swap via inline asm (PR #174) |
 | `dlopen()` / `dlsym()` | Dynamic Wasm module linker (host/src/dylink.ts) |
 | `exec()` / `posix_spawn()` | Full host-side exec with CWD resolution (PR #167, #178) |

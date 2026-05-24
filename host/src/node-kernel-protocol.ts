@@ -1,11 +1,18 @@
 /**
  * Message protocol for Node.js main thread ↔ kernel worker_thread communication.
  *
- * Mirrors the browser's kernel-worker-protocol.ts but adapted for Node.js:
+ * Mirrors browser-kernel-protocol.ts but adapted for Node.js:
  * - No SharedArrayBuffer VFS (Node uses real filesystem via NodePlatformIO)
  * - No worker entry URLs (Node uses NodeWorkerAdapter)
  * - No pipe/inject/bridge operations (TCP bridging is automatic via NodePlatformIO)
+ *
+ * The `http_request` message is a host-driven HTTP request injected
+ * straight into an in-kernel server's accept queue, bypassing real TCP.
+ * See docs/plans/2026-04-30-external-kernel-http-request-interface.md.
  */
+import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+
+export type { HttpRequest, HttpResponse };
 
 // ── Main Thread → Kernel Worker ──
 
@@ -20,6 +27,18 @@ export interface InitMessage {
   };
   /** Virtual path → host filesystem path for exec resolution */
   execPrograms?: Record<string, string>;
+  /**
+   * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded
+   * to the worker. When present, the worker materialises the default mount
+   * spec (rootfs at `/`, scratch dirs at `/tmp` etc.) and constructs a
+   * `VirtualPlatformIO`. Absent → worker falls back to `NodePlatformIO`
+   * (custom-io / legacy path).
+   */
+  rootfsImage?: ArrayBuffer;
+  extraMounts?: Array<{ mountPoint: string; hostPath: string; readonly?: boolean }>;
+  /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
+   *  so wasm programs can dial external hosts via Node `net.Socket`. */
+  enableTcpNetwork?: boolean;
 }
 
 export interface SpawnMessage {
@@ -30,6 +49,11 @@ export interface SpawnMessage {
   env?: string[];
   cwd?: string;
   pty?: boolean;
+  /** Initial PTY winsize. When set with `pty: true`, the kernel applies
+   *  the winsize before the wasm program starts so the first ioctl
+   *  returns the correct cols/rows. */
+  ptyCols?: number;
+  ptyRows?: number;
   stdin?: Uint8Array;
   /** Limit heap growth to protect thread channel pages */
   maxAddr?: number;
@@ -72,10 +96,61 @@ export interface DestroyMessage {
   requestId: number;
 }
 
+/** Request the kernel's per-process fork counter. The kernel-worker entry
+ * forwards this to `kernel_get_fork_count` and posts a `response` message
+ * with `result` set to a `bigint` (u64 as BigInt). Used by the spawn
+ * regression tests to assert SYS_SPAWN doesn't bump the counter. */
+export interface GetForkCountRequestMessage {
+  type: "get_fork_count";
+  requestId: number;
+  pid: number;
+}
+
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
   programBytes: ArrayBuffer | null;
+}
+
+/** Snapshot the kernel's process table. Mirrors the browser host's
+ * enum_procs request in browser-kernel-protocol.ts.
+ * Response carries `ProcessSnapshot[]`. */
+export interface EnumProcsRequestMessage {
+  type: "enum_procs";
+  requestId: number;
+}
+
+/** Read `/proc/[pid]/maps` for a foreign process via the host. Response
+ * carries a string (Linux maps text) or `null` if the pid is gone. */
+export interface ReadProcMapsRequestMessage {
+  type: "read_proc_maps";
+  requestId: number;
+  pid: number;
+}
+
+/** Enable / disable the syscall trace ring. Mirrors the browser host. */
+export interface SetSyscallTraceMessage {
+  type: "set_syscall_trace";
+  enabled: boolean;
+}
+
+/** Drain pending syscall trace events. Response carries SyscallTraceEvent[]. */
+export interface DrainSyscallTraceMessage {
+  type: "drain_syscall_trace";
+  requestId: number;
+}
+
+/** Send an HTTP request to a server running in the kernel and wait for the
+ *  response. Reply arrives as a `response` message whose `result` is an
+ *  {@link HttpResponse}, or with `error` set if no listener was found. */
+export interface HttpRequestMessage {
+  type: "http_request";
+  requestId: number;
+  /** Port the in-kernel server is listening on. */
+  port: number;
+  request: HttpRequest;
+  /** Optional timeout in ms (default 60_000). */
+  timeoutMs?: number;
 }
 
 export type MainToKernelMessage =
@@ -87,7 +162,13 @@ export type MainToKernelMessage =
   | PtyResizeMessage
   | TerminateProcessMessage
   | DestroyMessage
-  | ResolveExecResponseMessage;
+  | GetForkCountRequestMessage
+  | ResolveExecResponseMessage
+  | EnumProcsRequestMessage
+  | ReadProcMapsRequestMessage
+  | SetSyscallTraceMessage
+  | DrainSyscallTraceMessage
+  | HttpRequestMessage;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -132,6 +213,18 @@ export interface ResolveExecRequestMessage {
   path: string;
 }
 
+/**
+ * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
+ * browser-side ProcEventMessage. Exit events come via the existing
+ * ExitMessage; we don't duplicate them here.
+ */
+export interface ProcEventMessage {
+  type: "proc_event";
+  kind: "spawn" | "exec";
+  pid: number;
+  ppid?: number;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | ResponseMessage
@@ -139,4 +232,5 @@ export type KernelToMainMessage =
   | StdoutMessage
   | StderrMessage
   | PtyOutputMessage
-  | ResolveExecRequestMessage;
+  | ResolveExecRequestMessage
+  | ProcEventMessage;

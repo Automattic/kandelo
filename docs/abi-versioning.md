@@ -9,19 +9,22 @@ state. To prevent this, the project maintains:
    compiled binary carries and the kernel exports.
 2. A structural snapshot of the ABI surface at
    [`abi/snapshot.json`](../abi/snapshot.json), regenerated from source.
-3. A CI check that refuses to let the snapshot change without a matching
-   `ABI_VERSION` bump.
+3. A CI check that refuses to let the snapshot drift from source, and
+   refuses no-bump snapshot changes unless they are narrowly additive.
 
-**Agents and humans alike: do not change the kernel ABI without bumping
-`ABI_VERSION`.** The check is structural, not a convention — CI enforces
-it.
+**Agents and humans alike: do not change the kernel ABI incompatibly
+without bumping `ABI_VERSION`.** The check is structural, not a
+convention — CI enforces it.
 
 ## What counts as an ABI change
 
 Anything that could make an old compiled binary misbehave against a new
 kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 
-- Adding, removing, renaming, or reassigning a syscall number.
+- Removing, renaming, or reassigning a syscall number.
+- Changing an existing syscall argument descriptor used by the host for
+  pointer marshalling, including direction, size source, multipliers,
+  fixed byte lengths, or return-value copy adjustments.
 - Changing the channel header layout (field offsets or sizes in
   [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs)
   `channel` module).
@@ -30,8 +33,12 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`,
   `WasmStatfs`), or changing a field's type in a way that shifts offsets
   or span.
-- Changing the asyncify save-slot offsets or widths
-  ([`shared::abi::ASYNCIFY_SAVE_SLOTS`](../crates/shared/src/lib.rs)).
+- Changing the five `wpk_fork_*` export names or the save-buffer /
+  frame format emitted by
+  [`wasm-fork-instrument`](fork-instrumentation.md) into every
+  fork-using user program. The kernel does not read these exports
+  directly, but the host runtime in `host/src/worker-main.ts` does —
+  a rename here silently breaks fork for every already-built binary.
 - Renaming the ABI custom section or the process-expected globals.
 - Changing the meaning of a syscall argument, errno, or blocking
   behavior without changing its signature. **This is not caught
@@ -40,6 +47,25 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 Pure internal refactors (renaming a kernel-side function, reorganizing
 a source file, tightening a bound in a non-ABI type) are *not* ABI
 changes and do not require a bump.
+
+The following snapshot changes are backward-compatible additions and do
+not require an `ABI_VERSION` bump:
+
+- Adding a new named syscall number while leaving every existing syscall
+  entry unchanged.
+- Adding a new host-intercepted syscall number while leaving every
+  existing host-intercepted entry unchanged.
+- Adding a new kernel-wasm export while leaving every existing export's
+  kind, signature, type, mutability, and tracked value unchanged.
+- Adding a new marshalled struct name while leaving every existing
+  marshalled struct layout unchanged.
+- Adding a syscall argument descriptor for a syscall that previously had
+  no descriptor, while leaving every existing descriptor unchanged.
+
+These additions still require regenerating and committing
+`abi/snapshot.json`. They do not permit older kernels to run newer
+programs that require the new surface; they only permit older programs
+to keep running on newer kernels in the same `ABI_VERSION` epoch.
 
 ## The snapshot
 
@@ -60,8 +86,9 @@ captures:
   layout shift.
 - `syscalls` — every syscall number for which `Syscall::from_u32`
   returns a named variant.
-- `asyncify_save_slots` — negative offsets relative to the asyncify
-  buffer at which the parent saves register state for the fork child.
+- `syscall_arg_descriptors` — host marshalling descriptors for pointer
+  arguments, including direction, size source, size multipliers/additions,
+  fixed byte lengths, and any return-value-based copy-back adjustment.
 - `custom_sections` — names of wasm custom sections that participate in
   the ABI (currently `wasm-posix-abi` for the per-binary version).
 - `process_expected_globals` — globals every user process instance is
@@ -93,8 +120,9 @@ On a change:
 #    a stale binary can't defeat the check.
 bash scripts/check-abi-version.sh update
 # 3. Inspect the diff. If it's empty, the change didn't touch the ABI.
-#    If it's not empty, bump ABI_VERSION in crates/shared/src/lib.rs
-#    in the same commit, and document the reason in the commit message.
+#    If it is only an additive-compatible change, commit the snapshot
+#    without bumping ABI_VERSION. If it changes existing ABI surface,
+#    bump ABI_VERSION in crates/shared/src/lib.rs in the same commit.
 # 4. Verify.
 bash scripts/check-abi-version.sh
 ```
@@ -105,9 +133,9 @@ In CI:
 bash scripts/check-abi-version.sh
 ```
 
-Fails if the committed snapshot drifts from the source, or if the
-snapshot changed versus `origin/main` without a matching
-`ABI_VERSION` bump.
+Fails if the committed snapshot drifts from the source. If the snapshot
+changed versus `origin/main` without a matching `ABI_VERSION` bump, CI
+classifies the diff and accepts only the additive cases listed above.
 
 ## What the check does **not** catch
 
@@ -117,7 +145,7 @@ snapshot changed versus `origin/main` without a matching
 - **Things not in the generator's coverage list.** Whatever
   `xtask dump-abi` doesn't inspect isn't tracked. Treat the coverage
   list as itself ABI-critical: adding or removing an entry from
-  `xtask/src/dump_abi.rs` is an ABI-relevant change. (The export
+  `tools/xtask/src/dump_abi.rs` is an ABI-relevant change. (The export
   filter lists in `shared::abi::EXPORT_DENY_*` are themselves in the
   snapshot, so at least those are self-tracking.)
 - **Host-side assumptions not reflected in kernel source.** Wherever
@@ -134,22 +162,26 @@ binary whose custom-section version does not match the kernel's
 `__abi_version` export.
 
 When the ABI is bumped, all binaries must be rebuilt and a new
-`abi-v{N}/` release is cut. Old releases remain valid for old kernel
-revisions; a repo pin (`binaries.lock`) anchors consumers to a specific
-release.
+`binaries-abi-v{N}` release is cut. Old releases remain valid for old
+kernel revisions; the new release's `index.toml` ledger lists all
+v(N) archives. Each `packages/registry/<pkg>/build.toml`'s `[binary]
+index_url` templates `{abi}` against the current `ABI_VERSION`, so
+the next fetch automatically hits the v(N+1) release after the
+constant bumps — no per-package URL pinning in-tree to amend. The
+matrix flow's per-entry `scripts/index-update.sh` invocations
+populate the new tag's `index.toml` atomically as each archive
+publishes.
 
-### Additive changes still require a bump
+### Additive changes within an ABI epoch
 
-Even when an ABI change is purely additive (a new `kernel_*` export, a
-new syscall number) and v(N-1) binaries would in principle still run
-correctly against the v(N) kernel, the policy is to bump and rebuild.
-Two reasons: (1) the snapshot check is structural — any change to the
-export set produces a snapshot diff, and CI refuses a snapshot diff
-without a matching version bump; (2) the host-side `verifyProgramAbi`
-check is strict equality (`actual !== expected`), not `actual <=
-expected`, so mismatched binaries fail at instantiation regardless of
-whether the missing surface is actually used. Relaxing either of these
-to allow `actual <= expected` would let a future *non*-additive change
-slip through unnoticed. The cost of the strict policy is the
-coordinated rebuild; the cost of relaxing it is undetected ABI
-breakage.
+Pure additions do not bump `ABI_VERSION`. Existing binaries still carry
+the same ABI number, and the host-side `verifyProgramAbi` check remains
+strict equality (`actual !== expected`). This is intentional: we keep a
+single breaking-compatibility epoch rather than accepting arbitrary
+older binaries against newer kernels.
+
+The package cache key and release index remain keyed by `ABI_VERSION`,
+so additive kernel API growth does not force every package to rebuild.
+Packages built after an additive change may depend on the new syscall or
+export; those packages should be resolved with the matching current
+kernel, even though the ABI epoch did not change.
