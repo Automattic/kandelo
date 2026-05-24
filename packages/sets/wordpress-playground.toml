@@ -17,6 +17,7 @@ packages = [
   "sqlite",
   "mariadb",
   "dinit",
+  "msmtpd",
   "wordpress",
   "lamp",
 ]

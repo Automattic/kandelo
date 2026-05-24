@@ -1,0 +1,23 @@
+kind = "program"
+name = "msmtpd"
+version = "1.8.32"
+kernel_abi = 7
+depends_on = []
+
+# msmtpd is the small SMTP server shipped with msmtp. It accepts local SMTP
+# sessions and pipes each message to a command; the WordPress VFS uses that
+# hook to store raw .eml files under /var/mail/smtp-capture.
+[source]
+url = "https://marlam.de/msmtp/releases/msmtp-1.8.32.tar.xz"
+sha256 = "20cd58b58dd007acf7b937fa1a1e21f3afb3e9ef5bbcfb8b4f5650deadc64db4"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://marlam.de/msmtp/"
+
+[build]
+script_path = "packages/registry/msmtpd/build-msmtpd.sh"
+
+[[outputs]]
+name = "msmtpd"
+wasm = "msmtpd.wasm"
