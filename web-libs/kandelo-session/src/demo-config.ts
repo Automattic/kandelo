@@ -11,6 +11,7 @@ export interface DemoPresentationConfig {
   terminalAccess: DemoPresentation["terminalAccess"];
   internalsAccess: DemoPresentation["internalsAccess"];
   autoCommand?: string;
+  framebufferInput?: DemoPresentation["framebufferInput"];
 }
 
 export interface DemoAssetConfig {
@@ -19,6 +20,18 @@ export interface DemoAssetConfig {
   sha256?: string;
   mode?: number;
   devCorsProxy?: boolean;
+}
+
+export interface DemoInitConfig {
+  argv: string[];
+  env?: string[];
+  cwd?: string;
+  maxWorkers?: number;
+  maxMemoryPages?: number;
+  web?: {
+    label?: string;
+    requiredPorts: number[];
+  };
 }
 
 export type DemoActionKind = "terminal.run" | "terminal.write";
@@ -57,6 +70,7 @@ export interface DemoGuideConfig {
 
 export interface KandeloDemoProfileConfig {
   presentation?: DemoPresentationConfig;
+  init?: DemoInitConfig;
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
 }
@@ -64,6 +78,7 @@ export interface KandeloDemoProfileConfig {
 export interface KandeloDemoConfig {
   version: 1;
   presentation?: DemoPresentationConfig;
+  init?: DemoInitConfig;
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
   profiles?: Record<string, KandeloDemoProfileConfig>;
@@ -76,6 +91,10 @@ const PRIMARY_SURFACES = new Set<PrimarySurface>([
   "web",
 ]);
 const ACCESS_MODES = new Set(["primary", "drawer", "side"]);
+const FRAMEBUFFER_INPUT_MODES = new Set<NonNullable<DemoPresentation["framebufferInput"]>>([
+  "relative-scancode",
+  "absolute-text",
+]);
 const ACTION_KINDS = new Set<DemoActionKind>(["terminal.run", "terminal.write"]);
 
 export function parseKandeloDemoConfig(text: string): KandeloDemoConfig | null {
@@ -95,6 +114,19 @@ export function resolveDemoPresentation(
   return config.presentation === undefined
     ? null
     : normalizePresentationConfig(config.presentation);
+}
+
+export function resolveDemoInit(
+  config: KandeloDemoConfig,
+  profileId: string,
+): DemoInitConfig | null {
+  const profile = profileConfig(config, profileId);
+  if (isRecord(profile) && profile.init !== undefined) {
+    return normalizeInit(profile.init, `profiles.${profileId}.init`);
+  }
+  return config.init === undefined
+    ? null
+    : normalizeInit(config.init, "init");
 }
 
 export function resolveDemoAssets(
@@ -128,7 +160,16 @@ function profileConfig(
   config: KandeloDemoConfig,
   profileId: string,
 ): KandeloDemoProfileConfig | undefined {
-  return isRecord(config.profiles) ? config.profiles[profileId] : undefined;
+  if (!isRecord(config.profiles)) return undefined;
+  if (isRecord(config.profiles[profileId])) {
+    return config.profiles[profileId] as KandeloDemoProfileConfig;
+  }
+  for (const [id, profile] of Object.entries(config.profiles)) {
+    if (profileId.endsWith(`-${id}`) && isRecord(profile)) {
+      return profile as unknown as KandeloDemoProfileConfig;
+    }
+  }
+  return undefined;
 }
 
 function normalizePresentationConfig(config: unknown): DemoPresentation {
@@ -151,7 +192,48 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     terminalAccess: accessMode(config.terminalAccess, "terminalAccess"),
     internalsAccess: accessMode(config.internalsAccess, "internalsAccess"),
     ...(typeof config.autoCommand === "string" ? { autoCommand: config.autoCommand } : {}),
+    ...(config.framebufferInput !== undefined
+      ? { framebufferInput: framebufferInput(config.framebufferInput) }
+      : {}),
   };
+}
+
+function normalizeInit(value: unknown, field: string): DemoInitConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  if (!Array.isArray(value.argv) || value.argv.length === 0) {
+    throw new Error(`${field}.argv must be a non-empty string array`);
+  }
+  const init: DemoInitConfig = {
+    argv: value.argv.map((arg, index) => requiredString(arg, `${field}.argv[${index}]`)),
+  };
+  if (value.env !== undefined) {
+    if (!Array.isArray(value.env)) throw new Error(`${field}.env must be a string array`);
+    init.env = value.env.map((kv, index) => requiredString(kv, `${field}.env[${index}]`));
+  }
+  if (value.cwd !== undefined) {
+    init.cwd = requiredString(value.cwd, `${field}.cwd`);
+  }
+  if (value.maxWorkers !== undefined) {
+    init.maxWorkers = positiveInteger(value.maxWorkers, `${field}.maxWorkers`);
+  }
+  if (value.maxMemoryPages !== undefined) {
+    init.maxMemoryPages = positiveInteger(value.maxMemoryPages, `${field}.maxMemoryPages`);
+  }
+  if (value.web !== undefined) {
+    if (!isRecord(value.web)) throw new Error(`${field}.web must be an object`);
+    if (!Array.isArray(value.web.requiredPorts) || value.web.requiredPorts.length === 0) {
+      throw new Error(`${field}.web.requiredPorts must be a non-empty number array`);
+    }
+    init.web = {
+      ...(typeof value.web.label === "string" ? { label: value.web.label } : {}),
+      requiredPorts: value.web.requiredPorts.map((port, index) =>
+        positiveInteger(port, `${field}.web.requiredPorts[${index}]`)
+      ),
+    };
+  }
+  return init;
 }
 
 function normalizeAssets(value: unknown, field: string): DemoAssetConfig[] {
@@ -308,11 +390,26 @@ function accessMode(
   throw new Error(`presentation.${field} must be one of: ${Array.from(ACCESS_MODES).join(", ")}`);
 }
 
+function framebufferInput(value: unknown): NonNullable<DemoPresentation["framebufferInput"]> {
+  if (
+    typeof value === "string" &&
+    FRAMEBUFFER_INPUT_MODES.has(value as NonNullable<DemoPresentation["framebufferInput"]>)
+  ) {
+    return value as NonNullable<DemoPresentation["framebufferInput"]>;
+  }
+  throw new Error(`presentation.framebufferInput must be one of: ${Array.from(FRAMEBUFFER_INPUT_MODES).join(", ")}`);
+}
+
 function actionKind(value: unknown, field: string): DemoActionKind {
   if (typeof value === "string" && ACTION_KINDS.has(value as DemoActionKind)) {
     return value as DemoActionKind;
   }
   throw new Error(`${field} must be one of: ${Array.from(ACTION_KINDS).join(", ")}`);
+}
+
+function positiveInteger(value: unknown, field: string): number {
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  throw new Error(`${field} must be a positive integer`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

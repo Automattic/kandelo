@@ -37,8 +37,10 @@ import {
   parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
+  resolveDemoInit,
   resolveDemoPresentation,
   type DemoAssetConfig,
+  type DemoInitConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { PRESET_LIBRARY } from "../fixtures";
@@ -70,6 +72,7 @@ type SoftwareGalleryEntry = {
   description: string;
   packages: GalleryPackageRequirement[];
   package_url?: string;
+  init?: DemoInitConfig;
 };
 
 type SoftwareGalleryManifest = {
@@ -106,6 +109,7 @@ type SoftwareProfile = {
   autoCommand?: string;
   init?: LiveProfile["init"];
   presentation?: DemoPresentation;
+  cwd?: string;
 };
 
 const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
@@ -525,6 +529,23 @@ function initEnv(profile: InitEnvProfile | undefined): string[] | undefined {
   return INIT_ENV_PROFILES[profile]();
 }
 
+function liveInitFromConfig(
+  init: DemoInitConfig,
+  defaultWebLabel: string,
+): LiveProfile["init"] {
+  return {
+    argv: init.argv.slice(),
+    env: init.env?.slice(),
+    cwd: init.cwd,
+    maxWorkers: init.maxWorkers,
+    maxMemoryPages: init.maxMemoryPages,
+    web: init.web && {
+      label: init.web.label ?? defaultWebLabel,
+      requiredPorts: init.web.requiredPorts.slice(),
+    },
+  };
+}
+
 function shellEnvFor(profile: ShellProfile): string[] {
   return SHELL_PROFILES[profile].env;
 }
@@ -602,6 +623,13 @@ async function bootProfile(
   const presentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
     ?? profile.fallbackPresentation
     ?? null;
+  const configuredInit = imageConfig ? resolveDemoInit(imageConfig, profile.id) : null;
+  const activeProfile: LiveProfile = configuredInit
+    ? {
+        ...profile,
+        init: liveInitFromConfig(configuredInit, requestedDescriptor.title || profile.descriptor.title),
+      }
+    : profile;
   if (presentation) host.setPresentation(presentation);
   host.setDemoGuide(imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null);
   const assets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
@@ -616,8 +644,8 @@ async function bootProfile(
   try {
     kernel = new BrowserKernel({
       memfs,
-      maxWorkers: profile.init?.maxWorkers ?? 4,
-      maxMemoryPages: profile.init?.maxMemoryPages,
+      maxWorkers: activeProfile.init?.maxWorkers ?? 4,
+      maxMemoryPages: activeProfile.init?.maxMemoryPages,
       onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
       onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
@@ -625,7 +653,7 @@ async function bootProfile(
         if (!isCurrent()) return;
         seenPorts.add(port);
         tick(`service listening on :${port}`);
-        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+        maybeMarkWebReady(host, activeProfile, seenPorts, bridgeSent, webReadiness, tick);
       },
     });
     await kernel.init(kernelBytes);
@@ -641,13 +669,13 @@ async function bootProfile(
       programBytes: bashBytes,
       argv: ["bash", "-l", "-i"],
       env: shellEnv,
-      cwd: shellCwdFor(profile.shell),
+      cwd: profile.software?.cwd ?? shellCwdFor(profile.shell),
     });
 
-    if (profile.init?.web) {
+    if (activeProfile.init?.web) {
       tick("initializing HTTP bridge...");
       host.setWebPreview({
-        label: profile.init.web.label,
+        label: activeProfile.init.web.label,
         url: APP_PREFIX,
         status: "starting",
         message: "Waiting for service ports",
@@ -656,7 +684,7 @@ async function bootProfile(
       assertCurrent();
       if (!swBridge) {
         host.setWebPreview({
-          label: profile.init.web.label,
+          label: activeProfile.init.web.label,
           url: APP_PREFIX,
           status: "error",
           message: "Service workers unavailable",
@@ -668,20 +696,21 @@ async function bootProfile(
       }
     }
 
-    if (profile.init) {
-      const initBytes = readVfsFile(memfs, profile.init.argv[0]);
-      tick(`spawning ${profile.init.argv[0]}...`);
-      void kernel.spawn(initBytes, profile.init.argv, {
-        env: profile.init.env,
-        cwd: profile.init.cwd ?? "/",
+    if (activeProfile.init) {
+      const initBytes = readVfsFile(memfs, activeProfile.init.argv[0]);
+      tick(`spawning ${activeProfile.init.argv[0]}...`);
+      void kernel.spawn(initBytes, activeProfile.init.argv, {
+        env: activeProfile.init.env,
+        cwd: activeProfile.init.cwd ?? "/",
+        maxMemoryPages: activeProfile.init.maxMemoryPages,
       }).then(
-        (code) => tick(`${profile.init?.argv[0] ?? "init"} exited with code ${code}`),
+        (code) => tick(`${activeProfile.init?.argv[0] ?? "init"} exited with code ${code}`),
         (err) => tick(`init failed: ${err instanceof Error ? err.message : String(err)}`),
       );
     }
 
     host.setStatus("running");
-    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+    maybeMarkWebReady(host, activeProfile, seenPorts, bridgeSent, webReadiness, tick);
 
     if (profile.framebufferTest) {
       void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
@@ -1014,7 +1043,7 @@ function descriptorFor(id: string): BootDescriptor {
     ],
     boot: {
       argv: software ? ["bash", "-l", "-i"] : item.bootCommand,
-      cwd: shellCwdFor(shell),
+      cwd: software?.cwd ?? shellCwdFor(shell),
       env: Object.fromEntries((software?.shellEnv ?? shellEnvFor(shell)).map((kv) => {
         const idx = kv.indexOf("=");
         return [kv.slice(0, idx), kv.slice(idx + 1)];
@@ -1152,6 +1181,7 @@ function softwareProfileForEntry(
     vfsArtifactPath,
     binaries: [],
     shellEnv: SHELL_ENV,
+    init: entry.init ? liveInitFromConfig(entry.init, entry.title) : undefined,
   };
 
   if (entry.id.includes("python") && runtimeArchiveUrl) {

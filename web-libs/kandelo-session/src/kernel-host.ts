@@ -132,7 +132,13 @@ export interface KernelLike {
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; pty?: boolean; stdin?: Uint8Array },
+    options?: {
+      env?: string[];
+      cwd?: string;
+      pty?: boolean;
+      stdin?: Uint8Array;
+      maxMemoryPages?: number;
+    },
   ): Promise<number>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
@@ -304,6 +310,12 @@ export interface DemoPresentation {
    * framebuffer demos so exiting the app returns to the shell command.
    */
   autoCommand?: string;
+  /**
+   * Input bridge expected by the framebuffer process. fbDOOM consumes Linux
+   * scancodes and relative pointer-lock deltas; desktop-style guests such as
+   * Squeak consume text bytes and visible absolute-pointer motion.
+   */
+  framebufferInput?: "relative-scancode" | "absolute-text";
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────
