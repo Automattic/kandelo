@@ -1,0 +1,62 @@
+kind = "program"
+name = "spidermonkey"
+version = "140.11.0esr"
+kernel_abi = 7
+depends_on = ["libcxx@21"]
+
+[source]
+url = "https://ftp.mozilla.org/pub/firefox/releases/140.11.0esr/source/firefox-140.11.0esr.source.tar.xz"
+sha256 = "1b034d2117356fda24807a151055132315c6ba58ad2bdf7ec71ee707fac5e028"
+
+[license]
+spdx = "MPL-2.0"
+url = "https://www.mozilla.org/MPL/2.0/"
+
+[build]
+script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.10"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "brew install python", linux = "apt install python3" }
+
+[[host_tools]]
+name = "rustc"
+version_constraint = ">=1.85"
+probe = { args = ["--version"], version_regex = "rustc (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "rustup toolchain install stable", linux = "rustup toolchain install stable" }
+
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.85"
+probe = { args = ["--version"], version_regex = "cargo (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "rustup toolchain install stable", linux = "rustup toolchain install stable" }
+
+[[host_tools]]
+name = "cbindgen"
+version_constraint = ">=0.27.0"
+probe = { args = ["--version"], version_regex = "cbindgen (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "nix develop, or: cargo install cbindgen", linux = "nix develop, or: cargo install cbindgen" }
+
+[[host_tools]]
+name = "node"
+version_constraint = ">=22.0"
+probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "brew install node", linux = "install Node.js 22+ from your distro, nvm, or fnm" }
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "ships with macOS Command Line Tools; or: brew install make", linux = "apt install make" }
+
+[[host_tools]]
+name = "curl"
+version_constraint = ">=7.0"
+probe = { args = ["--version"], version_regex = "curl (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "ships with macOS; or: brew install curl", linux = "apt install curl" }
+
+[[outputs]]
+name = "js"
+wasm = "js.wasm"

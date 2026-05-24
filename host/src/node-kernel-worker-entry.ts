@@ -107,7 +107,7 @@ function installCrashSafetyNet(
       `[process-worker] pid=${pid} crashed (worker exit code=${code}, no SYS_exit_group from wasm)\n`,
     );
     post({ type: "stderr", pid, data: errBytes });
-    finalizeProcessWorker(pid, worker, 128 + 11 /* SIGSEGV */);
+    void finalizeProcessWorker(pid, worker, 128 + 11 /* SIGSEGV */);
   });
 }
 
@@ -127,6 +127,22 @@ const threadWorkers = new Map<number, Array<{
   tid: number;
   basePage: number;
 }>>();
+
+async function terminateTrackedWorker(
+  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+): Promise<void> {
+  intentionallyTerminated.add(worker as object);
+  await worker.terminate().catch(() => {});
+}
+
+async function terminateThreadWorkers(pid: number): Promise<void> {
+  const threads = threadWorkers.get(pid);
+  if (!threads) return;
+  threadWorkers.delete(pid);
+  for (const t of threads) {
+    await terminateTrackedWorker(t.worker);
+  }
+}
 
 // PTY index per-PID
 const ptyByPid = new Map<number, number>();
@@ -152,11 +168,11 @@ const pendingExecResolves = new Map<number, (bytes: ArrayBuffer | null) => void>
  * Idempotent: guarded by `cur && cur.worker === worker` so a later
  * `worker.on("exit")` from `installCrashSafetyNet` is a no-op.
  */
-function finalizeProcessWorker(
+async function finalizeProcessWorker(
   pid: number,
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
   exitStatus: number,
-): void {
+): Promise<void> {
   const cur = processes.get(pid);
   if (cur && cur.worker === worker) {
     // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
@@ -171,14 +187,8 @@ function finalizeProcessWorker(
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
-    const threads = threadWorkers.get(pid);
-    if (threads) {
-      for (const t of threads) {
-        intentionallyTerminated.add(t.worker as object);
-        t.worker.terminate().catch(() => {});
-      }
-      threadWorkers.delete(pid);
-    }
+    await terminateThreadWorkers(pid);
+    await terminateTrackedWorker(worker);
   }
   post({ type: "exit", pid, status: exitStatus });
 }
@@ -512,13 +522,13 @@ function handleSpawn(msg: SpawnMessage) {
       if (m.type === "error" && m.pid === pid) {
         const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
         post({ type: "stderr", pid, data: errBytes });
-        finalizeProcessWorker(pid, worker, -1);
+        void finalizeProcessWorker(pid, worker, -1);
       } else if (m.type === "exit" && m.pid === pid) {
         // worker-main posts {type:"exit"} when _start returns or hits an
         // "unreachable" trap (the latter is treated as normal _Exit). If
         // the kernel didn't process a SYS_exit_group first, the kernel
         // still has the process registered and host.spawn() would hang.
-        finalizeProcessWorker(pid, worker, m.status ?? 0);
+        void finalizeProcessWorker(pid, worker, m.status ?? 0);
       }
     });
 
@@ -597,9 +607,9 @@ async function handleFork(
     if (m.type === "error" && m.pid === childPid) {
       const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
       post({ type: "stderr", pid: childPid, data: errBytes });
-      finalizeProcessWorker(childPid, childWorker, -1);
+      void finalizeProcessWorker(childPid, childWorker, -1);
     } else if (m.type === "exit" && m.pid === childPid) {
-      finalizeProcessWorker(childPid, childWorker, m.status ?? 0);
+      void finalizeProcessWorker(childPid, childWorker, m.status ?? 0);
     }
   });
 
@@ -688,9 +698,9 @@ async function handleExec(
     if (m.type === "error" && m.pid === pid) {
       const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
       post({ type: "stderr", pid, data: errBytes });
-      finalizeProcessWorker(pid, newWorker, -1);
+      void finalizeProcessWorker(pid, newWorker, -1);
     } else if (m.type === "exit" && m.pid === pid) {
-      finalizeProcessWorker(pid, newWorker, m.status ?? 0);
+      void finalizeProcessWorker(pid, newWorker, m.status ?? 0);
     }
   });
 
@@ -879,30 +889,23 @@ async function handleClone(
 }
 
 function handleExit(pid: number, exitStatus: number): void {
+  void finishProcessExit(pid, exitStatus);
+}
+
+async function finishProcessExit(pid: number, exitStatus: number): Promise<void> {
   const info = processes.get(pid);
 
   // Deactivate process (zombie until reaped or destroy)
   kernelWorker.deactivateProcess(pid);
 
-  if (info?.worker) {
-    intentionallyTerminated.add(info.worker as object);
-    info.worker.terminate().catch(() => {});
-  }
-
-  // Terminate any surviving thread workers for this process; the main
-  // process worker exiting means their shared state is gone.
-  const threads = threadWorkers.get(pid);
-  if (threads) {
-    for (const t of threads) {
-      intentionallyTerminated.add(t.worker as object);
-      t.worker.terminate().catch(() => {});
-    }
-    threadWorkers.delete(pid);
-  }
-
   processes.delete(pid);
   threadModuleCache.delete(pid);
   ptyByPid.delete(pid);
+
+  // Terminate any surviving thread workers for this process; the main
+  // process worker exiting means their shared state is gone.
+  await terminateThreadWorkers(pid);
+  if (info?.worker) await terminateTrackedWorker(info.worker);
 
   // Notify main thread
   post({ type: "exit", pid, status: exitStatus });
@@ -930,8 +933,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   // Terminate main process worker
   const info = processes.get(pid);
   if (info?.worker) {
-    intentionallyTerminated.add(info.worker as object);
-    await info.worker.terminate().catch(() => {});
+    await terminateTrackedWorker(info.worker);
   }
 
   try {
@@ -946,12 +948,11 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 
 // --- Destroy ---
 
-function handleDestroy(msg: { requestId: number }) {
-  for (const [pid, info] of processes) {
-    if (info.worker) {
-      intentionallyTerminated.add(info.worker as object);
-      info.worker.terminate().catch(() => {});
-    }
+async function handleDestroy(msg: { requestId: number }) {
+  const processEntries = [...processes.entries()];
+  for (const [pid, info] of processEntries) {
+    await terminateThreadWorkers(pid);
+    await terminateTrackedWorker(info.worker);
     try { kernelWorker.unregisterProcess(pid); } catch {}
   }
   processes.clear();
@@ -1014,10 +1015,10 @@ port.on("message", (msg: MainToKernelMessage) => {
       handlePtyResize(msg.pid, msg.rows, msg.cols);
       break;
     case "terminate_process":
-      handleTerminate(msg);
+      void handleTerminate(msg);
       break;
     case "destroy":
-      handleDestroy(msg);
+      void handleDestroy(msg);
       break;
     case "get_fork_count": {
       // Round-trip access to the kernel's per-process fork counter for

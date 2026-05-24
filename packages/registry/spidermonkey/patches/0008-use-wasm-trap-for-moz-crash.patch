@@ -1,0 +1,53 @@
+--- a/mfbt/Assertions.h
++++ b/mfbt/Assertions.h
+@@ -235,6 +235,20 @@
+
+ #  define MOZ_REALLY_CRASH(line) __builtin_trap()
+
++#elif defined(__wasm32__) && !defined(__EMSCRIPTEN__)
++
++static inline void MOZ_WasmCrashWrite(const char* aMsg, size_t aLen) {
++  write(STDERR_FILENO, aMsg, aLen);
++}
++
++#  define MOZ_REALLY_CRASH(line)                         \
++    do {                                                 \
++      const char mozWasmCrash[] = "MOZ_REALLY_CRASH\n";  \
++      MOZ_WasmCrashWrite(mozWasmCrash,                   \
++                         sizeof(mozWasmCrash) - 1);      \
++      __builtin_trap();                                  \
++    } while (false)
++
+ #else
+
+ /*
+@@ -329,7 +343,8 @@
+  * in release builds, and it's hard to print to stderr safely when memory might
+  * have been corrupted.
+  */
+-#if !(defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING))
++#if !(defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING)) && \
++    !(defined(__wasm32__) && !defined(__EMSCRIPTEN__))
+ #  define MOZ_CRASH(...)                                                      \
+     do {                                                                      \
+       MOZ_FUZZING_HANDLE_CRASH_EVENT4("MOZ_CRASH", __FILE__, __LINE__, NULL); \
+@@ -374,7 +389,8 @@
+ static MOZ_ALWAYS_INLINE_EVEN_DEBUG MOZ_COLD MOZ_NORETURN void MOZ_Crash(
+     const char* aFilename, int aLine, const char* aReason) {
+   MOZ_FUZZING_HANDLE_CRASH_EVENT4("MOZ_CRASH", aFilename, aLine, aReason);
+-#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING)
++#if defined(DEBUG) || defined(MOZ_ASAN) || defined(FUZZING) || \
++    (defined(__wasm32__) && !defined(__EMSCRIPTEN__))
+   MOZ_ReportCrash(aReason, aFilename, aLine);
+ #endif
+   MOZ_CRASH_ANNOTATE(aReason);
+@@ -498,7 +514,8 @@
+ #  define MOZ_VALIDATE_ASSERT_CONDITION_TYPE(x)
+ #endif
+
+-#if defined(DEBUG) || defined(MOZ_ASAN)
++#if defined(DEBUG) || defined(MOZ_ASAN) || \
++    (defined(__wasm32__) && !defined(__EMSCRIPTEN__))
+ #  define MOZ_REPORT_ASSERTION_FAILURE(...) \
+     MOZ_ReportAssertionFailure(__VA_ARGS__)
+ #else

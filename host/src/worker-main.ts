@@ -11,6 +11,7 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
+import { extractAbiVersion } from "./constants";
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_IDLE,
@@ -58,6 +59,7 @@ function buildKernelImports(
   channelOffset: number,
   argv?: string[],
   envVars?: string[],
+  onKernelExit?: (status: number) => void,
 ): Record<string, WebAssembly.ExportValue> {
   const _argv = argv || [];
   const _envVars = envVars || [];
@@ -110,6 +112,7 @@ function buildKernelImports(
       // Wait for complete, then trap
       while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+      onKernelExit?.(status);
     },
 
     // Clone dispatches through channel (SYS_CLONE)
@@ -691,8 +694,8 @@ const DLOPEN_ENTRY_SIZE_WASM32 = 24;
 const DLOPEN_ENTRY_SIZE_WASM64 = 48;
 
 /**
- * Verify that a freshly-instantiated user program was built against an
- * ABI compatible with the running kernel.
+ * Verify that a user program was built against an ABI compatible with the
+ * running kernel.
  *
  * Three outcomes:
  *   - Program exports `__abi_version` matching the kernel: silent pass.
@@ -705,11 +708,13 @@ const DLOPEN_ENTRY_SIZE_WASM64 = 48;
  *     published binaries carry the marker, this path can be flipped to
  *     a hard error — see docs/abi-versioning.md.
  *
- * Called after instantiation but before any syscall runs, so known
- * mismatches are refused before memory corruption can happen.
+ * Reads the marker directly from the Wasm bytes instead of calling the
+ * `__abi_version` export. LLVM/lld may wrap exported functions with
+ * `__wasm_call_ctors`; invoking the export here would run C++ constructors
+ * before `_start`, which breaks runtimes such as SpiderMonkey.
  */
 function verifyProgramAbi(
-  instance: WebAssembly.Instance,
+  programBytes: ArrayBuffer,
   expected: number | undefined,
   pid: number,
 ): void {
@@ -718,8 +723,8 @@ function verifyProgramAbi(
     // Will be removed once all callers are updated.
     return;
   }
-  const fn = instance.exports.__abi_version as (() => number) | undefined;
-  if (typeof fn !== "function") {
+  const actual = extractAbiVersion(programBytes);
+  if (actual === null) {
     if (!abiMissingWarned) {
       abiMissingWarned = true;
       console.warn(
@@ -731,7 +736,6 @@ function verifyProgramAbi(
     }
     return;
   }
-  const actual = fn();
   if (actual !== expected) {
     throw new Error(
       `pid=${pid}: ABI version mismatch — kernel advertises ${expected}, ` +
@@ -813,8 +817,6 @@ export async function centralizedWorkerMain(
       } catch (e) {
         if (e instanceof WasiExit) {
           exitCode = e.code;
-        } else if (e instanceof Error && e.message.includes("unreachable")) {
-          exitCode = 0;
         } else {
           throw e;
         }
@@ -825,8 +827,13 @@ export async function centralizedWorkerMain(
     }
 
     // --- SDK module path (existing) ---
+    let kernelExitStatus: number | null = null;
     const kernelImports = buildKernelImports(
-      memory, channelOffset, initData.argv || [], initData.env || [],
+      memory,
+      channelOffset,
+      initData.argv || [],
+      initData.env || [],
+      (status) => { kernelExitStatus = status; },
     );
 
     // Check if the module has wpk_fork_* instrumentation exports
@@ -875,7 +882,7 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
-      verifyProgramAbi(instance, initData.kernelAbiVersion, pid);
+      verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
 
       // For the fork-parent case (initial launch, not a fork child), install
       // __channel_base now — the parent's __tls_base is already correctly
@@ -962,7 +969,10 @@ export async function centralizedWorkerMain(
             entry();
           } catch (e) {
             if (e instanceof Error && e.message.includes("unreachable")) {
-              break; // Normal exit via kernel_exit → unreachable trap
+              if (kernelExitStatus !== null) {
+                exitCode = kernelExitStatus;
+                break; // Normal exit via kernel_exit -> unreachable trap
+              }
             }
             throw e;
           }
@@ -987,7 +997,9 @@ export async function centralizedWorkerMain(
           break;
         }
       } catch (e) {
-        if (!(e instanceof Error && e.message.includes("unreachable"))) {
+        if (e instanceof Error && e.message.includes("unreachable") && kernelExitStatus !== null) {
+          exitCode = kernelExitStatus;
+        } else {
           throw e;
         }
       }
@@ -1021,7 +1033,7 @@ export async function centralizedWorkerMain(
         () => processInstance ?? undefined, ptrWidth);
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
-      verifyProgramAbi(instance, initData.kernelAbiVersion, pid);
+      verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
 
       setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
 
@@ -1031,10 +1043,16 @@ export async function centralizedWorkerMain(
       try {
         const start = instance.exports._start as (() => void) | undefined;
         if (start) start();
+        if (kernelExitStatus !== null) {
+          exitCode = kernelExitStatus;
+        }
       } catch (e) {
         if (e instanceof Error && e.message.includes("unreachable")) {
-          console.error(`[worker] pid=${pid} _start() hit unreachable trap: ${e.message}`);
-          exitCode = 0;
+          if (kernelExitStatus !== null) {
+            exitCode = kernelExitStatus;
+          } else {
+            throw e;
+          }
         } else {
           throw e;
         }
@@ -1293,8 +1311,8 @@ function sendForkSyscall(memory: WebAssembly.Memory, channelOffset: number): num
  *
  * This function:
  * 1. Removes the Start section so `__wasm_init_memory` doesn't auto-run.
- * 2. Finds the constructor function (by inspecting the first `call` instruction
- *    in any export wrapper) and replaces its body with a no-op.
+ * 2. Finds the constructor function by scanning the known LLVM helper exports
+ *    for their common call target and replaces that function body with a no-op.
  */
 export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
   const src = new Uint8Array(bytes);
@@ -1377,11 +1395,14 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     }
   }
 
-  // Find the constructor function by looking at an export wrapper's first `call`.
-  // In LLVM's shared-memory model, every export wrapper starts with `call $__wasm_call_ctors`.
-  // We find this by locating any exported function's code and reading its first call target.
+  // Find the constructor function by looking at the exported helper wrappers.
+  // Plain lld output puts `call $__wasm_call_ctors` first. After
+  // wasm-fork-instrument, wrappers have a rewind prolog before the original
+  // body, so scan instructions and choose the call target shared by the known
+  // helper exports instead of assuming opcode 0 is the constructor call.
   let ctorFuncIndex = -1;
   let exportedFuncIndices: number[] = [];
+  const exportFuncIndicesByName = new Map<string, number>();
 
   // Collect exported function indices from Export section (id=7)
   for (const sec of sections) {
@@ -1391,49 +1412,171 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
       pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readLEB128(src, pos);
-        pos += nameLenBytes + nameLen;
+        pos += nameLenBytes;
+        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
+        pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);
         pos += idxBytes;
         if (kind === 0) { // function export
           exportedFuncIndices.push(idx);
+          exportFuncIndicesByName.set(name, idx);
         }
       }
       break;
     }
   }
 
-  // Find the Code section and look at an exported function's body
+  function skipLEB(pos: number): number {
+    const [, n] = readLEB128(src, pos);
+    return pos + n;
+  }
+
+  function skipMemArg(pos: number): number {
+    pos = skipLEB(pos); // alignment
+    return skipLEB(pos); // offset
+  }
+
+  function getInstructionStartAndEnd(
+    codeSection: Section,
+    funcIndex: number,
+  ): { start: number; end: number } | null {
+    const codeEntry = funcIndex - numFuncImports;
+    if (codeEntry < 0) return null;
+
+    let pos = codeSection.contentOffset;
+    const [funcCount, funcCountBytes] = readLEB128(src, pos);
+    pos += funcCountBytes;
+    if (codeEntry >= funcCount) return null;
+
+    for (let i = 0; i < codeEntry; i++) {
+      const [bodySize, bodySizeBytes] = readLEB128(src, pos);
+      pos += bodySizeBytes + bodySize;
+    }
+
+    const [bodySize, bodySizeBytes] = readLEB128(src, pos);
+    pos += bodySizeBytes;
+    const bodyEnd = pos + bodySize;
+
+    const [localCount, localCountBytes] = readLEB128(src, pos);
+    pos += localCountBytes;
+    for (let i = 0; i < localCount; i++) {
+      pos = skipLEB(pos); // count
+      pos++; // valtype
+    }
+
+    return { start: pos, end: bodyEnd };
+  }
+
+  function scanCallTargets(codeSection: Section, funcIndex: number): number[] {
+    const bounds = getInstructionStartAndEnd(codeSection, funcIndex);
+    if (!bounds) return [];
+
+    const calls: number[] = [];
+    let pos = bounds.start;
+    while (pos < bounds.end) {
+      const op = src[pos++];
+      if (op === 0x10) { // call
+        const [target, n] = readLEB128(src, pos);
+        pos += n;
+        calls.push(target);
+      } else if (op === 0x11 || op === 0x13) { // call_indirect / return_call_indirect
+        pos = skipLEB(pos);
+        pos = skipLEB(pos);
+      } else if (op === 0x12 || op === 0x14 || op === 0x15) {
+        pos = skipLEB(pos);
+      } else if (op === 0x02 || op === 0x03 || op === 0x04) {
+        // blocktype: empty marker, valtype, or signed type index.
+        pos = src[pos] === 0x40 || src[pos] >= 0x70 ? pos + 1 : skipLEB(pos);
+      } else if (op === 0x0c || op === 0x0d || (op >= 0x20 && op <= 0x26) || op === 0xd0 || op === 0xd2) {
+        pos = skipLEB(pos);
+      } else if (op === 0x0e) { // br_table
+        const [count, n] = readLEB128(src, pos);
+        pos += n;
+        for (let i = 0; i <= count; i++) pos = skipLEB(pos);
+      } else if (op >= 0x28 && op <= 0x3e) {
+        pos = skipMemArg(pos);
+      } else if (op === 0x3f || op === 0x40) {
+        pos++;
+      } else if (op === 0x41 || op === 0x42) {
+        pos = skipLEB(pos);
+      } else if (op === 0x43) {
+        pos += 4;
+      } else if (op === 0x44) {
+        pos += 8;
+      } else if (op === 0xfc) {
+        const [subop, n] = readLEB128(src, pos);
+        pos += n;
+        if (subop === 8 || subop === 10 || subop === 12 || subop === 14) {
+          pos = skipLEB(skipLEB(pos));
+        } else if (subop >= 9 && subop <= 17) {
+          pos = skipLEB(pos);
+        }
+      } else if (op === 0xfe) {
+        pos = skipLEB(pos);
+        pos = skipMemArg(pos);
+      } else if (op === 0xfd) {
+        // SIMD is not expected in the helper wrappers. Stop before treating
+        // SIMD immediates as opcodes and collecting false call targets.
+        break;
+      } else {
+        // Most numeric, parametric, and control opcodes have no immediates.
+      }
+    }
+    return calls;
+  }
+
+  // Find the Code section and identify a call target shared by LLVM helper exports.
   for (const sec of sections) {
     if (sec.id === 10 && exportedFuncIndices.length > 0) {
-      // Use the last exported function (likely a wrapper, not a data export)
-      const targetFunc = exportedFuncIndices[exportedFuncIndices.length - 1];
-      const targetCodeEntry = targetFunc - numFuncImports;
-      if (targetCodeEntry < 0) break;
-
-      let pos = sec.contentOffset;
-      const [, funcCountBytes] = readLEB128(src, pos);
-      pos += funcCountBytes;
-
-      // Skip to the target code entry
-      for (let i = 0; i < targetCodeEntry; i++) {
-        const [bodySize, bodySizeBytes] = readLEB128(src, pos);
-        pos += bodySizeBytes + bodySize;
+      const helperNames = [
+        "__wasm_init_tls",
+        "__abi_version",
+        "__get_channel_base_addr",
+        "_start",
+        "__wasm_thread_init",
+      ];
+      const counts = new Map<number, { count: number; firstOrder: number }>();
+      let order = 0;
+      for (const name of helperNames) {
+        const funcIndex = exportFuncIndicesByName.get(name);
+        if (funcIndex === undefined) continue;
+        const perFunction = new Set(scanCallTargets(sec, funcIndex).filter(target => target >= numFuncImports));
+        for (const target of perFunction) {
+          const entry = counts.get(target);
+          if (entry) {
+            entry.count++;
+          } else {
+            counts.set(target, { count: 1, firstOrder: order++ });
+          }
+        }
       }
 
-      // Read the function body
-      const [bodySize, bodySizeBytes] = readLEB128(src, pos);
-      pos += bodySizeBytes;
-      // Skip locals
-      const [localCount, localCountBytes] = readLEB128(src, pos);
-      pos += localCountBytes;
-      for (let i = 0; i < localCount; i++) {
-        const [, countB] = readLEB128(src, pos); pos += countB;
-        pos++; // valtype
+      let best: { target: number; count: number; firstOrder: number } | null = null;
+      for (const [target, value] of counts) {
+        if (
+          value.count >= 2 &&
+          (!best || value.count > best.count ||
+            (value.count === best.count && value.firstOrder < best.firstOrder))
+        ) {
+          best = { target, count: value.count, firstOrder: value.firstOrder };
+        }
       }
-      // First instruction should be `call N` (opcode 0x10 followed by LEB128 func index)
-      if (src[pos] === 0x10) {
-        [ctorFuncIndex] = readLEB128(src, pos + 1);
+
+      if (best) {
+        ctorFuncIndex = best.target;
+      } else {
+        // Fallback for very small legacy binaries: use the first call in an
+        // exported function whose body starts with that call.
+        for (const funcIndex of exportedFuncIndices) {
+          const bounds = getInstructionStartAndEnd(sec, funcIndex);
+          if (!bounds || src[bounds.start] !== 0x10) continue;
+          const [target] = readLEB128(src, bounds.start + 1);
+          if (target >= numFuncImports) {
+            ctorFuncIndex = target;
+            break;
+          }
+        }
       }
       break;
     }
@@ -1587,31 +1730,10 @@ export async function centralizedThreadWorkerMain(
       wasmThreadInit(ptrWidth === 8 ? BigInt(tlsPtr) : tlsPtr);
     }
 
-    // Set __channel_base — either via wasm global (new) or TLS memory (legacy).
-    const getChannelBaseAddr = instance.exports.__get_channel_base_addr as (() => number | bigint) | undefined;
-    if (getChannelBaseAddr) {
-      const addr = Number(getChannelBaseAddr());
-      if (addr === 0) {
-        // Global-based approach — __channel_base was set at instantiation via
-        // WebAssembly.Global in buildImportObject. Nothing to do.
-      } else {
-        // Legacy TLS-based approach
-        const view = new DataView(memory.buffer);
-        if (ptrWidth === 8) {
-          view.setBigUint64(addr, BigInt(channelOffset), true);
-        } else {
-          view.setUint32(addr, channelOffset, true);
-        }
-      }
-    } else if (tlsBlock > 0) {
-      // Fallback: assume offset 0 (only for programs without the helper)
-      const view = new DataView(memory.buffer);
-      if (ptrWidth === 8) {
-        view.setBigUint64(tlsBlock, BigInt(channelOffset), true);
-      } else {
-        view.setUint32(tlsBlock, channelOffset, true);
-      }
-    }
+    // Set __channel_base without calling the exported helper. lld can prefix
+    // exported functions with __wasm_call_ctors, and thread workers must not
+    // re-run constructors in shared process memory.
+    setupChannelBase(instance, module, memory, channelOffset, initData.programBytes, ptrWidth);
 
     // Call the thread function via indirect function table
     const table = instance.exports.__indirect_function_table as WebAssembly.Table | undefined;

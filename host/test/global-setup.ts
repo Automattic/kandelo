@@ -28,6 +28,7 @@ const TEST_PROGRAMS = [
   "abort_test.c",
   "mount_probe_test.c",
   "getpwent_smoke.c",
+  "thread-exit-group.c",
 ];
 
 /** WAT fixtures used by host/test/wasi-shim.test.ts. */

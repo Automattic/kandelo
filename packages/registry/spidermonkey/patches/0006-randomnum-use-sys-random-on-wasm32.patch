@@ -1,0 +1,16 @@
+diff --git a/mfbt/RandomNum.cpp b/mfbt/RandomNum.cpp
+--- a/mfbt/RandomNum.cpp
++++ b/mfbt/RandomNum.cpp
+@@ -35,7 +35,11 @@
+ #endif
+
+ #if defined(__linux__)
++#  if defined(__wasm32__)
++#    include <sys/random.h>  // For GRND_NONBLOCK.
++#  else
+-#  include <linux/random.h>  // For GRND_NONBLOCK.
++#    include <linux/random.h>  // For GRND_NONBLOCK.
++#  endif
+ #  include <sys/syscall.h>   // For SYS_getrandom.
+
+ // Older glibc versions don't define SYS_getrandom, so we define it here if
