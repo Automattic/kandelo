@@ -40,13 +40,21 @@ export interface Toolchain {
 }
 
 const HOMEBREW_LLVM = '/opt/homebrew/opt/llvm/bin';
+const REQUIRED_LLVM_TOOLS = ['clang', 'clang++', 'llvm-ar', 'llvm-ranlib', 'llvm-nm', 'wasm-ld'];
+
+function hasRequiredLlvmTools(binDir: string): boolean {
+  return REQUIRED_LLVM_TOOLS.every(tool => existsSync(join(binDir, tool)));
+}
 
 export async function findLlvmDir(): Promise<string> {
   // 1. Project-specific override — highest priority.
   const envDir = process.env.WASM_POSIX_LLVM_DIR;
   if (envDir) {
-    if (existsSync(join(envDir, 'clang'))) return envDir;
-    throw new Error(`WASM_POSIX_LLVM_DIR="${envDir}" does not contain clang`);
+    if (hasRequiredLlvmTools(envDir)) return envDir;
+    throw new Error(
+      `WASM_POSIX_LLVM_DIR="${envDir}" does not contain the required LLVM tools: ` +
+      REQUIRED_LLVM_TOOLS.join(', ')
+    );
   }
 
   // 2. The Nix flake's shellHook exports LLVM_BIN (=${llvmTree}/bin) so
@@ -57,26 +65,33 @@ export async function findLlvmDir(): Promise<string> {
   //    -wasm-use-legacy-eh=true and other modern wasm flags). LLVM_PREFIX
   //    is the same tree, just the parent — accept either.
   const llvmBin = process.env.LLVM_BIN;
-  if (llvmBin && existsSync(join(llvmBin, 'clang'))) return llvmBin;
+  if (llvmBin && hasRequiredLlvmTools(llvmBin)) return llvmBin;
   const llvmPrefix = process.env.LLVM_PREFIX;
-  if (llvmPrefix && existsSync(join(llvmPrefix, 'bin', 'clang'))) {
+  if (llvmPrefix && hasRequiredLlvmTools(join(llvmPrefix, 'bin'))) {
     return join(llvmPrefix, 'bin');
   }
 
-  // 3. Check if clang on PATH supports wasm32
-  const pathResult = await run('which', ['clang']);
-  if (pathResult.exitCode === 0) {
-    const clangPath = pathResult.stdout.trim();
-    const testResult = await run(clangPath, [
-      '--target=wasm32-unknown-unknown', '-x', 'c', '-c', '-o', '/dev/null', '/dev/null',
-    ]);
-    if (testResult.exitCode === 0) {
-      return dirname(clangPath);
+  // 3. Check PATH for a complete LLVM bin directory. Some Nix clang packages
+  // put clang-wrapper or clang-unwrapped before our combined llvmTree, so
+  // `which clang` may find a clang-only directory even though a later PATH
+  // entry has clang + wasm-ld + llvm-* together.
+  const pathDirs = (process.env.PATH ?? '').split(':').filter(Boolean);
+  const seenPathDirs = new Set<string>();
+  for (const clangDir of pathDirs) {
+    if (seenPathDirs.has(clangDir)) continue;
+    seenPathDirs.add(clangDir);
+    if (hasRequiredLlvmTools(clangDir)) {
+      const testResult = await run(join(clangDir, 'clang'), [
+        '--target=wasm32-unknown-unknown', '-x', 'c', '-c', '-o', '/dev/null', '/dev/null',
+      ]);
+      if (testResult.exitCode === 0) {
+        return clangDir;
+      }
     }
   }
 
   // macOS Homebrew LLVM
-  if (existsSync(join(HOMEBREW_LLVM, 'clang'))) return HOMEBREW_LLVM;
+  if (hasRequiredLlvmTools(HOMEBREW_LLVM)) return HOMEBREW_LLVM;
 
   // Linux: scan /usr/lib/llvm-* for highest version
   try {
@@ -84,7 +99,7 @@ export async function findLlvmDir(): Promise<string> {
     const entries = readdirSync(parent).filter(e => e.startsWith('llvm-')).sort();
     for (const entry of entries.reverse()) {
       const binDir = join(parent, entry, 'bin');
-      if (existsSync(join(binDir, 'clang'))) return binDir;
+      if (hasRequiredLlvmTools(binDir)) return binDir;
     }
   } catch {
     // /usr/lib may not exist

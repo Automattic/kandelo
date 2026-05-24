@@ -1,3 +1,5 @@
+import type { DemoGuideConfig } from "./demo-config";
+
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
 // Every Kandelo UI surface (Sidebar, LiveURLBar, MachineView, Inspector tabs,
@@ -284,10 +286,10 @@ export type SurfaceAvailability = Record<PrimarySurface, boolean>;
 
 export interface DemoPresentation {
   /**
-   * Surface that should dominate while the machine is booting. Demos default
-   * to syslog so users can see real startup progress.
+   * Surface that should dominate while the machine is booting. Most demos use
+   * syslog so users can see real startup progress.
    */
-  bootPrimary: "syslog";
+  bootPrimary: PrimarySurface;
   /**
    * Ordered surface preferences once the demo is ready for use. The UI picks
    * the first available surface and falls back as runtime state changes.
@@ -444,6 +446,7 @@ export interface KernelHost {
 
   // shell / pty
   attachPty(path?: string, opts?: { cols: number; rows: number }): Promise<PtyHandle>;
+  runShellCommand(command: string): Promise<void>;
 
   // VFS / procfs
   readFile(path: string): Promise<Uint8Array>;
@@ -473,11 +476,14 @@ export interface KernelHost {
   subscribePresentation(cb: (state: DemoPresentation) => void): () => void;
   getSurfaceAvailability(): SurfaceAvailability;
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
+  getDemoGuide(): DemoGuideConfig | null;
+  subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
 
   // gallery / library
+  subscribeGallery(cb: () => void): () => void;
   galleryQuery(q: GalleryQuery): Promise<GalleryItem[]>;
   saveCurrentToGallery(title: string): Promise<GalleryItem>;
 }
@@ -542,7 +548,7 @@ function waitForPtyReadiness(pty: PtyHandle): Promise<void> {
 //   - subscribeSyscalls / syscallHistory
 //   - attachFramebuffer
 //   - snapshot
-//   - galleryQuery / saveCurrentToGallery
+//   - saveCurrentToGallery
 //
 // As each host endpoint lands, replace the throwing body with a real wrapper.
 
@@ -626,12 +632,15 @@ export class LiveKernelHost implements KernelHost {
   private webPreviewListeners = new ListenerSet<WebPreviewState | null>();
   private presentationListeners = new ListenerSet<DemoPresentation>();
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
+  private galleryListeners = new ListenerSet<void>();
+  private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
   private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
+  private demoGuide: DemoGuideConfig | null = null;
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
 
@@ -687,11 +696,12 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.kernel = undefined;
-    this.ptySession = null;
-    this.shellPid = null;
+    this.ptySessions.clear();
+    this.shellPids.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false });
+    this.setDemoGuide(null);
   }
 
   /** Configure the program attachPty spawns by default. */
@@ -704,6 +714,18 @@ export class LiveKernelHost implements KernelHost {
   setPresentation(presentation: DemoPresentation): void {
     this.presentation = { ...presentation, runningPrimary: presentation.runningPrimary.slice() };
     this.presentationListeners.emit(this.getPresentation());
+  }
+
+  /** Replace gallery presets and notify views that cache galleryQuery results. */
+  setGalleryItems(items: GalleryItem[]): void {
+    this.galleryItems = items.map((item) => ({ ...item, packages: item.packages.slice(), bootCommand: item.bootCommand.slice() }));
+    this.galleryListeners.emit(undefined);
+  }
+
+  /** Update the optional guide metadata exposed by the current VFS image. */
+  setDemoGuide(guide: DemoGuideConfig | null): void {
+    this.demoGuide = guide ? structuredClone(guide) : null;
+    this.demoGuideListeners.emit(this.getDemoGuide());
   }
 
   /**
@@ -811,6 +833,7 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false });
+    this.setDemoGuide(null);
     await this.kernel?.destroy?.();
   }
 
@@ -1338,6 +1361,14 @@ export class LiveKernelHost implements KernelHost {
     return this.surfaceListeners.add(cb);
   }
 
+  getDemoGuide(): DemoGuideConfig | null {
+    return this.demoGuide ? structuredClone(this.demoGuide) : null;
+  }
+
+  subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void {
+    return this.demoGuideListeners.add(cb);
+  }
+
   // ── KernelHost: sharing ──────────────────────────────────────────────────
 
   async snapshot(opts: SnapshotOptions = {}): Promise<Snapshot> {
@@ -1349,9 +1380,13 @@ export class LiveKernelHost implements KernelHost {
 
   // ── KernelHost: gallery ──────────────────────────────────────────────────
 
+  subscribeGallery(cb: () => void): () => void {
+    return this.galleryListeners.add(cb);
+  }
+
   async galleryQuery(q: GalleryQuery): Promise<GalleryItem[]> {
     if (q.tab !== "presets") return [];
-    const items = this.galleryItems.slice();
+    const items = this.galleryItems.map((item) => ({ ...item, packages: item.packages.slice(), bootCommand: item.bootCommand.slice() }));
     const needle = q.q?.toLowerCase().trim();
     if (!needle) return items;
     return items.filter((i) =>

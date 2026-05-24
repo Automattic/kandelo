@@ -218,6 +218,31 @@ describe("mkrootfs build — happy paths", () => {
     }
   });
 
+  it("--kernel-abi stamps image metadata", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    const out = join(tmp, "image.vfs");
+    try {
+      const r = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", out,
+        "--repo-root", fixture,
+        "--kernel-abi", "11",
+      );
+      expect(r.status).toBe(0);
+      const metadata = MemoryFileSystem.readImageMetadata(new Uint8Array(readFileSync(out)));
+      expect(metadata).toEqual({
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "mkrootfs build",
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("prints subcommand usage on `build --help` and exits 0 without writing", () => {
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
     const out = join(tmp, "should-not-exist.vfs");
@@ -330,6 +355,24 @@ describe("mkrootfs build — error handling", () => {
       expect(r.stderr).toContain("duplicate manifest path");
       expect(r.stderr).toContain("/etc");
       expect(existsSync(join(tmp, "image.vfs"))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("exits non-zero on invalid --kernel-abi", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    try {
+      const r = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", join(tmp, "x.vfs"),
+        "--kernel-abi", "abc",
+      );
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toContain("--kernel-abi");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -468,6 +511,63 @@ describe("mkrootfs inspect — happy paths", () => {
       // Dir size is null (not included as a number).
       const etc = data.find((e) => e.path === "/etc");
       expect(etc!.size).toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--metadata includes image metadata in json output", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-"));
+    const image = join(tmp, "rootfs.vfs");
+    try {
+      const build = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", image,
+        "--repo-root", fixture,
+        "--kernel-abi=11",
+      );
+      expect(build.status).toBe(0);
+
+      const r = run("inspect", image, "--format", "json", "--metadata");
+      expect(r.status).toBe(0);
+      const data = JSON.parse(r.stdout) as {
+        metadata: { version: 1; kernelAbi: number; createdBy: string };
+        entries: Array<{ path: string }>;
+      };
+      expect(data.metadata).toEqual({
+        version: 1,
+        kernelAbi: 11,
+        createdBy: "mkrootfs build",
+      });
+      expect(data.entries.some((e) => e.path === "/etc/passwd")).toBe(true);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--metadata includes image metadata before table output", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-inspect-"));
+    const image = join(tmp, "rootfs.vfs");
+    try {
+      const build = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", image,
+        "--repo-root", fixture,
+        "--kernel-abi=11",
+      );
+      expect(build.status).toBe(0);
+
+      const r = run("inspect", image, "--metadata");
+      expect(r.status).toBe(0);
+      const first = r.stdout.split("\n")[0];
+      expect(first).toContain("metadata");
+      expect(first).toContain(`"kernelAbi":11`);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

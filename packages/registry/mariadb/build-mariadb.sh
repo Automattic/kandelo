@@ -58,6 +58,21 @@ fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+HOST_HELPERS=(
+    "$HOST_BUILD_DIR/extra/comp_err"
+    "$HOST_BUILD_DIR/scripts/comp_sql"
+    "$HOST_BUILD_DIR/dbug/factorial"
+    "$HOST_BUILD_DIR/sql/gen_lex_hash"
+    "$HOST_BUILD_DIR/sql/gen_lex_token"
+)
+
+host_helpers_ready() {
+    [ -f "$HOST_BUILD_DIR/import_executables.cmake" ] || return 1
+    local helper
+    for helper in "${HOST_HELPERS[@]}"; do
+        [ -x "$helper" ] || return 1
+    done
+}
 
 # Homebrew bison (macOS system bison is too old for MariaDB)
 if [ -x /opt/homebrew/opt/bison/bin/bison ]; then
@@ -130,7 +145,7 @@ if [ -d "$PATCH_DIR" ]; then
 fi
 
 # --- Step 1: Host build (native executables for cross-compile) ---
-if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
+if ! host_helpers_ready; then
     echo "==> Step 1: Host build (generating import_executables.cmake)..."
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
@@ -167,11 +182,22 @@ if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
         -DWITH_ZLIB=bundled \
         2>&1 | tail -20
 
-    # Only build the helper executables needed for import_executables.cmake
-    make -j"$NPROC" import_executables 2>&1 | tail -5
+    # Only build the helper executables needed for import_executables.cmake.
+    # Keep the full log for diagnostics. Piping make directly into tail under
+    # pipefail can report SIGPIPE as a failure when the build is merely verbose.
+    HOST_IMPORT_LOG="$HOST_BUILD_DIR/import_executables.log"
+    if ! make -j"$NPROC" import_executables >"$HOST_IMPORT_LOG" 2>&1; then
+        tail -40 "$HOST_IMPORT_LOG"
+        exit 1
+    fi
+    tail -5 "$HOST_IMPORT_LOG"
 
     if [ ! -f "$HOST_BUILD_DIR/import_executables.cmake" ]; then
         echo "ERROR: import_executables.cmake not generated" >&2
+        exit 1
+    fi
+    if ! host_helpers_ready; then
+        echo "ERROR: host helper executables were not generated" >&2
         exit 1
     fi
     echo "==> Host build complete."
@@ -181,7 +207,7 @@ fi
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 resolve_dep() {
     local name="$1"
-    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps --arch="$WASM_ARCH" resolve "$name")
 }
 
 # --- Resolve libcxx via the dep cache, then index into the sysroot ---
@@ -483,5 +509,5 @@ fi
 # at mariadb-install-64/, which then made build-mariadb-vfs.sh's wasm64
 # branch fail with "mariadbd.wasm not found".
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
-[ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true
+WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" install_local_binary mariadb "$INSTALL_DIR/bin/mariadbd.wasm" mariadbd.wasm
+[ -f "$INSTALL_DIR/bin/mysqltest.wasm" ] && WASM_POSIX_DEP_TARGET_ARCH="$WASM_ARCH" install_local_binary mariadb "$INSTALL_DIR/bin/mysqltest.wasm" mysqltest.wasm || true

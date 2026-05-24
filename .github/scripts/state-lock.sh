@@ -14,7 +14,9 @@ set -euo pipefail
 
 LOCK_POLL_SECONDS="${STATE_LOCK_POLL_SECONDS:-${DURABLE_RELEASE_LOCK_POLL_SECONDS:-30}}"
 LOCK_STALE_SECONDS="${STATE_LOCK_STALE_SECONDS:-${DURABLE_RELEASE_LOCK_STALE_SECONDS:-21600}}"
+LOCK_SAME_RUN_STALE_SECONDS="${STATE_LOCK_SAME_RUN_STALE_SECONDS:-1800}"
 STATE_LOCK_OWNER_TOKEN="${STATE_LOCK_OWNER_TOKEN:-}"
+STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-}"
 
 usage() {
   echo "usage: $0 acquire <subject>|release" >&2
@@ -33,8 +35,30 @@ ref_for_subject() {
   echo "refs/heads/github-actions/state-lock/$1"
 }
 
+git_auth_header() {
+  local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [ -z "$token" ]; then
+    return 1
+  fi
+
+  printf 'AUTHORIZATION: basic %s' \
+    "$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
+}
+
+git_remote() {
+  local header
+  if header="$(git_auth_header 2>/dev/null)"; then
+    git \
+      -c "http.https://github.com/.extraheader=" \
+      -c "http.https://github.com/.extraheader=$header" \
+      "$@"
+  else
+    git "$@"
+  fi
+}
+
 remote_lock_sha() {
-  git ls-remote origin "$LOCK_REF" | awk '{print $1}'
+  git_remote ls-remote origin "$LOCK_REF" | awk '{print $1}'
 }
 
 state_file_path() {
@@ -78,6 +102,7 @@ write_lock_state() {
     printf 'STATE_LOCK_SHA=%q\n' "$lock_sha"
     printf 'STATE_LOCK_SUBJECT=%q\n' "$SUBJECT"
     printf 'STATE_LOCK_OWNER_TOKEN=%q\n' "$STATE_LOCK_OWNER_TOKEN"
+    printf 'STATE_LOCK_OWNER_DETAIL=%q\n' "$STATE_LOCK_OWNER_DETAIL"
     printf 'DURABLE_RELEASE_LOCK_REF=%q\n' "$lock_ref"
     printf 'DURABLE_RELEASE_LOCK_SHA=%q\n' "$lock_sha"
   } >"$state_file"
@@ -88,6 +113,7 @@ write_lock_state() {
       echo "STATE_LOCK_SHA=$lock_sha"
       echo "STATE_LOCK_SUBJECT=$SUBJECT"
       echo "STATE_LOCK_OWNER_TOKEN=$STATE_LOCK_OWNER_TOKEN"
+      echo "STATE_LOCK_OWNER_DETAIL=$STATE_LOCK_OWNER_DETAIL"
       # Backward-compat for any callers still reading the old env names.
       echo "DURABLE_RELEASE_LOCK_REF=$lock_ref"
       echo "DURABLE_RELEASE_LOCK_SHA=$lock_sha"
@@ -110,46 +136,49 @@ load_lock_state() {
 
 delete_lock_if_unchanged() {
   local expected_sha="$1"
-  git push \
+  git_remote push \
     --force-with-lease="$LOCK_REF:$expected_sha" \
     origin ":$LOCK_REF" >/dev/null 2>&1
 }
 
-probe_push_access() {
-  local probe_sha expected_sha lease output current_sha
-
-  probe_sha="$(create_lock_commit)"
-  expected_sha="$(remote_lock_sha || true)"
-  if [ -n "$expected_sha" ]; then
-    lease="--force-with-lease=$LOCK_REF:$expected_sha"
-  else
-    lease="--force-with-lease=$LOCK_REF:"
-  fi
-
-  if output="$(git push --dry-run "$lease" origin "$probe_sha:$LOCK_REF" 2>&1)"; then
-    return 0
-  fi
-
-  current_sha="$(remote_lock_sha || true)"
-  if [ "$current_sha" != "$expected_sha" ]; then
-    echo "State lock changed while probing push access for subject=$SUBJECT; treating as contention."
-    return 0
-  fi
-
-  echo "::error::state-lock cannot push ${LOCK_REF}; check this job's permissions (contents: write is required)." >&2
-  printf '%s\n' "$output" >&2
-  exit 1
-}
-
 lock_message_for() {
   local lock_sha="$1"
-  git fetch --no-tags --depth=1 origin "$LOCK_REF" >/dev/null 2>&1
+  git_remote fetch --no-tags --depth=1 origin "$LOCK_REF" >/dev/null 2>&1
   git log -1 --format=%B "$lock_sha"
 }
 
 owner_field() {
   local field="$1"
   sed -n "s/^${field}=//p" | head -n 1
+}
+
+same_run_owner_is_inactive() {
+  local repo="$1"
+  local owner_run_id="$2"
+  local owner_detail="$3"
+  local jobs
+  local found=0
+  local active=0
+  local job_name job_status
+
+  if [ -z "$owner_detail" ]; then
+    return 1
+  fi
+
+  jobs="$(gh api "/repos/${repo}/actions/runs/${owner_run_id}/jobs" \
+    --paginate \
+    --jq '.jobs[] | [.name, .status] | @tsv' 2>/dev/null || true)"
+
+  while IFS=$'\t' read -r job_name job_status; do
+    if [[ "$job_name" == *"$owner_detail"* ]]; then
+      found=1
+      if [ "$job_status" != "completed" ]; then
+        active=1
+      fi
+    fi
+  done <<<"$jobs"
+
+  [ "$found" = "1" ] && [ "$active" = "0" ]
 }
 
 create_lock_commit() {
@@ -169,6 +198,7 @@ run_id=${GITHUB_RUN_ID}
 run_attempt=${GITHUB_RUN_ATTEMPT:-}
 job=${GITHUB_JOB:-}
 owner_token=${STATE_LOCK_OWNER_TOKEN}
+owner_detail=${STATE_LOCK_OWNER_DETAIL}
 run_url=${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 created_epoch=${now}
 EOF
@@ -191,15 +221,17 @@ acquire() {
 
   local repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
   local run_id="${GITHUB_RUN_ID:?GITHUB_RUN_ID is required}"
+  local unresolved_push_failures=0
+  local unresolved_push_first_epoch=0
+  local unresolved_push_delay=2
+  local unresolved_push_max_seconds="${STATE_LOCK_UNRESOLVED_PUSH_FAILURE_SECONDS:-120}"
   ensure_owner_token
 
-  probe_push_access
-
   while true; do
-    local lock_sha
+    local lock_sha push_output
     lock_sha="$(create_lock_commit)"
 
-    if git push origin "$lock_sha:$LOCK_REF" >/dev/null 2>&1; then
+    if push_output="$(git_remote push origin "$lock_sha:$LOCK_REF" 2>&1)"; then
       write_lock_state "$LOCK_REF" "$lock_sha"
       echo "Acquired state lock $LOCK_REF (subject=$SUBJECT) at $lock_sha."
       return 0
@@ -208,14 +240,41 @@ acquire() {
     local held_sha
     held_sha="$(remote_lock_sha || true)"
     if [ -z "$held_sha" ]; then
-      sleep 2
+      local unresolved_now unresolved_elapsed
+      unresolved_now="$(date -u +%s)"
+      if [ "$unresolved_push_first_epoch" = "0" ]; then
+        unresolved_push_first_epoch="$unresolved_now"
+      fi
+      unresolved_elapsed=$((unresolved_now - unresolved_push_first_epoch))
+      unresolved_push_failures=$((unresolved_push_failures + 1))
+      if [ -n "${STATE_LOCK_UNRESOLVED_PUSH_FAILURES:-}" ] \
+           && [ "$unresolved_push_failures" -ge "$STATE_LOCK_UNRESOLVED_PUSH_FAILURES" ] \
+           || [ "$unresolved_elapsed" -ge "$unresolved_push_max_seconds" ]
+      then
+        echo "::error::state-lock cannot push ${LOCK_REF} and cannot read a current lock after ${unresolved_push_failures} attempts over ${unresolved_elapsed}s." >&2
+        echo "::error::Check this job's permissions (contents: write is required) and GitHub git transport availability." >&2
+        printf '%s\n' "$push_output" >&2
+        exit 1
+      fi
+      echo "State lock push did not acquire subject=$SUBJECT and no current lock was readable; retrying in ${unresolved_push_delay}s."
+      sleep "$unresolved_push_delay"
+      if [ "$unresolved_push_delay" -lt 30 ]; then
+        unresolved_push_delay=$((unresolved_push_delay * 2))
+        if [ "$unresolved_push_delay" -gt 30 ]; then
+          unresolved_push_delay=30
+        fi
+      fi
       continue
     fi
+    unresolved_push_failures=0
+    unresolved_push_first_epoch=0
+    unresolved_push_delay=2
 
-    local message owner_run_id owner_token owner_epoch status stale_reason now age
+    local message owner_run_id owner_token owner_detail owner_epoch status stale_reason now age
     message="$(lock_message_for "$held_sha" 2>/dev/null || true)"
     owner_run_id="$(printf '%s\n' "$message" | owner_field run_id)"
     owner_token="$(printf '%s\n' "$message" | owner_field owner_token)"
+    owner_detail="$(printf '%s\n' "$message" | owner_field owner_detail)"
     owner_epoch="$(printf '%s\n' "$message" | owner_field created_epoch)"
     stale_reason=""
 
@@ -225,6 +284,10 @@ acquire() {
            && [ "$owner_token" = "$STATE_LOCK_OWNER_TOKEN" ]
       then
         stale_reason="left by this lock owner"
+      elif [ "$owner_run_id" = "$run_id" ] \
+             && same_run_owner_is_inactive "$repo" "$owner_run_id" "$owner_detail"
+      then
+        stale_reason="same-run owner job is no longer active (${owner_detail})"
       else
         status="$(gh api "/repos/${repo}/actions/runs/${owner_run_id}" -q .status 2>/dev/null || true)"
         if [ "$status" = "completed" ]; then
@@ -236,7 +299,12 @@ acquire() {
     if [ -z "$stale_reason" ] && [ -n "$owner_epoch" ]; then
       now="$(date -u +%s)"
       age=$((now - owner_epoch))
-      if [ "$age" -gt "$LOCK_STALE_SECONDS" ]; then
+      if [ -n "$owner_run_id" ] \
+           && [ "$owner_run_id" = "$run_id" ] \
+           && [ "$age" -gt "$LOCK_SAME_RUN_STALE_SECONDS" ]
+      then
+        stale_reason="same-run lock is older than ${LOCK_SAME_RUN_STALE_SECONDS}s"
+      elif [ "$age" -gt "$LOCK_STALE_SECONDS" ]; then
         stale_reason="lock is older than ${LOCK_STALE_SECONDS}s"
       fi
     fi

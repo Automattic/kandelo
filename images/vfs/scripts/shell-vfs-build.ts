@@ -8,15 +8,15 @@
  * (+ MariaDB) and the WordPress tree.
  *
  * The flag that distinguishes Shell from WP/LAMP usage is `eagerBinaries`.
- * Shell uses `false`: only dash + magic + lazy archives are baked into
- * shell.vfs.zst; every other tool is fetched + lazy-registered by the
- * Shell page at runtime via kernel.registerLazyFiles(). WP/LAMP use
- * `true`: every tool binary is baked into the image, because those
+ * Shell uses `false`: the canonical rootfs provides base utility lazy stubs,
+ * then shell.vfs.zst overlays demo lazy stubs and lazy archives. Utility
+ * bytes are fetched on first exec.
+ * WP/LAMP use `true`: every tool binary is baked into the image, because those
  * demos run in `kernelOwnedFs: true` mode where the main thread has no
  * VFS to lazy-register against.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync, lstatSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
@@ -25,7 +25,11 @@ import {
   tryResolveBinary,
   findRepoRoot,
 } from "../../../host/src/binary-resolver";
-import { COREUTILS_NAMES } from "../lib/init/shell-binaries";
+import {
+  COREUTILS_NAMES,
+  SHELL_LAZY_BINARY_SPECS,
+  shellLazyPlaceholderUrl,
+} from "../lib/init/shell-binaries";
 import {
   writeVfsFile,
   writeVfsBinary,
@@ -41,10 +45,8 @@ export interface ShellVfsOptions {
    * for demos that run in `kernelOwnedFs: true` mode — there is no
    * main-thread filesystem to lazy-register against post-boot.
    *
-   * When false, only dash + magic + the lazy archives (vim.zip,
-   * nethack.zip) are baked; the page is expected to wire up runtime
-   * lazy registration for the rest. This matches the Shell demo's
-   * current behavior.
+   * When false, utility binaries are stored as lazy VFS metadata. If a base
+   * rootfs image was provided, only missing shell-demo tools are added here.
    */
   eagerBinaries: boolean;
   /**
@@ -75,6 +77,7 @@ export function populateShellEnvironment(
     populateSystem(fs);
     populateDash(fs);
     if (opts.eagerBinaries) populateBash(fs);
+    if (!opts.eagerBinaries) populateLazyBinaries(fs);
     populateCoreutilsSymlinks(fs);
     if (opts.eagerBinaries) populateCoreutils(fs);
     populateGrepSedSymlinks(fs);
@@ -85,6 +88,9 @@ export function populateShellEnvironment(
     populateBaseExtendedSymlinks(fs);
     if (opts.eagerBinaries) populateBaseExtendedBinaries(fs);
     populateMagic(fs);
+  }
+  if (opts.baseProvided && !opts.eagerBinaries) {
+    populateLazyBinaries(fs, { skipExisting: true });
   }
   populateVimArchive(fs);
   populateNetHackArchive(fs);
@@ -253,6 +259,23 @@ function populateSed(fs: MemoryFileSystem): void {
   writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(bytes));
 }
 
+function populateLazyBinaries(
+  fs: MemoryFileSystem,
+  opts: { skipExisting?: boolean } = {},
+): void {
+  for (const spec of SHELL_LAZY_BINARY_SPECS) {
+    if (opts.skipExisting && fs.getLazyEntry(spec.vfsPath)) continue;
+    const resolved = resolveBinary(spec.resolverPath);
+    const size = statSync(resolved).size;
+    fs.registerLazyFile(
+      spec.vfsPath,
+      shellLazyPlaceholderUrl(spec),
+      size,
+      0o755,
+    );
+  }
+}
+
 // ── Extended toolset ────────────────────────────────────────────
 
 function populateBaseExtendedSymlinks(fs: MemoryFileSystem): void {
@@ -394,7 +417,7 @@ function resolveMagicPath(): string {
 function populateMagic(fs: MemoryFileSystem): void {
   const magicPath = resolveMagicPath();
   try {
-    lstatSync(magicPath);
+    statSync(magicPath);
   } catch {
     throw new Error(
       `magic.lite not found (expected at ${magicPath}). ` +

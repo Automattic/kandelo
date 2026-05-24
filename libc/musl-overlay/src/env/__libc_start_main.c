@@ -57,10 +57,9 @@ void __init_libc(char **envp, char *pn)
 
 static void libc_start_init(void)
 {
-	_init();
-	uintptr_t a = (uintptr_t)&__init_array_start;
-	for (; a<(uintptr_t)&__init_array_end; a+=sizeof(void(*)()))
-		(*(void (**)(void))a)();
+	/* For wasm command modules, wasm-ld synthesizes a call to
+	 * __wasm_call_ctors from _start when constructors are present. Running
+	 * the init array here as well invokes C++ static constructors twice. */
 }
 
 weak_alias(libc_start_init, __libc_start_init);

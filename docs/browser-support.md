@@ -78,7 +78,7 @@ Browser fetch → Service Worker intercepts
 ## Capabilities
 
 ### Multi-Process
-- `fork()` via Asyncify snapshot/restore — child runs in new sub-worker with copied memory
+- `fork()` via `wasm-fork-instrument` snapshot/restore — child runs in new sub-worker with copied memory
 - `exec()` reads program binary from the shared filesystem, replaces process
 - `posix_spawn()` — fork+exec with file actions (addchdir, addfchdir, addclose, adddup2)
 - Process groups, wait/waitpid, cross-process signals, pipes
@@ -178,6 +178,83 @@ const memfs = MemoryFileSystem.fromImage(
 const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
 ```
 
+### Kandelo demo metadata
+
+VFS images can also carry UI presentation metadata at `/etc/kandelo/demo.json`.
+The Kandelo live loader reads this file immediately after restoring the image,
+before kernel instantiation, and uses it to decide which surface should be
+primary during boot and after the demo is ready. This keeps demo-specific UI
+preferences with the image instead of hardcoding them in the page loader.
+
+```json
+{
+  "version": 1,
+  "profiles": {
+    "wordpress-sqlite": {
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["web", "terminal", "syslog"],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    }
+  }
+}
+```
+
+Use `writeKandeloDemoConfig()` from
+`images/vfs/scripts/kandelo-demo-config.ts` in VFS build scripts. Images
+without this file still boot with Kandelo's generic presentation defaults, but
+the Kandelo app does not carry demo-specific presentation fallbacks.
+Any extra files needed by an image-declared `autoCommand` can be declared in
+`assets`; the loader stages those paths generically and hash-verifies them when
+`sha256` is provided.
+
+Images can also declare an optional `guide`. When `guide` is absent, Kandelo
+does not render a demo panel; this is the intended shape for demos where the
+primary surface is enough, such as WordPress and Doom. A guide can contain
+button groups, an editable shell script, and optional companion HTML:
+
+```json
+{
+  "version": 1,
+  "profiles": {
+    "node": {
+      "guide": {
+        "title": "Node.js demo",
+        "groups": [{
+          "title": "REPL",
+          "actions": [
+            {
+              "id": "enter-repl",
+              "label": "Open REPL",
+              "kind": "terminal.run",
+              "payload": "node"
+            },
+            {
+              "id": "send-expression",
+              "label": "Send expr",
+              "kind": "terminal.write",
+              "payload": "process.version\n"
+            }
+          ]
+        }]
+      }
+    }
+  }
+}
+```
+
+`terminal.run` sends a command through the persistent PTY-backed shell.
+`terminal.write` sends raw text to that PTY, which is useful for entering input
+into an already-running REPL. `guide.companion.srcDoc` runs in a sandboxed
+iframe and has no direct kernel access; it can only request parent-approved
+actions by posting `{ type: "kandelo.demoAction", actionId }`.
+
+When changing metadata for an existing package-backed image, bump that
+package's `build.toml` `revision` so published/fetched binaries are rebuilt.
+For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
+
 ### VFS images per demo
 
 | Demo | Image | Build command | What's inside |
@@ -207,8 +284,9 @@ Each build script requires the corresponding software to be compiled first (e.g.
 
 1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
 2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
-3. Update the demo's `main.ts` to fetch the `.vfs.zst` file and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
-4. Add a build target in `run.sh`
+3. If the image is consumed by Kandelo, write `/etc/kandelo/demo.json` via `writeKandeloDemoConfig()`
+4. Update the demo's `main.ts` to fetch the `.vfs.zst` file and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
+5. Add a build target in `run.sh`
 
 The shared helpers in `vfs-image-helpers.ts` provide:
 - `writeVfsFile(fs, path, content)` / `writeVfsBinary(fs, path, data)` — write files

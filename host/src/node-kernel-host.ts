@@ -25,6 +25,9 @@ import type {
   ResolveExecRequestMessage,
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
+import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+
+export type { HttpRequest, HttpResponse };
 
 function currentModuleDir(): string {
   if (typeof __dirname !== "undefined") return __dirname;
@@ -32,6 +35,7 @@ function currentModuleDir(): string {
 }
 
 const MODULE_DIR = currentModuleDir();
+const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 
 export interface NodeKernelHostOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -211,6 +215,29 @@ export class NodeKernelHost {
   }
 
   /**
+   * Send an HTTP request to a server running inside the kernel and return
+   * the parsed response. Bypasses real TCP by using the kernel's injected
+   * connection path directly. Prototype API.
+   *
+   * The in-kernel server must already be listening on `port`. Each call
+   * opens a fresh injected connection.
+   */
+  async fetchInKernel(
+    port: number,
+    request: HttpRequest,
+    options?: { timeoutMs?: number },
+  ): Promise<HttpResponse> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, {
+      type: "http_request",
+      requestId,
+      port,
+      request,
+      timeoutMs: options?.timeoutMs,
+    }) as Promise<HttpResponse>;
+  }
+
+  /**
    * Read the kernel's per-process fork counter. Used by the spawn
    * regression tests to assert a SYS_SPAWN call didn't fall back to
    * fork — `getForkCount(parent)` should return the same value before
@@ -329,10 +356,18 @@ export class NodeKernelHost {
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     const requestId = this._nextRequestId++;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
-      await this.request(requestId, { type: "destroy", requestId });
+      await Promise.race([
+        this.request(requestId, { type: "destroy", requestId }),
+        new Promise((resolve) => {
+          timeoutId = setTimeout(resolve, DESTROY_REQUEST_TIMEOUT_MS);
+        }),
+      ]);
     } catch {
       // Worker may have already exited
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
     await this.worker.terminate();
     this.exitResolvers.clear();

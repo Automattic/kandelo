@@ -219,6 +219,73 @@ node scripts/validate-software-gallery.mjs \
   --index /tmp/index.toml
 ```
 
+## Kandelo Demo Metadata
+
+Package-source VFS images can opt into Kandelo's built-in demo guide by writing
+`/etc/kandelo/demo.json` during image construction. Keep this metadata in the
+VFS package, not in the Kandelo app. The loader resolves metadata by gallery
+entry ID after restoring the image.
+
+For REPL demos in `kandelo-software`, add a `guide` next to the image's
+`presentation`:
+
+```typescript
+writeKandeloDemoConfig(fs, {
+  version: 1,
+  profiles: {
+    "kandelo-software-python-vfs": {
+      presentation: {
+        bootPrimary: "syslog",
+        runningPrimary: ["terminal", "syslog"],
+        terminalAccess: "primary",
+        internalsAccess: "drawer"
+      },
+      guide: {
+        title: "Python demo",
+        groups: [
+          {
+            title: "REPL",
+            actions: [
+              {
+                id: "open-repl",
+                label: "Open REPL",
+                kind: "terminal.run",
+                payload: "python3"
+              },
+              {
+                id: "send-expression",
+                label: "Send expr",
+                kind: "terminal.write",
+                payload: "import sys; sys.version\n"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+});
+```
+
+Action kinds:
+
+- `terminal.run` sends the payload as a shell command to the persistent
+  PTY-backed shell.
+- `terminal.write` sends raw text to that PTY, so it can enter input into an
+  already-running REPL.
+
+Optional companion HTML can be embedded as `guide.companion.srcDoc`. It runs in
+a sandboxed iframe and cannot call the kernel directly. It asks Kandelo to run
+known actions with:
+
+```js
+parent.postMessage({ type: "kandelo.demoAction", actionId: "send-expression" }, "*");
+```
+
+Kandelo validates `actionId` against the actions declared in the same VFS
+metadata before touching the running machine. Omitting `guide` means no demo
+panel is shown.
+
 The arguments may also be `https://` URLs.
 
 The browser demo uses `kandelo-software` by default. For local testing

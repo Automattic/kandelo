@@ -45,8 +45,8 @@ The kernel's binary interface to user programs is load-bearing: any silent incom
 - Channel header layout (`shared::channel::*`), channel data buffer, signal-delivery area.
 - Syscall numbers (removals, renames, reassignments; additions are allowed without a bump if existing entries are unchanged).
 - Existing marshalled `repr(C)` structs (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`, `WasmStatfs`).
-- Asyncify save slots (`shared::abi::ASYNCIFY_SAVE_SLOTS`).
 - `shared::abi::*` constants (custom section name, process-expected globals, export filter lists).
+- The five `wpk_fork_*` export names + save buffer / frame layout emitted by `wasm-fork-instrument` (see [docs/fork-instrumentation.md](docs/fork-instrumentation.md)). The tool hardcodes saved-global offsets at instrument time; changing the layout and re-running old user binaries against a new kernel will corrupt the fork save path.
 - Kernel-wasm exports (any existing `kernel_*` function signature change, global type/mutability change, or removed export that isn't on the toolchain denylist; additions are allowed without a bump if existing entries are unchanged).
 
 **Workflow when you've changed something that might be ABI-affecting:**
@@ -327,6 +327,19 @@ Every PR that adds or changes user-facing features, APIs, or behavior must inclu
 - **`README.md`** — Update when adding major features, new ported software, or changing project structure
 
 Do not skip documentation. If a feature is worth implementing, it is worth documenting.
+
+### Kandelo Demo Metadata
+
+Built-in Kandelo demo presentation preferences belong in the VFS image, not in
+the Kandelo app loader. Write `/etc/kandelo/demo.json` with
+`writeKandeloDemoConfig()` from `images/vfs/scripts/kandelo-demo-config.ts` for
+preferred surfaces, `autoCommand`, and image-declared assets.
+
+It is OK for `demo.json` to be absent. The Kandelo app should use generic
+defaults in that case, not demo-specific fallbacks or conditionals. When
+changing metadata for an existing package-backed image, bump that package's
+`build.toml` `revision` so the image is rebuilt. See
+`docs/browser-support.md#kandelo-demo-metadata`.
 
 ## Key Directories
 

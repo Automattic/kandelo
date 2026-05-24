@@ -4,6 +4,12 @@
  * The kernel worker hosts the CentralizedKernelWorker and all process
  * lifecycle. The main thread is a thin UI proxy that sends messages here.
  */
+import type {
+  HttpRequest,
+  HttpResponse,
+} from "./networking/in-kernel-http";
+
+export type { HttpRequest, HttpResponse };
 
 // ── Main Thread → Kernel Worker ──
 
@@ -276,6 +282,17 @@ export interface DrainSyscallTraceMessage {
   requestId: number;
 }
 
+/** Send an HTTP request to a server running in the kernel and wait for the
+ *  response. Reply arrives as a `response` message whose `result` is an
+ *  {@link HttpResponse}. */
+export interface HttpRequestMessage {
+  type: "http_request";
+  requestId: number;
+  port: number;
+  request: HttpRequest;
+  timeoutMs?: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -304,7 +321,8 @@ export type MainToKernelMessage =
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
-  | DrainSyscallTraceMessage;
+  | DrainSyscallTraceMessage
+  | HttpRequestMessage;
 
 // ── Kernel Worker → Main Thread ──
 

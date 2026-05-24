@@ -129,7 +129,7 @@ Compiled into every user program. Three main files:
 
 | File | Purpose |
 |------|---------|
-| `channel_syscall.c` | Channel-based syscall dispatcher. Writes syscall number + args to SharedArrayBuffer, notifies kernel via `Atomics.store` + `Atomics.notify`, waits for response via `Atomics.wait`. Also handles fork (Asyncify save/restore), clone (thread setup), exec, and signal delivery. |
+| `channel_syscall.c` | Channel-based syscall dispatcher. Writes syscall number + args to SharedArrayBuffer, notifies kernel via `Atomics.store` + `Atomics.notify`, waits for response via `Atomics.wait`. Also handles fork (`wasm-fork-instrument` save/restore), clone (thread setup), exec, and signal delivery. |
 | `compiler_rt.c` | Compiler runtime: soft-float (`__floatditf`, `__fixunstfdi`, etc.) and 64-bit builtins needed by musl on wasm32. |
 | `dlopen.c` | Dynamic loading glue for `dlopen`/`dlsym` via host. |
 
@@ -204,18 +204,19 @@ This mechanism is critical: the process worker blocks on `Atomics.wait` while th
 
 ### fork()
 
-Fork uses Binaryen Asyncify to snapshot the Wasm call stack:
+Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stack (details in [fork-instrumentation.md](fork-instrumentation.md)):
 
 1. User calls `fork()` → musl → `__syscall(SYS_clone, ...)` → glue
-2. Glue calls Asyncify unwind to save the call stack to a buffer
-3. Returns to host with "fork requested" status
-4. Host copies parent's entire Wasm memory to a new `WebAssembly.Memory`
+2. Host's `kernel_fork` override calls `wpk_fork_unwind_begin(buf)`. The tool-injected export sets state to UNWINDING, initializes `current_pos = frames_start_offset` at `*(buf+0)`, and snapshots every mutable scalar global (including `__tls_base` and `__stack_pointer`) into the buffer's `saved_globals[]` area.
+3. The return-to-caller chain unwinds; each instrumented function's postamble writes its frame to the buffer and bumps `current_pos`.
+4. Once `_start` returns (top-of-stack), the host sends SYS_FORK through the channel.
 5. Kernel's `kernel_fork_process` copies fd table, signals, env, CWD, etc.
-6. Host spawns a new worker with the copied memory
-7. Child worker starts Asyncify rewind, restoring the call stack
-8. Fork returns 0 in child, child PID in parent
+6. Host copies the parent's linear memory to a new `WebAssembly.Memory` and spawns a child worker.
+7. Child worker calls `wpk_fork_rewind_begin(buf)` — the tool's export restores all saved globals. The host then calls `setupChannelBase(...)` (which reads the now-correct `__tls_base`) and invokes `_start`.
+8. Each instrumented function's preamble sees state=REWINDING, reloads its frame, and re-enters the call site where the parent was interrupted. Eventually reaches the `kernel_fork` call site in the leaf function, which returns 0.
+9. `wpk_fork_rewind_end` resets state; fork returns 0 in child, child PID in parent.
 
-Key detail: Asyncify restores Wasm locals but NOT globals. The `__stack_pointer` and `__tls_base` globals are saved/restored explicitly by the glue at offsets near the asyncify buffer.
+Unlike Binaryen Asyncify, this instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
 
 ### exec()
 
@@ -235,7 +236,7 @@ Step 6 is required: without it, `MemoryManager` falls back to a hardcoded 16MB `
 POSIX `posix_spawn` is normally fork+exec done atomically. Our kernel
 ships a custom syscall (`SYS_SPAWN = 500`, host-intercepted in
 `host/src/kernel-worker.ts`) that builds the child directly — no fork,
-no asyncify rewind, no exec replay. This is the fast path popen,
+no `wpk_fork_*` rewind, no exec replay. This is the fast path popen,
 `system`, shell pipelines, nginx-FastCGI, and any direct posix_spawn
 caller now take.
 
@@ -360,6 +361,8 @@ The browser host layers two additional, host-specific mounts on top: `/dev/shm` 
 ### rootfs image as the source of truth
 
 `/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`, `/etc/resolv.conf`, etc. are real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. There is no in-kernel synthetic-file shim: any program that calls `getpwnam`, `gethostbyname`, `getservbyname`, etc. reads the same bytes a `cat /etc/passwd` would.
+
+VFS images can also carry image-level metadata outside the guest file tree. The first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for images that carry ABI-bound Wasm programs. `MemoryFileSystem.readImageMetadata(image)` reads this declaration without materialising the filesystem, and `MemoryFileSystem.assertImageKernelAbi(image, abi)` validates it for callers that already know the running kernel ABI. Legacy/data-only images may omit the field.
 
 ### Node host
 
@@ -633,7 +636,7 @@ bash build.sh
 2. Copies `wasm_posix_kernel.wasm` to `host/wasm/`
 3. Builds user programs from `programs/*.c` via `scripts/build-programs.sh`
 4. Builds TypeScript host via `npm run build` (tsup → ESM + CJS)
-5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree and writes `host/wasm/rootfs.vfs`
+5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
 
 `host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
 
@@ -646,7 +649,7 @@ The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 - Links: `channel_syscall.c` + `compiler_rt.c` + `crt1.o` + `libc.a`
 - Linker flags: `--import-memory --shared-memory --max-memory=1073741824`
 
-For programs that use `fork()`, Binaryen's `wasm-opt --asyncify` post-processing is required to enable call stack save/restore.
+For programs that use `fork()`, the in-tree `wasm-fork-instrument` tool (see [fork-instrumentation.md](fork-instrumentation.md)) must be the **last** post-link pass — after any `wasm-opt -O2`. The tool auto-discovers fork-path functions via call-graph analysis from the `kernel.kernel_fork` import; no `asyncify-onlylist.txt` is needed. Binaryen Asyncify is no longer used.
 
 ### Package system
 

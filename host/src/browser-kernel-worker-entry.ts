@@ -84,6 +84,7 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { ThreadPageAllocator } from "./thread-allocator";
+import { CH_TOTAL_SIZE } from "./constants";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
@@ -91,8 +92,7 @@ import type {
 
 const DEFAULT_MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
-const CH_TOTAL_SIZE = 72 + PAGE_SIZE;
-const ASYNCIFY_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = 16384;
 
 // State
 let kernelWorker: CentralizedKernelWorker;
@@ -713,13 +713,9 @@ async function handleFork(
     ptrWidth,
   });
 
-  // For fork-from-non-main-thread: the parent populated its asyncify
-  // buffer at the *thread's* channel offset. Use that for rewind and
-  // route the child to the thread function instead of _start. Mirrors
-  // handleFork in host/src/node-kernel-worker-entry.ts.
-  const asyncifyBufAddr = threadFork
+  const forkBufAddr = threadFork
     ? threadFork.forkBufAddr
-    : childChannelOffset - ASYNCIFY_BUF_SIZE;
+    : childChannelOffset - FORK_BUF_SIZE;
   const childInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
     pid: childPid,
@@ -729,7 +725,7 @@ async function handleFork(
     memory: childMemory,
     channelOffset: childChannelOffset,
     isForkChild: true,
-    asyncifyBufAddr,
+    forkBufAddr,
     forkChildThreadFnPtr: threadFork?.fnPtr,
     forkChildThreadArgPtr: threadFork?.argPtr,
     ptrWidth,
@@ -1304,30 +1300,31 @@ function handleRegisterPtyOutput(msg: Extract<MainToKernelMessage, { type: "regi
   });
 }
 
-// ── Connection Pump (runs inside kernel worker) ──
+// ── HTTP request bridge (runs inside kernel worker) ──
+//
+// Two callers:
+//   1. The service-worker MessagePort (bridgePort) — for browser pages whose
+//      fetch events are intercepted by a service worker.
+//   2. The main thread via the `http_request` message — for direct
+//      programmatic access without going through a service worker.
+//
+// Both end up calling kernelWorker.sendHttpRequest() with the same shape.
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-function handleHttpRequest(requestId: number, request: any) {
+async function handleHttpRequest(requestId: number, request: any) {
   if (!kernelInstance || !bridgePort) return;
-
   const url = request.url || "?";
 
-  // Find a listener target for the bridge's target HTTP port.
-  const kw = kernelWorker as any;
-  let target: { pid: number; fd: number } | null = null;
-  if (bridgeTargetPort !== null) {
-    target = kw.pickListenerTarget(bridgeTargetPort);
-  } else {
-    // Fallback: try all registered listener ports
-    const targetPorts: number[] = Array.from(kw.tcpListenerTargets?.keys() ?? []);
-    for (const port of targetPorts) {
-      target = kw.pickListenerTarget(port);
-      if (target) break;
-    }
+  // Resolve the port to dispatch to. The SW bridge configures one
+  // bridgeTargetPort per page; if not set, fall back to the first
+  // registered listener (matches earlier behavior).
+  let port = bridgeTargetPort;
+  if (port == null) {
+    const ports: number[] = Array.from(
+      (kernelWorker as any).tcpListenerTargets?.keys() ?? [],
+    );
+    port = ports[0] ?? null;
   }
-  if (!target) {
+  if (port == null) {
     console.warn(`[bridge] no listener target for req#${requestId} ${url}`);
     bridgePort.postMessage({
       type: "http-error",
@@ -1337,280 +1334,61 @@ function handleHttpRequest(requestId: number, request: any) {
     return;
   }
 
-  const injectConnection = kernelInstance.exports.kernel_inject_connection as (
-    pid: number, fd: number, a: number, b: number, c: number, d: number, port: number,
-  ) => number;
-  const recvPipeIdx = injectConnection(
-    target.pid, target.fd,
-    127, 0, 0, 1,
-    Math.floor(Math.random() * 60000) + 1024,
-  );
-  if (recvPipeIdx < 0) {
-    console.warn(`[bridge] inject failed for req#${requestId} ${url} → pid=${target.pid} err=${recvPipeIdx}`);
+  console.log(`[bridge] req#${requestId} ${request.method} ${url} → port=${port}`);
+  try {
+    const response = await kernelWorker.sendHttpRequest(
+      port,
+      {
+        method: request.method,
+        url,
+        headers: request.headers ?? {},
+        body: request.body ?? null,
+      },
+      { debugLabel: `req#${requestId}` },
+    );
+    bridgePort.postMessage({
+      type: "http-response",
+      requestId,
+      status: response.status,
+      headers: response.headers,
+      body: response.body,
+    });
+  } catch (e) {
+    console.warn(`[bridge] req#${requestId} ${url} failed:`, e);
     bridgePort.postMessage({
       type: "http-error",
       requestId,
-      error: "Failed to inject connection",
+      error: e instanceof Error ? e.message : String(e),
     });
+  }
+}
+
+/**
+ * Direct main-thread → in-kernel HTTP request. Mirrors the SW bridge path
+ * but doesn't require a transferred MessagePort. Replies via the
+ * `response` message (resolves to an HttpResponse, or rejects with an
+ * error string).
+ */
+async function handleHttpRequestMessage(msg: {
+  requestId: number;
+  port: number;
+  request: any;
+  timeoutMs?: number;
+}) {
+  if (!kernelInstance) {
+    respondError(msg.requestId, "Kernel not initialized");
     return;
   }
-
-  const sendPipeIdx = recvPipeIdx + 1;
-  const rawRequest = buildRawHttpRequest(request);
-
-  console.log(`[bridge] req#${requestId} ${request.method} ${url} → pid=${target.pid}`);
-
-  // Injected pipes live in the global pipe table (any process sharing
-  // the listener can accept this connection). Pass pid=0 to the kernel
-  // pipe APIs as the global-pipe sentinel — see kernel_inject_connection.
-  const GLOBAL_PIPE_PID = 0;
-
-  // Write request directly to pipe (synchronous)
-  const written = pipeWriteDirect(GLOBAL_PIPE_PID, recvPipeIdx, rawRequest);
-  if (written < rawRequest.length) {
-    console.warn(`[bridge] req#${requestId} partial write: ${written}/${rawRequest.length}`);
+  try {
+    const response = await kernelWorker.sendHttpRequest(
+      msg.port,
+      msg.request,
+      { timeoutMs: msg.timeoutMs },
+    );
+    respond(msg.requestId, response);
+  } catch (e) {
+    respondError(msg.requestId, e instanceof Error ? e.message : String(e));
   }
-
-  // Wake any worker blocked reading or polling on the new recv pipe.
-  // No pid filter: any worker sharing the listener (from the shared
-  // SHARED_LISTENER_BACKLOG_TABLE — see PR #383) can pick up this
-  // entry from the accept queue.
-  kernelWorker.notifyPipeReadable(recvPipeIdx);
-
-  // Pump response
-  pumpResponse(requestId, GLOBAL_PIPE_PID, sendPipeIdx, recvPipeIdx, url);
-}
-
-function pipeWriteDirect(pid: number, pipeIdx: number, data: Uint8Array): number {
-  const pipeWrite = kernelInstance!.exports.kernel_pipe_write as (
-    pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
-  ) => number;
-  const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  let written = 0;
-  while (written < data.length) {
-    const chunk = Math.min(data.length - written, PAGE_SIZE);
-    // Re-create view before each Wasm call — memory.grow detaches the ArrayBuffer.
-    let mem = new Uint8Array(kernelMemory!.buffer);
-    mem.set(data.subarray(written, written + chunk), scratchOffset);
-    const n = pipeWrite(pid, pipeIdx, BigInt(scratchOffset), chunk);
-    if (n <= 0) break;
-    written += n;
-  }
-  return written;
-}
-
-function pipeReadDirect(pid: number, pipeIdx: number): Uint8Array | null {
-  const pipeRead = kernelInstance!.exports.kernel_pipe_read as (
-    pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
-  ) => number;
-  const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
-  const chunks: Uint8Array[] = [];
-  for (;;) {
-    const n = pipeRead(pid, pipeIdx, BigInt(scratchOffset), PAGE_SIZE);
-    if (n <= 0) break;
-    // Re-create view after each Wasm call — memory.grow during pipe read
-    // (e.g. wakeup Vec realloc) detaches the previous ArrayBuffer.
-    const mem = new Uint8Array(kernelMemory!.buffer);
-    chunks.push(mem.slice(scratchOffset, scratchOffset + n));
-  }
-  if (chunks.length === 0) return null;
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
-}
-
-function pipeIsWriteOpenDirect(pid: number, pipeIdx: number): boolean {
-  const fn = kernelInstance!.exports.kernel_pipe_is_write_open as (pid: number, pipeIdx: number) => number;
-  return fn(pid, pipeIdx) === 1;
-}
-
-function pipeCloseReadDirect(pid: number, pipeIdx: number): void {
-  const fn = kernelInstance!.exports.kernel_pipe_close_read as (pid: number, pipeIdx: number) => number;
-  fn(pid, pipeIdx);
-}
-
-function pipeCloseWriteDirect(pid: number, pipeIdx: number): void {
-  const fn = kernelInstance!.exports.kernel_pipe_close_write as (pid: number, pipeIdx: number) => number;
-  fn(pid, pipeIdx);
-}
-
-function buildRawHttpRequest(request: any): Uint8Array {
-  let header = `${request.method} ${request.url} HTTP/1.1\r\n`;
-  const headerKeys = Object.keys(request.headers).map((k: string) => k.toLowerCase());
-  for (const [key, value] of Object.entries(request.headers)) {
-    header += `${key}: ${value}\r\n`;
-  }
-  if (request.body && !headerKeys.includes("content-length")) {
-    header += `Content-Length: ${request.body.length}\r\n`;
-  }
-  if (!headerKeys.includes("connection")) {
-    header += `Connection: close\r\n`;
-  }
-  header += `\r\n`;
-
-  const headerBytes = encoder.encode(header);
-  if (!request.body || request.body.length === 0) return headerBytes;
-
-  const result = new Uint8Array(headerBytes.length + request.body.length);
-  result.set(headerBytes, 0);
-  result.set(request.body, headerBytes.length);
-  return result;
-}
-
-// 5 min: WordPress install on the LAMP stack does a long sequence of
-// CREATE TABLE + INSERT against MariaDB inside the same wasm process —
-// 60s wasn't enough for the request to complete on slower hardware.
-// The bridge needs to outlive any single request the demo can make,
-// otherwise the iframe shows a blank 504 even though the kernel is
-// still happily processing the request.
-const HTTP_PUMP_TIMEOUT_MS = 300_000;
-
-function pumpResponse(
-  requestId: number,
-  pid: number,
-  sendPipeIdx: number,
-  recvPipeIdx: number,
-  debugUrl?: string,
-) {
-  const chunks: Uint8Array[] = [];
-  let sawWriteOpen = false;
-  const startTime = Date.now();
-  let totalBytes = 0;
-
-  let pumpIter = 0;
-  const pump = () => {
-    pumpIter++;
-    if (Date.now() - startTime > HTTP_PUMP_TIMEOUT_MS) {
-      // Timeout — clean up and send error response
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.warn(`[bridge] TIMEOUT req#${requestId} after ${elapsed}s, ${totalBytes} bytes received, sawWriteOpen=${sawWriteOpen}, url=${debugUrl}`);
-      pipeCloseReadDirect(pid, sendPipeIdx);
-      pipeCloseWriteDirect(pid, recvPipeIdx);
-      bridgePort!.postMessage({
-        type: "http-response",
-        requestId,
-        status: 504,
-        headers: {},
-        body: new Uint8Array(0),
-      });
-      return;
-    }
-
-    const data = pipeReadDirect(pid, sendPipeIdx);
-    if (data) {
-      chunks.push(data);
-      totalBytes += data.length;
-      // Wake any process blocked writing because the pipe was full.
-      kernelWorker.notifyPipeWritable(sendPipeIdx);
-    }
-
-    const writeOpen = (kernelInstance!.exports.kernel_pipe_is_write_open as (pid: number, pipeIdx: number) => number)(pid, sendPipeIdx) === 1;
-    if (writeOpen && !sawWriteOpen) sawWriteOpen = true;
-
-    if (sawWriteOpen && !writeOpen && !data) {
-      // Response complete
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`[bridge] DONE req#${requestId} ${elapsed}s ${totalBytes}B ${debugUrl}`);
-      pipeCloseReadDirect(pid, sendPipeIdx);
-      pipeCloseWriteDirect(pid, recvPipeIdx);
-      const rawResponse = concatChunks(chunks);
-      const parsed = parseRawHttpResponse(rawResponse);
-      bridgePort!.postMessage({
-        type: "http-response",
-        requestId,
-        status: parsed.status,
-        headers: parsed.headers,
-        body: parsed.body,
-      });
-      return;
-    }
-
-    setTimeout(pump, data ? 0 : 2);
-  };
-
-  pump();
-}
-
-function concatChunks(chunks: Uint8Array[]): Uint8Array {
-  if (chunks.length === 0) return new Uint8Array(0);
-  if (chunks.length === 1) return chunks[0];
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return result;
-}
-
-function parseRawHttpResponse(data: Uint8Array): { status: number; headers: Record<string, string>; body: Uint8Array } {
-  const text = decoder.decode(data);
-  const headerEnd = text.indexOf("\r\n\r\n");
-  if (headerEnd < 0) return { status: 200, headers: {}, body: data };
-
-  const headerText = text.slice(0, headerEnd);
-  const lines = headerText.split("\r\n");
-  const statusMatch = lines[0].match(/^HTTP\/[\d.]+ (\d+)/);
-  const status = statusMatch ? parseInt(statusMatch[1], 10) : 200;
-
-  const headers: Record<string, string> = {};
-  for (let i = 1; i < lines.length; i++) {
-    const colon = lines[i].indexOf(": ");
-    if (colon >= 0) {
-      const key = lines[i].slice(0, colon);
-      const value = lines[i].slice(colon + 2);
-      if (key.toLowerCase() === "set-cookie" && headers[key]) {
-        headers[key] += "\n" + value;
-      } else {
-        headers[key] = value;
-      }
-    }
-  }
-
-  let byteHeaderEnd = 0;
-  for (let i = 0; i < data.length - 3; i++) {
-    if (data[i] === 13 && data[i + 1] === 10 && data[i + 2] === 13 && data[i + 3] === 10) {
-      byteHeaderEnd = i + 4;
-      break;
-    }
-  }
-  let body = data.subarray(byteHeaderEnd);
-
-  const te = headers["Transfer-Encoding"] || headers["transfer-encoding"];
-  if (te && te.toLowerCase().includes("chunked")) {
-    body = decodeChunked(body);
-    delete headers["Transfer-Encoding"];
-    delete headers["transfer-encoding"];
-  }
-
-  return { status, headers, body: new Uint8Array(body) };
-}
-
-function decodeChunked(data: Uint8Array): Uint8Array {
-  const result: Uint8Array[] = [];
-  let pos = 0;
-  while (pos < data.length) {
-    let lineEnd = -1;
-    for (let i = pos; i < data.length - 1; i++) {
-      if (data[i] === 0x0d && data[i + 1] === 0x0a) { lineEnd = i; break; }
-    }
-    if (lineEnd < 0) break;
-    const sizeLine = decoder.decode(data.subarray(pos, lineEnd)).trim();
-    const chunkSize = parseInt(sizeLine, 16);
-    if (isNaN(chunkSize) || chunkSize === 0) break;
-    const chunkStart = lineEnd + 2;
-    const chunkEnd = chunkStart + chunkSize;
-    if (chunkEnd > data.length) break;
-    result.push(data.subarray(chunkStart, chunkEnd));
-    pos = chunkEnd + 2;
-  }
-  return concatChunks(result);
 }
 
 // ── Filesystem helpers ──
@@ -1669,6 +1447,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "wake_blocked_writers": handleWakeBlockedWriters(msg); break;
     case "is_stdin_consumed": handleIsStdinConsumed(msg); break;
     case "pick_listener_target": handlePickListenerTarget(msg); break;
+    case "http_request": handleHttpRequestMessage(msg); break;
     case "destroy": handleDestroy(msg); break;
     case "register_lazy_files": memfs.importLazyEntries(msg.entries); break;
     case "register_lazy_archives": memfs.importLazyArchiveEntries(msg.entries); break;

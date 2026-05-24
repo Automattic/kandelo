@@ -8,6 +8,7 @@
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh fetch                Fetch binaries pinned by per-package package.toml
 #   ./run.sh run <example> [args] Run a Node.js example
+#   ./run.sh prepare-browser      Fetch/build browser demo assets
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
@@ -131,7 +132,17 @@ has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
-has_programs()    { has_resolvable programs/fork-exec.wasm || [ -f "$REPO_ROOT/host/wasm/fork-exec.wasm" ]; }
+has_programs() {
+    has_resolvable programs/fork-exec.wasm &&
+    has_resolvable programs/fbtest.wasm &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/pipe-throughput.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/file-throughput.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/syscall-latency.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/fork-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/clone-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/spawn-bench.wasm" ] &&
+    [ -f "$REPO_ROOT/benchmarks/wasm/hello.wasm" ]
+}
 
 # Package-system entries: layout derived from package.toml's
 # `[[outputs]]` via `xtask build-deps output-path`. Source-tree
@@ -155,12 +166,13 @@ has_dinit()         { pkg_has_output dinit dinit.wasm || [ -f "$REPO_ROOT/packag
 has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/packages/registry/cpython/bin/python.wasm" ]; }
 has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/python.vfs.zst" ]; }
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst" ]; }
-has_shell_vfs()     { pkg_has_output shell shell.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst" ]; }
-has_node()          { pkg_has_output node node.wasm || [ -f "$REPO_ROOT/packages/registry/quickjs/bin/node.wasm" ]; }
+has_shell_vfs()     { pkg_has_output shell shell.vfs.zst; }
+has_node()          { pkg_has_output node node.wasm; }
 has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/packages/registry/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
+has_mariadb_test_vfs() { pkg_has_output mariadb-test mariadb-test.vfs.zst; }
 has_bc()            { pkg_has_output bc bc.wasm || [ -f "$REPO_ROOT/packages/registry/bc/bin/bc.wasm" ]; }
 has_file()          { pkg_has_output file file.wasm || [ -f "$REPO_ROOT/packages/registry/file/bin/file.wasm" ]; }
 has_less()          { pkg_has_output less less.wasm || [ -f "$REPO_ROOT/packages/registry/less/bin/less.wasm" ]; }
@@ -174,10 +186,11 @@ has_bzip2()         { pkg_has_output bzip2 bzip2.wasm || [ -f "$REPO_ROOT/packag
 has_xz()            { pkg_has_output xz xz.wasm || [ -f "$REPO_ROOT/packages/registry/xz/bin/xz.wasm" ]; }
 has_zstd()          { pkg_has_output zstd zstd.wasm || [ -f "$REPO_ROOT/packages/registry/zstd/bin/zstd.wasm" ]; }
 has_zip()           { pkg_has_output zip zip.wasm || [ -f "$REPO_ROOT/packages/registry/zip/bin/zip.wasm" ]; }
+has_lsof()          { pkg_has_output lsof lsof.wasm || [ -f "$REPO_ROOT/packages/registry/lsof/lsof.wasm" ]; }
 has_unzip()         { pkg_has_output unzip unzip.wasm || [ -f "$REPO_ROOT/packages/registry/unzip/bin/unzip.wasm" ]; }
 has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/packages/registry/nano/bin/nano.wasm" ]; }
 has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/packages/registry/nethack/bin/nethack.wasm" ]; }
-has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || { [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ] && [ -f "$REPO_ROOT/packages/registry/fbdoom/doom1.wad" ]; }; }
+has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ]; }
 has_vim()           { pkg_has_output vim vim.wasm || [ -f "$REPO_ROOT/packages/registry/vim/bin/vim.wasm" ]; }
 has_git()           { pkg_has_output git git.wasm || [ -f "$REPO_ROOT/packages/registry/git/bin/git.wasm" ]; }
 has_perl()          { pkg_has_output perl perl.wasm || [ -f "$REPO_ROOT/packages/registry/perl/bin/perl.wasm" ]; }
@@ -448,6 +461,20 @@ build_mariadb64_vfs() {
     info "MariaDB VFS image (wasm64) built"
 }
 
+build_mariadb_test_vfs() {
+    if has_mariadb_test_vfs; then
+        info "MariaDB test VFS image"
+        return
+    fi
+    build_mariadb
+    build_dash
+    build_coreutils
+    build_dinit
+    step "Building MariaDB test VFS image"
+    bash "$REPO_ROOT/packages/registry/mariadb-test/build-mariadb-test.sh"
+    info "MariaDB test VFS image built"
+}
+
 build_wordpress() {
     if ! has_wordpress; then
         step "Downloading WordPress"
@@ -639,6 +666,14 @@ build_node() {
     fi
     need_kernel
     need_sdk
+    local node_wasm="$REPO_ROOT/packages/registry/quickjs/bin/node.wasm"
+    if [ -f "$node_wasm" ]; then
+        step "Installing existing node.wasm into local-binaries"
+        source "$REPO_ROOT/scripts/install-local-binary.sh"
+        install_local_binary node "$node_wasm"
+        info "node installed"
+        return
+    fi
     step "Building node.wasm"
     local host_target
     host_target="$(rustc -vV | awk '/^host/ {print $2}')"
@@ -663,37 +698,9 @@ build_vim_zip() {
         return
     fi
 
-    # vim.zip = vim.wasm + minimal runtime tree, packaged for the
-    # browser shell demo's lazy-archive fetch. Vim's release archive
-    # ships both pieces (build-vim.sh stages runtime/ alongside
-    # vim.wasm into the resolver scratch), so this builder just locates
-    # the cache canonical dir and rezips. No upstream source download.
-    local vim_dir
-    vim_dir="$(cargo run -p xtask --target aarch64-apple-darwin --quiet -- \
-        build-deps resolve vim --arch wasm32 2>/dev/null)" || {
-        warn "vim package could not be resolved — run: ./run.sh build vim"
-        return
-    }
-    if [ ! -f "$vim_dir/vim.wasm" ] || [ ! -d "$vim_dir/runtime" ]; then
-        warn "vim cache at $vim_dir is missing vim.wasm or runtime/ — re-fetch the release"
-        return
-    fi
-
     step "Packaging vim.zip from cached vim package"
-    local stage out
-    stage="$(mktemp -d)"
-    out="$REPO_ROOT/apps/browser-demos/public/vim.zip"
-    mkdir -p "$stage/bin" "$stage/share/vim/vim91" "$(dirname "$out")"
-    cp "$vim_dir/vim.wasm" "$stage/bin/vim"
-    chmod 755 "$stage/bin/vim"
-    rsync -a "$vim_dir/runtime/" "$stage/share/vim/vim91/"
-    rm -f "$out"
-    (cd "$stage" && zip -r -q "$out" .)
-    rm -rf "$stage"
-    # shellcheck source=scripts/install-local-binary.sh
-    source "$REPO_ROOT/scripts/install-local-binary.sh"
-    install_local_binary vim "$out"
-    info "vim.zip built ($(du -h "$out" | cut -f1))"
+    bash "$REPO_ROOT/images/vfs/scripts/build-vim-zip.sh"
+    info "vim.zip built ($(du -h "$REPO_ROOT/apps/browser-demos/public/vim.zip" | cut -f1))"
 }
 
 build_nethack_zip() {
@@ -715,10 +722,9 @@ build_nethack_zip() {
 
 build_shell_vfs() {
     if ! has_shell_vfs; then
-        build_vim_zip
-        build_nethack_zip
+        build_fbdoom
         step "Building Shell VFS image"
-        bash "$REPO_ROOT/images/vfs/scripts/build-shell-vfs-image.sh"
+        bash "$REPO_ROOT/packages/registry/shell/build-shell.sh"
         info "Shell VFS image built"
     else
         info "Shell VFS image"
@@ -892,6 +898,22 @@ build_less() {
         info "less built"
     else
         info "less"
+    fi
+}
+
+build_lsof() {
+    if has_lsof; then
+        info "lsof"
+        return
+    fi
+    need_kernel
+    need_sdk
+    if ! has_lsof; then
+        step "Building lsof"
+        bash "$REPO_ROOT/packages/registry/lsof/build-lsof.sh"
+        info "lsof built"
+    else
+        info "lsof"
     fi
 }
 
@@ -1314,6 +1336,7 @@ build_target() {
         mariadb64)  build_mariadb64 ;;
         mariadb-vfs) build_mariadb_vfs ;;
         mariadb64-vfs) build_mariadb64_vfs ;;
+        mariadb-test) build_mariadb_test_vfs ;;
         redis)      build_redis ;;
         dinit)      build_dinit ;;
         cpython)    build_cpython ;;
@@ -1333,6 +1356,7 @@ build_target() {
         bc)         build_bc ;;
         file)       build_file ;;
         less)       build_less ;;
+        lsof)       build_lsof ;;
         m4)         build_m4 ;;
         make)       build_make ;;
         tar)        build_tar ;;
@@ -1346,6 +1370,7 @@ build_target() {
         unzip)      build_unzip ;;
         nano)       build_nano ;;
         nethack)    build_nethack ;;
+        nethack-zip) build_nethack_zip ;;
         fbdoom)     build_fbdoom ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
@@ -1376,11 +1401,7 @@ BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-
 # a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
 # listed: they're toolchain prerequisites for source builds, and any
 # `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
-# `less` and `wget` are omitted — both have known local-build failures
-# (less: ncurses libtermcap duplicate tputs; wget: requires automake
-# aclocal). They aren't in the release either, so the associated demo
-# features skip gracefully at runtime.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file m4 make tar curl-cli gzip bzip2 xz zstd zip unzip nano vim vim-zip nethack fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1673,6 +1694,7 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/fbdoom/fbdoom-src" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom.wasm" \
                   "$REPO_ROOT/packages/registry/fbdoom/doom1.wad" \
                   "$REPO_ROOT/packages/registry/fbdoom/COPYING.txt" \
                   "$REPO_ROOT/packages/registry/fbdoom/CREDITS.txt" \
@@ -1875,9 +1897,7 @@ cmd_fetch() {
     "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}" "$@"
 }
 
-cmd_browser() {
-    local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
-
+cmd_prepare_browser() {
     # Fetch the per-package binaries for enabled browser demos first.
     # The resolver-aware has_X
     # guards below then treat fetched binaries as "already built", so
@@ -1888,6 +1908,12 @@ cmd_browser() {
     fetch_browser_binaries
 
     build_browser
+}
+
+cmd_browser() {
+    local BROWSER_DIR="$REPO_ROOT/apps/browser-demos"
+
+    cmd_prepare_browser
 
     # Install browser deps if needed (re-run if package.json is newer than node_modules)
     if [ ! -d "$BROWSER_DIR/node_modules" ] || [ "$BROWSER_DIR/package.json" -nt "$BROWSER_DIR/node_modules" ]; then
@@ -2090,6 +2116,7 @@ cmd_list() {
     echo "  ./run.sh run dlopen                  dlopen shared library demo"
     echo ""
     echo "${BOLD}Browser:${RESET}"
+    echo "  ./run.sh prepare-browser             Fetch/build browser demo assets"
     echo "  ./run.sh browser                     Start Vite dev server for browser demos"
     echo ""
     echo "${BOLD}Test suites:${RESET}"
@@ -2115,6 +2142,7 @@ case "${1:-list}" in
     rebuild)  cmd_rebuild "${@:2}" ;;
     clean)    cmd_clean "${@:2}" ;;
     fetch)    cmd_fetch "${@:2}" ;;
+    prepare-browser) cmd_prepare_browser ;;
     run)      cmd_run "${@:2}" ;;
     browser)  cmd_browser "${@:2}" ;;
     test)     cmd_test "${@:2}" ;;

@@ -27,11 +27,15 @@ awk -v pkg="$pkg" -v arch="$arch" -v sha="$sha" -v rev="$rev" '
     return in_pkg && revision_match && in_arch && success && sha_match
   }
 
-  $0 == "[[packages]]" {
+  function maybe_exit() {
     if (matches()) {
       found = 1
       exit
     }
+  }
+
+  $0 == "[[packages]]" {
+    maybe_exit()
     reset_package()
     next
   }
@@ -55,11 +59,13 @@ awk -v pkg="$pkg" -v arch="$arch" -v sha="$sha" -v rev="$rev" '
 
   in_pkg && in_arch && $0 == "status = \"success\"" {
     success = 1
+    maybe_exit()
     next
   }
 
   in_pkg && in_arch && $0 == "cache_key_sha = \"" sha "\"" {
     sha_match = 1
+    maybe_exit()
     next
   }
 

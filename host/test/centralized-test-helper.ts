@@ -198,8 +198,12 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   });
 
   // Race spawn exit against timeout
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(`Program timed out after ${timeout}ms`)), timeout);
+    timeoutId = setTimeout(
+      () => reject(new Error(`Program timed out after ${timeout}ms`)),
+      timeout,
+    );
   });
 
   let exitCode: number;
@@ -210,6 +214,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
       forkCount = await host.getForkCount(capturedPid);
     }
   } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
     await host.destroy().catch(() => {});
   }
 
@@ -270,8 +275,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
         kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true, ptrWidth });
 
-        const ASYNCIFY_BUF_SIZE = 16384;
-        const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+        const FORK_BUF_SIZE = 16384;
+        const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
 
         const parentProgram = processProgramBytes.get(parentPid) ?? programBytes;
 
@@ -283,7 +288,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           memory: childMemory,
           channelOffset: childChannelOffset,
           isForkChild: true,
-          asyncifyBufAddr,
+          forkBufAddr,
           ptrWidth,
         };
 

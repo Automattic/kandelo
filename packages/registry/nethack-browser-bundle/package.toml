@@ -1,0 +1,20 @@
+kind = "program"
+name = "nethack-browser-bundle"
+version = "3.6.7"
+kernel_abi = 7
+depends_on = ["nethack@3.6.7"]
+
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "NGPL"
+url = "https://nethack.org/common/license.html"
+
+[build]
+script_path = "packages/registry/nethack-browser-bundle/build-nethack-browser-bundle.sh"
+
+[[outputs]]
+name = "nethack"
+wasm = "nethack.zip"

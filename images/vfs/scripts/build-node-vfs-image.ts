@@ -16,9 +16,10 @@
  *
  * Usage: npx tsx images/vfs/scripts/build-node-vfs-image.ts
  */
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
   ensureDirRecursive,
   walkAndWrite,
@@ -27,6 +28,15 @@ import {
   symlink,
 } from "./vfs-image-helpers";
 import { populateShellEnvironment } from "./shell-vfs-build";
+import {
+  NODE_LAZY_BINARY_SPEC,
+  shellLazyPlaceholderUrl,
+} from "../lib/init/shell-binaries";
+import {
+  terminalPresentation,
+  writeKandeloDemoConfig,
+} from "./kandelo-demo-config";
+import { nodeGuide } from "./kandelo-demo-guides";
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
@@ -50,6 +60,7 @@ async function main() {
 
   console.log("Populating shell base...");
   populateShellEnvironment(fs, { eagerBinaries: false });
+  populateNodeLazyBinary(fs);
 
   // Node/npm workspace additions.
   ensureDirRecursive(fs, "/usr/local/lib");
@@ -91,8 +102,31 @@ async function main() {
   symlink(fs, "/usr/bin/npm", "/usr/local/bin/npm");
   symlink(fs, "/usr/bin/npx", "/bin/npx");
   symlink(fs, "/usr/bin/npx", "/usr/local/bin/npx");
+  writeKandeloDemoConfig(fs, {
+    version: 1,
+    profiles: {
+      node: {
+        presentation: terminalPresentation(),
+        guide: nodeGuide(),
+      },
+    },
+  });
 
   await saveImage(fs, OUT_FILE);
+}
+
+function populateNodeLazyBinary(fs: MemoryFileSystem): void {
+  const resolved = resolveBinary(NODE_LAZY_BINARY_SPEC.resolverPath);
+  const size = statSync(resolved).size;
+  fs.registerLazyFile(
+    NODE_LAZY_BINARY_SPEC.vfsPath,
+    shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC),
+    size,
+    0o755,
+  );
+  for (const link of NODE_LAZY_BINARY_SPEC.symlinks) {
+    symlink(fs, NODE_LAZY_BINARY_SPEC.vfsPath, link);
+  }
 }
 
 main().catch((err) => {

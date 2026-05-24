@@ -28,6 +28,11 @@ PKG_MANIFEST="target/rootfs-packages.MANIFEST"
 ROOTFS_SAB_SIZE="${ROOTFS_SAB_SIZE:-16777216}"
 ROOTFS_PACKAGES="images/rootfs/PACKAGES.toml"
 mkdir -p "$(dirname "$OUT")"
+ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs)"
+if [ -z "$ABI_VERSION" ]; then
+    echo "ERROR: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    exit 1
+fi
 
 if [ "${ROOTFS_SKIP_PACKAGE_RESOLVE:-0}" != "1" ]; then
     for tool in cargo rustc; do
@@ -70,7 +75,8 @@ node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
     -o "$OUT" \
     --repo-root "$REPO_ROOT" \
     --manifest-fragment "$PKG_MANIFEST" \
-    --sab-size "$ROOTFS_SAB_SIZE"
+    --sab-size "$ROOTFS_SAB_SIZE" \
+    --kernel-abi "$ABI_VERSION"
 
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
 echo "==> Built $OUT ($SIZE bytes)"

@@ -7,11 +7,9 @@
  * paths with minimal C programs:
  *
  *   - `wasm_trap_test`:    `__builtin_trap()` from main(). Worker-main
- *                          catches the resulting `unreachable`
- *                          RuntimeError and posts {type:"exit"}; the
- *                          kernel-worker entry must forward that to
- *                          the host so spawn() resolves. Without the
- *                          handler, this hangs.
+ *                          reports the unhandled `unreachable`
+ *                          RuntimeError as a process failure; the host
+ *                          must still resolve spawn() promptly.
  *
  *   - `abort_test`:        abort(). musl's abort() raises SIGABRT and
  *                          then loops on `for(;;) a_crash()` as a
@@ -44,10 +42,9 @@ describe.skipIf(!programsBuilt)("wasm trap → host exit (regression)", () => {
 
     expect(stderr).toContain("before-trap");
     expect(stderr).not.toContain("SHOULD-NEVER-REACH");
-    // worker-main treats `unreachable` as the normal `_Exit` exit pattern,
-    // so exitCode is 0. The point of this test is that spawn() returned —
-    // the exit code itself isn't load-bearing.
-    expect(exitCode).toBe(0);
+    // Arbitrary `unreachable` traps are no longer masked as successful exits;
+    // only the known kernel_exit path is interpreted as normal termination.
+    expect(exitCode).toBe(-1);
     expect(elapsed).toBeLessThan(3000);
   }, 8_000);
 

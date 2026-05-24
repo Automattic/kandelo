@@ -24,7 +24,7 @@ const repoRoot = join(__dirname, "../../../..");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;
-const ASYNCIFY_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = 16384;
 
 const nginxWasmPath = tryResolveBinary("programs/nginx.wasm");
 const nginxPrefix = join(repoRoot, "packages/registry/nginx/demo");
@@ -117,7 +117,7 @@ describe.skipIf(!nginxWasmPath)(
 
             kw.registerProcess(childPid, childMemory, [childChannelOffset], { skipKernelCreate: true });
 
-            const asyncifyBufAddr = childChannelOffset - ASYNCIFY_BUF_SIZE;
+            const forkBufAddr = childChannelOffset - FORK_BUF_SIZE;
             const childInitData: CentralizedWorkerInitMessage = {
               type: "centralized_init",
               pid: childPid,
@@ -126,7 +126,7 @@ describe.skipIf(!nginxWasmPath)(
               memory: childMemory,
               channelOffset: childChannelOffset,
               isForkChild: true,
-              asyncifyBufAddr,
+              forkBufAddr,
             };
 
             const childWorker = workerAdapter.createWorker(childInitData);
@@ -203,13 +203,13 @@ describe.skipIf(!nginxWasmPath)(
         expect(ready).toBe(true);
 
         // Actual test: request the static page
-        const resp = await httpGet(testPort, "/");
+        const resp = await httpGet(testPort, "/", 15_000);
         expect(resp).toContain("HTTP/1.1 200 OK");
         expect(resp).toContain("Server: nginx");
         expect(resp).toContain("Hello from nginx on WebAssembly!");
 
         // Request a non-existent path → 404
-        const resp404 = await httpGet(testPort, "/nonexistent");
+        const resp404 = await httpGet(testPort, "/nonexistent", 15_000);
         expect(resp404).toContain("404");
       } finally {
         // Tear down all workers

@@ -1,0 +1,41 @@
+--- a/build/moz.configure/rust.configure
++++ b/build/moz.configure/rust.configure
+@@ -266,15 +266,17 @@
+         try:
+             info = split_triplet(t, allow_wasi=True)
+         except ValueError:
+-            if t.startswith("thumb"):
++            if t == "wasm32-unknown-unknown":
++                info = split_triplet("wasm32-unknown-linux-musl", allow_wasi=True)
++            elif t.startswith("thumb"):
+                 cpu, rest = t.split("-", 1)
+                 retry = "-".join(("arm", rest))
++                try:
++                    info = split_triplet(retry, allow_wasi=True)
++                except ValueError:
++                    continue
+             else:
+                 continue
+-            try:
+-                info = split_triplet(retry, allow_wasi=True)
+-            except ValueError:
+-                continue
+         key = (info.cpu, info.endianness, info.os)
+         data.setdefault(key, []).append(namespace(rust_target=t, target=info))
+     return data
+@@ -374,6 +376,15 @@
+                         "{}-".format(p)
+                     ) and c.rust_target.endswith(suffix):
+                         return c.rust_target
++
++        # Kandelo's C/C++ side is configured as wasm32-unknown-linux-musl so
++        # Mozilla enables the POSIX/Linux code paths. Rust's usable std target
++        # in the pinned toolchain is wasm32-unknown-unknown, and the Rust code
++        # linked into the JS shell does not provide the syscall ABI boundary.
++        if host_or_target.cpu == "wasm32" and host_or_target.kernel == "Linux":
++            narrowed = [c for c in candidates if c.rust_target == "wasm32-unknown-unknown"]
++            if len(narrowed) == 1:
++                return narrowed[0].rust_target
+
+         # See if we can narrow down on the exact alias.
+         # We use the sub_configure_alias to keep support mingw32 triplets as input.

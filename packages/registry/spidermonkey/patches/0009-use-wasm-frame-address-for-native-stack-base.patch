@@ -1,0 +1,29 @@
+diff --git a/js/src/util/NativeStack.cpp b/js/src/util/NativeStack.cpp
+--- a/js/src/util/NativeStack.cpp
++++ b/js/src/util/NativeStack.cpp
+@@ -9,7 +9,7 @@
+-
++
+ #ifdef XP_WIN
+ #  include "util/WindowsWrapper.h"
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || (defined(__wasm32__) && !defined(__EMSCRIPTEN__))
+ // Nothing
+ #elif defined(XP_DARWIN) || defined(DARWIN) || defined(XP_UNIX)
+ #  include <pthread.h>
+@@ -119,10 +119,11 @@ void* js::GetNativeStackBaseImpl() {
+
+-#elif defined(__wasi__)
++#elif defined(__wasi__) || (defined(__wasm32__) && !defined(__EMSCRIPTEN__))
+
+-// Since we rearrange the layout for wasi via --stack-first flag for the linker
+-// the final layout is: 0x00 | <- stack | data | heap -> |.
++// On wasm there is no native pthread stack mapping to query. Capture the
++// frame address during startup and use that as the high-water mark for the
++// downward-growing native stack checks.
+ static void* const NativeStackBase = __builtin_frame_address(0);
+-
++
+ void* js::GetNativeStackBaseImpl() {
+   MOZ_ASSERT(JS_STACK_GROWTH_DIRECTION < 0);
+   return NativeStackBase;

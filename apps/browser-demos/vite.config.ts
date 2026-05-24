@@ -7,6 +7,13 @@ import react from "@vitejs/plugin-react";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
+const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
+
+const crossOriginIsolationHeaders = {
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Service-Worker-Allowed": "/",
+};
 
 /**
  * Vite plugin: resolve `@kernel-wasm` and `@rootfs-vfs` lazily.
@@ -87,6 +94,14 @@ function resolveKernelArtifactsAlias(): Plugin {
  */
 function resolveBinariesAlias(): Plugin {
   const PREFIX = "@binaries/";
+  const applyDefaultArch = (rel: string): string => {
+    if (!rel.startsWith("programs/")) return rel;
+    const tail = rel.slice("programs/".length);
+    const first = tail.split("/", 1)[0];
+    if (first === "wasm32" || first === "wasm64") return rel;
+    return `programs/wasm32/${tail}`;
+  };
+
   return {
     name: "resolve-binaries-alias",
     enforce: "pre",
@@ -95,7 +110,7 @@ function resolveBinariesAlias(): Plugin {
       const queryIdx = source.indexOf("?");
       const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
       const query = queryIdx === -1 ? "" : source.slice(queryIdx);
-      const rest = pathPart.slice(PREFIX.length);
+      const rest = applyDefaultArch(pathPart.slice(PREFIX.length));
       const local = path.resolve(repoRoot, "local-binaries", rest);
       if (fs.existsSync(local)) return local + query;
       const fetched = path.resolve(repoRoot, "binaries", rest);
@@ -112,7 +127,7 @@ function resolveBinariesAlias(): Plugin {
 /**
  * Vite plugin: rewrite absolute nav links in HTML to include the base path.
  * In dev mode (base="/") this is a no-op. In production with a custom base
- * (e.g. "/wasm-posix-kernel/"), it rewrites href="/" → href="/wasm-posix-kernel/".
+ * (e.g. "/kandelo/"), it rewrites href="/" → href="/kandelo/".
  */
 function rewriteNavLinks(): Plugin {
   let base = "/";
@@ -337,7 +352,7 @@ function injectCorsProxyUrl(): Plugin {
   return {
     name: "inject-cors-proxy-url",
     configResolved() {
-      corsProxyUrl = process.env.VITE_CORS_PROXY_URL || "";
+      corsProxyUrl = process.env.VITE_CORS_PROXY_URL ?? DEFAULT_CORS_PROXY_URL;
     },
     writeBundle(_, bundle) {
       // service-worker.js is in public/ and gets copied as-is to dist/
@@ -369,14 +384,13 @@ export default defineConfig({
     injectCorsProxyUrl(),
   ],
   server: {
-    headers: {
-      "Cross-Origin-Opener-Policy": "same-origin",
-      "Cross-Origin-Embedder-Policy": "require-corp",
-      "Service-Worker-Allowed": "/",
-    },
+    headers: crossOriginIsolationHeaders,
     fs: {
       allow: [repoRoot],
     },
+  },
+  preview: {
+    headers: crossOriginIsolationHeaders,
   },
   build: {
     // Use terser instead of esbuild for minification. esbuild's minifier
@@ -413,5 +427,5 @@ export default defineConfig({
   worker: {
     format: "es",
   },
-  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst"],
+  assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst", "**/*.zip"],
 });

@@ -11,7 +11,7 @@ import {
   writeVfsBinary,
 } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
-import phpWasmUrl from "../../../../binaries/programs/wasm32/php/php.wasm?url";
+import phpWasmUrl from "@binaries/programs/wasm32/php/php.wasm?url";
 
 const codeEl = document.getElementById("code") as HTMLTextAreaElement;
 const output = document.getElementById("output") as HTMLPreElement;

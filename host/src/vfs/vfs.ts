@@ -1,4 +1,4 @@
-import type { NetworkIO, PlatformIO, StatResult } from "../types";
+import type { NetworkIO, PlatformIO, StatResult, StatfsResult } from "../types";
 import type { FileSystemBackend, MountConfig, TimeProvider } from "./types";
 
 interface MountEntry {
@@ -159,6 +159,11 @@ export class VirtualPlatformIO implements PlatformIO {
   lstat(path: string): StatResult {
     const { backend, relativePath } = this.resolve(path);
     return backend.lstat(relativePath);
+  }
+
+  statfs(path: string): StatfsResult {
+    const { backend, relativePath } = this.resolve(path);
+    return backend.statfs(relativePath);
   }
 
   mkdir(path: string, mode: number): void {

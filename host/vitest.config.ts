@@ -1,6 +1,33 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const viteUrlStub = resolve(__dirname, "test/fixtures/vite-url-stub.ts");
+
+/**
+ * Resolve the Vite-specific `?url` / `?worker&url` imports (and the
+ * `@kernel-wasm` alias) to a plain string stub so vitest can load
+ * modules that originate from the browser demos (e.g. BrowserKernel)
+ * without spinning up a real Vite environment. Tests that need a real
+ * Worker stub `globalThis.Worker` directly.
+ */
 export default defineConfig({
+  plugins: [
+    {
+      name: "vitest-stub-vite-url-imports",
+      enforce: "pre",
+      resolveId(source: string) {
+        if (source === "@kernel-wasm" || source === "@kernel-wasm?url") {
+          return viteUrlStub;
+        }
+        if (source.endsWith("?url") || source.endsWith("?worker&url")) {
+          return viteUrlStub;
+        }
+        return null;
+      },
+    },
+  ],
   test: {
     include: [
       "test/**/*.test.ts",
@@ -25,15 +52,14 @@ export default defineConfig({
     // expected to ship the fix; revisit then.
     pool: "forks",
     // Even with forks, the post-run aggregation RPC (`onTaskUpdate`)
-    // can time out on a heavily contended GHA runner. Cap fork
-    // parallelism and extend the teardown window so the final
-    // result-flush has room to complete. Without this, runs of
-    // 392+ tests succeed individually but the run-summary call
-    // fails the whole job on a 3s default RPC timeout.
+    // can time out on a heavily contended GHA runner. Fork-heavy host
+    // test files also launch their own process workers; keep local runs
+    // parallel, but serialize CI files so dash/fork/spawn coverage has
+    // enough worker time to make forward progress.
     teardownTimeout: 60_000,
     poolOptions: {
       forks: {
-        maxForks: 4,
+        maxForks: process.env.CI ? 1 : 4,
       },
     },
   },

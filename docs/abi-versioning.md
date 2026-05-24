@@ -22,6 +22,9 @@ Anything that could make an old compiled binary misbehave against a new
 kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 
 - Removing, renaming, or reassigning a syscall number.
+- Changing an existing syscall argument descriptor used by the host for
+  pointer marshalling, including direction, size source, multipliers,
+  fixed byte lengths, or return-value copy adjustments.
 - Changing the channel header layout (field offsets or sizes in
   [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs)
   `channel` module).
@@ -30,8 +33,12 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   (`WasmStat`, `WasmDirent`, `WasmFlock`, `WasmTimespec`, `WasmPollFd`,
   `WasmStatfs`), or changing a field's type in a way that shifts offsets
   or span.
-- Changing the asyncify save-slot offsets or widths
-  ([`shared::abi::ASYNCIFY_SAVE_SLOTS`](../crates/shared/src/lib.rs)).
+- Changing the five `wpk_fork_*` export names or the save-buffer /
+  frame format emitted by
+  [`wasm-fork-instrument`](fork-instrumentation.md) into every
+  fork-using user program. The kernel does not read these exports
+  directly, but the host runtime in `host/src/worker-main.ts` does —
+  a rename here silently breaks fork for every already-built binary.
 - Renaming the ABI custom section or the process-expected globals.
 - Changing the meaning of a syscall argument, errno, or blocking
   behavior without changing its signature. **This is not caught
@@ -52,6 +59,8 @@ not require an `ABI_VERSION` bump:
   kind, signature, type, mutability, and tracked value unchanged.
 - Adding a new marshalled struct name while leaving every existing
   marshalled struct layout unchanged.
+- Adding a syscall argument descriptor for a syscall that previously had
+  no descriptor, while leaving every existing descriptor unchanged.
 
 These additions still require regenerating and committing
 `abi/snapshot.json`. They do not permit older kernels to run newer
@@ -77,8 +86,9 @@ captures:
   layout shift.
 - `syscalls` — every syscall number for which `Syscall::from_u32`
   returns a named variant.
-- `asyncify_save_slots` — negative offsets relative to the asyncify
-  buffer at which the parent saves register state for the fork child.
+- `syscall_arg_descriptors` — host marshalling descriptors for pointer
+  arguments, including direction, size source, size multipliers/additions,
+  fixed byte lengths, and any return-value-based copy-back adjustment.
 - `custom_sections` — names of wasm custom sections that participate in
   the ABI (currently `wasm-posix-abi` for the per-binary version).
 - `process_expected_globals` — globals every user process instance is

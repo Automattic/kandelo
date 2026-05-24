@@ -186,9 +186,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Warm Nix dev shell
         run: bash scripts/dev-shell.sh true
@@ -213,7 +218,7 @@ jobs:
       - name: Compute matrix (with D3 bypass for force-rebuild list)
         id: compute
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           INPUT_FORCE_PACKAGES: ${{ inputs.packages }}
           INPUT_ARCHES: ${{ inputs.arches }}
         run: |
@@ -351,9 +356,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Compute cache key
         # Mirrors `prepare-merge.yml` / `staging-build.yml`'s formula
@@ -395,10 +405,13 @@ jobs:
             done
           '
 
-      - name: Pack toolchain sysroots
+      - name: Build fork-instrument host tool
+        run: bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
+
+      - name: Pack toolchain sysroots + host tools
         run: |
           tar --zstd -cf "$RUNNER_TEMP/toolchain-sysroots.tar.zst" \
-            sysroot sysroot64
+            sysroot sysroot64 tools/bin/wasm-fork-instrument
 
       - name: Upload toolchain sysroots artifact
         uses: actions/upload-artifact@v4
@@ -441,9 +454,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -504,7 +522,7 @@ jobs:
       - name: Publish archive + index entry
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -521,7 +539,7 @@ jobs:
       - name: Record failed build in index
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -568,9 +586,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4
@@ -644,7 +667,7 @@ jobs:
       - name: Publish archive + index entry
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -661,7 +684,7 @@ jobs:
       - name: Record failed build in index
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           bash scripts/index-update.sh \
@@ -701,9 +724,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
 
       - name: Cache Nix store + flake eval
         uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         uses: actions/download-artifact@v4

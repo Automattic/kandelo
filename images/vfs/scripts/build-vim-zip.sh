@@ -17,10 +17,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BROWSER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ROOT="$(cd "$BROWSER_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-OUTPUT_DIR="$BROWSER_DIR/public"
+OUTPUT_DIR="$REPO_ROOT/apps/browser-demos/public"
 OUTPUT_FILE="$OUTPUT_DIR/vim.zip"
 
 # Resolve the vim package via the resolver. Returns the cache canonical
@@ -64,7 +63,7 @@ chmod 755 "$STAGING/bin/vim"
 
 # Runtime files — staged under share/vim/vim91/
 mkdir -p "$STAGING/share/vim/vim91"
-rsync -a "$RUNTIME_DIR/" "$STAGING/share/vim/vim91/"
+cp -R "$RUNTIME_DIR/." "$STAGING/share/vim/vim91/"
 
 (cd "$STAGING" && zip -r -q "$OUTPUT_FILE" .)
 
