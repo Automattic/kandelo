@@ -1,0 +1,23 @@
+--- a/build/moz.configure/flags.configure
++++ b/build/moz.configure/flags.configure
+@@ -23,6 +23,7 @@
+     extra_toolchain_flags,
+     linker_ldflags,
+     llvm_objdump,
++    target,
+     when=target_has_linux_kernel,
+ )
+ @checking("whether we're trying to statically link with libstdc++")
+@@ -34,8 +35,12 @@
+     extra_toolchain_flags,
+     linker_ldflags,
+     llvm_objdump,
++    target,
+ ):
+     with create_temporary_file(suffix=".out") as bin_path:
++        if target.cpu == "wasm32":
++            return False
++
+         # This test is quite conservative: it assumes dynamic linkage if the
+         # compilation step fails or if the binary format is not supported. But
+         # it still detects basic issues.

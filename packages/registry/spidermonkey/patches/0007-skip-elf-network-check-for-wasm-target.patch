@@ -1,0 +1,24 @@
+diff --git a/python/mozbuild/mozbuild/action/check_binary.py b/python/mozbuild/mozbuild/action/check_binary.py
+--- a/python/mozbuild/mozbuild/action/check_binary.py
++++ b/python/mozbuild/mozbuild/action/check_binary.py
+@@ -47,6 +47,10 @@ def at_least_one(iter):
+         raise Empty()
+
+
++def is_wasm_target():
++    return str(buildconfig.substs.get("TARGET_CPU", "")) in ("wasm32", "wasm64")
++
++
+ # Iterates the symbol table on ELF binaries.
+ def iter_elf_symbols(binary, all=False):
+     ty = get_type(binary)
+@@ -234,6 +238,9 @@ def check_mozglue_order(binary):
+
+
+ def check_networking(binary):
++    if is_wasm_target():
++        return 0
++
+     retcode = 0
+     networking_functions = set(
+         [

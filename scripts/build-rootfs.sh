@@ -25,11 +25,17 @@ fi
 
 OUT="host/wasm/rootfs.vfs"
 mkdir -p "$(dirname "$OUT")"
+ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs)"
+if [ -z "$ABI_VERSION" ]; then
+    echo "ERROR: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    exit 1
+fi
 
 echo "==> Building rootfs.vfs from MANIFEST + images/rootfs/..."
 node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
     -o "$OUT" \
-    --repo-root "$REPO_ROOT"
+    --repo-root "$REPO_ROOT" \
+    --kernel-abi "$ABI_VERSION"
 
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
 echo "==> Built $OUT ($SIZE bytes)"

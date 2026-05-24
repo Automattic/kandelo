@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ -n "${WASM_POSIX_LLVM_DIR:-}" && -x "${WASM_POSIX_LLVM_DIR}/llvm-ranlib" ]]; then
+  exec "${WASM_POSIX_LLVM_DIR}/llvm-ranlib" "$@"
+fi
+for dir in /usr/lib/llvm/bin /usr/local/bin /usr/bin /bin; do
+  if [[ -x "${dir}/llvm-ranlib" ]]; then
+    exec "${dir}/llvm-ranlib" "$@"
+  fi
+done
+echo "wasm32posix-ranlib: llvm-ranlib not found; set WASM_POSIX_LLVM_DIR" >&2
+exit 1

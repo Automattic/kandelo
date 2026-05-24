@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+export WASM_POSIX_CXX_DRIVER=1
+exec "${DIR}/wasm32posix-cc" "$@"

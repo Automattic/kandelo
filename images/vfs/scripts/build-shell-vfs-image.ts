@@ -33,8 +33,9 @@ const DOOM_WAD_SHA256 = "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a
 async function main() {
   // 32 MB leaves room for dash, fbDOOM, symlinks, magic, and
   // lazy-archive stubs.
-  // The eager binaries (bash, coreutils, …) are not baked here — the
-  // Shell page registers them lazily at runtime.
+  // The eager binaries (bash, coreutils, etc.) are not baked here. Utility
+  // stubs + sizes are baked as lazy VFS metadata and their bytes are fetched
+  // on first exec.
   const sab = new SharedArrayBuffer(32 * 1024 * 1024);
   const fs = MemoryFileSystem.create(sab);
 

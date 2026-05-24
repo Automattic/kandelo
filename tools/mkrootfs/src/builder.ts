@@ -16,7 +16,10 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  type VfsImageMetadata,
+} from "../../../host/src/vfs/memory-fs";
 import {
   parseZipCentralDirectory,
   extractZipEntry,
@@ -46,6 +49,8 @@ export interface BuildOptions {
   repoRoot: string;
   /** Backing SharedArrayBuffer size in bytes; defaults to 16 MiB. */
   sabSize?: number;
+  /** Optional image-level declarations, such as the required kernel ABI. */
+  metadata?: VfsImageMetadata;
   /** Optional sink for non-fatal audit messages (archive overrides, etc.). */
   onWarn?: (msg: string) => void;
 }
@@ -71,7 +76,7 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   buildSymlinks(mfs, entries);
   buildArchives(mfs, archiveBundles, plan);
 
-  return await mfs.saveImage();
+  return await mfs.saveImage({ metadata: opts.metadata });
 }
 
 function buildDirectories(mfs: MemoryFileSystem, entries: ManifestEntry[]): void {

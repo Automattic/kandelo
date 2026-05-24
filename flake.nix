@@ -69,6 +69,9 @@
             pkgs.git
             pkgs.binaryen
             pkgs.wabt
+            # cbindgen — required by Mozilla's JS/SpiderMonkey configure
+            # path once Rust support is enabled.
+            pkgs.rust-cbindgen
             # System tools that build scripts pull from /usr/bin or
             # /opt/homebrew/bin in non-pure shells. Pinning them via
             # the flake makes `nix develop --ignore-environment` work

@@ -35,6 +35,7 @@ function currentModuleDir(): string {
 }
 
 const MODULE_DIR = currentModuleDir();
+const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 
 export interface NodeKernelHostOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -355,10 +356,18 @@ export class NodeKernelHost {
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     const requestId = this._nextRequestId++;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
-      await this.request(requestId, { type: "destroy", requestId });
+      await Promise.race([
+        this.request(requestId, { type: "destroy", requestId }),
+        new Promise((resolve) => {
+          timeoutId = setTimeout(resolve, DESTROY_REQUEST_TIMEOUT_MS);
+        }),
+      ]);
     } catch {
       // Worker may have already exited
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
     await this.worker.terminate();
     this.exitResolvers.clear();

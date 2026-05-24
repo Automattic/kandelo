@@ -6,8 +6,9 @@ VFS rootfs images.
 ## Usage
 
 ```
-mkrootfs build   <sourceTree> <manifest> -o <image>
-mkrootfs inspect <image>
+mkrootfs build   <manifest> <sourceTree> -o <image>
+mkrootfs build   <manifest> <sourceTree> -o <image> --kernel-abi <n>
+mkrootfs inspect <image> [--metadata]
 mkrootfs extract <image> <outDir>
 mkrootfs add     <image> <path> <src> [--mode=0644] [--uid=0] [--gid=0]
 ```

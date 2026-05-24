@@ -262,6 +262,26 @@ describe("extractAbiVersion", () => {
     expect(extractAbiVersion(wasm)).toBe(6);
   });
 
+  it("ignores instrumentation constants before the ABI return value", () => {
+    const wasm = buildWasm({
+      funcTypes: [0],
+      funcBodies: [{
+        locals: [0x00],
+        instructions: [
+          0x02, 0x40,              // block
+          0x41, ...sleb128_i32(2), // instrumentation constant
+          0x1a,                    // drop
+          0x0b,                    // end block
+          0x10, ...uleb128(0),      // call ctors stub
+          0x41, ...sleb128_i32(12), // actual ABI version
+          0x0f,                    // return
+        ],
+      }],
+      exports: [{ name: "__abi_version", kind: 0, index: 0 }],
+    });
+    expect(extractAbiVersion(wasm)).toBe(12);
+  });
+
   it("counts function imports correctly when computing the body index", () => {
     // 1 func import (index 0) + 1 defined function (index 1) → __abi_version = func 1
     const wasm = buildWasm({
