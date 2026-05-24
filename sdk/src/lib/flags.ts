@@ -67,10 +67,13 @@ const IGNORED_EXACT = new Set([
   '-fPIE', '-pie',
   '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
   '-rdynamic', '-Wl,-Bsymbolic',
+  '-Wl,-z,noexecstack', '-Wl,-z,text', '-Wl,-z,relro',
+  '-Wl,-z,now', '-Wl,-z,nocopyreloc',
 ]);
 
 const IGNORED_PREFIXES = [
   '-Wl,-rpath,',
+  '-Wl,-rpath-link,',
   '-Wl,-soname,',
   '-Wl,--version-script',
 ];
@@ -78,6 +81,12 @@ const IGNORED_PREFIXES = [
 const WARN_FLAGS = new Set([
   '-dynamiclib',
 ]);
+
+function isEquivalentWasmTarget(value: string, arch: WasmArch): boolean {
+  return value === targetTriple(arch) ||
+    value === `${arch}-unknown-linux-musl` ||
+    value === `${arch}-linux-musl`;
+}
 
 export interface FilterResult {
   filtered: string[];
@@ -89,7 +98,15 @@ export function filterArgs(args: string[], arch: WasmArch = 'wasm32'): FilterRes
   const warnings: string[] = [];
   const prefix = toolPrefix(arch);
 
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--target=') && isEquivalentWasmTarget(arg.slice('--target='.length), arch)) {
+      continue;
+    }
+    if ((arg === '--target' || arg === '-target') && i + 1 < args.length && isEquivalentWasmTarget(args[i + 1], arch)) {
+      i++;
+      continue;
+    }
     if (IGNORED_EXACT.has(arg)) continue;
     if (IGNORED_PREFIXES.some(p => arg.startsWith(p))) continue;
     if (WARN_FLAGS.has(arg)) {
@@ -191,5 +208,6 @@ export function parseArgs(args: string[]): ParsedArgs {
 
 export function needsLinking(parsed: ParsedArgs): boolean {
   if (parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly) return false;
+  if (parsed.otherArgs.some(arg => arg.startsWith('-Wl,@') || arg.startsWith('@'))) return true;
   return parsed.sourceFiles.length > 0 || parsed.objectFiles.length > 0;
 }

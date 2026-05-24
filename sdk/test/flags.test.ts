@@ -26,9 +26,40 @@ describe('filterArgs', () => {
     expect(result.filtered).toEqual(['main.c']);
   });
 
+  it('removes -Wl,-rpath-link,/some/path', () => {
+    const result = filterArgs(['-Wl,-rpath-link,/usr/lib', 'main.c']);
+    expect(result.filtered).toEqual(['main.c']);
+  });
+
   it('removes -Wl,-soname,libfoo.so', () => {
     const result = filterArgs(['-Wl,-soname,libfoo.so', 'main.c']);
     expect(result.filtered).toEqual(['main.c']);
+  });
+
+  it('removes ELF-only -z linker flags without dropping wasm stack sizing', () => {
+    const result = filterArgs([
+      '-Wl,-z,noexecstack',
+      '-Wl,-z,relro',
+      '-Wl,-z,stack-size=16777216',
+      'main.c',
+    ]);
+    expect(result.filtered).toEqual(['-Wl,-z,stack-size=16777216', 'main.c']);
+  });
+
+  it('removes equivalent wasm target aliases supplied by configure scripts', () => {
+    const result = filterArgs([
+      '--target=wasm32-linux-musl',
+      '-target',
+      'wasm32-unknown-linux-musl',
+      '--target=wasm32-unknown-unknown',
+      'main.c',
+    ]);
+    expect(result.filtered).toEqual(['main.c']);
+  });
+
+  it('preserves non-equivalent target flags', () => {
+    const result = filterArgs(['--target=x86_64-linux-gnu', 'main.c']);
+    expect(result.filtered).toEqual(['--target=x86_64-linux-gnu', 'main.c']);
   });
 });
 
@@ -85,6 +116,11 @@ describe('needsLinking', () => {
   it('returns false for -E', () => {
     const parsed = parseArgs(['-E', 'foo.c']);
     expect(needsLinking(parsed)).toBe(false);
+  });
+
+  it('returns true for linker response-list files', () => {
+    const parsed = parseArgs(['-fuse-ld=lld', '-o', 'out.wasm', '-Wl,@/tmp/objects.list']);
+    expect(needsLinking(parsed)).toBe(true);
   });
 });
 
