@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ABI_CUSTOM_SECTION,
   ABI_KERNEL_EXPORT,
+  ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
   ABI_VERSION,
   CHANNEL_STATUS,
@@ -100,6 +101,12 @@ describe("generated host ABI bindings", () => {
       namedNumberMap(snapshot.host_intercepted_syscalls),
     );
     expect(ABI_SYSCALLS).toEqual(namedNumberMap(snapshot.syscalls));
+    expect(ABI_SYSCALL_NAMES[ABI_SYSCALLS.Seek]).toBe("lseek");
+    expect(ABI_SYSCALL_NAMES[ABI_SYSCALLS.Llseek]).toBe("_llseek");
+    expect(ABI_SYSCALL_NAMES[ABI_SYSCALLS.Getrandom]).toBe("getrandom");
+    expect(ABI_SYSCALL_NAMES[ABI_SYSCALLS.TimerGetoverrun]).toBe("timer_getoverrun");
+    expect(ABI_SYSCALL_NAMES[HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE]).toBe("execve");
+    expect(ABI_SYSCALL_NAMES[HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN]).toBe("spawn");
 
     expect(STRUCT_SIZE_WASM_STAT).toBe(snapshot.marshalled_structs.WasmStat.size);
     expect(STRUCT_SIZE_WASM_DIRENT).toBe(snapshot.marshalled_structs.WasmDirent.size);

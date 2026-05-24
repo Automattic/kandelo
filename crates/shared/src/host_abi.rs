@@ -7,6 +7,7 @@
 
 use core::mem::size_of;
 
+use crate::abi::extended_syscalls as extra_syscalls;
 use crate::{Syscall, WasmStat, WasmStatfs, WasmTimespec};
 
 /// Direction of a marshalled pointer argument.
@@ -301,8 +302,8 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         Syscall::Getpeername as u32,
         [desc!(1, Out, deref!(2)), desc!(2, InOut, fixed!(4)),]
     ),
-    entry!(119, [desc!(3, Out, fixed!(8))]),
-    entry!(120, [desc!(0, Out, arg!(1))]),
+    entry!(extra_syscalls::SYS_LLSEEK, [desc!(3, Out, fixed!(8))]),
+    entry!(extra_syscalls::SYS_GETRANDOM, [desc!(0, Out, arg!(1))]),
     entry!(Syscall::Getdents64 as u32, [desc!(1, Out, arg!(2))]),
     entry!(
         Syscall::ClockGetres as u32,
@@ -356,10 +357,16 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         Syscall::Getaddrinfo as u32,
         [desc!(0, In, cstring!()), desc!(1, Out, fixed!(256)),]
     ),
-    entry!(205, [desc!(2, In, fixed!(128))]),
-    entry!(206, [desc!(0, Out, fixed!(8))]),
     entry!(
-        207,
+        extra_syscalls::SYS_RT_SIGQUEUEINFO,
+        [desc!(2, In, fixed!(128))]
+    ),
+    entry!(
+        extra_syscalls::SYS_RT_SIGPENDING,
+        [desc!(0, Out, fixed!(8))]
+    ),
+    entry!(
+        extra_syscalls::SYS_RT_SIGTIMEDWAIT,
         [
             desc!(0, In, fixed!(8)),
             desc!(1, Out, fixed!(128)),
@@ -367,7 +374,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         ]
     ),
     entry!(
-        209,
+        extra_syscalls::SYS_SIGALTSTACK,
         [
             desc!(0, In, fixed!(STACK_T_SIZE)),
             desc!(1, Out, fixed!(STACK_T_SIZE)),
@@ -377,52 +384,88 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         crate::abi::host_intercepted::SYS_EXECVE,
         [desc!(0, In, cstring!())]
     ),
-    entry!(223, [desc!(1, InOut, fixed!(16))]),
-    entry!(224, [desc!(1, Out, fixed!(ITIMERVAL_SIZE))]),
+    entry!(extra_syscalls::SYS_PRCTL, [desc!(1, InOut, fixed!(16))]),
     entry!(
-        225,
+        extra_syscalls::SYS_GETITIMER,
+        [desc!(1, Out, fixed!(ITIMERVAL_SIZE))]
+    ),
+    entry!(
+        extra_syscalls::SYS_SETITIMER,
         [
             desc!(1, In, fixed!(ITIMERVAL_SIZE)),
             desc!(2, Out, fixed!(ITIMERVAL_SIZE)),
         ]
     ),
-    entry!(230, [desc!(1, Out, fixed!(36))]),
-    entry!(236, [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE))]),
-    entry!(250, [desc!(2, In, fixed!(16)), desc!(3, Out, fixed!(16)),]),
-    entry!(251, [desc!(0, InOut, arg!(1, mul 8))]),
-    entry!(260, [desc!(1, In, cstring!()), desc!(4, Out, fixed!(256)),]),
-    entry!(271, [desc!(0, In, cstring!())]),
-    entry!(272, [desc!(1, In, cstring!())]),
-    entry!(326, [desc!(1, In, fixed!(16)), desc!(2, Out, fixed!(4)),]),
-    entry!(327, [desc!(2, In, fixed!(32)), desc!(3, Out, fixed!(32)),]),
-    entry!(328, [desc!(1, Out, fixed!(32))]),
-    entry!(331, [desc!(0, In, cstring!()), desc!(3, In, fixed!(32)),]),
-    entry!(332, [desc!(0, In, cstring!())]),
     entry!(
-        333,
+        extra_syscalls::SYS_SCHED_GETPARAM,
+        [desc!(1, Out, fixed!(36))]
+    ),
+    entry!(
+        extra_syscalls::SYS_SCHED_RR_GET_INTERVAL,
+        [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE))]
+    ),
+    entry!(
+        extra_syscalls::SYS_PRLIMIT64,
+        [desc!(2, In, fixed!(16)), desc!(3, Out, fixed!(16)),]
+    ),
+    entry!(extra_syscalls::SYS_PPOLL, [desc!(0, InOut, arg!(1, mul 8))]),
+    entry!(
+        extra_syscalls::SYS_STATX,
+        [desc!(1, In, cstring!()), desc!(4, Out, fixed!(256)),]
+    ),
+    entry!(extra_syscalls::SYS_MKNOD, [desc!(0, In, cstring!())]),
+    entry!(extra_syscalls::SYS_MKNODAT, [desc!(1, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_TIMER_CREATE,
+        [desc!(1, In, fixed!(16)), desc!(2, Out, fixed!(4)),]
+    ),
+    entry!(
+        extra_syscalls::SYS_TIMER_SETTIME,
+        [desc!(2, In, fixed!(32)), desc!(3, Out, fixed!(32)),]
+    ),
+    entry!(
+        extra_syscalls::SYS_TIMER_GETTIME,
+        [desc!(1, Out, fixed!(32))]
+    ),
+    entry!(
+        extra_syscalls::SYS_MQ_OPEN,
+        [desc!(0, In, cstring!()), desc!(3, In, fixed!(32)),]
+    ),
+    entry!(extra_syscalls::SYS_MQ_UNLINK, [desc!(0, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_MQ_TIMEDSEND,
         [
             desc!(1, In, arg!(2)),
             desc!(4, In, fixed!(WASM_TIMESPEC_SIZE)),
         ]
     ),
     entry!(
-        334,
+        extra_syscalls::SYS_MQ_TIMEDRECEIVE,
         [
             desc!(1, Out, arg!(2)),
             desc!(3, Out, fixed!(4)),
             desc!(4, In, fixed!(WASM_TIMESPEC_SIZE)),
         ]
     ),
-    entry!(335, [desc!(1, In, fixed!(16))]),
-    entry!(336, [desc!(1, In, fixed!(32)), desc!(2, Out, fixed!(32)),]),
-    entry!(338, [desc!(1, Out, arg!(2, add 4), copy_retval_add 4)]),
-    entry!(339, [desc!(1, In, arg!(2, add 4))]),
-    entry!(340, [desc!(2, InOut, fixed!(96))]),
-    entry!(342, [desc!(1, In, arg!(2, mul 6))]),
-    entry!(347, [desc!(2, InOut, fixed!(88))]),
-    entry!(382, [desc!(1, In, cstring!())]),
-    entry!(383, [desc!(1, In, cstring!())]),
-    entry!(384, [desc!(1, Out, deref!(2)), desc!(2, InOut, fixed!(4)),]),
+    entry!(extra_syscalls::SYS_MQ_NOTIFY, [desc!(1, In, fixed!(16))]),
+    entry!(
+        extra_syscalls::SYS_MQ_GETSETATTR,
+        [desc!(1, In, fixed!(32)), desc!(2, Out, fixed!(32)),]
+    ),
+    entry!(
+        extra_syscalls::SYS_MSGRCV,
+        [desc!(1, Out, arg!(2, add 4), copy_retval_add 4)]
+    ),
+    entry!(extra_syscalls::SYS_MSGSND, [desc!(1, In, arg!(2, add 4))]),
+    entry!(extra_syscalls::SYS_MSGCTL, [desc!(2, InOut, fixed!(96))]),
+    entry!(extra_syscalls::SYS_SEMOP, [desc!(1, In, arg!(2, mul 6))]),
+    entry!(extra_syscalls::SYS_SHMCTL, [desc!(2, InOut, fixed!(88))]),
+    entry!(extra_syscalls::SYS_FACCESSAT2, [desc!(1, In, cstring!())]),
+    entry!(extra_syscalls::SYS_FCHMODAT2, [desc!(1, In, cstring!())]),
+    entry!(
+        extra_syscalls::SYS_ACCEPT4,
+        [desc!(1, Out, deref!(2)), desc!(2, InOut, fixed!(4)),]
+    ),
 ];
 
 #[cfg(test)]
@@ -455,7 +498,7 @@ mod tests {
             }
         );
 
-        let msgrcv = find(338).args[0];
+        let msgrcv = find(extra_syscalls::SYS_MSGRCV).args[0];
         assert_eq!(
             msgrcv.size,
             SyscallArgSize::Arg {
@@ -466,7 +509,7 @@ mod tests {
         );
         assert_eq!(msgrcv.copy_retval_add, 4);
 
-        let semop = find(342).args[0].size;
+        let semop = find(extra_syscalls::SYS_SEMOP).args[0].size;
         assert_eq!(
             semop,
             SyscallArgSize::Arg {

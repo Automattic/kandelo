@@ -31,6 +31,7 @@ import {
   type SendHttpRequestOptions,
 } from "./networking/in-kernel-http";
 import {
+  ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_IDLE,
@@ -93,17 +94,17 @@ const EINTR_ERRNO = 4;
 const SYS_NANOSLEEP = ABI_SYSCALLS.Nanosleep;
 const SYS_USLEEP = ABI_SYSCALLS.Usleep;
 const SYS_CLOCK_NANOSLEEP = ABI_SYSCALLS.ClockNanosleep;
-const SYS_FUTEX = 200;
+const SYS_FUTEX = ABI_SYSCALLS.Futex;
 const SYS_POLL = ABI_SYSCALLS.Poll;
-const SYS_PPOLL = 251;
-const SYS_PSELECT6 = 252;
+const SYS_PPOLL = ABI_SYSCALLS.Ppoll;
+const SYS_PSELECT6 = ABI_SYSCALLS.Pselect6;
 const SYS_SELECT = ABI_SYSCALLS.Select;
-const SYS_EPOLL_PWAIT = 241;
-const SYS_EPOLL_CREATE1 = 239;
-const SYS_EPOLL_CREATE = 378;
-const SYS_EPOLL_CTL = 240;
-const SYS_EPOLL_WAIT = 379;
-const SYS_RT_SIGTIMEDWAIT = 207;
+const SYS_EPOLL_PWAIT = ABI_SYSCALLS.EpollPwait;
+const SYS_EPOLL_CREATE1 = ABI_SYSCALLS.EpollCreate1;
+const SYS_EPOLL_CREATE = ABI_SYSCALLS.EpollCreate;
+const SYS_EPOLL_CTL = ABI_SYSCALLS.EpollCtl;
+const SYS_EPOLL_WAIT = ABI_SYSCALLS.EpollWait;
+const SYS_RT_SIGTIMEDWAIT = ABI_SYSCALLS.RtSigtimedwait;
 
 /**
  * Grace period for signal-mask-swapping ppoll/pselect wakeups after a pipe
@@ -121,16 +122,16 @@ const SYS_EXECVEAT = HOST_INTERCEPTED_SYSCALLS.SYS_EXECVEAT;
 const SYS_FORK = HOST_INTERCEPTED_SYSCALLS.SYS_FORK;
 const SYS_VFORK = HOST_INTERCEPTED_SYSCALLS.SYS_VFORK;
 const SYS_SPAWN = HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN;
-const SYS_CLONE = 201;
+const SYS_CLONE = ABI_SYSCALLS.Clone;
 const SYS_EXIT = ABI_SYSCALLS.Exit;
-const SYS_EXIT_GROUP = 387;
+const SYS_EXIT_GROUP = ABI_SYSCALLS.ExitGroup;
 const SYS_SETPGID = ABI_SYSCALLS.Setpgid;
 const SYS_SETSID = ABI_SYSCALLS.Setsid;
 const SYS_WAIT4 = ABI_SYSCALLS.Wait4;
-const SYS_WAITID = 288;
+const SYS_WAITID = ABI_SYSCALLS.Waitid;
 /** SYS_THREAD_CANCEL: host-side wake-up for deferred pthread cancellation.
  * See libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
-const SYS_THREAD_CANCEL = 415;
+const SYS_THREAD_CANCEL = ABI_SYSCALLS.ThreadCancel;
 
 /** waitpid options */
 const WNOHANG = 1;
@@ -156,41 +157,47 @@ const SIOCGIFHWADDR = 0x8927;
 const SIOCGIFADDR = 0x8915;
 
 /** Ioctl syscall number */
-const SYS_IOCTL = 72;
+const SYS_IOCTL = ABI_SYSCALLS.Ioctl;
 
 /** Syscall numbers for memory management */
-const SYS_MMAP = 46;
-const SYS_MUNMAP = 47;
-const SYS_BRK = 48;
-const SYS_MREMAP = 126;
-const SYS_MSYNC = 278;
-const SYS_WRITE = 4;
-const SYS_PREAD = 64;
-const SYS_PWRITE = 65;
+const SYS_MMAP = ABI_SYSCALLS.Mmap;
+const SYS_MUNMAP = ABI_SYSCALLS.Munmap;
+const SYS_BRK = ABI_SYSCALLS.Brk;
+const SYS_MREMAP = ABI_SYSCALLS.Mremap;
+const SYS_MSYNC = ABI_SYSCALLS.Msync;
+const SYS_WRITE = ABI_SYSCALLS.Write;
+const SYS_READ = ABI_SYSCALLS.Read;
+const SYS_PREAD = ABI_SYSCALLS.Pread;
+const SYS_PWRITE = ABI_SYSCALLS.Pwrite;
+const SYS_SENDMSG = ABI_SYSCALLS.Sendmsg;
+const SYS_RECVMSG = ABI_SYSCALLS.Recvmsg;
+const SYS_ACCEPT = ABI_SYSCALLS.Accept;
+const SYS_ACCEPT4 = ABI_SYSCALLS.Accept4;
+const SYS_CONNECT = ABI_SYSCALLS.Connect;
 
 /** mmap flags */
 const MAP_SHARED = 0x01;
 const MAP_ANONYMOUS = 0x20;
 
 /** Syscall numbers for scatter/gather I/O */
-const SYS_WRITEV = 81;
-const SYS_READV = 82;
-const SYS_PREADV = 295;
-const SYS_PWRITEV = 296;
+const SYS_WRITEV = ABI_SYSCALLS.Writev;
+const SYS_READV = ABI_SYSCALLS.Readv;
+const SYS_PREADV = ABI_SYSCALLS.Preadv;
+const SYS_PWRITEV = ABI_SYSCALLS.Pwritev;
 
 /** fcntl commands that take a struct flock pointer */
-const SYS_FCNTL = 10;
+const SYS_FCNTL = ABI_SYSCALLS.Fcntl;
 
 /** SysV IPC syscall numbers (only those still intercepted on host) */
-const SYS_SEMCTL = 343;
-const SYS_SHMAT = 345;
-const SYS_SHMDT = 346;
+const SYS_SEMCTL = ABI_SYSCALLS.Semctl;
+const SYS_SHMAT = ABI_SYSCALLS.Shmat;
+const SYS_SHMDT = ABI_SYSCALLS.Shmdt;
 
 /** POSIX message queue syscall numbers */
-const SYS_MQ_TIMEDSEND = 333;
-const SYS_MQ_TIMEDRECEIVE = 334;
+const SYS_MQ_TIMEDSEND = ABI_SYSCALLS.MqTimedsend;
+const SYS_MQ_TIMEDRECEIVE = ABI_SYSCALLS.MqTimedreceive;
 
-const SYS_CLOSE = 2;
+const SYS_CLOSE = ABI_SYSCALLS.Close;
 
 /** IPC constants (must match musl) */
 const IPC_64 = 0x100;
@@ -212,9 +219,24 @@ const EAGAIN_RETRY_MS = 1;
 const PROFILING = typeof process !== 'undefined' && !!process.env?.WASM_POSIX_PROFILE;
 
 /** Read-like syscalls that may block on pipe/socket data */
-const READ_LIKE_SYSCALLS = new Set([3, 56, 63, 64, 82, 138]); // READ, RECV, RECVFROM, PREAD, READV, RECVMSG
+const READ_LIKE_SYSCALLS = new Set<number>([
+  ABI_SYSCALLS.Read,
+  ABI_SYSCALLS.Recv,
+  ABI_SYSCALLS.Recvfrom,
+  ABI_SYSCALLS.Pread,
+  ABI_SYSCALLS.Readv,
+  ABI_SYSCALLS.Recvmsg,
+]);
 /** Write-like syscalls that may produce pipe/socket data */
-const WRITE_LIKE_SYSCALLS = new Set([4, 55, 62, 65, 81, 137, 294]); // WRITE, SEND, SENDTO, PWRITE, WRITEV, SENDMSG, SENDFILE
+const WRITE_LIKE_SYSCALLS = new Set<number>([
+  ABI_SYSCALLS.Write,
+  ABI_SYSCALLS.Send,
+  ABI_SYSCALLS.Sendto,
+  ABI_SYSCALLS.Pwrite,
+  ABI_SYSCALLS.Writev,
+  ABI_SYSCALLS.Sendmsg,
+  ABI_SYSCALLS.Sendfile,
+]);
 // Signal delivery area — last 48 bytes of data buffer.
 // Written by kernel_dequeue_signal, read by glue channel_syscall.c.
 const CH_SIG_SI_VALUE = CH_SIG_BASE + 12;  // i32: si_value.sival_int
@@ -352,50 +374,7 @@ function decodeSpawnBlobStrings(blob: Uint8Array): { argv: string[]; envp: strin
 }
 
 /** Syscall number → name mapping for logging */
-export const SYSCALL_NAMES: Record<number, string> = {
-  1: "open", 2: "close", 3: "read", 4: "write", 5: "lseek", 6: "fstat",
-  7: "dup", 8: "dup2", 9: "pipe", 10: "fcntl", 11: "stat", 12: "lstat",
-  13: "mkdir", 14: "rmdir", 15: "unlink", 16: "rename", 17: "link",
-  18: "symlink", 19: "readlink", 20: "chmod", 21: "chown", 22: "access",
-  23: "getcwd", 24: "chdir", 25: "opendir", 26: "readdir", 27: "closedir",
-  28: "getpid", 29: "getppid", 30: "getuid", 31: "geteuid", 32: "getgid",
-  33: "getegid", 34: "exit", 35: "kill", 36: "sigaction", 37: "sigprocmask",
-  38: "raise", 40: "clock_gettime", 41: "nanosleep", 43: "getenv",
-  44: "setenv", 45: "unsetenv", 46: "mmap", 47: "munmap", 48: "brk",
-  50: "socket", 51: "bind", 52: "listen", 53: "accept", 54: "connect",
-  55: "send", 56: "recv", 57: "shutdown", 58: "getsockopt", 59: "setsockopt",
-  60: "poll", 61: "socketpair", 62: "sendto", 63: "recvfrom",
-  64: "pread", 65: "pwrite", 68: "usleep", 69: "openat", 70: "tcgetattr",
-  71: "tcsetattr", 72: "ioctl", 75: "uname", 77: "dup3", 78: "pipe2",
-  81: "writev", 82: "readv", 83: "getrlimit", 84: "setrlimit",
-  85: "truncate", 86: "ftruncate", 87: "fsync", 88: "fdatasync",
-  89: "getpgrp", 90: "setpgid", 92: "setsid", 93: "fstatat",
-  94: "unlinkat", 95: "mkdirat", 96: "renameat", 97: "faccessat",
-  98: "fchmodat", 99: "fchownat", 100: "linkat", 101: "symlinkat",
-  102: "readlinkat", 107: "fchmod", 108: "getrusage", 109: "realpath",
-  110: "sigsuspend", 114: "getsockname", 115: "getpeername",
-  119: "_llseek", 120: "getrandom", 121: "flock", 122: "getdents64",
-  123: "clock_getres", 124: "clock_nanosleep", 125: "utimensat",
-  126: "mremap", 127: "fchdir", 129: "statfs64", 130: "fstatfs64",
-  132: "getresuid", 134: "getresgid", 137: "sendmsg", 138: "recvmsg",
-  139: "wait4", 140: "getaddrinfo", 200: "futex", 201: "clone",
-  205: "rt_sigqueueinfo", 206: "rt_sigpending", 207: "rt_sigtimedwait",
-  208: "rt_sigreturn", 209: "sigaltstack", 211: "execve", 212: "fork",
-  213: "vfork", 214: "getpgid", 224: "getitimer", 225: "setitimer",
-  230: "sched_getparam", 236: "sched_rr_get_interval",
-  239: "epoll_create1", 240: "epoll_ctl", 241: "epoll_pwait",
-  250: "prlimit64", 251: "ppoll", 252: "pselect6", 260: "statx",
-  271: "mknod", 272: "mknodat", 278: "msync", 288: "waitid",
-  295: "preadv", 296: "pwritev", 326: "timer_create",
-  327: "timer_settime", 328: "timer_gettime", 329: "timer_getoverrun",
-  330: "timer_delete", 331: "mq_open", 332: "mq_unlink",
-  333: "mq_timedsend", 334: "mq_timedreceive", 335: "mq_notify",
-  336: "mq_getsetattr", 337: "msgget", 338: "msgrcv", 339: "msgsnd",
-  340: "msgctl", 341: "semget", 342: "semop", 343: "semctl",
-  344: "shmget", 345: "shmat", 346: "shmdt", 347: "shmctl",
-  378: "epoll_create", 379: "epoll_wait", 382: "faccessat2",
-  383: "fchmodat2", 384: "accept4", 386: "execveat", 387: "exit_group",
-};
+export const SYSCALL_NAMES: Record<number, string> = ABI_SYSCALL_NAMES;
 
 /** Errno number → name mapping for logging */
 const ERRNO_NAMES: Record<number, string> = {
@@ -1623,56 +1602,56 @@ export class CentralizedKernelWorker {
 
     // Decode args based on syscall type
     switch (syscallNr) {
-      case 1: // open(path, flags, mode)
+      case ABI_SYSCALLS.Open: // open(path, flags, mode)
         return `[${pid}${tidSuffix}] open("${this.readCString(channel.memory, args[0])}", 0x${(args[1] >>> 0).toString(16)}, 0o${(args[2] >>> 0).toString(8)})`;
-      case 69: // openat(dirfd, path, flags, mode)
+      case ABI_SYSCALLS.Openat: // openat(dirfd, path, flags, mode)
         return `[${pid}${tidSuffix}] openat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[2] >>> 0).toString(16)}, 0o${(args[3] >>> 0).toString(8)})`;
-      case 11: // stat(path, buf)
+      case ABI_SYSCALLS.Stat: // stat(path, buf)
         return `[${pid}${tidSuffix}] stat("${this.readCString(channel.memory, args[0])}")`;
-      case 12: // lstat(path, buf)
+      case ABI_SYSCALLS.Lstat: // lstat(path, buf)
         return `[${pid}${tidSuffix}] lstat("${this.readCString(channel.memory, args[0])}")`;
-      case 93: // fstatat(dirfd, path, buf, flags)
+      case ABI_SYSCALLS.Fstatat: // fstatat(dirfd, path, buf, flags)
         return `[${pid}${tidSuffix}] fstatat(${args[0]}, "${this.readCString(channel.memory, args[1])}", 0x${(args[3] >>> 0).toString(16)})`;
-      case 22: // access(path, mode)
+      case ABI_SYSCALLS.Access: // access(path, mode)
         return `[${pid}${tidSuffix}] access("${this.readCString(channel.memory, args[0])}", ${args[1]})`;
-      case 97: // faccessat(dirfd, path, mode, flags)
+      case ABI_SYSCALLS.Faccessat: // faccessat(dirfd, path, mode, flags)
         return `[${pid}${tidSuffix}] faccessat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[2]})`;
-      case 24: // chdir(path)
+      case ABI_SYSCALLS.Chdir: // chdir(path)
         return `[${pid}${tidSuffix}] chdir("${this.readCString(channel.memory, args[0])}")`;
-      case 25: // opendir(path)
+      case ABI_SYSCALLS.Opendir: // opendir(path)
         return `[${pid}${tidSuffix}] opendir("${this.readCString(channel.memory, args[0])}")`;
-      case 19: // readlink(path, buf, bufsiz)
+      case ABI_SYSCALLS.Readlink: // readlink(path, buf, bufsiz)
         return `[${pid}${tidSuffix}] readlink("${this.readCString(channel.memory, args[0])}", ${args[2]})`;
-      case 102: // readlinkat(dirfd, path, buf, bufsiz)
+      case ABI_SYSCALLS.Readlinkat: // readlinkat(dirfd, path, buf, bufsiz)
         return `[${pid}${tidSuffix}] readlinkat(${args[0]}, "${this.readCString(channel.memory, args[1])}", ${args[3]})`;
-      case 109: // realpath(path, buf, bufsiz)
+      case ABI_SYSCALLS.Realpath: // realpath(path, buf, bufsiz)
         return `[${pid}${tidSuffix}] realpath("${this.readCString(channel.memory, args[0])}")`;
-      case 3: // read(fd, buf, count)
+      case ABI_SYSCALLS.Read: // read(fd, buf, count)
         return `[${pid}${tidSuffix}] read(${args[0]}, ${args[2]})`;
-      case 4: // write(fd, buf, count)
+      case ABI_SYSCALLS.Write: // write(fd, buf, count)
         return `[${pid}${tidSuffix}] write(${args[0]}, ${args[2]})`;
-      case 2: // close(fd)
+      case ABI_SYSCALLS.Close: // close(fd)
         return `[${pid}${tidSuffix}] close(${args[0]})`;
-      case 6: // fstat(fd, buf)
+      case ABI_SYSCALLS.Fstat: // fstat(fd, buf)
         return `[${pid}${tidSuffix}] fstat(${args[0]})`;
-      case 10: // fcntl(fd, cmd, arg)
+      case ABI_SYSCALLS.Fcntl: // fcntl(fd, cmd, arg)
         return `[${pid}${tidSuffix}] fcntl(${args[0]}, ${args[1]}, ${args[2]})`;
-      case 46: // mmap(addr, len, prot, flags, fd, offset)
+      case ABI_SYSCALLS.Mmap: // mmap(addr, len, prot, flags, fd, offset)
         return `[${pid}${tidSuffix}] mmap(0x${(args[0] >>> 0).toString(16)}, ${args[1] >>> 0}, ${args[2]}, 0x${(args[3] >>> 0).toString(16)}, ${args[4]}, ${args[5] >>> 0})`;
-      case 47: // munmap(addr, len)
+      case ABI_SYSCALLS.Munmap: // munmap(addr, len)
         return `[${pid}${tidSuffix}] munmap(0x${(args[0] >>> 0).toString(16)}, ${args[1] >>> 0})`;
-      case 48: // brk(addr)
+      case ABI_SYSCALLS.Brk: // brk(addr)
         return `[${pid}${tidSuffix}] brk(0x${(args[0] >>> 0).toString(16)})`;
-      case 211: // execve(path, argv, envp)
+      case HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE: // execve(path, argv, envp)
         return `[${pid}${tidSuffix}] execve("${this.readCString(channel.memory, args[0])}")`;
-      case 212: return `[${pid}${tidSuffix}] fork()`;
-      case 213: return `[${pid}${tidSuffix}] vfork()`;
-      case 201: // clone(flags, stack, ptid, tls, ctid)
+      case HOST_INTERCEPTED_SYSCALLS.SYS_FORK: return `[${pid}${tidSuffix}] fork()`;
+      case HOST_INTERCEPTED_SYSCALLS.SYS_VFORK: return `[${pid}${tidSuffix}] vfork()`;
+      case ABI_SYSCALLS.Clone: // clone(flags, stack, ptid, tls, ctid)
         return `[${pid}${tidSuffix}] clone(0x${(args[0] >>> 0).toString(16)})`;
-      case 34: return `[${pid}${tidSuffix}] exit(${args[0]})`;
-      case 60: // poll(fds, nfds, timeout)
+      case ABI_SYSCALLS.Exit: return `[${pid}${tidSuffix}] exit(${args[0]})`;
+      case ABI_SYSCALLS.Poll: // poll(fds, nfds, timeout)
         return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]})`;
-      case 72: // ioctl(fd, cmd, arg)
+      case ABI_SYSCALLS.Ioctl: // ioctl(fd, cmd, arg)
         return `[${pid}${tidSuffix}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;
       default:
         return `[${pid}${tidSuffix}] ${name}(${args.filter((_, i) => i < 3).join(", ")})`;
@@ -1687,9 +1666,9 @@ export class CentralizedKernelWorker {
     }
     // Format return value based on syscall type
     switch (syscallNr) {
-      case 46: // mmap
+      case ABI_SYSCALLS.Mmap: // mmap
         return ` = 0x${(retVal >>> 0).toString(16)}`;
-      case 48: // brk
+      case ABI_SYSCALLS.Brk: // brk
         return ` = 0x${(retVal >>> 0).toString(16)}`;
       default:
         return ` = ${retVal}`;
@@ -1882,17 +1861,17 @@ export class CentralizedKernelWorker {
       this.handleLargeWrite(channel, syscallNr, origArgs);
       return;
     }
-    if ((syscallNr === 3 /* SYS_READ */ || syscallNr === SYS_PREAD) && origArgs[2] > CH_DATA_SIZE) {
+    if ((syscallNr === SYS_READ || syscallNr === SYS_PREAD) && origArgs[2] > CH_DATA_SIZE) {
       this.handleLargeRead(channel, syscallNr, origArgs);
       return;
     }
 
     // --- sendmsg/recvmsg: decompose msghdr from process memory ---
-    if (syscallNr === 137 /* SYS_SENDMSG */) {
+    if (syscallNr === SYS_SENDMSG) {
       this.handleSendmsg(channel, origArgs);
       return;
     }
-    if (syscallNr === 138 /* SYS_RECVMSG */) {
+    if (syscallNr === SYS_RECVMSG) {
       this.handleRecvmsg(channel, origArgs);
       return;
     }
@@ -3383,8 +3362,8 @@ export class CentralizedKernelWorker {
     // nginx that use non-blocking I/O and expect EAGAIN returned promptly.
     // Covers read/write, accept, accept4, and connect syscalls.
     if (READ_LIKE_SYSCALLS.has(syscallNr) || WRITE_LIKE_SYSCALLS.has(syscallNr)
-        || syscallNr === 53 /* ACCEPT */ || syscallNr === 384 /* ACCEPT4 */
-        || syscallNr === 54 /* CONNECT */) {
+        || syscallNr === SYS_ACCEPT || syscallNr === SYS_ACCEPT4
+        || syscallNr === SYS_CONNECT) {
       const fd = origArgs[0];
       const isFdNonblock = this.kernelInstance!.exports.kernel_is_fd_nonblock as
         ((pid: number, fd: number) => number) | undefined;
@@ -3495,7 +3474,7 @@ export class CentralizedKernelWorker {
     // Event-driven wakeup for accept/accept4: register the listening socket's
     // pipe index so injectConnection → scheduleWakeBlockedRetries wakes the
     // accept immediately instead of waiting for the fallback timer.
-    if (syscallNr === 53 /* ACCEPT */ || syscallNr === 384 /* ACCEPT4 */) {
+    if (syscallNr === SYS_ACCEPT || syscallNr === SYS_ACCEPT4) {
       const fd = origArgs[0];
       const getFdPipeIdx = this.kernelInstance!.exports.kernel_get_fd_pipe_idx as
         ((pid: number, fd: number) => number) | undefined;
@@ -5081,7 +5060,7 @@ export class CentralizedKernelWorker {
     }
 
     // Call kernel
-    kernelView.setUint32(CH_SYSCALL, 137, true); // SYS_SENDMSG
+    kernelView.setUint32(CH_SYSCALL, SYS_SENDMSG, true);
     kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
     kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(kMsgPtr), true);
     kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flags), true);
@@ -5100,11 +5079,11 @@ export class CentralizedKernelWorker {
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     if (retVal === -1 && errVal === EAGAIN) {
-      this.handleBlockingRetry(channel, 137, origArgs);
+      this.handleBlockingRetry(channel, SYS_SENDMSG, origArgs);
       return;
     }
 
-    this.completeChannel(channel, 137, origArgs, undefined, retVal, errVal);
+    this.completeChannel(channel, SYS_SENDMSG, origArgs, undefined, retVal, errVal);
   }
 
   /**
@@ -5213,7 +5192,7 @@ export class CentralizedKernelWorker {
     }
 
     // Call kernel
-    kernelView.setUint32(CH_SYSCALL, 138, true); // SYS_RECVMSG
+    kernelView.setUint32(CH_SYSCALL, SYS_RECVMSG, true);
     kernelView.setBigInt64(CH_ARGS, BigInt(fd), true);
     kernelView.setBigInt64(CH_ARGS + 1 * CH_ARG_SIZE, BigInt(kMsgPtr), true);
     kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(flags), true);
@@ -5232,7 +5211,7 @@ export class CentralizedKernelWorker {
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     if (retVal === -1 && errVal === EAGAIN) {
-      this.handleBlockingRetry(channel, 138, origArgs);
+      this.handleBlockingRetry(channel, SYS_RECVMSG, origArgs);
       return;
     }
 
@@ -5280,7 +5259,7 @@ export class CentralizedKernelWorker {
       processView.setUint32(msgPtr + 24, kMsgflags, true);     // msg_flags
     }
 
-    this.completeChannel(channel, 138, origArgs, undefined, retVal, errVal);
+    this.completeChannel(channel, SYS_RECVMSG, origArgs, undefined, retVal, errVal);
   }
 
   // -----------------------------------------------------------------------

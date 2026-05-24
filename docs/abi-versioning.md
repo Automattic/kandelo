@@ -84,8 +84,10 @@ captures:
   with `name`, `offset`, `span`). `span` is bytes until the next field
   (or end of struct), so it includes alignment padding and catches any
   layout shift.
-- `syscalls` — every syscall number for which `Syscall::from_u32`
-  returns a named variant.
+- `syscalls` — every syscall number named by the shared ABI metadata:
+  the core `Syscall::from_u32` table plus `abi::extended_syscalls`
+  entries for host-visible kernel/control syscalls that are not yet in
+  the core enum.
 - `syscall_arg_descriptors` — host marshalling descriptors for pointer
   arguments, including direction, size source, size multipliers/additions,
   fixed byte lengths, and any return-value-based copy-back adjustment.

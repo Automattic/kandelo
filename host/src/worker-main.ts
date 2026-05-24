@@ -115,7 +115,7 @@ function buildKernelImports(
     // Clone dispatches through channel (SYS_CLONE)
     kernel_clone: (fnPtr: number | bigint, stackPtr: number | bigint, flags: number,
       arg: number | bigint, ptidPtr: number | bigint, tlsPtr: number | bigint, ctidPtr: number | bigint): number => {
-      const SYS_CLONE_NR = 201;
+      const SYS_CLONE_NR = ABI_SYSCALLS.Clone;
       const view = new DataView(memory.buffer);
       const base = channelOffset;
       view.setInt32(base + CH_SYSCALL, SYS_CLONE_NR, true);
