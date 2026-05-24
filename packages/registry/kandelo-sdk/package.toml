@@ -1,0 +1,26 @@
+kind = "program"
+name = "kandelo-sdk"
+version = "0.1.0"
+kernel_abi = 12
+depends_on = ["libcxx@21"]
+
+[source]
+url = "https://github.com/brandonpayton/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later AND MIT AND Apache-2.0 WITH LLVM-exception"
+url = "https://github.com/brandonpayton/kandelo"
+
+[build]
+script_path = "packages/registry/kandelo-sdk/build-kandelo-sdk.sh"
+
+[[outputs]]
+name = "kandelo-sdk"
+wasm = "kandelo-sdk.vfs.zst"
+
+[[host_tools]]
+name = "clang"
+version_constraint = ">=21.0"
+probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "use nix develop, or: brew install llvm", linux = "use nix develop, or: apt install clang" }
