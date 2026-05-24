@@ -959,6 +959,368 @@ pub mod abi {
     /// changes.
     pub const ABI_VALUE_CAPTURE_PREFIXES: &[&str] = &["__abi_"];
 
+    /// One named syscall number in the host/kernel ABI metadata.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AbiSyscallNumber {
+        pub name: &'static str,
+        pub number: u32,
+    }
+
+    /// ABI-visible syscall numbers that are not yet represented in
+    /// [`crate::Syscall`].
+    ///
+    /// These include Linux-like extended calls handled by `wasm_api.rs`, plus
+    /// host-adapter control calls that enter through the normal syscall
+    /// channel. Fork/exec/spawn calls caught before normal dispatch stay in
+    /// [`host_intercepted`] instead.
+    pub mod extended_syscalls {
+        use super::AbiSyscallNumber;
+
+        pub const SYS_LLSEEK: u32 = 119;
+        pub const SYS_GETRANDOM: u32 = 120;
+        pub const SYS_FLOCK: u32 = 121;
+        pub const SYS_FUTEX: u32 = 200;
+        pub const SYS_CLONE: u32 = 201;
+        pub const SYS_GETTID: u32 = 202;
+        pub const SYS_SET_TID_ADDRESS: u32 = 203;
+        pub const SYS_RT_SIGQUEUEINFO: u32 = 205;
+        pub const SYS_RT_SIGPENDING: u32 = 206;
+        pub const SYS_RT_SIGTIMEDWAIT: u32 = 207;
+        pub const SYS_RT_SIGRETURN: u32 = 208;
+        pub const SYS_SIGALTSTACK: u32 = 209;
+        pub const SYS_GETPGID: u32 = 214;
+        pub const SYS_SETREUID: u32 = 215;
+        pub const SYS_SETREGID: u32 = 216;
+        pub const SYS_PRCTL: u32 = 223;
+        pub const SYS_GETITIMER: u32 = 224;
+        pub const SYS_SETITIMER: u32 = 225;
+        pub const SYS_CLOCK_SETTIME: u32 = 226;
+        pub const SYS_SCHED_YIELD: u32 = 229;
+        pub const SYS_SCHED_GETPARAM: u32 = 230;
+        pub const SYS_SCHED_RR_GET_INTERVAL: u32 = 236;
+        pub const SYS_EPOLL_CREATE1: u32 = 239;
+        pub const SYS_EPOLL_CTL: u32 = 240;
+        pub const SYS_EPOLL_PWAIT: u32 = 241;
+        pub const SYS_PRLIMIT64: u32 = 250;
+        pub const SYS_PPOLL: u32 = 251;
+        pub const SYS_PSELECT6: u32 = 252;
+        pub const SYS_STATX: u32 = 260;
+        pub const SYS_SET_ROBUST_LIST: u32 = 261;
+        pub const SYS_GET_ROBUST_LIST: u32 = 262;
+        pub const SYS_MKNOD: u32 = 271;
+        pub const SYS_MKNODAT: u32 = 272;
+        pub const SYS_MSYNC: u32 = 278;
+        pub const SYS_WAITID: u32 = 288;
+        pub const SYS_SENDFILE: u32 = 294;
+        pub const SYS_PREADV: u32 = 295;
+        pub const SYS_PWRITEV: u32 = 296;
+        pub const SYS_FALLOCATE: u32 = 308;
+        pub const SYS_TIMER_CREATE: u32 = 326;
+        pub const SYS_TIMER_SETTIME: u32 = 327;
+        pub const SYS_TIMER_GETTIME: u32 = 328;
+        pub const SYS_TIMER_GETOVERRUN: u32 = 329;
+        pub const SYS_TIMER_DELETE: u32 = 330;
+        pub const SYS_MQ_OPEN: u32 = 331;
+        pub const SYS_MQ_UNLINK: u32 = 332;
+        pub const SYS_MQ_TIMEDSEND: u32 = 333;
+        pub const SYS_MQ_TIMEDRECEIVE: u32 = 334;
+        pub const SYS_MQ_NOTIFY: u32 = 335;
+        pub const SYS_MQ_GETSETATTR: u32 = 336;
+        pub const SYS_MSGGET: u32 = 337;
+        pub const SYS_MSGRCV: u32 = 338;
+        pub const SYS_MSGSND: u32 = 339;
+        pub const SYS_MSGCTL: u32 = 340;
+        pub const SYS_SEMGET: u32 = 341;
+        pub const SYS_SEMOP: u32 = 342;
+        pub const SYS_SEMCTL: u32 = 343;
+        pub const SYS_SHMGET: u32 = 344;
+        pub const SYS_SHMAT: u32 = 345;
+        pub const SYS_SHMDT: u32 = 346;
+        pub const SYS_SHMCTL: u32 = 347;
+        pub const SYS_EPOLL_CREATE: u32 = 378;
+        pub const SYS_EPOLL_WAIT: u32 = 379;
+        pub const SYS_FACCESSAT2: u32 = 382;
+        pub const SYS_FCHMODAT2: u32 = 383;
+        pub const SYS_ACCEPT4: u32 = 384;
+        pub const SYS_EXIT_GROUP: u32 = 387;
+        pub const SYS_THREAD_CANCEL: u32 = 415;
+
+        pub const SYSCALLS: &[AbiSyscallNumber] = &[
+            AbiSyscallNumber {
+                name: "Llseek",
+                number: SYS_LLSEEK,
+            },
+            AbiSyscallNumber {
+                name: "Getrandom",
+                number: SYS_GETRANDOM,
+            },
+            AbiSyscallNumber {
+                name: "Flock",
+                number: SYS_FLOCK,
+            },
+            AbiSyscallNumber {
+                name: "Futex",
+                number: SYS_FUTEX,
+            },
+            AbiSyscallNumber {
+                name: "Clone",
+                number: SYS_CLONE,
+            },
+            AbiSyscallNumber {
+                name: "Gettid",
+                number: SYS_GETTID,
+            },
+            AbiSyscallNumber {
+                name: "SetTidAddress",
+                number: SYS_SET_TID_ADDRESS,
+            },
+            AbiSyscallNumber {
+                name: "RtSigqueueinfo",
+                number: SYS_RT_SIGQUEUEINFO,
+            },
+            AbiSyscallNumber {
+                name: "RtSigpending",
+                number: SYS_RT_SIGPENDING,
+            },
+            AbiSyscallNumber {
+                name: "RtSigtimedwait",
+                number: SYS_RT_SIGTIMEDWAIT,
+            },
+            AbiSyscallNumber {
+                name: "RtSigreturn",
+                number: SYS_RT_SIGRETURN,
+            },
+            AbiSyscallNumber {
+                name: "Sigaltstack",
+                number: SYS_SIGALTSTACK,
+            },
+            AbiSyscallNumber {
+                name: "Getpgid",
+                number: SYS_GETPGID,
+            },
+            AbiSyscallNumber {
+                name: "Setreuid",
+                number: SYS_SETREUID,
+            },
+            AbiSyscallNumber {
+                name: "Setregid",
+                number: SYS_SETREGID,
+            },
+            AbiSyscallNumber {
+                name: "Prctl",
+                number: SYS_PRCTL,
+            },
+            AbiSyscallNumber {
+                name: "Getitimer",
+                number: SYS_GETITIMER,
+            },
+            AbiSyscallNumber {
+                name: "Setitimer",
+                number: SYS_SETITIMER,
+            },
+            AbiSyscallNumber {
+                name: "ClockSettime",
+                number: SYS_CLOCK_SETTIME,
+            },
+            AbiSyscallNumber {
+                name: "SchedYield",
+                number: SYS_SCHED_YIELD,
+            },
+            AbiSyscallNumber {
+                name: "SchedGetparam",
+                number: SYS_SCHED_GETPARAM,
+            },
+            AbiSyscallNumber {
+                name: "SchedRrGetInterval",
+                number: SYS_SCHED_RR_GET_INTERVAL,
+            },
+            AbiSyscallNumber {
+                name: "EpollCreate1",
+                number: SYS_EPOLL_CREATE1,
+            },
+            AbiSyscallNumber {
+                name: "EpollCtl",
+                number: SYS_EPOLL_CTL,
+            },
+            AbiSyscallNumber {
+                name: "EpollPwait",
+                number: SYS_EPOLL_PWAIT,
+            },
+            AbiSyscallNumber {
+                name: "Prlimit64",
+                number: SYS_PRLIMIT64,
+            },
+            AbiSyscallNumber {
+                name: "Ppoll",
+                number: SYS_PPOLL,
+            },
+            AbiSyscallNumber {
+                name: "Pselect6",
+                number: SYS_PSELECT6,
+            },
+            AbiSyscallNumber {
+                name: "Statx",
+                number: SYS_STATX,
+            },
+            AbiSyscallNumber {
+                name: "SetRobustList",
+                number: SYS_SET_ROBUST_LIST,
+            },
+            AbiSyscallNumber {
+                name: "GetRobustList",
+                number: SYS_GET_ROBUST_LIST,
+            },
+            AbiSyscallNumber {
+                name: "Mknod",
+                number: SYS_MKNOD,
+            },
+            AbiSyscallNumber {
+                name: "Mknodat",
+                number: SYS_MKNODAT,
+            },
+            AbiSyscallNumber {
+                name: "Msync",
+                number: SYS_MSYNC,
+            },
+            AbiSyscallNumber {
+                name: "Waitid",
+                number: SYS_WAITID,
+            },
+            AbiSyscallNumber {
+                name: "Sendfile",
+                number: SYS_SENDFILE,
+            },
+            AbiSyscallNumber {
+                name: "Preadv",
+                number: SYS_PREADV,
+            },
+            AbiSyscallNumber {
+                name: "Pwritev",
+                number: SYS_PWRITEV,
+            },
+            AbiSyscallNumber {
+                name: "Fallocate",
+                number: SYS_FALLOCATE,
+            },
+            AbiSyscallNumber {
+                name: "TimerCreate",
+                number: SYS_TIMER_CREATE,
+            },
+            AbiSyscallNumber {
+                name: "TimerSettime",
+                number: SYS_TIMER_SETTIME,
+            },
+            AbiSyscallNumber {
+                name: "TimerGettime",
+                number: SYS_TIMER_GETTIME,
+            },
+            AbiSyscallNumber {
+                name: "TimerGetoverrun",
+                number: SYS_TIMER_GETOVERRUN,
+            },
+            AbiSyscallNumber {
+                name: "TimerDelete",
+                number: SYS_TIMER_DELETE,
+            },
+            AbiSyscallNumber {
+                name: "MqOpen",
+                number: SYS_MQ_OPEN,
+            },
+            AbiSyscallNumber {
+                name: "MqUnlink",
+                number: SYS_MQ_UNLINK,
+            },
+            AbiSyscallNumber {
+                name: "MqTimedsend",
+                number: SYS_MQ_TIMEDSEND,
+            },
+            AbiSyscallNumber {
+                name: "MqTimedreceive",
+                number: SYS_MQ_TIMEDRECEIVE,
+            },
+            AbiSyscallNumber {
+                name: "MqNotify",
+                number: SYS_MQ_NOTIFY,
+            },
+            AbiSyscallNumber {
+                name: "MqGetsetattr",
+                number: SYS_MQ_GETSETATTR,
+            },
+            AbiSyscallNumber {
+                name: "Msgget",
+                number: SYS_MSGGET,
+            },
+            AbiSyscallNumber {
+                name: "Msgrcv",
+                number: SYS_MSGRCV,
+            },
+            AbiSyscallNumber {
+                name: "Msgsnd",
+                number: SYS_MSGSND,
+            },
+            AbiSyscallNumber {
+                name: "Msgctl",
+                number: SYS_MSGCTL,
+            },
+            AbiSyscallNumber {
+                name: "Semget",
+                number: SYS_SEMGET,
+            },
+            AbiSyscallNumber {
+                name: "Semop",
+                number: SYS_SEMOP,
+            },
+            AbiSyscallNumber {
+                name: "Semctl",
+                number: SYS_SEMCTL,
+            },
+            AbiSyscallNumber {
+                name: "Shmget",
+                number: SYS_SHMGET,
+            },
+            AbiSyscallNumber {
+                name: "Shmat",
+                number: SYS_SHMAT,
+            },
+            AbiSyscallNumber {
+                name: "Shmdt",
+                number: SYS_SHMDT,
+            },
+            AbiSyscallNumber {
+                name: "Shmctl",
+                number: SYS_SHMCTL,
+            },
+            AbiSyscallNumber {
+                name: "EpollCreate",
+                number: SYS_EPOLL_CREATE,
+            },
+            AbiSyscallNumber {
+                name: "EpollWait",
+                number: SYS_EPOLL_WAIT,
+            },
+            AbiSyscallNumber {
+                name: "Faccessat2",
+                number: SYS_FACCESSAT2,
+            },
+            AbiSyscallNumber {
+                name: "Fchmodat2",
+                number: SYS_FCHMODAT2,
+            },
+            AbiSyscallNumber {
+                name: "Accept4",
+                number: SYS_ACCEPT4,
+            },
+            AbiSyscallNumber {
+                name: "ExitGroup",
+                number: SYS_EXIT_GROUP,
+            },
+            AbiSyscallNumber {
+                name: "ThreadCancel",
+                number: SYS_THREAD_CANCEL,
+            },
+        ];
+    }
+
     /// Host-intercepted syscall numbers (caught by `host/src/kernel-worker.ts`
     /// before reaching the kernel's syscall dispatcher). The kernel never sees
     /// these on the channel — the host calls the corresponding `kernel_*`
@@ -1008,6 +1370,31 @@ pub mod abi {
         ABI_VALUE_CAPTURE_PREFIXES
             .iter()
             .any(|&p| name.starts_with(p))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::extended_syscalls::SYSCALLS;
+        use crate::Syscall;
+
+        #[test]
+        fn extended_syscalls_are_sorted_unique_and_do_not_overlap_core_enum() {
+            let mut prev = None;
+            for syscall in SYSCALLS {
+                if let Some(prev) = prev {
+                    assert!(
+                        prev < syscall.number,
+                        "extended syscall metadata must be sorted and unique"
+                    );
+                }
+                assert!(
+                    Syscall::from_u32(syscall.number).is_none(),
+                    "extended syscall {} overlaps core Syscall enum",
+                    syscall.name
+                );
+                prev = Some(syscall.number);
+            }
+        }
     }
 }
 

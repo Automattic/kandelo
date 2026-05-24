@@ -3871,6 +3871,18 @@
       "number": 118
     },
     {
+      "name": "Llseek",
+      "number": 119
+    },
+    {
+      "name": "Getrandom",
+      "number": 120
+    },
+    {
+      "name": "Flock",
+      "number": 121
+    },
+    {
       "name": "Getdents64",
       "number": 122
     },
@@ -3945,6 +3957,266 @@
     {
       "name": "Getaddrinfo",
       "number": 140
+    },
+    {
+      "name": "Futex",
+      "number": 200
+    },
+    {
+      "name": "Clone",
+      "number": 201
+    },
+    {
+      "name": "Gettid",
+      "number": 202
+    },
+    {
+      "name": "SetTidAddress",
+      "number": 203
+    },
+    {
+      "name": "RtSigqueueinfo",
+      "number": 205
+    },
+    {
+      "name": "RtSigpending",
+      "number": 206
+    },
+    {
+      "name": "RtSigtimedwait",
+      "number": 207
+    },
+    {
+      "name": "RtSigreturn",
+      "number": 208
+    },
+    {
+      "name": "Sigaltstack",
+      "number": 209
+    },
+    {
+      "name": "Getpgid",
+      "number": 214
+    },
+    {
+      "name": "Setreuid",
+      "number": 215
+    },
+    {
+      "name": "Setregid",
+      "number": 216
+    },
+    {
+      "name": "Prctl",
+      "number": 223
+    },
+    {
+      "name": "Getitimer",
+      "number": 224
+    },
+    {
+      "name": "Setitimer",
+      "number": 225
+    },
+    {
+      "name": "ClockSettime",
+      "number": 226
+    },
+    {
+      "name": "SchedYield",
+      "number": 229
+    },
+    {
+      "name": "SchedGetparam",
+      "number": 230
+    },
+    {
+      "name": "SchedRrGetInterval",
+      "number": 236
+    },
+    {
+      "name": "EpollCreate1",
+      "number": 239
+    },
+    {
+      "name": "EpollCtl",
+      "number": 240
+    },
+    {
+      "name": "EpollPwait",
+      "number": 241
+    },
+    {
+      "name": "Prlimit64",
+      "number": 250
+    },
+    {
+      "name": "Ppoll",
+      "number": 251
+    },
+    {
+      "name": "Pselect6",
+      "number": 252
+    },
+    {
+      "name": "Statx",
+      "number": 260
+    },
+    {
+      "name": "SetRobustList",
+      "number": 261
+    },
+    {
+      "name": "GetRobustList",
+      "number": 262
+    },
+    {
+      "name": "Mknod",
+      "number": 271
+    },
+    {
+      "name": "Mknodat",
+      "number": 272
+    },
+    {
+      "name": "Msync",
+      "number": 278
+    },
+    {
+      "name": "Waitid",
+      "number": 288
+    },
+    {
+      "name": "Sendfile",
+      "number": 294
+    },
+    {
+      "name": "Preadv",
+      "number": 295
+    },
+    {
+      "name": "Pwritev",
+      "number": 296
+    },
+    {
+      "name": "Fallocate",
+      "number": 308
+    },
+    {
+      "name": "TimerCreate",
+      "number": 326
+    },
+    {
+      "name": "TimerSettime",
+      "number": 327
+    },
+    {
+      "name": "TimerGettime",
+      "number": 328
+    },
+    {
+      "name": "TimerGetoverrun",
+      "number": 329
+    },
+    {
+      "name": "TimerDelete",
+      "number": 330
+    },
+    {
+      "name": "MqOpen",
+      "number": 331
+    },
+    {
+      "name": "MqUnlink",
+      "number": 332
+    },
+    {
+      "name": "MqTimedsend",
+      "number": 333
+    },
+    {
+      "name": "MqTimedreceive",
+      "number": 334
+    },
+    {
+      "name": "MqNotify",
+      "number": 335
+    },
+    {
+      "name": "MqGetsetattr",
+      "number": 336
+    },
+    {
+      "name": "Msgget",
+      "number": 337
+    },
+    {
+      "name": "Msgrcv",
+      "number": 338
+    },
+    {
+      "name": "Msgsnd",
+      "number": 339
+    },
+    {
+      "name": "Msgctl",
+      "number": 340
+    },
+    {
+      "name": "Semget",
+      "number": 341
+    },
+    {
+      "name": "Semop",
+      "number": 342
+    },
+    {
+      "name": "Semctl",
+      "number": 343
+    },
+    {
+      "name": "Shmget",
+      "number": 344
+    },
+    {
+      "name": "Shmat",
+      "number": 345
+    },
+    {
+      "name": "Shmdt",
+      "number": 346
+    },
+    {
+      "name": "Shmctl",
+      "number": 347
+    },
+    {
+      "name": "EpollCreate",
+      "number": 378
+    },
+    {
+      "name": "EpollWait",
+      "number": 379
+    },
+    {
+      "name": "Faccessat2",
+      "number": 382
+    },
+    {
+      "name": "Fchmodat2",
+      "number": 383
+    },
+    {
+      "name": "Accept4",
+      "number": 384
+    },
+    {
+      "name": "ExitGroup",
+      "number": 387
+    },
+    {
+      "name": "ThreadCancel",
+      "number": 415
     }
   ]
 }
