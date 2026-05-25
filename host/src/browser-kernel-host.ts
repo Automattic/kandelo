@@ -410,20 +410,14 @@ export class BrowserKernel {
       ptyRows?: number;
     },
   ): Promise<number> {
-    const pid = this.nextPid++;
     const requestId = this.nextRequestId++;
-
-    const exitPromise = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
 
     // Clone programBytes since it gets transferred (detached)
     const bytesToSend = programBytes.slice(0);
 
-    await this.request(requestId, {
+    const pid = await this.request(requestId, {
       type: "spawn",
       requestId,
-      pid,
       programBytes: bytesToSend,
       argv,
       env: this.mergeEnv(options?.env ?? this.options.env),
@@ -433,7 +427,13 @@ export class BrowserKernel {
       ptyRows: options?.ptyRows,
       stdin: options?.stdin,
       maxPages: this.maxPages,
-    }, [bytesToSend]);
+    }, [bytesToSend]) as number;
+
+    this.nextPid = Math.max(this.nextPid, pid + 1);
+
+    const exitPromise = new Promise<number>((resolve) => {
+      this.exitResolvers.set(pid, resolve);
+    });
 
     // Register PTY output callback if pty was requested
     if (options?.pty) {

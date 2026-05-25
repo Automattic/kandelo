@@ -8,8 +8,12 @@ use fork_instrument::{Options, analyze};
 use std::collections::HashSet;
 
 fn discover(wat_src: &str) -> HashSet<String> {
+    discover_with_options(wat_src, &Options::default())
+}
+
+fn discover_with_options(wat_src: &str, opts: &Options) -> HashSet<String> {
     let bytes = wat::parse_str(wat_src).expect("wat parse");
-    let analysis = analyze(&bytes, &Options::default()).expect("analyze");
+    let analysis = analyze(&bytes, opts).expect("analyze");
     analysis
         .fork_path
         .iter()
@@ -138,6 +142,7 @@ fn custom_entry_import_name() {
     let bytes = wat::parse_str(wat).expect("wat parse");
     let opts = Options {
         entry_import: "host.do_async".into(),
+        ..Options::default()
     };
     let analysis = analyze(&bytes, &opts).expect("analyze");
     assert_eq!(analysis.fork_path.len(), 2);
@@ -187,6 +192,35 @@ fn indirect_call_to_fork_path_target_is_followed() {
         found.iter().any(|n| n == "calls_indirect"),
         "Phase 3: call_indirect caller must be added when its possible \
          target is on the fork path; got {found:?}"
+    );
+}
+
+#[test]
+fn direct_only_ignores_indirect_callers() {
+    // Same shape as indirect_call_to_fork_path_target_is_followed, but
+    // with indirect discovery disabled. The table target still reaches
+    // fork directly; the call_indirect caller is intentionally excluded.
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $ft (func (result i32)))
+          (table 1 funcref)
+          (elem (i32.const 0) $forks_via_indirect)
+          (func $forks_via_indirect (export "forks_via_indirect") (result i32)
+            call $fork)
+          (func $calls_indirect (export "calls_indirect") (result i32)
+            i32.const 0
+            call_indirect (type $ft)))
+    "#;
+    let opts = Options {
+        include_indirect_calls: false,
+        ..Options::default()
+    };
+    let found = discover_with_options(wat, &opts);
+    assert!(found.iter().any(|n| n == "forks_via_indirect"));
+    assert!(
+        !found.iter().any(|n| n == "calls_indirect"),
+        "--direct-only must not include call_indirect callers; got {found:?}"
     );
 }
 

@@ -29,12 +29,22 @@ pub struct Options {
     /// `kernel.kernel_fork`). Future phases read this to seed the
     /// call-graph discovery; Phase 1 ignores it.
     pub entry_import: String,
+
+    /// Include conservative reverse `call_indirect` edges when
+    /// discovering fork-path callers. This is the default because it is
+    /// required for binaries that can reach `fork()` through function
+    /// pointers. Large runtimes such as PHP-FPM can opt out when their
+    /// fork path is known to be direct; otherwise broad matching
+    /// signatures can pull unrelated request-handling code into the
+    /// instrumented set.
+    pub include_indirect_calls: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             entry_import: "kernel.kernel_fork".into(),
+            include_indirect_calls: true,
         }
     }
 }
@@ -64,7 +74,11 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
         );
     };
 
-    let reaching = call_graph::reaching_closure(&module, entry);
+    let reaching = if opts.include_indirect_calls {
+        call_graph::reaching_closure(&module, entry)
+    } else {
+        call_graph::direct_reaching_closure(&module, entry)
+    };
     let fork_path = call_graph::summarize(&module, &reaching);
     Ok(Analysis { fork_path })
 }
@@ -92,7 +106,8 @@ pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     // fork-path callers. (They can't reach the seed anyway, but the
     // earlier-is-simpler ordering keeps the invariant trivially.)
     let fork_path = match call_graph::find_import_func(&module, &opts.entry_import) {
-        Some(seed) => call_graph::reaching_closure(&module, seed),
+        Some(seed) if opts.include_indirect_calls => call_graph::reaching_closure(&module, seed),
+        Some(seed) => call_graph::direct_reaching_closure(&module, seed),
         None => Default::default(),
     };
 

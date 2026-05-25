@@ -57,12 +57,11 @@ install_local_binary() {
         return 1
     fi
 
-    # Repo root from wherever the caller is.
+    # Repo root from this helper's location. Some build scripts source this
+    # after cd'ing into a nested upstream git clone; `git rev-parse` there
+    # finds the upstream clone instead of the kandelo worktree.
     local repo_root
-    repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-    if [ -z "$repo_root" ]; then
-        repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-    fi
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
     local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
     local src_basename

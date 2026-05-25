@@ -51,6 +51,7 @@ import nginxPhpVfsUrl from "@binaries/programs/wasm32/nginx-php-vfs.vfs.zst?url"
 import wordpressVfsUrl from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
+import wordpressDevVfsUrl from "@binaries/programs/wasm32/wordpress-dev.vfs.zst?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
@@ -124,9 +125,10 @@ type LiveVfsImage =
   | "nginx"
   | "nginx-php"
   | "wordpress"
+  | "wordpress-development"
   | "lamp";
 
-type ShellProfile = "default" | "node";
+type ShellProfile = "default" | "node" | "wordpress-dev";
 type InitEnvProfile = "service" | "wordpress";
 
 interface LiveProfileSpec {
@@ -143,7 +145,7 @@ interface LiveProfileSpec {
     cwd?: string;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    web?: { requiredPorts: number[] };
+    web?: { requiredPorts: number[]; allowHttpErrors?: boolean };
   };
 }
 
@@ -153,10 +155,13 @@ const VFS_URLS: Record<LiveVfsImage, string> = {
   nginx: nginxVfsUrl,
   "nginx-php": nginxPhpVfsUrl,
   wordpress: wordpressVfsUrl,
+  "wordpress-development": wordpressDevVfsUrl,
   lamp: lampVfsUrl,
 };
 
 const DINIT_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"];
+const WORDPRESS_MARIADB_MEMORY_PAGES = 16_384;
+const WORDPRESS_DEV_FS_MAX_BYTES = 3 * 1024 * 1024 * 1024;
 
 const LIVE_DEMO_IDS = [
   "shell",
@@ -165,6 +170,7 @@ const LIVE_DEMO_IDS = [
   "nginx-php",
   "wordpress-sqlite",
   "wordpress-mariadb",
+  "wordpress-development",
   "doom",
 ] as const;
 
@@ -214,15 +220,29 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "wordpress-mariadb": {
     image: "lamp",
-    memoryPages: 4096,
+    memoryPages: WORDPRESS_MARIADB_MEMORY_PAGES,
     maxVfsByteLength: 512 * 1024 * 1024,
     network: true,
     init: {
       argv: DINIT_ARGV,
       env: "wordpress",
       maxWorkers: 10,
-      maxMemoryPages: 4096,
+      maxMemoryPages: WORDPRESS_MARIADB_MEMORY_PAGES,
       web: { requiredPorts: [HTTP_PORT, 3306] },
+    },
+  },
+  "wordpress-development": {
+    image: "wordpress-development",
+    shell: "wordpress-dev",
+    memoryPages: WORDPRESS_MARIADB_MEMORY_PAGES,
+    maxVfsByteLength: WORDPRESS_DEV_FS_MAX_BYTES,
+    network: true,
+    init: {
+      argv: DINIT_ARGV,
+      env: "wordpress",
+      maxWorkers: 64,
+      maxMemoryPages: WORDPRESS_MARIADB_MEMORY_PAGES,
+      web: { requiredPorts: [HTTP_PORT, 3306], allowHttpErrors: true },
     },
   },
   doom: {
@@ -234,6 +254,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
   wordpress: "wordpress-sqlite",
   lamp: "wordpress-mariadb",
+  "wordpress-dev": "wordpress-development",
 };
 
 interface LiveProfile {
@@ -252,7 +273,7 @@ interface LiveProfile {
     cwd?: string;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    web?: { label: string; requiredPorts: number[] };
+    web?: { label: string; requiredPorts: number[]; allowHttpErrors?: boolean };
   };
   framebufferTest: boolean;
 }
@@ -314,6 +335,27 @@ const NODE_SHELL_ENV: string[] = [
   "npm_config_progress=false",
 ];
 
+const WORDPRESS_DEV_SHELL_ENV: string[] = [
+  "HOME=/work/wordpress-develop",
+  "PWD=/work/wordpress-develop",
+  "TMPDIR=/tmp",
+  "TERM=xterm-256color",
+  "LANG=en_US.UTF-8",
+  "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+  "PS1=wp-dev$ ",
+  "HISTFILE=/work/wordpress-develop/.bash_history",
+  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+  "SSL_CERT_DIR=/etc/ssl/certs",
+  "npm_config_cache=/tmp/.npm-cache",
+  "npm_config_fund=false",
+  "npm_config_audit=false",
+  "npm_config_progress=false",
+  "npm_config_registry=http://proxy.local/",
+  "npm_config_include=dev",
+  "npm_config_maxsockets=1",
+  "npm_config_omit=optional",
+];
+
 const SERVICE_ENV: string[] = [
   "HOME=/root",
   "TMPDIR=/tmp",
@@ -326,6 +368,7 @@ const SERVICE_ENV: string[] = [
 const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
   default: { env: SHELL_ENV, cwd: "/home" },
   node: { env: NODE_SHELL_ENV, cwd: "/work" },
+  "wordpress-dev": { env: WORDPRESS_DEV_SHELL_ENV, cwd: "/work/wordpress-develop" },
 };
 
 const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
@@ -514,6 +557,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       web: spec.init.web && {
         label: desc.title,
         requiredPorts: spec.init.web.requiredPorts.slice(),
+        allowHttpErrors: spec.init.web.allowHttpErrors,
       },
     },
     framebufferTest: fb === "test",
@@ -897,7 +941,7 @@ function maybeMarkWebReady(
     status: "starting",
     message: "Waiting for HTTP response",
   });
-  void waitForHttpPreview(APP_PREFIX).then(
+  void waitForHttpPreview(APP_PREFIX, { allowHttpErrors: web.allowHttpErrors }).then(
     () => {
       readiness.ready = true;
       host.setWebPreview({
@@ -923,15 +967,20 @@ function maybeMarkWebReady(
   });
 }
 
-async function waitForHttpPreview(url: string, timeoutMs = 90_000): Promise<void> {
+async function waitForHttpPreview(
+  url: string,
+  opts: { allowHttpErrors?: boolean; timeoutMs?: number; requestTimeoutMs?: number } = {},
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 90_000;
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 15_000;
   const started = performance.now();
   let delayMs = 250;
   let lastError = "";
 
   while (performance.now() - started < timeoutMs) {
     try {
-      const response = await fetchWithTimeout(url, 5_000);
-      if (response.status < 500) return;
+      const response = await fetchWithTimeout(url, requestTimeoutMs);
+      if (response.status < 500 || opts.allowHttpErrors) return;
       lastError = `HTTP ${response.status}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
