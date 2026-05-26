@@ -548,7 +548,10 @@ jobs:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
-      max-parallel: 10
+      # Keep GitHub codeload/action downloads and the staging index state-lock
+      # below abuse-throttle territory, especially when stacked PRs trigger
+      # independent staging runs at the same time.
+      max-parallel: 4
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
@@ -691,7 +694,9 @@ jobs:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     strategy:
       fail-fast: false
-      max-parallel: 10
+      # Program jobs also publish through the same per-PR state-lock path; high
+      # fanout has caused transient codeload failures and git push 403s.
+      max-parallel: 4
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
