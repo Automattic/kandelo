@@ -4,15 +4,19 @@
 //! `kernel.kernel_fork`), computes the set of functions in the module
 //! that can transitively reach the seed via calls.
 //!
-//! Phase 2 implements **direct-call closure** only: `Call` instructions
-//! whose target is another function in the module. Phase 3 will extend
-//! this with indirect-call closure (enumerating `call_indirect` targets
-//! by type signature + function-table membership).
+//! Discovery follows direct calls and table-aware indirect calls. An
+//! indirect call can only reach functions that may inhabit the same
+//! table as that `call_indirect` instruction, with the same signature.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use walrus::{ElementItems, FunctionId, ImportKind, Module, TypeId};
-use walrus::ir::{Call, CallIndirect, Visitor, dfs_in_order};
+use walrus::ir::{
+    dfs_in_order, Call, CallIndirect, ReturnCall, ReturnCallIndirect, TableCopy, TableFill,
+    TableGrow, TableInit, TableSet, Visitor,
+};
+use walrus::{
+    ElementId, ElementItems, ElementKind, FunctionId, ImportKind, Module, TableId, TypeId,
+};
 
 /// Look up a function by its qualified import name (e.g.
 /// `"kernel.kernel_fork"`). Returns `None` if the module has no such
@@ -30,11 +34,14 @@ pub fn find_import_func(module: &Module, qualified_name: &str) -> Option<Functio
 }
 
 /// Walks a single local function, collecting every `Call` target
-/// and every `call_indirect` type index.
+/// and every indirect-call site.
 #[derive(Default)]
 struct CollectCalls {
     direct: HashSet<FunctionId>,
-    indirect_types: HashSet<TypeId>,
+    indirect: HashSet<IndirectCall>,
+    table_inits: Vec<(ElementId, TableId)>,
+    table_copies: Vec<(TableId, TableId)>,
+    dynamic_table_writes: HashSet<TableId>,
 }
 
 impl<'a> Visitor<'a> for CollectCalls {
@@ -42,16 +49,53 @@ impl<'a> Visitor<'a> for CollectCalls {
         self.direct.insert(instr.func);
     }
 
+    fn visit_return_call(&mut self, instr: &ReturnCall) {
+        self.direct.insert(instr.func);
+    }
+
     fn visit_call_indirect(&mut self, instr: &CallIndirect) {
-        self.indirect_types.insert(instr.ty);
+        self.indirect.insert(IndirectCall {
+            table: instr.table,
+            ty: instr.ty,
+        });
+    }
+
+    fn visit_return_call_indirect(&mut self, instr: &ReturnCallIndirect) {
+        self.indirect.insert(IndirectCall {
+            table: instr.table,
+            ty: instr.ty,
+        });
+    }
+
+    fn visit_table_init(&mut self, instr: &TableInit) {
+        self.table_inits.push((instr.elem, instr.table));
+    }
+
+    fn visit_table_copy(&mut self, instr: &TableCopy) {
+        self.table_copies.push((instr.src, instr.dst));
+    }
+
+    fn visit_table_set(&mut self, instr: &TableSet) {
+        self.dynamic_table_writes.insert(instr.table);
+    }
+
+    fn visit_table_fill(&mut self, instr: &TableFill) {
+        self.dynamic_table_writes.insert(instr.table);
+    }
+
+    fn visit_table_grow(&mut self, instr: &TableGrow) {
+        self.dynamic_table_writes.insert(instr.table);
     }
 }
 
 /// Per-function analysis: what it directly calls and what
-/// `call_indirect` type signatures it uses.
+/// indirect calls/table operations it uses.
 struct FuncProfile {
     direct: HashSet<FunctionId>,
-    indirect_types: HashSet<TypeId>,
+    indirect: HashSet<IndirectCall>,
+    table_inits: Vec<(ElementId, TableId)>,
+    table_copies: Vec<(TableId, TableId)>,
+    dynamic_table_writes: HashSet<TableId>,
 }
 
 fn profile_functions(module: &Module) -> HashMap<FunctionId, FuncProfile> {
@@ -63,7 +107,10 @@ fn profile_functions(module: &Module) -> HashMap<FunctionId, FuncProfile> {
             id,
             FuncProfile {
                 direct: collector.direct,
-                indirect_types: collector.indirect_types,
+                indirect: collector.indirect,
+                table_inits: collector.table_inits,
+                table_copies: collector.table_copies,
+                dynamic_table_writes: collector.dynamic_table_writes,
             },
         );
     }
@@ -103,51 +150,158 @@ pub fn direct_reaching_closure(module: &Module, seed: FunctionId) -> HashSet<Fun
     result
 }
 
-/// Enumerate the set of functions that appear in *any* element
-/// segment, meaning they are potential `call_indirect` targets.
-///
-/// Walks every element segment's items list; handles both the
-/// `Functions(Vec<FunctionId>)` form (most common, produced by LLVM
-/// for indirect-callable function tables) and the
-/// `Expressions(RefType, Vec<InstrSeqId>)` form (used for typed
-/// function references; we conservatively scan each init expression
-/// for `ref.func` to extract the function id).
-fn table_addressable_functions(module: &Module) -> HashSet<FunctionId> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct IndirectCall {
+    table: TableId,
+    ty: TypeId,
+}
+
+/// Extract concrete function references from an element segment's item list.
+fn element_functions(items: &ElementItems) -> HashSet<FunctionId> {
     let mut result = HashSet::new();
 
-    for elem in module.elements.iter() {
-        match &elem.items {
-            ElementItems::Functions(ids) => {
-                for id in ids {
-                    result.insert(*id);
-                }
+    match items {
+        ElementItems::Functions(ids) => {
+            for id in ids {
+                result.insert(*id);
             }
-            ElementItems::Expressions(_ref_ty, init_exprs) => {
-                // An init expression produces one value. For
-                // function-ref element segments, LLVM emits
-                // `ref.func $f`, which walrus stores as
-                // `ConstExpr::RefFunc`.
-                for expr in init_exprs {
-                    match expr {
-                        walrus::ConstExpr::RefFunc(f) => {
-                            result.insert(*f);
-                        }
-                        walrus::ConstExpr::Extended(ops) => {
-                            for op in ops {
-                                if let walrus::ConstOp::RefFunc(f) = op {
-                                    result.insert(*f);
-                                }
-                            }
-                        }
-                        // Other ConstExpr variants (Value, Global,
-                        // RefNull) don't yield a concrete function.
-                        _ => {}
-                    }
-                }
+        }
+        ElementItems::Expressions(_ref_ty, init_exprs) => {
+            // An init expression produces one value. For function-ref
+            // element segments, LLVM emits `ref.func $f`, which walrus
+            // stores as `ConstExpr::RefFunc`.
+            for expr in init_exprs {
+                result.extend(const_expr_functions(expr));
             }
         }
     }
+
     result
+}
+
+fn const_expr_functions(expr: &walrus::ConstExpr) -> HashSet<FunctionId> {
+    let mut result = HashSet::new();
+    match expr {
+        walrus::ConstExpr::RefFunc(f) => {
+            result.insert(*f);
+        }
+        walrus::ConstExpr::Extended(ops) => {
+            for op in ops {
+                if let walrus::ConstOp::RefFunc(f) = op {
+                    result.insert(*f);
+                }
+            }
+        }
+        // Other ConstExpr variants (Value, Global, RefNull) don't yield
+        // a concrete function.
+        _ => {}
+    }
+    result
+}
+
+#[derive(Default)]
+struct TableTargets {
+    funcs_by_table: HashMap<TableId, HashSet<FunctionId>>,
+    unknown_tables: HashSet<TableId>,
+}
+
+impl TableTargets {
+    fn table_can_contain(&self, table: TableId, func: FunctionId) -> bool {
+        self.unknown_tables.contains(&table)
+            || self
+                .funcs_by_table
+                .get(&table)
+                .is_some_and(|funcs| funcs.contains(&func))
+    }
+}
+
+/// Enumerate possible `call_indirect` targets per table.
+///
+/// Active element segments populate exactly one table and are the common LLVM
+/// function-pointer-table case. Passive segments are not table-addressable by
+/// themselves; they become possible targets only for tables that the module
+/// initializes from that segment with `table.init`. Declared segments never
+/// initialize a table, so they are intentionally ignored here.
+///
+/// Dynamic table writes (`table.set`, `table.fill`, `table.grow`) can place
+/// references this static pass cannot recover. For those tables we preserve
+/// soundness by treating the table as unknown, so any matching-signature
+/// function may be a target. `table.copy` propagates known and unknown target
+/// sets from source to destination.
+fn table_targets(module: &Module, profiles: &HashMap<FunctionId, FuncProfile>) -> TableTargets {
+    let mut targets = TableTargets::default();
+    let mut passive_table_inits: HashMap<ElementId, HashSet<TableId>> = HashMap::new();
+    let mut table_copies = Vec::new();
+
+    for profile in profiles.values() {
+        for &(elem, table) in &profile.table_inits {
+            passive_table_inits.entry(elem).or_default().insert(table);
+        }
+        table_copies.extend(profile.table_copies.iter().copied());
+        targets
+            .unknown_tables
+            .extend(profile.dynamic_table_writes.iter().copied());
+    }
+
+    for table in module.tables.iter() {
+        if let Some(init) = &table.init {
+            targets
+                .funcs_by_table
+                .entry(table.id())
+                .or_default()
+                .extend(const_expr_functions(init));
+        }
+    }
+
+    for elem in module.elements.iter() {
+        let funcs = element_functions(&elem.items);
+        if funcs.is_empty() {
+            continue;
+        }
+        match &elem.kind {
+            ElementKind::Active { table, .. } => {
+                targets
+                    .funcs_by_table
+                    .entry(*table)
+                    .or_default()
+                    .extend(funcs);
+            }
+            ElementKind::Passive => {
+                if let Some(tables) = passive_table_inits.get(&elem.id()) {
+                    for &table in tables {
+                        targets
+                            .funcs_by_table
+                            .entry(table)
+                            .or_default()
+                            .extend(funcs.iter().copied());
+                    }
+                }
+            }
+            ElementKind::Declared => {}
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &(src, dst) in &table_copies {
+            if targets.unknown_tables.contains(&src) && targets.unknown_tables.insert(dst) {
+                changed = true;
+            }
+
+            let Some(src_funcs) = targets.funcs_by_table.get(&src).cloned() else {
+                continue;
+            };
+            let dst_funcs = targets.funcs_by_table.entry(dst).or_default();
+            let old_len = dst_funcs.len();
+            dst_funcs.extend(src_funcs);
+            if dst_funcs.len() != old_len {
+                changed = true;
+            }
+        }
+    }
+
+    targets
 }
 
 /// A function's signature, used for comparing against `call_indirect`
@@ -172,25 +326,28 @@ fn types_match(module: &Module, a: TypeId, b: TypeId) -> bool {
     ta.params() == tb.params() && ta.results() == tb.results()
 }
 
+const MAX_INDIRECT_DEPTH: u8 = 2;
+
 /// Compute the transitive closure of functions that reach `seed` via
-/// direct or indirect calls.
+/// direct calls, plus a bounded number of table/function-pointer dispatches.
 ///
 /// A function `F` reaches `seed` if any of these hold:
 ///   (1) `F == seed`
 ///   (2) `F` directly calls some function `G` that reaches `seed`
 ///   (3) `F` executes `call_indirect` of type `T`, and some
-///       table-addressable function `G` of type `T` reaches `seed`
+///       function `G` of type `T` reaches `seed` and may inhabit the
+///       same table that `F` indexes
 ///
-/// The algorithm iterates a single worklist seeded with `seed`. For
-/// each newly-added function `g`:
-///   - add its direct callers (rule 2 in reverse)
-///   - if `g` is table-addressable, add every function that uses
-///     `call_indirect` of `g`'s signature (rule 3 in reverse)
-///
-/// Fixpoint when the worklist drains.
+/// Rule 3 is intentionally bounded. Functions discovered through indirect
+/// edges still pull in their direct callers, but after `MAX_INDIRECT_DEPTH`
+/// indirect hops they do not become new indirect roots. Depth 2 covers the
+/// common C/POSIX callback cases plus QuickJS's C-function trampoline
+/// (`JS_CallInternal -> js_call_c_function -> js_os_exec`) while avoiding
+/// whole-runtime closure in dynamic interpreters where a generic dispatcher
+/// can theoretically call thousands of same-table, same-signature callbacks.
 pub fn reaching_closure(module: &Module, seed: FunctionId) -> HashSet<FunctionId> {
     let profiles = profile_functions(module);
-    let table_funcs = table_addressable_functions(module);
+    let table_targets = table_targets(module, &profiles);
 
     // Reverse direct-call graph: `callee -> set of callers`.
     let mut reverse_direct: HashMap<FunctionId, HashSet<FunctionId>> = HashMap::new();
@@ -200,51 +357,91 @@ pub fn reaching_closure(module: &Module, seed: FunctionId) -> HashSet<FunctionId
         }
     }
 
-    // Reverse indirect-call graph: `call_indirect type T -> set of
-    // callers that use call_indirect with type T`. We compare types
-    // structurally (§types_match); the map is keyed by the caller's
-    // TypeId and we do an outer structural compare per lookup.
-    let indirect_callers_by_type: Vec<(TypeId, FunctionId)> = profiles
+    // Reverse indirect-call graph: `(table, call_indirect type T) ->
+    // callers that index that table with type T`. We compare types
+    // structurally (§types_match); TypeId is still stored and compared
+    // at lookup time rather than forcing exact type-index equality.
+    let indirect_callers: Vec<(IndirectCall, FunctionId)> = profiles
         .iter()
         .flat_map(|(caller, profile)| {
             profile
-                .indirect_types
+                .indirect
                 .iter()
-                .map(move |ty| (*ty, *caller))
+                .map(move |indirect| (*indirect, *caller))
         })
         .collect();
 
+    // First compute the direct-only closure. Every function in this set
+    // reaches the seed without crossing a function-pointer dispatch, so it
+    // is safe to use as an indirect root below.
     let mut result = HashSet::new();
-    let mut worklist: VecDeque<FunctionId> = VecDeque::new();
+    let mut direct_queue = VecDeque::new();
     result.insert(seed);
-    worklist.push_back(seed);
-
-    while let Some(g) = worklist.pop_front() {
-        // (2) Direct-reverse: who calls g directly?
+    direct_queue.push_back(seed);
+    while let Some(g) = direct_queue.pop_front() {
         if let Some(callers) = reverse_direct.get(&g) {
             for &caller in callers {
                 if result.insert(caller) {
-                    worklist.push_back(caller);
+                    direct_queue.push_back(caller);
                 }
             }
         }
+    }
 
-        // (3) Indirect-reverse: if g is table-addressable, every
-        // function that does `call_indirect` with g's signature might
-        // be reaching g. Add those callers.
-        //
-        // An imported function has no TypeId accessible the same way,
-        // so we skip the indirect reverse for imports.
-        if !table_funcs.contains(&g) {
-            continue;
+    let direct_roots = result.clone();
+    let mut best_indirect_depth: HashMap<FunctionId, u8> =
+        direct_roots.iter().map(|&id| (id, 0)).collect();
+    let mut worklist: VecDeque<(FunctionId, u8)> = direct_roots.iter().map(|&id| (id, 0)).collect();
+
+    fn enqueue(
+        func: FunctionId,
+        indirect_depth: u8,
+        best_indirect_depth: &mut HashMap<FunctionId, u8>,
+        result: &mut HashSet<FunctionId>,
+        worklist: &mut VecDeque<(FunctionId, u8)>,
+    ) {
+        let should_enqueue = match best_indirect_depth.get(&func) {
+            Some(&old_depth) => indirect_depth < old_depth,
+            None => true,
+        };
+        if should_enqueue {
+            best_indirect_depth.insert(func, indirect_depth);
+            result.insert(func);
+            worklist.push_back((func, indirect_depth));
         }
-        if matches!(module.funcs.get(g).kind, walrus::FunctionKind::Import(_)) {
-            continue;
+    }
+
+    while let Some((g, indirect_depth)) = worklist.pop_front() {
+        // (2) Direct-reverse: who calls g directly?
+        if let Some(callers) = reverse_direct.get(&g) {
+            for &caller in callers {
+                enqueue(
+                    caller,
+                    indirect_depth,
+                    &mut best_indirect_depth,
+                    &mut result,
+                    &mut worklist,
+                );
+            }
         }
-        let g_ty = function_type_id(module, g);
-        for &(caller_ty, caller) in &indirect_callers_by_type {
-            if types_match(module, caller_ty, g_ty) && result.insert(caller) {
-                worklist.push_back(caller);
+
+        // (3) Indirect-reverse: every function that does
+        // `call_indirect` with g's signature against a table that can
+        // contain g might be reaching g. Add those callers.
+        if indirect_depth < MAX_INDIRECT_DEPTH {
+            let g_ty = function_type_id(module, g);
+            for &(indirect, caller) in &indirect_callers {
+                if table_targets.table_can_contain(indirect.table, g)
+                    && types_match(module, indirect.ty, g_ty)
+                {
+                    enqueue(
+                        caller,
+                        indirect_depth + 1,
+                        &mut best_indirect_depth,
+                        &mut result,
+                        &mut worklist,
+                    );
+                }
             }
         }
     }
