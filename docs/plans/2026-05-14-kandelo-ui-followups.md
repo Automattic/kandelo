@@ -38,8 +38,9 @@ url-design.md`.
 
 ## Deferred vitest coverage
 
-`web-libs/kandelo-session/test/kandelo-session.test.ts` covers LiveKernelHost stubs + MockKernelHost
-contract (27 specs). Still missing:
+`web-libs/kandelo-session/test/kandelo-session.test.ts` covers LiveKernelHost
+status, descriptor, lifecycle, gallery, snapshot, and demo-config behavior
+(28 specs). Still missing:
 
 ### boot-descriptor round-trip + validation (~12 specs)
 
@@ -90,7 +91,8 @@ host/test). Worth doing once it's set up:
   bash + init.
 - Quit DOOM via menu → Procs drops fbdoom; canvas clears.
 - Relaunch fbdoom from bash → canvas re-attaches.
-- Ctrl+Shift+Esc releases canvas focus.
+- Focused framebuffer panes forward keyboard input as Linux keycodes; clicking
+  another pane or pressing Ctrl+Shift+Esc moves focus back to the UI.
 - Procs tab post-exec shows `fbdoom -iwad /doom1.wad`, not `bash`.
 
 ### Kernel-export tests (synthetic harness)

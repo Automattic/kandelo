@@ -1,5 +1,4 @@
-// Builds a LiveKernelHost over a real BrowserKernel. Used by default when the
-// kandelo page is loaded (use `?mock=1` for MockKernelHost).
+// Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
 import {
@@ -41,7 +40,14 @@ import {
   type DemoAssetConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
-import { PRESET_LIBRARY } from "../fixtures";
+import { PRESET_LIBRARY } from "../presets";
+import {
+  descriptorWithVfsImageUrl,
+  demoIdFromVfsImageUrl,
+  normalizeVfsImageUrl,
+  titleFromVfsImageUrl,
+  vfsImageUrlFromDescriptor,
+} from "../url-state";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
@@ -111,6 +117,7 @@ type SoftwareProfile = {
 const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
+const PHP_FPM_PORT = 9000;
 
 class BootSuperseded extends Error {
   constructor() {
@@ -214,15 +221,16 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "wordpress-mariadb": {
     image: "lamp",
-    memoryPages: 4096,
+    // Keep this aligned with pages/lamp: MariaDB's Aria recovery can grow
+    // beyond the 4096-page cap used by lighter PHP demos.
+    memoryPages: 16384,
     maxVfsByteLength: 512 * 1024 * 1024,
     network: true,
     init: {
       argv: DINIT_ARGV,
       env: "wordpress",
-      maxWorkers: 10,
-      maxMemoryPages: 4096,
-      web: { requiredPorts: [HTTP_PORT, 3306] },
+      maxWorkers: 16,
+      web: { requiredPorts: [HTTP_PORT, PHP_FPM_PORT, 3306] },
     },
   },
   doom: {
@@ -337,6 +345,7 @@ export type FbDemo = "none" | "test";
 
 export interface CreateLiveHostOptions {
   demo?: string | null;
+  vfsUrl?: string | null;
   fb?: FbDemo;
 }
 
@@ -346,16 +355,17 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const localGalleryItems = liveGalleryItems();
 
+  const initialDescriptor = descriptorForBootQuery(opts.vfsUrl, opts.demo);
   const host = new LiveKernelHost({
     status: "booting",
-    descriptor: descriptorFor("shell"),
+    descriptor: initialDescriptor,
     galleryItems: localGalleryItems,
     applyBootDescriptor: async (desc, h) => {
-      await startBoot(h, profileFor(desc.id, "none"), desc);
+      await startBoot(h, profileForDescriptor(desc, "none"), desc);
     },
   });
 
-  const requireServiceWorker = (tick?: (msg: string) => void) => {
+  const requireServiceWorker = (tick?: (msg: string) => void): Promise<ServiceWorker> => {
     if (!serviceWorkerReady) {
       tick?.("preparing service worker...");
       serviceWorkerReady = ensureServiceWorkerReady(SW_URL)
@@ -376,7 +386,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
           sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
           tick?.("service worker active; reloading to enable cross-origin isolation...");
           window.location.reload();
-          await new Promise<never>((_, reject) => {
+          return new Promise<never>((_, reject) => {
             window.setTimeout(() => {
               reject(new Error(
                 "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
@@ -389,11 +399,14 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
           throw err;
         });
     }
-    return serviceWorkerReady;
+    const ready = serviceWorkerReady;
+    if (!ready) {
+      throw new Error("Kandelo service worker readiness promise was not initialized.");
+    }
+    return ready;
   };
 
-  const initialId = normalizeDemoId(opts.demo) ?? "shell";
-  void startBoot(host, profileFor(initialId, opts.fb), descriptorFor(initialId));
+  void startBoot(host, profileForDescriptor(initialDescriptor, opts.fb), initialDescriptor);
   void requireServiceWorker()
     .then(() => refreshSoftwareGallery(host, localGalleryItems))
     .catch((err) => {
@@ -474,6 +487,62 @@ function showBootError(
     });
   }
   host.setStatus("error");
+}
+
+function descriptorForBootQuery(
+  vfsUrl: string | null | undefined,
+  demo: string | null | undefined,
+): BootDescriptor {
+  const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl);
+  if (!normalizedVfsUrl) return descriptorFor(normalizeDemoId(demo) ?? "shell");
+
+  const liveId = liveDemoIdForVfsImageUrl(normalizedVfsUrl);
+  const base = descriptorFor(liveId ?? "shell");
+  return descriptorWithVfsImageUrl(base, normalizedVfsUrl, liveId
+    ? {
+      id: liveId,
+      title: base.title,
+      packages: base.packages,
+    }
+    : {
+      id: demoIdFromVfsImageUrl(normalizedVfsUrl),
+      title: titleFromVfsImageUrl(normalizedVfsUrl),
+      packages: [],
+    });
+}
+
+function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
+  const vfsUrl = vfsImageUrlFromDescriptor(desc);
+  if (!vfsUrl) return profileFor(desc.id, fb);
+
+  const knownDemo = normalizeDemoId(desc.id);
+  const profile = knownDemo
+    ? profileFor(knownDemo, fb)
+    : customVfsProfile(desc, vfsUrl, fb);
+
+  return {
+    ...profile,
+    id: knownDemo ?? desc.id,
+    vfsUrl,
+    software: undefined,
+    descriptor: desc,
+  };
+}
+
+function customVfsProfile(
+  desc: BootDescriptor,
+  vfsUrl: string,
+  fb?: FbDemo,
+): LiveProfile {
+  return {
+    id: desc.id,
+    vfsUrl,
+    descriptor: desc,
+    shell: "default",
+    includeNodeUtility: false,
+    maxVfsByteLength: 256 * 1024 * 1024,
+    framebufferTest: fb === "test",
+  };
 }
 
 function profileFor(id: string, fb?: FbDemo): LiveProfile {
@@ -1032,10 +1101,45 @@ function liveGalleryItems(): GalleryItem[] {
     base: p.base,
     packages: p.packages,
     bootCommand: p.bootCommand,
+    vfsImageUrl: vfsImageUrlForPreset(p.id),
     accent: p.accent,
     glyph: p.glyph,
     estimatedUrlBytes: p.estimatedUrlBytes,
   }));
+}
+
+function vfsImageUrlForPreset(id: string): string | undefined {
+  const liveId = normalizeDemoId(id);
+  if (!liveId) return undefined;
+  const url = new URL(VFS_URLS[LIVE_PROFILE_SPECS[liveId].image], location.href);
+  url.hash = liveId;
+  return url.href;
+}
+
+function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
+  const normalized = normalizeVfsImageUrl(vfsUrl);
+  if (!normalized) return null;
+
+  const url = new URL(normalized);
+  const hashId = url.hash.slice(1);
+  const baseUrl = withoutHash(url);
+  if (isLiveDemoId(hashId) && baseUrl === profileVfsBaseUrl(hashId)) {
+    return hashId;
+  }
+
+  const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
+  if (matches.length === 1) return matches[0];
+  return matches.find((id) => id !== "doom") ?? null;
+}
+
+function profileVfsBaseUrl(id: LiveDemoId): string {
+  return withoutHash(new URL(VFS_URLS[LIVE_PROFILE_SPECS[id].image], location.href));
+}
+
+function withoutHash(url: URL): string {
+  const copy = new URL(url.href);
+  copy.hash = "";
+  return copy.href;
 }
 
 async function refreshSoftwareGallery(

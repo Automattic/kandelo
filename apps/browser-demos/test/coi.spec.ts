@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test("Kandelo page is cross-origin isolated for SharedArrayBuffer", async ({
   page,
 }) => {
-  const response = await page.goto("/pages/kandelo/?mock=1", {
+  const response = await page.goto("/pages/kandelo/", {
     waitUntil: "domcontentloaded",
   });
 
