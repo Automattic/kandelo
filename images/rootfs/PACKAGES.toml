@@ -238,3 +238,196 @@ aliases = ["/bin/diff3"]
 binary = "programs/wasm32/diffutils/sdiff.wasm"
 path = "/usr/bin/sdiff"
 aliases = ["/bin/sdiff"]
+
+[[packages]]
+name = "posix-utils-lite"
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ar.wasm"
+path = "/usr/bin/ar"
+aliases = ["/bin/ar"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/asa.wasm"
+path = "/usr/bin/asa"
+aliases = ["/bin/asa"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/cal.wasm"
+path = "/usr/bin/cal"
+aliases = ["/bin/cal"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/cflow.wasm"
+path = "/usr/bin/cflow"
+aliases = ["/bin/cflow"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/compress.wasm"
+path = "/usr/bin/compress"
+aliases = ["/bin/compress"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ctags.wasm"
+path = "/usr/bin/ctags"
+aliases = ["/bin/ctags"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/cxref.wasm"
+path = "/usr/bin/cxref"
+aliases = ["/bin/cxref"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ed.wasm"
+path = "/usr/bin/ed"
+aliases = ["/bin/ed"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ex.wasm"
+path = "/usr/bin/ex"
+aliases = ["/bin/ex"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/fuser.wasm"
+path = "/usr/bin/fuser"
+aliases = ["/bin/fuser"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/gencat.wasm"
+path = "/usr/bin/gencat"
+aliases = ["/bin/gencat"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/getconf.wasm"
+path = "/usr/bin/getconf"
+aliases = ["/bin/getconf"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/gettext.wasm"
+path = "/usr/bin/gettext"
+aliases = ["/bin/gettext"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/iconv.wasm"
+path = "/usr/bin/iconv"
+aliases = ["/bin/iconv"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ipcrm.wasm"
+path = "/usr/bin/ipcrm"
+aliases = ["/bin/ipcrm"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ipcs.wasm"
+path = "/usr/bin/ipcs"
+aliases = ["/bin/ipcs"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/lex.wasm"
+path = "/usr/bin/lex"
+aliases = ["/bin/lex"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/locale.wasm"
+path = "/usr/bin/locale"
+aliases = ["/bin/locale"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/logger.wasm"
+path = "/usr/bin/logger"
+aliases = ["/bin/logger"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/man.wasm"
+path = "/usr/bin/man"
+aliases = ["/bin/man"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/more.wasm"
+path = "/usr/bin/more"
+aliases = ["/bin/more"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/msgfmt.wasm"
+path = "/usr/bin/msgfmt"
+aliases = ["/bin/msgfmt"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ngettext.wasm"
+path = "/usr/bin/ngettext"
+aliases = ["/bin/ngettext"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/nm.wasm"
+path = "/usr/bin/nm"
+aliases = ["/bin/nm"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/patch.wasm"
+path = "/usr/bin/patch"
+aliases = ["/bin/patch"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/pax.wasm"
+path = "/usr/bin/pax"
+aliases = ["/bin/pax"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ps.wasm"
+path = "/usr/bin/ps"
+aliases = ["/bin/ps"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/renice.wasm"
+path = "/usr/bin/renice"
+aliases = ["/bin/renice"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/strings.wasm"
+path = "/usr/bin/strings"
+aliases = ["/bin/strings"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/strip.wasm"
+path = "/usr/bin/strip"
+aliases = ["/bin/strip"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/tabs.wasm"
+path = "/usr/bin/tabs"
+aliases = ["/bin/tabs"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/tput.wasm"
+path = "/usr/bin/tput"
+aliases = ["/bin/tput"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/uncompress.wasm"
+path = "/usr/bin/uncompress"
+aliases = ["/bin/uncompress"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/uudecode.wasm"
+path = "/usr/bin/uudecode"
+aliases = ["/bin/uudecode"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/uuencode.wasm"
+path = "/usr/bin/uuencode"
+aliases = ["/bin/uuencode"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/what.wasm"
+path = "/usr/bin/what"
+aliases = ["/bin/what"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/xgettext.wasm"
+path = "/usr/bin/xgettext"
+aliases = ["/bin/xgettext"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/yacc.wasm"
+path = "/usr/bin/yacc"
+aliases = ["/bin/yacc"]

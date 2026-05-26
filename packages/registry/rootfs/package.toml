@@ -15,6 +15,7 @@ depends_on = [
   "make@4.4.1",
   "findutils@4.10.0",
   "diffutils@3.10",
+  "posix-utils-lite@0.1.0",
 ]
 
 # Canonical base VFS image. The source is the repository's MANIFEST,
