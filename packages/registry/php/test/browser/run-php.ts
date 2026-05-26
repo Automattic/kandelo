@@ -43,8 +43,9 @@ async function runPhp(
     new SharedArrayBuffer(16 * 1024 * 1024, { maxByteLength: 64 * 1024 * 1024 }),
     64 * 1024 * 1024,
   );
-  for (const dir of ["/tmp", "/home", "/dev"]) ensureDir(memfs, dir);
+  for (const dir of ["/tmp", "/root", "/dev"]) ensureDir(memfs, dir);
   memfs.chmod("/tmp", 0o777);
+  memfs.chmod("/root", 0o700);
   ensureDirRecursive(memfs, "/usr/local/bin");
   writeVfsBinary(memfs, PHP_PATH, new Uint8Array(phpBytes));
   for (const [path, content] of Object.entries(files)) {
@@ -63,12 +64,16 @@ async function runPhp(
     vfsImage,
     argv: [PHP_PATH, ...argv.slice(1)],
     env: [
-      "HOME=/home",
+      "HOME=/root",
       "TMPDIR=/tmp",
       "TERM=xterm-256color",
+      "USER=root",
+      "LOGNAME=root",
       "PATH=/usr/local/bin:/usr/bin:/bin",
     ],
-    cwd: "/home",
+    cwd: "/root",
+    uid: 0,
+    gid: 0,
   });
   const exitCode = await exit;
 

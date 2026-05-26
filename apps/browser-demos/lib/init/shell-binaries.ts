@@ -58,9 +58,13 @@ export function populateShellBinaries(
     "/usr/share/file",
     "/etc",
     "/root",
+    "/home",
+    "/home/user",
   ]) {
     ensureDir(fs, dir);
   }
+  fs.chmod("/root", 0o700);
+  fs.chown("/home/user", 1000, 1000);
 
   // 2. Write git system config — disable maintenance/gc (fork+exec not fully
   //    supported for background daemons), use cat as pager, set default user.

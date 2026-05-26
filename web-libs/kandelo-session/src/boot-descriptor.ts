@@ -191,6 +191,14 @@ export function validateBootDescriptor(desc: unknown): asserts desc is BootDescr
   if (!boot.env || typeof boot.env !== "object") {
     throw new BootDescriptorError("E_BOOT_ENV", "boot.env must be an object");
   }
+  for (const field of ["uid", "gid"] as const) {
+    if (
+      boot[field] !== undefined &&
+      (!Number.isInteger(boot[field]) || (boot[field] as number) < 0 || (boot[field] as number) > 0xffff)
+    ) {
+      throw new BootDescriptorError("E_BOOT_USER", `boot.${field} must be an integer from 0 to 65535`);
+    }
+  }
 }
 
 // ── Encode / decode ────────────────────────────────────────────────────────

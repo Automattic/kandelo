@@ -125,13 +125,15 @@ function populateSystem(fs: MemoryFileSystem): void {
   for (const dir of [
     "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
     "/usr/share", "/usr/share/misc", "/usr/share/file",
-    "/etc", "/root", "/tmp", "/home", "/dev", "/usr/sbin",
+    "/etc", "/root", "/tmp", "/home", "/home/user", "/dev", "/usr/sbin",
     // NetHack VAR_PLAYGROUND — writable saves, scores, bones.
     "/home/.nethack",
   ]) {
     ensureDirRecursive(fs, dir);
   }
   fs.chmod("/tmp", 0o777);
+  fs.chmod("/root", 0o700);
+  fs.chown("/home/user", 1000, 1000);
   fs.chmod("/home/.nethack", 0o777);
 
   // NetHack getlock() calls link(filename, lockname) on an empty marker

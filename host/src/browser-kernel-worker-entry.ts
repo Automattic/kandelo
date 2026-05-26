@@ -531,6 +531,7 @@ function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
     }
+    kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
 
     if (msg.pty) {
       const ptyIdx = kernelWorker.setupPty(pid);

@@ -128,6 +128,14 @@ const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
 const MARIADB_PORT = 3306;
+const ROOT_UID = 0;
+const ROOT_GID = 0;
+const ROOT_HOME = "/root";
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
+const DEMO_USER = "user";
+const DEMO_HOME = "/home/user";
+const NODE_WORKDIR = "/work";
 
 class BootSuperseded extends Error {
   constructor() {
@@ -159,6 +167,8 @@ interface LiveProfileSpec {
     env?: InitEnvProfile;
     cwd?: string;
     programUrl?: string;
+    uid?: number;
+    gid?: number;
     maxWorkers?: number;
     maxMemoryPages?: number;
     web?: { requiredPorts: number[] };
@@ -275,6 +285,8 @@ interface LiveProfile {
     env?: string[];
     cwd?: string;
     programUrl?: string;
+    uid?: number;
+    gid?: number;
     maxWorkers?: number;
     maxMemoryPages?: number;
     web?: { label: string; requiredPorts: number[] };
@@ -310,26 +322,30 @@ request_slowlog_trace_depth = 0
 `;
 
 const SHELL_ENV: string[] = [
-  "HOME=/home",
+  `HOME=${DEMO_HOME}`,
   "TMPDIR=/tmp",
   "TERM=xterm-256color",
   "LANG=en_US.UTF-8",
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+  `USER=${DEMO_USER}`,
+  `LOGNAME=${DEMO_USER}`,
   "PS1=kandelo$ ",
-  "HISTFILE=/home/.bash_history",
+  `HISTFILE=${DEMO_HOME}/.bash_history`,
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
 ];
 
 const NODE_SHELL_ENV: string[] = [
-  "HOME=/work",
-  "PWD=/work",
+  `HOME=${DEMO_HOME}`,
+  `PWD=${NODE_WORKDIR}`,
   "TMPDIR=/tmp",
   "TERM=xterm-256color",
   "LANG=en_US.UTF-8",
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+  `USER=${DEMO_USER}`,
+  `LOGNAME=${DEMO_USER}`,
   "PS1=node$ ",
-  "HISTFILE=/work/.bash_history",
+  `HISTFILE=${DEMO_HOME}/.bash_history`,
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
   "npm_config_cache=/tmp/.npm-cache",
@@ -340,17 +356,19 @@ const NODE_SHELL_ENV: string[] = [
 ];
 
 const SERVICE_ENV: string[] = [
-  "HOME=/root",
+  `HOME=${ROOT_HOME}`,
   "TMPDIR=/tmp",
   "TERM=xterm-256color",
+  "USER=root",
+  "LOGNAME=root",
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
 ];
 
 const SHELL_PROFILES: Record<ShellProfile, { env: string[]; cwd: string }> = {
-  default: { env: SHELL_ENV, cwd: "/home" },
-  node: { env: NODE_SHELL_ENV, cwd: "/work" },
+  default: { env: SHELL_ENV, cwd: DEMO_HOME },
+  node: { env: NODE_SHELL_ENV, cwd: NODE_WORKDIR },
 };
 
 const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
@@ -596,6 +614,8 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       env: initEnv(spec.init.env),
       cwd: spec.init.cwd,
       programUrl: spec.init.programUrl,
+      uid: spec.init.uid,
+      gid: spec.init.gid,
       maxWorkers: spec.init.maxWorkers,
       maxMemoryPages: spec.init.maxMemoryPages,
       web: spec.init.web && {
@@ -620,6 +640,50 @@ function shellCwdFor(profile: ShellProfile): string {
   return SHELL_PROFILES[profile].cwd;
 }
 
+function shellIdentityForProfile(profile: LiveProfile, boot?: BootDescriptor["boot"]): {
+  env: string[];
+  cwd: string;
+  uid: number;
+  gid: number;
+} {
+  let identity: { env: string[]; cwd: string; uid: number; gid: number };
+  if (profile.software?.shellEnv) {
+    identity = profile.init || profile.software.shellEnv === SERVICE_ENV
+      ? { env: profile.software.shellEnv, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID }
+      : { env: profile.software.shellEnv, cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
+  } else if (profile.shell === "node") {
+    identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
+  } else if (profile.init) {
+    identity = { env: SERVICE_ENV, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID };
+  } else {
+    identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
+  }
+  if (!boot) return identity;
+  return {
+    env: mergeEnvArrays(identity.env, envArray(boot.env)),
+    cwd: boot.cwd || identity.cwd,
+    uid: boot.uid ?? identity.uid,
+    gid: boot.gid ?? identity.gid,
+  };
+}
+
+function envArray(env: Record<string, string>): string[] {
+  return Object.entries(env).map(([key, value]) => `${key}=${value}`);
+}
+
+function mergeEnvArrays(base: string[], override: string[]): string[] {
+  const out = new Map<string, string>();
+  for (const kv of base) {
+    const idx = kv.indexOf("=");
+    if (idx > 0) out.set(kv.slice(0, idx), kv.slice(idx + 1));
+  }
+  for (const kv of override) {
+    const idx = kv.indexOf("=");
+    if (idx > 0) out.set(kv.slice(0, idx), kv.slice(idx + 1));
+  }
+  return Array.from(out, ([key, value]) => `${key}=${value}`);
+}
+
 async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
@@ -635,12 +699,21 @@ async function bootProfile(
   host.clearDmesg();
   host.setWebPreview(null);
   host.setDemoGuide(null);
+  const effectiveBoot = {
+    ...profile.descriptor.boot,
+    ...requestedDescriptor.boot,
+    env: {
+      ...profile.descriptor.boot.env,
+      ...requestedDescriptor.boot.env,
+    },
+  };
   host.setDescriptor({
     ...profile.descriptor,
     title: requestedDescriptor.title || profile.descriptor.title,
     packages: requestedDescriptor.packages.length > 0
       ? requestedDescriptor.packages
       : profile.descriptor.packages,
+    boot: effectiveBoot,
   });
   const genericPresentation = profile.fallbackPresentation ?? genericPresentationForProfile(profile);
   host.setPresentation(genericPresentation);
@@ -702,6 +775,7 @@ async function bootProfile(
     ensureDirRecursive(memfs, dirname(profile.init.argv[0]));
     writeVfsBinary(memfs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
   }
+  ensureDemoHomes(memfs);
   const imageConfig = readImageConfig(memfs);
   const presentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
     ?? builtinDemoPresentation(profile.id)
@@ -743,12 +817,14 @@ async function bootProfile(
     stageSoftwareBinaries(kernel, softwareBinaries);
     assertCurrent();
     host.attachKernel(kernel);
-    const shellEnv = profile.software?.shellEnv ?? shellEnvFor(profile.shell);
+    const shellIdentity = shellIdentityForProfile(profile, effectiveBoot);
     host.setDefaultShell({
       programBytes: bashBytes,
       argv: ["bash", "-l", "-i"],
-      env: shellEnv,
-      cwd: shellCwdFor(profile.shell),
+      env: shellIdentity.env,
+      cwd: shellIdentity.cwd,
+      uid: shellIdentity.uid,
+      gid: shellIdentity.gid,
     });
 
     if (profile.init?.web) {
@@ -776,13 +852,16 @@ async function bootProfile(
     }
 
     if (profile.init) {
-      const initBytes = readVfsFile(memfs, profile.init.argv[0]);
-      tick(`spawning ${profile.init.argv[0]}...`);
-      void kernel.spawn(initBytes, profile.init.argv, {
-        env: profile.init.env,
-        cwd: profile.init.cwd ?? "/",
+      const initArgv = effectiveBoot.argv.length > 0 ? effectiveBoot.argv : profile.init.argv;
+      const initBytes = readVfsFile(memfs, initArgv[0]);
+      tick(`spawning ${initArgv[0]}...`);
+      void kernel.spawn(initBytes, initArgv, {
+        env: mergeEnvArrays(profile.init.env ?? [], envArray(effectiveBoot.env)),
+        cwd: effectiveBoot.cwd || profile.init.cwd || ROOT_HOME,
+        uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
+        gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
       }).then(
-        (code) => tick(`${profile.init?.argv[0] ?? "init"} exited with code ${code}`),
+        (code) => tick(`${initArgv[0] ?? "init"} exited with code ${code}`),
         (err) => tick(`init failed: ${err instanceof Error ? err.message : String(err)}`),
       );
     }
@@ -827,7 +906,7 @@ function stageShellUtilities(
   dashBytes: ArrayBuffer,
   bashBytes: ArrayBuffer,
 ): void {
-  ensureDirRecursive(kernel.fs, "/home");
+  ensureDemoHomes(kernel.fs);
   ensureDirRecursive(kernel.fs, "/bin");
   ensureDirRecursive(kernel.fs, "/usr/bin");
   writeVfsBinary(kernel.fs, "/bin/dash", new Uint8Array(dashBytes), 0o755);
@@ -844,6 +923,25 @@ function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
     if (url !== placeholder) return url;
     return nodeWasmUrl;
   });
+}
+
+function ensureDemoHomes(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/home");
+  ensureOwnedDir(fs, DEMO_HOME, 0o755, DEMO_UID, DEMO_GID);
+  ensureOwnedDir(fs, ROOT_HOME, 0o700, ROOT_UID, ROOT_GID);
+  ensureOwnedDir(fs, NODE_WORKDIR, 0o755, DEMO_UID, DEMO_GID);
+}
+
+function ensureOwnedDir(
+  fs: MemoryFileSystem,
+  path: string,
+  mode: number,
+  uid: number,
+  gid: number,
+): void {
+  ensureDirRecursive(fs, path);
+  fs.chown(path, uid, gid);
+  fs.chmod(path, mode);
 }
 
 function patchWordPressRuntimeConfig(
@@ -974,7 +1072,12 @@ async function spawnLazy(
     tick(`fetching ${argv[0]}...`);
     const bytes = await fetch(url).then(failOn(argv[0])).then((r) => r.arrayBuffer());
     tick(`spawning ${argv[0]}...`);
-    await kernel.spawn(bytes, argv, { env: SHELL_ENV });
+    await kernel.spawn(bytes, argv, {
+      env: SHELL_ENV,
+      cwd: DEMO_HOME,
+      uid: DEMO_UID,
+      gid: DEMO_GID,
+    });
     tick(`${argv[0]} exited`);
   } catch (err) {
     tick(`${argv[0]} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1123,6 +1226,28 @@ function setupBridgeRestoreListener(
   });
 }
 
+function descriptorBootIdentity(
+  id: string,
+  software: SoftwareProfile | undefined,
+  shell: ShellProfile,
+): { env: string[]; cwd: string; uid: number; gid: number } {
+  const serviceIds = new Set(["nginx", "nginx-php", "wordpress-sqlite", "wordpress-mariadb"]);
+  if (software?.init || serviceIds.has(id) || software?.shellEnv === SERVICE_ENV) {
+    return { env: software?.shellEnv ?? SERVICE_ENV, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID };
+  }
+  if (id === "node" || shell === "node") {
+    return { env: shellEnvFor(shell), cwd: shellCwdFor(shell), uid: DEMO_UID, gid: DEMO_GID };
+  }
+  return { env: software?.shellEnv ?? shellEnvFor(shell), cwd: shellCwdFor(shell), uid: DEMO_UID, gid: DEMO_GID };
+}
+
+function envRecord(env: string[]): Record<string, string> {
+  return Object.fromEntries(env.map((kv) => {
+    const idx = kv.indexOf("=");
+    return [kv.slice(0, idx), kv.slice(idx + 1)];
+  }));
+}
+
 function descriptorFor(id: string): BootDescriptor {
   const software = SOFTWARE_PROFILES.get(id);
   const normalized = software ? "shell" : normalizeDemoId(id) ?? "shell";
@@ -1132,6 +1257,7 @@ function descriptorFor(id: string): BootDescriptor {
     : liveGalleryItems().find((p) => p.id === normalized) ?? liveGalleryItems()[0];
   const shell = spec.shell ?? "default";
   const network = software ? false : spec.network ?? false;
+  const bootIdentity = descriptorBootIdentity(normalized, software, shell);
   return {
     version: 1,
     id: software?.id ?? item.id,
@@ -1155,12 +1281,11 @@ function descriptorFor(id: string): BootDescriptor {
       { path: "/tmp", source: "scratch", ephemeral: true },
     ],
     boot: {
-      argv: software ? ["bash", "-l", "-i"] : item.bootCommand,
-      cwd: shellCwdFor(shell),
-      env: Object.fromEntries((software?.shellEnv ?? shellEnvFor(shell)).map((kv) => {
-        const idx = kv.indexOf("=");
-        return [kv.slice(0, idx), kv.slice(idx + 1)];
-      })),
+      argv: software?.init ? software.init.argv : software ? ["bash", "-l", "-i"] : item.bootCommand,
+      cwd: bootIdentity.cwd,
+      env: envRecord(bootIdentity.env),
+      uid: bootIdentity.uid,
+      gid: bootIdentity.gid,
     },
     caps: { network },
   };

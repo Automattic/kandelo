@@ -991,6 +991,23 @@ unsafe fn get_process() -> (GklGuard, &'static mut Process) {
     }
 }
 
+fn current_pid_eids() -> (u32, u32, u32) {
+    if crate::is_centralized_mode() {
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        let pid = table.current_pid();
+        match table.get(pid) {
+            Some(p) => (pid, p.euid, p.egid),
+            None => (pid, 0, 0),
+        }
+    } else {
+        let proc = unsafe { &*PROCESS.0.get() };
+        match proc {
+            Some(p) => (p.pid, p.euid, p.egid),
+            None => (0, 0, 0),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 3b. Memory growth helper
 // ---------------------------------------------------------------------------
@@ -1213,6 +1230,27 @@ pub extern "C" fn kernel_set_cwd(pid: u32, path_ptr: *const u8, path_len: u32) -
     if let Some(proc) = table.get_mut(pid) {
         let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
         proc.cwd = path.to_vec();
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
+/// Set a process's initial real/effective uid and gid (centralized mode).
+/// The host calls this after creating the process but before user code starts.
+/// Pass `u32::MAX` for either uid or gid to leave that side unchanged.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_process_credentials(pid: u32, uid: u32, gid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        if uid != u32::MAX {
+            proc.uid = uid;
+            proc.euid = uid;
+        }
+        if gid != u32::MAX {
+            proc.gid = gid;
+            proc.egid = gid;
+        }
         0
     } else {
         -(Errno::ESRCH as i32)
@@ -2911,15 +2949,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         337 => {
             // SYS_MSGGET: (key, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            // Get uid/gid from current process
-            let (uid, gid) = unsafe {
-                let pt = &*PROCESS_TABLE.0.get();
-                match pt.get(pid) {
-                    Some(p) => (p.euid, p.egid),
-                    None => (0, 0),
-                }
-            };
+            let (pid, uid, gid) = current_pid_eids();
             match ipc.msgget(a1, a2 as u32, pid, uid, gid) {
                 Ok(id) => id,
                 Err(e) => -(e as i32),
@@ -2928,8 +2958,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         338 => {
             // SYS_MSGRCV: (qid, msgp, msgsz, msgtyp, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            match ipc.msgrcv(a1, a3 as u32, a4, a5 as u32, pid) {
+            let (pid, uid, gid) = current_pid_eids();
+            match ipc.msgrcv(a1, a3 as u32, a4, a5 as u32, pid, uid, gid) {
                 Ok(result) => {
                     // Write {mtype (4B), mtext} to msgp (kernel scratch)
                     let out = a2 as *mut u8;
@@ -2950,14 +2980,14 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         339 => {
             // SYS_MSGSND: (qid, msgp, msgsz, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let (pid, uid, gid) = current_pid_eids();
             // Read mtype from msgp, mtext from msgp+4
             let msgp = a2 as *const u8;
             let msgsz = a3 as usize;
             let mtype =
                 unsafe { i32::from_le_bytes([*msgp, *msgp.add(1), *msgp.add(2), *msgp.add(3)]) };
             let data = unsafe { core::slice::from_raw_parts(msgp.add(4), msgsz) };
-            match ipc.msgsnd(a1, mtype, data, a4 as u32, pid) {
+            match ipc.msgsnd(a1, mtype, data, a4 as u32, pid, uid, gid) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
@@ -2965,9 +2995,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         340 => {
             // SYS_MSGCTL: (qid, cmd, buf_ptr)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let (pid, uid, gid) = current_pid_eids();
             let cmd = a2 & !0x100; // strip IPC_64
-            match ipc.msgctl(a1, cmd, pid) {
+            match ipc.msgctl(a1, cmd, pid, uid, gid) {
                 Ok(Some(info)) => {
                     if a3 != 0 {
                         let out = a3 as *mut u8;
@@ -2984,14 +3014,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         341 => {
             // SYS_SEMGET: (key, nsems, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            let (uid, gid) = unsafe {
-                let pt = &*PROCESS_TABLE.0.get();
-                match pt.get(pid) {
-                    Some(p) => (p.euid, p.egid),
-                    None => (0, 0),
-                }
-            };
+            let (pid, uid, gid) = current_pid_eids();
             match ipc.semget(a1, a2 as u32, a3 as u32, pid, uid, gid) {
                 Ok(id) => id,
                 Err(e) => -(e as i32),
@@ -3000,7 +3023,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         342 => {
             // SYS_SEMOP: (semid, sops_ptr, nsops)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let (pid, uid, gid) = current_pid_eids();
             let nsops = a3 as usize;
             let sops_ptr = a2 as *const u8;
             let mut sops = alloc::vec::Vec::with_capacity(nsops);
@@ -3011,7 +3034,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                 let flg = unsafe { u16::from_le_bytes([*base.add(4), *base.add(5)]) };
                 sops.push(crate::ipc::SemOp { num, op, flg });
             }
-            match ipc.semop(a1, &sops, pid) {
+            match ipc.semop(a1, &sops, pid, uid, gid) {
                 Ok(()) => 0,
                 Err(e) => -(e as i32),
             }
@@ -3019,12 +3042,12 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         343 => {
             // SYS_SEMCTL: (semid, semnum, cmd, arg)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let (pid, uid, gid) = current_pid_eids();
             let cmd = a3 & !0x100; // strip IPC_64
             // SETALL (17): arg points to u16[] in scratch
             if cmd == 17 {
                 // First get nsems via IPC_STAT
-                match ipc.semctl(a1, 0, 2, pid, 0) {
+                match ipc.semctl(a1, 0, 2, pid, 0, uid, gid) {
                     // IPC_STAT=2
                     Ok(crate::ipc::SemCtlResult::Stat(info)) => {
                         let nsems = info.nsems as usize;
@@ -3034,7 +3057,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                             let base = unsafe { ptr.add(i * 2) };
                             vals.push(unsafe { u16::from_le_bytes([*base, *base.add(1)]) });
                         }
-                        match ipc.semctl_set_all(a1, &vals) {
+                        match ipc.semctl_set_all(a1, &vals, uid, gid) {
                             Ok(()) => 0,
                             Err(e) => -(e as i32),
                         }
@@ -3042,7 +3065,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                     _ => -(Errno::EINVAL as i32),
                 }
             } else {
-                match ipc.semctl(a1, a2, cmd, pid, a4) {
+                match ipc.semctl(a1, a2, cmd, pid, a4, uid, gid) {
                     Ok(crate::ipc::SemCtlResult::Ok) => 0,
                     Ok(crate::ipc::SemCtlResult::Value(v)) => v,
                     Ok(crate::ipc::SemCtlResult::Stat(info)) => {
@@ -3075,14 +3098,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         344 => {
             // SYS_SHMGET: (key, size, flags)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-            let (uid, gid) = unsafe {
-                let pt = &*PROCESS_TABLE.0.get();
-                match pt.get(pid) {
-                    Some(p) => (p.euid, p.egid),
-                    None => (0, 0),
-                }
-            };
+            let (pid, uid, gid) = current_pid_eids();
             match ipc.shmget(a1, a2 as u32, a3 as u32, pid, uid, gid) {
                 Ok(id) => id,
                 Err(e) => -(e as i32),
@@ -3094,9 +3110,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         347 => {
             // SYS_SHMCTL: (shmid, cmd, buf_ptr)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
-            let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+            let (pid, uid, gid) = current_pid_eids();
             let cmd = a2 & !0x100; // strip IPC_64
-            match ipc.shmctl(a1, cmd, pid) {
+            match ipc.shmctl(a1, cmd, pid, uid, gid) {
                 Ok(Some(info)) => {
                     if a3 != 0 {
                         let out = a3 as *mut u8;
@@ -3934,10 +3950,10 @@ pub extern "C" fn kernel_set_current_tid(tid: u32) {
 /// Attach to shared memory segment. Returns segment size, or negative errno.
 /// Host uses this + kernel_ipc_shm_read_chunk to transfer data to process memory.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_ipc_shmat(shmid: i32, _shmaddr: i32, _flags: i32) -> i32 {
+pub extern "C" fn kernel_ipc_shmat(shmid: i32, _shmaddr: i32, flags: i32) -> i32 {
     let ipc = unsafe { crate::ipc::global_ipc_table() };
-    let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
-    match ipc.shmat(shmid, pid) {
+    let (pid, uid, gid) = current_pid_eids();
+    match ipc.shmat(shmid, pid, flags as u32, uid, gid) {
         Ok(size) => size as i32,
         Err(e) => -(e as i32),
     }

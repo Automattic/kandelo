@@ -23,6 +23,9 @@ declare global {
 let kernelWasmBytes: ArrayBuffer | null = null;
 let gitBytes: ArrayBuffer | null = null;
 let gitRemoteHttpBytes: ArrayBuffer | null = null;
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
+const DEMO_HOME = "/home/user";
 
 /** Write a binary file to the virtual filesystem. */
 function writeFileToFs(
@@ -77,6 +80,8 @@ async function init() {
         "/usr/libexec",
         "/usr/libexec/git-core",
         "/usr/bin",
+        "/home",
+        DEMO_HOME,
       ]) {
         try {
           kernel.fs.mkdir(dir, 0o755);
@@ -84,6 +89,8 @@ async function init() {
           /* exists */
         }
       }
+      kernel.fs.chown(DEMO_HOME, DEMO_UID, DEMO_GID);
+      kernel.fs.chmod(DEMO_HOME, 0o755);
 
       writeFileToFs(kernel.fs, `${gitExecPath}/git`, gitBytes!);
       writeFileToFs(
@@ -112,12 +119,19 @@ async function init() {
         "GIT_CONFIG_KEY_3=init.defaultBranch",
         "GIT_CONFIG_VALUE_3=main",
         `GIT_EXEC_PATH=${gitExecPath}`,
-        "HOME=/home",
+        `HOME=${DEMO_HOME}`,
+        "USER=user",
+        "LOGNAME=user",
         "TMPDIR=/tmp",
       ];
 
       const exitCode = await Promise.race([
-        kernel.spawn(gitBytes!, ["git", "clone", httpUrl, cloneDir], { env }),
+        kernel.spawn(gitBytes!, ["git", "clone", httpUrl, cloneDir], {
+          env,
+          cwd: DEMO_HOME,
+          uid: DEMO_UID,
+          gid: DEMO_GID,
+        }),
         new Promise<number>((_, reject) =>
           setTimeout(() => reject(new Error("TIMEOUT")), 120_000),
         ),

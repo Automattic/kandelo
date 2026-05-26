@@ -134,9 +134,9 @@ const Card: React.FC<{
 
 /**
  * Apply a GalleryItem to a base BootDescriptor — used by the App to convert
- * a card click into an applyBootDescriptor() call. Lifts argv, packages, and
- * any direct VFS image URL from the gallery item; other fields stay from the
- * current descriptor.
+ * a card click into an applyBootDescriptor() call. Lifts argv, packages, any
+ * direct VFS image URL, and the expected user context from the gallery item;
+ * other fields stay from the current descriptor.
  */
 export function descriptorFromGalleryItem(
   item: GalleryItem,
@@ -145,12 +145,25 @@ export function descriptorFromGalleryItem(
   const mounts = item.vfsImageUrl
     ? mountsWithRootImageUrl(base.mounts, item.vfsImageUrl)
     : base.mounts;
+  const rootBoot = item.bootCommand[0] === "/sbin/dinit";
+  const nodeBoot = item.id === "node";
+  const userEnv = nodeBoot
+    ? { ...base.boot.env, HOME: "/home/user", PWD: "/work", USER: "user", LOGNAME: "user" }
+    : { ...base.boot.env, HOME: "/home/user", USER: "user", LOGNAME: "user" };
+  const rootEnv = { ...base.boot.env, HOME: "/root", USER: "root", LOGNAME: "root" };
   return {
     ...base,
     id: item.id,
     title: item.title,
     packages: item.packages,
     mounts,
-    boot: { ...base.boot, argv: item.bootCommand },
+    boot: {
+      ...base.boot,
+      argv: item.bootCommand,
+      cwd: rootBoot ? "/root" : nodeBoot ? "/work" : "/home/user",
+      env: rootBoot ? rootEnv : userEnv,
+      uid: rootBoot ? 0 : 1000,
+      gid: rootBoot ? 0 : 1000,
+    },
   };
 }

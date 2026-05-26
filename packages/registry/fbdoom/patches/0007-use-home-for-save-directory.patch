@@ -1,0 +1,14 @@
+diff --git a/fbdoom/m_config.c b/fbdoom/m_config.c
+index e60a3bf..c746f41 100644
+--- a/fbdoom/m_config.c
++++ b/fbdoom/m_config.c
+@@ -2053,8 +2053,7 @@ static char *GetDefaultConfigDir(void)
+     char *homedir;
+     char *result;
+
+-    // frosted HACK - homedir = getenv("HOME");
+-    homedir = "/mnt";
++    homedir = getenv("HOME");
+
+     if (homedir != NULL)
+     {

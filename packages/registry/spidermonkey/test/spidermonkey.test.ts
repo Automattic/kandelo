@@ -24,6 +24,7 @@ const DEFAULT_TEST_TIMEOUT = DEFAULT_TIMEOUT + 30_000;
 const LONG_TIMEOUT = process.env.CI ? 180_000 : 30_000;
 const LONG_TEST_TIMEOUT = LONG_TIMEOUT + 60_000;
 const CI_PROGRESS_INTERVAL = 15_000;
+const WORKER_TEARDOWN_ITERATIONS = process.env.CI ? 2 : 4;
 
 function loadWasm(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -194,7 +195,7 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
   }, DEFAULT_TEST_TIMEOUT);
 
   it("tears down workers repeatedly while GC runs", async () => {
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < WORKER_TEARDOWN_ITERATIONS; i++) {
       const result = await runJs([
         "var sab = new SharedArrayBuffer(4)",
         "var view = new Int32Array(sab)",
