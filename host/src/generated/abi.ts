@@ -5,6 +5,50 @@ export const ABI_VERSION = 12 as const;
 export const ABI_CUSTOM_SECTION = "wasm-posix-abi" as const;
 export const ABI_KERNEL_EXPORT = "__abi_version" as const;
 
+export const HOST_ADAPTER_VERSION = 1 as const;
+export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
+export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
+export const HOST_ADAPTER_MANIFEST_SIZE = 40 as const;
+export const HOST_ADAPTER_REQUIRED_WORKER_FEATURES = 7 as const;
+export const HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES = 0 as const;
+
+export const HOST_ADAPTER_WORKER_FEATURES = {
+  atomics_wait: 2,
+  atomics_wait_async: 4,
+  shared_array_buffer: 1,
+} as const;
+
+export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
+  "__abi_version",
+  "kernel_alloc_scratch",
+  "kernel_create_process",
+  "kernel_handle_channel",
+  "kernel_host_adapter_manifest_len",
+  "kernel_host_adapter_manifest_ptr",
+  "kernel_remove_process",
+  "kernel_set_mode",
+] as const;
+
+export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
+  "kernel_set_cwd",
+  "kernel_set_max_addr",
+  "kernel_set_process_argv",
+] as const;
+
+export const HOST_ADAPTER_MANIFEST_FIELDS = {
+  magic: { offset: 0, size: 4 },
+  manifestVersion: { offset: 4, size: 2 },
+  manifestSize: { offset: 6, size: 2 },
+  abiVersion: { offset: 8, size: 4 },
+  requiredHostAdapterVersion: { offset: 12, size: 4 },
+  requiredWorkerFeatures: { offset: 16, size: 4 },
+  optionalKernelFeatures: { offset: 20, size: 4 },
+  channelHeaderSize: { offset: 24, size: 4 },
+  channelDataOffset: { offset: 28, size: 4 },
+  channelDataSize: { offset: 32, size: 4 },
+  channelMinSize: { offset: 36, size: 4 },
+} as const;
+
 export const CHANNEL_STATUS_IDLE = 0 as const;
 export const CHANNEL_STATUS_PENDING = 1 as const;
 export const CHANNEL_STATUS_COMPLETE = 2 as const;

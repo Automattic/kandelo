@@ -1131,6 +1131,18 @@ pub extern "C" fn __abi_version() -> u32 {
     wasm_posix_shared::ABI_VERSION
 }
 
+/// Pointer to the Rust-owned host adapter manifest in kernel Wasm memory.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_host_adapter_manifest_ptr() -> usize {
+    &wasm_posix_shared::abi::HOST_ADAPTER_MANIFEST as *const _ as usize
+}
+
+/// Size in bytes of the Rust-owned host adapter manifest.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_host_adapter_manifest_len() -> u32 {
+    core::mem::size_of::<wasm_posix_shared::abi::HostAdapterManifest>() as u32
+}
+
 /// Set kernel operating mode. 0 = traditional, 1 = centralized.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_mode(mode: u32) {
