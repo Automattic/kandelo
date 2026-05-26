@@ -23,7 +23,7 @@ import { readFileSync } from "fs";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 import { resolveBinary } from "../../../../host/src/binary-resolver";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { writeVfsFile } from "../../../../host/src/vfs/image-helpers";
+import { ensureDirRecursive, writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 
 const wordpressVfsPath = resolveBinary("programs/wordpress.vfs.zst");
 const dinitWasmPath = resolveBinary("programs/dinit/dinit.wasm");
@@ -103,6 +103,19 @@ async function configureWordPressVfs(image: ArrayBuffer): Promise<ArrayBuffer> {
   const phpFpmConf = readVfsText(fs, "/etc/php-fpm.conf")
     .replace(/pm\.max_children\s*=\s*\d+/, `pm.max_children = ${PHP_FPM_WORKERS}`);
   writeVfsFile(fs, "/etc/php-fpm.conf", phpFpmConf);
+  ensureDirRecursive(fs, "/var/cache/opcache");
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-config.php",
+    readVfsText(fs, "/etc/wp-config-template.php")
+      .replaceAll("@@APP_PATH@@", "/")
+      .replaceAll("@@PROTO@@", "http"),
+  );
+  writeVfsFile(
+    fs,
+    "/etc/wp-config-init.sh",
+    "echo \"wp-config-init: APP_PATH=${WP_APP_PATH:-/} PROTO=${WP_PROTO:-http}\"\n",
+  );
   for (const service of ["wp-config-init", "php-fpm", "nginx"]) {
     const path = `/etc/dinit.d/${service}`;
     const conf = readVfsText(fs, path).replace(/^logfile\s*=.*\n/gm, "");

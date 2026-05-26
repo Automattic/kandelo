@@ -8,13 +8,8 @@ if [ ! -f "$REPO_ROOT/packages/registry/npm/dist/bin/npm-cli.js" ]; then
     bash "$REPO_ROOT/packages/registry/npm/fetch-npm.sh"
 fi
 
-# The Node VFS is layered on the shell VFS populator, which registers the
-# shell lazy archives for vim and nethack. Build those archive inputs before
-# invoking the image builder so clean source builds do not depend on a prior
-# shell package build.
-bash "$REPO_ROOT/images/vfs/scripts/build-vim-zip.sh"
-bash "$REPO_ROOT/images/vfs/scripts/build-nethack-zip.sh"
-
+# The Node VFS layers npm and a lazy node binary on top of the resolved shell
+# VFS image. The shell package owns its own lazy archive inputs.
 bash "$REPO_ROOT/images/vfs/scripts/build-node-vfs-image.sh"
 
 VFS="$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst"

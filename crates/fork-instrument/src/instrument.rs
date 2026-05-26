@@ -1,7 +1,7 @@
 //! Per-function instrumentation — switch-dispatch transform.
 //!
 //! This module rewrites every fork-path function's body into an
-//! asyncify-style switch dispatch: during REWIND, execution jumps
+//! switch-dispatch fork rewind: during REWIND, execution jumps
 //! directly to the post-active-call-site label via a `br_table`
 //! inside a REWINDING guard, skipping all body code between the
 //! function entry and the resumed call site.

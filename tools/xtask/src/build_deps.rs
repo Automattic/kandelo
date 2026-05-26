@@ -776,13 +776,29 @@ fn ensure_built_uncached(
         .map(|s| s.contains(&target.name))
         .unwrap_or(false);
 
-    // Cache hit: trust it. Users invalidate by deleting the directory.
-    // `force_source_build` skips this so the build script always runs;
-    // we additionally wipe `canonical` below so `build_into_cache`'s
-    // atomic-install doesn't discard the fresh tmp dir as a same-input
-    // duplicate.
+    // Cache hit: validate before using it. The cache key includes the
+    // numeric kernel ABI, but fork-continuation mechanism changes have
+    // previously produced stale artifacts with a matching ABI number
+    // (legacy Asyncify exports instead of wpk_fork_*). Reject those so
+    // the resolver can fetch a current remote artifact or source-build.
     if !force_rebuild && canonical.is_dir() {
-        return Ok((canonical, transitive));
+        match validate_cache_artifacts(target, &canonical) {
+            Ok(()) => return Ok((canonical, transitive)),
+            Err(e) => {
+                eprintln!(
+                    "warning: ignoring stale cached artifact for {} at {} ({})",
+                    target.spec(),
+                    canonical.display(),
+                    e,
+                );
+                std::fs::remove_dir_all(&canonical).map_err(|remove_err| {
+                    format!(
+                        "clear stale cache entry {} after validation failure: {remove_err}",
+                        canonical.display()
+                    )
+                })?;
+            }
+        }
     }
     if force_rebuild && canonical.is_dir() {
         std::fs::remove_dir_all(&canonical)
@@ -916,7 +932,20 @@ fn ensure_built_uncached(
                         abi_version,
                         &cache_key_sha_hex,
                     ) {
-                        Ok(()) => return Ok((canonical, transitive)),
+                        Ok(()) => match validate_cache_artifacts(target, &canonical) {
+                            Ok(()) => return Ok((canonical, transitive)),
+                            Err(e) => {
+                                eprintln!(
+                                    "warning: direct binary fetch for {} from {} produced \
+                                     a stale artifact ({}); falling back to indexed \
+                                     binary/source build",
+                                    target.spec(),
+                                    binary.archive_url,
+                                    e,
+                                );
+                                let _ = std::fs::remove_dir_all(&canonical);
+                            }
+                        },
                         Err(e) => {
                             eprintln!(
                                 "warning: direct binary fetch for {} from {} failed ({}); \
@@ -1070,7 +1099,20 @@ fn try_index_install(
         abi_version,
         cache_key_sha_hex,
     ) {
-        Ok(()) => Some(()),
+        Ok(()) => match validate_cache_artifacts(target, canonical) {
+            Ok(()) => Some(()),
+            Err(e) => {
+                eprintln!(
+                    "warning: index-based fetch for {} from {} produced \
+                     a stale artifact ({}); falling back to source build",
+                    target.spec(),
+                    archive_url,
+                    e,
+                );
+                let _ = std::fs::remove_dir_all(canonical);
+                None
+            }
+        },
         Err(e) => {
             eprintln!(
                 "warning: index-based fetch for {} from {} failed ({}); \
@@ -1357,6 +1399,85 @@ fn rewrite_dir(dir: &Path, needle: &str, replacement: &str) -> Result<(), String
     Ok(())
 }
 
+const WASM_MAGIC: &[u8; 4] = b"\0asm";
+const WPK_FORK_EXPORTS: [&str; 5] = [
+    "wpk_fork_unwind_begin",
+    "wpk_fork_unwind_end",
+    "wpk_fork_rewind_begin",
+    "wpk_fork_rewind_end",
+    "wpk_fork_state",
+];
+
+fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn is_wasm_bytes(bytes: &[u8]) -> bool {
+    bytes.len() >= WASM_MAGIC.len() && &bytes[..WASM_MAGIC.len()] == WASM_MAGIC
+}
+
+fn wasm_artifact_policy_failures(bytes: &[u8]) -> Vec<String> {
+    if !is_wasm_bytes(bytes) {
+        return Vec::new();
+    }
+
+    let mut failures = Vec::new();
+    if bytes_contain(bytes, b"asyncify_") {
+        failures.push("contains legacy asyncify_ instrumentation".to_string());
+    }
+
+    let wpk_present: Vec<&str> = WPK_FORK_EXPORTS
+        .iter()
+        .copied()
+        .filter(|name| bytes_contain(bytes, name.as_bytes()))
+        .collect();
+    if !wpk_present.is_empty() && wpk_present.len() != WPK_FORK_EXPORTS.len() {
+        let missing = WPK_FORK_EXPORTS
+            .iter()
+            .copied()
+            .filter(|name| !wpk_present.contains(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        failures.push(format!(
+            "has incomplete wasm-fork-instrument exports; missing {missing}"
+        ));
+    }
+    if bytes_contain(bytes, b"kernel_fork") && wpk_present.len() != WPK_FORK_EXPORTS.len() {
+        failures.push(
+            "references kernel_fork without complete wasm-fork-instrument exports".to_string(),
+        );
+    }
+    failures
+}
+
+fn validate_wasm_artifact_policy(path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let failures = wasm_artifact_policy_failures(&bytes);
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{}: {}", path.display(), failures.join("; ")))
+    }
+}
+
+fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Result<(), String> {
+    if !matches!(target.kind, ManifestKind::Program) {
+        return Ok(());
+    }
+    for out in &target.program_outputs {
+        let path = dir.join(&out.wasm);
+        if !path.exists() {
+            return Err(format!(
+                "{}: declared wasm output {:?} missing from cache entry",
+                target.spec(),
+                out.wasm
+            ));
+        }
+        validate_wasm_artifact_policy(&path)?;
+    }
+    Ok(())
+}
+
 fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String> {
     match target.kind {
         ManifestKind::Library => {
@@ -1392,6 +1513,7 @@ fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String>
                         out.wasm
                     ));
                 }
+                validate_wasm_artifact_policy(&p)?;
             }
         }
         // No outputs to validate for source-kind (Chunk C).
@@ -4165,6 +4287,63 @@ wasm = "vim.wasm"
         let err =
             ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None)).unwrap_err();
         assert!(err.contains("miss.wasm"), "got: {err}");
+    }
+
+    #[test]
+    fn program_output_validation_rejects_legacy_asyncify_wasm() {
+        let out = tempdir("prog-out-asyncify");
+        fs::write(
+            out.join("bad.wasm"),
+            b"\0asm\x01\0\0\0 exported asyncify_start_unwind",
+        )
+        .unwrap();
+        let m = DepsManifest::parse(
+            r#"kind = "program"
+name = "bad"
+version = "0.1.0"
+[source]
+url = "https://x.test/bad.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Test"
+[[outputs]]
+name = "bad"
+wasm = "bad.wasm"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+        let err = validate_outputs(&m, &out).unwrap_err();
+        assert!(err.contains("asyncify_"), "got: {err}");
+    }
+
+    #[test]
+    fn program_output_validation_rejects_fork_without_wpk_exports() {
+        let out = tempdir("prog-out-fork-policy");
+        fs::write(
+            out.join("bad.wasm"),
+            b"\0asm\x01\0\0\0 import kernel kernel_fork",
+        )
+        .unwrap();
+        let m = DepsManifest::parse(
+            r#"kind = "program"
+name = "badfork"
+version = "0.1.0"
+[source]
+url = "https://x.test/badfork.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Test"
+[[outputs]]
+name = "badfork"
+wasm = "bad.wasm"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+        let err = validate_outputs(&m, &out).unwrap_err();
+        assert!(err.contains("kernel_fork"), "got: {err}");
+        assert!(err.contains("wasm-fork-instrument"), "got: {err}");
     }
 
     #[test]

@@ -437,7 +437,16 @@
   min-width: 0;
   display: flex;
 }
-.kmachine-primary > .kpane {
+.kmachine-primary-slot {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+.kmachine-primary-slot.is-hidden {
+  display: none;
+}
+.kmachine-primary-slot > .kpane {
   flex: 1;
 }
 

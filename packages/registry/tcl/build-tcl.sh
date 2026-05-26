@@ -165,15 +165,10 @@ fi
 # and any later pass reordering globals would corrupt the fork buffer.
 TCLSH="$INSTALL_DIR/bin/tclsh8.6"
 if [ -f "$TCLSH" ]; then
-    FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-    if [ -x "$FORK_INSTRUMENT" ]; then
-        echo "==> Applying fork instrumentation to tclsh..."
-        "$FORK_INSTRUMENT" "$TCLSH" -o "$TCLSH.instr"
-        mv "$TCLSH.instr" "$TCLSH"
-    else
-        echo "WARNING: wasm-fork-instrument not found. Fork (exec command) will not work in tclsh." >&2
-        echo "  Run 'bash build.sh' to build it." >&2
-    fi
+    FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+    echo "==> Applying fork instrumentation to tclsh..."
+    "$FORK_INSTRUMENT" "$TCLSH" -o "$TCLSH.instr"
+    mv "$TCLSH.instr" "$TCLSH"
 
     # Copy to bin/ with .wasm extension
     mkdir -p "$SCRIPT_DIR/bin"

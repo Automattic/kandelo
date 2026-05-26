@@ -15,6 +15,23 @@ SYSROOT="$REPO_ROOT/sysroot"
 SRC_DIR="$SCRIPT_DIR/dinit-src"
 BIN_DIR="$SCRIPT_DIR/bin"
 
+source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
+
+current_kernel_abi() {
+    sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);/\1/p' \
+        "$REPO_ROOT/crates/shared/src/lib.rs" | head -1
+}
+
+wasm_abi() {
+    local wasm="$1"
+    (
+        cd "$REPO_ROOT"
+        npx --no-install tsx --eval \
+            "const { extractAbiVersion } = require('./host/src/constants.ts'); const { readFileSync } = require('node:fs'); const path = process.argv[1]; const b = readFileSync(path); const abi = extractAbiVersion(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); if (abi != null) console.log(abi);" \
+            -- "$wasm"
+    )
+}
+
 # --- Idempotent fast path ---
 # If all three artifacts already exist (e.g. left over from a prior
 # build, or downloaded by scripts/fetch-binaries.sh into bin/), just
@@ -22,12 +39,27 @@ BIN_DIR="$SCRIPT_DIR/bin"
 # environments that don't have libc++ available — needed because the
 # resolver invokes this script to ensure_built before staging.
 if [ -f "$BIN_DIR/dinit.wasm" ] && [ -f "$BIN_DIR/dinitctl.wasm" ] && [ -f "$BIN_DIR/dinitcheck.wasm" ]; then
-    echo "==> Reusing existing dinit artifacts in $BIN_DIR (skip rebuild)."
-    source "$REPO_ROOT/scripts/install-local-binary.sh"
-    install_local_binary dinit "$BIN_DIR/dinit.wasm" dinit.wasm
-    install_local_binary dinit "$BIN_DIR/dinitctl.wasm" dinitctl.wasm
-    install_local_binary dinit "$BIN_DIR/dinitcheck.wasm" dinitcheck.wasm
-    exit 0
+    current_abi="$(current_kernel_abi || true)"
+    artifact_abi="$(wasm_abi "$BIN_DIR/dinit.wasm" 2>/dev/null || true)"
+    legacy_artifacts=()
+    for artifact in "$BIN_DIR/dinit.wasm" "$BIN_DIR/dinitctl.wasm" "$BIN_DIR/dinitcheck.wasm"; do
+        if wasm_has_legacy_asyncify "$artifact"; then
+            legacy_artifacts+=("$artifact")
+        fi
+    done
+    if [ -n "$current_abi" ] && [ "$artifact_abi" = "$current_abi" ] && [ "${#legacy_artifacts[@]}" -eq 0 ]; then
+        echo "==> Reusing existing dinit artifacts in $BIN_DIR (ABI $artifact_abi; skip rebuild)."
+        source "$REPO_ROOT/scripts/install-local-binary.sh"
+        install_local_binary dinit "$BIN_DIR/dinit.wasm" dinit.wasm
+        install_local_binary dinit "$BIN_DIR/dinitctl.wasm" dinitctl.wasm
+        install_local_binary dinit "$BIN_DIR/dinitcheck.wasm" dinitcheck.wasm
+        exit 0
+    fi
+    if [ "${#legacy_artifacts[@]}" -gt 0 ]; then
+        echo "==> Existing dinit artifacts contain legacy Asyncify symbols; rebuilding."
+    else
+        echo "==> Existing dinit artifacts are stale (artifact ABI ${artifact_abi:-unknown}, current ABI ${current_abi:-unknown}); rebuilding."
+    fi
 fi
 
 # --- Prerequisites ---
@@ -141,12 +173,7 @@ done
 # from the fork point with all locals intact, exec's the right binary.
 # Same pattern as nginx/php-fpm/bash. Apply only to dinit (the only
 # binary that forks); dinitctl and dinitcheck don't need it.
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ ! -x "$FORK_INSTRUMENT" ]; then
-    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
-    exit 1
-fi
-
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying wasm-fork-instrument to dinit.wasm..."
 "$FORK_INSTRUMENT" "$BIN_DIR/dinit.wasm" -o "$BIN_DIR/dinit.wasm.instr"
 mv "$BIN_DIR/dinit.wasm.instr" "$BIN_DIR/dinit.wasm"

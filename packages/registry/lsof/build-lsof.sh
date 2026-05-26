@@ -37,7 +37,7 @@ find_llvm_bin() {
 LLVM_BIN="$(find_llvm_bin)"
 CC="$LLVM_BIN/clang"
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "ERROR: sysroot not found at $SYSROOT. Run scripts/build-musl.sh first." >&2
@@ -85,13 +85,8 @@ if [ -n "$WASM_OPT" ]; then
     "$WASM_OPT" -O2 "$OUT_BIN" -o "$OUT_BIN"
 fi
 
-if [ -x "$FORK_INSTRUMENT" ]; then
-    "$FORK_INSTRUMENT" "$OUT_BIN" -o "$OUT_BIN.instr"
-    mv "$OUT_BIN.instr" "$OUT_BIN"
-else
-    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
-    exit 1
-fi
+"$FORK_INSTRUMENT" "$OUT_BIN" -o "$OUT_BIN.instr"
+mv "$OUT_BIN.instr" "$OUT_BIN"
 
 ls -lh "$OUT_BIN"
 echo "==> lsof built successfully!"

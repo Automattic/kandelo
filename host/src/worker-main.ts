@@ -171,7 +171,7 @@ export interface DlopenSupport {
   imports: Record<string, WebAssembly.ExportValue>;
   /** Replay the parent's dlopen list (read from the archive in linear
    *  memory). No-op if the archive head pointer is 0. Call this in the
-   *  fork-child path AFTER setupChannelBase and BEFORE the asyncify
+   *  fork-child path AFTER setupChannelBase and BEFORE the wpk_fork
    *  rewind into _start. */
   replayDlopens: () => void;
 }
@@ -185,7 +185,7 @@ export interface DlopenSupport {
  *
  * Each successful dlopen is also persisted into a per-process archive
  * (linked list in linear memory, head pointer at a fixed slot below
- * asyncifyBufAddr) so the fork child can replay them via `replayDlopens`.
+ * forkBufAddr) so the fork child can replay them via `replayDlopens`.
  */
 function buildDlopenImports(
   memory: WebAssembly.Memory,
@@ -201,9 +201,9 @@ function buildDlopenImports(
   const encoder = new TextEncoder();
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
 
-  const asyncifyBufAddr = channelOffset - FORK_BUF_SIZE;
+  const forkBufAddr = channelOffset - FORK_BUF_SIZE;
   const headOffset = ptrWidth === 8 ? DLOPEN_HEAD_OFFSET_WASM64 : DLOPEN_HEAD_OFFSET_WASM32;
-  const headSlot = asyncifyBufAddr - headOffset;
+  const headSlot = forkBufAddr - headOffset;
   const entrySize = ptrWidth === 8 ? DLOPEN_ENTRY_SIZE_WASM64 : DLOPEN_ENTRY_SIZE_WASM32;
 
   const readPtr = (view: DataView, addr: number): number =>
@@ -684,14 +684,48 @@ function buildImportObject(
 /** Size of the fork save buffer used by wpk_fork_* instrumentation */
 const FORK_BUF_SIZE = 16384;
 
-// Slot below asyncifyBufAddr that stores the head pointer of the dlopen
+// Slot below forkBufAddr that stores the head pointer of the dlopen
 // archive linked list. Fork's memcpy carries the parent's archive into
 // the child intact; the child walks it to replay each dlopen before
-// asyncify rewind.
+// wpk_fork rewind.
 const DLOPEN_HEAD_OFFSET_WASM32 = 12;
 const DLOPEN_HEAD_OFFSET_WASM64 = 24;
 const DLOPEN_ENTRY_SIZE_WASM32 = 24;
 const DLOPEN_ENTRY_SIZE_WASM64 = 48;
+
+const WPK_FORK_EXPORTS = [
+  "wpk_fork_unwind_begin",
+  "wpk_fork_unwind_end",
+  "wpk_fork_rewind_begin",
+  "wpk_fork_rewind_end",
+  "wpk_fork_state",
+] as const;
+
+function hasCompleteForkInstrumentation(
+  moduleExports: WebAssembly.ModuleExportDescriptor[],
+  pid: number,
+): boolean {
+  const exportNames = new Set(moduleExports.map((e) => e.name));
+  const legacyAsyncifyExports = [...exportNames].filter((name) => name.startsWith("asyncify_"));
+  if (legacyAsyncifyExports.length > 0) {
+    throw new Error(
+      `pid=${pid}: user program exports legacy Asyncify instrumentation ` +
+        `(${legacyAsyncifyExports.join(", ")}). This host requires ` +
+        "wasm-fork-instrument artifacts exporting wpk_fork_*; rebuild the package for the current ABI.",
+    );
+  }
+
+  const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exportNames.has(name));
+  if (presentWpkExports.length > 0 && presentWpkExports.length !== WPK_FORK_EXPORTS.length) {
+    const missing = WPK_FORK_EXPORTS.filter((name) => !exportNames.has(name));
+    throw new Error(
+      `pid=${pid}: incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}. ` +
+        "Rebuild the package for the current ABI.",
+    );
+  }
+
+  return presentWpkExports.length === WPK_FORK_EXPORTS.length;
+}
 
 /**
  * Verify that a user program was built against an ABI compatible with the
@@ -836,10 +870,10 @@ export async function centralizedWorkerMain(
       (status) => { kernelExitStatus = status; },
     );
 
-    // Check if the module has wpk_fork_* instrumentation exports
-    // (produced by our wasm-fork-instrument tool).
+    // Check if the module has complete wpk_fork_* instrumentation exports,
+    // and reject stale legacy fork artifacts before they can run.
     const moduleExports = WebAssembly.Module.exports(module);
-    const hasForkInstrumentation = moduleExports.some(e => e.name === "wpk_fork_state");
+    const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
     // Fork state — captured by kernel_fork closure
     let forkResult = 0;
     const forkBufAddr = channelOffset - FORK_BUF_SIZE;
@@ -1006,19 +1040,15 @@ export async function centralizedWorkerMain(
 
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     } else {
-      // No fork instrumentation — use original channel-based fork (re-execute _start)
-      // Fork children re-execute _start: first kernel_fork call returns 0
-      if (initData.isForkChild) {
-        let firstFork = true;
-        const origKernelFork = kernelImports.kernel_fork;
-        kernelImports.kernel_fork = (): number => {
-          if (firstFork) {
-            firstFork = false;
-            return 0; // fork() returns 0 in child
-          }
-          return (origKernelFork as () => number)();
-        };
-      }
+      // No fork instrumentation: fork cannot be represented safely because
+      // the child cannot resume at the fork call site. Fail loudly if the
+      // program reaches kernel_fork instead of silently degrading.
+      kernelImports.kernel_fork = (): number => {
+        throw new Error(
+          `pid=${pid}: kernel_fork reached without complete wasm-fork-instrument ` +
+            "exports. Rebuild the program with scripts/run-wasm-fork-instrument.sh.",
+        );
+      };
 
       let processInstance: WebAssembly.Instance | null = null;
       const dlopenSupport = buildDlopenImports(
@@ -1679,7 +1709,7 @@ export async function centralizedThreadWorkerMain(
       : new WebAssembly.Module(programBytes!);
 
     const moduleExports = WebAssembly.Module.exports(module);
-    const hasForkInstrumentation = moduleExports.some(e => e.name === "wpk_fork_state");
+    const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
     const forkBufAddr = channelOffset - FORK_BUF_SIZE;
     let forkResult = 0;
 
@@ -1697,6 +1727,14 @@ export async function centralizedThreadWorkerMain(
 
         (threadInstance.exports.wpk_fork_unwind_begin as (addr: number) => void)(forkBufAddr);
         return 0;
+      };
+    } else {
+      kernelImports.kernel_fork = (): number => {
+        throw new Error(
+          `pid=${pid} tid=${tid}: kernel_fork reached without complete ` +
+            "wasm-fork-instrument exports. Rebuild the program with " +
+            "scripts/run-wasm-fork-instrument.sh.",
+        );
       };
     }
     const importObject = buildImportObject(module, memory, kernelImports, channelOffset, undefined,

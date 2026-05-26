@@ -12,6 +12,7 @@ import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
+  renderWordPressConfig,
   wordpressConfigTemplate,
   type WordPressDatabaseKind,
 } from "../../../lib/init/wordpress-runtime-config";
@@ -21,6 +22,7 @@ import {
   writeVfsBinary,
   writeVfsFile,
 } from "../../../../../host/src/vfs/image-helpers";
+import { ABI_VERSION } from "../../../../../host/src/generated/abi";
 import {
   NODE_LAZY_BINARY_SPEC,
   shellLazyPlaceholderUrl,
@@ -34,6 +36,7 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   KANDELO_DEMO_CONFIG_PATH,
+  genericDemoPresentation,
   parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
@@ -41,16 +44,22 @@ import {
   type DemoAssetConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import {
+  builtinDemoAssets,
+  builtinDemoGuide,
+  builtinDemoPresentation,
+} from "../../../../../web-libs/kandelo-session/src/demo-guides";
 import { PRESET_LIBRARY } from "../fixtures";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
+import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 import nodeVfsUrl from "@binaries/programs/wasm32/node-vfs.vfs.zst?url";
 import nginxVfsUrl from "@binaries/programs/wasm32/nginx-vfs.vfs.zst?url";
 import nginxPhpVfsUrl from "@binaries/programs/wasm32/nginx-php-vfs.vfs.zst?url";
 import wordpressVfsUrl from "@binaries/programs/wasm32/wordpress.vfs.zst?url";
 import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
-import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
+import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
@@ -111,6 +120,7 @@ type SoftwareProfile = {
 const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
+const MARIADB_PORT = 3306;
 
 class BootSuperseded extends Error {
   constructor() {
@@ -141,6 +151,7 @@ interface LiveProfileSpec {
     argv: string[];
     env?: InitEnvProfile;
     cwd?: string;
+    programUrl?: string;
     maxWorkers?: number;
     maxMemoryPages?: number;
     web?: { requiredPorts: number[] };
@@ -187,6 +198,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     init: {
       argv: DINIT_ARGV,
       env: "service",
+      programUrl: dinitWasmUrl,
       maxWorkers: 6,
       web: { requiredPorts: [HTTP_PORT] },
     },
@@ -197,7 +209,8 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     init: {
       argv: DINIT_ARGV,
       env: "service",
-      maxWorkers: 8,
+      programUrl: dinitWasmUrl,
+      maxWorkers: 12,
       web: { requiredPorts: [HTTP_PORT] },
     },
   },
@@ -207,7 +220,8 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     init: {
       argv: DINIT_ARGV,
       env: "wordpress",
-      maxWorkers: 8,
+      programUrl: dinitWasmUrl,
+      maxWorkers: 12,
       maxMemoryPages: 4096,
       web: { requiredPorts: [HTTP_PORT] },
     },
@@ -220,9 +234,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     init: {
       argv: DINIT_ARGV,
       env: "wordpress",
-      maxWorkers: 10,
-      maxMemoryPages: 4096,
-      web: { requiredPorts: [HTTP_PORT, 3306] },
+      programUrl: dinitWasmUrl,
+      maxWorkers: 24,
+      maxMemoryPages: 16384,
+      web: { requiredPorts: [HTTP_PORT, MARIADB_PORT] },
     },
   },
   doom: {
@@ -250,6 +265,7 @@ interface LiveProfile {
     argv: string[];
     env?: string[];
     cwd?: string;
+    programUrl?: string;
     maxWorkers?: number;
     maxMemoryPages?: number;
     web?: { label: string; requiredPorts: number[] };
@@ -355,11 +371,11 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     },
   });
 
-  const requireServiceWorker = (tick?: (msg: string) => void) => {
+  const requireServiceWorker = (tick?: (msg: string) => void): Promise<ServiceWorker> => {
     if (!serviceWorkerReady) {
       tick?.("preparing service worker...");
       serviceWorkerReady = ensureServiceWorkerReady(SW_URL)
-        .then(async (controller) => {
+        .then(async (controller): Promise<ServiceWorker> => {
           if (window.crossOriginIsolated) {
             sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
             return controller;
@@ -376,7 +392,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
           sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
           tick?.("service worker active; reloading to enable cross-origin isolation...");
           window.location.reload();
-          await new Promise<never>((_, reject) => {
+          return await new Promise<never>((_, reject) => {
             window.setTimeout(() => {
               reject(new Error(
                 "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
@@ -509,6 +525,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       argv: spec.init.argv.slice(),
       env: initEnv(spec.init.env),
       cwd: spec.init.cwd,
+      programUrl: spec.init.programUrl,
       maxWorkers: spec.init.maxWorkers,
       maxMemoryPages: spec.init.maxMemoryPages,
       web: spec.init.web && {
@@ -555,6 +572,8 @@ async function bootProfile(
       ? requestedDescriptor.packages
       : profile.descriptor.packages,
   });
+  const genericPresentation = profile.fallbackPresentation ?? genericPresentationForProfile(profile);
+  host.setPresentation(genericPresentation);
   host.setStatus("booting");
 
   let t = 0;
@@ -578,6 +597,11 @@ async function bootProfile(
   assertCurrent();
 
   tick(`kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(vfsBytes.byteLength)}`);
+  MemoryFileSystem.assertImageKernelAbi(
+    new Uint8Array(vfsBytes),
+    ABI_VERSION,
+    `${profile.id}.vfs.zst`,
+  );
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
     maxByteLength: profile.maxVfsByteLength,
   });
@@ -587,6 +611,8 @@ async function bootProfile(
     profile.id === "wordpress-mariadb"
   ) {
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+    ensureDirRecursive(memfs, "/var/cache/opcache");
+    stripDinitServiceLogfiles(memfs, dinitServicesForProfile(profile.id));
   }
   if (profile.id === "wordpress-sqlite") {
     patchWordPressRuntimeConfig(memfs, "sqlite");
@@ -598,13 +624,24 @@ async function bootProfile(
   if (profile.includeNodeUtility) {
     rewriteNodeLazyFileUrl(memfs);
   }
+  if (profile.init?.programUrl) {
+    tick(`staging ${profile.init.argv[0]}...`);
+    const bytes = await fetch(profile.init.programUrl)
+      .then(failOn(profile.init.argv[0]))
+      .then((r) => r.arrayBuffer());
+    ensureDirRecursive(memfs, dirname(profile.init.argv[0]));
+    writeVfsBinary(memfs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
+  }
   const imageConfig = readImageConfig(memfs);
   const presentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
-    ?? profile.fallbackPresentation
-    ?? null;
-  if (presentation) host.setPresentation(presentation);
-  host.setDemoGuide(imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null);
-  const assets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
+    ?? builtinDemoPresentation(profile.id)
+    ?? genericPresentation;
+  host.setPresentation(presentation);
+  const demoGuide = (imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null)
+    ?? builtinDemoGuide(profile.id);
+  host.setDemoGuide(demoGuide);
+  const imageAssets = imageConfig ? resolveDemoAssets(imageConfig, profile.id) : [];
+  const assets = imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
   await stageConfiguredAssets(memfs, assets, tick);
   assertCurrent();
 
@@ -707,6 +744,14 @@ async function bootProfile(
   }
 }
 
+function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
+  if (profile.init?.web) return genericDemoPresentation("web");
+  if (profile.framebufferTest || profile.descriptor.runtime.features.includes("framebuffer")) {
+    return genericDemoPresentation("framebuffer");
+  }
+  return genericDemoPresentation("terminal");
+}
+
 function stageShellUtilities(
   kernel: BrowserKernel,
   dashBytes: ArrayBuffer,
@@ -725,7 +770,10 @@ function stageShellUtilities(
 
 function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
   const placeholder = shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC);
-  fs.rewriteLazyFileUrls((url) => url === placeholder ? nodeWasmUrl : url);
+  fs.rewriteLazyFileUrls((url) => {
+    if (url !== placeholder) return url;
+    return nodeWasmUrl;
+  });
 }
 
 function patchWordPressRuntimeConfig(
@@ -734,12 +782,36 @@ function patchWordPressRuntimeConfig(
 ): void {
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
   writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate(kind));
+  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig(kind, APP_PATH, PROTO));
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
   writeVfsFile(
     fs,
     "/var/www/html/wp-content/mu-plugins/kandelo-url.php",
     WORDPRESS_URL_MU_PLUGIN,
   );
+}
+
+function dinitServicesForProfile(profileId: string): string[] {
+  switch (profileId) {
+    case "wordpress-mariadb":
+      return ["mariadb-bootstrap", "mariadb", "wp-config-init", "php-fpm", "nginx"];
+    case "wordpress-sqlite":
+      return ["wp-config-init", "php-fpm", "nginx"];
+    case "nginx-php":
+      return ["php-fpm", "nginx"];
+    default:
+      return [];
+  }
+}
+
+function stripDinitServiceLogfiles(fs: MemoryFileSystem, serviceNames: string[]): void {
+  for (const serviceName of serviceNames) {
+    const path = `/etc/dinit.d/${serviceName}`;
+    const conf = readOptionalVfsText(fs, path);
+    if (conf === null) continue;
+    const patched = conf.replace(/^logfile\s*=.*(?:\r?\n|$)/gm, "");
+    if (patched !== conf) writeVfsFile(fs, path, patched);
+  }
 }
 
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {

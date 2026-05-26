@@ -216,6 +216,174 @@ function skipImportEntry(
   return pos;
 }
 
+function hasWasmMagic(src: Uint8Array): boolean {
+  return src.length >= 8 &&
+    src[0] === 0x00 &&
+    src[1] === 0x61 &&
+    src[2] === 0x73 &&
+    src[3] === 0x6d;
+}
+
+function readName(src: Uint8Array, pos: number): [string, number] {
+  const [len, lenBytes] = readULEB128(src, pos);
+  pos += lenBytes;
+  const name = new TextDecoder().decode(src.subarray(pos, pos + len));
+  return [name, pos + len];
+}
+
+function containsAscii(src: Uint8Array, needle: string): boolean {
+  if (needle.length === 0) return true;
+  const bytes = new TextEncoder().encode(needle);
+  outer:
+  for (let i = 0; i <= src.length - bytes.length; i++) {
+    for (let j = 0; j < bytes.length; j++) {
+      if (src[i + j] !== bytes[j]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Export set produced by `wasm-fork-instrument`.
+ *
+ * Any program that can reach `kernel.kernel_fork` must export all of these so
+ * the host can unwind the parent and rewind the child at the fork point.
+ */
+export const WPK_FORK_EXPORTS = [
+  "wpk_fork_unwind_begin",
+  "wpk_fork_unwind_end",
+  "wpk_fork_rewind_begin",
+  "wpk_fork_rewind_end",
+  "wpk_fork_state",
+] as const;
+
+/**
+ * Return import names in `module.field` form. This is intentionally a small
+ * section parser rather than `new WebAssembly.Module(...)` so release/resolver
+ * guards can inspect binaries built with newer wasm features than the current
+ * JS engine can instantiate.
+ */
+export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
+  const src = new Uint8Array(programBytes);
+  if (!hasWasmMagic(src)) return [];
+
+  const names: string[] = [];
+  let offset = 8;
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readULEB128(src, offset + 1);
+    const contentOffset = offset + 1 + sizeBytes;
+
+    if (sectionId === 2) {
+      let pos = contentOffset;
+      const [importCount, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < importCount; i++) {
+        const [moduleName, afterModule] = readName(src, pos);
+        const [fieldName, afterField] = readName(src, afterModule);
+        names.push(`${moduleName}.${fieldName}`);
+
+        pos = afterField;
+        const kind = src[pos++];
+        if (kind === 0) {
+          const [, n] = readULEB128(src, pos); pos += n;
+        } else if (kind === 1) {
+          pos++;
+          const flags = src[pos++];
+          const [, minBytes] = readULEB128(src, pos); pos += minBytes;
+          if (flags & 1) { const [, maxBytes] = readULEB128(src, pos); pos += maxBytes; }
+        } else if (kind === 2) {
+          const flags = src[pos++];
+          const [, minBytes] = readULEB128(src, pos); pos += minBytes;
+          if (flags & 1) { const [, maxBytes] = readULEB128(src, pos); pos += maxBytes; }
+        } else if (kind === 3) {
+          pos += 2;
+        }
+      }
+      break;
+    }
+
+    offset = contentOffset + sectionSize;
+  }
+  return names;
+}
+
+/** Return all export names from a wasm module. */
+export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
+  const src = new Uint8Array(programBytes);
+  if (!hasWasmMagic(src)) return [];
+
+  const names: string[] = [];
+  let offset = 8;
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readULEB128(src, offset + 1);
+    const contentOffset = offset + 1 + sizeBytes;
+
+    if (sectionId === 7) {
+      let pos = contentOffset;
+      const [exportCount, countBytes] = readULEB128(src, pos);
+      pos += countBytes;
+      for (let i = 0; i < exportCount; i++) {
+        const [name, afterName] = readName(src, pos);
+        names.push(name);
+        pos = afterName + 1;
+        const [, indexBytes] = readULEB128(src, pos);
+        pos += indexBytes;
+      }
+      break;
+    }
+
+    offset = contentOffset + sectionSize;
+  }
+  return names;
+}
+
+export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
+  return containsAscii(new Uint8Array(programBytes), "asyncify_");
+}
+
+export function wasmImportsKernelFork(programBytes: ArrayBuffer): boolean {
+  return readWasmImportNames(programBytes).includes("kernel.kernel_fork");
+}
+
+export function wasmHasCompleteForkInstrumentation(programBytes: ArrayBuffer): boolean {
+  const exports = new Set(readWasmExportNames(programBytes));
+  return WPK_FORK_EXPORTS.every((name) => exports.has(name));
+}
+
+export function describeWasmArtifactPolicyFailures(
+  programBytes: ArrayBuffer,
+  options: { expectedAbi?: number | null } = {},
+): string[] {
+  const failures: string[] = [];
+  if (wasmContainsLegacyAsyncify(programBytes)) {
+    failures.push("contains asyncify_");
+  }
+
+  if (options.expectedAbi !== undefined && options.expectedAbi !== null) {
+    const abi = extractAbiVersion(programBytes);
+    if (abi !== null && abi !== options.expectedAbi) {
+      failures.push(`ABI ${abi}, expected ${options.expectedAbi}`);
+    }
+  }
+
+  const exports = new Set(readWasmExportNames(programBytes));
+  const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
+  const hasCompleteForkInstrumentation = presentWpkExports.length === WPK_FORK_EXPORTS.length;
+  if (presentWpkExports.length > 0 && !hasCompleteForkInstrumentation) {
+    const missing = WPK_FORK_EXPORTS.filter((name) => !exports.has(name));
+    failures.push(`incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}`);
+  }
+
+  if (wasmImportsKernelFork(programBytes) && !hasCompleteForkInstrumentation) {
+    failures.push("imports kernel.kernel_fork without complete wasm-fork-instrument exports");
+  }
+
+  return failures;
+}
+
 /**
  * Read a global's init expression. Returns the address value as bigint
  * (to handle both wasm32 i32 and wasm64 i64 uniformly), or null if the
@@ -390,94 +558,120 @@ export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
 
   if (abiFuncIndex === null || codeSectionContent === null) return null;
 
-  // Code section indexes only defined functions; skip imports.
-  const definedIndex = abiFuncIndex - funcImports;
-  if (definedIndex < 0) return null;
+  let funcCountPos = codeSectionContent.offset;
+  const [funcCount, funcCountBytes] = readULEB128(src, funcCountPos);
+  funcCountPos += funcCountBytes;
 
-  let pos = codeSectionContent.offset;
-  const [funcCount, funcCountBytes] = readULEB128(src, pos); pos += funcCountBytes;
-  if (definedIndex >= funcCount) return null;
+  function bodyRangeForFunc(funcIndex: number): { start: number; end: number } | null {
+    const definedIndex = funcIndex - funcImports;
+    if (definedIndex < 0 || definedIndex >= funcCount) return null;
 
-  // Skip to the target function body
-  for (let i = 0; i < definedIndex; i++) {
+    let pos = funcCountPos;
+    for (let i = 0; i < definedIndex; i++) {
+      const [bodySize, bodySizeBytes] = readULEB128(src, pos);
+      pos += bodySizeBytes + bodySize;
+    }
     const [bodySize, bodySizeBytes] = readULEB128(src, pos);
-    pos += bodySizeBytes + bodySize;
-  }
-  const [bodySize, bodySizeBytes] = readULEB128(src, pos);
-  pos += bodySizeBytes;
-  const bodyEnd = pos + bodySize;
-
-  // Skip local declarations (count + count*(num + valtype))
-  const [localGroups, localGroupsBytes] = readULEB128(src, pos);
-  pos += localGroupsBytes;
-  for (let i = 0; i < localGroups; i++) {
-    const [, n] = readULEB128(src, pos); pos += n; // count
-    pos++; // valtype
+    pos += bodySizeBytes;
+    return { start: pos, end: pos + bodySize };
   }
 
-  // Walk instructions and find the constant directly returned by this trivial
-  // marker export. Instrumentation may insert unrelated constants before it.
-  while (pos < bodyEnd) {
-    const op = src[pos++];
-    if (op === 0x0b) {
-      if (pos === bodyEnd) return null;
-      continue;
+  function skipLocals(pos: number, bodyEnd: number): number | null {
+    if (pos >= bodyEnd) return null;
+    const [localGroups, localGroupsBytes] = readULEB128(src, pos);
+    pos += localGroupsBytes;
+    for (let i = 0; i < localGroups; i++) {
+      const [, n] = readULEB128(src, pos); pos += n; // count
+      pos++; // valtype
+      if (pos > bodyEnd) return null;
     }
-    if (op === 0x41) {
-      const [val] = readSLEB128_i32(src, pos);
-      const [, n] = readSLEB128_i32(src, pos);
-      const next = pos + n;
-      if (src[next] === 0x0f || (src[next] === 0x0b && next + 1 === bodyEnd)) {
-        return val;
-      }
-      pos = next;
-    } else if (op === 0x10 || op === 0x0c || op === 0x0d || op === 0x12 || op === 0xd2) {
-      const [, n] = readULEB128(src, pos);
-      pos += n;
-    } else if (op === 0x02 || op === 0x03 || op === 0x04) {
-      pos = skipWasmBlockType(src, pos);
-    } else if (op === 0x0e) {
-      const [targetCount, targetCountBytes] = readULEB128(src, pos);
-      pos += targetCountBytes;
-      for (let i = 0; i <= targetCount; i++) {
-        const [, n] = readULEB128(src, pos);
-        pos += n;
-      }
-    } else if (op === 0x11) {
-      const [, typeBytes] = readULEB128(src, pos);
-      pos += typeBytes;
-      const [, tableBytes] = readULEB128(src, pos);
-      pos += tableBytes;
-    } else if (op === 0x1c) {
-      const [typeCount, typeCountBytes] = readULEB128(src, pos);
-      pos += typeCountBytes;
-      for (let i = 0; i < typeCount; i++) {
-        const [, n] = readULEB128(src, pos);
-        pos += n;
-      }
-    } else if ((op >= 0x20 && op <= 0x26) || op === 0xd0) {
-      const [, n] = readULEB128(src, pos);
-      pos += n;
-    } else if (op >= 0x28 && op <= 0x3e) {
-      pos = skipVectorMemarg(src, pos);
-    } else if (op === 0x3f || op === 0x40) {
-      pos++;
-    } else if (op === 0x42) {
-      const [, n] = readSLEB128_i64(src, pos);
-      pos += n;
-    } else if (op === 0x43) {
-      pos += 4;
-    } else if (op === 0x44) {
-      pos += 8;
-    } else if (op === 0xfc || op === 0xfd || op === 0xfe) {
-      const next = skipPrefixedInstructionImmediate(op, src, pos);
-      if (next === null) return null;
-      pos = next;
-    } else {
-      // Most scalar numeric/control/parametric instructions have no immediates.
-    }
+    return pos;
   }
-  return null;
+
+  function extractFromFunc(funcIndex: number, depth = 0): number | null {
+    if (depth > 4) return null;
+    const range = bodyRangeForFunc(funcIndex);
+    if (!range) return null;
+
+    let pos = skipLocals(range.start, range.end);
+    if (pos === null) return null;
+    const bodyEnd = range.end;
+
+    // Walk instructions and find the constant directly returned by this
+    // trivial marker export. wasm-fork-instrument may wrap exported command
+    // functions; when the wrapper does `call real_marker; return`, follow it.
+    while (pos < bodyEnd) {
+      const op = src[pos++];
+      if (op === 0x0b) {
+        if (pos === bodyEnd) return null;
+        continue;
+      }
+      if (op === 0x41) {
+        const [val] = readSLEB128_i32(src, pos);
+        const [, n] = readSLEB128_i32(src, pos);
+        const next = pos + n;
+        if (src[next] === 0x0f || (src[next] === 0x0b && next + 1 === bodyEnd)) {
+          return val;
+        }
+        pos = next;
+      } else if (op === 0x10) {
+        const [callee, n] = readULEB128(src, pos);
+        const next = pos + n;
+        if (src[next] === 0x0f || (src[next] === 0x0b && next + 1 === bodyEnd)) {
+          const val = extractFromFunc(callee, depth + 1);
+          if (val !== null) return val;
+        }
+        pos = next;
+      } else if (op === 0x0c || op === 0x0d || op === 0x12 || op === 0xd2) {
+        const [, n] = readULEB128(src, pos);
+        pos += n;
+      } else if (op === 0x02 || op === 0x03 || op === 0x04) {
+        pos = skipWasmBlockType(src, pos);
+      } else if (op === 0x0e) {
+        const [targetCount, targetCountBytes] = readULEB128(src, pos);
+        pos += targetCountBytes;
+        for (let i = 0; i <= targetCount; i++) {
+          const [, n] = readULEB128(src, pos);
+          pos += n;
+        }
+      } else if (op === 0x11) {
+        const [, typeBytes] = readULEB128(src, pos);
+        pos += typeBytes;
+        const [, tableBytes] = readULEB128(src, pos);
+        pos += tableBytes;
+      } else if (op === 0x1c) {
+        const [typeCount, typeCountBytes] = readULEB128(src, pos);
+        pos += typeCountBytes;
+        for (let i = 0; i < typeCount; i++) {
+          const [, n] = readULEB128(src, pos);
+          pos += n;
+        }
+      } else if ((op >= 0x20 && op <= 0x26) || op === 0xd0) {
+        const [, n] = readULEB128(src, pos);
+        pos += n;
+      } else if (op >= 0x28 && op <= 0x3e) {
+        pos = skipVectorMemarg(src, pos);
+      } else if (op === 0x3f || op === 0x40) {
+        pos++;
+      } else if (op === 0x42) {
+        const [, n] = readSLEB128_i64(src, pos);
+        pos += n;
+      } else if (op === 0x43) {
+        pos += 4;
+      } else if (op === 0x44) {
+        pos += 8;
+      } else if (op === 0xfc || op === 0xfd || op === 0xfe) {
+        const next = skipPrefixedInstructionImmediate(op, src, pos);
+        if (next === null) return null;
+        pos = next;
+      } else {
+        // Most scalar numeric/control/parametric instructions have no immediates.
+      }
+    }
+    return null;
+  }
+
+  return extractFromFunc(abiFuncIndex);
 }
 
 /**

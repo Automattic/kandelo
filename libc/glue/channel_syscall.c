@@ -120,15 +120,15 @@ uintptr_t __get_channel_base_addr(void) {
 /* SYS_EXIT needs special handling */
 #define SYS_EXIT 34
 
-/* SYS_FORK/VFORK — kernel_fork import provides asyncify-based fork.
- * wasm-opt --asyncify instruments around kernel.kernel_fork, enabling
+/* SYS_FORK/VFORK — kernel_fork import is the fork-continuation boundary.
+ * wasm-fork-instrument rewrites the call graph around kernel.kernel_fork, enabling
  * the host to save/restore the call stack across fork — so the child
  * resumes from the fork point with all local variables intact.
  *
  * IMPORTANT: fork()/vfork()/_Fork() call kernel_fork() directly below,
- * NOT through __do_syscall(). This keeps asyncify instrumentation limited
+ * NOT through __do_syscall(). This keeps fork instrumentation limited
  * to the fork call chain. If kernel_fork were reachable from __do_syscall,
- * asyncify would instrument every function that makes any syscall (~54K
+ * the tool would instrument every function that makes any syscall (~54K
  * functions in PHP-FPM), bloating frame sizes and overflowing V8's stack
  * in browser web workers. */
 #define SYS_FORK  212
@@ -139,20 +139,19 @@ __attribute__((import_module("kernel"), import_name("kernel_fork")))
 int32_t kernel_fork(void);
 
 /* Direct fork/vfork/_Fork — call kernel_fork without going through the
- * general syscall dispatcher.  This ensures asyncify only instruments
+ * general syscall dispatcher.  This ensures fork instrumentation only covers
  * fork callers, not every function that makes any syscall. */
 
 void __fork_handler(int);
 
-/* _Fork/fork/vfork MUST NOT be inlined. wasm-opt's asyncify pass matches
- * functions by name to instrument the call chain around kernel_fork (an
- * asyncify import). At -O2, LLVM inlines these wrappers into every caller
+/* _Fork/fork/vfork MUST NOT be inlined. wasm-fork-instrument discovers
+ * the call chain around kernel_fork. At -O2, LLVM inlines these wrappers into every caller
  * and can then eliminate the kernel_fork call on paths where it decides
  * the return value is unused in a specific way — a silent miscompile that
  * makes bash's make_child appear to "fork" but never actually invoke
  * kernel_fork, so pipeline child-side redirection runs in the parent
  * process and subsequent writes to the pipe fail with EPIPE. Keeping these
- * as distinct non-inlined functions preserves both the asyncify call graph
+ * as distinct non-inlined functions preserves both the fork call graph
  * and the observable side effect of the kernel_fork import. */
 
 __attribute__((noinline))
@@ -281,7 +280,7 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
     /* Fork/vfork are handled by fork()/_Fork()/vfork() overrides above,
      * which call kernel_fork() directly.  If we somehow get here (e.g. a
      * program calls __syscall(SYS_fork) directly), return ENOSYS because
-     * asyncify can't save the call stack through the channel path. */
+     * fork instrumentation cannot save the call stack through the channel path. */
     if (n == SYS_FORK || n == SYS_VFORK) {
         return -38; /* ENOSYS */
     }
@@ -453,4 +452,3 @@ long __syscall_cp(long n, long a1, long a2, long a3, long a4, long a5,
 #ifdef __cplusplus
 }
 #endif
-

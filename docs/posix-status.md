@@ -120,7 +120,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `futex()` | Partial | FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAKE_OP implemented. In centralized mode, WAIT returns EAGAIN (host retries via Atomics.waitAsync). Thread workers use direct Atomics.wait. |
 | `execve()` | Full | Delegates to kernel_execve. Replaces process image. |
 | `execveat()` | Full | SYS_EXECVEAT (386). Resolves fd path via `kernel_get_fd_path`. Supports AT_EMPTY_PATH for `fexecve()`. Relative paths resolved against process CWD. |
-| `fork()` (syscall) | Full | Centralized mode: glue traps to kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. Continuation across the fork boundary uses `wasm-fork-instrument`'s `wpk_fork_*` exports (Phase 7 replaced Binaryen Asyncify). |
+| `fork()` (syscall) | Full | Centralized mode: glue traps to kernel via channel IPC. Kernel serializes state, host callback spawns child Worker. Returns child pid to parent, 0 to child. Continuation across the fork boundary uses `wasm-fork-instrument`'s `wpk_fork_*` exports. |
 | `vfork()` | Full | Alias for fork() in centralized mode. |
 | `posix_spawn()` | Full | **Non-forking implementation** (this kernel's invention; no Linux equivalent). Glue issues `SYS_SPAWN` (500) with a marshalled blob (argv + envp + file actions + spawn attrs). Host parses the blob, calls `kernel_spawn_process` to allocate a child pid + build the child Process descriptor, then invokes `onSpawn` to launch a fresh Worker. No fork, no `wpk_fork_*` rewind, no exec replay. Supports POSIX_SPAWN_SETSID / SETPGROUP / SETSIGMASK / SETSIGDEF and FDOP_OPEN / CLOSE / DUP2 / CHDIR / FCHDIR. SIG_IGN dispositions persist across the implicit exec; custom handlers reset to SIG_DFL (POSIX exec semantics). Regression-guarded: `kernel_get_fork_count` exposes a per-process counter the test suite asserts is unchanged across SYS_SPAWN. See `docs/plans/2026-05-04-non-forking-posix-spawn-design.md`. |
 | `posix_spawnp()` | Full | PATH search lives in libc (`libc/musl-overlay/src/process/wasm32posix/posix_spawnp.c`); resolves the absolute path then delegates to `posix_spawn()`. Empty PATH entries treated as `.`; defers EACCES per `__execvpe` policy. |
@@ -242,7 +242,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `time()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns seconds since epoch. |
 | `gettimeofday()` | Full | Wrapper around clock_gettime(CLOCK_REALTIME). Returns (sec, usec) pair. |
 | `clock_gettime()` | Full | Host-delegated. CLOCK_REALTIME and CLOCK_MONOTONIC supported. Node.js uses Date.now() and process.hrtime.bigint(). |
-| `nanosleep()` | Partial | Host-delegated. Node.js uses Atomics.wait with timeout. Browser may need Asyncify fallback. Validates tv_sec >= 0 and tv_nsec < 1e9. |
+| `nanosleep()` | Partial | Host-delegated. Node.js uses Atomics.wait with timeout. Browser support requires a worker context that can block with Atomics.wait. Validates tv_sec >= 0 and tv_nsec < 1e9. |
 | `usleep()` | Full | Converts microseconds to sec+nsec, delegates to host_nanosleep. |
 | `clock_settime()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
 | `settimeofday()` | Stub | Returns EPERM. Cannot set system clock from Wasm. |
@@ -446,10 +446,10 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 
 | Feature | With SAB | Without SAB |
 |---------|----------|-------------|
-| Blocking syscalls | `Atomics.wait()` — true blocking | Asyncify yield — cooperative, adds overhead |
+| Blocking syscalls | `Atomics.wait()` — true blocking | Not supported without a worker/blocking bridge |
 | `fcntl()` locking | Kernel-coordinated via atomic ops | postMessage round-trip, higher latency |
-| `pipe()` blocking read | Blocks worker until data available | Asyncify unwind/rewind |
-| `nanosleep()` | `Atomics.wait()` with timeout | `setTimeout()` via Asyncify |
+| `pipe()` blocking read | Blocks worker until data available | Not supported without a worker/blocking bridge |
+| `nanosleep()` | `Atomics.wait()` with timeout | Not supported without a worker/blocking bridge |
 | Multi-process shared memory | Direct shared linear memory | Not supported; would need serialization |
 
 ### Browser vs Node.js
@@ -471,7 +471,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 2. **Phase 2 (Complete):** Directory operations — stat, lstat, mkdir, rmdir, unlink, link, symlink, readlink, rename, chmod, chown, access, opendir, readdir, closedir, chdir, getcwd
 3. **Phase 3a (Complete):** Process identity & lifecycle — getpid, getppid, getuid/geteuid, getgid/getegid, exit/_exit
 3b. **Phase 3b (Deferred):** Multi-process — fork, exec, waitpid (requires multi-worker architecture)
-4. **Phase 4 (Complete):** Signals — kill, raise, sigaction, sigprocmask. Signal delivery mechanism deferred (needs Asyncify).
+4. **Phase 4 (Complete):** Signals — kill, raise, sigaction, sigprocmask. Signal delivery mechanism deferred.
 5. **Phase 5 (Complete):** fcntl locking — F_GETLK, F_SETLK, F_SETLKW with byte-range granularity
 6. **Phase 6 (Complete):** Sockets & I/O multiplexing — socket, socketpair, shutdown, send/recv, getsockopt/setsockopt, poll, epoll. AF_INET TCP via host-delegated networking (bind/listen/accept/connect/send/recv).
 7. **Phase 7 (Complete):** Time, TTY, environment — clock_gettime, nanosleep, isatty, getenv/setenv/unsetenv
@@ -569,7 +569,7 @@ PHP is synchronous but the browser host is async. Two approaches:
 | Approach | Pros | Cons |
 |----------|------|------|
 | **SAB + `Atomics.wait()`** (current) | True blocking, no stack transform overhead, works reliably in Workers | Cannot block browser main thread; PHP must run in Web Worker |
-| **Asyncify / JSPI** (Emscripten approach) | Works on main thread | ~4.5s startup with auto-detect, 2x code size, fragile whitelist maintenance |
+| **JSPI or promise-driven bridge** | Could work on main thread in future designs | Requires a different host/runtime contract and does not cover fork continuation |
 
 The `Atomics.wait()` approach is architecturally superior but requires PHP to run in a Web Worker, which is different from current Playground architecture.
 

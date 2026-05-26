@@ -25,6 +25,7 @@ import type {
   SurfaceAvailability, SyscallEvent, SyscallFilter, VfsDirent, WebPreviewState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import type { DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import { genericDemoPresentation } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { takeSnapshot } from "../../../../../web-libs/kandelo-session/src/snapshot";
 import {
   BOOT_LOG, KSTATE, MEMMAP, MOUNTS, PROCS, SHELL_SESSION, SYSCALLS,
@@ -355,12 +356,14 @@ export class MockKernelHost implements KernelHost {
   }
 
   getPresentation(): DemoPresentation {
-    return {
-      bootPrimary: "syslog",
-      runningPrimary: ["terminal", "syslog"],
-      terminalAccess: "primary",
-      internalsAccess: "drawer",
-    };
+    if (this.getWebPreview()) return genericDemoPresentation("web");
+    if (
+      this.descriptor.runtime.features.includes("framebuffer") ||
+      hasPackage(this.descriptor, "fbdoom")
+    ) {
+      return genericDemoPresentation("framebuffer");
+    }
+    return genericDemoPresentation("terminal");
   }
 
   subscribePresentation(cb: (state: DemoPresentation) => void): () => void {
@@ -376,7 +379,7 @@ export class MockKernelHost implements KernelHost {
         this.descriptor.runtime.features.includes("framebuffer") ||
         hasPackage(this.descriptor, "fbdoom")
       ) && this._status === "running",
-      web: preview?.status === "running",
+      web: preview !== null,
     };
   }
 

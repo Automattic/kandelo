@@ -5,7 +5,7 @@
  * contiguous blob and issues SYS_SPAWN. The kernel allocates a child pid,
  * builds the child process descriptor (with attrs and file actions
  * already applied), and the host launches a fresh worker — no fork, no
- * asyncify rewind, no exec replay.
+ * fork rewind, no exec replay.
  *
  * Wire format and design rationale:
  *   docs/plans/2026-05-04-non-forking-posix-spawn-design.md (Section 1).

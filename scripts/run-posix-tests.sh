@@ -88,13 +88,11 @@ LINK_FLAGS=(
 )
 
 # Fork-instrumentation for fork()
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 instrument_wasm() {
     local wasm="$1"
-    if [ -x "$FORK_INSTRUMENT" ]; then
-        "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
-    fi
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
 }
 
 # Timeout per test (seconds)

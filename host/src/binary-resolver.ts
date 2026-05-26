@@ -3,12 +3,12 @@
  * `local-binaries/` or `binaries/` tree.
  *
  * Priority:
- *   1. `<repo>/local-binaries/<relPath>` — user-built override.
- *   2. `<repo>/binaries/<relPath>` — populated by
- *      `scripts/fetch-binaries.sh`.
+ *   1. `<repo>/local-binaries/<relPath>` — user-built override, unless it is
+ *      a legacy fork artifact and a fresher fetched/package candidate exists.
+ *   2. `<repo>/binaries/<relPath>` — populated by `scripts/fetch-binaries.sh`.
  *
- * Throws if neither exists. Callers that want to tolerate a missing
- * binary should catch and fall back themselves.
+ * Throws if neither exists. Callers that want to tolerate a missing binary
+ * should catch and fall back themselves.
  *
  * See `docs/binary-releases.md` for the layout.
  */
@@ -16,6 +16,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { describeWasmArtifactPolicyFailures } from "./constants";
+import { ABI_VERSION } from "./generated/abi";
 
 /**
  * Walk up from the importing file to find the repo root. Markers:
@@ -115,25 +117,47 @@ function packagedBinaryCandidates(relPath: string): string[] {
   return candidates;
 }
 
+function hasWasmArtifactPolicyFailures(path: string): boolean {
+  if (!path.endsWith(".wasm")) return false;
+  try {
+    const bytes = readFileSync(path);
+    const programBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    return describeWasmArtifactPolicyFailures(programBytes, { expectedAbi: ABI_VERSION }).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function chooseBinaryCandidate(candidates: string[]): string | null {
+  const existing = candidates.filter((candidate) => existsSync(candidate));
+  if (existing.length === 0) return null;
+
+  return existing.find((candidate) => !hasWasmArtifactPolicyFailures(candidate)) ?? null;
+}
+
 export function resolveBinary(relPath: string): string {
   const adjusted = applyDefaultArch(relPath);
   const checked: string[] = [];
+  const candidates: string[] = [];
   try {
     const repo = findRepoRoot();
     const local = join(repo, "local-binaries", adjusted);
     checked.push(local);
-    if (existsSync(local)) return local;
+    candidates.push(local);
     const fetched = join(repo, "binaries", adjusted);
     checked.push(fetched);
-    if (existsSync(fetched)) return fetched;
+    candidates.push(fetched);
   } catch {
     // Installed npm consumers do not have a source repo root. Fall
     // through to packaged assets below.
   }
-  for (const candidate of packagedBinaryCandidates(relPath)) {
+  const packaged = packagedBinaryCandidates(relPath);
+  for (const candidate of packaged) {
     checked.push(candidate);
-    if (existsSync(candidate)) return candidate;
+    candidates.push(candidate);
   }
+  const candidate = chooseBinaryCandidate(candidates);
+  if (candidate) return candidate;
   throw new Error(
     `Binary not found: ${relPath}\n` +
       checked.map((p) => `  checked: ${p}`).join("\n") +

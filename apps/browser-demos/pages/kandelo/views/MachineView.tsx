@@ -9,7 +9,7 @@ import * as React from "react";
 import { useDemoGuide, usePresentation, useStatus, useSurfaceAvailability } from "../kernel-host/react";
 import { Inspector } from "../panes/Inspector";
 import { Display } from "../panes/Display";
-import { Shell, type ShellProps, type ShellTerminal } from "../panes/Shell";
+import { Shell, type ShellTerminal } from "../panes/Shell";
 import { DemoGuide } from "../panes/DemoGuide";
 import type { PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
@@ -98,7 +98,10 @@ export const MachineView: React.FC<MachineViewProps> = ({
   const demoSurface = status === "running"
     ? resolvePrimary(presentation.runningPrimary, availability, presentation.bootPrimary)
     : presentation.runningPrimary[0] ?? "terminal";
-  const canOpenDemo = status === "running" && isSurfaceAvailable(demoSurface, availability);
+  const canOpenDemo =
+    isSurfaceAvailable(demoSurface, availability) &&
+    (status === "running" || demoSurface === "web");
+  const shouldMountDemoSurface = demoSurface !== "terminal" && isSurfaceAvailable(demoSurface, availability);
   const showDemoGuide = demoGuide !== null;
 
   const beginDrawerResize = (
@@ -136,7 +139,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
       <div className="kmachine-toolbar">
         <div className="kmachine-switch" role="tablist" aria-label="Machine surfaces">
           <SurfaceButton
-            active={activePrimary === demoSurface && demoSurface !== "terminal" && status === "running"}
+            active={activePrimary === demoSurface && demoSurface !== "terminal"}
             disabled={!canOpenDemo || demoSurface === "terminal"}
             onClick={() => choosePrimary(demoSurface)}
             label="Demo"
@@ -158,7 +161,21 @@ export const MachineView: React.FC<MachineViewProps> = ({
 
       <div className={`kmachine-workspace${showDemoGuide ? "" : " no-demo-guide"}`}>
         <div className="kmachine-primary">
-          {renderSurface(activePrimary, internalsTab, onInternalsTab, shellProps)}
+          {shouldMountDemoSurface && (
+            <PrimarySurfaceSlot active={activePrimary === demoSurface}>
+              <Display autoFocus={activePrimary === demoSurface} />
+            </PrimarySurfaceSlot>
+          )}
+          {activePrimary === "terminal" && (
+            <PrimarySurfaceSlot active>
+              <Shell autoFocus {...shellProps} />
+            </PrimarySurfaceSlot>
+          )}
+          {activePrimary === "syslog" && (
+            <PrimarySurfaceSlot active>
+              <Inspector tab={internalsTab} onTab={onInternalsTab} />
+            </PrimarySurfaceSlot>
+          )}
         </div>
         {showDemoGuide && (
           <DemoGuide
@@ -217,6 +234,15 @@ const SurfaceButton: React.FC<{
   </button>
 );
 
+const PrimarySurfaceSlot: React.FC<{
+  active: boolean;
+  children: React.ReactNode;
+}> = ({ active, children }) => (
+  <div className={`kmachine-primary-slot${active ? "" : " is-hidden"}`} aria-hidden={!active}>
+    {children}
+  </div>
+);
+
 const MachineDrawer: React.FC<{
   title: string;
   open: boolean;
@@ -250,24 +276,6 @@ const MachineDrawer: React.FC<{
     {open && <div className="kmachine-drawer-body" style={{ height: bodyHeight }}>{children}</div>}
   </section>
 );
-
-function renderSurface(
-  surface: PrimarySurface,
-  internalsTab: string,
-  onInternalsTab: (id: string) => void,
-  shellProps: Pick<ShellProps, "terminals" | "activeTerminalId" | "onActiveTerminalId" | "onAddTerminal">,
-): React.ReactNode {
-  switch (surface) {
-    case "terminal":
-      return <Shell autoFocus {...shellProps} />;
-    case "framebuffer":
-    case "web":
-      return <Display autoFocus />;
-    case "syslog":
-    default:
-      return <Inspector tab={internalsTab} onTab={onInternalsTab} />;
-  }
-}
 
 function surfaceLabel(surface: PrimarySurface): string {
   switch (surface) {

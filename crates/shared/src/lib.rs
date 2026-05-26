@@ -20,7 +20,7 @@ pub mod host_abi;
 /// See `docs/abi-versioning.md` for the full policy.
 ///
 /// 12: fork-instrument switch-dispatch redesign + wpk_fork_* exports
-///     replace asyncify_* on top of main's ABI 11.
+///     replace legacy fork-continuation exports on top of main's ABI 11.
 pub const ABI_VERSION: u32 = 12;
 
 /// Syscall numbers for the POSIX kernel interface.

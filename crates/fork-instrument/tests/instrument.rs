@@ -5,7 +5,7 @@
 //!
 //! - **switch-dispatch**: used when every fork-path call lives at the
 //!   function body's top level. REWIND jumps directly to the resumed
-//!   call site via a top-level `br_table` (asyncify-style). Chunks
+//!   call site via a top-level `br_table` (switch-dispatch). Chunks
 //!   between calls run only on the NORMAL fall-through.
 //! - **guard-dispatch**: used when any fork-path call is nested inside
 //!   a block/loop/if/try_table. Each call site carries an in-place
@@ -708,7 +708,6 @@ fn two_calls_assign_sequential_call_idx() {
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
-    let unwind_save = entry_wrapper_seq(&module, caller);
     let f = local_func(&module, caller);
 
     // Extract every `i32.const N` immediately before a `local.set`
