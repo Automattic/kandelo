@@ -92,3 +92,71 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
   expect(result.localRefUrl).toBeNull();
   expect(result.relativeRefUrl).toBe(result.expectedRelativeRefUrl);
 });
+
+test("Kandelo service worker app probe does not capture the shell page client", async ({ page }) => {
+  await page.goto(appUrl("/pages/kandelo/?mock=1&idle=1"), {
+    waitUntil: "domcontentloaded",
+  });
+
+  await installDummyAppBridge(page);
+  await page.evaluate(async () => {
+    const response = await fetch("/app/", { cache: "no-store" });
+    await response.text();
+  });
+
+  await page.goto(appUrl("/pages/kandelo/?mock=1&idle=1&vfs=https%3A%2F%2Fcdn.example.invalid%2Fshell.vfs.zst"), {
+    waitUntil: "domcontentloaded",
+  });
+
+  const url = new URL(page.url());
+  expect(url.pathname).toBe("/pages/kandelo/");
+  expect(url.searchParams.get("vfs")).toBe("https://cdn.example.invalid/shell.vfs.zst");
+});
+
+async function installDummyAppBridge(page: import("@playwright/test").Page): Promise<void> {
+  await page.evaluate(async () => {
+    if (!("serviceWorker" in navigator)) {
+      throw new Error("Service workers unavailable");
+    }
+
+    await navigator.serviceWorker.register("/service-worker.js", { updateViaCache: "none" });
+    await navigator.serviceWorker.ready;
+    const controller = navigator.serviceWorker.controller ?? await new Promise<ServiceWorker>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+        reject(new Error("Timed out waiting for service worker control"));
+      }, 10_000);
+      const onControllerChange = () => {
+        const next = navigator.serviceWorker.controller;
+        if (!next) return;
+        window.clearTimeout(timeout);
+        navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
+        resolve(next);
+      };
+      navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+    });
+
+    const bridge = new MessageChannel();
+    bridge.port1.onmessage = (event) => {
+      const msg = event.data;
+      if (msg?.type !== "http-request") return;
+      bridge.port1.postMessage({
+        type: "http-response",
+        requestId: msg.requestId,
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+        body: new TextEncoder().encode("<!doctype html><title>Dummy app</title>"),
+      });
+    };
+    bridge.port1.start();
+
+    const reply = new MessageChannel();
+    await new Promise<void>((resolve) => {
+      reply.port1.onmessage = () => resolve();
+      controller.postMessage(
+        { type: "init-bridge", appPrefix: "/app/" },
+        [bridge.port2, reply.port2],
+      );
+    });
+  });
+}

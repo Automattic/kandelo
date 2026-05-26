@@ -118,6 +118,7 @@ type SoftwareProfile = {
 const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
+const PHP_FPM_PORT = 9000;
 
 class BootSuperseded extends Error {
   constructor() {
@@ -221,15 +222,16 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "wordpress-mariadb": {
     image: "lamp",
-    memoryPages: 4096,
+    // Keep this aligned with pages/lamp: MariaDB's Aria recovery can grow
+    // beyond the 4096-page cap used by lighter PHP demos.
+    memoryPages: 16384,
     maxVfsByteLength: 512 * 1024 * 1024,
     network: true,
     init: {
       argv: DINIT_ARGV,
       env: "wordpress",
-      maxWorkers: 10,
-      maxMemoryPages: 4096,
-      web: { requiredPorts: [HTTP_PORT, 3306] },
+      maxWorkers: 16,
+      web: { requiredPorts: [HTTP_PORT, PHP_FPM_PORT, 3306] },
     },
   },
   doom: {
