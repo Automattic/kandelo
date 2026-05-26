@@ -1096,7 +1096,8 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - id: checkout
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -1234,7 +1235,7 @@ jobs:
             --cache-key-sha "${{ matrix.sha }}"
 
       - name: Record failed build in index
-        if: failure()
+        if: ${{ failure() && steps.checkout.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -1270,7 +1271,8 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - id: checkout
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -1414,7 +1416,7 @@ jobs:
             --cache-key-sha "${{ matrix.sha }}"
 
       - name: Record failed build in index
-        if: failure()
+        if: ${{ failure() && steps.checkout.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
