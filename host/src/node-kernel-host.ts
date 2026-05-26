@@ -87,6 +87,10 @@ export interface NodeKernelHostOptions {
 export interface SpawnOptions {
   env?: string[];
   cwd?: string;
+  /** Initial real/effective user ID for the process. */
+  uid?: number;
+  /** Initial real/effective group ID for the process. */
+  gid?: number;
   stdin?: Uint8Array;
   pty?: boolean;
   /** Initial PTY winsize. Applied before the wasm program starts so the
@@ -173,6 +177,8 @@ export class NodeKernelHost {
       argv,
       env: options?.env,
       cwd: options?.cwd,
+      uid: options?.uid,
+      gid: options?.gid,
       pty: options?.pty,
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,

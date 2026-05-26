@@ -1194,6 +1194,56 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Set a freshly-created process's initial real/effective uid and gid.
+   * Must be called after registerProcess and before the process starts.
+   */
+  setCredentials(pid: number, ids: { uid?: number; gid?: number }): void {
+    if (!this.initialized) throw new Error("Kernel not initialized");
+    if (ids.uid == null && ids.gid == null) return;
+
+    const unchanged = 0xffffffff;
+    const direct = this.kernelInstance!.exports.kernel_set_process_credentials as
+      ((pid: number, uid: number, gid: number) => number) | undefined;
+    if (direct) {
+      const result = direct(
+        pid,
+        ids.uid ?? unchanged,
+        ids.gid ?? unchanged,
+      );
+      if (result < 0) {
+        throw new Error(`setCredentials failed for pid ${pid}: errno ${-result}`);
+      }
+      return;
+    }
+
+    // Compatibility with kernel.wasm builds from before the direct
+    // per-pid export existed: select the new process, then use the normal
+    // syscall exports while it is still root. gid must be applied first,
+    // because setting uid to a non-root value drops privilege.
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
+      ((pid: number) => void) | undefined;
+    const setgid = this.kernelInstance!.exports.kernel_setgid as
+      ((gid: number) => number) | undefined;
+    const setuid = this.kernelInstance!.exports.kernel_setuid as
+      ((uid: number) => number) | undefined;
+    if (!setCurrentPid || !setgid || !setuid) return;
+
+    try {
+      setCurrentPid(pid);
+      if (ids.gid != null) {
+        const result = setgid(ids.gid);
+        if (result < 0) throw new Error(`setgid failed for pid ${pid}: errno ${-result}`);
+      }
+      if (ids.uid != null) {
+        const result = setuid(ids.uid);
+        if (result < 0) throw new Error(`setuid failed for pid ${pid}: errno ${-result}`);
+      }
+    } finally {
+      setCurrentPid(0);
+    }
+  }
+
+  /**
    * Snapshot the kernel's process table. Returns one ProcessSnapshot per
    * live process. Used by Inspector → Procs (Kandelo UI) and any host that
    * wants a `ps`-equivalent without spawning a user-mode reader.

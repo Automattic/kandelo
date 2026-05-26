@@ -60,7 +60,7 @@ export class PtyTerminal {
   async spawn(
     programBytes: ArrayBuffer,
     argv: string[],
-    options?: { env?: string[]; cwd?: string },
+    options?: { env?: string[]; cwd?: string; uid?: number; gid?: number },
   ): Promise<number> {
     // Spawn with PTY enabled. Pass cols/rows pre-spawn so the very first
     // TIOCGWINSZ from the program returns the real width instead of the
@@ -153,7 +153,7 @@ export class PtyTerminal {
   async spawnFromVfs(
     programPath: string,
     argv: string[],
-    options?: { env?: string[]; cwd?: string },
+    options?: { env?: string[]; cwd?: string; uid?: number; gid?: number },
   ): Promise<number> {
     const { pid, exit } = await this.kernel.spawnFromVfs(programPath, argv, {
       ...options,

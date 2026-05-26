@@ -144,7 +144,10 @@ async function start() {
       kernelWasm: kernelBytes,
       vfsImage,
       argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
-      env: ["HOME=/root", "TERM=xterm-256color", "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"],
+      env: ["HOME=/root", "TERM=xterm-256color", "USER=root", "LOGNAME=root", "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"],
+      cwd: "/root",
+      uid: 0,
+      gid: 0,
     });
 
     kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
