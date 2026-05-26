@@ -370,17 +370,22 @@ if (typeof window !== "undefined") {
   }
 
   function markAppClient(event, request) {
+    var appReferer = getAppReferer(request);
     if (isNavigationRequest(request)) {
       if (event.resultingClientId) {
         appClientIds.add(event.resultingClientId);
       }
-      if (getAppReferer(request) !== null && event.clientId) {
+      if (appReferer !== null && event.clientId) {
         appClientIds.add(event.clientId);
       }
       return;
     }
 
-    if (event.clientId) {
+    // A shell page may fetch /app/ as a readiness probe. That must not turn
+    // the shell page into an app client, or later gallery navigations are
+    // redirected under /app/. Only subresource/fetch requests from a document
+    // already inside appPrefix should mark their client.
+    if (appReferer !== null && event.clientId) {
       appClientIds.add(event.clientId);
     }
   }

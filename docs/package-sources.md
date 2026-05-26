@@ -299,6 +299,22 @@ of another package source, pass one or more manifest URLs with the
 For a local build, `VITE_KANDELO_SOFTWARE_MANIFEST_URLS` may contain a
 comma- or whitespace-separated manifest URL list.
 
+Direct VFS image links do not need a gallery manifest. The Kandelo UI
+also accepts a `vfs` query parameter whose value is an `http` or `https`
+URL to a `.vfs` or `.vfs.zst` image:
+
+```text
+/pages/kandelo/?vfs=https://example.com/images/site.vfs.zst
+```
+
+Gallery launches update this `vfs` parameter and reload the Kandelo app
+from the new URL. `demo` is not a supported boot parameter.
+
+The browser must be allowed to fetch the image under Kandelo's
+cross-origin-isolated page. In practice, third-party image hosts should
+serve the file with CORS or compatible cross-origin resource policy
+headers.
+
 ## Agent Checklist
 
 When creating or maintaining a package source:
