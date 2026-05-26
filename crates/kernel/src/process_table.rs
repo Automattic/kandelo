@@ -22,7 +22,7 @@ use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
 
 use crate::ofd::FileType;
-use crate::process::Process;
+use crate::process::{Process, ProcessState};
 
 /// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
 ///
@@ -252,6 +252,26 @@ impl ProcessTable {
     /// Cleans up all cross-process resources: pipe ref counts, socket pipes,
     /// and listening socket backlogs in the global pipe table.
     pub fn remove_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
+        let result = self.remove_process_inner(pid, false)?;
+        self.prune_empty_limbo_groups();
+        Some(result)
+    }
+
+    /// Reap a wait-consumed process from the table. If it is still the
+    /// process-group leader for remaining members, keep a resource-free limbo
+    /// record so getpgid/setpgid can still address the leader until the group
+    /// empties.
+    pub fn reap_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
+        let result = self.remove_process_inner(pid, true)?;
+        self.prune_empty_limbo_groups();
+        Some(result)
+    }
+
+    fn remove_process_inner(
+        &mut self,
+        pid: u32,
+        retain_limbo_leader: bool,
+    ) -> Option<RemoveProcessResult> {
         let proc = self.processes.remove(&pid)?;
         let mut host_net_closes: Vec<i32> = Vec::new();
 
@@ -390,10 +410,66 @@ impl ProcessTable {
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
 
+        if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {
+            self.processes.insert(pid, Self::limbo_process_from(&proc));
+        }
+
         Some(RemoveProcessResult {
             process: proc,
             host_net_closes,
         })
+    }
+
+    fn group_has_member(&self, pgid: u32) -> bool {
+        self.processes.iter().any(|(&pid, proc)| {
+            pid != pgid && proc.pgid == pgid && proc.state != ProcessState::Limbo
+        })
+    }
+
+    fn limbo_process_from(proc: &Process) -> Process {
+        let mut limbo = Process::new(proc.pid);
+        limbo.ppid = proc.ppid;
+        limbo.uid = proc.uid;
+        limbo.gid = proc.gid;
+        limbo.euid = proc.euid;
+        limbo.egid = proc.egid;
+        limbo.pgid = proc.pgid;
+        limbo.sid = proc.sid;
+        limbo.is_session_leader = proc.is_session_leader;
+        limbo.state = ProcessState::Limbo;
+        limbo.exit_status = proc.exit_status;
+        limbo.cwd = proc.cwd.clone();
+        limbo.environ = proc.environ.clone();
+        limbo.argv = proc.argv.clone();
+        limbo.umask = proc.umask;
+        limbo.nice = proc.nice;
+        limbo.rlimits = proc.rlimits;
+        limbo.thread_name = proc.thread_name;
+        limbo.has_exec = proc.has_exec;
+
+        // Process::new preopens stdio; limbo records must not own any
+        // resources because teardown already ran for the real process.
+        limbo.fd_table = crate::fd::FdTable::new();
+        limbo.ofd_table = crate::ofd::OfdTable::new();
+        limbo
+    }
+
+    pub fn prune_empty_limbo_groups(&mut self) {
+        let limbo_pids: Vec<u32> = self
+            .processes
+            .iter()
+            .filter(|(pid, proc)| {
+                let pid = **pid;
+                proc.state == ProcessState::Limbo
+                    && proc.pgid == pid
+                    && !self.group_has_member(pid)
+            })
+            .map(|(pid, _)| *pid)
+            .collect();
+
+        for pid in limbo_pids {
+            self.processes.remove(&pid);
+        }
     }
 
     /// Set the current pid for syscall dispatch.
@@ -726,9 +802,52 @@ impl ProcessTable {
     pub fn pids_in_group(&self, pgid: u32) -> Vec<u32> {
         self.processes
             .iter()
-            .filter(|(_, p)| p.pgid == pgid)
+            .filter(|(_, p)| p.pgid == pgid && p.state != ProcessState::Limbo)
             .map(|(&pid, _)| pid)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reap_retains_group_leader_as_limbo_until_group_empties() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.fork_process(100, 101).unwrap();
+        table.fork_process(100, 102).unwrap();
+        table.processes.get_mut(&101).unwrap().pgid = 101;
+        table.processes.get_mut(&102).unwrap().pgid = 101;
+        table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
+
+        table.reap_process(101).expect("reap group leader");
+
+        let limbo = table.get(101).expect("limbo leader retained");
+        assert_eq!(limbo.state, ProcessState::Limbo);
+        assert_eq!(limbo.pgid, 101);
+        assert_eq!(limbo.ppid, 100);
+
+        table.processes.get_mut(&102).unwrap().state = ProcessState::Exited;
+        table.reap_process(102).expect("reap final member");
+        assert!(table.get(101).is_none(), "empty limbo group is pruned");
+    }
+
+    #[test]
+    fn remove_process_does_not_create_limbo_record() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.fork_process(100, 101).unwrap();
+        table.fork_process(100, 102).unwrap();
+        table.processes.get_mut(&101).unwrap().pgid = 101;
+        table.processes.get_mut(&102).unwrap().pgid = 101;
+        table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
+
+        table.remove_process(101).expect("remove group leader");
+
+        assert!(table.get(101).is_none());
+        assert_eq!(table.get(102).unwrap().pgid, 101);
     }
 }
 

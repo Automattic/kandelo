@@ -582,11 +582,26 @@ exit: $rc"
         fi
     fi
 
-    # For suites with .expect files, compare output
-    local has_expect=false
-    local expect_dir="$OS_TEST/${suite}.expect"
-    if [ -d "$expect_dir" ]; then
-        has_expect=true
+    # For suites with .expect files, compare output. Repo-local overrides
+    # shadow submodule expectations for tests whose upstream expectation is a
+    # known Kandelo-specific limitation that has since been fixed here.
+    local expect_base="${test_name##*/}"
+    local default_expect_dir="$OS_TEST/${suite}.expect"
+    local override_expect_dir="$REPO_ROOT/tests/sortix/os-test-overrides/${suite}.expect"
+    local -a expect_dirs=()
+    local override_has_expect=false
+    if [ -d "$override_expect_dir" ]; then
+        for expect_file in "$override_expect_dir/${expect_base}.posix" "$override_expect_dir/${expect_base}.posix."* "$override_expect_dir/${expect_base}."[0-9]* "$override_expect_dir/${expect_base}.unknown."*; do
+            if [ -f "$expect_file" ]; then
+                override_has_expect=true
+                break
+            fi
+        done
+    fi
+    if $override_has_expect; then
+        expect_dirs=("$override_expect_dir")
+    elif [ -d "$default_expect_dir" ]; then
+        expect_dirs=("$default_expect_dir")
     fi
 
     local test_passed=false
@@ -601,16 +616,17 @@ exit: $rc"
     fi
 
     # Check output against expect files
-    if $has_expect; then
-        local expect_base="${test_name##*/}"
-        for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]* "$expect_dir/${expect_base}.unknown."*; do
-            [ -f "$expect_file" ] || continue
-            local expected
-            expected=$(cat "$expect_file")
-            if [ "$output" = "$expected" ]; then
-                test_passed=true
-                break
-            fi
+    if [ ${#expect_dirs[@]} -gt 0 ]; then
+        for expect_dir in "${expect_dirs[@]}"; do
+            for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]* "$expect_dir/${expect_base}.unknown."*; do
+                [ -f "$expect_file" ] || continue
+                local expected
+                expected=$(cat "$expect_file")
+                if [ "$output" = "$expected" ]; then
+                    test_passed=true
+                    break 2
+                fi
+            done
         done
     elif [ $rc -eq 0 ]; then
         test_passed=true
@@ -666,6 +682,23 @@ run_runtime_test() {
     _collect_result "$suite" "$test_name" "$result_dir"
 }
 
+_print_result_output() {
+    local result_file="$1"
+    local max_lines="${SORTIX_DIAGNOSTIC_LINES:-40}"
+    local output_lines
+    output_lines=$(tail -n +2 "$result_file" | wc -l | tr -d ' ')
+
+    if [ "$output_lines" -le "$max_lines" ]; then
+        tail -n +2 "$result_file" | sed 's/^/  /'
+        return
+    fi
+
+    echo "  --- output: first ${max_lines} lines ---"
+    tail -n +2 "$result_file" | head -n "$max_lines" | sed 's/^/  /'
+    echo "  --- output: last ${max_lines} lines ---"
+    tail -n "$max_lines" "$result_file" | sed 's/^/  /'
+}
+
 # Collect one test result from result file into RESULTS array and counters
 _collect_result() {
     local suite="$1"
@@ -690,7 +723,7 @@ _collect_result() {
             ;;
         FAIL)
             echo "FAIL  ${suite}/${test_name}"
-            tail -n +2 "$result_file" | tail -5 | head -3 | sed 's/^/  /'
+            _print_result_output "$result_file"
             RESULTS+=("FAIL  ${suite}/${test_name}")
             FAIL=$((FAIL + 1))
             ;;
@@ -705,12 +738,13 @@ _collect_result() {
             ;;
         BUILD)
             echo "BUILD ${suite}/${test_name}"
-            tail -n +2 "$result_file" | head -3 | sed 's/^/  /'
+            _print_result_output "$result_file"
             RESULTS+=("BUILD ${suite}/${test_name}")
             BUILD_FAIL=$((BUILD_FAIL + 1))
             ;;
         TIME)
             echo "TIME  ${suite}/${test_name} (timeout)"
+            _print_result_output "$result_file"
             RESULTS+=("TIME  ${suite}/${test_name}")
             TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
             ;;

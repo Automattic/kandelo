@@ -1259,43 +1259,62 @@ pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
     }
 }
 
+fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
+    use core::sync::atomic::Ordering;
+
+    let removed = result.process;
+    // /dev/fb0 cleanup: if the exiting process held a live mmap, tell the host
+    // to drop the canvas binding before the process Memory disappears. Then
+    // release the global owner claim — best-effort CAS makes this idempotent.
+    if removed.fb_binding.is_some() {
+        unsafe { host_unbind_framebuffer(pid as i32) };
+    }
+    let _ = crate::process_table::FB0_OWNER.compare_exchange(
+        pid as i32,
+        -1,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    );
+    // Tear down host-side AF_INET handles whose cross-process refcount hit zero
+    // during teardown. process_table.rs can't call host externs directly; we
+    // drain its close-list here.
+    for net_handle in result.host_net_closes {
+        unsafe { host_net_close(net_handle) };
+    }
+    // /dev/input/mice cleanup: drop ownership and any pending packets so a
+    // successor open starts clean. No host-side unbind — the device is
+    // host→kernel only.
+    crate::syscalls::maybe_release_mice(pid);
+    // /dev/dsp cleanup: drop ownership and flush the PCM ring. The host-side
+    // AudioContext keeps playing whatever is already scheduled; we just stop
+    // feeding it new samples from this dead pid.
+    crate::syscalls::maybe_release_dsp(pid);
+}
+
 /// Remove a process from the process table (centralized mode).
 /// Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
-    use core::sync::atomic::Ordering;
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.remove_process(pid) {
         Some(result) => {
-            let removed = result.process;
-            // /dev/fb0 cleanup: if the exiting process held a live mmap,
-            // tell the host to drop the canvas binding before the
-            // process Memory disappears. Then release the global owner
-            // claim — best-effort CAS makes this idempotent.
-            if removed.fb_binding.is_some() {
-                unsafe { host_unbind_framebuffer(pid as i32) };
-            }
-            let _ = crate::process_table::FB0_OWNER.compare_exchange(
-                pid as i32,
-                -1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
-            // Tear down host-side AF_INET handles whose cross-process
-            // refcount hit zero during teardown. process_table.rs can't
-            // call host externs directly; we drain its close-list here.
-            for net_handle in result.host_net_closes {
-                unsafe { host_net_close(net_handle) };
-            }
-            // /dev/input/mice cleanup: drop ownership and any pending
-            // packets so a successor open starts clean. No host-side
-            // unbind — the device is host→kernel only.
-            crate::syscalls::maybe_release_mice(pid);
-            // /dev/dsp cleanup: drop ownership and flush the PCM ring.
-            // The host-side AudioContext keeps playing whatever is
-            // already scheduled; we just stop feeding it new samples
-            // from this dead pid.
-            crate::syscalls::maybe_release_dsp(pid);
+            finish_removed_process(pid, result);
+            0
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Reap a wait-consumed process from the process table (centralized mode).
+/// Reaped process-group leaders are retained as limbo records while group
+/// members remain, so getpgid/setpgid can still resolve the leader.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reap_process(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.reap_process(pid) {
+        Some(result) => {
+            finish_removed_process(pid, result);
             0
         }
         None => -(Errno::ESRCH as i32),
@@ -2793,6 +2812,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                             -(Errno::EPERM as i32)
                         } else {
                             target.pgid = new_pgid;
+                            table.prune_empty_limbo_groups();
                             0
                         }
                     }
