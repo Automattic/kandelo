@@ -70,6 +70,8 @@ export interface KernelStdinProxy {
 export interface RunProgramOptions {
   /** Path to the .wasm program file */
   programPath: string;
+  /** Optional pre-compiled module for programPath. */
+  programModule?: WebAssembly.Module;
   /** Environment variables as KEY=VALUE strings */
   env?: string[];
   /** Program arguments */
@@ -194,6 +196,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   const exitPromise = host.spawn(programBytes, options.argv ?? [options.programPath], {
     env: options.env,
     stdin: stdinData,
+    programModule: options.programModule,
     onStarted: onStartedWrapper,
   });
 

@@ -197,6 +197,25 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     includeNodeUtility: true,
     memoryPages: 4096,
     network: true,
+    features: ["js-workers"],
+    autoCommand: [
+      "node -e \"",
+      "const assert=require('node:assert');",
+      "const path=require('path');",
+      "const {Worker}=require('worker_threads');",
+      "const b=Buffer.from('Kandelo');",
+      "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
+      "console.log('SpiderMonkey Node', process.version, process.arch);",
+      "console.log(b.toString('hex'));",
+      "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
+      "const sab=new SharedArrayBuffer(4);",
+      "const view=new Int32Array(sab);",
+      "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.notify(view,0);',{eval:true,workerData:sab});",
+      "Atomics.wait(view,0,0,5000);",
+      "console.log('worker', Atomics.load(view,0));",
+      "\"",
+      "&& npm --version",
+    ].join(" "),
   },
   nginx: {
     image: "nginx",
@@ -250,6 +269,8 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
+  spidermonkey: "node",
+  "spidermonkey-node": "node",
   wordpress: "wordpress-sqlite",
   lamp: "wordpress-mariadb",
 };

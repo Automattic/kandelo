@@ -1,6 +1,6 @@
 kind = "program"
-name = "node"
-version = "0.1.0"
+name = "spidermonkey-node"
+version = "140.11.0esr-node.1"
 kernel_abi = 7
 depends_on = ["spidermonkey@140.11.0esr"]
 
@@ -16,5 +16,5 @@ url = "https://www.mozilla.org/MPL/2.0/"
 script_path = "packages/registry/spidermonkey-node/build-spidermonkey-node.sh"
 
 [[outputs]]
-name = "node"
+name = "spidermonkey-node"
 wasm = "node.wasm"

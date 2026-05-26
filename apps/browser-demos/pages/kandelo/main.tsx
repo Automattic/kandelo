@@ -30,12 +30,15 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
-    const { createLiveHost } = await import("./kernel-host/live-setup");
-    const host = await createLiveHost({
-      demo,
-      vfsUrl: bootQuery.vfsImageUrl,
-      fb: fbDemo === "test" ? "test" : "none",
-    });
+    const host = demo === "node" || demo === "spidermonkey-node" || demo === "spidermonkey"
+      ? await import("./kernel-host/live-spidermonkey-node-setup")
+        .then(({ createLiveSpiderMonkeyNodeHost }) => createLiveSpiderMonkeyNodeHost(demo))
+      : await import("./kernel-host/live-setup")
+        .then(({ createLiveHost }) => createLiveHost({
+          demo,
+          vfsUrl: bootQuery.vfsImageUrl,
+          fb: fbDemo === "test" ? "test" : "none",
+        }));
     mount(host);
   } catch (err) {
     // Surface fetch / instantiation failures in the page so the user

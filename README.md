@@ -24,7 +24,7 @@ Real, unmodified software compiled to WebAssembly:
 | fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |
-| QuickJS-NG | 0.12 | ES2023 JavaScript engine + Node.js compat layer (`node:crypto` hash + HMAC via OpenSSL, `node:zlib` deflate/inflate/gzip/gunzip via libz, native `JSON.parse` via yyjson). `npm install` works for `lodash`, `express`, and `vite`. |
+| SpiderMonkey | 140 ESR | JavaScript engine backing the Node.js-compatible runtime with Intl, SharedArrayBuffer, worker_threads, and npm package installs. |
 | GNU nano | 8.3 | Terminal text editor |
 | dash | 0.5.12 | POSIX shell with pipes, redirects, job control |
 | GNU coreutils | 9.6 | 50+ utilities (ls, cat, sort, wc, etc.) |
@@ -236,7 +236,7 @@ bash packages/registry/git/build-git.sh             # Git 2.47
 bash packages/registry/vim/build-vim.sh             # Vim 9.1
 bash packages/registry/perl/build-perl.sh           # Perl 5.40
 bash packages/registry/ruby/build-ruby.sh           # Ruby 3.3
-bash packages/registry/quickjs/build-quickjs.sh     # QuickJS-NG + Node.js compat
+bash packages/registry/spidermonkey/build-spidermonkey.sh # SpiderMonkey JS + Node.js compat
 bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
 bash packages/registry/curl/build-curl.sh           # curl
 bash packages/registry/make/build-make.sh           # GNU make

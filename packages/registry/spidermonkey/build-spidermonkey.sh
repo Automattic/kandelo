@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Build Mozilla SpiderMonkey's JS shell for the Kandelo wasm32 POSIX target.
 #
-# This is the engine-only Phase 0 port. It produces `js.wasm`; the
-# Node-compatible runtime is a later embedding layer built on top of the
-# SpiderMonkey JSAPI once the shell is green under the kernel.
+# It produces `js.wasm` plus `node.wasm`, a Node-compatible shell entry point
+# that runs the Kandelo CommonJS bootstrap when invoked as node.
 
 set -euo pipefail
 
@@ -85,12 +84,47 @@ fi
     exit 1
 }
 
+OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
+if [ -z "$OPENSSL_PREFIX" ]; then
+    echo "==> Resolving openssl via cargo xtask build-deps..."
+    OPENSSL_PREFIX="$(resolve_dep openssl)"
+fi
+[ -f "$OPENSSL_PREFIX/lib/libssl.a" ] || {
+    echo "ERROR: openssl resolve missing libssl.a at $OPENSSL_PREFIX" >&2
+    exit 1
+}
+[ -f "$OPENSSL_PREFIX/lib/libcrypto.a" ] || {
+    echo "ERROR: openssl resolve missing libcrypto.a at $OPENSSL_PREFIX" >&2
+    exit 1
+}
+[ -d "$OPENSSL_PREFIX/include" ] || {
+    echo "ERROR: openssl resolve missing include directory at $OPENSSL_PREFIX" >&2
+    exit 1
+}
+
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib via cargo xtask build-deps..."
+    ZLIB_PREFIX="$(resolve_dep zlib)"
+fi
+[ -f "$ZLIB_PREFIX/lib/libz.a" ] || {
+    echo "ERROR: zlib resolve missing libz.a at $ZLIB_PREFIX" >&2
+    exit 1
+}
+[ -d "$ZLIB_PREFIX/include" ] || {
+    echo "ERROR: zlib resolve missing include directory at $ZLIB_PREFIX" >&2
+    exit 1
+}
+
 # Mozilla's build uses the compiler driver directly and expects libc++ to be
 # visible from the target sysroot. Keep the sysroot as an index of cache-managed
 # libcxx artifacts, matching the MariaDB and C++ program build paths.
 mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
 ln -sf "$LIBCXX_PREFIX/lib/libc++.a" "$SYSROOT/lib/libc++.a"
 ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
+ln -sf "$OPENSSL_PREFIX/lib/libssl.a" "$SYSROOT/lib/libssl.a"
+ln -sf "$OPENSSL_PREFIX/lib/libcrypto.a" "$SYSROOT/lib/libcrypto.a"
+ln -sf "$ZLIB_PREFIX/lib/libz.a" "$SYSROOT/lib/libz.a"
 rm -rf "$SYSROOT/include/c++/v1"
 ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
 
@@ -172,6 +206,49 @@ if [ -d "$PATCH_DIR" ]; then
     done
 fi
 
+NODE_ADAPTER_JS="$SCRIPT_DIR/node-compat/adapter.js"
+NODE_SHARED_BOOTSTRAP_JS="$REPO_ROOT/packages/registry/node-compat/bootstrap.js"
+NODE_SUFFIX_JS="$SCRIPT_DIR/node-compat/suffix.js"
+NODE_BOOTSTRAP_JS="$OBJ_DIR/kandelo-node-bootstrap.generated.js"
+NODE_BOOTSTRAP_INC="$SRC_DIR/js/src/shell/kandelo-node-bootstrap.h"
+for bootstrap_part in "$NODE_ADAPTER_JS" "$NODE_SHARED_BOOTSTRAP_JS" "$NODE_SUFFIX_JS"; do
+    [ -f "$bootstrap_part" ] || {
+        echo "ERROR: SpiderMonkey Node bootstrap input missing at $bootstrap_part" >&2
+        exit 1
+    }
+done
+mkdir -p "$OBJ_DIR"
+echo "==> Generating SpiderMonkey Node bootstrap include..."
+python3 - "$NODE_ADAPTER_JS" "$NODE_SHARED_BOOTSTRAP_JS" "$NODE_SUFFIX_JS" "$NODE_BOOTSTRAP_JS" "$NODE_BOOTSTRAP_INC" <<'PY'
+from pathlib import Path
+import sys
+
+adapter = Path(sys.argv[1]).read_text(encoding="utf-8")
+shared = Path(sys.argv[2]).read_text(encoding="utf-8")
+suffix = Path(sys.argv[3]).read_text(encoding="utf-8")
+generated = Path(sys.argv[4])
+dest = Path(sys.argv[5])
+
+shared_lines = [
+    line for line in shared.splitlines()
+    if not line.startswith("import * as ")
+]
+source_text = adapter.rstrip() + "\n" + "\n".join(shared_lines) + "\n" + suffix.rstrip() + "\n"
+generated.write_text(source_text, encoding="utf-8")
+source = source_text.encode("utf-8")
+dest.parent.mkdir(parents=True, exist_ok=True)
+with dest.open("w", encoding="ascii") as f:
+    f.write("#ifndef shell_kandelo_node_bootstrap_h\n")
+    f.write("#define shell_kandelo_node_bootstrap_h\n\n")
+    f.write("static const unsigned char kKandeloNodeBootstrap[] = {\n")
+    for i in range(0, len(source), 12):
+        chunk = source[i:i + 12]
+        f.write("  " + ", ".join(f"0x{b:02x}" for b in chunk) + ",\n")
+    f.write("};\n")
+    f.write("static const size_t kKandeloNodeBootstrapLen = sizeof(kKandeloNodeBootstrap);\n")
+    f.write("\n#endif  // shell_kandelo_node_bootstrap_h\n")
+PY
+
 WASM_RUST_TARGET_FEATURES='-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals'
 GETRANDOM_BACKEND_RUSTFLAG='--cfg=getrandom_backend=\"custom\"'
 WASM_RUSTFLAGS="$WASM_RUST_TARGET_FEATURES $GETRANDOM_BACKEND_RUSTFLAG"
@@ -218,9 +295,9 @@ else
     export HOST_CC="${HOST_CC:-cc}"
     export HOST_CXX="${HOST_CXX:-c++}"
 fi
-export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi -Wl,-z,stack-size=16777216"
+export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include"
+export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||
@@ -267,19 +344,21 @@ else
     echo "WARNING: wasm-opt not found; leaving unoptimized js.wasm." >&2
 fi
 
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ -x "$FORK_INSTRUMENT" ]; then
-    echo "==> Applying fork instrumentation to js.wasm..."
-    "$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
-    mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
-else
-    echo "ERROR: fork instrumenter not found at $FORK_INSTRUMENT. Run 'bash build.sh' first." >&2
-    exit 1
-fi
+# Do not run SpiderMonkey through wasm-fork-instrument. The rewrite expands
+# SpiderMonkey's already-large C++ control flow enough that Chromium workers
+# exhaust their Wasm call stack before the shell reaches user JavaScript.
+# SpiderMonkey worker_threads use clone/pthreads, which remain supported
+# without POSIX fork-stack instrumentation.
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey built successfully: $BIN_DIR/js.wasm ($JS_SIZE bytes)"
 
+cp "$BIN_DIR/js.wasm" "$BIN_DIR/node.wasm"
+NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"
+echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE_SIZE bytes)"
+
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary spidermonkey "$BIN_DIR/js.wasm"
+install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
+install_local_binary node "$BIN_DIR/node.wasm"

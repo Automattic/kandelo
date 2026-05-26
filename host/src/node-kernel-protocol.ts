@@ -45,6 +45,8 @@ export interface SpawnMessage {
   type: "spawn";
   requestId: number;
   programBytes: ArrayBuffer;
+  /** Optional pre-compiled module for the same bytes. */
+  programModule?: WebAssembly.Module;
   argv: string[];
   env?: string[];
   cwd?: string;
