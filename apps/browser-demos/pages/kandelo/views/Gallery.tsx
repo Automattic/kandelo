@@ -4,6 +4,7 @@
 
 import * as React from "react";
 import { useGalleryItems } from "../kernel-host/react";
+import { mountsWithRootImageUrl } from "../url-state";
 import { classifyTier } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
   GalleryItem,
@@ -133,18 +134,23 @@ const Card: React.FC<{
 
 /**
  * Apply a GalleryItem to a base BootDescriptor — used by the App to convert
- * a card click into an applyBootDescriptor() call. Lifts argv + packages
- * from the gallery item; other fields stay from the current descriptor.
+ * a card click into an applyBootDescriptor() call. Lifts argv, packages, and
+ * any direct VFS image URL from the gallery item; other fields stay from the
+ * current descriptor.
  */
 export function descriptorFromGalleryItem(
   item: GalleryItem,
   base: BootDescriptor,
 ): BootDescriptor {
+  const mounts = item.vfsImageUrl
+    ? mountsWithRootImageUrl(base.mounts, item.vfsImageUrl)
+    : base.mounts;
   return {
     ...base,
     id: item.id,
     title: item.title,
     packages: item.packages,
+    mounts,
     boot: { ...base.boot, argv: item.bootCommand },
   };
 }

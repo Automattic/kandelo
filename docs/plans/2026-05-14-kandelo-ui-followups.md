@@ -38,8 +38,9 @@ url-design.md`.
 
 ## Deferred vitest coverage
 
-`web-libs/kandelo-session/test/kandelo-session.test.ts` covers LiveKernelHost stubs + MockKernelHost
-contract (27 specs). Still missing:
+`web-libs/kandelo-session/test/kandelo-session.test.ts` covers LiveKernelHost
+status, descriptor, lifecycle, gallery, snapshot, and demo-config behavior
+(28 specs). Still missing:
 
 ### boot-descriptor round-trip + validation (~12 specs)
 

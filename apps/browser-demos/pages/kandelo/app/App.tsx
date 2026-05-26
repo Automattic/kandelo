@@ -14,6 +14,7 @@ import { Config } from "../views/Config";
 import { EmptyState } from "../views/EmptyState";
 import { ShareDialog } from "../dialogs/ShareDialog";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
+import { navigateToGalleryItemUrl } from "../url-state";
 import type { BootDescriptor, GalleryItem } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export const App: React.FC = () => {
@@ -43,6 +44,11 @@ export const App: React.FC = () => {
   };
 
   const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
+    if (item.vfsImageUrl) {
+      navigateToGalleryItemUrl(item);
+      return;
+    }
+
     const next = descriptorFromGalleryItem(item, host.getBootDescriptor());
     setView("machine");
     void host.applyBootDescriptor(next).catch((err) => {
