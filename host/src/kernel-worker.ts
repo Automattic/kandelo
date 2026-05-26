@@ -31,6 +31,7 @@ import {
   type SendHttpRequestOptions,
 } from "./networking/in-kernel-http";
 import {
+  ABI_KERNEL_EXPORT,
   ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
   CHANNEL_STATUS_COMPLETE,
@@ -55,6 +56,7 @@ import {
   SYSCALL_ARGS,
   type SyscallArgDesc,
 } from "./generated/abi";
+import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 
 import type { KernelConfig, PlatformIO } from "./types";
 
@@ -873,14 +875,17 @@ export class CentralizedKernelWorker {
     // `__abi_version` export compared against this value; mismatches
     // are refused before any syscall runs.
     const abiVersionFn =
-      this.kernelInstance.exports.__abi_version as (() => number) | undefined;
+      this.kernelInstance.exports[ABI_KERNEL_EXPORT] as
+        | (() => number)
+        | undefined;
     if (typeof abiVersionFn !== "function") {
       throw new Error(
-        "kernel wasm is missing the __abi_version export — refusing to run. " +
+        `kernel wasm is missing the ${ABI_KERNEL_EXPORT} export — refusing to run. ` +
           "Rebuild the kernel (bash build.sh) against the current ABI.",
       );
     }
     this.kernelAbiVersion = abiVersionFn();
+    validateKernelHostAdapterManifest(this.kernelInstance, this.kernelMemory);
 
     // Set centralized mode (existing call below)
     const setMode = this.kernelInstance.exports.kernel_set_mode as (mode: number) => void;

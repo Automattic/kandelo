@@ -23,6 +23,16 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  HOST_ADAPTER_MANIFEST_FIELDS,
+  HOST_ADAPTER_MANIFEST_MAGIC,
+  HOST_ADAPTER_MANIFEST_SIZE,
+  HOST_ADAPTER_MANIFEST_VERSION,
+  HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS,
+  HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES,
+  HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
+  HOST_ADAPTER_REQUIRED_WORKER_FEATURES,
+  HOST_ADAPTER_VERSION,
+  HOST_ADAPTER_WORKER_FEATURES,
   HOST_INTERCEPTED_SYSCALLS,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_POLL_FD,
@@ -61,6 +71,12 @@ function signalOffset(name: string): number {
 
 function namedNumberMap(entries: NamedNumber[]): Record<string, number> {
   return Object.fromEntries(entries.map(({ name, number }) => [name, number]));
+}
+
+function hostAdapterManifestField(name: string): { offset: number; size: number } {
+  const field = snapshot.host_adapter.manifest_fields.find((f: { name: string }) => f.name === name);
+  if (!field) throw new Error(`missing host_adapter manifest field ${name}`);
+  return { offset: field.offset, size: field.size };
 }
 
 describe("generated host ABI bindings", () => {
@@ -115,5 +131,39 @@ describe("generated host ABI bindings", () => {
     expect(STRUCT_SIZE_WASM_STATFS).toBe(snapshot.marshalled_structs.WasmStatfs.size);
 
     expect(SYSCALL_ARGS).toEqual(snapshot.syscall_arg_descriptors);
+  });
+
+  it("match Rust-owned host adapter manifest metadata", () => {
+    expect(HOST_ADAPTER_VERSION).toBe(snapshot.host_adapter.version);
+    expect(HOST_ADAPTER_MANIFEST_MAGIC).toBe(snapshot.host_adapter.manifest.magic);
+    expect(HOST_ADAPTER_MANIFEST_VERSION).toBe(snapshot.host_adapter.manifest.manifest_version);
+    expect(HOST_ADAPTER_MANIFEST_SIZE).toBe(snapshot.host_adapter.manifest.manifest_size);
+    expect(HOST_ADAPTER_REQUIRED_WORKER_FEATURES).toBe(
+      snapshot.host_adapter.required_worker_features,
+    );
+    expect(HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES).toBe(
+      snapshot.host_adapter.optional_kernel_features,
+    );
+    expect(HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS).toEqual(
+      snapshot.host_adapter.required_kernel_exports,
+    );
+    expect(HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS).toEqual(
+      snapshot.host_adapter.optional_kernel_exports,
+    );
+
+    expect(Object.entries(HOST_ADAPTER_WORKER_FEATURES)).toEqual(
+      snapshot.host_adapter.worker_features.map((f: { name: string; bit: number }) => [
+        f.name,
+        f.bit,
+      ]),
+    );
+
+    for (const fieldName of Object.keys(HOST_ADAPTER_MANIFEST_FIELDS)) {
+      expect(
+        HOST_ADAPTER_MANIFEST_FIELDS[
+          fieldName as keyof typeof HOST_ADAPTER_MANIFEST_FIELDS
+        ],
+      ).toEqual(hostAdapterManifestField(fieldName));
+    }
   });
 });
