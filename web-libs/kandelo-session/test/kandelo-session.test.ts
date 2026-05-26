@@ -3,7 +3,6 @@ import {
   LiveKernelHost,
   type BootDescriptor,
   type FileSystemLike,
-  type KernelHost,
   type MachineStatus,
   type ProcessEvent,
 } from "../src/kernel-host";
@@ -21,17 +20,12 @@ import {
   builtinDemoPresentation,
   nodeGuide,
 } from "../src/demo-guides";
-import { MockKernelHost } from "../../../apps/browser-demos/pages/kandelo/kernel-host/mock";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
  *
  *   1. LiveKernelHost — status, dmesg, process events, descriptor
  *      cloning, lifecycle hooks, and gallery defaults.
- *
- *   2. MockKernelHost — boot replay timing, full lifecycle, snapshot
- *      mode pick from fixture state, and a structural assertion that
- *      the mock implements the full KernelHost interface.
  *
  * Things explicitly NOT covered here (see
  * docs/plans/2026-05-14-kandelo-ui-followups.md): boot-descriptor
@@ -57,6 +51,15 @@ const DUMMY_DESCRIPTOR: BootDescriptor = {
     { path: "/tmp", source: "scratch", ephemeral: true },
   ],
   boot: { argv: ["/bin/sh"], cwd: "/", env: { HOME: "/" } },
+};
+
+const INLINE_OVERLAY_DESCRIPTOR: BootDescriptor = {
+  ...DUMMY_DESCRIPTOR,
+  id: "delta",
+  mounts: [
+    ...DUMMY_DESCRIPTOR.mounts,
+    { path: "/home/user", source: "inline-overlay", data: "abc123" },
+  ],
 };
 
 function makeFs(files: Record<string, string>): FileSystemLike {
@@ -364,6 +367,13 @@ describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
     expect(snap.mode).toBe("manifest");
     expect(snap.reason).toContain("Mode forced to manifest");
   });
+
+  it("picks 'delta' when the descriptor carries a small inline overlay", async () => {
+    const host = new LiveKernelHost({ descriptor: INLINE_OVERLAY_DESCRIPTOR });
+    const snap = await host.snapshot();
+    expect(snap.mode).toBe("delta");
+    expect(snap.reason).toMatch(/delta/i);
+  });
 });
 
 describe("Kandelo demo config", () => {
@@ -578,147 +588,5 @@ describe("Kandelo demo config", () => {
     expect(config).not.toBeNull();
 
     expect(resolveDemoPresentation(config!, "missing")).toBeNull();
-  });
-});
-
-// ── MockKernelHost ─────────────────────────────────────────────────────
-
-describe("MockKernelHost: KernelHost contract", () => {
-  it("structurally satisfies KernelHost", () => {
-    // Compile-time check: if MockKernelHost grows out of sync with
-    // KernelHost the assignment below fails tsc. Runtime body is just
-    // a smoke test that an instance is constructible.
-    const host: KernelHost = new MockKernelHost();
-    expect(typeof host.getStatus).toBe("function");
-    expect(typeof host.subscribeStatus).toBe("function");
-    expect(typeof host.snapshot).toBe("function");
-    expect(typeof host.attachFramebuffer).toBe("function");
-    expect(typeof host.subscribeGallery).toBe("function");
-    expect(typeof host.getDemoGuide).toBe("function");
-  });
-});
-
-describe("MockKernelHost: demo presentation", () => {
-  it("exposes a web demo pane during boot for web-backed presets", () => {
-    const host = new MockKernelHost({
-      status: "booting",
-      bootSpeed: 1000,
-      descriptor: {
-        ...DUMMY_DESCRIPTOR,
-        title: "WordPress SQLite",
-        runtime: {
-          ...DUMMY_DESCRIPTOR.runtime,
-          features: [...DUMMY_DESCRIPTOR.runtime.features, "tcp-bridge"],
-        },
-        packages: ["nginx@local", "wordpress@local"],
-        boot: {
-          ...DUMMY_DESCRIPTOR.boot,
-          argv: ["/sbin/dinit", "--container"],
-        },
-      },
-    });
-
-    expect(host.getWebPreview()?.status).toBe("starting");
-    expect(host.getSurfaceAvailability().web).toBe(true);
-    expect(host.getPresentation().runningPrimary[0]).toBe("web");
-  });
-});
-
-describe("MockKernelHost: boot replay", () => {
-  it("starts in 'booting' and transitions to 'running' after the boot log replays", async () => {
-    // bootSpeed=1000 → 2240ms boot log compresses to ~2.2ms; add the
-    // 80ms tail wait and the transition should hit inside ~150ms.
-    const host = new MockKernelHost({ status: "booting", bootSpeed: 1000 });
-    expect(host.getStatus()).toBe("booting");
-    const reached: MachineStatus[] = [];
-    await new Promise<void>((resolve) => {
-      const off = host.subscribeStatus((s) => {
-        reached.push(s);
-        if (s === "running") { off(); resolve(); }
-      });
-    });
-    expect(reached).toContain("running");
-    expect(host.getStatus()).toBe("running");
-  });
-
-  it("dmesg ring fills as the boot log replays", async () => {
-    const host = new MockKernelHost({ status: "booting", bootSpeed: 1000 });
-    // Wait for full boot
-    await new Promise<void>((resolve) => {
-      const off = host.subscribeStatus((s) => {
-        if (s === "running") { off(); resolve(); }
-      });
-    });
-    const hist = host.dmesgHistory();
-    // The fixture has 56 lines (the static rootfs boot log). Don't pin
-    // the exact count — pin a sensible floor so the assertion survives
-    // future tweaks to the fixture.
-    expect(hist.length).toBeGreaterThan(10);
-    // First few lines are kernel-facility info messages.
-    expect(hist[0].facility).toBe("kernel");
-  });
-});
-
-describe("MockKernelHost: snapshot mode picker", () => {
-  it("picks 'delta' for the default CURRENT_DESCRIPTOR_TEMPLATE (has inline overlay)", async () => {
-    // The fixture descriptor has an inline-overlay with a small 'data'
-    // field, so the heuristic in takeSnapshot picks 'delta'.
-    const host = new MockKernelHost({ status: "running" });
-    const snap = await host.snapshot();
-    expect(snap.mode).toBe("delta");
-    expect(snap.reason).toMatch(/delta/i);
-  });
-
-  it("picks 'preset' for a descriptor with no inline-overlay", async () => {
-    const host = new MockKernelHost({
-      status: "running",
-      descriptor: DUMMY_DESCRIPTOR,
-    });
-    const snap = await host.snapshot();
-    expect(snap.mode).toBe("preset");
-  });
-});
-
-describe("MockKernelHost: gallery + inspector data", () => {
-  it("galleryQuery({tab:'presets'}) returns the preset library", async () => {
-    const host = new MockKernelHost({ status: "running" });
-    const items = await host.galleryQuery({ tab: "presets" });
-    expect(items.length).toBeGreaterThan(0);
-    // Each item should have the shape the UI expects.
-    expect(items[0]).toHaveProperty("id");
-    expect(items[0]).toHaveProperty("title");
-    expect(items[0]).toHaveProperty("accent");
-    expect(items[0]).toHaveProperty("estimatedUrlBytes");
-  });
-
-  it("galleryQuery filters by query string", async () => {
-    const host = new MockKernelHost({ status: "running" });
-    const all = await host.galleryQuery({ tab: "presets" });
-    const wp = await host.galleryQuery({ tab: "presets", q: "wordpress" });
-    expect(wp.length).toBeLessThan(all.length);
-    expect(wp.every((i) => /wordpress/i.test(i.title) || /wordpress/i.test(i.summary))).toBe(true);
-  });
-
-  it("readDir('/') returns the fixture VFS tree", async () => {
-    const host = new MockKernelHost({ status: "running" });
-    const root = await host.readDir("/");
-    expect(root.length).toBeGreaterThan(0);
-    const names = root.map((e) => e.name);
-    expect(names).toContain("bin");
-    expect(names).toContain("etc");
-  });
-
-  it("enumProcs / getMounts / getKernelState return fixtures", async () => {
-    const host = new MockKernelHost({ status: "running" });
-    const [procs, mounts, kstate] = await Promise.all([
-      host.enumProcs(),
-      host.getMounts(),
-      host.getKernelState(),
-    ]);
-    expect(procs.length).toBeGreaterThan(0);
-    expect(mounts.length).toBeGreaterThan(0);
-    expect(kstate.length).toBeGreaterThan(0);
-    expect(procs[0]).toHaveProperty("pid");
-    expect(mounts[0]).toHaveProperty("target");
   });
 });

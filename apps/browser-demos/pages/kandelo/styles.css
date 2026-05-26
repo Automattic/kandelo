@@ -117,11 +117,6 @@
   color: var(--k-text-faint);
   padding: 14px 10px 6px;
 }
-.ksb-section-mocked {
-  margin-top: 8px;
-  border-top: 1px solid var(--k-border);
-  color: var(--k-warn);
-}
 .ksb.collapsed .ksb-section { display: none; }
 
 .ksb-item {

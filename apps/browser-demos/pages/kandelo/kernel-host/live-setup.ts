@@ -1,5 +1,4 @@
-// Builds a LiveKernelHost over a real BrowserKernel. Used by default when the
-// kandelo page is loaded (use `?mock=1` for MockKernelHost).
+// Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
 import {
@@ -49,7 +48,7 @@ import {
   builtinDemoGuide,
   builtinDemoPresentation,
 } from "../../../../../web-libs/kandelo-session/src/demo-guides";
-import { PRESET_LIBRARY } from "../fixtures";
+import { PRESET_LIBRARY } from "../presets";
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
@@ -392,7 +391,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
           sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
           tick?.("service worker active; reloading to enable cross-origin isolation...");
           window.location.reload();
-          return await new Promise<never>((_, reject) => {
+          return new Promise<never>((_, reject) => {
             window.setTimeout(() => {
               reject(new Error(
                 "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
@@ -405,7 +404,11 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
           throw err;
         });
     }
-    return serviceWorkerReady;
+    const ready = serviceWorkerReady;
+    if (!ready) {
+      throw new Error("Kandelo service worker readiness promise was not initialized.");
+    }
+    return ready;
   };
 
   const initialId = normalizeDemoId(opts.demo) ?? "shell";
