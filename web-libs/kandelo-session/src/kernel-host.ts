@@ -402,6 +402,8 @@ export interface GalleryItem {
   base: string;
   packages: string[];
   bootCommand: string[];
+  /** Direct .vfs or .vfs.zst image URL used for bootable deep links. */
+  vfsImageUrl?: string;
   accent: string;
   glyph: string;
   estimatedUrlBytes: number;
