@@ -1,22 +1,23 @@
 // Framebuffer pane — paints whatever process is bound to /dev/fb0, forwards
-// focused keyboard input as AT-set-1 / Linux MEDIUMRAW scancodes, forwards
+// focused keyboard input as Linux input keycodes encoded in MEDIUMRAW, forwards
 // pointer-lock mouse input to /dev/input/mice, and drains /dev/dsp audio.
 //
 // Painting: host.attachFramebuffer(canvas) returns a FramebufferHandle; the
 // host owns the requestAnimationFrame loop and BGRA→RGBA swizzle (see
 // host/src/framebuffer/canvas-renderer.ts).
 //
-// Input: DOM keydown/keyup → scancode byte. Press-encoding is standard
-// Linux MEDIUMRAW (bit 7 clear for press, set for release). Released on
-// blur to keep the held set in sync.
+// Input: DOM keydown/keyup → Linux input keycode byte. Press-encoding is
+// standard Linux MEDIUMRAW (bit 7 clear for press, set for release). Released
+// on blur to keep the held set in sync.
 //
-// Focus management: canvas is tabindex=0 + click-to-focus. Ctrl+Shift+Esc
-// is intercepted (NOT forwarded) and blurs the canvas — gives users a
-// guaranteed way out without a DOOM-bound key collision.
+// Focus management: canvas is tabindex=0 + click-to-focus. While focused and
+// bound, the framebuffer process receives keyboard events; click another pane
+// or press Ctrl+Shift+Esc to move focus back to the UI.
 
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import {
+  attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
   type PointerLockMouseHandle,
 } from "../../../../../host/src/framebuffer/browser-controls";
@@ -33,42 +34,6 @@ const ICON = (
   </svg>
 );
 
-// DOM KeyboardEvent.code → Linux input keycode.
-//
-// WASD aliases to arrow scancodes so the gamer-default movement keys work.
-// Cheats containing W/A/S/D letters won't fire as a result — DOOM's cheat
-// state machine sees KEY_*ARROW, not KEY_W/A/S/D. Cheats that avoid those
-// letters (IDCLEV01, IDMUS, IDBEHOLD*) still work; "iddqd" and friends
-// would need a fresh keyboard binding. We picked WASD movement as the
-// primary tradeoff since it's the user-facing default for nearly every
-// FPS, and DOOM's cheat letters mostly cluster around the right hand.
-const SCANCODES: Record<string, readonly number[]> = {
-  Escape: [1],
-  Digit1: [2], Digit2: [3], Digit3: [4], Digit4: [5], Digit5: [6],
-  Digit6: [7], Digit7: [8], Digit8: [9], Digit9: [10], Digit0: [11],
-  Minus: [12], Equal: [13], Backspace: [14], Tab: [15],
-  KeyQ: [16], KeyE: [18], KeyR: [19], KeyT: [20],
-  KeyY: [21], KeyU: [22], KeyI: [23], KeyO: [24], KeyP: [25],
-  BracketLeft: [26], BracketRight: [27], Enter: [28], ControlLeft: [29],
-  KeyF: [33], KeyG: [34],
-  KeyH: [35], KeyJ: [36], KeyK: [37], KeyL: [38], Semicolon: [39],
-  Quote: [40], Backquote: [41], ShiftLeft: [42], Backslash: [43],
-  KeyZ: [44], KeyX: [45], KeyC: [46], KeyV: [47], KeyB: [48],
-  KeyN: [49], KeyM: [50], Comma: [51], Period: [52], Slash: [53],
-  ShiftRight: [54], NumpadMultiply: [55], AltLeft: [56], Space: [57],
-  CapsLock: [58], F1: [59], F2: [60], F3: [61], F4: [62], F5: [63],
-  F6: [64], F7: [65], F8: [66], F9: [67], F10: [68],
-  ControlRight: [97], AltRight: [100],
-  // Arrows + WASD movement aliases — both map to Linux KEY_*ARROW
-  // (KEY_UP=103, KEY_DOWN=108, KEY_LEFT=105, KEY_RIGHT=106). fbDOOM's
-  // input layer dispatches movement on the arrow keys; this lets WASD
-  // muscle memory drive the player.
-  ArrowUp:    [103], KeyW: [103],
-  ArrowDown:  [108], KeyS: [108],
-  ArrowLeft:  [105], KeyA: [105],
-  ArrowRight: [106], KeyD: [106],
-};
-
 export interface FramebufferProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
   onCollapse?: () => void;
@@ -84,7 +49,6 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
   const handleRef = React.useRef<FramebufferHandle | null>(null);
   const mouseRef = React.useRef<PointerLockMouseHandle | null>(null);
   const audioRef = React.useRef<AudioOutputHandle | null>(null);
-  const releaseTimersRef = React.useRef<number[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
@@ -149,85 +113,34 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ dragProps, onCollapse,
     };
   }, [status]);
 
-  // Keyboard input → scancode bytes via the framebuffer handle. We dedup
-  // autorepeat client-side because fbDOOM treats every press as a fresh
-  // edge (auto-repeat would freeze the player on continuous keydown).
+  // Keyboard input → Linux MEDIUMRAW bytes via the framebuffer handle. The
+  // helper captures the focused canvas's key stream and leaves interpretation
+  // to the framebuffer process.
   React.useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (status !== "running") return;
-    const held = new Set<string>();
-
-    const sendScancodes = (codes: readonly number[], pressed: boolean) => {
-      const h = handleRef.current;
-      if (!h) return;
-      // Press: bit 7 clear; release: bit 7 set. Linux MEDIUMRAW.
-      const bytes = new Uint8Array(codes.length);
-      for (let i = 0; i < codes.length; i++) {
-        bytes[i] = pressed ? codes[i] & 0x7f : codes[i] | 0x80;
-      }
-      h.sendInput(bytes);
-    };
-    const sendReleaseScancodes = (codes: readonly number[]) => {
-      const timer = window.setTimeout(() => {
-        releaseTimersRef.current = releaseTimersRef.current.filter((id) => id !== timer);
-        if (handleRef.current?.getBoundPid() === null) return;
-        sendScancodes(codes, false);
-      }, 16);
-      releaseTimersRef.current.push(timer);
-    };
-
-    const isReleaseCombo = (e: KeyboardEvent) =>
-      e.ctrlKey && e.shiftKey && e.code === "Escape";
-
-    const onDown = (e: KeyboardEvent) => {
-      if (isReleaseCombo(e)) {
-        // Intercept BEFORE forwarding so DOOM never sees the combo.
-        e.preventDefault();
-        e.stopPropagation();
-        canvas.blur();
-        return;
-      }
-      const codes = SCANCODES[e.code];
-      if (!codes) return;
-      e.preventDefault();
-      if (held.has(e.code)) return;
-      held.add(e.code);
-      sendScancodes(codes, true);
-    };
-    const onUp = (e: KeyboardEvent) => {
-      if (isReleaseCombo(e)) {
-        e.preventDefault();
-        return;
-      }
-      const codes = SCANCODES[e.code];
-      if (!codes) return;
-      e.preventDefault();
-      held.delete(e.code);
-      sendReleaseScancodes(codes);
-    };
+    const keyboard = attachLinuxMediumRawKeyboard(
+      canvas,
+      {
+        sendInput: (bytes) => handleRef.current?.sendInput(bytes),
+      },
+      {
+        getEnabled: () => handleRef.current?.getBoundPid() !== null,
+        onReleaseCapture: () => canvas.blur(),
+        releaseDelayMs: 16,
+      },
+    );
     const onBlur = () => {
-      // Flush held keys so the game doesn't keep walking if focus moves
-      // (e.g. user clicks the shell or hits the release combo).
-      for (const k of held) {
-        const codes = SCANCODES[k];
-        if (codes) sendScancodes(codes, false);
-      }
-      held.clear();
       mouseRef.current?.releaseCapture();
       setFocused(false);
     };
     const onFocus = () => setFocused(true);
 
-    canvas.addEventListener("keydown", onDown);
-    canvas.addEventListener("keyup", onUp);
     canvas.addEventListener("blur", onBlur);
     canvas.addEventListener("focus", onFocus);
     return () => {
-      for (const timer of releaseTimersRef.current) window.clearTimeout(timer);
-      releaseTimersRef.current = [];
-      canvas.removeEventListener("keydown", onDown);
-      canvas.removeEventListener("keyup", onUp);
+      keyboard.close();
       canvas.removeEventListener("blur", onBlur);
       canvas.removeEventListener("focus", onFocus);
     };
