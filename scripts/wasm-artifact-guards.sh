@@ -91,6 +91,21 @@ wasm_has_complete_fork_instrumentation() {
         wasm_has_wpk_fork_export "$path" wpk_fork_state
 }
 
+wasm_is_relocatable_object() {
+    local path="${1:-}"
+    wasm_is_binary "$path" || return 1
+    if command -v wasm-objdump >/dev/null 2>&1; then
+        local dump
+        dump="$(wasm-objdump -x "$path" 2>/dev/null)" || return 1
+        grep -q -E 'name: "(linking|reloc\.)' <<< "$dump"
+        return $?
+    fi
+    case "$path" in
+        *.o) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 wasm_has_any_wpk_fork_export() {
     local path="${1:-}"
     wasm_has_wpk_fork_export "$path" wpk_fork_unwind_begin ||
@@ -103,6 +118,7 @@ wasm_has_any_wpk_fork_export() {
 wasm_has_missing_fork_instrumentation() {
     local path="${1:-}"
     wasm_is_binary "$path" || return 1
+    wasm_is_relocatable_object "$path" && return 1
     if wasm_imports_kernel_fork "$path" && ! wasm_has_complete_fork_instrumentation "$path"; then
         return 0
     fi

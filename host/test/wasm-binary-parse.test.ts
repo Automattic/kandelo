@@ -18,6 +18,8 @@ import {
   extractHeapBase,
   extractAbiVersion,
   wasmContainsLegacyAsyncify,
+  wasmIsRelocatableObject,
+  readWasmCustomSectionNames,
   readWasmExportNames,
   readWasmImportNames,
   wasmHasCompleteForkInstrumentation,
@@ -90,11 +92,16 @@ function buildWasm(opts: {
   globals?: DefinedGlobal[];
   exports?: ExportEntry[];
   funcBodies?: FuncBody[];
+  customSections?: { name: string; data?: number[] }[];
 }): ArrayBuffer {
   const bytes: number[] = [
     0x00, 0x61, 0x73, 0x6d,
     0x01, 0x00, 0x00, 0x00,
   ];
+
+  for (const custom of opts.customSections ?? []) {
+    bytes.push(...section(0, [...nameBytes(custom.name), ...(custom.data ?? [])]));
+  }
 
   // Type section (id=1): one type `() -> i32` so __abi_version-like funcs work.
   // Encoded: count=1, [0x60 (func), 0 params, 1 result, 0x7F i32]
@@ -404,6 +411,21 @@ describe("wasm artifact policy helpers", () => {
     });
 
     expect(wasmImportsKernelFork(wasm)).toBe(false);
+    expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
+  });
+
+  it("does not require fork instrumentation for relocatable wasm objects", () => {
+    const wasm = buildWasm({
+      customSections: [{ name: "linking" }, { name: "reloc.CODE" }],
+      funcImports: [{ module: "kernel", name: "kernel_fork", typeIdx: 0 }],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [{ name: "__abi_version", kind: 0, index: 1 }],
+    });
+
+    expect(readWasmCustomSectionNames(wasm)).toContain("linking");
+    expect(wasmIsRelocatableObject(wasm)).toBe(true);
+    expect(wasmImportsKernelFork(wasm)).toBe(true);
     expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
   });
 });

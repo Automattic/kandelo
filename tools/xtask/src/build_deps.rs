@@ -1416,6 +1416,65 @@ fn is_wasm_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= WASM_MAGIC.len() && &bytes[..WASM_MAGIC.len()] == WASM_MAGIC
 }
 
+#[derive(Default)]
+struct WasmArtifactFacts {
+    imports_kernel_fork: bool,
+    exports: BTreeSet<String>,
+    is_relocatable_object: bool,
+}
+
+fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
+    use wasmparser::{Imports, Parser, Payload};
+
+    let mut facts = WasmArtifactFacts::default();
+    for payload in Parser::new(0).parse_all(bytes) {
+        match payload.map_err(|e| format!("parse wasm: {e}"))? {
+            Payload::ImportSection(r) => {
+                for group in r {
+                    let group = group.map_err(|e| format!("import section: {e}"))?;
+                    match group {
+                        Imports::Single(_, imp) => {
+                            if imp.module == "kernel" && imp.name == "kernel_fork" {
+                                facts.imports_kernel_fork = true;
+                            }
+                        }
+                        Imports::Compact1 { module, items } => {
+                            for item in items {
+                                let item = item.map_err(|e| format!("import section: {e}"))?;
+                                if module == "kernel" && item.name == "kernel_fork" {
+                                    facts.imports_kernel_fork = true;
+                                }
+                            }
+                        }
+                        Imports::Compact2 { module, names, .. } => {
+                            for name in names {
+                                let name = name.map_err(|e| format!("import section: {e}"))?;
+                                if module == "kernel" && name == "kernel_fork" {
+                                    facts.imports_kernel_fork = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Payload::ExportSection(r) => {
+                for export in r {
+                    let export = export.map_err(|e| format!("export section: {e}"))?;
+                    facts.exports.insert(export.name.to_string());
+                }
+            }
+            Payload::CustomSection(c) => {
+                let name = c.name();
+                if name == "linking" || name.starts_with("reloc.") {
+                    facts.is_relocatable_object = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(facts)
+}
+
 fn wasm_artifact_policy_failures(bytes: &[u8]) -> Vec<String> {
     if !is_wasm_bytes(bytes) {
         return Vec::new();
@@ -1426,10 +1485,22 @@ fn wasm_artifact_policy_failures(bytes: &[u8]) -> Vec<String> {
         failures.push("contains legacy asyncify_ instrumentation".to_string());
     }
 
+    let facts = match wasm_artifact_facts(bytes) {
+        Ok(facts) => facts,
+        Err(e) => {
+            failures.push(e);
+            return failures;
+        }
+    };
+
+    if facts.is_relocatable_object {
+        return failures;
+    }
+
     let wpk_present: Vec<&str> = WPK_FORK_EXPORTS
         .iter()
         .copied()
-        .filter(|name| bytes_contain(bytes, name.as_bytes()))
+        .filter(|name| facts.exports.contains(*name))
         .collect();
     if !wpk_present.is_empty() && wpk_present.len() != WPK_FORK_EXPORTS.len() {
         let missing = WPK_FORK_EXPORTS
@@ -1442,9 +1513,9 @@ fn wasm_artifact_policy_failures(bytes: &[u8]) -> Vec<String> {
             "has incomplete wasm-fork-instrument exports; missing {missing}"
         ));
     }
-    if bytes_contain(bytes, b"kernel_fork") && wpk_present.len() != WPK_FORK_EXPORTS.len() {
+    if facts.imports_kernel_fork && wpk_present.len() != WPK_FORK_EXPORTS.len() {
         failures.push(
-            "references kernel_fork without complete wasm-fork-instrument exports".to_string(),
+            "imports kernel.kernel_fork without complete wasm-fork-instrument exports".to_string(),
         );
     }
     failures
@@ -2183,6 +2254,64 @@ libs = ["lib/lib{name}.a"]
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    fn uleb(mut n: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut byte = (n & 0x7f) as u8;
+            n >>= 7;
+            if n != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if n == 0 {
+                return out;
+            }
+        }
+    }
+
+    fn wasm_name(name: &str) -> Vec<u8> {
+        let mut out = uleb(name.len() as u32);
+        out.extend_from_slice(name.as_bytes());
+        out
+    }
+
+    fn wasm_section(id: u8, payload: Vec<u8>) -> Vec<u8> {
+        let mut out = vec![id];
+        out.extend(uleb(payload.len() as u32));
+        out.extend(payload);
+        out
+    }
+
+    fn wasm_importing_kernel_fork(custom_sections: &[&str]) -> Vec<u8> {
+        let mut bytes = b"\0asm\x01\0\0\0".to_vec();
+        for name in custom_sections {
+            bytes.extend(wasm_section(0, wasm_name(name)));
+        }
+        bytes.extend(wasm_section(1, vec![0x01, 0x60, 0x00, 0x01, 0x7f]));
+
+        let mut imports = vec![0x01];
+        imports.extend(wasm_name("kernel"));
+        imports.extend(wasm_name("kernel_fork"));
+        imports.push(0x00); // func import
+        imports.push(0x00); // type index
+        bytes.extend(wasm_section(2, imports));
+        bytes
+    }
+
+    fn wasm_exporting_kernel_fork() -> Vec<u8> {
+        let mut bytes = b"\0asm\x01\0\0\0".to_vec();
+        bytes.extend(wasm_section(1, vec![0x01, 0x60, 0x00, 0x01, 0x7f]));
+        bytes.extend(wasm_section(3, vec![0x01, 0x00]));
+
+        let mut exports = vec![0x01];
+        exports.extend(wasm_name("kernel_fork"));
+        exports.push(0x00); // func export
+        exports.push(0x00); // func index
+        bytes.extend(wasm_section(7, exports));
+        bytes.extend(wasm_section(10, vec![0x01, 0x04, 0x00, 0x41, 0x00, 0x0b]));
+        bytes
     }
 
     #[test]
@@ -4320,11 +4449,7 @@ wasm = "bad.wasm"
     #[test]
     fn program_output_validation_rejects_fork_without_wpk_exports() {
         let out = tempdir("prog-out-fork-policy");
-        fs::write(
-            out.join("bad.wasm"),
-            b"\0asm\x01\0\0\0 import kernel kernel_fork",
-        )
-        .unwrap();
+        fs::write(out.join("bad.wasm"), wasm_importing_kernel_fork(&[])).unwrap();
         let m = DepsManifest::parse(
             r#"kind = "program"
 name = "badfork"
@@ -4344,6 +4469,36 @@ wasm = "bad.wasm"
         let err = validate_outputs(&m, &out).unwrap_err();
         assert!(err.contains("kernel_fork"), "got: {err}");
         assert!(err.contains("wasm-fork-instrument"), "got: {err}");
+    }
+
+    #[test]
+    fn program_output_validation_accepts_kernel_fork_exports() {
+        let out = tempdir("prog-out-kernel-export-policy");
+        fs::write(out.join("kernel.wasm"), wasm_exporting_kernel_fork()).unwrap();
+        let m = DepsManifest::parse(
+            r#"kind = "program"
+name = "kernel"
+version = "0.1.0"
+[source]
+url = "https://x.test/kernel.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Test"
+[[outputs]]
+name = "kernel"
+wasm = "kernel.wasm"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+        validate_outputs(&m, &out).unwrap();
+    }
+
+    #[test]
+    fn program_output_validation_accepts_relocatable_fork_objects() {
+        let bytes = wasm_importing_kernel_fork(&["linking", "reloc.CODE"]);
+        let failures = wasm_artifact_policy_failures(&bytes);
+        assert!(failures.is_empty(), "got: {failures:?}");
     }
 
     #[test]

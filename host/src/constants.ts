@@ -340,6 +340,28 @@ export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
   return names;
 }
 
+/** Return all custom-section names from a wasm module. */
+export function readWasmCustomSectionNames(programBytes: ArrayBuffer): string[] {
+  const src = new Uint8Array(programBytes);
+  if (!hasWasmMagic(src)) return [];
+
+  const names: string[] = [];
+  let offset = 8;
+  while (offset < src.length) {
+    const sectionId = src[offset];
+    const [sectionSize, sizeBytes] = readULEB128(src, offset + 1);
+    const contentOffset = offset + 1 + sizeBytes;
+
+    if (sectionId === 0) {
+      const [name] = readName(src, contentOffset);
+      names.push(name);
+    }
+
+    offset = contentOffset + sectionSize;
+  }
+  return names;
+}
+
 export function wasmContainsLegacyAsyncify(programBytes: ArrayBuffer): boolean {
   return containsAscii(new Uint8Array(programBytes), "asyncify_");
 }
@@ -353,9 +375,15 @@ export function wasmHasCompleteForkInstrumentation(programBytes: ArrayBuffer): b
   return WPK_FORK_EXPORTS.every((name) => exports.has(name));
 }
 
+export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
+  const customSections = readWasmCustomSectionNames(programBytes);
+  return customSections.includes("linking") ||
+    customSections.some((name) => name.startsWith("reloc."));
+}
+
 export function describeWasmArtifactPolicyFailures(
   programBytes: ArrayBuffer,
-  options: { expectedAbi?: number | null } = {},
+  options: { expectedAbi?: number | null; requireForkInstrumentation?: boolean } = {},
 ): string[] {
   const failures: string[] = [];
   if (wasmContainsLegacyAsyncify(programBytes)) {
@@ -369,16 +397,20 @@ export function describeWasmArtifactPolicyFailures(
     }
   }
 
-  const exports = new Set(readWasmExportNames(programBytes));
-  const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
-  const hasCompleteForkInstrumentation = presentWpkExports.length === WPK_FORK_EXPORTS.length;
-  if (presentWpkExports.length > 0 && !hasCompleteForkInstrumentation) {
-    const missing = WPK_FORK_EXPORTS.filter((name) => !exports.has(name));
-    failures.push(`incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}`);
-  }
+  const requireForkInstrumentation =
+    options.requireForkInstrumentation ?? !wasmIsRelocatableObject(programBytes);
+  if (requireForkInstrumentation) {
+    const exports = new Set(readWasmExportNames(programBytes));
+    const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
+    const hasCompleteForkInstrumentation = presentWpkExports.length === WPK_FORK_EXPORTS.length;
+    if (presentWpkExports.length > 0 && !hasCompleteForkInstrumentation) {
+      const missing = WPK_FORK_EXPORTS.filter((name) => !exports.has(name));
+      failures.push(`incomplete wasm-fork-instrument exports; missing ${missing.join(", ")}`);
+    }
 
-  if (wasmImportsKernelFork(programBytes) && !hasCompleteForkInstrumentation) {
-    failures.push("imports kernel.kernel_fork without complete wasm-fork-instrument exports");
+    if (wasmImportsKernelFork(programBytes) && !hasCompleteForkInstrumentation) {
+      failures.push("imports kernel.kernel_fork without complete wasm-fork-instrument exports");
+    }
   }
 
   return failures;
