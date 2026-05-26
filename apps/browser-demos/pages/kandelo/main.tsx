@@ -6,6 +6,7 @@ import * as ReactDOM from "react-dom/client";
 import { App } from "./app/App";
 import { KernelHostProvider } from "./kernel-host/react";
 import type { KernelHost } from "./kernel-host";
+import { readKandeloBootQuery } from "./url-state";
 
 const container = document.getElementById("kandelo-root");
 if (!container) {
@@ -14,6 +15,7 @@ if (!container) {
 
 const qs = new URLSearchParams(location.search);
 const demo = qs.get("demo");
+const bootQuery = readKandeloBootQuery(location.search);
 const fbDemo = qs.get("fb"); // "test" | null
 
 const mount = (host: KernelHost) => {
@@ -31,6 +33,7 @@ void (async () => {
     const { createLiveHost } = await import("./kernel-host/live-setup");
     const host = await createLiveHost({
       demo,
+      vfsUrl: bootQuery.vfsImageUrl,
       fb: fbDemo === "test" ? "test" : "none",
     });
     mount(host);

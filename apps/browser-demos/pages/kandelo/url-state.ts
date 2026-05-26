@@ -1,0 +1,176 @@
+import type {
+  BootDescriptor,
+  DescriptorMount,
+  GalleryItem,
+} from "../../../../web-libs/kandelo-session/src/kernel-host";
+
+export const VFS_IMAGE_QUERY_PARAM = "vfs";
+
+const VFS_IMAGE_QUERY_ALIASES = [
+  VFS_IMAGE_QUERY_PARAM,
+  "vfsUrl",
+  "demoVfs",
+  "demoVfsUrl",
+  "image",
+] as const;
+
+export interface KandeloBootQuery {
+  vfsImageUrl: string | null;
+}
+
+export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery {
+  const params = new URLSearchParams(search);
+  return {
+    vfsImageUrl: normalizeVfsImageUrl(firstVfsImageQueryValue(params)),
+  };
+}
+
+export function galleryItemUrl(
+  item: GalleryItem,
+  href = currentHref(),
+): string {
+  const url = new URL(href);
+  url.searchParams.delete("demo");
+  url.searchParams.delete("idle");
+  clearVfsImageQueryParams(url.searchParams);
+  if (item.vfsImageUrl) {
+    url.searchParams.set(VFS_IMAGE_QUERY_PARAM, item.vfsImageUrl);
+  }
+  return url.href;
+}
+
+export function navigateToGalleryItemUrl(item: GalleryItem): void {
+  const next = galleryItemUrl(item);
+  if (next === window.location.href) return;
+  window.location.assign(next);
+}
+
+export function vfsImageUrlFromDescriptor(
+  descriptor: BootDescriptor,
+  baseHref = currentHref(),
+): string | null {
+  const root = descriptor.mounts.find((mount) =>
+    mount.path === "/" &&
+    mount.source === "image" &&
+    typeof mount.ref === "string"
+  );
+  const ref = root?.ref ?? null;
+  if (!isUrlLikeImageRef(ref)) return null;
+  return normalizeVfsImageUrl(ref, baseHref);
+}
+
+export function descriptorWithVfsImageUrl(
+  descriptor: BootDescriptor,
+  vfsImageUrl: string,
+  opts: {
+    id?: string;
+    title?: string;
+    packages?: string[];
+  } = {},
+): BootDescriptor {
+  const normalizedVfsImageUrl = normalizeVfsImageUrl(vfsImageUrl) ?? vfsImageUrl;
+  const id = opts.id ?? demoIdFromVfsImageUrl(normalizedVfsImageUrl);
+  return {
+    ...descriptor,
+    id,
+    title: opts.title ?? titleFromVfsImageUrl(normalizedVfsImageUrl),
+    packages: opts.packages ?? descriptor.packages.slice(),
+    mounts: mountsWithRootImageUrl(descriptor.mounts, normalizedVfsImageUrl),
+  };
+}
+
+export function mountsWithRootImageUrl(
+  mounts: DescriptorMount[],
+  vfsImageUrl: string,
+): DescriptorMount[] {
+  let replaced = false;
+  const next = mounts.map((mount) => {
+    if (mount.path !== "/" || mount.source !== "image") return { ...mount };
+    replaced = true;
+    return { ...mount, ref: vfsImageUrl, readonly: false };
+  });
+  if (!replaced) {
+    next.unshift({ path: "/", source: "image", ref: vfsImageUrl, readonly: false });
+  }
+  return next;
+}
+
+export function normalizeVfsImageUrl(
+  raw: string | null | undefined,
+  baseHref = currentHref(),
+): string | null {
+  const trimmed = nonEmpty(raw);
+  if (!trimmed) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed, baseHref);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  return url.href;
+}
+
+export function demoIdFromVfsImageUrl(vfsImageUrl: string): string {
+  let name = "custom-vfs";
+  try {
+    const url = new URL(vfsImageUrl, currentHref());
+    name = url.pathname.split("/").filter(Boolean).pop() ?? name;
+  } catch {
+    name = vfsImageUrl.split(/[/?#]/).filter(Boolean).pop() ?? name;
+  }
+  name = name
+    .replace(/\.vfs(?:\.zst)?$/i, "")
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+  return name || "custom-vfs";
+}
+
+export function titleFromVfsImageUrl(vfsImageUrl: string): string {
+  const id = demoIdFromVfsImageUrl(vfsImageUrl);
+  if (id === "custom-vfs") return "Custom VFS image";
+  return id
+    .split(/[-_.]+/)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function firstVfsImageQueryValue(params: URLSearchParams): string | null {
+  for (const key of VFS_IMAGE_QUERY_ALIASES) {
+    const value = nonEmpty(params.get(key));
+    if (value) return value;
+  }
+  return null;
+}
+
+function clearVfsImageQueryParams(params: URLSearchParams): void {
+  for (const key of VFS_IMAGE_QUERY_ALIASES) {
+    params.delete(key);
+  }
+}
+
+function nonEmpty(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function isUrlLikeImageRef(value: string | null | undefined): boolean {
+  const trimmed = nonEmpty(value);
+  if (!trimmed) return false;
+  return (
+    /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../")
+  );
+}
+
+function currentHref(): string {
+  return typeof window === "undefined" ? "https://kandelo.local/pages/kandelo/" : window.location.href;
+}
+
+function currentSearch(): string {
+  return typeof window === "undefined" ? "" : window.location.search;
+}
