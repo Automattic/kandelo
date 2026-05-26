@@ -6,11 +6,11 @@ const appUrl = (path: string): string => {
 };
 
 test("Kandelo gallery launch updates the browser URL with a VFS image", async ({ page }) => {
-  await page.goto(appUrl("/pages/kandelo/?mock=1&idle=1"), {
+  await page.goto(appUrl("/pages/kandelo/?demo=shell"), {
     waitUntil: "domcontentloaded",
   });
 
-  await page.getByRole("button", { name: /browse all presets/i }).click();
+  await page.getByRole("button", { name: "Gallery" }).click();
   await expect(page.getByRole("heading", { name: "Gallery" })).toBeVisible();
 
   await page
@@ -22,14 +22,13 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
 
   await expect
     .poll(() => new URL(page.url()).searchParams.get("vfs"))
-    .toContain("/mock-vfs/node.vfs.zst#node");
+    .toContain("/node-vfs.vfs.zst#node");
   const url = new URL(page.url());
   expect(url.searchParams.has("demo")).toBe(false);
-  expect(url.searchParams.has("idle")).toBe(false);
 });
 
 test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) => {
-  await page.goto(appUrl("/pages/kandelo/?mock=1&idle=1"), {
+  await page.goto(appUrl("/pages/kandelo/?demo=shell"), {
     waitUntil: "domcontentloaded",
   });
 
@@ -72,7 +71,7 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
       accent: "#2f6f73",
       glyph: "st",
       estimatedUrlBytes: 120,
-    }, "https://kandelo.dev/pages/kandelo/?mock=1&idle=1&demo=shell");
+    }, "https://kandelo.dev/pages/kandelo/?demo=shell");
     return {
       href,
       parsed: readKandeloBootQuery("?demo=site&vfs=https%3A%2F%2Fcdn.example.invalid%2Fsite.vfs.zst"),
@@ -85,7 +84,6 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
   const url = new URL(result.href);
   expect(url.searchParams.has("demo")).toBe(false);
   expect(url.searchParams.get("vfs")).toBe("https://cdn.example.invalid/site.vfs.zst");
-  expect(url.searchParams.has("idle")).toBe(false);
   expect(result.parsed).toEqual({
     vfsImageUrl: "https://cdn.example.invalid/site.vfs.zst",
   });
@@ -94,7 +92,7 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
 });
 
 test("Kandelo service worker app probe does not capture the shell page client", async ({ page }) => {
-  await page.goto(appUrl("/pages/kandelo/?mock=1&idle=1"), {
+  await page.goto(appUrl("/pages/kandelo/?demo=shell"), {
     waitUntil: "domcontentloaded",
   });
 
@@ -104,7 +102,7 @@ test("Kandelo service worker app probe does not capture the shell page client", 
     await response.text();
   });
 
-  await page.goto(appUrl("/pages/kandelo/?mock=1&idle=1&vfs=https%3A%2F%2Fcdn.example.invalid%2Fshell.vfs.zst"), {
+  await page.goto(appUrl("/pages/kandelo/?vfs=https%3A%2F%2Fcdn.example.invalid%2Fshell.vfs.zst"), {
     waitUntil: "domcontentloaded",
   });
 

@@ -1,5 +1,4 @@
-// Builds a LiveKernelHost over a real BrowserKernel. Used by default when the
-// kandelo page is loaded (use `?mock=1` for MockKernelHost).
+// Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
 import {
@@ -41,7 +40,7 @@ import {
   type DemoAssetConfig,
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
-import { PRESET_LIBRARY } from "../fixtures";
+import { PRESET_LIBRARY } from "../presets";
 import {
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
@@ -345,6 +344,7 @@ const INIT_ENV_PROFILES: Record<InitEnvProfile, () => string[]> = {
 export type FbDemo = "none" | "test";
 
 export interface CreateLiveHostOptions {
+  demo?: string | null;
   vfsUrl?: string | null;
   fb?: FbDemo;
 }
@@ -355,7 +355,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const localGalleryItems = liveGalleryItems();
 
-  const initialDescriptor = descriptorForBootQuery(opts.vfsUrl);
+  const initialDescriptor = descriptorForBootQuery(opts.vfsUrl, opts.demo);
   const host = new LiveKernelHost({
     status: "booting",
     descriptor: initialDescriptor,
@@ -386,7 +386,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
           sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
           tick?.("service worker active; reloading to enable cross-origin isolation...");
           window.location.reload();
-          return await new Promise<never>((_, reject) => {
+          return new Promise<never>((_, reject) => {
             window.setTimeout(() => {
               reject(new Error(
                 "Kandelo requested a reload to enable cross-origin isolation, but the page did not unload.",
@@ -399,7 +399,11 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
           throw err;
         });
     }
-    return serviceWorkerReady;
+    const ready = serviceWorkerReady;
+    if (!ready) {
+      throw new Error("Kandelo service worker readiness promise was not initialized.");
+    }
+    return ready;
   };
 
   void startBoot(host, profileForDescriptor(initialDescriptor, opts.fb), initialDescriptor);
@@ -485,9 +489,12 @@ function showBootError(
   host.setStatus("error");
 }
 
-function descriptorForBootQuery(vfsUrl: string | null | undefined): BootDescriptor {
+function descriptorForBootQuery(
+  vfsUrl: string | null | undefined,
+  demo: string | null | undefined,
+): BootDescriptor {
   const normalizedVfsUrl = normalizeVfsImageUrl(vfsUrl);
-  if (!normalizedVfsUrl) return descriptorFor("shell");
+  if (!normalizedVfsUrl) return descriptorFor(normalizeDemoId(demo) ?? "shell");
 
   const liveId = liveDemoIdForVfsImageUrl(normalizedVfsUrl);
   const base = descriptorFor(liveId ?? "shell");
