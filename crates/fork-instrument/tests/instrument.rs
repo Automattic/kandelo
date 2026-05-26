@@ -708,6 +708,7 @@ fn two_calls_assign_sequential_call_idx() {
     validate(&bytes);
     let module = Module::from_buffer(&bytes).unwrap();
     let caller = func_by_name(&module, "caller");
+    let _unwind_save = entry_wrapper_seq(&module, caller);
     let f = local_func(&module, caller);
 
     // Extract every `i32.const N` immediately before a `local.set`

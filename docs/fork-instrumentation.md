@@ -257,10 +257,21 @@ whether the per-region transform applies, and routes to either
 `instrument_one_function_nested_switch` or `instrument_one_function_switch`
 accordingly.
 
-Indirect calls (`call_indirect`) are conservatively treated as fork-path
-landings whenever they may dispatch to a fork-path-reachable callee —
-switch-dispatch handles them identically to direct calls (the call's
-table index is spilled as part of the args).
+Indirect calls (`call_indirect`) are treated as fork-path landings when they
+may dispatch to a fork-path-reachable callee in the same table with the same
+signature. Discovery is table-aware: active element segments populate their
+own table, passive segments count only for tables that can receive them via
+`table.init`, and declared segments do not count as table initializers.
+
+To keep dynamic interpreter/function-pointer-heavy runtimes resource-safe,
+indirect closure is bounded to two dispatch hops. Direct callers of functions
+found through those hops are still included. This covers normal C callback
+fork paths and QuickJS's C-function trampoline shape
+(`JS_CallInternal -> js_call_c_function -> js_os_exec`) without turning one
+generic dispatcher into whole-runtime instrumentation. A program whose only
+fork path requires three or more nested function-pointer dispatches is outside
+the current static-discovery guarantee and needs a more precise value-flow
+analysis before it can be supported safely.
 
 ## Per-function transform — before/after WAT
 
