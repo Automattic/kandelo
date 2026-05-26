@@ -3,8 +3,11 @@ name = "mariadb-vfs"
 version = "0.1.0"
 kernel_abi = 7
 # Implicit deps: build-mariadb-vfs-image.ts
-#   - reads mariadbd + bootstrap SQL from `packages/registry/mariadb/mariadb-install{,-64}/`
-#     (side effect of `build-mariadb.sh`)
+#   - reads mariadbd via `resolveBinary("programs/mariadb/mariadbd.wasm")`
+#     or `resolveBinary("programs/wasm64/mariadb/mariadbd.wasm")`.
+#     Bootstrap SQL prefers `packages/registry/mariadb/mariadb-install{,-64}/`
+#     when a local source build has populated it, otherwise it is extracted
+#     from the MariaDB source tarball on demand.
 #   - calls `resolveBinary("programs/dash.wasm")` (strict — throws if missing)
 #     to bake `/bin/dash` + `/bin/sh` symlink for dinit's scripted bootstrap services
 #   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()` (strict —

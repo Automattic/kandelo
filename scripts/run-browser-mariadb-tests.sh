@@ -104,8 +104,8 @@ is_expected_fail() {
 check_prereqs() {
     local missing=0
 
-    if [ ! -f "$INSTALL_DIR/bin/mariadbd" ]; then
-        echo "ERROR: mariadbd not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
+    if [ ! -f "$INSTALL_DIR/bin/mariadbd.wasm" ]; then
+        echo "ERROR: mariadbd.wasm not found. Run: bash packages/registry/mariadb/build-mariadb.sh" >&2
         missing=1
     fi
 

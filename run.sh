@@ -150,8 +150,8 @@ has_programs() {
 has_nginx()         { pkg_has_output nginx nginx.wasm || [ -f "$REPO_ROOT/packages/registry/nginx/nginx.wasm" ]; }
 has_php()           { pkg_has_output php php.wasm || [ -f "$REPO_ROOT/packages/registry/php/php-src/sapi/cli/php" ]; }
 has_php_fpm()       { pkg_has_output php php-fpm.wasm || [ -f "$REPO_ROOT/packages/registry/php/php-src/sapi/fpm/php-fpm" ]; }
-has_mariadb()       { pkg_has_output mariadb mariadbd.wasm || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd" ]; }
-has_mariadb64()     { pkg_has_output mariadb mariadbd.wasm wasm64 || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64/bin/mariadbd" ]; }
+has_mariadb()       { pkg_has_output mariadb mariadbd.wasm || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm" ]; }
+has_mariadb64()     { pkg_has_output mariadb mariadbd.wasm wasm64 || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64/bin/mariadbd.wasm" ]; }
 has_mariadb_vfs()   { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst; }
 has_mariadb64_vfs() { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst wasm64; }
 has_wordpress()     { [ -f "$REPO_ROOT/packages/registry/wordpress/wordpress/wp-settings.php" ]; }

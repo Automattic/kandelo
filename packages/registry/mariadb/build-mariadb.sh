@@ -440,10 +440,11 @@ if [ -f "$MYSQLD_BIN" ]; then
     ls -lh "$MYSQLD_BIN"
     file "$MYSQLD_BIN" || true
 
-    # Install to output directory
+    # Install the manifest/resolver-facing artifact. Keep the no-extension
+    # copy as a local-build compatibility alias for older demo/test workflows.
     mkdir -p "$INSTALL_DIR/bin" "$INSTALL_DIR/share/mysql"
-    cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/"
-    cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/mariadbd.wasm"  # For Vite browser bundling
+    cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/mariadbd.wasm"
+    cp "$MYSQLD_BIN" "$INSTALL_DIR/bin/mariadbd"
 
     # Copy system tables SQL for bootstrap
     if [ -d "$SRC_DIR/scripts" ]; then

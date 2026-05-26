@@ -46,6 +46,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # Exercise GitHub's post-Node-20 action runtime now, before it becomes
+  # the runner default for actions that still declare node20.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
