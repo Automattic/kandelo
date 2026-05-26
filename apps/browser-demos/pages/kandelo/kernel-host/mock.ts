@@ -34,6 +34,13 @@ import {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const mockVfsImageUrl = (id: string): string => {
+  const base = typeof window === "undefined"
+    ? "https://kandelo.local/pages/kandelo/"
+    : window.location.href;
+  return new URL(`/mock-vfs/${id}.vfs.zst#${id}`, base).href;
+};
+
 type Listener<T> = (arg: T) => void;
 class ListenerSet<T> {
   private listeners = new Set<Listener<T>>();
@@ -414,6 +421,7 @@ export class MockKernelHost implements KernelHost {
       base: p.base,
       packages: p.packages,
       bootCommand: p.bootCommand,
+      vfsImageUrl: mockVfsImageUrl(p.id),
       accent: p.accent,
       glyph: p.glyph,
       estimatedUrlBytes: p.estimatedUrlBytes,

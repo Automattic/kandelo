@@ -12,7 +12,11 @@ import { App } from "./app/App";
 import { KernelHostProvider } from "./kernel-host/react";
 import { MockKernelHost } from "./kernel-host/mock";
 import type { KernelHost } from "./kernel-host";
-import { CURRENT_DESCRIPTOR_TEMPLATE, PRESET_LIBRARY } from "./fixtures";
+import { CURRENT_DESCRIPTOR_TEMPLATE } from "./fixtures";
+import {
+  descriptorWithVfsImageUrl,
+  readKandeloBootQuery,
+} from "./url-state";
 
 const container = document.getElementById("kandelo-root");
 if (!container) {
@@ -22,7 +26,7 @@ if (!container) {
 const qs = new URLSearchParams(location.search);
 const useMock = qs.get("mock") === "1";
 const useIdle = qs.get("idle") === "1";
-const demo = qs.get("demo");
+const bootQuery = readKandeloBootQuery(location.search);
 const fbDemo = qs.get("fb"); // "test" | null
 
 const mount = (host: KernelHost) => {
@@ -36,15 +40,12 @@ const mount = (host: KernelHost) => {
 };
 
 if (useMock) {
-  const preset = PRESET_LIBRARY.find((p) => p.id === demo);
-  const descriptor = preset
-    ? {
-      ...CURRENT_DESCRIPTOR_TEMPLATE,
-      id: preset.id,
-      title: preset.title,
-      packages: preset.packages,
-      boot: { ...CURRENT_DESCRIPTOR_TEMPLATE.boot, argv: preset.bootCommand },
-    }
+  const descriptor = bootQuery.vfsImageUrl
+    ? descriptorWithVfsImageUrl(
+      CURRENT_DESCRIPTOR_TEMPLATE,
+      bootQuery.vfsImageUrl,
+      { packages: [] },
+    )
     : undefined;
   mount(new MockKernelHost(
     useIdle
@@ -58,7 +59,7 @@ if (useMock) {
     try {
       const { createLiveHost } = await import("./kernel-host/live-setup");
       const host = await createLiveHost({
-        demo,
+        vfsUrl: bootQuery.vfsImageUrl,
         fb: fbDemo === "test" ? "test" : "none",
       });
       mount(host);
