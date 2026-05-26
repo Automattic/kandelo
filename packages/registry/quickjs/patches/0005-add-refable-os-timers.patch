@@ -1,0 +1,122 @@
+Subject: os timers: support ref/unref state for embedders
+
+Node-compatible timer objects need `unref()` to stop timeout handles from
+keeping the process alive after application work has finished. QuickJS's
+stdlib timers previously had no ref state, so a timeout created by npm's
+agent could keep the Node-compatible runtime alive after a fetch/extract
+completed.
+---
+diff --git a/quickjs-libc.c b/quickjs-libc.c
+--- a/quickjs-libc.c
++++ b/quickjs-libc.c
+@@ -134,6 +134,7 @@ typedef struct {
+     struct list_head link;
+     int64_t timer_id;
+     uint8_t repeats:1;
++    uint8_t ref:1;
+     int64_t timeout;
+     int64_t delay;
+     JSValue func;
+@@ -2413,6 +2414,7 @@ static JSValue js_os_setTimeout(JSContext *ctx, JSValueConst this_val,
+     if (ts->next_timer_id > MAX_SAFE_INTEGER)
+         ts->next_timer_id = 1;
+     th->repeats = (magic > 0);
++    th->ref = 1;
+     th->timeout = js__hrtime_ms() + delay;
+     th->delay = delay;
+     th->func = JS_DupValue(ctx, func);
+@@ -2450,6 +2452,38 @@ static JSValue js_os_clearTimeout(JSContext *ctx, JSValueConst this_val,
+     return JS_UNDEFINED;
+ }
+ 
++static JSValue js_os_unrefTimeout(JSContext *ctx, JSValueConst this_val,
++                                  int argc, JSValueConst *argv)
++{
++    JSRuntime *rt = JS_GetRuntime(ctx);
++    JSThreadState *ts = js_get_thread_state(rt);
++    JSOSTimer *th;
++    int64_t timer_id;
++
++    if (JS_ToInt64(ctx, &timer_id, argv[0]))
++        return JS_EXCEPTION;
++    th = find_timer_by_id(ts, timer_id);
++    if (th)
++        th->ref = 0;
++    return JS_UNDEFINED;
++}
++
++static JSValue js_os_refTimeout(JSContext *ctx, JSValueConst this_val,
++                                int argc, JSValueConst *argv)
++{
++    JSRuntime *rt = JS_GetRuntime(ctx);
++    JSThreadState *ts = js_get_thread_state(rt);
++    JSOSTimer *th;
++    int64_t timer_id;
++
++    if (JS_ToInt64(ctx, &timer_id, argv[0]))
++        return JS_EXCEPTION;
++    th = find_timer_by_id(ts, timer_id);
++    if (th)
++        th->ref = 1;
++    return JS_UNDEFINED;
++}
++
+ /* return a promise */
+ static JSValue js_os_sleepAsync(JSContext *ctx, JSValueConst this_val,
+                                 int argc, JSValueConst *argv)
+@@ -2474,6 +2508,7 @@ static JSValue js_os_sleepAsync(JSContext *ctx, JSValueConst this_val,
+         return JS_EXCEPTION;
+     }
+     th->timer_id = -1;
++    th->ref = 1;
+     th->timeout = js__hrtime_ms() + delay;
+     th->func = JS_DupValue(ctx, resolving_funcs[0]);
+     list_add_tail(&th->link, &ts->os_timers);
+@@ -2502,9 +2537,9 @@ static int js_os_run_timers(JSRuntime *rt, JSContext *ctx, JSThreadState *ts, in
+ {
+     JSValue func;
+     JSOSTimer *th;
+-    int64_t cur_time, delay;
++    int64_t cur_time, delay, min_delay_all;
+     struct list_head *el;
+-    int r;
++    int r, has_ref_timer;
+ 
+     if (list_empty(&ts->os_timers)) {
+         *min_delay = -1;
+@@ -2512,13 +2547,16 @@ static int js_os_run_timers(JSRuntime *rt, JSContext *ctx, JSThreadState *ts, in
+     }
+ 
+     cur_time = js__hrtime_ms();
+-    *min_delay = INT32_MAX;
++    min_delay_all = INT32_MAX;
++    has_ref_timer = 0;
+ 
+     list_for_each(el, &ts->os_timers) {
+         th = list_entry(el, JSOSTimer, link);
+         delay = th->timeout - cur_time;
++        if (th->ref)
++            has_ref_timer = 1;
+         if (delay > 0) {
+-            *min_delay = min_int(*min_delay, delay);
++            min_delay_all = min_int(min_delay_all, delay);
+         } else {
+             *min_delay = 0;
+             func = JS_DupValueRT(rt, th->func);
+@@ -2532,6 +2570,7 @@ static int js_os_run_timers(JSRuntime *rt, JSContext *ctx, JSThreadState *ts, in
+         }
+     }
+ 
++    *min_delay = has_ref_timer ? min_delay_all : -1;
+     return 0;
+ }
+ 
+@@ -4344,6 +4383,8 @@ static const JSCFunctionListEntry js_os_funcs[] = {
+     // per spec: both functions can cancel timeouts and intervals
+     JS_CFUNC_DEF("clearTimeout", 1, js_os_clearTimeout ),
+     JS_CFUNC_DEF("clearInterval", 1, js_os_clearTimeout ),
++    JS_CFUNC_DEF("unrefTimeout", 1, js_os_unrefTimeout ),
++    JS_CFUNC_DEF("refTimeout", 1, js_os_refTimeout ),
+     JS_CFUNC_DEF("sleepAsync", 1, js_os_sleepAsync ),
+     JS_PROP_STRING_DEF("platform", OS_PLATFORM, 0 ),
+     JS_CFUNC_DEF("getcwd", 0, js_os_getcwd ),

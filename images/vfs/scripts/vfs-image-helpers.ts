@@ -54,7 +54,7 @@ export function walkAndWrite(
         } else if (lstat.isFile()) {
           if (opts?.exclude?.(rel)) continue;
           const data = readFileSync(full);
-          writeVfsBinary(fs, mountPath, new Uint8Array(data), 0o644);
+          writeVfsBinary(fs, mountPath, new Uint8Array(data), lstat.mode & 0o777);
           count++;
         }
       } catch {

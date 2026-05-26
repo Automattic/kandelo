@@ -38,6 +38,11 @@ fi
 # read.
 CC="wasm32posix-cc"
 AR="wasm32posix-ar"
+# If CC/AR arrived exported from the dev shell, assigning above preserves
+# the export attribute in bash. Keep these as shell locals so nested host
+# cargo helpers still use the host compiler while this script invokes the
+# wasm tools explicitly via "$CC"/"$AR".
+export -n CC AR 2>/dev/null || true
 
 SYSROOT="$REPO_ROOT/sysroot"
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -190,11 +195,11 @@ for src in "${QJS_CLI_SRCS[@]}"; do
     CLI_OBJS+=("$obj")
 done
 
-# QuickJS records the wasm __stack_pointer at JS_NewContext as `stack_top`,
-# then enforces a 1 MiB JS_DEFAULT_STACK_SIZE budget. Bump the wasm stack so
-# the first JS call has headroom. lld only has a positive `--stack-first`
-# switch on this toolchain; omitting it keeps the normal stack-last layout.
-QJS_STACK_FLAGS=(-Wl,-z,stack-size=8388608)
+# QuickJS and npm's CommonJS loader use enough nested C frames that the
+# browser worker can exhaust an 8 MiB Wasm stack while loading npm itself.
+# Keep the normal stack-last layout, but reserve more room for Node-compat
+# workloads that load large dependency graphs.
+QJS_STACK_FLAGS=(-Wl,-z,stack-size=33554432)
 
 echo "Linking qjs..."
 $CC "${CLI_OBJS[@]}" "${OBJS[@]}" -lm "${QJS_STACK_FLAGS[@]}" -o "$BIN_DIR/qjs.wasm"
@@ -293,10 +298,14 @@ if [ "$BUILD_NODE" = "1" ]; then
     echo "Optimizing node with wasm-opt -O2..."
     $WASM_OPT -O2 "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm"
 
-    # Fork instrumentation — must run LAST.
-    echo "Applying fork instrumentation to node..."
-    "$FORK_INSTRUMENT" "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm.instr"
-    mv "$BIN_DIR/node.wasm.instr" "$BIN_DIR/node.wasm"
+    if [ "${QJS_INSTRUMENT_NODE:-0}" = "1" ]; then
+        # Fork instrumentation — must run LAST.
+        echo "Applying fork instrumentation to node..."
+        "$FORK_INSTRUMENT" "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm.instr"
+        mv "$BIN_DIR/node.wasm.instr" "$BIN_DIR/node.wasm"
+    else
+        echo "Skipping fork instrumentation for node."
+    fi
 
     NODE_SIZE=$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')
 fi
@@ -325,7 +334,7 @@ fi
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary quickjs "$BIN_DIR/qjs.wasm" qjs.wasm
+install_local_binary quickjs "$BIN_DIR/qjs.wasm"
 if [ "$BUILD_NODE" = "1" ] && [ -f "$BIN_DIR/node.wasm" ]; then
-    install_local_binary node "$BIN_DIR/node.wasm" node.wasm
+    install_local_binary node "$BIN_DIR/node.wasm"
 fi

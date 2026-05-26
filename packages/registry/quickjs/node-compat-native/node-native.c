@@ -2,6 +2,9 @@
 #include "cutils.h"
 
 #include <errno.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -104,6 +107,142 @@ static JSValue js_node_native_set_raw_mode(JSContext *ctx,
     return JS_UNDEFINED;
 }
 
+static int native_errno(int ret)
+{
+    return ret == -1 ? -errno : ret;
+}
+
+static JSValue js_node_native_chmod(JSContext *ctx,
+                                    JSValueConst this_val,
+                                    int argc,
+                                    JSValueConst *argv)
+{
+    const char *path;
+    int32_t mode;
+    int ret;
+
+    if (argc < 2)
+        return JS_ThrowTypeError(ctx, "chmod(path, mode)");
+    path = JS_ToCString(ctx, argv[0]);
+    if (!path)
+        return JS_EXCEPTION;
+    if (JS_ToInt32(ctx, &mode, argv[1])) {
+        JS_FreeCString(ctx, path);
+        return JS_EXCEPTION;
+    }
+    ret = native_errno(chmod(path, (mode_t)mode));
+    JS_FreeCString(ctx, path);
+    return JS_NewInt32(ctx, ret);
+}
+
+static JSValue js_node_native_fchmod(JSContext *ctx,
+                                     JSValueConst this_val,
+                                     int argc,
+                                     JSValueConst *argv)
+{
+    int32_t fd;
+    int32_t mode;
+
+    if (argc < 2)
+        return JS_ThrowTypeError(ctx, "fchmod(fd, mode)");
+    if (JS_ToInt32(ctx, &fd, argv[0]))
+        return JS_EXCEPTION;
+    if (JS_ToInt32(ctx, &mode, argv[1]))
+        return JS_EXCEPTION;
+    return JS_NewInt32(ctx, native_errno(fchmod(fd, (mode_t)mode)));
+}
+
+static JSValue js_node_native_chown(JSContext *ctx,
+                                    JSValueConst this_val,
+                                    int argc,
+                                    JSValueConst *argv)
+{
+    const char *path;
+    int32_t uid;
+    int32_t gid;
+    int ret;
+
+    if (argc < 3)
+        return JS_ThrowTypeError(ctx, "chown(path, uid, gid)");
+    path = JS_ToCString(ctx, argv[0]);
+    if (!path)
+        return JS_EXCEPTION;
+    if (JS_ToInt32(ctx, &uid, argv[1]) ||
+        JS_ToInt32(ctx, &gid, argv[2])) {
+        JS_FreeCString(ctx, path);
+        return JS_EXCEPTION;
+    }
+    ret = native_errno(chown(path, (uid_t)uid, (gid_t)gid));
+    JS_FreeCString(ctx, path);
+    return JS_NewInt32(ctx, ret);
+}
+
+static JSValue js_node_native_fchown(JSContext *ctx,
+                                     JSValueConst this_val,
+                                     int argc,
+                                     JSValueConst *argv)
+{
+    int32_t fd;
+    int32_t uid;
+    int32_t gid;
+
+    if (argc < 3)
+        return JS_ThrowTypeError(ctx, "fchown(fd, uid, gid)");
+    if (JS_ToInt32(ctx, &fd, argv[0]) ||
+        JS_ToInt32(ctx, &uid, argv[1]) ||
+        JS_ToInt32(ctx, &gid, argv[2]))
+        return JS_EXCEPTION;
+    return JS_NewInt32(ctx, native_errno(fchown(fd, (uid_t)uid, (gid_t)gid)));
+}
+
+static void seconds_to_timeval(double seconds, struct timeval *tv)
+{
+    time_t sec = (time_t)seconds;
+    double frac = seconds - (double)sec;
+    suseconds_t usec = (suseconds_t)(frac * 1000000.0);
+    if (usec < 0) {
+        sec -= 1;
+        usec += 1000000;
+    }
+    tv->tv_sec = sec;
+    tv->tv_usec = usec;
+}
+
+static JSValue js_node_native_futimes(JSContext *ctx,
+                                      JSValueConst this_val,
+                                      int argc,
+                                      JSValueConst *argv)
+{
+    int32_t fd;
+    double atime;
+    double mtime;
+    struct timeval tv[2];
+
+    if (argc < 3)
+        return JS_ThrowTypeError(ctx, "futimes(fd, atime, mtime)");
+    if (JS_ToInt32(ctx, &fd, argv[0]) ||
+        JS_ToFloat64(ctx, &atime, argv[1]) ||
+        JS_ToFloat64(ctx, &mtime, argv[2]))
+        return JS_EXCEPTION;
+    seconds_to_timeval(atime, &tv[0]);
+    seconds_to_timeval(mtime, &tv[1]);
+    return JS_NewInt32(ctx, native_errno(futimes(fd, tv)));
+}
+
+static JSValue js_node_native_fsync(JSContext *ctx,
+                                    JSValueConst this_val,
+                                    int argc,
+                                    JSValueConst *argv)
+{
+    int32_t fd;
+
+    if (argc < 1)
+        return JS_ThrowTypeError(ctx, "fsync(fd)");
+    if (JS_ToInt32(ctx, &fd, argv[0]))
+        return JS_EXCEPTION;
+    return JS_NewInt32(ctx, native_errno(fsync(fd)));
+}
+
 static const JSCFunctionListEntry node_native_funcs[] = {
     JS_CFUNC_DEF("evalScriptAsFunction", 2, js_node_native_eval_script_as_function),
     JS_CFUNC_DEF("createHash", 1, js_node_native_create_hash),
@@ -127,6 +266,12 @@ static const JSCFunctionListEntry node_native_funcs[] = {
     JS_CFUNC_DEF("jsonParse", 1, js_node_native_json_parse),
     JS_CFUNC_DEF("decodeUtf8", 1, js_node_native_decode_utf8),
     JS_CFUNC_DEF("setRawMode", 2, js_node_native_set_raw_mode),
+    JS_CFUNC_DEF("chmod", 2, js_node_native_chmod),
+    JS_CFUNC_DEF("fchmod", 2, js_node_native_fchmod),
+    JS_CFUNC_DEF("chown", 3, js_node_native_chown),
+    JS_CFUNC_DEF("fchown", 3, js_node_native_fchown),
+    JS_CFUNC_DEF("futimes", 3, js_node_native_futimes),
+    JS_CFUNC_DEF("fsync", 1, js_node_native_fsync),
 };
 
 static int node_native_module_init(JSContext *ctx, JSModuleDef *m)

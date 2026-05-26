@@ -955,6 +955,14 @@ int main(int argc, char **argv)
 
         if (!strcmp(arg, "-h") || !strcmp(arg, "--help")) {
             help();
+        } else if (!strcmp(arg, "--v8-options")) {
+            /* Some legacy CLI tools (grunt-cli via v8flags) discover
+               supported runtime flags by spawning `node --v8-options`.
+               This runtime is not V8, but returning a valid, empty options
+               section lets those probes complete instead of falling through
+               into the interactive REPL. */
+            printf("V8 options:\n\nOptions:\n");
+            return 0;
         } else if (!strcmp(arg, "-v") || !strcmp(arg, "--version")) {
             printf("v22.0.0\n");
             return 0;
@@ -1075,8 +1083,22 @@ int main(int argc, char **argv)
 
         JS_FreeValue(ctx, global);
 
-        if (eval_file(ctx, filename, module))
-            goto fail;
+        if (module == 1 || (module < 0 && js__has_suffix(filename, ".mjs"))) {
+            if (eval_file(ctx, filename, module))
+                goto fail;
+        } else {
+            JSValue run_main = JS_GetPropertyStr(ctx, global, "__nodeRunMain");
+            JSValue arg = JS_NewString(ctx, resolved);
+            JSValue val = JS_Call(ctx, run_main, global, 1, &arg);
+            JS_FreeValue(ctx, arg);
+            JS_FreeValue(ctx, run_main);
+            val = js_std_await(ctx, val);
+            if (JS_IsException(val)) {
+                JS_FreeValue(ctx, val);
+                goto fail;
+            }
+            JS_FreeValue(ctx, val);
+        }
     } else {
         /* Interactive REPL */
         interactive = 1;
