@@ -1,12 +1,8 @@
 // Inspector pane — live internals tabs.
 //
-// Each tab reads through the KernelHost interface. MockKernelHost satisfies
-// every method with fixture data so the UI is exercisable end-to-end.
-// LiveKernelHost throws "not implemented" for methods whose kernel-side
-// endpoints haven't landed yet (procs/config/syscalls); we
-// catch those and render a "host endpoint missing" placeholder so designers
-// can still review the visual layout against the mock data while the kernel
-// gaps fill in.
+// Each tab reads through the KernelHost interface. Methods whose live
+// kernel-side endpoints are unavailable throw a clear "not implemented"
+// error; the pane catches those and renders a host-endpoint placeholder.
 
 import * as React from "react";
 import { useKernelHost, useDmesg } from "../kernel-host/react";

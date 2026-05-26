@@ -167,8 +167,7 @@ const ShellTerminalHost: React.FC<{
 
   React.useEffect(() => {
     // Don't open the PTY until the kernel is running. The chassis-driven
-    // status comes from useStatus; the MockKernelHost transitions to
-    // 'running' once its boot log finishes replaying.
+    // status comes from useStatus after the live boot path finishes.
     if (status !== "running") return;
     if (!containerRef.current) return;
 
