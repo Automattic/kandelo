@@ -17,6 +17,7 @@ import { parentPort } from "node:worker_threads";
 import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "./kernel-worker";
 import type { ForkFromThreadContext, ResolvedSpawnProgram } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
@@ -31,6 +32,7 @@ import {
 } from "./vfs";
 import type { MountConfig } from "./vfs/types";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
+import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
@@ -65,6 +67,7 @@ let threadAllocator: ThreadPageAllocator;
 let maxPages = DEFAULT_MAX_PAGES;
 let execPrograms: Record<string, string> = {};
 let vfsExecIO: PlatformIO | null = null;
+let rootfsMemfs: MemoryFileSystem | null = null;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
@@ -233,26 +236,33 @@ function growToMax(memory: WebAssembly.Memory, ptrWidth: 4 | 8, currentPages: nu
   }
 }
 
+function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const out = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(out).set(bytes);
+  return out;
+}
+
 function resolveExecLocal(path: string): ArrayBuffer | null {
   const mapped = execPrograms[path];
   if (mapped && existsSync(mapped)) {
     const bytes = readFileSync(mapped);
-    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    return bufferToArrayBuffer(bytes);
   }
   return null;
 }
 
 function readExecFromVfs(path: string): ArrayBuffer | null {
-  if (!vfsExecIO) return null;
+  const io = vfsExecIO;
+  if (!io) return null;
   let fd: number | null = null;
   try {
-    const st = vfsExecIO.stat(path);
+    const st = io.stat(path);
     if ((st.mode & 0o170000) === 0o040000) return null;
-    fd = vfsExecIO.open(path, 0, 0);
+    fd = io.open(path, 0, 0);
     const bytes = new Uint8Array(st.size);
     let offset = 0;
     while (offset < bytes.byteLength) {
-      const n = vfsExecIO.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
+      const n = io.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
       if (n <= 0) break;
       offset += n;
     }
@@ -261,14 +271,60 @@ function readExecFromVfs(path: string): ArrayBuffer | null {
     return null;
   } finally {
     if (fd !== null) {
-      try { vfsExecIO.close(fd); } catch {}
+      try { io.close(fd); } catch {}
     }
   }
+}
+
+async function resolveExecFromRootfs(path: string): Promise<ArrayBuffer | null> {
+  if (!rootfsMemfs) return null;
+
+  const lazy = rootfsMemfs.getLazyEntry(path);
+  if (lazy) {
+    return readLazyExecBytes(lazy.url);
+  }
+
+  try {
+    const st = rootfsMemfs.stat(path);
+    if (st.size <= 0) return null;
+    const fd = rootfsMemfs.open(path, 0, 0);
+    try {
+      const bytes = new Uint8Array(st.size);
+      let offset = 0;
+      while (offset < bytes.byteLength) {
+        const n = rootfsMemfs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
+        if (n <= 0) break;
+        offset += n;
+      }
+      return bufferToArrayBuffer(bytes.subarray(0, offset));
+    } finally {
+      rootfsMemfs.close(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function readLazyExecBytes(url: string): Promise<ArrayBuffer | null> {
+  if (/^https?:\/\//.test(url)) {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return await resp.arrayBuffer();
+  }
+
+  const path = url.startsWith("file://")
+    ? fileURLToPath(url)
+    : join(findRepoRoot(), url.replace(/^\/+/, ""));
+  if (!existsSync(path)) return null;
+  return bufferToArrayBuffer(readFileSync(path));
 }
 
 async function resolveExec(path: string): Promise<ArrayBuffer | null> {
   const local = resolveExecLocal(path);
   if (local) return local;
+
+  const fromRootfs = await resolveExecFromRootfs(path);
+  if (fromRootfs) return fromRootfs;
 
   const vfs = readExecFromVfs(path);
   if (vfs) return vfs;
@@ -348,17 +404,24 @@ function buildVirtualPlatformIO(
     ...specMounts,
     ...extras,
   ];
+  const rootMount = mounts.find((m) => m.mountPoint === "/");
+  rootfsMemfs = rootMount?.backend instanceof MemoryFileSystem
+    ? rootMount.backend
+    : null;
   return new VirtualPlatformIO(mounts, new NodeTimeProvider());
 }
 
 function cleanupSessionDir(): void {
-  if (!sessionDir) return;
-  try {
-    rmSync(sessionDir, { recursive: true, force: true });
-  } catch {
-    // best-effort: tests should still pass even if cleanup races a hold
+  if (sessionDir) {
+    try {
+      rmSync(sessionDir, { recursive: true, force: true });
+    } catch {
+      // best-effort: tests should still pass even if cleanup races a hold
+    }
   }
   sessionDir = null;
+  vfsExecIO = null;
+  rootfsMemfs = null;
 }
 
 async function handleInit(msg: InitMessage) {

@@ -1,9 +1,8 @@
 /**
  * Build a pre-built VFS image containing the full shell environment.
- * The actual layout (dash, coreutils symlinks, grep/sed symlinks,
- * extended tool symlinks, magic database, lazy archive references)
- * lives in `shell-vfs-build.ts` so the WordPress (SQLite/LAMP) demos
- * can reuse it.
+ * The base utility layout comes from the canonical rootfs image. The shell
+ * overlay layout lives in `shell-vfs-build.ts` so the WordPress (SQLite/LAMP)
+ * demos can reuse it where they still build standalone images.
  *
  * Produces: apps/browser-demos/public/shell.vfs.zst
  *
@@ -31,17 +30,23 @@ import {
 
 const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
 
+function resolveRootfsImagePath(): string {
+  try {
+    return resolveBinary("rootfs.vfs");
+  } catch {
+    return resolveBinary("programs/rootfs.vfs");
+  }
+}
+
 async function main() {
-  // 32 MB leaves room for dash, fbDOOM, symlinks, magic, and
-  // lazy-archive stubs.
-  // The eager binaries (bash, coreutils, etc.) are not baked here. Utility
-  // stubs + sizes are baked as lazy VFS metadata and their bytes are fetched
-  // on first exec.
-  const sab = new SharedArrayBuffer(32 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
+  const rootfsBytes = readFileSync(resolveRootfsImagePath());
+  const fs = MemoryFileSystem.fromImage(new Uint8Array(rootfsBytes), {
+    maxByteLength: 256 * 1024 * 1024,
+  });
 
   console.log("Populating shell environment...");
-  populateShellEnvironment(fs, { eagerBinaries: false });
+  populateShellEnvironment(fs, { eagerBinaries: false, baseProvided: true });
+
   console.log("Populating Doom runtime...");
   populateDoomRuntime(fs);
   writeKandeloDemoConfig(fs, {

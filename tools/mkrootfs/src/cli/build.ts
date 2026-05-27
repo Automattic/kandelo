@@ -18,6 +18,9 @@ Required:
 
 Options:
   --repo-root <path>     root for resolving relative src= and url= paths (default: cwd)
+  --manifest-fragment <path>
+                        additional manifest to apply after MANIFEST (repeatable)
+  --sab-size <bytes>     backing SharedArrayBuffer size (default: 16777216)
   --kernel-abi <n>       declare exact kernel ABI required by this VFS image
   --quiet                suppress non-fatal override warnings
   --help                 print this message
@@ -28,6 +31,8 @@ interface ParsedArgs {
   sourceTree: string;
   output: string;
   repoRoot?: string;
+  manifestFragments: string[];
+  sabSize?: number;
   kernelAbi?: number;
   quiet: boolean;
 }
@@ -38,6 +43,8 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
   const positional: string[] = [];
   let output: string | undefined;
   let repoRoot: string | undefined;
+  const manifestFragments: string[] = [];
+  let sabSize: number | undefined;
   let kernelAbi: number | undefined;
   let quiet = false;
 
@@ -61,6 +68,18 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
       output = v;
       continue;
     }
+    if (a === "--manifest-fragment") {
+      const v = args[++i];
+      if (v === undefined) throw new UsageError(`flag "${a}" requires a value`);
+      manifestFragments.push(v);
+      continue;
+    }
+    if (a === "--sab-size") {
+      const v = args[++i];
+      if (v === undefined) throw new UsageError(`flag "${a}" requires a value`);
+      sabSize = parseSabSize(v);
+      continue;
+    }
     const eq = a.indexOf("=");
     if (eq > 0) {
       const key = a.slice(0, eq);
@@ -71,6 +90,14 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
       }
       if (key === "--repo-root") {
         repoRoot = value;
+        continue;
+      }
+      if (key === "--manifest-fragment") {
+        manifestFragments.push(value);
+        continue;
+      }
+      if (key === "--sab-size") {
+        sabSize = parseSabSize(value);
         continue;
       }
       if (key === "--kernel-abi") {
@@ -110,9 +137,22 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
     sourceTree: positional[1],
     output,
     repoRoot,
+    manifestFragments,
+    sabSize,
     kernelAbi,
     quiet,
   };
+}
+
+function parseSabSize(value: string): number {
+  if (!/^[0-9]+$/.test(value)) {
+    throw new UsageError(`--sab-size must be a positive integer`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new UsageError(`--sab-size must be a positive integer`);
+  }
+  return parsed;
 }
 
 export async function runBuild(args: string[]): Promise<number> {
@@ -140,8 +180,10 @@ export async function runBuild(args: string[]): Promise<number> {
   try {
     image = await buildImage({
       manifest: parsed.manifest,
+      manifestFragments: parsed.manifestFragments,
       sourceTree: parsed.sourceTree,
       repoRoot: parsed.repoRoot ?? process.cwd(),
+      sabSize: parsed.sabSize,
       metadata: parsed.kernelAbi === undefined
         ? undefined
         : {

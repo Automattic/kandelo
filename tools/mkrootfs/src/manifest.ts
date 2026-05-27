@@ -12,6 +12,7 @@
 //
 // Per-type trailing key=value fields:
 //   f   src=<repo-relative path>       — override implicit sourceTree/<path>
+//   f   lazy_url=<url> lazy_size=<n>   — URL-backed file stub, fetched on demand
 //   l   target=<symlink target path>   — required
 //   c|b major=<n>  minor=<n>           — both required
 //
@@ -40,6 +41,8 @@ export interface ManifestNode {
   /** 1-indexed line number in the source manifest; used for downstream error reporting. */
   lineNumber: number;
   src?: string;
+  lazyUrl?: string;
+  lazySize?: number;
   target?: string;
   major?: number;
   minor?: number;
@@ -178,6 +181,8 @@ function parseNode(tokens: string[], lineNumber: number, sourcePath: string | un
     const value = extra.slice(eq + 1);
     switch (key) {
       case "src": node.src = value; break;
+      case "lazy_url": node.lazyUrl = value; break;
+      case "lazy_size": node.lazySize = parseDecimal(value, lineNumber, sourcePath, "lazy_size"); break;
       case "target": node.target = value; break;
       case "major": node.major = parseDecimal(value, lineNumber, sourcePath, "major"); break;
       case "minor": node.minor = parseDecimal(value, lineNumber, sourcePath, "minor"); break;
@@ -200,6 +205,23 @@ function validateRequiredExtras(node: ManifestNode, lineNumber: number, sourcePa
   }
   if (node.src === "") {
     throw err(lineNumber, sourcePath, `"${node.path}" has empty src=`);
+  }
+  if (node.lazyUrl !== undefined || node.lazySize !== undefined) {
+    if (node.type !== "f") {
+      throw err(lineNumber, sourcePath, `lazy_url=/lazy_size= only apply to regular files`);
+    }
+    if (node.src !== undefined) {
+      throw err(lineNumber, sourcePath, `"${node.path}" cannot combine src= with lazy_url=`);
+    }
+    if (node.lazyUrl === undefined) {
+      throw err(lineNumber, sourcePath, `"${node.path}" requires lazy_url= with lazy_size=`);
+    }
+    if (node.lazyUrl === "") {
+      throw err(lineNumber, sourcePath, `"${node.path}" has empty lazy_url=`);
+    }
+    if (node.lazySize === undefined) {
+      throw err(lineNumber, sourcePath, `"${node.path}" requires lazy_size= with lazy_url=`);
+    }
   }
   if (node.type === "c" || node.type === "b") {
     if (node.major === undefined) {

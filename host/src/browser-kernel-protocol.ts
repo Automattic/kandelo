@@ -23,6 +23,8 @@ export interface InitMessage {
    * and `kernel.fs` is unavailable.
    */
   vfsImage?: Uint8Array;
+  /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
+  lazyUrlBase?: string;
   /**
    * @deprecated — legacy path. Kept until all demos migrate to vfsImage.
    * Pre-formatted SharedFS SAB shared with the main thread (so demos can

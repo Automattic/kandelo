@@ -45,6 +45,8 @@ export interface BuildOptions {
   sourceTree: string;
   /** Absolute or repo-relative path to the MANIFEST file. */
   manifest: string;
+  /** Additional manifests applied after `manifest`, in order. */
+  manifestFragments?: string[];
   /** Root used to resolve explicit `src=` paths and `archive` URLs. */
   repoRoot: string;
   /** Backing SharedArrayBuffer size in bytes; defaults to 16 MiB. */
@@ -56,8 +58,7 @@ export interface BuildOptions {
 }
 
 export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
-  const manifestText = readFileSync(resolve(opts.manifest), "utf8");
-  const entries = parseManifest(manifestText, opts.manifest);
+  const entries = loadManifestEntries(opts);
 
   // Phase 1: text-only validation (no FS). Catches duplicate manifest paths.
   validateManifestEntries(entries);
@@ -77,6 +78,15 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   buildArchives(mfs, archiveBundles, plan);
 
   return await mfs.saveImage({ metadata: opts.metadata });
+}
+
+function loadManifestEntries(opts: BuildOptions): ManifestEntry[] {
+  const manifestPaths = [opts.manifest, ...(opts.manifestFragments ?? [])];
+  return manifestPaths.flatMap((manifestPath) => {
+    const resolvedManifestPath = resolve(manifestPath);
+    const manifestText = readFileSync(resolvedManifestPath, "utf8");
+    return parseManifest(manifestText, resolvedManifestPath);
+  });
 }
 
 function buildDirectories(mfs: MemoryFileSystem, entries: ManifestEntry[]): void {
@@ -99,6 +109,12 @@ function buildFiles(
     (e): e is ManifestNode => e.kind === "node" && e.type === "f",
   );
   for (const f of files) {
+    if (f.lazyUrl !== undefined) {
+      mfs.registerLazyFile(f.path, f.lazyUrl, f.lazySize ?? 0, f.mode);
+      mfs.chown(f.path, f.uid, f.gid);
+      mfs.chmod(f.path, f.mode);
+      continue;
+    }
     const sourcePath = f.src
       ? resolve(opts.repoRoot, f.src)
       : resolve(opts.sourceTree, f.path.replace(/^\//, ""));

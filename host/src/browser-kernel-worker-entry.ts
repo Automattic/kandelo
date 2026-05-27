@@ -273,6 +273,11 @@ function overlayEtcFromRootfs(target: MemoryFileSystem, rootfsImage: Uint8Array)
   }
 }
 
+function resolveLazyUrl(base: string, url: string): string {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("/")) return url;
+  return base.replace(/\/?$/, "/") + url;
+}
+
 // ── Init ──
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
@@ -300,6 +305,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     const rootMount = specMounts.find((m) => m.mountPoint === "/");
     if (!rootMount) throw new Error("DEFAULT_MOUNT_SPEC missing / mount");
     memfs = rootMount.backend as MemoryFileSystem;
+    if (msg.lazyUrlBase) {
+      memfs.rewriteLazyFileUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
+      memfs.rewriteLazyArchiveUrls((url) => resolveLazyUrl(msg.lazyUrlBase!, url));
+    }
     mounts = [
       { mountPoint: "/dev/shm", backend: shmfs },
       { mountPoint: "/dev", backend: devfs },
@@ -485,14 +494,14 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
 // ── Spawn ──
 
-function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
+async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
   try {
     let programBytes: ArrayBuffer;
     if (msg.programBytes) {
       programBytes = msg.programBytes;
     } else if (msg.programPath) {
       // Read from shared filesystem
-      const bytes = readFileFromFs(msg.programPath);
+      const bytes = await readExecFileFromFs(msg.programPath);
       if (!bytes) {
         respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
         return;
@@ -1406,6 +1415,11 @@ function readFileFromFs(path: string): ArrayBuffer | null {
   }
 }
 
+async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
+  await memfs.ensureMaterialized(path);
+  return readFileFromFs(path);
+}
+
 // ── Message dispatch ──
 
 const sw = globalThis as unknown as {
@@ -1417,7 +1431,7 @@ sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
   switch (msg.type) {
     case "init": handleInit(msg); break;
-    case "spawn": handleSpawn(msg); break;
+    case "spawn": void handleSpawn(msg); break;
     case "terminate_process": handleTerminateProcess(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;

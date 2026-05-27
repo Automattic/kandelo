@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { zipSync } from "fflate";
 import { buildImage } from "../src/builder.ts";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
@@ -91,6 +92,42 @@ describe("image builder — pass 2: regular files", () => {
     const st = mfs.stat("/etc/mytool.conf");
     expect(st.mode & 0o777).toBe(0o644);
     expect(readFromImage(mfs, "/etc/mytool.conf")).toBe("some config\n");
+  });
+
+  it("registers lazy file entries without embedding their content", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-builder-lazy-"));
+    try {
+      const manifest = join(tmp, "MANIFEST");
+      writeFileSync(
+        manifest,
+        [
+          "/usr d 0755 0 0",
+          "/usr/bin d 0755 0 0",
+          "/usr/bin/find f 0755 0 0 lazy_url=binaries/programs/wasm32/findutils/find.wasm lazy_size=12345",
+          "",
+        ].join("\n"),
+      );
+      const image = await buildImage({
+        sourceTree: tmp,
+        manifest,
+        repoRoot: tmp,
+      });
+      const mfs = MemoryFileSystem.fromImage(image);
+
+      const st = mfs.stat("/usr/bin/find");
+      expect(st.mode & 0o777).toBe(0o755);
+      expect(st.size).toBe(12345);
+      expect(mfs.exportLazyEntries()).toEqual([
+        {
+          ino: st.ino,
+          path: "/usr/bin/find",
+          url: "binaries/programs/wasm32/findutils/find.wasm",
+          size: 12345,
+        },
+      ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

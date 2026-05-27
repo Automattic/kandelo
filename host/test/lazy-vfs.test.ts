@@ -72,6 +72,19 @@ describe("Lazy VFS files", () => {
     expect(entries.find(e => e.path === "/bin/b")!.size).toBe(200);
   });
 
+  it("getLazyEntry returns lazy metadata and follows symlinks", () => {
+    const mfs = createMemfs();
+    mfs.registerLazyFile("/usr/bin/tool", "programs/tool.wasm", 100);
+    mfs.mkdir("/bin", 0o755);
+    mfs.symlink("/usr/bin/tool", "/bin/tool");
+
+    expect(mfs.getLazyEntry("/bin/tool")).toMatchObject({
+      path: "/usr/bin/tool",
+      url: "programs/tool.wasm",
+      size: 100,
+    });
+  });
+
   it("rewriteLazyFileUrls updates lazy metadata without changing size", () => {
     const mfs = createMemfs();
     mfs.registerLazyFile("/bin/tool", "kandelo-lazy:programs/tool.wasm", 1234);
