@@ -9,6 +9,7 @@
  * Usage: npx tsx images/vfs/scripts/build-shell-vfs-image.ts
  */
 import { readFileSync } from "node:fs";
+import { resolveBinary } from "../../../host/src/binary-resolver";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   saveImage,
