@@ -100,14 +100,12 @@ LINK_FLAGS=(
     -Wl,--export=__wasm_thread_init
 )
 
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 instrument_wasm() {
     local wasm="$1"
-    if [ -x "$FORK_INSTRUMENT" ]; then
-        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
-            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
-    fi
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
+    mv "$wasm.instr" "$wasm"
 }
 
 TEST_TIMEOUT=30000  # ms (for browser runner)

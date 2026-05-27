@@ -402,12 +402,10 @@ wasm32posix-cc "${OBJS[@]}" -o "$SCRIPT_DIR/nginx.wasm" -lcrypt
 # wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
 # no onlylist needed. Must run last — it hardcodes mutable-global offsets
 # and any later pass reordering globals would corrupt the fork buffer.
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ -x "$FORK_INSTRUMENT" ]; then
-    echo "  Applying fork instrumentation..."
-    "$FORK_INSTRUMENT" "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm.instr"
-    mv "$SCRIPT_DIR/nginx.wasm.instr" "$SCRIPT_DIR/nginx.wasm"
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+echo "  Applying fork instrumentation..."
+"$FORK_INSTRUMENT" "$SCRIPT_DIR/nginx.wasm" -o "$SCRIPT_DIR/nginx.wasm.instr"
+mv "$SCRIPT_DIR/nginx.wasm.instr" "$SCRIPT_DIR/nginx.wasm"
 
 echo "==> nginx.wasm built successfully!"
 ls -la "$SCRIPT_DIR/nginx.wasm"

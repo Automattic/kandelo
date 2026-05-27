@@ -38,6 +38,22 @@
 
 6. **Browser demo verification**: When fixing browser demo bugs, run `./run.sh browser` and manually verify the fix in a browser before claiming it works. Code reasoning alone is not sufficient — browser timing, service workers, and Wasm behavior must be observed.
 
+## Debugging Policy
+
+Fix root causes, not just visible symptoms. A workaround is only acceptable when
+the underlying cause is already understood, documented in the change, and the
+workaround is the correct compatibility boundary for a third-party dependency
+or external platform limit. Demo code must not mask runtime, packaging, VFS, or
+kernel defects with demo-specific shortcuts.
+
+When a browser demo reports a generic symptom such as `Segmentation fault`,
+`Maximum call stack size exceeded`, a hung pane, or a missing binary, trace the
+actual failure path before editing behavior. Confirm whether the bug lives in
+the demo UI, VFS image, package artifact, host runtime, libc/syscall layer, or
+kernel. Prefer fixes that make the same program work through the normal runtime
+path; do not special-case preset buttons, wrapper scripts, or terminal output
+unless the special case is itself the product behavior being implemented.
+
 ## Kernel ABI stability — DO NOT change incompatibly without bumping `ABI_VERSION`
 
 The kernel's binary interface to user programs is load-bearing: any silent incompatible change can corrupt memory in any binary compiled against an older kernel. **Every incompatible change to the following requires bumping `ABI_VERSION` in `crates/shared/src/lib.rs` and regenerating `abi/snapshot.json` in the same commit:**
@@ -48,6 +64,14 @@ The kernel's binary interface to user programs is load-bearing: any silent incom
 - `shared::abi::*` constants (custom section name, process-expected globals, export filter lists).
 - The five `wpk_fork_*` export names + save buffer / frame layout emitted by `wasm-fork-instrument` (see [docs/fork-instrumentation.md](docs/fork-instrumentation.md)). The tool hardcodes saved-global offsets at instrument time; changing the layout and re-running old user binaries against a new kernel will corrupt the fork save path.
 - Kernel-wasm exports (any existing `kernel_*` function signature change, global type/mutability change, or removed export that isn't on the toolchain denylist; additions are allowed without a bump if existing entries are unchanged).
+
+## Fork instrumentation policy
+
+- **Asyncify is not an active implementation path in this repo.** Do not add `wasm-opt --asyncify`, `--asyncify-*`, Asyncify export handling, or Asyncify fallback behavior to build scripts, tests, host runtime code, or new docs. Historical plan documents may mention it as history only.
+- **`wasm-fork-instrument` is mandatory for programs that perform `fork()` or fork-like operations.** This includes direct `fork()` / `vfork()` / `_Fork()` and features implemented through fork such as shell pipelines, command substitution, `system()`, `popen()`, and fork-backed helpers. Missing instrumentation must fail the build or fail loudly at runtime; it must not silently degrade.
+- **Use `scripts/run-wasm-fork-instrument.sh` from build scripts and tests.** The wrapper uses `tools/bin/wasm-fork-instrument` when present and otherwise builds it from `crates/fork-instrument/` with Cargo. Do not assume a developer manually preinstalled `tools/bin/wasm-fork-instrument`.
+- **Legacy Asyncify artifacts are invalid.** Binaries exporting `asyncify_*` are stale for the current system even if their numeric `__abi_version` matches. Bump the affected package `build.toml` revision and rebuild/publish a `wpk_fork_*` artifact instead of adding compatibility.
+- **Do not keep compiler/linker flags solely for the retired Asyncify path.** In particular, do not add `--no-wasm-opt`, name-section preservation, or debug-info flags just to support old onlylists. If a package keeps flags such as `-gline-tables-only`, document the current non-Asyncify reason.
 
 **Workflow when you've changed something that might be ABI-affecting:**
 
@@ -239,7 +263,7 @@ for the full design.
   build.toml survives ABI bumps.
 - **Bumping `build.toml.revision = N` invalidates every cached
   archive for that package.** Bump only when output bytes
-  legitimately change (build flag tweaks, asyncify pass, etc.).
+  legitimately change (build flag tweaks, fork instrumentation pass, etc.).
   Don't bump for doc-only changes — that triggers a needless
   rebuild across the matrix. Revision lives in `build.toml`
   because it's a publish-time counter (project state), not a

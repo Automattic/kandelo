@@ -141,6 +141,13 @@ const ETC_HOSTS = [
   "",
 ].join("\n");
 
+const ETC_SERVICES = [
+  "http\t\t80/tcp\t\twww",
+  "https\t\t443/tcp",
+  "mysql\t\t3306/tcp",
+  "",
+].join("\n");
+
 /**
  * Options for {@link addDinitInit}. The defaults set up an implicit
  * `boot` service that depends on every supplied service — fine for
@@ -195,6 +202,7 @@ export function addDinitInit(
   writeVfsFile(fs, "/etc/passwd", ETC_PASSWD);
   writeVfsFile(fs, "/etc/group", ETC_GROUP);
   writeVfsFile(fs, "/etc/hosts", ETC_HOSTS);
+  writeVfsFile(fs, "/etc/services", ETC_SERVICES);
 
   // Standard runtime/log dirs
   ensureDirRecursive(fs, "/var/log");

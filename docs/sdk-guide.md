@@ -264,10 +264,15 @@ See `packages/registry/redis/build-redis.sh` for the complete build script.
 
 ## Fork instrumentation (`wasm-fork-instrument`)
 
-Programs that call `fork()`, `posix_spawn()`, or `system()` need the in-tree
+Programs that call `fork()` or fork-like APIs need the in-tree
 `wasm-fork-instrument` tool to save/restore the Wasm call stack across fork.
-This tool replaced Binaryen's `wasm-opt --asyncify` in the Phase 7 rollout —
-do **not** use `--asyncify` in new build scripts.
+Fork-like APIs include `vfork()`, `_Fork()`, shell pipelines, command
+substitution, `system()`, `popen()`, and helper processes implemented through
+fork.
+
+This step is mandatory for fork-using programs. Do not use Binaryen Asyncify,
+do not tolerate missing instrumentation, and do not publish binaries that
+export legacy `asyncify_*` symbols.
 
 ```bash
 # Compile normally
@@ -279,15 +284,15 @@ wasm-opt -O2 program.wasm -o program.wasm
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist
-# file needed.
-"$REPO_ROOT/tools/bin/wasm-fork-instrument" program.wasm -o program.wasm.instr
+# file needed. The wrapper builds the tool on demand if tools/bin is absent.
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm.instr
 mv program.wasm.instr program.wasm
 ```
 
-`wasm-fork-instrument` is built by `bash build.sh` (compiled from
-`crates/fork-instrument/`) and installed to `tools/bin/`. The tool emits five
-`wpk_fork_*` exports that the host runtime drives during fork. Programs that
-don't use fork can skip this step entirely.
+The tool emits five `wpk_fork_*` exports that the host runtime drives during
+fork. Programs that don't use fork can skip this step entirely, but a program
+that reaches `kernel_fork` without complete `wpk_fork_*` instrumentation is
+invalid.
 
 See [`docs/fork-instrumentation.md`](fork-instrumentation.md) for the
 exported ABI, save-buffer format, and the dispatch-scheme decisions.
@@ -321,6 +326,7 @@ See the [Porting Guide](porting-guide.md) for creating browser demos.
 - **Don't add `-pthread`**: Thread creation is host-managed via `clone()`. The SDK silently ignores `-pthread`.
 - **Use `-O2` or `-Os`**: Unoptimized Wasm is significantly slower and larger.
 - **Check build script examples**: `packages/registry/` contains complete build scripts for 12 real-world libraries including autoconf, CMake, and plain Makefile projects.
-- **For fork support**: Run `tools/bin/wasm-fork-instrument` as the final
-  post-link step. Without it, `fork()` will fail.
+- **For fork support**: Run `scripts/run-wasm-fork-instrument.sh` as the final
+  post-link step. Without complete `wpk_fork_*` exports, fork-using programs
+  are invalid.
 - **Memory limit**: Default max memory is 1GB (16384 pages). For multi-process demos, consider reducing `maxMemoryPages` to avoid exhausting browser memory.

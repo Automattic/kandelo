@@ -40,8 +40,7 @@ export function linkFlags(arch: WasmArch): string[] {
     '-Wl,--export=__tls_align',
     '-Wl,--export=__stack_pointer',
     '-Wl,--export=__wasm_thread_init',
-    // Pinned so wasm-opt DCE in later build stages (e.g. asyncify
-    // finishers) does not drop the runtime ABI marker the host
+    // Pinned so later build stages do not drop the runtime ABI marker the host
     // verifies against. See docs/abi-versioning.md.
     '-Wl,--export=__abi_version',
   ];

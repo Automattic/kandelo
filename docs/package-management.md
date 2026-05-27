@@ -151,7 +151,7 @@ index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/downloa
 - `repo_url` + `commit` record the project's recipe provenance.
 - `revision` is the publish-time counter the resolver hashes into
   the cache-key. Bump when output bytes legitimately change (build
-  flag tweaks, asyncify pass, etc.). Don't bump for doc-only
+  flag tweaks, fork-instrument output, etc.). Don't bump for doc-only
   changes — it triggers a needless rebuild across the matrix.
 - `[binary]` declares where binaries are published. Two forms,
   exactly one of which must be present:

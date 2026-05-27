@@ -16,10 +16,9 @@
  *
  * Usage: npx tsx images/vfs/scripts/build-node-vfs-image.ts
  */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
   ensureDirRecursive,
   walkAndWrite,
@@ -27,7 +26,7 @@ import {
   saveImage,
   symlink,
 } from "./vfs-image-helpers";
-import { populateShellEnvironment } from "./shell-vfs-build";
+import { resolveVfsArtifact } from "./shell-vfs-build";
 import {
   NODE_LAZY_BINARY_SPEC,
   shellLazyPlaceholderUrl,
@@ -44,6 +43,7 @@ const NPM_DIST = join(REPO_ROOT, "packages", "registry", "npm", "dist");
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "node-vfs.vfs.zst");
 
 const NPM_MOUNT = "/usr/local/lib/npm";
+const NODE_IMAGE_MAX_BYTES = 64 * 1024 * 1024;
 
 async function main() {
   if (!existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) {
@@ -52,14 +52,12 @@ async function main() {
     process.exit(1);
   }
 
-  // 32 MiB SAB. npm dist is ~17 MiB on disk; rest is shell base metadata,
-  // magic data, npm wrappers, and scratch headroom.
-  // The .vfs file size equals the SAB size verbatim (saveImage writes the full buffer).
-  const sab = new SharedArrayBuffer(32 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
-
-  console.log("Populating shell base...");
-  populateShellEnvironment(fs, { eagerBinaries: false });
+  console.log("Loading shell base image...");
+  const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
+  const shellImage = new Uint8Array(readFileSync(shellImagePath));
+  const fs = MemoryFileSystem.fromImage(shellImage, {
+    maxByteLength: NODE_IMAGE_MAX_BYTES,
+  });
   populateNodeLazyBinary(fs);
 
   // Node/npm workspace additions.
@@ -116,7 +114,7 @@ async function main() {
 }
 
 function populateNodeLazyBinary(fs: MemoryFileSystem): void {
-  const resolved = resolveBinary(NODE_LAZY_BINARY_SPEC.resolverPath);
+  const resolved = resolveVfsArtifact(NODE_LAZY_BINARY_SPEC.resolverPath, NODE_LAZY_BINARY_SPEC.id);
   const size = statSync(resolved).size;
   fs.registerLazyFile(
     NODE_LAZY_BINARY_SPEC.vfsPath,

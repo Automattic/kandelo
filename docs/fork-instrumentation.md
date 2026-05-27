@@ -2,20 +2,38 @@
 
 `wasm-fork-instrument` is an in-tree Rust tool that rewrites wasm user-program
 binaries with save/restore machinery so POSIX `fork()` works. The tool source
-lives at [`crates/fork-instrument/`](../crates/fork-instrument/); `bash build.sh`
-compiles a host binary and installs it to `tools/bin/wasm-fork-instrument`. Every
-build script that targets a fork-using program invokes the tool after linking —
-there is no longer a `wasm-opt --asyncify` pass in the pipeline, and the
-`third_party/binaryen` submodule has been removed. This document is the
+lives at [`crates/fork-instrument/`](../crates/fork-instrument/).
+Build scripts and tests should invoke
+[`scripts/run-wasm-fork-instrument.sh`](../scripts/run-wasm-fork-instrument.sh),
+which uses `tools/bin/wasm-fork-instrument` when present and otherwise builds
+the tool from Cargo on demand. Every build script that targets a fork-using
+program invokes the tool after linking. Asyncify is not an active implementation
+path: do not use `wasm-opt --asyncify`, do not accept `asyncify_*` exports, and
+do not add Asyncify compatibility fallbacks. This document is the
 living reference for the tool's behavior, exported ABI, and save-buffer format.
 For motivation, tradeoffs, and the rollout plan that led here, read
 [`plans/2026-04-20-fork-instrumentation-design.md`](plans/2026-04-20-fork-instrumentation-design.md);
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `11` (see
+ABI version: `12` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
+
+## Policy
+
+- `wasm-fork-instrument` is mandatory for any program that performs `fork()` or
+  fork-like operations. That includes `fork()`, `vfork()`, `_Fork()`, shell
+  pipelines, command substitution, `system()`, `popen()`, and fork-backed helper
+  processes.
+- Missing instrumentation is a build/runtime error, not an optional feature
+  loss. A fork-using program without complete `wpk_fork_*` exports cannot
+  resume the child at the fork call site.
+- Binaries exporting legacy `asyncify_*` symbols are stale and must be rebuilt.
+  Do not add host support for them.
+- Do not keep compiler/linker flags solely for the retired legacy path. The
+  fork instrumenter does not require preserved function names or onlylists; if
+  a build keeps debug-info flags, it should be for a current diagnostic reason.
 
 ## State machine
 
@@ -239,10 +257,21 @@ whether the per-region transform applies, and routes to either
 `instrument_one_function_nested_switch` or `instrument_one_function_switch`
 accordingly.
 
-Indirect calls (`call_indirect`) are conservatively treated as fork-path
-landings whenever they may dispatch to a fork-path-reachable callee —
-switch-dispatch handles them identically to direct calls (the call's
-table index is spilled as part of the args).
+Indirect calls (`call_indirect`) are treated as fork-path landings when they
+may dispatch to a fork-path-reachable callee in the same table with the same
+signature. Discovery is table-aware: active element segments populate their
+own table, passive segments count only for tables that can receive them via
+`table.init`, and declared segments do not count as table initializers.
+
+To keep dynamic interpreter/function-pointer-heavy runtimes resource-safe,
+indirect closure is bounded to two dispatch hops. Direct callers of functions
+found through those hops are still included. This covers normal C callback
+fork paths and QuickJS's C-function trampoline shape
+(`JS_CallInternal -> js_call_c_function -> js_os_exec`) without turning one
+generic dispatcher into whole-runtime instrumentation. A program whose only
+fork path requires three or more nested function-pointer dispatches is outside
+the current static-discovery guarantee and needs a more precise value-flow
+analysis before it can be supported safely.
 
 ## Per-function transform — before/after WAT
 
@@ -818,7 +847,7 @@ investigation — is preserved in
 
 ## Performance envelope
 
-The Phase 7 acceptance gate is ±3% of the Asyncify baseline on fork-heavy
+The Phase 7 acceptance gate is ±3% of the previous fork-continuation baseline on fork-heavy
 benchmark suites, measured with `npx tsx benchmarks/run.ts --rounds=3` on
 both the Node.js host and the browser host. The suites that exercise fork
 meaningfully are `wordpress`, `erlang-ring`, and `process-lifecycle`.
@@ -826,7 +855,7 @@ meaningfully are `wordpress`, `erlang-ring`, and `process-lifecycle`.
 For the concrete numbers landed by the Phase 7 rollout PR, see Task 15 of
 `docs/plans/2026-04-21-fork-instrument-phase-7-rollout-plan.md`. Binary size
 for fork-heavy programs is expected to be equal or smaller than under the
-prior full-asyncify carve-out (most notably git), since the tool instruments
+prior full-module fork-continuation carve-out (most notably git), since the tool instruments
 a tighter reachable set.
 
 ## Maintainer notes
@@ -874,7 +903,8 @@ in this workspace is `wasm64-unknown-unknown` (from `.cargo/config.toml`),
 which cannot build host tests — always pass the explicit host target:
 
 ```bash
-cargo test -p fork-instrument --target aarch64-apple-darwin
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo test -p fork-instrument --target "$HOST_TARGET"
 ```
 
 ### Running the fuzz gate

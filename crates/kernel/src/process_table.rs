@@ -189,8 +189,8 @@ fn bump_inherited_resource_refcounts(child: &Process) {
 }
 
 /// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
-/// write_fd) pairs so that when the child re-runs pre-fork code under
-/// asyncify rewind, `sys_pipe` returns the same fd numbers the parent saw.
+/// write_fd) pairs so that when the child resumes through fork rewind,
+/// `sys_pipe` returns the same fd numbers the parent saw.
 /// Spawn doesn't replay code, so this stays fork-local.
 fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
     use alloc::collections::BTreeMap;
@@ -451,7 +451,7 @@ impl ProcessTable {
         // factored out into a free helper.
         bump_inherited_resource_refcounts(&child);
 
-        // Build fork-only `fork_pipe_replay` (asyncify replay needs it to
+        // Build fork-only `fork_pipe_replay` (fork replay needs it to
         // return the same fds as the parent did when re-running
         // pre-fork code). Spawn doesn't replay, so this stays fork-local.
         child.fork_pipe_replay = build_fork_pipe_replay(&child);
@@ -470,7 +470,7 @@ impl ProcessTable {
     }
 
     /// Non-forking spawn: build a child process for `posix_spawn` without
-    /// going through fork/asyncify at all. The child is constructed from a
+    /// going through fork continuation at all. The child is constructed from a
     /// fresh `Process::new(child_pid)` and selectively inherits only what
     /// POSIX requires (identity, cwd, umask, rlimits, signal mask, fd
     /// state); everything else (signal handlers, threads, mmap, alt-stack,

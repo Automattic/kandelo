@@ -80,7 +80,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture refer
 |-----------|------------|
 | File I/O | open, close, read, write, seek, dup/dup2/dup3, pipe, readv/writev, pread/pwrite, sendfile, ftruncate, fsync, copy_file_range, splice, statx |
 | fcntl | Advisory locking (F_GETLK/F_SETLK/F_SETLKW), file flags, FD_CLOEXEC, cross-process locks |
-| Process | fork (Asyncify), exec, posix_spawn, exit, getpid/getppid, process groups, sessions, waitpid |
+| Process | fork (`wasm-fork-instrument`), exec, posix_spawn, exit, getpid/getppid, process groups, sessions, waitpid |
 | Threads | clone with CLONE_VM\|CLONE_THREAD, per-thread TLS and channels |
 | Signals | kill, sigaction (SA_SIGINFO), sigprocmask, sigsuspend, sigaltstack, alarm, setitimer/getitimer, RT signals, sigqueue, sigtimedwait, signalfd |
 | Memory | mmap (MAP_ANONYMOUS + MAP_PRIVATE file + MAP_SHARED file), munmap, mremap, brk/sbrk, memfd_create |
@@ -354,7 +354,7 @@ docs/
    - Kernel worker wakes, reads channel, dispatches to `sys_open()`, writes result back
    - Glue resumes with the return value (fd or negative errno)
 
-4. **Multi-process**: `fork()` uses Binaryen Asyncify to snapshot the Wasm call stack. The host copies process memory to a new Web Worker, and the child resumes from the fork point. `exec()` replaces the process image by terminating the old worker and starting a new one with fresh memory. Cross-process pipes, signals, and locks are coordinated through the shared kernel instance.
+4. **Multi-process**: `fork()` uses `wasm-fork-instrument` to snapshot and restore the Wasm call stack. The host copies process memory to a new Web Worker, and the child resumes from the fork point. `exec()` replaces the process image by terminating the old worker and starting a new one with fresh memory. Cross-process pipes, signals, and locks are coordinated through the shared kernel instance.
 
 ## License
 

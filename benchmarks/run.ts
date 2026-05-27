@@ -124,16 +124,8 @@ function fingerprintFile(relativePath: string): BenchmarkArtifactFile {
   };
 }
 
-function expectedForkBenchSymbols(gitHead: string): ForkBenchSymbolReport["expected"] {
-  const mainHead = runGit(["rev-parse", "origin/main"]);
-  const fierceWireHead = runGit(["rev-parse", "origin/fierce-wire"]);
-  if (gitHead !== "unknown" && gitHead === fierceWireHead) {
-    return "wpk_fork_without_asyncify";
-  }
-  if (gitHead !== "unknown" && gitHead === mainHead) {
-    return "asyncify";
-  }
-  return "unknown";
+function expectedForkBenchSymbols(_gitHead: string): ForkBenchSymbolReport["expected"] {
+  return "wpk_fork_without_legacy";
 }
 
 function inspectForkBench(gitHead: string): ForkBenchSymbolReport {
@@ -141,7 +133,7 @@ function inspectForkBench(gitHead: string): ForkBenchSymbolReport {
   if (!existsSync(forkBenchPath)) {
     return {
       hasWpkForkSymbols: false,
-      hasAsyncifySymbols: false,
+      hasLegacyForkSymbols: false,
       matchedSymbols: [],
       expected: expectedForkBenchSymbols(gitHead),
       passed: null,
@@ -153,17 +145,15 @@ function inspectForkBench(gitHead: string): ForkBenchSymbolReport {
     text.match(/[A-Za-z0-9_$./:-]*(?:wpk_fork|asyncify)[A-Za-z0-9_$./:-]*/g) ?? [],
   )).sort();
   const hasWpkForkSymbols = matchedSymbols.some((symbol) => symbol.includes("wpk_fork"));
-  const hasAsyncifySymbols = matchedSymbols.some((symbol) => symbol.includes("asyncify"));
+  const hasLegacyForkSymbols = matchedSymbols.some((symbol) => symbol.includes("asyncify"));
   const expected = expectedForkBenchSymbols(gitHead);
-  const passed = expected === "wpk_fork_without_asyncify"
-    ? hasWpkForkSymbols && !hasAsyncifySymbols
-    : expected === "asyncify"
-      ? hasAsyncifySymbols
-      : null;
+  const passed = expected === "wpk_fork_without_legacy"
+    ? hasWpkForkSymbols && !hasLegacyForkSymbols
+    : null;
 
   return {
     hasWpkForkSymbols,
-    hasAsyncifySymbols,
+    hasLegacyForkSymbols,
     matchedSymbols,
     expected,
     passed,
@@ -198,7 +188,7 @@ function logArtifacts(artifacts: BenchmarkArtifacts) {
   console.log(
     `  fork-bench symbols: expected=${artifacts.forkBench.expected} ` +
     `wpk_fork=${artifacts.forkBench.hasWpkForkSymbols} ` +
-    `asyncify=${artifacts.forkBench.hasAsyncifySymbols} ` +
+    `legacy_fork=${artifacts.forkBench.hasLegacyForkSymbols} ` +
     `passed=${artifacts.forkBench.passed}`,
   );
 }

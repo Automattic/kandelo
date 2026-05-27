@@ -1677,8 +1677,8 @@ const fs = (() => {
         _throwErrno(17, 'mkdtemp', p);
     }
 
-    // Async wrappers (callback-based)
-    function _asyncify(syncFn) {
+    // Callback wrappers for sync filesystem helpers.
+    function _callbackify(syncFn) {
         return function(...args) {
             const cb = args.pop();
             try {
@@ -1737,35 +1737,35 @@ const fs = (() => {
         mkdtempSync,
 
         // Async versions
-        readFile: _asyncify(readFileSync),
-        writeFile: _asyncify(writeFileSync),
-        appendFile: _asyncify(appendFileSync),
-        readdir: _asyncify(readdirSync),
-        mkdir: _asyncify(mkdirSync),
-        mkdtemp: _asyncify(mkdtempSync),
-        rmdir: _asyncify(rmdirSync),
-        unlink: _asyncify(unlinkSync),
-        rename: _asyncify(renameSync),
-        copyFile: _asyncify(copyFileSync),
-        symlink: _asyncify(symlinkSync),
-        readlink: _asyncify(readlinkSync),
-        realpath: _asyncify(realpathSync),
-        chmod: _asyncify(chmodSync),
-        chown: _asyncify(chownSync),
-        utimes: _asyncify(utimesSync),
-        stat: _asyncify(statSync),
-        lstat: _asyncify(lstatSync),
-        access: _asyncify(accessSync),
-        rm: _asyncify(rmSync),
+        readFile: _callbackify(readFileSync),
+        writeFile: _callbackify(writeFileSync),
+        appendFile: _callbackify(appendFileSync),
+        readdir: _callbackify(readdirSync),
+        mkdir: _callbackify(mkdirSync),
+        mkdtemp: _callbackify(mkdtempSync),
+        rmdir: _callbackify(rmdirSync),
+        unlink: _callbackify(unlinkSync),
+        rename: _callbackify(renameSync),
+        copyFile: _callbackify(copyFileSync),
+        symlink: _callbackify(symlinkSync),
+        readlink: _callbackify(readlinkSync),
+        realpath: _callbackify(realpathSync),
+        chmod: _callbackify(chmodSync),
+        chown: _callbackify(chownSync),
+        utimes: _callbackify(utimesSync),
+        stat: _callbackify(statSync),
+        lstat: _callbackify(lstatSync),
+        access: _callbackify(accessSync),
+        rm: _callbackify(rmSync),
         exists(filepath, cb) {
             cb(existsSync(filepath));
         },
-        open: _asyncify(openSync),
-        close: _asyncify(closeSync),
-        fstat: _asyncify(fstatSync),
-        fchmod: _asyncify(fchmodSync),
-        fchown: _asyncify(fchownSync),
-        futimes: _asyncify(futimesSync),
+        open: _callbackify(openSync),
+        close: _callbackify(closeSync),
+        fstat: _callbackify(fstatSync),
+        fchmod: _callbackify(fchmodSync),
+        fchown: _callbackify(fchownSync),
+        futimes: _callbackify(futimesSync),
         read(fd, buffer, offset, length, position, cb) {
             try {
                 const n = readSync(fd, buffer, offset, length, position);
