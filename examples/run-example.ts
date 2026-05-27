@@ -41,8 +41,9 @@ const xzWasm = tryResolveBinary("programs/xz.wasm");
 const zstdWasm = tryResolveBinary("programs/zstd.wasm");
 const zipWasm = tryResolveBinary("programs/zip.wasm");
 const unzipWasm = tryResolveBinary("programs/unzip.wasm");
-const qjsWasm = tryResolveBinary("programs/quickjs/qjs.wasm");
-const nodeWasm = tryResolveBinary("programs/quickjs/node.wasm");
+const nodeWasm =
+    tryResolveBinary("programs/node.wasm") ??
+    tryResolveBinary("programs/spidermonkey-node.wasm");
 const lsofWasm = resolve(repoRoot, "examples/lsof.wasm");
 const rubyWasm = tryResolveBinary("programs/ruby.wasm");
 const vimWasm = tryResolveBinary("programs/vim.zip");
@@ -178,11 +179,7 @@ const builtinPrograms: Record<string, string | null> = {
     "funzip": unzipWasm,
     "/usr/bin/funzip": unzipWasm,
     "/bin/funzip": unzipWasm,
-    // QuickJS-NG JavaScript interpreter
-    "qjs": qjsWasm,
-    "/usr/bin/qjs": qjsWasm,
-    "/bin/qjs": qjsWasm,
-    // Node.js-compatible runtime (QuickJS-NG with Node.js API compat layer)
+    // Node.js-compatible runtime backed by SpiderMonkey.
     "node": nodeWasm,
     "/usr/bin/node": nodeWasm,
     "/bin/node": nodeWasm,

@@ -9,13 +9,15 @@ Current scope:
 - wasm32 POSIX cross-build through `wasm32posix-cc` / `wasm32posix-c++`
 - ECMAScript `Intl` support through Mozilla's in-tree ICU/ICU4X
 - JS shared memory and shell worker support
-- JIT disabled, C++ exceptions enabled, fork instrumentation applied after
-  optimization
+- JIT disabled and C++ exceptions enabled
+- no fork instrumentation: SpiderMonkey's C++ control flow is too large for
+  the current fork-stack rewrite in Chromium workers; JS worker_threads use
+  clone/pthreads and still work
 
 Out of scope for this package:
 
-- the Node-compatible embedding
-- vendored Node builtin modules
+- a complete Node-compatible embedding
+- vendored npm-scale Node builtin modules
 - npm / Express / Claude Code validation
 - JS-facing nested WebAssembly compilation, which currently requires a
   SpiderMonkey wasm JIT backend while this package builds with JIT disabled

@@ -65,10 +65,99 @@ local_path="$repo_root/local-binaries/$adjusted"
 fetched_path="$repo_root/binaries/$adjusted"
 current_abi="$(wasm_current_abi_version "$repo_root" || true)"
 
+fork_instrumentation_for_rel() {
+    local rel="$1"
+    case "$rel" in
+        programs/wasm32/*) rel="${rel#programs/wasm32/}" ;;
+        programs/wasm64/*) rel="${rel#programs/wasm64/}" ;;
+        programs/*) rel="${rel#programs/}" ;;
+        *) echo auto; return 0 ;;
+    esac
+
+    local manifest policy
+    for manifest in "$repo_root"/packages/registry/*/package.toml; do
+        [ -f "$manifest" ] || continue
+        policy="$(awk -v target="$rel" '
+            function val(s) {
+                sub(/^[^=]*=[ \t]*"/, "", s)
+                sub(/".*$/, "", s)
+                return s
+            }
+            function ext(path, parts, n, base, dot) {
+                n = split(path, parts, "/")
+                base = parts[n]
+                dot = index(base, ".")
+                return dot ? substr(base, dot) : ""
+            }
+            function flush() {
+                if (!in_output) return
+                count++
+                output_name[count] = out_name
+                output_wasm[count] = out_wasm
+                output_policy[count] = out_policy
+                out_name = ""
+                out_wasm = ""
+                out_policy = ""
+                in_output = 0
+            }
+            $0 ~ /^\[\[outputs\]\]/ {
+                flush()
+                in_output = 1
+                in_root = 0
+                next
+            }
+            in_output && $0 ~ /^\[/ {
+                flush()
+                in_root = 0
+                next
+            }
+            !in_output && $0 ~ /^\[/ {
+                in_root = 0
+                next
+            }
+            BEGIN {
+                in_root = 1
+            }
+            in_root && $0 ~ /^kind[ \t]*=/ { kind = val($0); next }
+            in_root && $0 ~ /^name[ \t]*=/ { pkg = val($0); next }
+            in_output && $0 ~ /^name[ \t]*=/ { out_name = val($0); next }
+            in_output && $0 ~ /^wasm[ \t]*=/ { out_wasm = val($0); next }
+            in_output && $0 ~ /^fork_instrumentation[ \t]*=/ { out_policy = val($0); next }
+            END {
+                flush()
+                if (kind != "program" || pkg == "") exit
+                for (i = 1; i <= count; i++) {
+                    if (output_name[i] == "" || output_wasm[i] == "") continue
+                    dest = output_name[i] ext(output_wasm[i])
+                    if (count > 1) dest = pkg "/" dest
+                    if (dest == target && output_policy[i] == "disabled") {
+                        print "disabled"
+                        exit
+                    }
+                }
+            }
+        ' "$manifest")"
+        if [ "$policy" = "disabled" ]; then
+            echo disabled
+            return 0
+        fi
+    done
+    echo auto
+}
+
+fork_instrumentation="$(fork_instrumentation_for_rel "$adjusted")"
+
 is_stale_wasm_artifact() {
     wasm_has_legacy_asyncify "$1" ||
         wasm_has_stale_abi "$1" "$current_abi" ||
-        wasm_has_missing_fork_instrumentation "$1"
+        case "$fork_instrumentation" in
+            disabled)
+                wasm_has_any_wpk_fork_export "$1"
+                ;;
+            *)
+                wasm_has_missing_fork_instrumentation "$1"
+                ;;
+        esac
 }
 
 if [ -e "$local_path" ]; then

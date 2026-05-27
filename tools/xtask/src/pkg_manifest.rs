@@ -91,6 +91,36 @@ impl TargetArch {
     }
 }
 
+/// Per-program-output fork instrumentation policy.
+///
+/// Most binaries use `auto`: importing `kernel.kernel_fork` means the artifact
+/// must carry the complete `wasm-fork-instrument` export set. Some runtimes,
+/// notably SpiderMonkey, link a libc that exposes `fork` but cannot safely be
+/// rewritten because the extra control-flow depth breaks browser worker startup.
+/// Those outputs declare `disabled`, which accepts the raw import but rejects
+/// any stale artifact that already carries `wpk_fork_*` exports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ForkInstrumentationPolicy {
+    Auto,
+    Disabled,
+}
+
+impl Default for ForkInstrumentationPolicy {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl ForkInstrumentationPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
 /// Build-time provenance + ABI compatibility data injected into an
 /// archived `manifest.toml` at archive creation. Source `package.toml`
 /// files MUST NOT contain this block; archived manifests MUST.
@@ -147,6 +177,8 @@ pub struct Binary {
 pub struct ProgramOutput {
     pub name: String,
     pub wasm: String,
+    #[serde(default)]
+    pub fork_instrumentation: ForkInstrumentationPolicy,
 }
 
 /// One entry in a manifest's `[[host_tools]]` array. Inline
@@ -770,9 +802,25 @@ impl DepsManifest {
     /// (via `xtask build-deps output-path`) which have only the file
     /// they just built, not the parsed package.toml struct.
     pub fn output_dest_rel(&self, wasm_basename: &str) -> Result<PathBuf, String> {
+        let out = self.output_for_wasm_basename(wasm_basename)?;
+        Ok(self.output_dest_rel_for(out))
+    }
+
+    /// Return the fork instrumentation policy for a declared program
+    /// output, keyed by its `wasm` basename.
+    pub fn output_fork_instrumentation(
+        &self,
+        wasm_basename: &str,
+    ) -> Result<ForkInstrumentationPolicy, String> {
+        Ok(self
+            .output_for_wasm_basename(wasm_basename)?
+            .fork_instrumentation)
+    }
+
+    fn output_for_wasm_basename(&self, wasm_basename: &str) -> Result<&ProgramOutput, String> {
         if self.kind != ManifestKind::Program {
             return Err(format!(
-                "manifest {:?} is kind={:?}; output_dest_rel is program-only",
+                "manifest {:?} is kind={:?}; program output lookup is program-only",
                 self.name, self.kind
             ));
         }
@@ -793,7 +841,7 @@ impl DepsManifest {
                     self.name, wasm_basename, declared
                 )
             })?;
-        Ok(self.output_dest_rel_for(out))
+        Ok(out)
     }
 
     /// Read + parse + validate a `package.toml` file. `dir` is the
@@ -2408,6 +2456,30 @@ spdx = "TestLicense"
         assert_eq!(
             m.output_dest_rel("dash.wasm").unwrap(),
             PathBuf::from("dash.wasm")
+        );
+    }
+
+    #[test]
+    fn output_fork_instrumentation_defaults_to_auto() {
+        let m = program_manifest(
+            "dash",
+            "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\n",
+        );
+        assert_eq!(
+            m.output_fork_instrumentation("dash.wasm").unwrap(),
+            ForkInstrumentationPolicy::Auto
+        );
+    }
+
+    #[test]
+    fn output_fork_instrumentation_can_be_disabled() {
+        let m = program_manifest(
+            "spidermonkey",
+            "[[outputs]]\nname = \"js\"\nwasm = \"js.wasm\"\nfork_instrumentation = \"disabled\"\n",
+        );
+        assert_eq!(
+            m.output_fork_instrumentation("js.wasm").unwrap(),
+            ForkInstrumentationPolicy::Disabled
         );
     }
 

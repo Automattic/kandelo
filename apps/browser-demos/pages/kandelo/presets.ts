@@ -34,13 +34,13 @@ export const PRESET_LIBRARY: Preset[] = [
   {
     id: "node",
     title: "Node.js",
-    summary: "Node.js and npm layered onto the shell demo VFS with a writable /work project.",
-    base: "kandelo:shell@abi8",
+    summary: "SpiderMonkey-backed Node.js compatibility runtime with npm staged as /usr/bin/node.",
+    base: "kandelo:shell@abi12",
     packages: ["node@local", "node-vfs@local", "npm@10.9.2", "bash@local", "coreutils@local"],
     accent: "#43853d",
     glyph: "js",
     bootCommand: ["bash", "-l", "-i"],
-    estimatedUrlBytes: 864,
+    estimatedUrlBytes: 812,
   },
   {
     id: "nginx",

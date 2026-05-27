@@ -13,7 +13,7 @@
  * See `docs/binary-releases.md` for the layout.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeWasmArtifactPolicyFailures } from "./constants";
@@ -117,22 +117,128 @@ function packagedBinaryCandidates(relPath: string): string[] {
   return candidates;
 }
 
-function hasWasmArtifactPolicyFailures(path: string): boolean {
+let cachedForkInstrumentationDisabledOutputs: Set<string> | null = null;
+
+interface ProgramOutputPolicy {
+  name?: string;
+  wasm?: string;
+  forkInstrumentation?: string;
+}
+
+function outputExtension(wasmPath: string): string {
+  const basename = wasmPath.split(/[\\/]/).pop() ?? wasmPath;
+  const dot = basename.indexOf(".");
+  return dot >= 0 ? basename.slice(dot) : "";
+}
+
+function outputRelForPackage(
+  packageName: string,
+  output: Required<Pick<ProgramOutputPolicy, "name" | "wasm">>,
+  outputCount: number,
+): string {
+  const destName = `${output.name}${outputExtension(output.wasm)}`;
+  return outputCount > 1 ? `${packageName}/${destName}` : destName;
+}
+
+function parseProgramOutputPolicies(packageToml: string): {
+  kind?: string;
+  name?: string;
+  outputs: ProgramOutputPolicy[];
+} {
+  const kind = packageToml.match(/^kind\s*=\s*"([^"]+)"/m)?.[1];
+  const name = packageToml.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+  const outputs: ProgramOutputPolicy[] = [];
+  let current: ProgramOutputPolicy | null = null;
+
+  for (const line of packageToml.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "[[outputs]]") {
+      if (current) outputs.push(current);
+      current = {};
+      continue;
+    }
+    if (!current) continue;
+    if (trimmed.startsWith("[") && trimmed !== "[[outputs]]") {
+      outputs.push(current);
+      current = null;
+      continue;
+    }
+    const match = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*"([^"]*)"/);
+    if (!match) continue;
+    if (match[1] === "name") current.name = match[2];
+    if (match[1] === "wasm") current.wasm = match[2];
+    if (match[1] === "fork_instrumentation") current.forkInstrumentation = match[2];
+  }
+  if (current) outputs.push(current);
+
+  return { kind, name, outputs };
+}
+
+function forkInstrumentationDisabledOutputs(): Set<string> {
+  if (cachedForkInstrumentationDisabledOutputs) {
+    return cachedForkInstrumentationDisabledOutputs;
+  }
+
+  const disabled = new Set<string>();
+  try {
+    const registry = join(findRepoRoot(), "packages", "registry");
+    for (const entry of readdirSync(registry, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const manifestPath = join(registry, entry.name, "package.toml");
+      if (!existsSync(manifestPath)) continue;
+      const parsed = parseProgramOutputPolicies(readFileSync(manifestPath, "utf8"));
+      if (parsed.kind !== "program" || !parsed.name) continue;
+      const completeOutputs = parsed.outputs.filter(
+        (out): out is Required<Pick<ProgramOutputPolicy, "name" | "wasm">> & ProgramOutputPolicy =>
+          Boolean(out.name && out.wasm),
+      );
+      for (const output of completeOutputs) {
+        if (output.forkInstrumentation !== "disabled") continue;
+        disabled.add(outputRelForPackage(parsed.name, output, completeOutputs.length));
+      }
+    }
+  } catch {
+    // Installed package consumers do not carry registry manifests.
+  }
+
+  cachedForkInstrumentationDisabledOutputs = disabled;
+  return disabled;
+}
+
+function stripProgramArch(relPath: string): string | null {
+  const adjusted = applyDefaultArch(relPath);
+  for (const prefix of ["programs/wasm32/", "programs/wasm64/"]) {
+    if (adjusted.startsWith(prefix)) return adjusted.slice(prefix.length);
+  }
+  return null;
+}
+
+function disablesForkInstrumentation(relPath: string): boolean {
+  const programRel = stripProgramArch(relPath);
+  return programRel !== null && forkInstrumentationDisabledOutputs().has(programRel);
+}
+
+function hasWasmArtifactPolicyFailures(path: string, relPath: string): boolean {
   if (!path.endsWith(".wasm")) return false;
   try {
     const bytes = readFileSync(path);
     const programBytes = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    return describeWasmArtifactPolicyFailures(programBytes, { expectedAbi: ABI_VERSION }).length > 0;
+    const forkDisabled = disablesForkInstrumentation(relPath);
+    return describeWasmArtifactPolicyFailures(programBytes, {
+      expectedAbi: ABI_VERSION,
+      requireForkInstrumentation: forkDisabled ? false : undefined,
+      forbidForkInstrumentation: forkDisabled,
+    }).length > 0;
   } catch {
     return false;
   }
 }
 
-function chooseBinaryCandidate(candidates: string[]): string | null {
+function chooseBinaryCandidate(candidates: string[], relPath: string): string | null {
   const existing = candidates.filter((candidate) => existsSync(candidate));
   if (existing.length === 0) return null;
 
-  return existing.find((candidate) => !hasWasmArtifactPolicyFailures(candidate)) ?? null;
+  return existing.find((candidate) => !hasWasmArtifactPolicyFailures(candidate, relPath)) ?? null;
 }
 
 export function resolveBinary(relPath: string): string {
@@ -156,7 +262,7 @@ export function resolveBinary(relPath: string): string {
     checked.push(candidate);
     candidates.push(candidate);
   }
-  const candidate = chooseBinaryCandidate(candidates);
+  const candidate = chooseBinaryCandidate(candidates, relPath);
   if (candidate) return candidate;
   throw new Error(
     `Binary not found: ${relPath}\n` +
