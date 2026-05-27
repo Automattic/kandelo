@@ -428,16 +428,57 @@ describe("wasm artifact policy helpers", () => {
     expect(wasmImportsKernelFork(wasm)).toBe(true);
     expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
   });
+
+  it("allows fork imports when an output explicitly disables fork instrumentation", () => {
+    const wasm = buildWasm({
+      funcImports: [{ module: "kernel", name: "kernel_fork", typeIdx: 0 }],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [{ name: "__abi_version", kind: 0, index: 1 }],
+    });
+
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 12,
+      requireForkInstrumentation: false,
+      forbidForkInstrumentation: true,
+    })).toEqual([]);
+  });
+
+  it("rejects fork instrumentation when an output disables it", () => {
+    const wasm = buildWasm({
+      funcImports: [{ module: "kernel", name: "kernel_fork", typeIdx: 0 }],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [
+        { name: "__abi_version", kind: 0, index: 1 },
+        { name: "wpk_fork_unwind_begin", kind: 0, index: 1 },
+        { name: "wpk_fork_unwind_end", kind: 0, index: 1 },
+        { name: "wpk_fork_rewind_begin", kind: 0, index: 1 },
+        { name: "wpk_fork_rewind_end", kind: 0, index: 1 },
+        { name: "wpk_fork_state", kind: 0, index: 1 },
+      ],
+    });
+
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 12,
+      requireForkInstrumentation: false,
+      forbidForkInstrumentation: true,
+    })).toContain("contains wasm-fork-instrument exports");
+  });
 });
 
-const builtNodeBinary = join(process.cwd(), "packages/registry/spidermonkey-node/bin/node.wasm");
+const builtNodeBinary = join(process.cwd(), "..", "packages/registry/spidermonkey-node/bin/node.wasm");
 
 describe.skipIf(!existsSync(builtNodeBinary))("built node.wasm artifact policy", () => {
-  it("does not carry fork or legacy Asyncify instrumentation", () => {
+  it("uses the SpiderMonkey no-fork-instrumentation policy", () => {
     const bytes = readFileSync(builtNodeBinary);
     const wasm = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 
-    expect(wasmImportsKernelFork(wasm)).toBe(false);
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 12,
+      requireForkInstrumentation: false,
+      forbidForkInstrumentation: true,
+    })).toEqual([]);
     expect(wasmContainsLegacyAsyncify(wasm)).toBe(false);
     expect(readWasmExportNames(wasm).filter((name) => name.startsWith("wpk_fork_"))).toEqual([]);
   });

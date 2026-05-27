@@ -383,7 +383,11 @@ export function wasmIsRelocatableObject(programBytes: ArrayBuffer): boolean {
 
 export function describeWasmArtifactPolicyFailures(
   programBytes: ArrayBuffer,
-  options: { expectedAbi?: number | null; requireForkInstrumentation?: boolean } = {},
+  options: {
+    expectedAbi?: number | null;
+    requireForkInstrumentation?: boolean;
+    forbidForkInstrumentation?: boolean;
+  } = {},
 ): string[] {
   const failures: string[] = [];
   if (wasmContainsLegacyAsyncify(programBytes)) {
@@ -397,11 +401,15 @@ export function describeWasmArtifactPolicyFailures(
     }
   }
 
+  const exports = new Set(readWasmExportNames(programBytes));
+  const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
+  if (options.forbidForkInstrumentation && presentWpkExports.length > 0) {
+    failures.push("contains wasm-fork-instrument exports");
+  }
+
   const requireForkInstrumentation =
     options.requireForkInstrumentation ?? !wasmIsRelocatableObject(programBytes);
   if (requireForkInstrumentation) {
-    const exports = new Set(readWasmExportNames(programBytes));
-    const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
     const hasCompleteForkInstrumentation = presentWpkExports.length === WPK_FORK_EXPORTS.length;
     if (presentWpkExports.length > 0 && !hasCompleteForkInstrumentation) {
       const missing = WPK_FORK_EXPORTS.filter((name) => !exports.has(name));

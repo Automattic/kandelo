@@ -60,3 +60,4 @@ install_hints = { darwin = "ships with macOS; or: brew install curl", linux = "a
 [[outputs]]
 name = "js"
 wasm = "js.wasm"
+fork_instrumentation = "disabled"

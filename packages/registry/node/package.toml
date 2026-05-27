@@ -18,3 +18,4 @@ script_path = "packages/registry/spidermonkey-node/build-spidermonkey-node.sh"
 [[outputs]]
 name = "node"
 wasm = "node.wasm"
+fork_instrumentation = "disabled"
