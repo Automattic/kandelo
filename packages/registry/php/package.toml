@@ -32,8 +32,8 @@ wasm = "php.wasm"
 # now-removed packages/registry/nginx/demo/build-php-fpm.sh) using two separate
 # php-src checkouts and a sysroot-copy dance. Build-php.sh now does
 # both from one source tree: --enable-cli + --enable-fpm produce
-# sapi/cli/php and sapi/fpm/php-fpm; FPM gets asyncify-onlylist on
-# top so its worker fork() path resumes correctly.
+# sapi/cli/php and sapi/fpm/php-fpm; FPM gets fork instrumentation so
+# its worker fork() path resumes correctly.
 [[outputs]]
 name = "php-fpm"
 wasm = "php-fpm.wasm"

@@ -5,7 +5,7 @@
 //!
 //! - **switch-dispatch**: used when every fork-path call lives at the
 //!   function body's top level. REWIND jumps directly to the resumed
-//!   call site via a top-level `br_table` (asyncify-style). Chunks
+//!   call site via a top-level `br_table` (switch-dispatch). Chunks
 //!   between calls run only on the NORMAL fall-through.
 //! - **guard-dispatch**: used when any fork-path call is nested inside
 //!   a block/loop/if/try_table. Each call site carries an in-place

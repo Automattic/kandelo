@@ -120,9 +120,7 @@ if [ ! -f Makefile ]; then
     export ac_cv_func_putchar_unlocked=no
 
     # -gline-tables-only keeps DWARF line tables for symbolication and
-    # debug stack traces. The asyncify-onlylist requirement for function
-    # names is obsolete (replaced by wasm-fork-instrument, which uses
-    # call-graph analysis); the flag is kept for general debuggability.
+    # debug stack traces; the flag is kept for general debuggability.
     export CFLAGS="-O2 -gline-tables-only -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-pointer-types"
     export LDFLAGS="-Wl,-z,stack-size=1048576 ${LDFLAGS_NCURSES:-}"
 
@@ -395,7 +393,7 @@ fi
 mkdir -p "$BIN_DIR"
 cp "$BASH_BIN" "$BIN_DIR/bash.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/bash.wasm" | tr -d ' ')
-echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
+echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
 # --- Size optimization + fork instrumentation ---
 # wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must
@@ -405,7 +403,7 @@ echo "==> Optimizing bash with wasm-opt -O2..."
 "$WASM_OPT" -O2 "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
 
 echo "==> Applying fork instrumentation..."
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 "$FORK_INSTRUMENT" "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm.instr"
 mv "$BIN_DIR/bash.wasm.instr" "$BIN_DIR/bash.wasm"
 

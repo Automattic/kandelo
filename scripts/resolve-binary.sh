@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Resolve a binary relative to the binaries/ tree. Priority:
-#   1. $REPO/local-binaries/<rel>   (user override)
+#   1. $REPO/local-binaries/<rel>   (user override unless it is a legacy
+#                                    fork artifact and fetched release is fresh)
 #   2. $REPO/binaries/<rel>         (fetched release)
 #
 # Prints the absolute path on stdout, or prints a helpful error to
@@ -16,6 +17,9 @@
 #   $(scripts/resolve-binary.sh vfs/shell.vfs.zst)
 
 set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+source "$script_dir/wasm-artifact-guards.sh"
 
 if [ $# -ne 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     sed -n '3,18p' "$0"
@@ -59,12 +63,35 @@ esac
 
 local_path="$repo_root/local-binaries/$adjusted"
 fetched_path="$repo_root/binaries/$adjusted"
+current_abi="$(wasm_current_abi_version "$repo_root" || true)"
+
+is_stale_wasm_artifact() {
+    wasm_has_legacy_asyncify "$1" ||
+        wasm_has_stale_abi "$1" "$current_abi" ||
+        wasm_has_missing_fork_instrumentation "$1"
+}
 
 if [ -e "$local_path" ]; then
+    if [ -e "$fetched_path" ] \
+        && is_stale_wasm_artifact "$local_path" \
+        && ! is_stale_wasm_artifact "$fetched_path"; then
+        echo "$fetched_path"
+        exit 0
+    fi
+    if is_stale_wasm_artifact "$local_path"; then
+        echo "ERROR: stale wasm artifact ignored: $local_path" >&2
+        echo "       Rebuild it for ABI ${current_abi:-current}, fetch a fresh release, or remove the stale local override." >&2
+        exit 1
+    fi
     echo "$local_path"
     exit 0
 fi
 if [ -e "$fetched_path" ]; then
+    if is_stale_wasm_artifact "$fetched_path"; then
+        echo "ERROR: stale wasm artifact ignored: $fetched_path" >&2
+        echo "       Rebuild it for ABI ${current_abi:-current} or fetch a fresh release." >&2
+        exit 1
+    fi
     echo "$fetched_path"
     exit 0
 fi

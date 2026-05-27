@@ -10,24 +10,25 @@
  */
 import { readFileSync } from "node:fs";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
   saveImage,
   writeVfsBinary,
 } from "./vfs-image-helpers";
-import { populateShellEnvironment } from "./shell-vfs-build";
+import { populateShellEnvironment, resolveVfsArtifact } from "./shell-vfs-build";
 import {
   externalAsset,
   framebufferPresentation,
   terminalPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
-import { shellGuide } from "./kandelo-demo-guides";
+import {
+  DOOM_COMMAND,
+  DOOM_WAD_SHA256,
+  DOOM_WAD_URL,
+  shellGuide,
+} from "./kandelo-demo-guides";
 
 const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
-const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
-const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
-const DOOM_WAD_SHA256 = "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
 
 function resolveRootfsImagePath(): string {
   try {
@@ -79,6 +80,6 @@ main().catch((err) => {
 });
 
 function populateDoomRuntime(fs: MemoryFileSystem): void {
-  const fbdoomBytes = readFileSync(resolveBinary("programs/fbdoom.wasm"));
+  const fbdoomBytes = readFileSync(resolveVfsArtifact("programs/fbdoom.wasm", "fbdoom"));
   writeVfsBinary(fs, "/usr/local/bin/fbdoom", new Uint8Array(fbdoomBytes), 0o755);
 }

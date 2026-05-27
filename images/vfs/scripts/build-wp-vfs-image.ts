@@ -2,12 +2,11 @@
  * Build a fully-bootable VFS image for the WordPress browser demo.
  * dinit (PID 1) brings up:
  *
- *   wp-config-init (scripted) → php-fpm (process) → nginx (process)
+ *   wp-config-init (internal) → php-fpm (process) → nginx (process)
  *
- * The wp-config-init service runs sed at boot to substitute the page-
- * supplied @@APP_PATH@@ and @@PROTO@@ values into wp-config.php. The
- * page passes those as env vars when calling kernel.boot(); dinit
- * inherits its env to scripted children.
+ * The browser host overwrites wp-config.php with the page-supplied
+ * @@APP_PATH@@ and @@PROTO@@ values before dinit starts. Keeping that
+ * substitution host-side avoids a shell fork during service boot.
  *
  * Produces: apps/browser-demos/public/wordpress.vfs
  */
@@ -24,7 +23,6 @@ import {
 } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract, ensureExtract } from "./source-extract-helper";
-import { populateShellEnvironment } from "./shell-vfs-build";
 import { prewarmOpcache } from "./opcache-prewarm";
 import {
   webPresentation,
@@ -273,9 +271,8 @@ include $docRoot . '/index.php';
 
 /**
  * dinit service tree:
- *   wp-config-init (scripted) — sed-substitutes @@APP_PATH@@ / @@PROTO@@
- *                               in /var/www/html/wp-config.php from env vars
- *                               passed by the page through dinit.
+ *   wp-config-init (internal) — dependency marker. The browser host writes
+ *                               the runtime wp-config.php before dinit starts.
  *   php-fpm        (process)  — depends-on wp-config-init
  *   nginx          (process)  — depends-on php-fpm
  */
@@ -283,9 +280,7 @@ function buildServices(): DinitService[] {
   return [
     {
       name: "wp-config-init",
-      type: "scripted",
-      command: "/bin/sh /etc/wp-config-init.sh",
-      logfile: "/var/log/wp-config-init.log",
+      type: "internal",
       restart: false,
     },
     {
@@ -311,14 +306,9 @@ function buildServices(): DinitService[] {
   ];
 }
 
-const WP_CONFIG_INIT_SCRIPT = `# Substitute runtime values into wp-config.php. WP_APP_PATH and WP_PROTO
-# come from the env the page passes through kernel.boot() — dinit
-# inherits its env to scripted services.
+const WP_CONFIG_INIT_SCRIPT = `# wp-config.php is rendered into the VFS by the host before dinit starts.
 : "\${WP_APP_PATH:=/app}"
 : "\${WP_PROTO:=http}"
-sed -e "s|@@APP_PATH@@|$WP_APP_PATH|g" \\
-    -e "s|@@PROTO@@|$WP_PROTO|g" \\
-    /etc/wp-config-template.php > /var/www/html/wp-config.php
 echo "wp-config-init: APP_PATH=$WP_APP_PATH PROTO=$WP_PROTO"
 `;
 
@@ -367,6 +357,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once ABSPATH . 'wp-settings.php';
 `;
 
+function renderWpConfig(appPath: string, proto: string): string {
+  return WP_CONFIG_TEMPLATE_PHP
+    .replaceAll("@@APP_PATH@@", phpSingleQuotedContent(appPath))
+    .replaceAll("@@PROTO@@", phpSingleQuotedContent(proto));
+}
+
+function phpSingleQuotedContent(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 // --- Main ---
 
 async function main() {
@@ -376,27 +376,21 @@ async function main() {
   const sab = new SharedArrayBuffer(128 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
 
-  // Shell environment (dash + bash + coreutils + grep + sed + extended
-  // tools + magic db + vim/nethack lazy archives) — shared with the
-  // Shell demo via images/vfs/scripts/shell-vfs-build.ts. eager:
-  // every binary is baked because WP runs in kernelOwnedFs mode.
-  console.log("Populating shell environment...");
-  populateShellEnvironment(fs, { eagerBinaries: true });
-
   console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
 
   console.log("Writing nginx + php-fpm binaries...");
+  ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
   writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
 
-  // Template + bootstrap script. wp-config-init service runs the script
-  // at boot, sed-substituting @@APP_PATH@@ and @@PROTO@@ from env vars
-  // the page passes through dinit's argv/env.
+  // Template + default wp-config. The browser host overwrites wp-config.php
+  // with the current page prefix/protocol before dinit starts.
   ensureDirRecursive(fs, "/var/www/html");
   writeVfsFile(fs, "/etc/wp-config-template.php", WP_CONFIG_TEMPLATE_PHP);
   writeVfsFile(fs, "/etc/wp-config-init.sh", WP_CONFIG_INIT_SCRIPT);
+  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWpConfig("/app", "http"));
 
   // WordPress-specific directories
   ensureDirRecursive(fs, "/var/www/html/wp-content/database");

@@ -257,15 +257,10 @@ fi
 # wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
 # no onlylist needed. Must run last — it hardcodes mutable-global offsets
 # and any later pass reordering globals would corrupt the fork buffer.
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ -x "$FORK_INSTRUMENT" ]; then
-    echo "==> Applying fork instrumentation..."
-    "$FORK_INSTRUMENT" testfixture -o testfixture.instr
-    mv testfixture.instr testfixture
-else
-    echo "WARNING: wasm-fork-instrument not found. Fork (exec command) will not work." >&2
-    echo "  Run 'bash build.sh' to build it." >&2
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+echo "==> Applying fork instrumentation..."
+"$FORK_INSTRUMENT" testfixture -o testfixture.instr
+mv testfixture.instr testfixture
 
 # --- Install ---
 mkdir -p "$SCRIPT_DIR/bin"

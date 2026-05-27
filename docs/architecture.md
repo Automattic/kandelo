@@ -216,7 +216,7 @@ Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stac
 8. Each instrumented function's preamble sees state=REWINDING, reloads its frame, and re-enters the call site where the parent was interrupted. Eventually reaches the `kernel_fork` call site in the leaf function, which returns 0.
 9. `wpk_fork_rewind_end` resets state; fork returns 0 in child, child PID in parent.
 
-Unlike Binaryen Asyncify, this instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
+The instrumentation handles LLVM's new-EH `try_table` output correctly, including fork from inside C++ catch handlers. See [fork-instrumentation.md](fork-instrumentation.md) for the current guarantees and documented unanticipated Wasm-level carve-outs.
 
 ### exec()
 
@@ -649,7 +649,14 @@ The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 - Links: `channel_syscall.c` + `compiler_rt.c` + `crt1.o` + `libc.a`
 - Linker flags: `--import-memory --shared-memory --max-memory=1073741824`
 
-For programs that use `fork()`, the in-tree `wasm-fork-instrument` tool (see [fork-instrumentation.md](fork-instrumentation.md)) must be the **last** post-link pass — after any `wasm-opt -O2`. The tool auto-discovers fork-path functions via call-graph analysis from the `kernel.kernel_fork` import; no `asyncify-onlylist.txt` is needed. Binaryen Asyncify is no longer used.
+For programs that use `fork()` or fork-like helpers, the in-tree
+`wasm-fork-instrument` tool (see
+[fork-instrumentation.md](fork-instrumentation.md)) must be the **last**
+post-link pass — after any `wasm-opt -O2`. Build scripts call
+`scripts/run-wasm-fork-instrument.sh`, which builds the tool on demand if the
+prebuilt `tools/bin/wasm-fork-instrument` is absent. The tool auto-discovers
+fork-path functions via call-graph analysis from the `kernel.kernel_fork`
+import; no onlylist is needed. Legacy Asyncify artifacts are not supported.
 
 ### Package system
 

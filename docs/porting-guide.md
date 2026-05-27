@@ -37,12 +37,22 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 
 **Missing features**: Check [wasm-limitations.md](wasm-limitations.md) for what cannot be implemented (mprotect, raw server sockets in browser, guest-initiated pthread_create). Most software has graceful fallbacks for these.
 
-**fork() support**: If the program uses `fork()`, `posix_spawn()`, or `system()`, run `wasm-fork-instrument` as the final step of the wasm pipeline (after any `wasm-opt -O2`):
+**fork() support**: If the program uses `fork()` or fork-like behavior, run
+`wasm-fork-instrument` as the final step of the wasm pipeline (after any
+`wasm-opt -O2`). Fork-like behavior includes `vfork()`, `_Fork()`, shell
+pipelines, command substitution, `system()`, `popen()`, and helper processes
+implemented through fork.
 ```bash
-"$REPO_ROOT/tools/bin/wasm-fork-instrument" program.wasm -o program.wasm
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm
 ```
 
-The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. It must run last — it hardcodes mutable-global offsets at instrument time, and any later pass that reorders globals will corrupt the fork save buffer. See [fork-instrumentation.md](fork-instrumentation.md) for the full transform and ABI.
+The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. It must run last — it hardcodes mutable-global offsets at instrument time, and any later pass that reorders globals will corrupt the fork save buffer.
+
+Instrumentation is mandatory for fork-using programs. Do not treat it as an
+optional optimization, and do not use Binaryen Asyncify as a fallback. The host
+requires complete `wpk_fork_*` exports for fork continuation and rejects legacy
+`asyncify_*` artifacts. See [fork-instrumentation.md](fork-instrumentation.md)
+for the full transform and ABI.
 
 **Thread support**: Programs that create threads (MariaDB, Redis) work via the kernel's `clone()` syscall. No special compilation flags needed, but the host runner must implement the `onClone` callback.
 
@@ -585,7 +595,7 @@ index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/downloa
   `ABI_VERSION` at resolve time — one `build.toml` survives ABI bumps.
 - `revision` bumps invalidate every cached archive for this
   package; bump only when output bytes legitimately change (build
-  flag tweaks, asyncify pass). Don't bump for doc-only changes.
+  flag tweaks, fork-instrument output). Don't bump for doc-only changes.
 - `commit` is informational provenance; the matrix-build CI step
   reads `git rev-parse HEAD` at publish time and writes the result
   back into the archive's internal manifest's `[compatibility]`
@@ -680,7 +690,7 @@ hardcoding it.
   invalidates the cache for that package and triggers a full
   re-source-build across the matrix. Bump only when output bytes
   legitimately change (compiler flag tweaks, fork-instrument output,
-  asyncify pass, etc.).
+  etc.).
 - **Source-tree reads instead of declared deps.** If your build
   script reads `packages/registry/<other>/<x>-src/...`, declare `<other>`
   in `depends_on`. The resolver builds deps before you and exports
@@ -713,7 +723,10 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 
 **"wasm_posix_kernel.wasm not found"**: Run `bash build.sh` first.
 
-**Fork fails silently**: Run the binary through `tools/bin/wasm-fork-instrument` — the host detects the five `wpk_fork_*` exports at launch and falls back to non-forking mode when they are absent. See [fork-instrumentation.md](fork-instrumentation.md).
+**Fork fails or the host rejects `asyncify_*` exports**: Rebuild the program
+through `scripts/run-wasm-fork-instrument.sh`. Fork-using programs must export
+the complete `wpk_fork_*` set. Legacy Asyncify artifacts are intentionally not
+accepted. See [fork-instrumentation.md](fork-instrumentation.md).
 
 **"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected (the indirect-call closure is conservative; signatures alone determine reach).
 

@@ -7,11 +7,19 @@ import {
   type ProcessEvent,
 } from "../src/kernel-host";
 import {
+  genericDemoPresentation,
   parseKandeloDemoConfig,
   resolveDemoAssets,
   resolveDemoGuide,
   resolveDemoPresentation,
 } from "../src/demo-config";
+import {
+  DOOM_COMMAND,
+  builtinDemoAssets,
+  builtinDemoGuide,
+  builtinDemoPresentation,
+  nodeGuide,
+} from "../src/demo-guides";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
@@ -318,6 +326,32 @@ describe("LiveKernelHost: descriptor + gallery lifecycle defaults", () => {
   });
 });
 
+describe("LiveKernelHost: surface availability", () => {
+  it("marks a configured web preview available before the HTTP response is ready", () => {
+    const host = new LiveKernelHost();
+    const seen: boolean[] = [];
+    host.subscribeSurfaceAvailability((state) => seen.push(state.web));
+
+    host.setWebPreview({
+      label: "WordPress",
+      url: "/app/",
+      status: "starting",
+      message: "Waiting for HTTP response",
+    });
+
+    expect(host.getSurfaceAvailability().web).toBe(true);
+    expect(seen).toEqual([true]);
+  });
+
+  it("clears web availability when the preview is removed", () => {
+    const host = new LiveKernelHost();
+    host.setWebPreview({ label: "WordPress", url: "/app/", status: "error" });
+    host.setWebPreview(null);
+
+    expect(host.getSurfaceAvailability().web).toBe(false);
+  });
+});
+
 describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
   it("returns a Snapshot whose descriptor matches the host's", async () => {
     const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR });
@@ -343,6 +377,14 @@ describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
 });
 
 describe("Kandelo demo config", () => {
+  it("provides generic presentation defaults for web-backed profiles", () => {
+    expect(genericDemoPresentation("web")).toMatchObject({
+      bootPrimary: "syslog",
+      runningPrimary: ["web", "terminal", "syslog"],
+      terminalAccess: "drawer",
+    });
+  });
+
   it("resolves profile presentation over image defaults", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
@@ -488,6 +530,33 @@ describe("Kandelo demo config", () => {
 
     expect(resolveDemoGuide(config!, "node")?.groups?.[0].actions[0].kind).toBe("terminal.write");
     expect(resolveDemoGuide(config!, "missing")).toBeNull();
+  });
+
+  it("provides built-in Node guide metadata for stale VFS images", () => {
+    const guide = builtinDemoGuide("node");
+
+    expect(guide).toEqual(nodeGuide());
+    expect(guide?.title).toBe("Node.js demo");
+    expect(guide?.groups?.[0].actions.map((action) => action.id)).toContain("node-version");
+    expect(builtinDemoGuide("wordpress-sqlite")).toBeNull();
+  });
+
+  it("provides built-in presentation and assets for stale VFS images", () => {
+    expect(builtinDemoPresentation("shell")).toMatchObject({
+      runningPrimary: ["terminal", "syslog"],
+    });
+    expect(builtinDemoPresentation("wordpress-mariadb")).toMatchObject({
+      runningPrimary: ["web", "terminal", "syslog"],
+    });
+    expect(builtinDemoPresentation("doom")).toMatchObject({
+      runningPrimary: ["framebuffer", "terminal", "syslog"],
+      autoCommand: DOOM_COMMAND,
+    });
+
+    expect(builtinDemoAssets("doom")).toEqual([
+      expect.objectContaining({ path: "/doom1.wad", devCorsProxy: true }),
+    ]);
+    expect(builtinDemoAssets("node")).toEqual([]);
   });
 
   it("rejects duplicate guide action ids", () => {

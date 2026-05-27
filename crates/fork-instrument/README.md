@@ -34,18 +34,25 @@ patterns are documented in `docs/fork-instrumentation.md`.
 
 ## Build
 
-Standard workspace member:
+The repo default Cargo target is `wasm64-unknown-unknown`, which is correct
+for the kernel but wrong for this host-side CLI. Build it for the host
+triple:
 
 ```sh
-cargo build -p fork-instrument --release
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo build -p fork-instrument --release --target "$HOST_TARGET"
 ```
 
-Binary: `target/release/wasm-fork-instrument`.
+Binary: `target/$HOST_TARGET/release/wasm-fork-instrument`.
+
+From the repo root, `scripts/build-fork-instrument-tool.sh` does this and
+installs the result to `tools/bin/wasm-fork-instrument`.
 
 ## Tests
 
 ```sh
-cargo test -p fork-instrument
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+cargo test -p fork-instrument --target "$HOST_TARGET"
 ```
 
 ## Fuzzing (Phase 6 gate)

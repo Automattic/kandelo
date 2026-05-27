@@ -3,20 +3,17 @@ set -euo pipefail
 
 # Builds two PHP binaries from one source tree:
 #
-#   sapi/cli/php        → php.wasm     (CLI; no asyncify)
+#   sapi/cli/php        → php.wasm     (CLI)
 #   sapi/fpm/php-fpm    → php-fpm.wasm (FastCGI Process Manager;
-#                                       asyncified via onlylist for
-#                                       fork support)
+#                                       fork-instrumented)
 #
 # The two builds were previously separate scripts (this one + the
 # now-removed packages/registry/nginx/demo/build-php-fpm.sh). Unifying them lets a
 # single autoconf invocation produce both sapis from one source tree
 # and one set of patched config.h/Makefile.
 #
-# CFLAGS/LDFLAGS are set to FPM's stricter requirements (line tables
-# preserved, clang's automatic wasm-opt step skipped) because they're
-# needed for FPM's asyncify-onlylist to find function names. CLI just
-# ships the same way without asyncify on top.
+# CFLAGS/LDFLAGS are set to FPM's stricter requirements. CLI ships
+# with the same flags for debuggability.
 
 PHP_VERSION="${PHP_VERSION:-8.3.15}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -182,7 +179,7 @@ if [ ! -f Makefile ]; then
     # passes its own `blocks*vars > 4M` size guard.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
     CPPFLAGS="$DEP_CPPFLAGS" \
-    LDFLAGS="$DEP_LDFLAGS --no-wasm-opt -ldl -Wl,--export-all \
+    LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
 -Wl,-z,stack-size=4194304" \
     wasm32posix-configure \
@@ -221,12 +218,8 @@ if [ ! -f Makefile ]; then
         --cache-file="$SCRIPT_DIR/config.cache" \
         --prefix="$INSTALL_DIR" \
         CFLAGS="-O2 -gline-tables-only -DZEND_USE_ASM_ARITHMETIC=0"
-    # CFLAGS includes -gline-tables-only and LDFLAGS sets --no-wasm-opt
-    # to preserve DWARF and the wasm name section for debug stack traces.
-    # The legacy reason — keeping function names visible to an asyncify
-    # onlylist — went away when fork instrumentation moved to
-    # wasm-fork-instrument (which works off function indices, not names),
-    # but the debug-trace value is worth keeping. CLI inherits the same
+    # CFLAGS includes -gline-tables-only for debug stack traces.
+    # The debug-trace value is worth keeping. CLI inherits the same
     # flags; it just produces a slightly larger binary.
 
     # Patch config.h: disable features that pass link-time checks (--allow-undefined)
@@ -319,14 +312,13 @@ mkdir -p "$SCRIPT_DIR/bin"
 cp sapi/cli/php "$SCRIPT_DIR/bin/php.wasm"
 cp sapi/fpm/php-fpm "$SCRIPT_DIR/bin/php-fpm.wasm"
 
-# CLI gets a plain wasm-opt -O2 pass to strip debug info.
-# FPM (which forks worker children) gets wasm-fork-instrument as the
-# tail step — wasm-opt -O2 first, then fork instrumentation, since
-# wasm-fork-instrument hardcodes mutable-global offsets at instrument
-# time and any later pass that reorders globals would invalidate them.
-# wasm-fork-instrument auto-discovers fork paths via call-graph analysis;
-# no onlylist file is required (the legacy asyncify-fpm-onlylist.txt was
-# retired in the Phase 7 rollout).
+# CLI and FPM both retain libc paths that can reach kernel_fork
+# (system/popen/fork wrappers for CLI, worker forks for FPM), so both
+# must be fork-instrumented. wasm-opt runs first, then fork
+# instrumentation as the tail step because the instrumenter hardcodes
+# mutable-global offsets and any later pass that reorders globals would
+# invalidate them. wasm-fork-instrument auto-discovers fork paths via
+# call-graph analysis; no onlylist file is required.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -n "$WASM_OPT" ]; then
     echo "==> Optimizing CLI binary with wasm-opt -O2..."
@@ -336,14 +328,14 @@ if [ -n "$WASM_OPT" ]; then
     "$WASM_OPT" -O2 "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm"
 fi
 
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ -x "$FORK_INSTRUMENT" ]; then
-    echo "==> Applying fork instrumentation to FPM..."
-    "$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm.instr"
-    mv "$SCRIPT_DIR/bin/php-fpm.wasm.instr" "$SCRIPT_DIR/bin/php-fpm.wasm"
-else
-    echo "==> WARN: wasm-fork-instrument not found at $FORK_INSTRUMENT — FPM workers will not fork." >&2
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+echo "==> Applying fork instrumentation to CLI..."
+"$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/php.wasm" -o "$SCRIPT_DIR/bin/php.wasm.instr"
+mv "$SCRIPT_DIR/bin/php.wasm.instr" "$SCRIPT_DIR/bin/php.wasm"
+
+echo "==> Applying fork instrumentation to FPM..."
+"$FORK_INSTRUMENT" "$SCRIPT_DIR/bin/php-fpm.wasm" -o "$SCRIPT_DIR/bin/php-fpm.wasm.instr"
+mv "$SCRIPT_DIR/bin/php-fpm.wasm.instr" "$SCRIPT_DIR/bin/php-fpm.wasm"
 
 ls -la "$SCRIPT_DIR/bin/php.wasm" "$SCRIPT_DIR/bin/php-fpm.wasm"
 

@@ -84,14 +84,14 @@ export async function prewarmOpcache(
   fs: MemoryFileSystem,
   options: OpcachePrewarmOptions,
 ): Promise<number> {
+  ensureDirRecursive(fs, CACHE_DIR);
+
   if (process.env.KANDELO_NO_OPCACHE_PREWARM === "1") {
     console.log("[opcache-prewarm] skipped (KANDELO_NO_OPCACHE_PREWARM=1)");
     return 0;
   }
 
   const { label } = options;
-
-  ensureDirRecursive(fs, CACHE_DIR);
 
   console.log(`[opcache-prewarm:${label}] booting kernel against in-memory VFS...`);
   const imageBytes = await fs.saveImage();

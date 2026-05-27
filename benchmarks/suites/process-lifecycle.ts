@@ -81,7 +81,7 @@ const suite: BenchmarkSuite = {
 
     // posix_spawn — the non-forking SYS_SPAWN fast path. Distinct from
     // exec_ms (which times execve replacing the same process) and
-    // fork_ms (which times fork's asyncify rewind). spawn_ms exists
+    // fork_ms (which times fork rewind). spawn_ms exists
     // because popen / system / shell pipelines all go through
     // posix_spawn, and that path used to cost a fork-instrument unwind
     // we no longer pay.
