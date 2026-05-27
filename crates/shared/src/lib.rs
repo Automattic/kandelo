@@ -1016,11 +1016,15 @@ pub mod abi {
         "__abi_version",
         "kernel_alloc_scratch",
         "kernel_create_process",
+        "kernel_get_parent_pid",
         "kernel_handle_channel",
         "kernel_host_adapter_manifest_len",
         "kernel_host_adapter_manifest_ptr",
+        "kernel_mark_process_signaled",
+        "kernel_reap_exited_child",
         "kernel_remove_process",
         "kernel_set_mode",
+        "kernel_wait4_poll",
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
