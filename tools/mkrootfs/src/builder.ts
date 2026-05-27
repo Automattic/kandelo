@@ -51,6 +51,8 @@ export interface BuildOptions {
   repoRoot: string;
   /** Backing SharedArrayBuffer size in bytes; defaults to 16 MiB. */
   sabSize?: number;
+  /** Maximum growable filesystem size in bytes; defaults to SharedFS's 4x initial cap. */
+  maxSizeBytes?: number;
   /** Optional image-level declarations, such as the required kernel ABI. */
   metadata?: VfsImageMetadata;
   /** Optional sink for non-fatal audit messages (archive overrides, etc.). */
@@ -69,8 +71,13 @@ export async function buildImage(opts: BuildOptions): Promise<Uint8Array> {
   const plan = validateAndPlanArchives(entries, archiveBundles);
   for (const w of plan.warnings) opts.onWarn?.(w);
 
-  const sab = new SharedArrayBuffer(opts.sabSize ?? DEFAULT_SAB_SIZE);
-  const mfs = MemoryFileSystem.create(sab);
+  const sabSize = opts.sabSize ?? DEFAULT_SAB_SIZE;
+  if (opts.maxSizeBytes !== undefined && opts.maxSizeBytes < sabSize) {
+    throw new Error("maxSizeBytes must be greater than or equal to sabSize");
+  }
+
+  const sab = new SharedArrayBuffer(sabSize);
+  const mfs = MemoryFileSystem.create(sab, opts.maxSizeBytes);
 
   buildDirectories(mfs, entries);
   buildFiles(mfs, entries, opts);

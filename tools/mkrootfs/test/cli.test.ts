@@ -178,6 +178,37 @@ describe("mkrootfs build — happy paths", () => {
     }
   });
 
+  it("accepts --max-size to control image growth capacity", () => {
+    const fixture = join(here, "fixtures", "basic");
+    const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));
+    const out = join(tmp, "growable.vfs");
+    try {
+      const r = run(
+        "build",
+        join(fixture, "MANIFEST"),
+        join(fixture, "rootfs"),
+        "-o", out,
+        "--repo-root", fixture,
+        "--sab-size", "1048576",
+        "--max-size", "8388608",
+      );
+      expect(r.status).toBe(0);
+
+      const mfs = MemoryFileSystem.fromImage(new Uint8Array(readFileSync(out)), {
+        maxByteLength: 8 * 1024 * 1024,
+      });
+      const fd = mfs.open("/large.bin", 0x0001 | 0x0040 | 0x0200, 0o644);
+      try {
+        const data = new Uint8Array(5 * 1024 * 1024);
+        expect(mfs.write(fd, data, null, data.length)).toBe(data.length);
+      } finally {
+        mfs.close(fd);
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("prints onWarn messages to stderr by default", () => {
     const fixture = join(here, "fixtures", "archive-collision");
     const tmp = mkdtempSync(join(tmpdir(), "mkrootfs-cli-build-"));

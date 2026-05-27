@@ -26,6 +26,7 @@ fi
 OUT="host/wasm/rootfs.vfs"
 PKG_MANIFEST="target/rootfs-packages.MANIFEST"
 ROOTFS_SAB_SIZE="${ROOTFS_SAB_SIZE:-16777216}"
+ROOTFS_MAX_SIZE="${ROOTFS_MAX_SIZE:-268435456}"
 ROOTFS_PACKAGES="images/rootfs/PACKAGES.toml"
 mkdir -p "$(dirname "$OUT")"
 ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs)"
@@ -76,6 +77,7 @@ node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
     --repo-root "$REPO_ROOT" \
     --manifest-fragment "$PKG_MANIFEST" \
     --sab-size "$ROOTFS_SAB_SIZE" \
+    --max-size "$ROOTFS_MAX_SIZE" \
     --kernel-abi "$ABI_VERSION"
 
 SIZE=$(wc -c < "$OUT" | tr -d ' ')
