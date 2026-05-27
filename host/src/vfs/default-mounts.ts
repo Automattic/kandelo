@@ -26,6 +26,10 @@ export interface MountSpec {
   readonly?: boolean;
   /** Directory mode for scratch mount roots. Mirrors MANIFEST for defaults. */
   mode?: number;
+  /** Virtual owner for scratch mount roots. Defaults to root. */
+  uid?: number;
+  /** Virtual group for scratch mount roots. Defaults to root. */
+  gid?: number;
   /** Documentation hint that the mount is wiped on kernel destroy. */
   ephemeral?: boolean;
 }
@@ -41,8 +45,8 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/var/tmp",   source: "scratch", mode: 0o1777 },
   { path: "/var/log",   source: "scratch", mode: 0o755 },
   { path: "/var/run",   source: "scratch", mode: 0o755, ephemeral: true },
-  { path: "/home/user", source: "scratch", mode: 0o755 },
-  { path: "/root",      source: "scratch", mode: 0o700 },
+  { path: "/home/user", source: "scratch", mode: 0o755, uid: 1000, gid: 1000 },
+  { path: "/root",      source: "scratch", mode: 0o700, uid: 0, gid: 0 },
   { path: "/srv",       source: "scratch", mode: 0o755 },
 ];
 
@@ -173,6 +177,9 @@ export function resolveForBrowser(
       const sab = new SharedArrayBuffer(bytes);
       const backend = MemoryFileSystem.create(sab);
       if (m.mode !== undefined) backend.chmod("/", m.mode);
+      if (m.uid !== undefined || m.gid !== undefined) {
+        backend.chown("/", m.uid ?? 0, m.gid ?? 0);
+      }
       out.push({
         mountPoint: m.path,
         backend,

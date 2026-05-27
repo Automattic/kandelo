@@ -20,6 +20,7 @@ const examplesEl = document.getElementById("examples") as HTMLSelectElement;
 const statusDiv = document.getElementById("status") as HTMLDivElement;
 
 const decoder = new TextDecoder();
+const ROOT_HOME = "/root";
 
 function appendOutput(text: string, cls?: string) {
   const span = document.createElement("span");
@@ -178,8 +179,9 @@ async function buildPhpImage(scriptPath: string, scriptContent: string): Promise
     new SharedArrayBuffer(16 * 1024 * 1024, { maxByteLength: 64 * 1024 * 1024 }),
     64 * 1024 * 1024,
   );
-  for (const d of ["/tmp", "/home", "/dev"]) ensureDir(fs, d);
+  for (const d of ["/tmp", ROOT_HOME, "/dev"]) ensureDir(fs, d);
   fs.chmod("/tmp", 0o777);
+  fs.chmod(ROOT_HOME, 0o700);
   ensureDirRecursive(fs, "/usr/local/bin");
   ensureDirRecursive(fs, "/usr/local/share/php-demo");
   writeVfsBinary(fs, "/usr/local/bin/php", new Uint8Array(phpBytes!));
@@ -213,11 +215,14 @@ async function runPhp() {
       vfsImage,
       argv: ["/usr/local/bin/php", scriptPath],
       env: [
-        "HOME=/home",
+        `HOME=${ROOT_HOME}`,
         "TMPDIR=/tmp",
         "TERM=xterm-256color",
+        "USER=root",
+        "LOGNAME=root",
         "PATH=/usr/local/bin:/usr/bin:/bin",
       ],
+      cwd: ROOT_HOME,
     });
     const exitCode = await exit;
 

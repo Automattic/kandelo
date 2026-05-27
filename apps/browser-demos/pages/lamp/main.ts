@@ -223,8 +223,13 @@ function setupTerminalPane(kernel: BrowserKernel): void {
           "TERM=xterm-256color",
           "LANG=en_US.UTF-8",
           "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+          "USER=root",
+          "LOGNAME=root",
           "PS1=bash$ ",
         ],
+        cwd: "/root",
+        uid: 0,
+        gid: 0,
       });
       pty.terminal.writeln(`\r\n[Shell exited with code ${code}]`);
       panel.setStatus(`exited ${code}`);
@@ -367,10 +372,15 @@ async function start() {
       env: [
         "HOME=/root",
         "TERM=xterm-256color",
+        "USER=root",
+        "LOGNAME=root",
         "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
         `WP_APP_PATH=${APP_PATH}`,
         `WP_PROTO=${PROTO}`,
       ],
+      cwd: "/root",
+      uid: 0,
+      gid: 0,
     });
 
     appendLog("Initializing service worker bridge -> fetchInKernel...\n", "info");

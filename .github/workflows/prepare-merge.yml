@@ -349,14 +349,24 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for staging-build on PR HEAD
+      - name: Checkout workflow helpers
         if: needs.change-scope.outputs.package_staging_required == 'true'
-        # staging-build runs the same matrix flow on every PR push (and
-        # since Phase B-1, the matrix already targets the undated
-        # `binaries-abi-v<N>` tag in parallel with the legacy build).
-        # Waiting here lets prepare-merge promote PR-staged archives
-        # whose cache key still matches the selected synthetic merge tree,
-        # while rebuilding entries whose merged-tree inputs changed.
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            .github/scripts
+
+      - name: Inspect staging-build on PR HEAD
+        if: needs.change-scope.outputs.package_staging_required == 'true'
+        # staging-build runs the same matrix flow on every PR push.
+        # If a real non-skipped staging-build exists for this HEAD,
+        # respect it: wait while it is running and block if it failed.
+        # If the only run is the intentionally skipped label-event run
+        # produced by ready-to-ship, fall through. prepare-merge's own
+        # synthetic-merge durable preflight/matrix/test-gate below will
+        # build or promote exact cache-key matches and validate the
+        # merge candidate before posting merge-gate=success.
         run: |
           gh_retry() {
             local attempt=1
@@ -396,39 +406,80 @@ jobs:
             done
           }
 
-          # The label event can fire before staging-build's run is
-          # registered against PR_HEAD_SHA. Retry briefly.
-          #
-          # staging-build also listens to label changes so toggling
-          # skip-staging-tests can re-run the gate with the new policy.
-          # Other label events, including ready-to-ship, create an
-          # all-skipped workflow run. Ignore those skipped runs here so
-          # the gate watches the latest real staging-build run for this
-          # commit.
-          RUN_ID=""
+          classify_runs() {
+            jq -c -f .github/scripts/select-staging-build-run.jq
+          }
+
+          log_summary() {
+            jq -r '
+              "staging-build selection: state=\(.state) total=\(.total_count) real=\(.real_count) skipped=\(.skipped_count) selected=\(.run_id) status=\(.status) conclusion=\(.conclusion) skipped_ids=\(.skipped_run_ids | join(","))"
+            '
+          }
+
+          # The label event can fire before GitHub registers related
+          # workflow runs against PR_HEAD_SHA. Retry only the truly
+          # empty state. A skipped-only state is meaningful: label
+          # events other than skip-staging-tests intentionally create
+          # all-skipped staging-build runs.
+          SUMMARY=""
           for attempt in 1 2 3 4 5 6; do
-            RUN_ID=$(gh_retry gh run list \
+            RUNS_JSON=$(gh_retry gh run list \
               --repo ${{ github.repository }} \
               --workflow=staging-build.yml \
               --commit="$PR_HEAD_SHA" \
-              --limit=20 \
-              --json databaseId,status,conclusion \
-              --jq '[.[] | select(.conclusion != "skipped")][0].databaseId // empty')
-            [ -n "$RUN_ID" ] && break
+              --limit=100 \
+              --json databaseId,status,conclusion,createdAt)
+            SUMMARY=$(printf '%s\n' "$RUNS_JSON" | classify_runs)
+            printf '%s\n' "$SUMMARY" | log_summary
+
+            STATE=$(printf '%s\n' "$SUMMARY" | jq -r '.state')
+            [ "$STATE" != "no_runs" ] && break
+            [ "$attempt" = "6" ] && break
             sleep 10
           done
 
+          STATE=$(printf '%s\n' "$SUMMARY" | jq -r '.state')
+          RUN_ID=$(printf '%s\n' "$SUMMARY" | jq -r '.run_id')
+          RUN_STATUS=$(printf '%s\n' "$SUMMARY" | jq -r '.status')
+          RUN_CONCLUSION=$(printf '%s\n' "$SUMMARY" | jq -r '.conclusion')
+          SKIPPED_IDS=$(printf '%s\n' "$SUMMARY" | jq -r '.skipped_run_ids | join(", ")')
+
+          case "$STATE" in
+            no_runs)
+              echo "::notice::No staging-build run is registered for HEAD $PR_HEAD_SHA after the retry window; prepare-merge will run synthetic-merge package validation itself."
+              exit 0
+              ;;
+            only_skipped)
+              echo "::notice::Only skipped staging-build run(s) found for HEAD $PR_HEAD_SHA (${SKIPPED_IDS:-none}). These are expected for non-skip-staging-tests label events such as ready-to-ship; prepare-merge will run synthetic-merge package validation itself."
+              exit 0
+              ;;
+            real_success)
+              echo "Latest real staging-build run $RUN_ID for $PR_HEAD_SHA succeeded; continuing."
+              exit 0
+              ;;
+            real_failed)
+              gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
+              gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: latest real non-skipped \`staging-build\` for HEAD \`$PR_HEAD_SHA\` concluded \`${RUN_CONCLUSION:-$RUN_STATUS}\` (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Skipped label-event staging runs are ignored and do not count as validation. Re-apply \`ready-to-ship\` once staging-build is green, or let a new commit trigger a fresh run." || true
+              exit 1
+              ;;
+            real_in_progress)
+              ;;
+            *)
+              echo "::error::Unknown staging-build selection state: $STATE"
+              exit 1
+              ;;
+          esac
+
           if [ -z "$RUN_ID" ]; then
-            gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: no non-skipped \`staging-build\` run found for HEAD \`$PR_HEAD_SHA\` after 60s. Push a new commit (or close+reopen the PR) to trigger one, then re-apply \`ready-to-ship\`." || true
+            echo "::error::staging-build selector returned state=$STATE without a run_id"
             exit 1
           fi
 
-          echo "Waiting for staging-build run $RUN_ID on $PR_HEAD_SHA…"
+          echo "Waiting for real staging-build run $RUN_ID on $PR_HEAD_SHA (status: $RUN_STATUS)."
           # --exit-status: non-zero on failure/cancelled conclusion.
           if ! gh_retry gh run watch "$RUN_ID" --repo ${{ github.repository }} --exit-status; then
             gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Re-apply \`ready-to-ship\` once it is green." || true
+            gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: real non-skipped \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Skipped label-event staging runs are ignored and do not count as validation. Re-apply \`ready-to-ship\` once staging-build is green." || true
             exit 1
           fi
 
@@ -1045,7 +1096,8 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - id: checkout
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -1183,7 +1235,7 @@ jobs:
             --cache-key-sha "${{ matrix.sha }}"
 
       - name: Record failed build in index
-        if: failure()
+        if: ${{ failure() && steps.checkout.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -1219,7 +1271,8 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - id: checkout
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
@@ -1363,7 +1416,7 @@ jobs:
             --cache-key-sha "${{ matrix.sha }}"
 
       - name: Record failed build in index
-        if: failure()
+        if: ${{ failure() && steps.checkout.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}

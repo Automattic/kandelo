@@ -7,12 +7,13 @@
  *   2. Spawn fbdoom.wasm with `-iwad /usr/local/games/doom/doom1.wad`.
  *   3. fbdoom mmaps /dev/fb0; the kernel forwards the binding to the main
  *      thread; attachCanvas runs a RAF loop over the bound region.
- *   4. Keyboard events on the canvas become AT-set-1 scancodes (the
- *      Linux MEDIUMRAW protocol); fbDOOM's i_input_tty decodes them.
+ *   4. Keyboard events on the canvas become Linux input keycodes encoded
+ *      as MEDIUMRAW bytes; fbDOOM's i_input_tty decodes them.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { attachCanvas } from "../../../../host/src/framebuffer/canvas-renderer";
 import {
+  attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
   createPcmAudioScheduler,
 } from "../../../../host/src/framebuffer/browser-controls";
@@ -27,6 +28,9 @@ const canvas = document.getElementById("fb") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 
 const WAD_VFS_PATH = "/usr/local/games/doom/doom1.wad";
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
+const DEMO_HOME = "/home/user";
 
 // DOOM shareware IWAD — id Software, freely redistributable.
 // Mirror: SlitaZ Linux package sources (hosted at iBiblio). This pin
@@ -37,6 +41,33 @@ const SHAREWARE_WAD_URL =
 const SHAREWARE_WAD_SHA256 =
   "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
 const WAD_CACHE_NAME = "fbdoom-wad";
+const traceSyscalls = new URLSearchParams(location.search).has("traceSyscalls");
+
+function ensureDirectory(kernel: BrowserKernel, path: string): void {
+  try {
+    kernel.fs.mkdir(path, 0o755);
+  } catch {
+    // Exists, or fbDOOM will report the real filesystem problem on startup.
+  }
+}
+
+function ensureSymlink(kernel: BrowserKernel, target: string, path: string): void {
+  try {
+    kernel.fs.symlink(target, path);
+  } catch {
+    // Exists, or fbDOOM will report the real filesystem problem on startup.
+  }
+}
+
+function ensureDoomSaveDirectories(kernel: BrowserKernel): void {
+  // fbDOOM should save under HOME. Current release builds still contain an old
+  // /mnt config-dir hack, so keep /mnt as an alias rather than a separate save
+  // root until the rebuilt binary with the source patch is everywhere.
+  ensureDirectory(kernel, "/home");
+  ensureSymlink(kernel, "/home", "/mnt");
+  ensureDirectory(kernel, "/home/.fdoom.tar");
+  ensureDirectory(kernel, "/home/.fdoom.tar/savegame");
+}
 
 /**
  * Fetch the shareware IWAD, verifying its SHA-256 and caching it via
@@ -102,56 +133,13 @@ async function loadSharewareWad(
   return bytes;
 }
 
-/**
- * Browser `KeyboardEvent.code` → Linux *keycode* (the values in
- * `<linux/input-event-codes.h>`, KEY_*). fbDOOM's `at_to_doom` table
- * is keyed on those codes — for the printable / Esc / Enter / Space
- * range they happen to match AT set-1 scancodes (KEY_ESC=1=0x01,
- * KEY_ENTER=28=0x1c, KEY_SPACE=57=0x39), but arrows differ:
- *   - AT set-1 keypad up:   0x48   →   at_to_doom[0x48] = 0  (no key)
- *   - Linux keycode UP:    103     →   at_to_doom[103]   = KEY_UPARROW
- * So we send Linux keycodes. WASD aliases to the same arrow keycodes
- * since fbDOOM dispatches movement on KEY_*ARROW only.
- *
- * Press / release encoding is standard Linux MEDIUMRAW: bit 7 clear
- * for press, bit 7 set for release. fbDOOM's `*pressed = (data &
- * 0x80) == 0x80` followed by `if (!pressed)` triggering ev_keydown
- * matches that — the variable is named confusingly but the logic
- * is correct.
- */
-const SCANCODE: Record<string, number> = {
-  Escape: 1,
-  Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6,
-  Digit6: 7, Digit7: 8, Digit8: 9, Digit9: 10, Digit0: 11,
-  Minus: 12, Equal: 13, Backspace: 14, Tab: 15,
-  KeyQ: 16, KeyE: 18, KeyR: 19, KeyT: 20,
-  KeyY: 21, KeyU: 22, KeyI: 23, KeyO: 24, KeyP: 25,
-  BracketLeft: 26, BracketRight: 27, Enter: 28, ControlLeft: 29,
-  KeyF: 33, KeyG: 34,
-  KeyH: 35, KeyJ: 36, KeyK: 37, KeyL: 38, Semicolon: 39,
-  Quote: 40, Backquote: 41, ShiftLeft: 42, Backslash: 43,
-  KeyZ: 44, KeyX: 45, KeyC: 46, KeyV: 47, KeyB: 48,
-  KeyN: 49, KeyM: 50, Comma: 51, Period: 52, Slash: 53,
-  ShiftRight: 54, NumpadMultiply: 55, AltLeft: 56, Space: 57,
-  CapsLock: 58, F1: 59, F2: 60, F3: 61, F4: 62, F5: 63,
-  F6: 64, F7: 65, F8: 66, F9: 67, F10: 68,
-  // Right modifiers — Linux keycodes for the right-side variants.
-  ControlRight: 97, AltRight: 100,
-  // Arrows + WASD movement aliases — Linux input KEY_UP/DOWN/LEFT/RIGHT
-  // are 103, 108, 105, 106. fbDOOM's at_to_doom maps these to its
-  // KEY_UPARROW/DOWNARROW/LEFTARROW/RIGHTARROW.
-  ArrowUp:    103, KeyW: 103,
-  ArrowDown:  108, KeyS: 108,
-  ArrowLeft:  105, KeyA: 105,
-  ArrowRight: 106, KeyD: 106,
-};
-
 startBtn.addEventListener("click", async () => {
   startBtn.disabled = true;
   statusEl.textContent = "Booting kernel…";
 
   // Capture stderr/stdout for visibility while bringing the demo up.
   const kernel = new BrowserKernel({
+    enableSyscallLog: traceSyscalls,
     onStdout: (data) => {
       console.log("[doom stdout]", new TextDecoder().decode(data));
     },
@@ -201,6 +189,7 @@ startBtn.addEventListener("click", async () => {
   ).toFixed(1)}MB)…`;
   await kernel.ensureMaterialized(WAD_VFS_PATH);
   URL.revokeObjectURL(wadBlobUrl);
+  ensureDoomSaveDirectories(kernel);
 
   statusEl.textContent = "Loading fbdoom.wasm…";
   const fbdoomBytes = await fetch(fbdoomWasmUrl).then((r) => r.arrayBuffer());
@@ -211,7 +200,17 @@ startBtn.addEventListener("click", async () => {
   const exitPromise = kernel.spawn(
     fbdoomBytes,
     ["fbdoom", "-iwad", WAD_VFS_PATH],
-    { env: ["HOME=/home", "TERM=linux"], cwd: "/home" },
+    {
+      env: [
+        `HOME=${DEMO_HOME}`,
+        "TERM=linux",
+        "USER=user",
+        "LOGNAME=user",
+      ],
+      cwd: DEMO_HOME,
+      uid: DEMO_UID,
+      gid: DEMO_GID,
+    },
   );
 
   attachCanvas(canvas, kernel.framebuffers, pid, {
@@ -226,35 +225,6 @@ startBtn.addEventListener("click", async () => {
   const audio = createPcmAudioScheduler(kernel);
   void audio.resume();
 
-  // Keyboard input → AT-set-1 scancode bytes on stdin. fbDOOM's
-  // `kbd_read` reads the high bit as the *press* flag (inverse of
-  // standard MEDIUMRAW), so we set it on keydown and clear it on
-  // keyup. We also de-dup keydown autorepeat — fbDOOM treats every
-  // press as a fresh edge, which would re-arm the move and freeze
-  // the player on auto-repeat.
-  canvas.focus();
-  const heldKeys = new Set<string>();
-  const sendScancode = (code: number, pressed: boolean) => {
-    // Linux MEDIUMRAW: high bit clear = press, set = release.
-    const byte = pressed ? code & 0x7f : code | 0x80;
-    kernel.appendStdinData(pid, new Uint8Array([byte]));
-  };
-  canvas.addEventListener("keydown", (e) => {
-    const code = SCANCODE[e.code];
-    if (code === undefined) return;
-    e.preventDefault();
-    if (heldKeys.has(e.code)) return; // ignore autorepeat
-    heldKeys.add(e.code);
-    sendScancode(code, true);
-  });
-  canvas.addEventListener("keyup", (e) => {
-    const code = SCANCODE[e.code];
-    if (code === undefined) return;
-    e.preventDefault();
-    heldKeys.delete(e.code);
-    sendScancode(code, false);
-  });
-
   // Mouse input → /dev/input/mice PS/2 packets. Pointer Lock gives
   // unbounded relative motion; the shared helper scales browser CSS-pixel
   // deltas into mouse mickeys and splits large deltas into legal PS/2
@@ -268,16 +238,19 @@ startBtn.addEventListener("click", async () => {
     pointerMouse.requestCapture();
   });
 
-  // Releasing focus (e.g. Cmd-tab while moving) leaves the held set
-  // out of sync; flush it on blur so the player doesn't keep walking
-  // or firing.
+  // Releasing focus also releases pointer lock. The keyboard helper flushes
+  // held keys on the same blur event.
   canvas.addEventListener("blur", () => {
-    for (const k of heldKeys) {
-      const code = SCANCODE[k];
-      if (code !== undefined) sendScancode(code, false);
-    }
-    heldKeys.clear();
     pointerMouse.releaseCapture();
+  });
+
+  // Keyboard input → Linux MEDIUMRAW bytes on stdin. The helper forwards
+  // real keycodes (W/A/S/D stay letters) and de-dups browser autorepeat.
+  canvas.focus();
+  const keyboard = attachLinuxMediumRawKeyboard(canvas, {
+    sendInput: (bytes) => kernel.appendStdinData(pid, bytes),
+  }, {
+    onReleaseCapture: () => canvas.blur(),
   });
 
   statusEl.textContent =
@@ -291,6 +264,7 @@ startBtn.addEventListener("click", async () => {
       statusEl.textContent = `fbdoom error: ${err.message ?? err}`;
     })
     .finally(() => {
+      keyboard.close();
       pointerMouse.close();
       audio.close();
     });

@@ -97,6 +97,10 @@ export interface BrowserKernelBootOptions {
   env?: string[];
   /** Working directory for the first process. */
   cwd?: string;
+  /** Initial real/effective user ID for the first process. */
+  uid?: number;
+  /** Initial real/effective group ID for the first process. */
+  gid?: number;
   /** Allocate a PTY for the first process. */
   pty?: boolean;
   /** Initial stdin bytes (with implicit EOF). */
@@ -150,12 +154,12 @@ export class BrowserKernel {
       maxWorkers: 4,
       fsSize: 16 * 1024 * 1024,
       env: [
-        "HOME=/home",
+        "HOME=/root",
         "TMPDIR=/tmp",
         "TERM=xterm-256color",
         "LANG=en_US.UTF-8",
-        "USER=browser",
-        "LOGNAME=browser",
+        "USER=root",
+        "LOGNAME=root",
         "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
         "SSL_CERT_DIR=/etc/ssl/certs",
       ],
@@ -187,6 +191,8 @@ export class BrowserKernel {
       // these mkdirs become redundant.
       this.memfs.mkdir("/tmp", 0o777);
       this.memfs.mkdir("/home", 0o755);
+      this.memfs.mkdirWithOwner("/home/user", 0o755, 1000, 1000);
+      this.memfs.mkdir("/root", 0o700);
       this.memfs.mkdir("/dev", 0o755);
       this.memfs.mkdir("/etc", 0o755);
     }
@@ -363,6 +369,8 @@ export class BrowserKernel {
       argv: options.argv,
       env: this.mergeEnv(options.env ?? this.options.env),
       cwd: options.cwd,
+      uid: options.uid,
+      gid: options.gid,
       pty: options.pty,
       stdin: options.stdin,
       maxPages: this.maxPages,
@@ -410,6 +418,8 @@ export class BrowserKernel {
       cwd?: string;
       stdin?: Uint8Array;
       pty?: boolean;
+      uid?: number;
+      gid?: number;
       onStarted?: (pid: number) => void | Promise<void>;
       ptyCols?: number;
       ptyRows?: number;
@@ -433,6 +443,8 @@ export class BrowserKernel {
       argv,
       env: this.mergeEnv(options?.env ?? this.options.env),
       cwd: options?.cwd,
+      uid: options?.uid,
+      gid: options?.gid,
       pty: options?.pty,
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,
@@ -471,7 +483,7 @@ export class BrowserKernel {
   async spawnFromVfs(
     programPath: string,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; pty?: boolean; stdin?: Uint8Array },
+    options?: { env?: string[]; cwd?: string; uid?: number; gid?: number; pty?: boolean; stdin?: Uint8Array },
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
     const pid = await this.request(requestId, {
@@ -481,6 +493,8 @@ export class BrowserKernel {
       argv,
       env: this.mergeEnv(options?.env ?? this.options.env),
       cwd: options?.cwd,
+      uid: options?.uid,
+      gid: options?.gid,
       pty: options?.pty,
       stdin: options?.stdin,
       maxPages: this.maxPages,

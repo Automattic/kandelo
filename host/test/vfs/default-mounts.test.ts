@@ -146,12 +146,17 @@ describe("resolveForNode", () => {
     const mounts = withUmask(0, () => resolveForNode(DEFAULT_MOUNT_SPEC, image, modeSessionDir));
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!;
     const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!;
+    const home = mounts.find((m) => m.mountPoint === "/home/user")!;
     const root = mounts.find((m) => m.mountPoint === "/root")!;
 
     try {
       expect(tmp.backend.stat("/").mode & 0o7777).toBe(0o1777);
       expect(varTmp.backend.stat("/").mode & 0o7777).toBe(0o1777);
+      expect(home.backend.stat("/").uid).toBe(1000);
+      expect(home.backend.stat("/").gid).toBe(1000);
       expect(root.backend.stat("/").mode & 0o7777).toBe(0o700);
+      expect(root.backend.stat("/").uid).toBe(0);
+      expect(root.backend.stat("/").gid).toBe(0);
       expect(statSync(join(modeSessionDir, "tmp")).mode & PERMISSION_MASK).toBe(0o777);
       expect(statSync(join(modeSessionDir, "var", "tmp")).mode & PERMISSION_MASK).toBe(0o777);
       expect(statSync(join(modeSessionDir, "root")).mode & 0o7777).toBe(0o700);
@@ -261,10 +266,15 @@ describe("resolveForBrowser", () => {
     });
     const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
     const varTmp = mounts.find((m) => m.mountPoint === "/var/tmp")!.backend as MemoryFileSystem;
+    const home = mounts.find((m) => m.mountPoint === "/home/user")!.backend as MemoryFileSystem;
     const root = mounts.find((m) => m.mountPoint === "/root")!.backend as MemoryFileSystem;
     expect(tmp.stat("/").mode & 0o7777).toBe(0o1777);
     expect(varTmp.stat("/").mode & 0o7777).toBe(0o1777);
+    expect(home.stat("/").uid).toBe(1000);
+    expect(home.stat("/").gid).toBe(1000);
     expect(root.stat("/").mode & 0o7777).toBe(0o700);
+    expect(root.stat("/").uid).toBe(0);
+    expect(root.stat("/").gid).toBe(0);
   });
 
   it("adds the nobody group to legacy dinit images", async () => {

@@ -21,6 +21,10 @@ const IPC_PRIVATE: i32 = 0;
 const IPC_RMID: i32 = 0;
 const IPC_SET: i32 = 1;
 const IPC_STAT: i32 = 2;
+const IPC_R: u32 = 0o400;
+const IPC_W: u32 = 0o200;
+const IPC_PERM_MASK: u32 = 0o777;
+const SHM_RDONLY: u32 = 0o10000;
 
 // msgrcv flags
 const MSG_NOERROR: u32 = 0o10000;
@@ -39,6 +43,44 @@ const SETALL: i32 = 17;
 const MSGMAX: usize = 8192; // max message size
 const MSGMNB: u32 = 16384; // default max bytes in queue
 const SEMMSL: usize = 32; // max semaphores per set
+
+fn ipc_has_perm(uid: u32, gid: u32, owner_uid: u32, owner_gid: u32, mode: u32, perm: u32) -> bool {
+    if uid == 0 || perm == 0 {
+        return true;
+    }
+    let available = if uid == owner_uid {
+        (mode >> 6) & 0o7
+    } else if gid == owner_gid {
+        (mode >> 3) & 0o7
+    } else {
+        mode & 0o7
+    };
+    let requested = (perm >> 6) & 0o7;
+    available & requested == requested
+}
+
+fn ipc_check_perm(
+    uid: u32,
+    gid: u32,
+    owner_uid: u32,
+    owner_gid: u32,
+    mode: u32,
+    perm: u32,
+) -> Result<(), Errno> {
+    if ipc_has_perm(uid, gid, owner_uid, owner_gid, mode, perm) {
+        Ok(())
+    } else {
+        Err(Errno::EACCES)
+    }
+}
+
+fn ipc_check_owner(uid: u32, owner_uid: u32, creator_uid: u32) -> Result<(), Errno> {
+    if uid == 0 || uid == owner_uid || uid == creator_uid {
+        Ok(())
+    } else {
+        Err(Errno::EPERM)
+    }
+}
 
 // ── Data structures ──
 
@@ -247,6 +289,7 @@ impl IpcTable {
                     if creating && exclusive {
                         return Err(Errno::EEXIST);
                     }
+                    ipc_check_perm(uid, gid, q.uid, q.gid, q.mode, flags & IPC_PERM_MASK)?;
                     return Ok(q.id);
                 }
             }
@@ -291,11 +334,14 @@ impl IpcTable {
         data: &[u8],
         flags: u32,
         pid: u32,
+        uid: u32,
+        gid: u32,
     ) -> Result<(), Errno> {
         if mtype <= 0 {
             return Err(Errno::EINVAL);
         }
         let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        ipc_check_perm(uid, gid, q.uid, q.gid, q.mode, IPC_W)?;
 
         if data.len() > MSGMAX {
             return Err(Errno::EINVAL);
@@ -329,8 +375,11 @@ impl IpcTable {
         msgtype: i32,
         flags: u32,
         pid: u32,
+        uid: u32,
+        gid: u32,
     ) -> Result<MsgRcvResult, Errno> {
         let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+        ipc_check_perm(uid, gid, q.uid, q.gid, q.mode, IPC_R)?;
 
         let noerror = (flags & MSG_NOERROR) != 0;
         let except = (flags & MSG_EXCEPT) != 0;
@@ -391,10 +440,18 @@ impl IpcTable {
     }
 
     /// Message queue control operations.
-    pub fn msgctl(&mut self, qid: i32, cmd: i32, _pid: u32) -> Result<Option<MsgQueueInfo>, Errno> {
+    pub fn msgctl(
+        &mut self,
+        qid: i32,
+        cmd: i32,
+        _pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<Option<MsgQueueInfo>, Errno> {
         match cmd {
             IPC_STAT => {
                 let q = self.msg_queues.get(&qid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, q.uid, q.gid, q.mode, IPC_R)?;
                 Ok(Some(MsgQueueInfo {
                     key: q.key,
                     uid: q.uid,
@@ -414,11 +471,14 @@ impl IpcTable {
                 }))
             }
             IPC_RMID => {
-                self.msg_queues.remove(&qid).ok_or(Errno::EINVAL)?;
+                let q = self.msg_queues.get(&qid).ok_or(Errno::EINVAL)?;
+                ipc_check_owner(uid, q.uid, q.cuid)?;
+                self.msg_queues.remove(&qid);
                 Ok(None)
             }
             IPC_SET => {
                 let q = self.msg_queues.get_mut(&qid).ok_or(Errno::EINVAL)?;
+                ipc_check_owner(uid, q.uid, q.cuid)?;
                 q.ctime = crate::current_time_secs();
                 Ok(None)
             }
@@ -449,6 +509,7 @@ impl IpcTable {
                     if creating && exclusive {
                         return Err(Errno::EEXIST);
                     }
+                    ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, flags & IPC_PERM_MASK)?;
                     return Ok(s.id);
                 }
             }
@@ -495,8 +556,20 @@ impl IpcTable {
     }
 
     /// Perform atomic semaphore operations (two-pass: validate then apply).
-    pub fn semop(&mut self, semid: i32, sops: &[SemOp], pid: u32) -> Result<(), Errno> {
+    pub fn semop(
+        &mut self,
+        semid: i32,
+        sops: &[SemOp],
+        pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Errno> {
         let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+        let mut perm = 0;
+        for op in sops {
+            perm |= if op.op == 0 { IPC_R } else { IPC_W };
+        }
+        ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, perm)?;
 
         // First pass: validate all operations can proceed
         for op in sops {
@@ -544,10 +617,13 @@ impl IpcTable {
         cmd: i32,
         _pid: u32,
         arg: i32,
+        uid: u32,
+        gid: u32,
     ) -> Result<SemCtlResult, Errno> {
         match cmd {
             IPC_STAT => {
                 let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 Ok(SemCtlResult::Stat(SemSetInfo {
                     key: s.key,
                     uid: s.uid,
@@ -562,16 +638,20 @@ impl IpcTable {
                 }))
             }
             IPC_RMID => {
-                self.sem_sets.remove(&semid).ok_or(Errno::EINVAL)?;
+                let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_owner(uid, s.uid, s.cuid)?;
+                self.sem_sets.remove(&semid);
                 Ok(SemCtlResult::Ok)
             }
             IPC_SET => {
                 let s = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_owner(uid, s.uid, s.cuid)?;
                 s.ctime = crate::current_time_secs();
                 Ok(SemCtlResult::Ok)
             }
             GETVAL => {
                 let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
                 }
@@ -579,6 +659,7 @@ impl IpcTable {
             }
             SETVAL => {
                 let s = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_W)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
                 }
@@ -591,6 +672,7 @@ impl IpcTable {
             }
             GETALL => {
                 let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 let vals: Vec<u16> = s.values.iter().map(|v| v.val).collect();
                 Ok(SemCtlResult::All(vals))
             }
@@ -601,6 +683,7 @@ impl IpcTable {
             }
             GETPID => {
                 let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
                 }
@@ -608,6 +691,7 @@ impl IpcTable {
             }
             GETNCNT => {
                 let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
                 }
@@ -615,6 +699,7 @@ impl IpcTable {
             }
             GETZCNT => {
                 let s = self.sem_sets.get(&semid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_R)?;
                 if semnum < 0 || semnum as u32 >= s.nsems {
                     return Err(Errno::EINVAL);
                 }
@@ -625,8 +710,15 @@ impl IpcTable {
     }
 
     /// Set all semaphore values in a set (SETALL command).
-    pub fn semctl_set_all(&mut self, semid: i32, values: &[u16]) -> Result<(), Errno> {
+    pub fn semctl_set_all(
+        &mut self,
+        semid: i32,
+        values: &[u16],
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Errno> {
         let s = self.sem_sets.get_mut(&semid).ok_or(Errno::EINVAL)?;
+        ipc_check_perm(uid, gid, s.uid, s.gid, s.mode, IPC_W)?;
         if values.len() != s.nsems as usize {
             return Err(Errno::EINVAL);
         }
@@ -660,6 +752,7 @@ impl IpcTable {
                     if creating && exclusive {
                         return Err(Errno::EEXIST);
                     }
+                    ipc_check_perm(uid, gid, seg.uid, seg.gid, seg.mode, flags & IPC_PERM_MASK)?;
                     return Ok(seg.id);
                 }
             }
@@ -702,8 +795,21 @@ impl IpcTable {
 
     /// Attach to a shared memory segment.
     /// Returns the segment size. The caller reads data via shm_read_chunk.
-    pub fn shmat(&mut self, shmid: i32, pid: u32) -> Result<u32, Errno> {
+    pub fn shmat(
+        &mut self,
+        shmid: i32,
+        pid: u32,
+        flags: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<u32, Errno> {
         let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;
+        let perm = if flags & SHM_RDONLY != 0 {
+            IPC_R
+        } else {
+            IPC_R | IPC_W
+        };
+        ipc_check_perm(uid, gid, seg.uid, seg.gid, seg.mode, perm)?;
         seg.nattch += 1;
         seg.lpid = pid as i32;
         seg.atime = crate::current_time_secs();
@@ -748,10 +854,18 @@ impl IpcTable {
     }
 
     /// Shared memory control operations.
-    pub fn shmctl(&mut self, shmid: i32, cmd: i32, _pid: u32) -> Result<Option<ShmSegInfo>, Errno> {
+    pub fn shmctl(
+        &mut self,
+        shmid: i32,
+        cmd: i32,
+        _pid: u32,
+        uid: u32,
+        gid: u32,
+    ) -> Result<Option<ShmSegInfo>, Errno> {
         match cmd {
             IPC_STAT => {
                 let seg = self.shm_segments.get(&shmid).ok_or(Errno::EINVAL)?;
+                ipc_check_perm(uid, gid, seg.uid, seg.gid, seg.mode, IPC_R)?;
                 Ok(Some(ShmSegInfo {
                     key: seg.key,
                     uid: seg.uid,
@@ -770,11 +884,14 @@ impl IpcTable {
                 }))
             }
             IPC_RMID => {
-                self.shm_segments.remove(&shmid).ok_or(Errno::EINVAL)?;
+                let seg = self.shm_segments.get(&shmid).ok_or(Errno::EINVAL)?;
+                ipc_check_owner(uid, seg.uid, seg.cuid)?;
+                self.shm_segments.remove(&shmid);
                 Ok(None)
             }
             IPC_SET => {
                 let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;
+                ipc_check_owner(uid, seg.uid, seg.cuid)?;
                 seg.ctime = crate::current_time_secs();
                 Ok(None)
             }
@@ -855,15 +972,15 @@ mod tests {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
 
-        t.msgsnd(qid, 1, b"hello", 0, 42).unwrap();
-        t.msgsnd(qid, 2, b"world", 0, 42).unwrap();
+        t.msgsnd(qid, 1, b"hello", 0, 42, 0, 0).unwrap();
+        t.msgsnd(qid, 2, b"world", 0, 42, 0, 0).unwrap();
 
         // msgtype=0: FIFO order
-        let msg = t.msgrcv(qid, 100, 0, 0, 43).unwrap();
+        let msg = t.msgrcv(qid, 100, 0, 0, 43, 0, 0).unwrap();
         assert_eq!(msg.mtype, 1);
         assert_eq!(msg.data, b"hello");
 
-        let msg = t.msgrcv(qid, 100, 0, 0, 43).unwrap();
+        let msg = t.msgrcv(qid, 100, 0, 0, 43, 0, 0).unwrap();
         assert_eq!(msg.mtype, 2);
         assert_eq!(msg.data, b"world");
     }
@@ -873,12 +990,12 @@ mod tests {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
 
-        t.msgsnd(qid, 1, b"one", 0, 1).unwrap();
-        t.msgsnd(qid, 2, b"two", 0, 1).unwrap();
-        t.msgsnd(qid, 3, b"three", 0, 1).unwrap();
+        t.msgsnd(qid, 1, b"one", 0, 1, 0, 0).unwrap();
+        t.msgsnd(qid, 2, b"two", 0, 1, 0, 0).unwrap();
+        t.msgsnd(qid, 3, b"three", 0, 1, 0, 0).unwrap();
 
         // Receive type 2 specifically
-        let msg = t.msgrcv(qid, 100, 2, 0, 1).unwrap();
+        let msg = t.msgrcv(qid, 100, 2, 0, 1, 0, 0).unwrap();
         assert_eq!(msg.mtype, 2);
         assert_eq!(msg.data, b"two");
     }
@@ -888,12 +1005,12 @@ mod tests {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
 
-        t.msgsnd(qid, 5, b"five", 0, 1).unwrap();
-        t.msgsnd(qid, 2, b"two", 0, 1).unwrap();
-        t.msgsnd(qid, 3, b"three", 0, 1).unwrap();
+        t.msgsnd(qid, 5, b"five", 0, 1, 0, 0).unwrap();
+        t.msgsnd(qid, 2, b"two", 0, 1, 0, 0).unwrap();
+        t.msgsnd(qid, 3, b"three", 0, 1, 0, 0).unwrap();
 
         // Negative type: first with type <= |msgtype|
-        let msg = t.msgrcv(qid, 100, -3, 0, 1).unwrap();
+        let msg = t.msgrcv(qid, 100, -3, 0, 1, 0, 0).unwrap();
         // Should get type 2 (first match <= 3, scanning in order: 5>3 skip, 2<=3 match)
         assert_eq!(msg.mtype, 2);
     }
@@ -903,11 +1020,11 @@ mod tests {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
 
-        t.msgsnd(qid, 1, b"one", 0, 1).unwrap();
-        t.msgsnd(qid, 2, b"two", 0, 1).unwrap();
+        t.msgsnd(qid, 1, b"one", 0, 1, 0, 0).unwrap();
+        t.msgsnd(qid, 2, b"two", 0, 1, 0, 0).unwrap();
 
         // MSG_EXCEPT: first message NOT of type 1
-        let msg = t.msgrcv(qid, 100, 1, MSG_EXCEPT, 1).unwrap();
+        let msg = t.msgrcv(qid, 100, 1, MSG_EXCEPT, 1, 0, 0).unwrap();
         assert_eq!(msg.mtype, 2);
     }
 
@@ -916,13 +1033,13 @@ mod tests {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
 
-        t.msgsnd(qid, 1, b"hello world", 0, 1).unwrap();
+        t.msgsnd(qid, 1, b"hello world", 0, 1, 0, 0).unwrap();
 
         // Without MSG_NOERROR, too-small buffer returns E2BIG
-        assert_eq!(t.msgrcv(qid, 5, 0, 0, 1).unwrap_err(), Errno::E2BIG);
+        assert_eq!(t.msgrcv(qid, 5, 0, 0, 1, 0, 0).unwrap_err(), Errno::E2BIG);
 
         // With MSG_NOERROR, truncates
-        let msg = t.msgrcv(qid, 5, 0, MSG_NOERROR, 1).unwrap();
+        let msg = t.msgrcv(qid, 5, 0, MSG_NOERROR, 1, 0, 0).unwrap();
         assert_eq!(msg.data, b"hello");
     }
 
@@ -932,7 +1049,7 @@ mod tests {
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
 
         assert_eq!(
-            t.msgrcv(qid, 100, 0, IPC_NOWAIT, 1).unwrap_err(),
+            t.msgrcv(qid, 100, 0, IPC_NOWAIT, 1, 0, 0).unwrap_err(),
             Errno::ENOMSG
         );
     }
@@ -941,17 +1058,23 @@ mod tests {
     fn test_msgsnd_invalid_type() {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
-        assert_eq!(t.msgsnd(qid, 0, b"x", 0, 1).unwrap_err(), Errno::EINVAL);
-        assert_eq!(t.msgsnd(qid, -1, b"x", 0, 1).unwrap_err(), Errno::EINVAL);
+        assert_eq!(
+            t.msgsnd(qid, 0, b"x", 0, 1, 0, 0).unwrap_err(),
+            Errno::EINVAL
+        );
+        assert_eq!(
+            t.msgsnd(qid, -1, b"x", 0, 1, 0, 0).unwrap_err(),
+            Errno::EINVAL
+        );
     }
 
     #[test]
     fn test_msgctl_stat() {
         let mut t = IpcTable::new();
         let qid = t.msgget(1234, IPC_CREAT | 0o666, 1, 1000, 1000).unwrap();
-        t.msgsnd(qid, 1, b"test", 0, 42).unwrap();
+        t.msgsnd(qid, 1, b"test", 0, 42, 0, 0).unwrap();
 
-        let info = t.msgctl(qid, IPC_STAT, 1).unwrap().unwrap();
+        let info = t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap().unwrap();
         assert_eq!(info.key, 1234);
         assert_eq!(info.mode, 0o666);
         assert_eq!(info.qnum, 1);
@@ -963,8 +1086,8 @@ mod tests {
     fn test_msgctl_rmid() {
         let mut t = IpcTable::new();
         let qid = t.msgget(IPC_PRIVATE, IPC_CREAT | 0o666, 1, 0, 0).unwrap();
-        t.msgctl(qid, IPC_RMID, 1).unwrap();
-        assert_eq!(t.msgctl(qid, IPC_STAT, 1).unwrap_err(), Errno::EINVAL);
+        t.msgctl(qid, IPC_RMID, 1, 0, 0).unwrap();
+        assert_eq!(t.msgctl(qid, IPC_STAT, 1, 0, 0).unwrap_err(), Errno::EINVAL);
     }
 
     // ── Semaphore Tests ──
@@ -1007,10 +1130,12 @@ mod tests {
                 flg: 0,
             }],
             42,
+            0,
+            0,
         )
         .unwrap();
 
-        let val = match t.semctl(id, 0, GETVAL, 1, 0).unwrap() {
+        let val = match t.semctl(id, 0, GETVAL, 1, 0, 0, 0).unwrap() {
             SemCtlResult::Value(v) => v,
             _ => panic!("expected Value"),
         };
@@ -1025,9 +1150,11 @@ mod tests {
                 flg: 0,
             }],
             42,
+            0,
+            0,
         )
         .unwrap();
-        let val = match t.semctl(id, 0, GETVAL, 1, 0).unwrap() {
+        let val = match t.semctl(id, 0, GETVAL, 1, 0, 0, 0).unwrap() {
             SemCtlResult::Value(v) => v,
             _ => panic!("expected Value"),
         };
@@ -1050,7 +1177,9 @@ mod tests {
                     op: -1,
                     flg: IPC_NOWAIT as u16
                 }],
-                1
+                1,
+                0,
+                0
             )
             .unwrap_err(),
             Errno::EAGAIN
@@ -1073,6 +1202,8 @@ mod tests {
                 flg: 0,
             }],
             1,
+            0,
+            0,
         )
         .unwrap();
 
@@ -1085,6 +1216,8 @@ mod tests {
                 flg: 0,
             }],
             1,
+            0,
+            0,
         )
         .unwrap();
 
@@ -1097,7 +1230,9 @@ mod tests {
                     op: 0,
                     flg: IPC_NOWAIT as u16
                 }],
-                1
+                1,
+                0,
+                0
             )
             .unwrap_err(),
             Errno::EAGAIN
@@ -1120,6 +1255,8 @@ mod tests {
                 flg: 0,
             }],
             1,
+            0,
+            0,
         )
         .unwrap();
         t.semop(
@@ -1130,6 +1267,8 @@ mod tests {
                 flg: 0,
             }],
             1,
+            0,
+            0,
         )
         .unwrap();
 
@@ -1149,18 +1288,20 @@ mod tests {
                         flg: IPC_NOWAIT as u16
                     }, // Can't: 5-6 < 0
                 ],
-                1
+                1,
+                0,
+                0
             )
             .unwrap_err(),
             Errno::EAGAIN
         );
 
         // Verify neither was changed (atomic failure)
-        let v0 = match t.semctl(id, 0, GETVAL, 1, 0).unwrap() {
+        let v0 = match t.semctl(id, 0, GETVAL, 1, 0, 0, 0).unwrap() {
             SemCtlResult::Value(v) => v,
             _ => panic!(),
         };
-        let v1 = match t.semctl(id, 1, GETVAL, 1, 0).unwrap() {
+        let v1 = match t.semctl(id, 1, GETVAL, 1, 0, 0, 0).unwrap() {
             SemCtlResult::Value(v) => v,
             _ => panic!(),
         };
@@ -1175,8 +1316,8 @@ mod tests {
             .semget(IPC_PRIVATE, 3, IPC_CREAT | 0o666, 1, 0, 0)
             .unwrap();
 
-        t.semctl(id, 1, SETVAL, 1, 42).unwrap();
-        let val = match t.semctl(id, 1, GETVAL, 1, 0).unwrap() {
+        t.semctl(id, 1, SETVAL, 1, 42, 0, 0).unwrap();
+        let val = match t.semctl(id, 1, GETVAL, 1, 0, 0, 0).unwrap() {
             SemCtlResult::Value(v) => v,
             _ => panic!("expected Value"),
         };
@@ -1190,9 +1331,9 @@ mod tests {
             .semget(IPC_PRIVATE, 3, IPC_CREAT | 0o666, 1, 0, 0)
             .unwrap();
 
-        t.semctl_set_all(id, &[10, 20, 30]).unwrap();
+        t.semctl_set_all(id, &[10, 20, 30], 0, 0).unwrap();
 
-        let vals = match t.semctl(id, 0, GETALL, 1, 0).unwrap() {
+        let vals = match t.semctl(id, 0, GETALL, 1, 0, 0, 0).unwrap() {
             SemCtlResult::All(v) => v,
             _ => panic!("expected All"),
         };
@@ -1204,7 +1345,7 @@ mod tests {
         let mut t = IpcTable::new();
         let id = t.semget(5678, 4, IPC_CREAT | 0o666, 1, 1000, 1000).unwrap();
 
-        let info = match t.semctl(id, 0, IPC_STAT, 1, 0).unwrap() {
+        let info = match t.semctl(id, 0, IPC_STAT, 1, 0, 0, 0).unwrap() {
             SemCtlResult::Stat(s) => s,
             _ => panic!("expected Stat"),
         };
@@ -1219,8 +1360,11 @@ mod tests {
         let id = t
             .semget(IPC_PRIVATE, 1, IPC_CREAT | 0o666, 1, 0, 0)
             .unwrap();
-        t.semctl(id, 0, IPC_RMID, 1, 0).unwrap();
-        assert_eq!(t.semctl(id, 0, IPC_STAT, 1, 0).unwrap_err(), Errno::EINVAL);
+        t.semctl(id, 0, IPC_RMID, 1, 0, 0, 0).unwrap();
+        assert_eq!(
+            t.semctl(id, 0, IPC_STAT, 1, 0, 0, 0).unwrap_err(),
+            Errno::EINVAL
+        );
     }
 
     #[test]
@@ -1238,10 +1382,12 @@ mod tests {
                 flg: 0,
             }],
             99,
+            0,
+            0,
         )
         .unwrap();
 
-        let pid = match t.semctl(id, 0, GETPID, 1, 0).unwrap() {
+        let pid = match t.semctl(id, 0, GETPID, 1, 0, 0, 0).unwrap() {
             SemCtlResult::Value(v) => v,
             _ => panic!("expected Value"),
         };
@@ -1292,17 +1438,17 @@ mod tests {
             .shmget(IPC_PRIVATE, 1024, IPC_CREAT | 0o666, 42, 0, 0)
             .unwrap();
 
-        let size = t.shmat(id, 42).unwrap();
+        let size = t.shmat(id, 42, 0, 0, 0).unwrap();
         assert_eq!(size, 1024);
 
         // Check nattch
-        let info = t.shmctl(id, IPC_STAT, 1).unwrap().unwrap();
+        let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
         assert_eq!(info.nattch, 1);
         assert_eq!(info.lpid, 42);
 
         // Detach
         t.shmdt(id, 42).unwrap();
-        let info = t.shmctl(id, IPC_STAT, 1).unwrap().unwrap();
+        let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
         assert_eq!(info.nattch, 0);
     }
 
@@ -1348,7 +1494,7 @@ mod tests {
             .shmget(9999, 4096, IPC_CREAT | 0o666, 42, 1000, 1000)
             .unwrap();
 
-        let info = t.shmctl(id, IPC_STAT, 1).unwrap().unwrap();
+        let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
         assert_eq!(info.key, 9999);
         assert_eq!(info.segsz, 4096);
         assert_eq!(info.cpid, 42);
@@ -1361,8 +1507,8 @@ mod tests {
         let id = t
             .shmget(IPC_PRIVATE, 1024, IPC_CREAT | 0o666, 1, 0, 0)
             .unwrap();
-        t.shmctl(id, IPC_RMID, 1).unwrap();
-        assert_eq!(t.shmctl(id, IPC_STAT, 1).unwrap_err(), Errno::EINVAL);
+        t.shmctl(id, IPC_RMID, 1, 0, 0).unwrap();
+        assert_eq!(t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap_err(), Errno::EINVAL);
     }
 
     #[test]

@@ -4,11 +4,7 @@ import type { DemoGuideConfig } from "./demo-config";
 //
 // Every Kandelo UI surface (Sidebar, LiveURLBar, MachineView, Inspector tabs,
 // Gallery, Share dialog, System Config, EmptyState) consumes this one
-// interface. Two implementations:
-//
-//   - MockKernelHost: drives the UI from static fixtures (lives in
-//     apps/browser-demos, alongside the rest of the demo).
-//   - LiveKernelHost (this file): wraps the real host runtime in host/src/.
+// interface. LiveKernelHost wraps the real host runtime in host/src/.
 //
 // The full schema for BootDescriptor is `docs/plans/2026-05-11-shareable-
 // computer-url-design.md`. The encode/decode/snapshot machinery lives under
@@ -16,18 +12,14 @@ import type { DemoGuideConfig } from "./demo-config";
 // LiveKernelHost.snapshot will call into those.
 //
 // This file is the reusable session surface shared by the browser app and
-// future embedders. Today the
-// LiveKernelHost stub only implements the four methods the UI chassis needs
-// to come online (status, dmesg subscription, PTY attach); everything else
-// throws so callers fail loudly until the matching host endpoint lands.
+// future embedders. Runtime-specific boot wiring lives in the consuming page.
 
 // ── Kernel surface this file consumes ──────────────────────────────────────
 //
-// The stub LiveKernelHost wraps a "browser-kernel-shaped" object. We don't
-// import apps/browser-demos/lib/browser-kernel here. Instead we describe the
-// minimum surface attachPty needs so any
-// concrete kernel (KernelLike today, a thinner host/-side wrapper later)
-// satisfies it.
+// LiveKernelHost wraps a "browser-kernel-shaped" object. We don't import the
+// browser demo kernel here. Instead we describe the minimum surface the UI
+// needs so any concrete kernel (KernelLike today, a thinner host-side wrapper
+// later) satisfies it.
 //
 // All methods match `BrowserKernel`'s existing signatures verbatim.
 
@@ -132,7 +124,7 @@ export interface KernelLike {
   spawn(
     programBytes: ArrayBuffer,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; pty?: boolean; stdin?: Uint8Array },
+    options?: { env?: string[]; cwd?: string; uid?: number; gid?: number; pty?: boolean; stdin?: Uint8Array },
   ): Promise<number>;
   onPtyOutput(pid: number, callback: (data: Uint8Array) => void): void;
   ptyWrite(pid: number, data: Uint8Array): void;
@@ -410,6 +402,8 @@ export interface GalleryItem {
   base: string;
   packages: string[];
   bootCommand: string[];
+  /** Direct .vfs or .vfs.zst image URL used for bootable deep links. */
+  vfsImageUrl?: string;
   accent: string;
   glyph: string;
   estimatedUrlBytes: number;
@@ -527,30 +521,12 @@ function waitForPtyReadiness(pty: PtyHandle): Promise<void> {
 
 // ── LiveKernelHost — wraps the real host runtime in host/src/ ──────────────
 //
-// Today this is a STUB: only the methods the UI chassis needs to come online
-// have working bodies. Everything else throws "not implemented" so callers
-// fail loudly until the matching host endpoint lands.
-//
-// What works today:
-//   - getStatus / subscribeStatus: tracks an internal MachineStatus, driven
-//     by setStatus() from the boot logic in the consuming page.
-//   - subscribeDmesg / dmesgHistory: in-memory ring buffer. The page is
-//     expected to call pushDmesg() with lines from whatever source it has
-//     until a real kernel-side dmesg ring lands (see kernel-host-contract.md
-//     "dmesg ring buffer" entry).
-//   - attachPty: spawns a PTY-backed shell on the wrapped KernelLike and
-//     returns a PtyHandle that proxies bytes/resize/close.
-//
-// What is stubbed (throws):
-//   - applyBootDescriptor / halt / reboot
-//   - readFile / readDir / stat
-//   - enumProcs / readMemMap / getMounts / getKernelState
-//   - subscribeSyscalls / syscallHistory
-//   - attachFramebuffer
-//   - snapshot
-//   - saveCurrentToGallery
-//
-// As each host endpoint lands, replace the throwing body with a real wrapper.
+// LiveKernelHost owns the UI-facing session state: status, descriptor,
+// presentation, dmesg, gallery data, web preview, and per-surface availability.
+// When attached to a KernelLike it exposes PTY, VFS, process, syscall, and
+// framebuffer surfaces through the KernelHost contract. Calls that depend on
+// an unavailable kernel capability fail loudly so the UI can render a specific
+// missing-endpoint state.
 
 export interface LiveKernelHostOptions {
   /**
@@ -569,6 +545,8 @@ export interface LiveKernelHostOptions {
     argv: string[];
     env?: string[];
     cwd?: string;
+    uid?: number;
+    gid?: number;
   };
   /** Initial status. Defaults to "idle". */
   status?: MachineStatus;
@@ -596,7 +574,13 @@ const DEFAULT_DESCRIPTOR: BootDescriptor = {
   },
   packages: [],
   mounts: [],
-  boot: { argv: ["/bin/sh"], cwd: "/", env: {} },
+  boot: {
+    argv: ["/bin/sh"],
+    cwd: "/root",
+    env: { HOME: "/root", USER: "root", LOGNAME: "root" },
+    uid: 0,
+    gid: 0,
+  },
   caps: {},
 };
 
@@ -887,6 +871,8 @@ export class LiveKernelHost implements KernelHost {
         pty: true,
         env: shell.env,
         cwd: shell.cwd,
+        uid: shell.uid,
+        gid: shell.gid,
       });
       const pid = kernel.nextPid - 1;
       this.shellPids.set(pid, sessionKey);

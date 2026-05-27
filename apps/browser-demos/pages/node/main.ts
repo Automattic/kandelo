@@ -23,6 +23,30 @@ const PROMPT = "\x1b[32m$\x1b[0m ";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
+const DEMO_HOME = "/home/user";
+const NODE_WORKDIR = "/work";
+const NODE_ENV = [
+  `HOME=${DEMO_HOME}`,
+  `PWD=${NODE_WORKDIR}`,
+  "TMPDIR=/tmp",
+  "TERM=xterm-256color",
+  "LANG=en_US.UTF-8",
+  "PATH=/usr/local/bin:/usr/bin:/bin",
+  "USER=user",
+  "LOGNAME=user",
+];
+
+function prepareNodeFs(fs: MemoryFileSystem): void {
+  for (const path of ["/home", DEMO_HOME, NODE_WORKDIR]) {
+    try { fs.mkdir(path, 0o755); } catch {}
+  }
+  fs.chown(DEMO_HOME, DEMO_UID, DEMO_GID);
+  fs.chmod(DEMO_HOME, 0o755);
+  fs.chown(NODE_WORKDIR, DEMO_UID, DEMO_GID);
+  fs.chmod(NODE_WORKDIR, 0o755);
+}
 
 let kernelBytes: ArrayBuffer | null = null;
 let nodeBytes: ArrayBuffer | null = null;
@@ -180,6 +204,7 @@ async function enterRepl(): Promise<void> {
     const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
       maxByteLength: 256 * 1024 * 1024,
     });
+    prepareNodeFs(memfs);
 
     const kernel = new BrowserKernel({
       memfs,
@@ -193,16 +218,10 @@ async function enterRepl(): Promise<void> {
     // when spawn's body starts, so peeking before the call is safe.
     const pid = kernel.nextPid;
     const exitPromise = kernel.spawn(nodeBytes!, ["node"], {
-      env: [
-        "HOME=/work",
-        "PWD=/work",
-        "TMPDIR=/tmp",
-        // The REPL needs cursor/color sequences; shell-mode TERM=dumb
-        // would suppress its prompt entirely.
-        "TERM=xterm-256color",
-        "LANG=en_US.UTF-8",
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-      ],
+      env: NODE_ENV,
+      cwd: NODE_WORKDIR,
+      uid: DEMO_UID,
+      gid: DEMO_GID,
     });
 
     repl = { kernel, pid };
@@ -234,6 +253,7 @@ async function runCommand(line: string): Promise<void> {
     const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
       maxByteLength: 256 * 1024 * 1024,
     });
+    prepareNodeFs(memfs);
 
     const segments = line.split(/\s*&&\s*/).map((s) => s.trim()).filter(Boolean);
     let lastExit = 0;
@@ -257,14 +277,10 @@ async function runCommand(line: string): Promise<void> {
 
       const t0 = performance.now();
       lastExit = await kernel.spawn(nodeBytes!, argv, {
-        env: [
-          "HOME=/work",
-          "PWD=/work",
-          "TMPDIR=/tmp",
-          "TERM=dumb",
-          "LANG=en_US.UTF-8",
-          "PATH=/usr/local/bin:/usr/bin:/bin",
-        ],
+        env: NODE_ENV.filter((kv) => !kv.startsWith("TERM=")).concat("TERM=dumb"),
+        cwd: NODE_WORKDIR,
+        uid: DEMO_UID,
+        gid: DEMO_GID,
       });
       lastDt = ((performance.now() - t0) / 1000).toFixed(2);
       if (lastExit !== 0) break;

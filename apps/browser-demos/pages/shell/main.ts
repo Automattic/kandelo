@@ -101,6 +101,7 @@ function prepareShellFs(): MemoryFileSystem {
   const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsImageBuf!), {
     maxByteLength: 256 * 1024 * 1024,
   });
+  prepareDemoFs(memfs);
   // URLs were stored as build-time placeholders; rewrite them to Vite asset
   // URLs before BrowserKernel.init forwards lazy metadata.
   memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
@@ -123,6 +124,33 @@ function formatLazyInfo(memfs: MemoryFileSystem): string {
 
 let activeKernel: BrowserKernel | null = null;
 let activePtyTerminal: PtyTerminal | null = null;
+const ROOT_UID = 0;
+const ROOT_GID = 0;
+const ROOT_HOME = "/root";
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
+const DEMO_HOME = "/home/user";
+const SHELL_ENV = [
+  `HOME=${DEMO_HOME}`,
+  "TMPDIR=/tmp",
+  "TERM=xterm-256color",
+  "LANG=en_US.UTF-8",
+  "PATH=/usr/local/bin:/usr/bin:/bin",
+  "USER=user",
+  "LOGNAME=user",
+  "PS1=bash$ ",
+  `HISTFILE=${DEMO_HOME}/.bash_history`,
+];
+
+function prepareDemoFs(fs: MemoryFileSystem): void {
+  try { fs.mkdir("/home", 0o755); } catch {}
+  try { fs.mkdir(DEMO_HOME, 0o755); } catch {}
+  fs.chown(DEMO_HOME, DEMO_UID, DEMO_GID);
+  fs.chmod(DEMO_HOME, 0o755);
+  try { fs.mkdir(ROOT_HOME, 0o700); } catch {}
+  fs.chown(ROOT_HOME, ROOT_UID, ROOT_GID);
+  fs.chmod(ROOT_HOME, 0o700);
+}
 
 async function startInteractiveShell() {
   startBtn.disabled = true;
@@ -160,15 +188,10 @@ async function startInteractiveShell() {
     // shell too, so this matches what users expect: /etc/profile is
     // sourced, aliases and environment set up there are applied.
     const exitCode = await ptyTerminal.spawnFromVfs("/usr/bin/bash", ["bash", "-l", "-i"], {
-      env: [
-        "HOME=/home",
-        "TMPDIR=/tmp",
-        "TERM=xterm-256color",
-        "LANG=en_US.UTF-8",
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-        "PS1=bash$ ",
-        "HISTFILE=/home/.bash_history",
-      ],
+      env: SHELL_ENV,
+      cwd: DEMO_HOME,
+      uid: DEMO_UID,
+      gid: DEMO_GID,
     });
 
     ptyTerminal.terminal.writeln(`\r\n[Shell exited with code ${exitCode}]`);
@@ -401,13 +424,10 @@ async function runBatch() {
     await kernel.init(kernelBytes!);
 
     const { exit } = await kernel.spawnFromVfs("/usr/bin/bash", ["bash"], {
-      env: [
-        "HOME=/home",
-        "TMPDIR=/tmp",
-        "TERM=dumb",
-        "LANG=en_US.UTF-8",
-        "PATH=/usr/local/bin:/usr/bin:/bin",
-      ],
+      env: SHELL_ENV.filter((kv) => !kv.startsWith("TERM=") && !kv.startsWith("PS1=")).concat("TERM=dumb"),
+      cwd: DEMO_HOME,
+      uid: DEMO_UID,
+      gid: DEMO_GID,
       stdin: encoder.encode(commands),
     });
     const exitCode = await exit;
