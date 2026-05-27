@@ -25,7 +25,9 @@ export function terminalPresentation(): DemoPresentationConfig {
 export function webPresentation(): DemoPresentationConfig {
   return {
     bootPrimary: "syslog",
-    runningPrimary: ["web", "terminal", "syslog"],
+    // Web demos should stay on the boot log while the HTTP preview is
+    // still unavailable; Terminal remains accessible as a drawer.
+    runningPrimary: ["web", "syslog", "terminal"],
     terminalAccess: "drawer",
     internalsAccess: "drawer",
   };

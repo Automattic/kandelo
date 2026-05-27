@@ -270,6 +270,13 @@ const DEMO_ALIASES: Record<string, LiveDemoId> = {
   lamp: "wordpress-mariadb",
 };
 
+const WEB_BOOT_LOG_DEMO_IDS = new Set<LiveDemoId>([
+  "nginx",
+  "nginx-php",
+  "wordpress-sqlite",
+  "wordpress-mariadb",
+]);
+
 interface LiveProfile {
   id: string;
   vfsUrl: string;
@@ -684,6 +691,53 @@ function mergeEnvArrays(base: string[], override: string[]): string[] {
   return Array.from(out, ([key, value]) => `${key}=${value}`);
 }
 
+function presentationForProfile(
+  profile: LiveProfile,
+  presentation: DemoPresentation,
+): DemoPresentation {
+  // Older released VFS images put Terminal before Syslog for web demos,
+  // which briefly focuses a shell while dinit is still bringing services up.
+  const demoId = normalizeDemoId(profile.id);
+  if (
+    !demoId ||
+    !WEB_BOOT_LOG_DEMO_IDS.has(demoId) ||
+    !profile.init?.web ||
+    presentation.bootPrimary !== "syslog" ||
+    presentation.runningPrimary[0] !== "web"
+  ) {
+    return presentation;
+  }
+
+  return {
+    ...presentation,
+    runningPrimary: [
+      "web",
+      "syslog",
+      ...presentation.runningPrimary.filter((surface) =>
+        surface !== "web" && surface !== "syslog"
+      ),
+    ],
+  };
+}
+
+function reportInitError(
+  host: LiveKernelHost,
+  profile: LiveProfile,
+  message: string,
+  tick: (msg: string) => void,
+): void {
+  tick(message);
+  if (profile.init?.web) {
+    host.setWebPreview({
+      label: profile.init.web.label,
+      url: APP_PREFIX,
+      status: "error",
+      message,
+    });
+  }
+  host.setStatus("error");
+}
+
 async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
@@ -777,9 +831,10 @@ async function bootProfile(
   }
   ensureDemoHomes(memfs);
   const imageConfig = readImageConfig(memfs);
-  const presentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
+  const rawPresentation = (imageConfig ? resolveDemoPresentation(imageConfig, profile.id) : null)
     ?? builtinDemoPresentation(profile.id)
     ?? genericPresentation;
+  const presentation = presentationForProfile(profile, rawPresentation);
   host.setPresentation(presentation);
   const demoGuide = (imageConfig ? resolveDemoGuide(imageConfig, profile.id) : null)
     ?? builtinDemoGuide(profile.id);
@@ -861,8 +916,24 @@ async function bootProfile(
         uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
         gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
       }).then(
-        (code) => tick(`${initArgv[0] ?? "init"} exited with code ${code}`),
-        (err) => tick(`init failed: ${err instanceof Error ? err.message : String(err)}`),
+        (code) => {
+          if (!isCurrent()) return;
+          reportInitError(
+            host,
+            profile,
+            `${initArgv[0] ?? "init"} exited with code ${code}`,
+            tick,
+          );
+        },
+        (err) => {
+          if (!isCurrent()) return;
+          reportInitError(
+            host,
+            profile,
+            `init failed: ${err instanceof Error ? err.message : String(err)}`,
+            tick,
+          );
+        },
       );
     }
 
