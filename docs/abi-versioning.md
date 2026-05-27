@@ -61,6 +61,9 @@ not require an `ABI_VERSION` bump:
   marshalled struct layout unchanged.
 - Adding a syscall argument descriptor for a syscall that previously had
   no descriptor, while leaving every existing descriptor unchanged.
+- Adding the initial `host_adapter` snapshot section or adding new
+  optional host-adapter metadata while leaving required existing fields
+  unchanged.
 
 These additions still require regenerating and committing
 `abi/snapshot.json`. They do not permit older kernels to run newer
@@ -91,6 +94,9 @@ captures:
 - `syscall_arg_descriptors` — host marshalling descriptors for pointer
   arguments, including direction, size source, size multipliers/additions,
   fixed byte lengths, and any return-value-based copy-back adjustment.
+- `host_adapter` — Rust-owned boot manifest metadata consumed by host
+  adapters: manifest layout, host adapter protocol version, required
+  worker feature bits, and required/optional kernel exports.
 - `custom_sections` — names of wasm custom sections that participate in
   the ABI (currently `wasm-posix-abi` for the per-binary version).
 - `process_expected_globals` — globals every user process instance is
