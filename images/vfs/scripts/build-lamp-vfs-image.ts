@@ -35,14 +35,14 @@ import {
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 // WordPress + MariaDB source-tree fallbacks so the demo builds in a
-// fetch-only checkout. The mariadbd binary comes from the resolver
-// (already in the binary release); the system_tables SQL files are
-// shipped only in the upstream MariaDB source tarball, so we extract
-// it on demand the same way build-mariadb-vfs-image.ts does.
+// fetch-only checkout. The mariadbd binary comes from the resolver;
+// the system_tables SQL files are shipped only in the upstream MariaDB
+// source tarball, so we extract them on demand the same way
+// build-mariadb-vfs-image.ts does.
 const WP_DIR = ensureSourceExtract(
   "wordpress",
   REPO_ROOT,
-  join(REPO_ROOT, "examples", "wordpress", "wordpress"),
+  join(REPO_ROOT, "packages", "registry", "wordpress", "wordpress"),
 );
 const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages", "registry", "mariadb", "mariadb-install");
 const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
@@ -412,7 +412,10 @@ function buildServices(): DinitService[] {
 
 async function main() {
   try { lstatSync(MARIADB_PATH); }
-  catch { console.error("mariadbd.wasm not found. fetch-binaries should provide programs/mariadb/mariadbd.wasm"); process.exit(1); }
+  catch {
+    console.error("mariadbd.wasm not found. Run scripts/fetch-binaries.sh or bash packages/registry/mariadb/build-mariadb.sh");
+    process.exit(1);
+  }
 
   // 256 MiB initial — WordPress core + SQLite plugin (~80 MiB) + MariaDB
   // binary (~14 MiB) + bootstrap SQL (~1 MiB) plus headroom. Worker entry

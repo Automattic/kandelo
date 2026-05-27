@@ -30,8 +30,8 @@ else
 fi
 
 # Step 3: MariaDB binary
-MARIADB_BINARY="$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd"
-if [ ! -f "$MARIADB_BINARY" ]; then
+if ! "$REPO_ROOT/scripts/resolve-binary.sh" programs/mariadb/mariadbd.wasm >/dev/null 2>&1 \
+   && [ ! -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm" ]; then
     echo "--- Building MariaDB ---"
     bash "$REPO_ROOT/packages/registry/mariadb/build-mariadb.sh"
 else

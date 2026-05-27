@@ -7,6 +7,10 @@ kernel_abi = 7
 # MariaDB one-shot script, and the WordPress tree. It does not bake the
 # full shell toolset; service inspection happens from a separate shell
 # process in the browser host.
+# It reads mariadbd.wasm via `resolveBinary("programs/mariadb/mariadbd.wasm")`.
+# The bootstrap SQL prefers `packages/registry/mariadb/mariadb-install/`
+# when a local source build has populated it, otherwise it is extracted
+# from the MariaDB source tarball on demand.
 depends_on = [
     "mariadb@10.5.28",
     "nginx@1.24.0",
