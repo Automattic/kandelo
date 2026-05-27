@@ -10,6 +10,8 @@ import type {
   MemoryFileSystem,
   VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
+import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
+import { ABI_VERSION } from "../../../host/src/generated/abi";
 
 export {
   writeVfsFile,
@@ -79,6 +81,83 @@ export function walkAndWrite(
 export interface SaveImageOptions {
   metadata?: VfsImageMetadata;
   kernelAbi?: number;
+  skipWasmArtifactCheck?: boolean;
+}
+
+function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+  const st = fs.stat(path);
+  const fd = fs.open(path, 0, 0);
+  try {
+    const buf = new Uint8Array(st.size);
+    fs.read(fd, buf, null, buf.length);
+    return buf;
+  } finally {
+    fs.close(fd);
+  }
+}
+
+function walkVfsFiles(fs: MemoryFileSystem, dir: string, out: string[] = []): string[] {
+  let dh: number;
+  try {
+    dh = fs.opendir(dir);
+  } catch {
+    return out;
+  }
+  try {
+    for (;;) {
+      const entry = fs.readdir(dh);
+      if (!entry) break;
+      if (entry.name === "." || entry.name === "..") continue;
+      const path = dir === "/" ? `/${entry.name}` : `${dir}/${entry.name}`;
+      let st;
+      try {
+        st = fs.lstat(path);
+      } catch {
+        continue;
+      }
+      const kind = st.mode & 0xf000;
+      if (kind === 0x4000) {
+        walkVfsFiles(fs, path, out);
+      } else if (kind === 0x8000) {
+        out.push(path);
+      }
+    }
+  } finally {
+    fs.closedir(dh);
+  }
+  return out;
+}
+
+function isWasm(bytes: Uint8Array): boolean {
+  return bytes.length >= 4 &&
+    bytes[0] === 0x00 &&
+    bytes[1] === 0x61 &&
+    bytes[2] === 0x73 &&
+    bytes[3] === 0x6d;
+}
+
+function assertNoStaleWasmArtifacts(fs: MemoryFileSystem, kernelAbi: number): void {
+  const failures: string[] = [];
+  for (const path of walkVfsFiles(fs, "/")) {
+    let bytes: Uint8Array;
+    try {
+      bytes = readVfsBytes(fs, path);
+    } catch {
+      continue;
+    }
+    if (!isWasm(bytes)) continue;
+    const reasons = describeWasmArtifactPolicyFailures(
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      { expectedAbi: kernelAbi },
+    );
+    if (reasons.length > 0) failures.push(`${path}: ${reasons.join("; ")}`);
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      "Refusing to save VFS image with stale wasm artifacts:\n" +
+        failures.map((line) => `  ${line}`).join("\n"),
+    );
+  }
 }
 
 export async function saveImage(
@@ -93,14 +172,16 @@ export async function saveImage(
   }
 
   console.log("Saving VFS image...");
+  const kernelAbi = options.kernelAbi ?? ABI_VERSION;
+  if (!options.skipWasmArtifactCheck) {
+    assertNoStaleWasmArtifacts(fs, kernelAbi);
+  }
   const metadata = options.metadata ??
-    (options.kernelAbi === undefined
-      ? undefined
-      : {
+    {
           version: 1 as const,
-          kernelAbi: options.kernelAbi,
+          kernelAbi,
           createdBy: "images/vfs/scripts/saveImage",
-        });
+        };
   const image = await fs.saveImage({ metadata });
   // Level 19 — slow build, smaller download. Decompression speed is
   // unaffected by compression level, so this is a one-sided trade.

@@ -161,13 +161,11 @@ SO_LINK_FLAGS=(
     -Wl,--allow-undefined
 )
 
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 instrument_wasm() {
     local wasm="$1"
-    if [ -x "$FORK_INSTRUMENT" ]; then
-        "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
-    fi
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
 }
 
 TEST_TIMEOUT=${TEST_TIMEOUT:-30}
@@ -793,9 +791,7 @@ run_suite() {
             "$CC" $CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST" \
                 "$src" $LINK_FLAGS_STR \
                 -o "$wasm" 2>/dev/null || return 1
-            if [ -x "$FORK_INSTRUMENT" ]; then
-                "$FORK_INSTRUMENT" "$wasm" -o "$wasm" 2>/dev/null || true
-            fi
+            "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
             # Build shared library (.so) if source has #ifdef SHARED
             if grep -q '#ifdef SHARED' "$src" 2>/dev/null; then
                 local so="$BUILD_DIR/$suite/${test_name}.so"

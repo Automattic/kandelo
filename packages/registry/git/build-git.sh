@@ -96,13 +96,7 @@ if [ -z "$WASM_OPT" ]; then
     exit 1
 fi
 
-# Check for fork-instrument tool (required for fork support).
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ ! -x "$FORK_INSTRUMENT" ]; then
-    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
-    echo "  Run 'bash build.sh' to build it." >&2
-    exit 1
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 # --- Download Git source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -132,18 +126,13 @@ prefix = /usr
 sysconfdir = /etc
 
 # Optimization + debug info for symbolication. -gline-tables-only emits
-# DWARF line tables without full debug info. The asyncify-onlylist
-# requirement for function names is obsolete (wasm-fork-instrument uses
-# call-graph analysis); the flag is retained for general debuggability.
+# DWARF line tables without full debug info and is retained for general
+# debuggability.
 CFLAGS = -O2 -gline-tables-only
 
 # Increase shadow stack from default 64KB to 1MB — git's deeply nested
 # calls (strbuf_realpath, config parsing, snprintf) overflow 64KB.
-# --no-wasm-opt prevents clang's built-in wasm-opt from stripping the
-# name section after linking; retained so later tooling (wasm-opt -O2,
-# wasm-fork-instrument) has symbol names available.
-# Must NOT use -Wl, prefix — this is a clang driver flag, not a linker flag.
-LDFLAGS = -Wl,-z,stack-size=1048576 --no-wasm-opt
+LDFLAGS = -Wl,-z,stack-size=1048576
 
 # Disable optional features that need unavailable infrastructure
 NO_PERL = YesPlease

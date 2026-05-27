@@ -207,7 +207,7 @@ $WASM_OPT -O2 "$BIN_DIR/qjs.wasm" -o "$BIN_DIR/qjs.wasm"
 
 # Fork instrumentation — must run LAST so later passes don't reorder
 # globals. Auto-discovers fork paths via call-graph analysis; no onlylist.
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "Applying fork instrumentation to qjs..."
 "$FORK_INSTRUMENT" "$BIN_DIR/qjs.wasm" -o "$BIN_DIR/qjs.wasm.instr"
 mv "$BIN_DIR/qjs.wasm.instr" "$BIN_DIR/qjs.wasm"
@@ -220,6 +220,23 @@ if [ "$BUILD_NODE" = "1" ]; then
     # ----------------------------------------------------------------
     echo "Compiling node CLI..."
     NODE_OBJS=()
+    NODE_CORE_OBJS=()
+
+    for obj in "${OBJS[@]}"; do
+        if [ "$(basename "$obj")" != "quickjs-libc.o" ]; then
+            NODE_CORE_OBJS+=("$obj")
+        fi
+    done
+
+    # The Node-compatible runtime uses qjs:std and qjs:os for filesystem,
+    # timers, sockets, and process metadata, but npm's child_process path goes
+    # through std.popen() -> wasm32posix posix_spawn(), not qjs:os.exec().
+    # Omitting os.exec keeps node.wasm from importing kernel_fork, so the whole
+    # QuickJS interpreter does not need fork-continuation instrumentation for
+    # ordinary npm/module loading.
+    $CC "${CFLAGS[@]}" -DWASM_POSIX_NODE_NO_OS_EXEC \
+        -c "$SRC_DIR/quickjs-libc.c" -o "$BIN_DIR/quickjs-libc-node.o"
+    NODE_CORE_OBJS+=("$BIN_DIR/quickjs-libc-node.o")
 
     # Compile node-main.c
     $CC "${CFLAGS[@]}" -c "$SCRIPT_DIR/node-main.c" -o "$BIN_DIR/node-main.o"
@@ -236,7 +253,9 @@ if [ "$BUILD_NODE" = "1" ]; then
     HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
     resolve_dep() {
         local name="$1"
-        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+        (cd "$REPO_ROOT" && \
+            env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+            cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
     }
 
     OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"
@@ -282,7 +301,7 @@ if [ "$BUILD_NODE" = "1" ]; then
     done
 
     echo "Linking node..."
-    $CC "${NODE_OBJS[@]}" "${OBJS[@]}" \
+    $CC "${NODE_OBJS[@]}" "${NODE_CORE_OBJS[@]}" \
         "$OPENSSL_PREFIX/lib/libssl.a" \
         "$OPENSSL_PREFIX/lib/libcrypto.a" \
         "$ZLIB_PREFIX/lib/libz.a" \
@@ -293,10 +312,16 @@ if [ "$BUILD_NODE" = "1" ]; then
     echo "Optimizing node with wasm-opt -O2..."
     $WASM_OPT -O2 "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm"
 
-    # Fork instrumentation — must run LAST.
-    echo "Applying fork instrumentation to node..."
-    "$FORK_INSTRUMENT" "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm.instr"
-    mv "$BIN_DIR/node.wasm.instr" "$BIN_DIR/node.wasm"
+    # Fork instrumentation is required only for binaries that can actually
+    # reach kernel_fork. node.wasm intentionally uses non-forking posix_spawn
+    # for child_process, so a no-fork build should stay uninstrumented.
+    if wasm-objdump -x "$BIN_DIR/node.wasm" | grep -q "kernel.kernel_fork"; then
+        echo "Applying fork instrumentation to node..."
+        "$FORK_INSTRUMENT" "$BIN_DIR/node.wasm" -o "$BIN_DIR/node.wasm.instr"
+        mv "$BIN_DIR/node.wasm.instr" "$BIN_DIR/node.wasm"
+    else
+        echo "Skipping fork instrumentation for node: no kernel_fork import"
+    fi
 
     NODE_SIZE=$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')
 fi

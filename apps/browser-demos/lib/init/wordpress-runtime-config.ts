@@ -1,12 +1,8 @@
 export type WordPressDatabaseKind = "sqlite" | "mariadb";
 
-export const WORDPRESS_CONFIG_INIT_SCRIPT = `# Substitute runtime values into wp-config.php. WP_APP_PATH and WP_PROTO
-# come from the env the page passes through kernel boot.
+export const WORDPRESS_CONFIG_INIT_SCRIPT = `# wp-config.php is rendered into the VFS by the browser host before dinit starts.
 : "\${WP_APP_PATH:=/app}"
 : "\${WP_PROTO:=http}"
-sed -e "s|@@APP_PATH@@|$WP_APP_PATH|g" \\
-    -e "s|@@PROTO@@|$WP_PROTO|g" \\
-    /etc/wp-config-template.php > /var/www/html/wp-config.php
 echo "wp-config-init: APP_PATH=$WP_APP_PATH PROTO=$WP_PROTO"
 `;
 
@@ -94,4 +90,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once ABSPATH . 'wp-settings.php';
 `;
+}
+
+export function renderWordPressConfig(
+  kind: WordPressDatabaseKind,
+  appPath: string,
+  proto: string,
+): string {
+  return wordpressConfigTemplate(kind)
+    .replaceAll("@@APP_PATH@@", phpSingleQuotedContent(appPath))
+    .replaceAll("@@PROTO@@", phpSingleQuotedContent(proto));
+}
+
+function phpSingleQuotedContent(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }

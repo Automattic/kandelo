@@ -79,11 +79,11 @@ LINK_FLAGS=(
     -Wl,--export=__abi_version
 )
 
-# Phase 7: fork support comes from wasm-fork-instrument (replaces
-# wasm-opt --asyncify). The tool auto-discovers fork-path functions via
-# call-graph analysis from `kernel.kernel_fork`; no onlylist is needed.
+# Fork support comes from wasm-fork-instrument. The tool auto-discovers
+# fork-path functions via call-graph analysis from `kernel.kernel_fork`;
+# no onlylist is needed.
 # See docs/fork-instrumentation.md.
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 build_program() {
     local src="$1"
@@ -100,10 +100,8 @@ build_program() {
     # unconditionally on every program. Programs without fork stay
     # byte-identical except for a small ABI metadata section the tool
     # always emits (see runtime::inject_runtime).
-    if [ -x "$FORK_INSTRUMENT" ]; then
-        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
-            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
-    fi
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
+    mv "$wasm.instr" "$wasm"
 }
 
 # Build a C++ program via the SDK's wasm32posix-c++ wrapper. The SDK
@@ -136,10 +134,8 @@ build_cpp_program() {
     # a no-op for modules without `kernel.kernel_fork`, so it's safe to
     # run unconditionally — programs without fork stay byte-identical
     # except for the ABI metadata section.
-    if [ -x "$FORK_INSTRUMENT" ]; then
-        "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr" 2>/dev/null && \
-            mv "$wasm.instr" "$wasm" || rm -f "$wasm.instr"
-    fi
+    "$FORK_INSTRUMENT" "$wasm" -o "$wasm.instr"
+    mv "$wasm.instr" "$wasm"
 }
 
 # Resolve libcxx and symlink its outputs into the sysroot if there are

@@ -13,9 +13,10 @@ set -euo pipefail
 
 RUNS="${FUZZ_RUNS:-10000}"
 MAX_LEN="${FUZZ_MAX_LEN:-128}"
+HOST_TARGET="${HOST_TARGET:-$(rustc -vV | awk '/^host/ {print $2}')}"
 
 cd "$(dirname "$0")/../crates/fork-instrument"
 
-exec cargo fuzz run --sanitizer=none fuzz_try_table -- \
+exec cargo fuzz run --target "$HOST_TARGET" --sanitizer=none fuzz_try_table -- \
     -runs="$RUNS" \
     -max_len="$MAX_LEN"

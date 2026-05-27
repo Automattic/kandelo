@@ -50,13 +50,7 @@ if [ -z "$WASM_OPT" ]; then
     exit 1
 fi
 
-# Check for fork-instrument tool (required for fork support).
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ ! -x "$FORK_INSTRUMENT" ]; then
-    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
-    echo "  Run 'bash build.sh' to build it." >&2
-    exit 1
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
@@ -137,9 +131,6 @@ if [ ! -f src/auto/config.mk ]; then
     export ac_cv_func_getpwnam=yes
 
     # -gline-tables-only retained for symbolication / debug stack traces.
-    # The asyncify-onlylist function-name matching requirement is obsolete
-    # (replaced by wasm-fork-instrument, which uses call-graph analysis).
-    # --no-wasm-opt preserves the name section for later tooling.
     # -I<ncurses>/include pulls in the top-level termcap.h and
     # curses.h symlinks the ncurses build emits.
     export CFLAGS="-O2 -gline-tables-only -I$NCURSES_PREFIX/include"
@@ -147,7 +138,7 @@ if [ ! -f src/auto/config.mk ]; then
     # without it, LLVM's gc-sections drops the function because no
     # other object in the link graph calls it (the host does, after
     # instantiation).
-    export LDFLAGS="--no-wasm-opt -Wl,-z,stack-size=1048576 -Wl,--export=__abi_version -L$NCURSES_PREFIX/lib"
+    export LDFLAGS="-Wl,-z,stack-size=1048576 -Wl,--export=__abi_version -L$NCURSES_PREFIX/lib"
     export LIBS="-lncursesw -ltinfow"
 
     wasm32posix-configure \
@@ -219,7 +210,7 @@ fi
 
 cp "$SRC_DIR/src/vim" "$BIN_DIR/vim.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')
-echo "==> Pre-asyncify size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
+echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
 # --- Size optimization + fork instrumentation ---
 # wasm-opt -O2 runs first to shrink the binary. wasm-fork-instrument must

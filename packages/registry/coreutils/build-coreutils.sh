@@ -249,6 +249,13 @@ mkdir -p "$BIN_DIR"
 if [ -f "$SRC_DIR/src/coreutils" ]; then
     cp "$SRC_DIR/src/coreutils" "$BIN_DIR/coreutils.wasm"
     echo "==> Built single-binary coreutils"
+    # The single binary includes utilities and libc paths that can reach
+    # fork()/vfork()/clone(). Fork instrumentation is required before this
+    # artifact can enter local-binaries or a VFS image.
+    FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+    echo "==> Applying fork instrumentation to coreutils..."
+    "$FORK_INSTRUMENT" "$BIN_DIR/coreutils.wasm" -o "$BIN_DIR/coreutils.wasm.instr"
+    mv "$BIN_DIR/coreutils.wasm.instr" "$BIN_DIR/coreutils.wasm"
     ls -lh "$BIN_DIR/coreutils.wasm"
 else
     echo "ERROR: coreutils binary not found after build" >&2

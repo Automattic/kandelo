@@ -6,9 +6,8 @@
  *                                  with a sleep+kill timeout because
  *                                  mariadbd doesn't exit at stdin EOF.
  *   mariadb           (process)  — depends-on mariadb-bootstrap
- *   wp-config-init    (scripted) — substitutes @@APP_PATH@@/@@PROTO@@
- *                                  in /etc/wp-config-template.php from
- *                                  env vars passed via kernel.boot().
+ *   wp-config-init    (internal) — dependency marker. The browser host writes
+ *                                  runtime wp-config.php before dinit starts.
  *   php-fpm           (process)  — depends-on mariadb, wp-config-init
  *   nginx             (process)  — depends-on php-fpm
  *
@@ -27,7 +26,6 @@ import {
 } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
-import { populateShellEnvironment } from "./shell-vfs-build";
 import { prewarmOpcache } from "./opcache-prewarm";
 import {
   webPresentation,
@@ -58,19 +56,34 @@ const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/my
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
+const DASH_PATH = resolveBinary("programs/dash.wasm");
+const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 
-// LAMP-specific data dirs that mariadbd writes to at runtime. Shell
-// environment dirs (/bin, /usr/bin, /etc, /root, /tmp, /home, …) are
-// covered by populateShellEnvironment.
+// LAMP-specific data dirs that mariadbd writes to at runtime. The image
+// intentionally bakes only a minimal /bin/sh + sleep environment for the
+// bootstrap script, not the full shell demo toolset.
 function populateMariadbDataDirs(fs: MemoryFileSystem): void {
   for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
     ensureDirRecursive(fs, dir);
   }
 }
 
+function populateBootstrapShell(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/bin");
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
+  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
+  for (const name of ["sleep"]) {
+    try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
+    try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
+  }
+}
+
 function populateMariadb(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
   ensureDirRecursive(fs, "/etc/mariadb");
   const systemTablesSql = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
@@ -292,14 +305,9 @@ kill -KILL $PID 2>/dev/null
 exit 0
 `;
 
-const WP_CONFIG_INIT_SCRIPT = `# Substitute runtime values into wp-config.php. WP_APP_PATH and WP_PROTO
-# come from the env the page passes through kernel.boot() — dinit
-# inherits its env to scripted services.
+const WP_CONFIG_INIT_SCRIPT = `# wp-config.php is rendered into the VFS by the host before dinit starts.
 : "\${WP_APP_PATH:=/app}"
 : "\${WP_PROTO:=http}"
-sed -e "s|@@APP_PATH@@|$WP_APP_PATH|g" \\
-    -e "s|@@PROTO@@|$WP_PROTO|g" \\
-    /etc/wp-config-template.php > /var/www/html/wp-config.php
 echo "wp-config-init: APP_PATH=$WP_APP_PATH PROTO=$WP_PROTO"
 `;
 
@@ -342,6 +350,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once ABSPATH . 'wp-settings.php';
 `;
 
+function renderWpConfig(appPath: string, proto: string): string {
+  return WP_CONFIG_TEMPLATE_PHP
+    .replaceAll("@@APP_PATH@@", phpSingleQuotedContent(appPath))
+    .replaceAll("@@PROTO@@", phpSingleQuotedContent(proto));
+}
+
+function phpSingleQuotedContent(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
 function buildServices(): DinitService[] {
   return [
     {
@@ -370,9 +388,7 @@ function buildServices(): DinitService[] {
     },
     {
       name: "wp-config-init",
-      type: "scripted",
-      command: "/bin/sh /etc/wp-config-init.sh",
-      logfile: "/var/log/wp-config-init.log",
+      type: "internal",
       restart: false,
     },
     {
@@ -405,15 +421,12 @@ async function main() {
   const sab = new SharedArrayBuffer(256 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 512 * 1024 * 1024);
 
-  // Shell environment (dash + bash + coreutils + grep + sed + extended
-  // tools + magic db + vim/nethack lazy archives) — shared with the
-  // Shell demo via images/vfs/scripts/shell-vfs-build.ts. eager:
-  // every binary is baked because LAMP runs in kernelOwnedFs mode.
-  console.log("Populating shell environment...");
-  populateShellEnvironment(fs, { eagerBinaries: true });
+  console.log("Populating bootstrap shell...");
+  populateBootstrapShell(fs);
   populateMariadbDataDirs(fs);
 
   console.log("Writing nginx + php-fpm binaries...");
+  ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
   writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
 
@@ -423,7 +436,8 @@ async function main() {
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
 
-  // Bootstrap + config-init scripts (sed-substituted at boot from env).
+  // Bootstrap scripts + default wp-config. The browser host overwrites
+  // wp-config.php with the current page prefix/protocol before dinit starts.
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", MARIADB_BOOTSTRAP_SCRIPT);
   // mariadbd --init-file runs at server startup — used as a belt-and-
   // suspenders guarantee that the wordpress DB exists, since the
@@ -432,6 +446,8 @@ async function main() {
   writeVfsFile(fs, "/etc/mariadb/init.sql", "CREATE DATABASE IF NOT EXISTS wordpress;\n");
   writeVfsFile(fs, "/etc/wp-config-template.php", WP_CONFIG_TEMPLATE_PHP);
   writeVfsFile(fs, "/etc/wp-config-init.sh", WP_CONFIG_INIT_SCRIPT);
+  ensureDirRecursive(fs, "/var/www/html");
+  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWpConfig("/app", "http"));
 
   // WordPress-specific dirs + mu-plugin
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");

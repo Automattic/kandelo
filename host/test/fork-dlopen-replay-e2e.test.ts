@@ -30,7 +30,7 @@ const CLANG = `${LLVM_BIN}/clang`;
 const WASM_LD = process.env.LLVM_BIN
   ? `${LLVM_BIN}/wasm-ld`
   : "/opt/homebrew/bin/wasm-ld";
-const FORK_INSTRUMENT = join(REPO_ROOT, "tools", "bin", "wasm-fork-instrument");
+const FORK_INSTRUMENT = join(REPO_ROOT, "scripts", "run-wasm-fork-instrument.sh");
 
 const hasSysroot = existsSync(join(SYSROOT, "lib", "libc.a"));
 const hasKernel = existsSync(join(REPO_ROOT, "binaries", "kernel.wasm")) ||

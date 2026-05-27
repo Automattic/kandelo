@@ -16,9 +16,9 @@ export interface BenchmarkArtifactFile {
 
 export interface ForkBenchSymbolReport {
   hasWpkForkSymbols: boolean;
-  hasAsyncifySymbols: boolean;
+  hasLegacyForkSymbols: boolean;
   matchedSymbols: string[];
-  expected: "asyncify" | "wpk_fork_without_asyncify" | "unknown";
+  expected: "wpk_fork_without_legacy" | "unknown";
   passed: boolean | null;
 }
 

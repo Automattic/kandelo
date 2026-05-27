@@ -267,15 +267,10 @@ else
     echo "WARNING: wasm-opt not found; leaving unoptimized js.wasm." >&2
 fi
 
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ -x "$FORK_INSTRUMENT" ]; then
-    echo "==> Applying fork instrumentation to js.wasm..."
-    "$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
-    mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
-else
-    echo "ERROR: fork instrumenter not found at $FORK_INSTRUMENT. Run 'bash build.sh' first." >&2
-    exit 1
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+echo "==> Applying fork instrumentation to js.wasm..."
+"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
+mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey built successfully: $BIN_DIR/js.wasm ($JS_SIZE bytes)"

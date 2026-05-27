@@ -654,7 +654,7 @@ export class LiveKernelHost implements KernelHost {
     this.galleryItems = opts.galleryItems ?? [];
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
-    this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+    this.refreshWebAvailability();
   }
 
   // ── owner-facing wiring helpers ──────────────────────────────────────────
@@ -761,7 +761,7 @@ export class LiveKernelHost implements KernelHost {
   setWebPreview(state: WebPreviewState | null): void {
     this.webPreview = state ? { ...state } : null;
     this.webPreviewListeners.emit(this.getWebPreview());
-    this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+    this.refreshWebAvailability();
   }
 
   private setSurfaceAvailability(patch: Partial<SurfaceAvailability>): void {
@@ -786,6 +786,10 @@ export class LiveKernelHost implements KernelHost {
     this.setSurfaceAvailability({
       framebuffer: Boolean(this.kernel?.framebuffers?.list().length),
     });
+  }
+
+  private refreshWebAvailability(): void {
+    this.setSurfaceAvailability({ web: this.webPreview !== null });
   }
 
   // ── KernelHost: status ───────────────────────────────────────────────────

@@ -159,15 +159,10 @@ fi
 # Auto-discovers fork paths via call-graph analysis — no onlylist needed.
 # Must run last — it hardcodes mutable-global offsets and any later pass
 # reordering globals would corrupt the fork buffer.
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ -x "$FORK_INSTRUMENT" ]; then
-    echo "==> Applying fork instrumentation..."
-    "$FORK_INSTRUMENT" "$DASH_BIN" -o "$DASH_BIN.instr"
-    mv "$DASH_BIN.instr" "$DASH_BIN"
-else
-    echo "WARNING: wasm-fork-instrument not found. Fork (command substitution, pipes) will not work." >&2
-    echo "  Run 'bash build.sh' to build it." >&2
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+echo "==> Applying fork instrumentation..."
+"$FORK_INSTRUMENT" "$DASH_BIN" -o "$DASH_BIN.instr"
+mv "$DASH_BIN.instr" "$DASH_BIN"
 
 echo "==> dash built successfully!"
 

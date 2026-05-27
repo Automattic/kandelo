@@ -43,6 +43,8 @@
 # while running build scripts) and falls back to "wasm32" for direct
 # build-script invocations like `bash packages/registry/dash/build-dash.sh`.
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wasm-artifact-guards.sh"
+
 install_local_binary() {
     local program="$1"
     local src="$2"
@@ -57,11 +59,31 @@ install_local_binary() {
         return 1
     fi
 
-    # Repo root from wherever the caller is.
+    # Repo root must be derived from this helper, not from the caller's
+    # current directory: package builds often `cd` into an upstream git
+    # checkout before installing artifacts.
     local repo_root
-    repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-    if [ -z "$repo_root" ]; then
-        repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+    if ! wasm_require_no_legacy_asyncify "$src"; then
+        return 1
+    fi
+    if wasm_imports_kernel_fork "$src" && ! wasm_has_complete_fork_instrumentation "$src"; then
+        if wasm_has_any_wpk_fork_export "$src"; then
+            wasm_require_fork_instrumentation_if_needed "$src"
+            return 1
+        fi
+        echo "  applying wasm-fork-instrument to $(basename "$src")"
+        local instrumented
+        instrumented="$(mktemp "${TMPDIR:-/tmp}/wpk-fork-instrument.XXXXXX.wasm")"
+        if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" -o "$instrumented"; then
+            rm -f "$instrumented"
+            return 1
+        fi
+        mv "$instrumented" "$src"
+    fi
+    if ! wasm_require_fork_instrumentation_if_needed "$src"; then
+        return 1
     fi
 
     local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
@@ -87,6 +109,7 @@ install_local_binary() {
     host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
     if [ -n "$host_target" ]; then
         rel="$(cd "$repo_root" && \
+            env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
             cargo run -p xtask --target "$host_target" --quiet -- \
                 build-deps output-path "$program" "$src_basename" 2>/dev/null || true)"
     fi
