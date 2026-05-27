@@ -3,7 +3,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import { NodePlatformIO } from "../../../../host/src/platform/node";
+import { TcpNetworkBackend } from "../../../../host/src/networking/tcp-backend";
+import { runCentralizedProgram, type RunProgramOptions } from "../../../../host/test/centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const NODE = join(__dirname, "../../../../packages/registry/quickjs/bin/node.wasm");
@@ -11,6 +13,25 @@ const NPM_DIST = join(__dirname, "../../../../packages/registry/npm/dist");
 const NPM_CLI = join(NPM_DIST, "bin/npm-cli.js");
 const HAS_NODE = existsSync(NODE);
 const HAS_NPM = existsSync(NPM_CLI);
+
+type NodeRunOptions = Omit<RunProgramOptions, "programPath" | "io" | "enableTcpNetwork"> & {
+  network?: boolean;
+};
+
+function nodeHostIO(network = false): NodePlatformIO {
+  const io = new NodePlatformIO();
+  if (network) io.network = new TcpNetworkBackend();
+  return io;
+}
+
+function runNode(options: NodeRunOptions) {
+  const { network, ...rest } = options;
+  return runCentralizedProgram({
+    programPath: NODE,
+    io: nodeHostIO(network),
+    ...rest,
+  });
+}
 
 /* These tests exercise the bootstrap.js + node-main.c changes that make
    npm 10.9.2 boot under our QuickJS Node-compat layer. They cover the
@@ -40,8 +61,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
         protoNamesContainsFinish: protoNames.includes('finish'),
       }));
     `;
-    const r = await runCentralizedProgram({
-      programPath: NODE,
+    const r = await runNode({
       argv: ["node", "-e", src],
       timeout: 15_000,
     });
@@ -63,8 +83,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
       process.on('output', (...args) => process.stdout.write('SAW:' + JSON.stringify(args) + '\\n'));
       output.standard('hello');
     `;
-    const r = await runCentralizedProgram({
-      programPath: NODE,
+    const r = await runNode({
       argv: ["node", "-e", src],
       timeout: 15_000,
     });
@@ -78,8 +97,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
       console.warn('warn-line');
       process.stdout.write('done\\n');
     `;
-    const r = await runCentralizedProgram({
-      programPath: NODE,
+    const r = await runNode({
       argv: ["node", "-e", src],
       timeout: 15_000,
     });
@@ -98,8 +116,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
         mkdir: typeof fsp.mkdir,
       }));
     `;
-    const r = await runCentralizedProgram({
-      programPath: NODE,
+    const r = await runNode({
       argv: ["node", "-e", src],
       timeout: 15_000,
     });
@@ -118,8 +135,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
       const gfs = require('${NPM_DIST}/node_modules/graceful-fs');
       console.log(JSON.stringify({ gracefulify: typeof gfs.gracefulify }));
     `;
-    const r = await runCentralizedProgram({
-      programPath: NODE,
+    const r = await runNode({
       argv: ["node", "-e", src],
       timeout: 15_000,
     });
@@ -135,8 +151,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
       const npmJs = require('${NPM_DIST}/lib/npm.js');
       console.log(JSON.stringify({ ctor: typeof npmJs }));
     `;
-    const r = await runCentralizedProgram({
-      programPath: NODE,
+    const r = await runNode({
       argv: ["node", "-e", src],
       timeout: 15_000,
     });
@@ -145,8 +160,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
   });
 
   it("`node ${NPM_CLI} --version` prints 10.9.2 (full e2e)", { timeout: 30_000 }, async () => {
-    const r = await runCentralizedProgram({
-      programPath: NODE,
+    const r = await runNode({
       argv: ["node", NPM_CLI, "--version"],
       timeout: 30_000,
     });
@@ -159,8 +173,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
     const cache = mkdtempSync(join(tmpdir(), "npm-install-cache-"));
     writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "t", version: "0.0.1" }));
     try {
-      const r = await runCentralizedProgram({
-        programPath: NODE,
+      const r = await runNode({
         argv: [
           "node",
           NPM_CLI,
@@ -173,7 +186,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
           "--no-progress",
         ],
         env: [`HOME=${prefix}`, "PATH=/usr/bin:/bin"],
-        enableTcpNetwork: true,
+        network: true,
         timeout: 240_000,
       });
       expect(r.exitCode).toBe(0);
@@ -191,8 +204,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
     const cache = mkdtempSync(join(tmpdir(), "npm-express-cache-"));
     writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "t", version: "0.0.1" }));
     try {
-      const r = await runCentralizedProgram({
-        programPath: NODE,
+      const r = await runNode({
         argv: [
           "node",
           NPM_CLI,
@@ -205,7 +217,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
           "--no-progress",
         ],
         env: [`HOME=${prefix}`, "PATH=/usr/bin:/bin"],
-        enableTcpNetwork: true,
+        network: true,
         timeout: 600_000,
       });
       expect(r.exitCode).toBe(0);
@@ -224,8 +236,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
     const cache = mkdtempSync(join(tmpdir(), "npm-vite-cache-"));
     writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "t", version: "0.0.1" }));
     try {
-      const r = await runCentralizedProgram({
-        programPath: NODE,
+      const r = await runNode({
         argv: [
           "node",
           NPM_CLI,
@@ -238,7 +249,7 @@ describe.skipIf(!HAS_NODE || !HAS_NPM)("npm 10.9.2 bootstrap (Phase 5)", () => {
           "--no-progress",
         ],
         env: [`HOME=${prefix}`, "PATH=/usr/bin:/bin"],
-        enableTcpNetwork: true,
+        network: true,
         timeout: 600_000,
       });
       expect(r.exitCode).toBe(0);

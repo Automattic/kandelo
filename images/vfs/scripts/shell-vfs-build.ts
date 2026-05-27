@@ -17,7 +17,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
@@ -36,6 +36,41 @@ import {
   ensureDirRecursive,
   symlink,
 } from "./vfs-image-helpers";
+
+function depEnvKey(name: string): string {
+  return name.replaceAll("-", "_").toUpperCase();
+}
+
+function artifactDepName(relPath: string, depName?: string): string {
+  if (depName) return depName === "git-remote-http" ? "git" : depName;
+  if (relPath.startsWith("programs/git/")) return "git";
+  if (relPath.startsWith("programs/file/")) return "file";
+  return basename(relPath).replace(/\.(wasm|zip|zst)$/, "");
+}
+
+function depArtifactPath(relPath: string, depName?: string): string | null {
+  const packageName = artifactDepName(relPath, depName);
+  const depDir = process.env[`WASM_POSIX_DEP_${depEnvKey(packageName)}_DIR`];
+  if (!depDir) return null;
+  const path = join(depDir, basename(relPath));
+  if (existsSync(path)) return path;
+  throw new Error(
+    `direct dependency ${packageName} is available at ${depDir}, ` +
+    `but ${basename(relPath)} was not found`,
+  );
+}
+
+export function tryResolveVfsArtifact(relPath: string, depName?: string): string | null {
+  const depPath = depArtifactPath(relPath, depName);
+  if (depPath) return depPath;
+  return tryResolveBinary(relPath);
+}
+
+export function resolveVfsArtifact(relPath: string, depName?: string): string {
+  const resolved = tryResolveVfsArtifact(relPath, depName);
+  if (resolved) return resolved;
+  return resolveBinary(relPath);
+}
 
 export interface ShellVfsOptions {
   /**
@@ -165,7 +200,7 @@ function populateSystem(fs: MemoryFileSystem): void {
 // ── Shell binaries ──────────────────────────────────────────────
 
 function populateDash(fs: MemoryFileSystem): void {
-  const dashBytes = readFileSync(resolveBinary("programs/dash.wasm"));
+  const dashBytes = readFileSync(resolveVfsArtifact("programs/dash.wasm", "dash"));
   writeVfsBinary(fs, "/bin/dash", new Uint8Array(dashBytes));
   symlink(fs, "/bin/dash", "/bin/sh");
   symlink(fs, "/bin/dash", "/usr/bin/dash");
@@ -173,7 +208,7 @@ function populateDash(fs: MemoryFileSystem): void {
 }
 
 function populateBash(fs: MemoryFileSystem): void {
-  const bashBytes = readFileSync(resolveBinary("programs/bash.wasm"));
+  const bashBytes = readFileSync(resolveVfsArtifact("programs/bash.wasm", "bash"));
   writeVfsBinary(fs, "/usr/bin/bash", new Uint8Array(bashBytes));
   symlink(fs, "/usr/bin/bash", "/bin/bash");
 }
@@ -186,7 +221,7 @@ function populateCoreutilsSymlinks(fs: MemoryFileSystem): void {
 }
 
 function populateCoreutils(fs: MemoryFileSystem): void {
-  const bytes = readFileSync(resolveBinary("programs/coreutils.wasm"));
+  const bytes = readFileSync(resolveVfsArtifact("programs/coreutils.wasm", "coreutils"));
   writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(bytes));
 }
 
@@ -201,18 +236,18 @@ function populateGrepSedSymlinks(fs: MemoryFileSystem): void {
 }
 
 function populateGrep(fs: MemoryFileSystem): void {
-  const bytes = readFileSync(resolveBinary("programs/grep.wasm"));
+  const bytes = readFileSync(resolveVfsArtifact("programs/grep.wasm", "grep"));
   writeVfsBinary(fs, "/usr/bin/grep", new Uint8Array(bytes));
 }
 
 function populateSed(fs: MemoryFileSystem): void {
-  const bytes = readFileSync(resolveBinary("programs/sed.wasm"));
+  const bytes = readFileSync(resolveVfsArtifact("programs/sed.wasm", "sed"));
   writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(bytes));
 }
 
 function populateLazyBinaries(fs: MemoryFileSystem): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
-    const resolved = resolveBinary(spec.resolverPath);
+    const resolved = resolveVfsArtifact(spec.resolverPath, spec.id);
     const size = statSync(resolved).size;
     fs.registerLazyFile(
       spec.vfsPath,
@@ -310,7 +345,7 @@ function populateExtendedBinaries(fs: MemoryFileSystem): void {
     { relPath: "programs/lsof.wasm",                 vfsPath: "/usr/bin/lsof" },
   ];
   for (const { relPath, vfsPath } of extended) {
-    const bytes = readFileSync(resolveBinary(relPath));
+    const bytes = readFileSync(resolveVfsArtifact(relPath));
     writeVfsBinary(fs, vfsPath, new Uint8Array(bytes));
   }
 }
@@ -326,6 +361,8 @@ function populateExtendedBinaries(fs: MemoryFileSystem): void {
  * scenarios; the in-tree fallback covers direct build-file.sh runs.
  */
 function resolveMagicPath(): string {
+  const directDep = tryResolveVfsArtifact("programs/file/magic.lite", "file");
+  if (directDep) return directDep;
   const released = tryResolveBinary("programs/file/magic.lite");
   if (released) return released;
   try {

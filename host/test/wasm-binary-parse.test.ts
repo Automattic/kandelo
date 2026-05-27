@@ -13,7 +13,18 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { extractHeapBase, extractAbiVersion } from "../src/constants";
+import {
+  describeWasmArtifactPolicyFailures,
+  extractHeapBase,
+  extractAbiVersion,
+  wasmContainsLegacyAsyncify,
+  wasmIsRelocatableObject,
+  readWasmCustomSectionNames,
+  readWasmExportNames,
+  readWasmImportNames,
+  wasmHasCompleteForkInstrumentation,
+  wasmImportsKernelFork,
+} from "../src/constants";
 import { tryResolveBinary } from "../src/binary-resolver";
 
 // ---------------------------------------------------------------------------
@@ -81,11 +92,16 @@ function buildWasm(opts: {
   globals?: DefinedGlobal[];
   exports?: ExportEntry[];
   funcBodies?: FuncBody[];
+  customSections?: { name: string; data?: number[] }[];
 }): ArrayBuffer {
   const bytes: number[] = [
     0x00, 0x61, 0x73, 0x6d,
     0x01, 0x00, 0x00, 0x00,
   ];
+
+  for (const custom of opts.customSections ?? []) {
+    bytes.push(...section(0, [...nameBytes(custom.name), ...(custom.data ?? [])]));
+  }
 
   // Type section (id=1): one type `() -> i32` so __abi_version-like funcs work.
   // Encoded: count=1, [0x60 (func), 0 params, 1 result, 0x7F i32]
@@ -282,6 +298,34 @@ describe("extractAbiVersion", () => {
     expect(extractAbiVersion(wasm)).toBe(12);
   });
 
+  it("follows an instrumented command-export wrapper to the real ABI marker", () => {
+    const wasm = buildWasm({
+      funcTypes: [0],
+      funcBodies: [
+        {
+          locals: [0x00],
+          instructions: [
+            0x02, 0x40,               // block
+            0x41, ...sleb128_i32(2),  // fork-state constant
+            0x1a,                     // drop
+            0x0b,                     // end block
+            0x10, ...uleb128(1),      // call real marker
+            0x0f,                     // return
+            0x41, ...sleb128_i32(0),  // wrapper default path, not ABI
+          ],
+        },
+        {
+          locals: [0x00],
+          instructions: [
+            0x41, ...sleb128_i32(12),
+          ],
+        },
+      ],
+      exports: [{ name: "__abi_version", kind: 0, index: 0 }],
+    });
+    expect(extractAbiVersion(wasm)).toBe(12);
+  });
+
   it("counts function imports correctly when computing the body index", () => {
     // 1 func import (index 0) + 1 defined function (index 1) → __abi_version = func 1
     const wasm = buildWasm({
@@ -291,6 +335,111 @@ describe("extractAbiVersion", () => {
       exports: [{ name: "__abi_version", kind: 0, index: 1 }],
     });
     expect(extractAbiVersion(wasm)).toBe(7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wasm artifact policy helpers
+// ---------------------------------------------------------------------------
+
+describe("wasm artifact policy helpers", () => {
+  it("reads import and export names without compiling the module", () => {
+    const wasm = buildWasm({
+      funcImports: [
+        { module: "kernel", name: "kernel_fork", typeIdx: 0 },
+        { module: "kernel", name: "kernel_clone", typeIdx: 0 },
+      ],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [
+        { name: "__abi_version", kind: 0, index: 2 },
+        { name: "wpk_fork_state", kind: 0, index: 2 },
+      ],
+    });
+
+    expect(readWasmImportNames(wasm)).toEqual([
+      "kernel.kernel_fork",
+      "kernel.kernel_clone",
+    ]);
+    expect(readWasmExportNames(wasm)).toContain("wpk_fork_state");
+    expect(wasmImportsKernelFork(wasm)).toBe(true);
+  });
+
+  it("flags fork-capable wasm without the complete instrumentation exports", () => {
+    const wasm = buildWasm({
+      funcImports: [{ module: "kernel", name: "kernel_fork", typeIdx: 0 }],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [
+        { name: "__abi_version", kind: 0, index: 1 },
+        { name: "wpk_fork_state", kind: 0, index: 1 },
+      ],
+    });
+
+    expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
+    expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([
+      "incomplete wasm-fork-instrument exports; missing wpk_fork_unwind_begin, wpk_fork_unwind_end, wpk_fork_rewind_begin, wpk_fork_rewind_end",
+      "imports kernel.kernel_fork without complete wasm-fork-instrument exports",
+    ]);
+  });
+
+  it("accepts fork-capable wasm with the complete instrumentation export set", () => {
+    const wasm = buildWasm({
+      funcImports: [{ module: "kernel", name: "kernel_fork", typeIdx: 0 }],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [
+        { name: "__abi_version", kind: 0, index: 1 },
+        { name: "wpk_fork_unwind_begin", kind: 0, index: 1 },
+        { name: "wpk_fork_unwind_end", kind: 0, index: 1 },
+        { name: "wpk_fork_rewind_begin", kind: 0, index: 1 },
+        { name: "wpk_fork_rewind_end", kind: 0, index: 1 },
+        { name: "wpk_fork_state", kind: 0, index: 1 },
+      ],
+    });
+
+    expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(true);
+    expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
+  });
+
+  it("does not require fork instrumentation for thread-only kernel_clone imports", () => {
+    const wasm = buildWasm({
+      funcImports: [{ module: "kernel", name: "kernel_clone", typeIdx: 0 }],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [{ name: "__abi_version", kind: 0, index: 1 }],
+    });
+
+    expect(wasmImportsKernelFork(wasm)).toBe(false);
+    expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
+  });
+
+  it("does not require fork instrumentation for relocatable wasm objects", () => {
+    const wasm = buildWasm({
+      customSections: [{ name: "linking" }, { name: "reloc.CODE" }],
+      funcImports: [{ module: "kernel", name: "kernel_fork", typeIdx: 0 }],
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [{ name: "__abi_version", kind: 0, index: 1 }],
+    });
+
+    expect(readWasmCustomSectionNames(wasm)).toContain("linking");
+    expect(wasmIsRelocatableObject(wasm)).toBe(true);
+    expect(wasmImportsKernelFork(wasm)).toBe(true);
+    expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
+  });
+});
+
+const builtNodeBinary = join(process.cwd(), "packages/registry/quickjs/bin/node.wasm");
+
+describe.skipIf(!existsSync(builtNodeBinary))("built node.wasm artifact policy", () => {
+  it("does not carry fork or legacy Asyncify instrumentation", () => {
+    const bytes = readFileSync(builtNodeBinary);
+    const wasm = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+
+    expect(wasmImportsKernelFork(wasm)).toBe(false);
+    expect(wasmContainsLegacyAsyncify(wasm)).toBe(false);
+    expect(readWasmExportNames(wasm).filter((name) => name.startsWith("wpk_fork_"))).toEqual([]);
   });
 });
 

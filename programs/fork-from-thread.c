@@ -6,7 +6,7 @@
 // The parent thread resumes with the child's pid.
 //
 // This exercises the host runtime's fork-from-non-main-thread path:
-// the thread worker drives an asyncify unwind/SYS_FORK/rewind cycle,
+// the thread worker drives a wpk_fork unwind/SYS_FORK/rewind cycle,
 // the kernel-worker passes the thread's fnPtr/argPtr through to onFork,
 // and the child Worker enters the thread function directly instead of
 // _start.

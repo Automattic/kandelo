@@ -1,7 +1,7 @@
 /**
  * Tests fork() called from a pthread_create'd worker thread.
  *
- * The host runtime must (a) drive the asyncify state machine from the
+ * The host runtime must (a) drive the wpk_fork state machine from the
  * thread worker so the save buffer contains the thread's frames +
  * saved __tls_base/__stack_pointer; (b) route the child Worker into
  * the thread function via `forkChildThreadFnPtr` so the rewind

@@ -4,6 +4,7 @@ import fs from "fs";
 import { execSync } from "child_process";
 import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
+import { tryResolveBinary } from "../../host/src/binary-resolver";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -41,12 +42,12 @@ function resolveKernelArtifactsAlias(): Plugin {
       const query = queryIdx === -1 ? "" : source.slice(queryIdx);
 
       if (pathPart === KERNEL) {
+        const resolved = tryResolveBinary("kernel.wasm");
+        if (resolved) return resolved + query;
         const local = path.resolve(repoRoot, "local-binaries/kernel.wasm");
-        if (fs.existsSync(local)) return local + query;
         const fetched = path.resolve(repoRoot, "binaries/kernel.wasm");
-        if (fs.existsSync(fetched)) return fetched + query;
         this.error(
-          "kernel.wasm not found. Run `bash build.sh` from the repo root.\n" +
+          "kernel.wasm not found, or every candidate is stale. Run `bash build.sh` from the repo root.\n" +
           `  Looked at: ${local}\n  Looked at: ${fetched}`
         );
       }
@@ -103,12 +104,12 @@ function resolveBinariesAlias(): Plugin {
       const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
       const query = queryIdx === -1 ? "" : source.slice(queryIdx);
       const rest = applyDefaultArch(pathPart.slice(PREFIX.length));
+      const resolved = tryResolveBinary(rest);
+      if (resolved) return resolved + query;
       const local = path.resolve(repoRoot, "local-binaries", rest);
-      if (fs.existsSync(local)) return local + query;
       const fetched = path.resolve(repoRoot, "binaries", rest);
-      if (fs.existsSync(fetched)) return fetched + query;
       this.error(
-        `@binaries: ${rest} not found. ` +
+        `@binaries: ${rest} not found, or every candidate is stale. ` +
         `Looked at:\n  ${local}\n  ${fetched}\n` +
         `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`
       );

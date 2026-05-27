@@ -69,6 +69,37 @@ export interface KandeloDemoConfig {
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
 
+export type GenericDemoPresentationKind = "terminal" | "web" | "framebuffer";
+
+export function genericDemoPresentation(
+  kind: GenericDemoPresentationKind = "terminal",
+): DemoPresentation {
+  switch (kind) {
+    case "web":
+      return {
+        bootPrimary: "syslog",
+        runningPrimary: ["web", "terminal", "syslog"],
+        terminalAccess: "drawer",
+        internalsAccess: "drawer",
+      };
+    case "framebuffer":
+      return {
+        bootPrimary: "syslog",
+        runningPrimary: ["framebuffer", "terminal", "syslog"],
+        terminalAccess: "drawer",
+        internalsAccess: "drawer",
+      };
+    case "terminal":
+    default:
+      return {
+        bootPrimary: "syslog",
+        runningPrimary: ["terminal", "syslog"],
+        terminalAccess: "primary",
+        internalsAccess: "drawer",
+      };
+  }
+}
+
 const PRIMARY_SURFACES = new Set<PrimarySurface>([
   "syslog",
   "terminal",

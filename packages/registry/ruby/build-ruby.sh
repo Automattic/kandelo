@@ -708,15 +708,10 @@ elif [ -f miniruby ]; then
     cp miniruby "$BIN_DIR/ruby.wasm"
 fi
 
-FORK_INSTRUMENT="$REPO_ROOT/tools/bin/wasm-fork-instrument"
-if [ -x "$FORK_INSTRUMENT" ]; then
-    echo "==> Applying wasm-fork-instrument to ruby.wasm..."
-    "$FORK_INSTRUMENT" "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.instr"
-    mv "$BIN_DIR/ruby.wasm.instr" "$BIN_DIR/ruby.wasm"
-else
-    echo "ERROR: wasm-fork-instrument not found at $FORK_INSTRUMENT." >&2
-    exit 1
-fi
+FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+echo "==> Applying wasm-fork-instrument to ruby.wasm..."
+"$FORK_INSTRUMENT" "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.instr"
+mv "$BIN_DIR/ruby.wasm.instr" "$BIN_DIR/ruby.wasm"
 
 # Install stdlib
 echo "==> Installing Ruby stdlib..."
