@@ -95,13 +95,14 @@ export const MachineView: React.FC<MachineViewProps> = ({
   };
 
   const primaryLabel = surfaceLabel(activePrimary);
-  const demoSurface = status === "running"
-    ? resolvePrimary(presentation.runningPrimary, availability, presentation.bootPrimary)
-    : presentation.runningPrimary[0] ?? "terminal";
+  const demoSurface = resolveDemoSurface(presentation.runningPrimary);
   const canOpenDemo =
+    demoSurface !== null &&
     isSurfaceAvailable(demoSurface, availability) &&
     (status === "running" || demoSurface === "web");
-  const shouldMountDemoSurface = demoSurface !== "terminal" && isSurfaceAvailable(demoSurface, availability);
+  const shouldMountDemoSurface =
+    demoSurface !== null &&
+    isSurfaceAvailable(demoSurface, availability);
   const showDemoGuide = demoGuide !== null;
 
   const beginDrawerResize = (
@@ -139,9 +140,11 @@ export const MachineView: React.FC<MachineViewProps> = ({
       <div className="kmachine-toolbar">
         <div className="kmachine-switch" role="tablist" aria-label="Machine surfaces">
           <SurfaceButton
-            active={activePrimary === demoSurface && demoSurface !== "terminal"}
-            disabled={!canOpenDemo || demoSurface === "terminal"}
-            onClick={() => choosePrimary(demoSurface)}
+            active={demoSurface !== null && activePrimary === demoSurface}
+            disabled={!canOpenDemo}
+            onClick={() => {
+              if (demoSurface) choosePrimary(demoSurface);
+            }}
             label="Demo"
           />
           <SurfaceButton
@@ -292,6 +295,10 @@ function resolvePrimary(
   fallback: PrimarySurface,
 ): PrimarySurface {
   return preferences.find((surface) => isSurfaceAvailable(surface, availability)) ?? fallback;
+}
+
+function resolveDemoSurface(preferences: readonly PrimarySurface[]): PrimarySurface | null {
+  return preferences.find((surface) => surface === "web" || surface === "framebuffer") ?? null;
 }
 
 function isSurfaceAvailable(surface: PrimarySurface, availability: SurfaceAvailability): boolean {
