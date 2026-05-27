@@ -295,7 +295,13 @@ if (typeof window !== "undefined") {
   // --- CORS proxy URL (injected at build time, empty string in dev) ---
   var CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
   // In dev mode the placeholder is not replaced — treat as unconfigured
-  if (CORS_PROXY_URL.indexOf("__") === 0) CORS_PROXY_URL = "";
+  if (CORS_PROXY_URL.indexOf("__") === 0) {
+    CORS_PROXY_URL =
+      self.location.hostname === "127.0.0.1" ||
+      self.location.hostname === "localhost"
+        ? "/cors-proxy?url="
+        : "";
+  }
 
   /**
    * Check if a URL is cross-origin relative to the service worker's origin.
@@ -364,17 +370,22 @@ if (typeof window !== "undefined") {
   }
 
   function markAppClient(event, request) {
+    var appReferer = getAppReferer(request);
     if (isNavigationRequest(request)) {
       if (event.resultingClientId) {
         appClientIds.add(event.resultingClientId);
       }
-      if (getAppReferer(request) !== null && event.clientId) {
+      if (appReferer !== null && event.clientId) {
         appClientIds.add(event.clientId);
       }
       return;
     }
 
-    if (event.clientId) {
+    // A shell page may fetch /app/ as a readiness probe. That must not turn
+    // the shell page into an app client, or later gallery navigations are
+    // redirected under /app/. Only subresource/fetch requests from a document
+    // already inside appPrefix should mark their client.
+    if (appReferer !== null && event.clientId) {
       appClientIds.add(event.clientId);
     }
   }
@@ -440,7 +451,7 @@ if (typeof window !== "undefined") {
 
     // If we have a CORS proxy, route through it
     if (CORS_PROXY_URL) {
-      var proxyUrl = CORS_PROXY_URL + targetUrl;
+      var proxyUrl = CORS_PROXY_URL + encodeURIComponent(targetUrl);
       return fetch(proxyUrl, { credentials: "omit", mode: "cors" }).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
         return new Response(response.body, {
@@ -668,13 +679,26 @@ if (typeof window !== "undefined") {
                 if (!locUrl.pathname.startsWith(appPrefix)) {
                   locUrl.pathname = appPrefix.slice(0, -1) + locUrl.pathname;
                 }
-                respHeaders.set("Location", locUrl.toString());
               }
+              var redirectStatus = bridgeResp.status;
+              if (
+                (redirectStatus === 301 || redirectStatus === 302) &&
+                request.method !== "GET" &&
+                request.method !== "HEAD"
+              ) {
+                redirectStatus = 303;
+              }
+              respHeaders.set("Location", locUrl.toString());
+              return new Response(null, {
+                status: redirectStatus,
+                headers: respHeaders,
+              });
             } catch (e) {
               /* leave as-is */
             }
           }
         }
+        rewriteAppUrlHeader(respHeaders, "Link", url);
 
         // COEP/CORP for cross-origin isolation
         if (!respHeaders.has("Cross-Origin-Embedder-Policy")) {
@@ -718,11 +742,23 @@ if (typeof window !== "undefined") {
       contentType.indexOf("text/css") === 0 ||
       contentType.indexOf("text/javascript") === 0 ||
       contentType.indexOf("application/javascript") === 0 ||
+      contentType.indexOf("application/x-javascript") === 0 ||
       contentType.indexOf("application/json") === 0 ||
+      contentType.indexOf("+json") !== -1 ||
       contentType.indexOf("application/xml") === 0 ||
       contentType.indexOf("text/xml") === 0 ||
+      contentType.indexOf("+xml") !== -1 ||
       contentType.indexOf("image/svg+xml") === 0
     );
+  }
+
+  function rewriteAppUrlHeader(headers, name, requestUrl) {
+    var value = headers.get(name);
+    if (!value) return;
+    var rewritten = rewriteSameHostAppUrls(value, requestUrl);
+    if (rewritten !== value) {
+      headers.set(name, rewritten);
+    }
   }
 
   function rewriteSameHostAppUrls(text, requestUrl) {
@@ -740,13 +776,23 @@ if (typeof window !== "undefined") {
       "http:\\\\/\\\\/" + hostPattern + "\\\\/(?!" + escapedAppPathPattern + "(?:\\\\/|$))",
       "g",
     );
+    var encodedAppPathPattern = appPathPattern.replace(/\//g, "%2F");
+    var encoded = new RegExp(
+      "http%3A%2F%2F" + hostPattern + "%2F(?!" + encodedAppPathPattern + "(?:%2F|$))",
+      "gi",
+    );
     return text
       .replace(plain, publicBase)
       .replace(escaped, publicBase.replace(/\//g, "\\/"))
+      .replace(encoded, encodeURIComponent(publicBase))
       .replace(new RegExp("http://" + hostPattern + "/", "g"), publicOrigin)
       .replace(
         new RegExp("http:\\\\/\\\\/" + hostPattern + "\\\\/", "g"),
         publicOrigin.replace(/\//g, "\\/"),
+      )
+      .replace(
+        new RegExp("http%3A%2F%2F" + hostPattern + "%2F", "gi"),
+        encodeURIComponent(publicOrigin),
       );
   }
 

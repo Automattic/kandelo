@@ -1,74 +1,18 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
   <script src="/kandelo/service-worker.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Simple Programs — wasm-posix-kernel</title>
-  <script type="module" crossorigin src="/kandelo/assets/main-CWsMiWVh.js"></script>
-  <link rel="modulepreload" crossorigin href="/kandelo/assets/preload-helper-D6EpyWyH.js">
-  <link rel="modulepreload" crossorigin href="/kandelo/assets/browser-kernel-host-1oDhl4Fp.js">
-  <link rel="stylesheet" crossorigin href="/kandelo/assets/layout-CVR4BuDr.css">
+  <title>Kandelo demos</title>
+  <script>
+    const target = new URL("/pages/kandelo/", window.location.origin);
+    target.search = window.location.search;
+    target.hash = window.location.hash;
+    window.location.replace(target);
+  </script>
 </head>
 <body>
-  <nav class="sidebar">
-    <div class="sidebar-title">Demos</div>
-    <a href="/kandelo/" aria-current="page">Simple Programs</a>
-    <a href="/kandelo/pages/nginx/">nginx</a>
-    <a href="/kandelo/pages/php/">PHP CLI</a>
-    <a href="/kandelo/pages/nginx-php/">nginx + PHP-FPM</a>
-    <a href="/kandelo/pages/mariadb/">MariaDB</a>
-    <a href="/kandelo/pages/wordpress/">WordPress (LEMP-but-SQLite)</a>
-    <a href="/kandelo/pages/lamp/">WordPress (LEMP)</a>
-    <a href="/kandelo/pages/shell/">Shell</a>
-    <a href="/kandelo/pages/doom/">DOOM</a>
-    <a class="sidebar-revision" href="https://github.com/brandonpayton/kandelo/commit/462b4b69197753c85eaa6ff194ef2f97d1779dab" target="_blank" rel="noopener">rev: 462b4b6</a>
-  </nav>
-  <div class="main">
-    <div class="main-header">
-      <h1>Simple Programs</h1>
-      <p class="subtitle">C programs running inside a POSIX kernel compiled to WebAssembly</p>
-      <div class="controls">
-        <select id="program">
-          <option value="hello">hello</option>
-          <option value="malloc">malloc</option>
-          <option value="strings">strings</option>
-          <option value="math">math</option>
-          <option value="snprintf">snprintf</option>
-          <option value="environ">environ</option>
-          <option value="fprintf">fprintf</option>
-          <option value="files">files</option>
-          <option value="dirs">dirs</option>
-          <option value="spawn-smoke">spawn-smoke</option>
-        </select>
-        <button id="run">Run</button>
-      </div>
-    </div>
-    <div class="preview-area simple-programs-preview">
-      <section class="software-gallery" aria-labelledby="software-gallery-title">
-        <div class="software-gallery-heading">
-          <div>
-            <h2 id="software-gallery-title">Third-party VFS Builds</h2>
-            <p id="third-party-gallery-status" class="software-gallery-status">Checking kandelo-software...</p>
-          </div>
-          <a
-            class="software-gallery-source"
-            href="https://github.com/brandonpayton/kandelo-software"
-            target="_blank"
-            rel="noopener"
-          >kandelo-software</a>
-        </div>
-        <div id="third-party-gallery" class="software-gallery-grid hidden"></div>
-      </section>
-      <div class="output-area">
-        <pre id="output"></pre>
-        <!-- Surfaced for the non-forking-spawn regression test. After spawn-smoke
-             runs, main.ts sets data-fork-count to the kernel's per-process fork
-             counter — Playwright reads it to assert SYS_SPAWN didn't fall back
-             to fork. -->
-        <div id="fork-count-debug" data-fork-count="" style="display: none"></div>
-      </div>
-    </div>
-  </div>
+  <a href="/kandelo/pages/kandelo/">Open Kandelo demos</a>
 </body>
 </html>
