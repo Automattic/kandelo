@@ -22,7 +22,7 @@ use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
 
 use crate::ofd::FileType;
-use crate::process::Process;
+use crate::process::{Process, ProcessState};
 
 /// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
 ///
@@ -730,6 +730,98 @@ impl ProcessTable {
             .map(|(&pid, _)| pid)
             .collect()
     }
+
+    /// Return the recorded parent pid for a process.
+    pub fn parent_pid(&self, pid: u32) -> Option<u32> {
+        self.processes.get(&pid).map(|proc| proc.ppid)
+    }
+
+    /// Mark a process as terminated by a host-observed signal death.
+    ///
+    /// Used when the worker dies without reaching the normal `SYS_EXIT`
+    /// path. The process remains in the table as an Exited zombie until its
+    /// parent reaps it, so wait semantics stay kernel-owned.
+    pub fn mark_process_signaled(&mut self, pid: u32, signum: u32) -> Result<(), Errno> {
+        let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
+        proc.state = ProcessState::Exited;
+        proc.exit_status = 128 + signum as i32;
+        Ok(())
+    }
+
+    /// Poll for a waitable child owned by `parent_pid` matching a waitpid-style
+    /// target.
+    ///
+    /// Returns:
+    /// - `Ok(Some((child_pid, wait_status)))` when a matching zombie exists.
+    /// - `Ok(None)` when a matching child exists but is still running.
+    /// - `Err(ECHILD)` when no matching child belongs to the parent.
+    pub fn poll_waitable_child(
+        &self,
+        parent_pid: u32,
+        target_pid: i32,
+    ) -> Result<Option<(u32, i32)>, Errno> {
+        let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+        let mut saw_matching_child = false;
+
+        for (&child_pid, child) in &self.processes {
+            if child.ppid != parent_pid {
+                continue;
+            }
+            if !Self::child_matches_wait_target(child_pid, child, target_pid, parent.pgid) {
+                continue;
+            }
+            saw_matching_child = true;
+            if child.state == ProcessState::Exited {
+                return Ok(Some((
+                    child_pid,
+                    Self::wait_status_from_exit_status(child.exit_status),
+                )));
+            }
+        }
+
+        if saw_matching_child {
+            Ok(None)
+        } else {
+            Err(Errno::ECHILD)
+        }
+    }
+
+    /// True when `child_pid` is an exited direct child of `parent_pid`.
+    pub fn is_exited_child_of(&self, parent_pid: u32, child_pid: u32) -> bool {
+        self.processes
+            .get(&child_pid)
+            .map(|child| child.ppid == parent_pid && child.state == ProcessState::Exited)
+            .unwrap_or(false)
+    }
+
+    fn child_matches_wait_target(
+        child_pid: u32,
+        child: &Process,
+        target_pid: i32,
+        parent_pgid: u32,
+    ) -> bool {
+        if target_pid > 0 {
+            return child_pid == target_pid as u32;
+        }
+        if target_pid == -1 {
+            return true;
+        }
+        if target_pid == 0 {
+            return child.pgid == parent_pgid;
+        }
+        let Some(target_pgid) = target_pid.checked_neg().map(|pid| pid as u32) else {
+            return false;
+        };
+        child.pgid == target_pgid
+    }
+
+    fn wait_status_from_exit_status(exit_status: i32) -> i32 {
+        if exit_status >= 128 {
+            (exit_status - 128) & 0x7f
+        } else {
+            (exit_status & 0xff) << 8
+        }
+    }
 }
 
 /// Global process table wrapper for static storage.
@@ -756,4 +848,76 @@ pub fn current_tid() -> u32 {
 #[inline]
 pub fn current_pid() -> u32 {
     unsafe { (*GLOBAL_PROCESS_TABLE.0.get()).current_pid() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_waitable_child_returns_exited_child_status() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        let child = table.processes.get_mut(&11).unwrap();
+        child.ppid = 10;
+        child.state = ProcessState::Exited;
+        child.exit_status = 7;
+
+        assert_eq!(
+            table.poll_waitable_child(10, -1).unwrap(),
+            Some((11, 7 << 8))
+        );
+    }
+
+    #[test]
+    fn poll_waitable_child_encodes_signal_status() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        table.mark_process_signaled(11, 15).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
+
+        assert_eq!(table.poll_waitable_child(10, 11).unwrap(), Some((11, 15)));
+    }
+
+    #[test]
+    fn poll_waitable_child_distinguishes_running_from_no_child() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
+
+        assert_eq!(table.poll_waitable_child(10, -1).unwrap(), None);
+        assert_eq!(table.poll_waitable_child(10, 12), Err(Errno::ECHILD));
+    }
+
+    #[test]
+    fn poll_waitable_child_matches_process_groups() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.processes.get_mut(&10).unwrap().pgid = 20;
+        table.create_process(11).unwrap();
+        {
+            let child = table.processes.get_mut(&11).unwrap();
+            child.ppid = 10;
+            child.pgid = 20;
+            child.state = ProcessState::Exited;
+            child.exit_status = 0;
+        }
+        table.create_process(12).unwrap();
+        {
+            let child = table.processes.get_mut(&12).unwrap();
+            child.ppid = 10;
+            child.pgid = 30;
+            child.state = ProcessState::Exited;
+            child.exit_status = 1;
+        }
+
+        assert_eq!(table.poll_waitable_child(10, 0).unwrap(), Some((11, 0)));
+        assert_eq!(
+            table.poll_waitable_child(10, -30).unwrap(),
+            Some((12, 1 << 8))
+        );
+    }
 }

@@ -135,12 +135,6 @@ const SYS_WAITID = ABI_SYSCALLS.Waitid;
  * See libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c for the design. */
 const SYS_THREAD_CANCEL = ABI_SYSCALLS.ThreadCancel;
 
-function exitCodeFromWaitStatus(waitStatus: number): number {
-  const signal = waitStatus & 0x7f;
-  if (signal !== 0) return 128 + signal;
-  return (waitStatus >> 8) & 0xff;
-}
-
 /** waitpid options */
 const WNOHANG = 1;
 const WNOWAIT = 0x1000000;
@@ -423,6 +417,11 @@ interface ProcessRegistration {
   ptrWidth: 4 | 8;
 }
 
+type WaitPollResult =
+  | { kind: "exited"; childPid: number; waitStatus: number }
+  | { kind: "running" }
+  | { kind: "error"; errno: number };
+
 /**
  * Context describing a fork() initiated from a non-main thread. Set on
  * `onFork`'s optional `threadFork` arg by `handleFork` when it detects
@@ -623,12 +622,7 @@ export class CentralizedKernelWorker {
   private tcpScratchOffset = 0;
   /** Node.js net module (loaded dynamically for browser compatibility) */
   private netModule: typeof import("net") | null = null;
-  /** Parent-child process tracking for waitpid */
-  private childToParent = new Map<number, number>();
-  private parentToChildren = new Map<number, Set<number>>();
-  /** Exit statuses of children not yet wait()-ed for: childPid → waitStatus */
-  private exitedChildren = new Map<number, number>();
-  /** Deferred waitpid/waitid completions */
+  /** Deferred waitpid/waitid completions. Child matching/reap state is Rust-owned. */
   private waitingForChild: Array<{
     parentPid: number;
     channel: ChannelInfo;
@@ -2214,9 +2208,7 @@ export class CentralizedKernelWorker {
     if (getExitStatus) {
       const exitStatus = getExitStatus(channel.pid);
       if (exitStatus >= 128) {
-        const signum = exitStatus - 128;
-        const waitStatus = signum & 0x7f;
-        this.handleProcessTerminated(channel, waitStatus);
+        this.handleProcessTerminated(channel);
         return;
       }
     }
@@ -2272,9 +2264,8 @@ export class CentralizedKernelWorker {
     //       blocked in a non-blocking-retry path (most importantly
     //       pendingSleeps), call handleProcessTerminated directly so the
     //       parent's wait4 actually sees the killed child. Without this,
-    //       a `kill` of a sleeping child silently reaps the process at the
-    //       kernel level but leaves it in parentToChildren forever — the
-    //       parent's wait4(-1) then blocks indefinitely.
+    //       a `kill` of a sleeping child can leave the parent blocked even
+    //       though Rust has marked the child as an Exited zombie.
     if (errVal === 0 && syscallNr === SYS_KILL) {
       this.scheduleWakeBlockedRetries();
       this.reapKilledProcessesAfterSyscall();
@@ -3540,11 +3531,7 @@ export class CentralizedKernelWorker {
     if (getExitStatus) {
       const exitStatus = getExitStatus(channel.pid);
       if (exitStatus >= 128) {
-        // Process was killed by a signal — encode as signal death wait status.
-        // Exit status from deliver_pending_signals is 128+signum.
-        const signum = exitStatus - 128;
-        const waitStatus = signum & 0x7f;
-        this.handleProcessTerminated(channel, waitStatus);
+        this.handleProcessTerminated(channel);
         return;
       }
     }
@@ -5321,15 +5308,6 @@ export class CentralizedKernelWorker {
       ((pid: number) => number) | undefined;
     if (resetSignalMask) resetSignalMask(childPid);
 
-    // Track parent-child relationship for waitpid
-    this.childToParent.set(childPid, parentPid);
-    let children = this.parentToChildren.get(parentPid);
-    if (!children) {
-      children = new Set();
-      this.parentToChildren.set(parentPid, children);
-    }
-    children.add(childPid);
-
     // If the syscall arrived on a thread channel (registered via clone()
     // with tid > 0), the wpk_fork save buffer is at THIS channel's offset
     // and the unwind frames are rooted in the pthread entry function, not
@@ -5526,21 +5504,12 @@ export class CentralizedKernelWorker {
     // parent can't collide with the kernel's allocation.
     if (childPid >= this.nextChildPid) this.nextChildPid = childPid + 1;
 
-    // Track parent-child for waitpid.
-    this.childToParent.set(childPid, parentPid);
-    let children = this.parentToChildren.get(parentPid);
-    if (!children) { children = new Set(); this.parentToChildren.set(parentPid, children); }
-    children.add(childPid);
-
     // ── Launch the worker async (with already-resolved bytes) ──
     this.callbacks.onSpawn!(childPid, programBytes, argv, envp).then((rc) => {
       if (rc < 0) {
         const removeProcess = this.kernelInstance!.exports.kernel_remove_process as
           (pid: number) => number;
         removeProcess(childPid);
-        this.childToParent.delete(childPid);
-        const set = this.parentToChildren.get(parentPid);
-        if (set) set.delete(childPid);
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, (-rc) >>> 0);
         return;
       }
@@ -5554,9 +5523,6 @@ export class CentralizedKernelWorker {
       const removeProcess = this.kernelInstance!.exports.kernel_remove_process as
         (pid: number) => number;
       removeProcess(childPid);
-      this.childToParent.delete(childPid);
-      const set = this.parentToChildren.get(parentPid);
-      if (set) set.delete(childPid);
       this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 5); // EIO
     });
   }
@@ -5909,46 +5875,7 @@ export class CentralizedKernelWorker {
       return;
     }
     this.hostReaped.add(exitingPid);
-    const parentPid = this.childToParent.get(exitingPid);
-    if (parentPid !== undefined) {
-      // Check if the kernel marked this process as killed by a signal.
-      // deliver_pending_signals sets exit_status = 128 + signum for default
-      // Terminate/CoreDump actions. We need to encode the wait status
-      // differently for signal death vs normal exit.
-      const getExitStatus = this.kernelInstance!.exports
-        .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
-      const kernelExitStatus = getExitStatus ? getExitStatus(exitingPid) : -1;
-      let waitStatus: number;
-      if (kernelExitStatus >= 128) {
-        // Signal death: encode as signal number in low 7 bits
-        const signum = kernelExitStatus - 128;
-        waitStatus = signum & 0x7f;
-      } else {
-        // Normal exit: exitStatus << 8 (matches WIFEXITED/WEXITSTATUS macros)
-        waitStatus = (exitStatus & 0xff) << 8;
-      }
-      // Check if parent has SA_NOCLDWAIT set (or SIGCHLD set to SIG_IGN).
-      // If so, auto-reap the child — don't store as zombie, and per POSIX,
-      // don't send SIGCHLD.
-      const hasNoCldWait = this.kernelInstance!.exports
-        .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
-      const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
-
-      if (!autoReap) {
-        this.exitedChildren.set(exitingPid, waitStatus);
-
-        // Queue SIGCHLD on parent process in the kernel.
-        // kernel_kill handles cross-process signal delivery in centralized mode.
-        this.sendSignalToProcess(parentPid, SIGCHLD);
-
-        // Wake any parent blocked in waitpid
-        this.wakeWaitingParent(parentPid, exitingPid, waitStatus);
-      } else {
-        // Auto-reap: clean up child tracking without leaving a zombie.
-        // SIGCHLD is suppressed per POSIX when SA_NOCLDWAIT is set.
-        this.childToParent.delete(exitingPid);
-      }
-    }
+    this.notifyParentOfExitedProcess(exitingPid);
 
     // Complete the channel so the worker unblocks from Atomics.wait().
     // Without this, the worker stays blocked and Node.js aborts when
@@ -5967,9 +5894,10 @@ export class CentralizedKernelWorker {
 
   /**
    * Handle a process that was terminated by a signal while blocking on a
-   * syscall retry. Records the wait status and notifies the parent.
+   * syscall retry. Rust already owns the Exited state and wait status; the
+   * host only wakes the parent waiter and terminates the Worker.
    */
-  private handleProcessTerminated(channel: ChannelInfo, waitStatus: number): void {
+  private handleProcessTerminated(channel: ChannelInfo): void {
     const exitingPid = channel.pid;
     // Idempotency guard — both handleExit and reapKilledProcessesAfterSyscall
     // can route here for the same pid; do the parent-wakeup work exactly
@@ -5978,20 +5906,7 @@ export class CentralizedKernelWorker {
     // but defensive) starts fresh.
     if (this.hostReaped.has(exitingPid)) return;
     this.hostReaped.add(exitingPid);
-    const parentPid = this.childToParent.get(exitingPid);
-    if (parentPid !== undefined) {
-      const hasNoCldWait = this.kernelInstance!.exports
-        .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
-      const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
-
-      if (!autoReap) {
-        this.exitedChildren.set(exitingPid, waitStatus);
-        this.sendSignalToProcess(parentPid, SIGCHLD);
-        this.wakeWaitingParent(parentPid, exitingPid, waitStatus);
-      } else {
-        this.childToParent.delete(exitingPid);
-      }
-    }
+    this.notifyParentOfExitedProcess(exitingPid);
 
     // Clean up per-process state
     this.sharedMappings.delete(exitingPid);
@@ -6000,7 +5915,10 @@ export class CentralizedKernelWorker {
     // and waking it would cause the C code to continue executing.
     // onExit will terminate the worker.
     if (this.callbacks.onExit) {
-      this.callbacks.onExit(exitingPid, exitCodeFromWaitStatus(waitStatus));
+      const getExitStatus = this.kernelInstance!.exports
+        .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
+      const exitStatus = getExitStatus ? getExitStatus(exitingPid) : -1;
+      this.callbacks.onExit(exitingPid, exitStatus >= 128 ? exitStatus : -1);
     }
   }
 
@@ -6017,9 +5935,8 @@ export class CentralizedKernelWorker {
    * deactivated the process locally, but the kernel never marked the
    * pid as a zombie or woke the parent.
    *
-   * Synthesizes a WIFSIGNALED-style wait status (signum in the low
-   * 7 bits) using `signum` (default `SIGSEGV` = 11), records the
-   * exit, queues `SIGCHLD` on the parent, and wakes any parked
+   * Marks the process as signal-terminated in Rust using `signum` (default
+   * `SIGSEGV` = 11), queues `SIGCHLD` on the parent, and wakes any parked
    * `waitpid` / `waitid`.
    *
    * Idempotent via `hostReaped`: if the kernel already saw a clean
@@ -6030,22 +5947,11 @@ export class CentralizedKernelWorker {
    */
   notifyHostProcessCrashed(pid: number, signum: number = 11 /* SIGSEGV */): void {
     if (this.hostReaped.has(pid)) return;
+    const markSignaled = this.kernelInstance!.exports.kernel_mark_process_signaled as
+      ((pid: number, signum: number) => number) | undefined;
+    if (markSignaled && markSignaled(pid, signum) < 0) return;
     this.hostReaped.add(pid);
-    const waitStatus = signum & 0x7f;
-    const parentPid = this.childToParent.get(pid);
-    if (parentPid !== undefined) {
-      const hasNoCldWait = this.kernelInstance!.exports
-        .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
-      const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
-
-      if (!autoReap) {
-        this.exitedChildren.set(pid, waitStatus);
-        this.sendSignalToProcess(parentPid, SIGCHLD);
-        this.wakeWaitingParent(parentPid, pid, waitStatus);
-      } else {
-        this.childToParent.delete(pid);
-      }
-    }
+    this.notifyParentOfExitedProcess(pid);
     this.sharedMappings.delete(pid);
   }
 
@@ -6054,8 +5960,8 @@ export class CentralizedKernelWorker {
    * Exited that the host hasn't reaped. Without this, a `kill` of a
    * sleeping child (or any process not blocked in poll/select/pipe — those
    * are handled by scheduleWakeBlockedRetries) silently reaps the process
-   * at the kernel level but leaves it in parentToChildren — wait4(-1)
-   * then blocks forever.
+   * at the kernel level but can leave the host-side blocked wait queue
+   * asleep — wait4(-1) then blocks forever.
    *
    * The kernel sets exit_status to 128 + signum for default Terminate
    * actions. Anything < 0 means the process is still alive.
@@ -6074,9 +5980,6 @@ export class CentralizedKernelWorker {
       if (status < 128) continue;           // still alive, or normally exiting via SYS_EXIT
       if (this.hostReaped.has(pid)) continue; // already reaped this generation
 
-      const sigKilled = status - 128;
-      const waitStatus = sigKilled & 0x7f;
-
       // Cancel any pending blocking-syscall timers — the process is gone.
       const ps = this.pendingSleeps.get(pid);
       if (ps) { clearTimeout(ps.timer); this.pendingSleeps.delete(pid); }
@@ -6086,7 +5989,7 @@ export class CentralizedKernelWorker {
       // handleProcessTerminated re-checks hostReaped and adds the pid
       // itself, so passing through here is idempotent if two reap
       // events fire close together.
-      if (ch) this.handleProcessTerminated(ch, waitStatus);
+      if (ch) this.handleProcessTerminated(ch);
     }
   }
   /** Track pids the host has already reaped (prevents double-reaping
@@ -6105,28 +6008,15 @@ export class CentralizedKernelWorker {
     const options = origArgs[2] >>> 0;
     const parentPid = channel.pid;
 
-    const children = this.parentToChildren.get(parentPid);
-    if (!children || children.size === 0) {
-      // No children at all → ECHILD
-      this.completeWaitpid(channel, origArgs, -1, 10); // ECHILD = 10
+    const poll = this.pollWaitableChild(parentPid, targetPid);
+    if (poll.kind === "error") {
+      this.completeWaitpid(channel, origArgs, -1, poll.errno);
       return;
     }
-
-    // Find a matching exited child
-    const matchedChild = this.findExitedChild(parentPid, targetPid);
-    if (matchedChild !== undefined) {
-      const waitStatus = this.exitedChildren.get(matchedChild)!;
-      this.consumeExitedChild(parentPid, matchedChild);
-      this.writeWaitStatus(channel, wstatusPtr, waitStatus);
-      this.completeWaitpid(channel, origArgs, matchedChild, 0);
-      return;
-    }
-
-    // Check if there are living children that could still exit
-    const hasLivingChild = this.hasMatchingLivingChild(parentPid, targetPid);
-    if (!hasLivingChild) {
-      // No matching child exists → ECHILD
-      this.completeWaitpid(channel, origArgs, -1, 10);
+    if (poll.kind === "exited") {
+      this.consumeExitedChild(parentPid, poll.childPid);
+      this.writeWaitStatus(channel, wstatusPtr, poll.waitStatus);
+      this.completeWaitpid(channel, origArgs, poll.childPid, 0);
       return;
     }
 
@@ -6147,74 +6037,46 @@ export class CentralizedKernelWorker {
     });
   }
 
-  /** Get the pgid of a process from the kernel's ProcessTable. */
-  private getProcessPgid(pid: number): number {
-    const fn_ = this.kernelInstance?.exports.kernel_getpgid_direct as
-      ((pid: number) => number) | undefined;
-    if (!fn_) return pid; // fallback: pgid = pid
-    const result = fn_(pid);
-    return result >= 0 ? result : pid;
+  private pollWaitableChild(parentPid: number, targetPid: number): WaitPollResult {
+    const waitPoll = this.kernelInstance!.exports.kernel_wait4_poll as
+      (parentPid: number, targetPid: number, statusPtr: bigint) => number;
+    const result = waitPoll(parentPid, targetPid, BigInt(this.scratchOffset!));
+    if (result > 0) {
+      const waitStatus = new DataView(this.kernelMemory!.buffer)
+        .getInt32(this.scratchOffset!, true);
+      return { kind: "exited", childPid: result, waitStatus };
+    }
+    if (result === 0) return { kind: "running" };
+    return { kind: "error", errno: (-result) >>> 0 };
   }
 
-  /** Check if a child matches the waitpid pid argument. */
-  private childMatchesWaitTarget(childPid: number, targetPid: number, parentPid: number): boolean {
-    if (targetPid > 0) {
-      return childPid === targetPid;
-    }
-    if (targetPid === -1) {
-      return true; // any child
-    }
-    if (targetPid === 0) {
-      // Same process group as caller
-      const parentPgid = this.getProcessPgid(parentPid);
-      const childPgid = this.getProcessPgid(childPid);
-      return childPgid === parentPgid;
-    }
-    // targetPid < -1: process group |targetPid|
-    const targetPgid = -targetPid;
-    const childPgid = this.getProcessPgid(childPid);
-    return childPgid === targetPgid;
+  private getParentPid(pid: number): number | undefined {
+    const getParentPid = this.kernelInstance!.exports.kernel_get_parent_pid as
+      (pid: number) => number;
+    const result = getParentPid(pid);
+    return result > 0 ? result : undefined;
   }
 
-  /** Find an exited child matching the waitpid pid argument. */
-  private findExitedChild(parentPid: number, targetPid: number): number | undefined {
-    const children = this.parentToChildren.get(parentPid);
-    if (!children) return undefined;
-
-    for (const childPid of children) {
-      if (this.exitedChildren.has(childPid) && this.childMatchesWaitTarget(childPid, targetPid, parentPid)) {
-        return childPid;
-      }
-    }
-    return undefined;
-  }
-
-  /** Check if there are living children matching the pid arg. */
-  private hasMatchingLivingChild(parentPid: number, targetPid: number): boolean {
-    const children = this.parentToChildren.get(parentPid);
-    if (!children) return false;
-
-    for (const childPid of children) {
-      if (!this.exitedChildren.has(childPid) && this.childMatchesWaitTarget(childPid, targetPid, parentPid)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** Remove an exited child from tracking after wait() consumes it. */
   private consumeExitedChild(parentPid: number, childPid: number): void {
-    this.exitedChildren.delete(childPid);
-    this.childToParent.delete(childPid);
-    // Now that the zombie is reaped, remove from kernel process table
-    this.removeFromKernelProcessTable(childPid);
-    const children = this.parentToChildren.get(parentPid);
-    if (children) {
-      children.delete(childPid);
-      if (children.size === 0) {
-        this.parentToChildren.delete(parentPid);
-      }
+    const reapChild = this.kernelInstance!.exports.kernel_reap_exited_child as
+      (parentPid: number, childPid: number) => number;
+    reapChild(parentPid, childPid);
+  }
+
+  private notifyParentOfExitedProcess(pid: number): void {
+    const parentPid = this.getParentPid(pid);
+    if (parentPid === undefined) return;
+
+    const hasNoCldWait = this.kernelInstance!.exports
+      .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
+    const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
+    if (autoReap) {
+      this.consumeExitedChild(parentPid, pid);
+      return;
     }
+
+    this.sendSignalToProcess(parentPid, SIGCHLD);
+    this.wakeWaitingParent(parentPid);
   }
 
   /** Write wait status to the wstatus pointer in process memory. */
@@ -6236,28 +6098,36 @@ export class CentralizedKernelWorker {
   }
 
   /** Wake a parent blocked in waitpid/waitid when a child exits. */
-  private wakeWaitingParent(parentPid: number, childPid: number, waitStatus: number): void {
-    const idx = this.waitingForChild.findIndex((w) =>
-      w.parentPid === parentPid && this.childMatchesWaitTarget(childPid, w.pid, parentPid),
-    );
-    if (idx === -1) return;
+  private wakeWaitingParent(parentPid: number): void {
+    let idx = -1;
+    let poll: WaitPollResult | undefined;
+    for (let i = 0; i < this.waitingForChild.length; i++) {
+      const waiter = this.waitingForChild[i];
+      if (waiter.parentPid !== parentPid) continue;
+      const waiterPoll = this.pollWaitableChild(waiter.parentPid, waiter.pid);
+      if (waiterPoll.kind !== "exited") continue;
+      idx = i;
+      poll = waiterPoll;
+      break;
+    }
+    if (idx === -1 || poll?.kind !== "exited") return;
 
     const waiter = this.waitingForChild[idx];
     this.waitingForChild.splice(idx, 1);
 
     if (waiter.syscallNr === SYS_WAITID) {
       // waitid: write siginfo_t, optionally consume zombie
-      this.writeSignalInfo(waiter.channel, waiter.origArgs[2], childPid, waitStatus);
+      this.writeSignalInfo(waiter.channel, waiter.origArgs[2], poll.childPid, poll.waitStatus);
       if (!(waiter.options & WNOWAIT)) {
-        this.consumeExitedChild(parentPid, childPid);
+        this.consumeExitedChild(parentPid, poll.childPid);
       }
       this.dequeueSignalForDelivery(waiter.channel);
       this.completeChannel(waiter.channel, SYS_WAITID, waiter.origArgs, undefined, 0, 0);
     } else {
       // wait4: write wstatus, consume zombie
-      this.consumeExitedChild(parentPid, childPid);
-      this.writeWaitStatus(waiter.channel, waiter.origArgs[1], waitStatus);
-      this.completeWaitpid(waiter.channel, waiter.origArgs, childPid, 0);
+      this.consumeExitedChild(parentPid, poll.childPid);
+      this.writeWaitStatus(waiter.channel, waiter.origArgs[1], poll.waitStatus);
+      this.completeWaitpid(waiter.channel, waiter.origArgs, poll.childPid, 0);
     }
   }
 
@@ -6273,14 +6143,14 @@ export class CentralizedKernelWorker {
       // Only re-check waiters targeting a specific process group (pid < -1 or pid == 0)
       if (waiter.pid > 0 || waiter.pid === -1) continue;
 
-      if (!this.hasMatchingLivingChild(waiter.parentPid, waiter.pid) &&
-          !this.findExitedChild(waiter.parentPid, waiter.pid)) {
+      const poll = this.pollWaitableChild(waiter.parentPid, waiter.pid);
+      if (poll.kind === "error") {
         // No more matching children — wake with ECHILD
         this.waitingForChild.splice(i, 1);
         if (waiter.syscallNr === SYS_WAITID) {
-          this.completeChannel(waiter.channel, SYS_WAITID, waiter.origArgs, undefined, -1, 10);
+          this.completeChannel(waiter.channel, SYS_WAITID, waiter.origArgs, undefined, -1, poll.errno);
         } else {
-          this.completeWaitpid(waiter.channel, waiter.origArgs, -1, 10); // ECHILD = 10
+          this.completeWaitpid(waiter.channel, waiter.origArgs, -1, poll.errno);
         }
       }
     }
@@ -6299,73 +6169,19 @@ export class CentralizedKernelWorker {
     const siginfoPtr = origArgs[2];
     const options = origArgs[3] >>> 0;
     const parentPid = channel.pid;
+    const waitPid = this.waitidToWaitPid(idtype, id);
 
-    const children = this.parentToChildren.get(parentPid);
-    if (!children || children.size === 0) {
-      this.completeChannel(channel, SYS_WAITID, origArgs, undefined, -1, 10); // ECHILD
+    const poll = this.pollWaitableChild(parentPid, waitPid);
+    if (poll.kind === "error") {
+      this.completeChannel(channel, SYS_WAITID, origArgs, undefined, -1, poll.errno);
       return;
     }
-
-    // Find matching exited child based on idtype
-    let matchedChild: number | undefined;
-    if (idtype === P_PID) {
-      if (children.has(id) && this.exitedChildren.has(id)) {
-        matchedChild = id;
-      }
-    } else if (idtype === P_ALL) {
-      for (const childPid of children) {
-        if (this.exitedChildren.has(childPid)) {
-          matchedChild = childPid;
-          break;
-        }
-      }
-    } else if (idtype === P_PGID) {
-      // Match children in the specified process group.
-      // id=0 means caller's own process group.
-      const targetPgid = id === 0 ? this.getProcessPgid(parentPid) : id;
-      for (const childPid of children) {
-        if (this.exitedChildren.has(childPid) && this.getProcessPgid(childPid) === targetPgid) {
-          matchedChild = childPid;
-          break;
-        }
-      }
-    }
-
-    if (matchedChild !== undefined) {
-      const waitStatus = this.exitedChildren.get(matchedChild)!;
-      this.writeSignalInfo(channel, siginfoPtr, matchedChild, waitStatus);
-
+    if (poll.kind === "exited") {
+      this.writeSignalInfo(channel, siginfoPtr, poll.childPid, poll.waitStatus);
       if (!(options & WNOWAIT)) {
-        // Consume the zombie (reap it)
-        this.consumeExitedChild(parentPid, matchedChild);
+        this.consumeExitedChild(parentPid, poll.childPid);
       }
       this.completeChannel(channel, SYS_WAITID, origArgs, undefined, 0, 0);
-      return;
-    }
-
-    // Check for living children matching the target
-    let hasLivingChild = false;
-    if (idtype === P_PID) {
-      hasLivingChild = children.has(id) && !this.exitedChildren.has(id);
-    } else if (idtype === P_PGID) {
-      const targetPgid = id === 0 ? this.getProcessPgid(parentPid) : id;
-      for (const childPid of children) {
-        if (!this.exitedChildren.has(childPid) && this.getProcessPgid(childPid) === targetPgid) {
-          hasLivingChild = true;
-          break;
-        }
-      }
-    } else {
-      for (const childPid of children) {
-        if (!this.exitedChildren.has(childPid)) {
-          hasLivingChild = true;
-          break;
-        }
-      }
-    }
-
-    if (!hasLivingChild) {
-      this.completeChannel(channel, SYS_WAITID, origArgs, undefined, -1, 10); // ECHILD
       return;
     }
 
@@ -6381,18 +6197,6 @@ export class CentralizedKernelWorker {
     }
 
     // Blocking wait: defer until a child exits.
-    // Convert idtype/id to waitpid-style pid for childMatchesWaitTarget():
-    //   P_PID  → positive pid
-    //   P_ALL  → -1 (any child)
-    //   P_PGID → 0 (caller's pgid) or -pgid (specific group)
-    let waitPid: number;
-    if (idtype === P_PID) {
-      waitPid = id;
-    } else if (idtype === P_PGID) {
-      waitPid = id === 0 ? 0 : -id;
-    } else {
-      waitPid = -1;
-    }
     this.waitingForChild.push({
       parentPid,
       channel,
@@ -6401,6 +6205,12 @@ export class CentralizedKernelWorker {
       options,
       syscallNr: SYS_WAITID,
     });
+  }
+
+  private waitidToWaitPid(idtype: number, id: number): number {
+    if (idtype === P_PID) return id;
+    if (idtype === P_PGID) return id === 0 ? 0 : -id;
+    return -1;
   }
 
   /**
@@ -7197,7 +7007,7 @@ export class CentralizedKernelWorker {
     // listener (the master doesn't accept connections, workers do).
     let candidates = alive;
     if (alive.length > 1) {
-      const children = alive.filter(t => this.childToParent.has(t.pid));
+      const children = alive.filter(t => this.getParentPid(t.pid) !== undefined);
       if (children.length > 0) {
         candidates = children;
       }

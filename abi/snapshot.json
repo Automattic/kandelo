@@ -192,11 +192,15 @@
       "__abi_version",
       "kernel_alloc_scratch",
       "kernel_create_process",
+      "kernel_get_parent_pid",
       "kernel_handle_channel",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
+      "kernel_mark_process_signaled",
+      "kernel_reap_exited_child",
       "kernel_remove_process",
-      "kernel_set_mode"
+      "kernel_set_mode",
+      "kernel_wait4_poll"
     ],
     "required_worker_features": 7,
     "version": 1,
@@ -630,6 +634,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_parent_pid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_pipe_ofds",
       "signature": "(i64,i32) -> (i32)"
     },
@@ -915,6 +924,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_mark_process_signaled",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_mkdir",
       "signature": "(i64,i32,i32) -> (i32)"
     },
@@ -1137,6 +1151,11 @@
       "kind": "func",
       "name": "kernel_realpath",
       "signature": "(i64,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_reap_exited_child",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1557,6 +1576,11 @@
       "kind": "func",
       "name": "kernel_wait4",
       "signature": "(i32,i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait4_poll",
+      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
