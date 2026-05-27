@@ -92,7 +92,7 @@ QJS_CLI_SRCS=(
 )
 
 CFLAGS=(
-    -O2
+    -Oz
     -D_GNU_SOURCE
     -DQUICKJS_NG_BUILD
     # We are NOT __wasi__ — our kernel has full POSIX support (fork, exec,
@@ -236,7 +236,8 @@ if [ "$BUILD_NODE" = "1" ]; then
     HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
     resolve_dep() {
         local name="$1"
-        (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
+        (cd "$REPO_ROOT" && env -u CC -u CXX -u AR -u CFLAGS -u CXXFLAGS \
+            cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve "$name")
     }
 
     OPENSSL_PREFIX="${WASM_POSIX_DEP_OPENSSL_DIR:-}"

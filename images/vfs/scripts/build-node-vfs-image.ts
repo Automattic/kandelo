@@ -5,7 +5,7 @@
  * Layout produced:
  *   Shell VFS base         — dash + shell utility symlinks/config/lazy archives
  *   /usr/local/lib/npm/...   — full npm dist (bin/npm-cli.js + lib + node_modules)
- *   /usr/bin/npm          — wrapper that runs npm through the node binary
+ *   /usr/bin/npm          — wrapper that runs bundled npm through node
  *   /work/package.json       — empty starter package, used as --prefix and HOME
  *   /tmp/                    — writable, mode 0o777
  *
@@ -16,7 +16,7 @@
  *
  * Usage: npx tsx images/vfs/scripts/build-node-vfs-image.ts
  */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
@@ -41,6 +41,7 @@ import { nodeGuide } from "./kandelo-demo-guides";
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
 const NPM_DIST = join(REPO_ROOT, "packages", "registry", "npm", "dist");
+const NODE_BROWSER_INSTALL = join(SCRIPT_DIR, "node-browser-install.js");
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "node-vfs.vfs.zst");
 
 const NPM_MOUNT = "/usr/local/lib/npm";
@@ -88,8 +89,98 @@ async function main() {
   );
   writeVfsFile(
     fs,
+    "/work/package-lock.json",
+    JSON.stringify({
+      name: "demo",
+      version: "0.0.1",
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        "": {
+          name: "demo",
+          version: "0.0.1",
+        },
+      },
+    }, null, 2) + "\n",
+    0o644,
+  );
+  fs.chown("/work/package.json", 1000, 1000);
+  fs.chown("/work/package-lock.json", 1000, 1000);
+  writeVfsFile(
+    fs,
+    "/usr/local/lib/npm/bin/npm-browser-shim.js",
+    `#!/usr/bin/env node
+process.env.npm_config_update_notifier = process.env.npm_config_update_notifier || "false";
+const browserInstall = require("/usr/local/lib/npm/bin/npm-browser-install.js");
+if (browserInstall.shouldHandle(process.argv)) {
+  browserInstall.run(process.argv).catch((err) => {
+    process.stderr.write((err && err.stack) ? err.stack : String(err));
+    process.stderr.write("\\n");
+    process.exit(1);
+  });
+} else {
+const mapWorkspacesPath = require.resolve("@npmcli/map-workspaces");
+const mapWorkspaces = require(mapWorkspacesPath);
+const fastMapWorkspaces = (opts = {}) => {
+  const workspaces = opts.pkg && opts.pkg.workspaces;
+  const declaration = workspaces && (
+    Array.isArray(workspaces.packages) ? workspaces.packages : workspaces
+  );
+  if (!declaration || (Array.isArray(declaration) && declaration.length === 0)) {
+    return Promise.resolve(new Map());
+  }
+  return mapWorkspaces(opts);
+};
+fastMapWorkspaces.virtual = mapWorkspaces.virtual;
+require.cache[mapWorkspacesPath].exports = fastMapWorkspaces;
+const preloads = [
+  "/usr/local/lib/npm/node_modules/minipass-flush/node_modules/minipass",
+  "/usr/local/lib/npm/node_modules/minipass-pipeline/node_modules/minipass",
+  "/usr/local/lib/npm/node_modules/minipass-sized/node_modules/minipass",
+  "/usr/local/lib/npm/node_modules/minizlib/node_modules/minipass",
+  "/usr/local/lib/npm/node_modules/tar/node_modules/minipass",
+  "/usr/local/lib/npm/node_modules/tar/node_modules/fs-minipass/node_modules/minipass",
+  "/usr/local/lib/npm/node_modules/cacache",
+  "/usr/local/lib/npm/node_modules/make-fetch-happen",
+  "/usr/local/lib/npm/node_modules/@npmcli/arborist",
+  "/usr/local/lib/npm/lib/commands/install.js",
+  "/usr/local/lib/npm/node_modules/unique-filename",
+  "/usr/local/lib/npm/node_modules/unique-slug",
+];
+for (const id of preloads) {
+  try { require(id); } catch {}
+}
+try {
+  const Arborist = require("/usr/local/lib/npm/node_modules/@npmcli/arborist");
+  const setWorkspaces = Symbol.for("setWorkspaces");
+  const originalSetWorkspaces = Arborist.prototype[setWorkspaces];
+  Arborist.prototype[setWorkspaces] = function (node) {
+    const workspaces = node && node.package && node.package.workspaces;
+    const declaration = workspaces && (
+      Array.isArray(workspaces.packages) ? workspaces.packages : workspaces
+    );
+    if (!declaration || (Array.isArray(declaration) && declaration.length === 0)) {
+      return node;
+    }
+    return originalSetWorkspaces.call(this, node);
+  };
+} catch {}
+process.argv[1] = "/usr/local/lib/npm/bin/npm-cli.js";
+require("/usr/local/lib/npm/bin/npm-cli.js");
+}
+`,
+    0o755,
+  );
+  writeVfsFile(
+    fs,
+    "/usr/local/lib/npm/bin/npm-browser-install.js",
+    readFileSync(NODE_BROWSER_INSTALL, "utf8"),
+    0o644,
+  );
+  writeVfsFile(
+    fs,
     "/usr/bin/npm",
-    "#!/bin/sh\nexec node /usr/local/lib/npm/bin/npm-cli.js \"$@\"\n",
+    "#!/bin/sh\nexport npm_config_update_notifier=false\nexec node /usr/local/lib/npm/bin/npm-browser-shim.js \"$@\"\n",
     0o755,
   );
   writeVfsFile(

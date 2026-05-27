@@ -4014,6 +4014,29 @@ const _builtinModules = {
             return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
         },
     },
+    // npm uses ci-info only to disable CI-hostile behaviour such as update
+    // notifications. Browser demos are never CI environments from the guest
+    // process' perspective, and loading ci-info's vendor table costs enough
+    // QuickJS stack in browser workers to trip Chrome's wasm call limit.
+    'ci-info': {
+        isCI: false,
+        name: null,
+        isPR: null,
+        id: null,
+    },
+    // minipass-fetch treats `encoding` as an optional helper for
+    // Body#textConverted(). Loading the package pulls in iconv-lite's
+    // streaming/table loader, which is unnecessary for npm's registry JSON
+    // path and costs too much browser wasm stack. Provide the small API npm
+    // needs: convert input to a Buffer, preserving UTF-8 bytes.
+    'encoding': {
+        convert(str, _to, _from) {
+            if (str == null) return Buffer.alloc(0);
+            if (Buffer.isBuffer(str)) return str;
+            if (str instanceof Uint8Array || str instanceof ArrayBuffer) return Buffer.from(str);
+            return Buffer.from(String(str), 'utf8');
+        },
+    },
 };
 
 // Node exposes `node:module` as the CJS Module class itself: a
@@ -4077,10 +4100,13 @@ function _resolvePackageMain(pkgDir) {
             const mainPath = path.resolve(pkgDir, main);
             if (_isReg(mainPath)) return mainPath;
             if (_isReg(mainPath + '.js')) return mainPath + '.js';
+            if (_isReg(mainPath + '.json')) return mainPath + '.json';
             if (_isReg(mainPath + '/index.js')) return mainPath + '/index.js';
+            if (_isReg(mainPath + '/index.json')) return mainPath + '/index.json';
         } catch {}
     }
     if (_isReg(pkgDir + '/index.js')) return pkgDir + '/index.js';
+    if (_isReg(pkgDir + '/index.json')) return pkgDir + '/index.json';
     return null;
 }
 
@@ -4091,7 +4117,12 @@ function _resolveFile(id, basedir) {
         id === '.' || id === '..';
     if (isRelOrAbs) {
         const baseAbs = id.startsWith('/') ? id : basedir + '/' + id;
-        const norm = path.normalize(baseAbs);
+        const norm = (
+            id.startsWith('./') &&
+            id.indexOf('..') === -1 &&
+            id.indexOf('//') === -1 &&
+            basedir !== '/'
+        ) ? basedir + '/' + id.slice(2) : path.normalize(baseAbs);
         // 1. exact file
         if (_isReg(norm)) return norm;
         // 2. file + .js / .json
@@ -4133,6 +4164,201 @@ function _resolveFile(id, basedir) {
 // keyed by absolute resolved path. Without this, circular requires loop
 // forever (each module gets its own cache and re-evaluates the cycle).
 const _moduleCache = {};
+const _resolutionCache = {};
+const _functionCache = {};
+const _preloadedPrelude = {};
+
+function _compileCommonJSFunction(resolved, source) {
+    if (_functionCache[resolved]) return _functionCache[resolved];
+    if (source.startsWith('#!')) {
+        const nl = source.indexOf('\n');
+        source = (nl === -1) ? '' : '//' + source.slice(2, nl) + source.slice(nl);
+    }
+    let fn;
+    try {
+        fn = source.includes('import(') || source.includes('import (')
+            ? _nodeNative.evalScriptAsFunction(
+                '(function (exports, require, module, __filename, __dirname) {\n' +
+                    source +
+                    '\n})',
+                resolved
+            )
+            : new Function(
+                'exports',
+                'require',
+                'module',
+                '__filename',
+                '__dirname',
+                source
+            );
+    } catch (e) {
+        try { e.message = e.message + ` while compiling ${resolved}`; } catch {}
+        throw e;
+    }
+    _functionCache[resolved] = fn;
+    return fn;
+}
+
+function _collectPreloadRequireIds(source) {
+    const ids = [];
+    const seen = {};
+    const add = (id) => {
+        if (!seen[id]) {
+            seen[id] = true;
+            ids.push(id);
+        }
+    };
+    const isIdent = (ch) => !!ch && (
+        (ch >= 'a' && ch <= 'z') ||
+        (ch >= 'A' && ch <= 'Z') ||
+        (ch >= '0' && ch <= '9') ||
+        ch === '_' ||
+        ch === '$'
+    );
+    const skipQuoted = (i, quote) => {
+        i++;
+        while (i < source.length) {
+            const ch = source[i];
+            if (ch === '\\') {
+                i += 2;
+                continue;
+            }
+            if (ch === quote) return i + 1;
+            i++;
+        }
+        return i;
+    };
+    const skipLineComment = (i) => {
+        i += 2;
+        while (i < source.length && source[i] !== '\n') i++;
+        return i;
+    };
+    const skipBlockComment = (i) => {
+        i += 2;
+        while (i + 1 < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
+        return Math.min(source.length, i + 2);
+    };
+
+    let i = 0;
+    while (i < source.length) {
+        const ch = source[i];
+        if (ch === '"' || ch === "'" || ch === '`') {
+            i = skipQuoted(i, ch);
+            continue;
+        }
+        if (ch === '/' && source[i + 1] === '/') {
+            i = skipLineComment(i);
+            continue;
+        }
+        if (ch === '/' && source[i + 1] === '*') {
+            i = skipBlockComment(i);
+            continue;
+        }
+        if (
+            source.startsWith('require', i) &&
+            !isIdent(source[i - 1]) &&
+            !isIdent(source[i + 7])
+        ) {
+            let j = i + 7;
+            while (/\s/.test(source[j] || '')) j++;
+            if (source[j] === '(') {
+                j++;
+                while (/\s/.test(source[j] || '')) j++;
+                const quote = source[j];
+                if (quote === '"' || quote === "'") {
+                    j++;
+                    let id = '';
+                    let ok = false;
+                    while (j < source.length) {
+                        const c = source[j];
+                        if (c === '\\') {
+                            id += source[j + 1] || '';
+                            j += 2;
+                            continue;
+                        }
+                        if (c === quote) {
+                            ok = true;
+                            break;
+                        }
+                        id += c;
+                        j++;
+                    }
+                    if (ok) add(id);
+                }
+            }
+        }
+        i++;
+    }
+    return ids;
+}
+
+function _resolveForRequire(parentResolved, id) {
+    let name = id;
+    if (name.startsWith('node:')) name = name.slice(5);
+    if (_builtinModules[name] !== undefined) return null;
+
+    const basedir = path.dirname(parentResolved);
+    const cacheKey = basedir + '\0' + id;
+    let resolved = _resolutionCache[cacheKey];
+    if (!resolved) {
+        resolved = _resolveFile(id, basedir);
+        if (resolved) _resolutionCache[cacheKey] = resolved;
+    }
+    return resolved;
+}
+
+function _preloadPreludeRequires(resolved, source) {
+    if (_preloadedPrelude[resolved]) return;
+    const nodes = [];
+    const seen = {};
+
+    const addNode = (nodeResolved, nodeSource, parentResolved, requestId) => {
+        if (seen[nodeResolved]) return false;
+        seen[nodeResolved] = true;
+        _preloadedPrelude[nodeResolved] = true;
+        try {
+            _compileCommonJSFunction(nodeResolved, nodeSource);
+        } catch {
+            return false;
+        }
+        nodes.push({
+            resolved: nodeResolved,
+            parentResolved,
+            requestId,
+            ids: _collectPreloadRequireIds(nodeSource),
+        });
+        return true;
+    };
+
+    addNode(resolved, source, null, null);
+    for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        for (const id of node.ids) {
+            const childResolved = _resolveForRequire(node.resolved, id);
+            if (!childResolved || _moduleCache[childResolved]) {
+                continue;
+            }
+            if (childResolved.endsWith('.json')) {
+                const jsonSource = std.loadFile(childResolved);
+                if (jsonSource !== null) {
+                    _moduleCache[childResolved] = { exports: JSON.parse(jsonSource) };
+                }
+                continue;
+            }
+            const childSource = std.loadFile(childResolved);
+            if (childSource === null) continue;
+            addNode(childResolved, childSource, node.resolved, id);
+        }
+    }
+
+    for (let i = nodes.length - 1; i > 0; i--) {
+        const node = nodes[i];
+        if (_moduleCache[node.resolved]) continue;
+        try {
+            _makeRequire(node.parentResolved)(node.requestId);
+        } catch {}
+    }
+}
 
 function _makeRequire(filename) {
     const basedir = path.dirname(filename || process.cwd() + '/repl');
@@ -4146,7 +4372,41 @@ function _makeRequire(filename) {
         }
 
         // Resolve file path
-        const resolved = _resolveFile(id, basedir);
+        const cacheKey = basedir + '\0' + id;
+        let resolved = _resolutionCache[cacheKey];
+        if (!resolved) {
+            if (
+                id.startsWith('./') &&
+                id.indexOf('..') === -1 &&
+                id.indexOf('//') === -1 &&
+                basedir !== '/'
+            ) {
+                const norm = basedir + '/' + id.slice(2);
+                let st, err;
+                [st, err] = os.stat(norm);
+                if (err === 0 && (st.mode & 0o170000) === 0o100000) {
+                    resolved = norm;
+                } else if (!id.endsWith('.js') && !id.endsWith('.json') && !id.endsWith('.mjs') && !id.endsWith('.cjs')) {
+                    [st, err] = os.stat(norm + '.js');
+                    if (err === 0 && (st.mode & 0o170000) === 0o100000) {
+                        resolved = norm + '.js';
+                    } else {
+                        [st, err] = os.stat(norm + '.json');
+                        if (err === 0 && (st.mode & 0o170000) === 0o100000) {
+                            resolved = norm + '.json';
+                        }
+                    }
+                }
+                if (!resolved) {
+                    [st, err] = os.stat(norm);
+                    if (err === 0 && (st.mode & 0o170000) === 0o40000) {
+                        resolved = _resolvePackageMain(norm);
+                    }
+                }
+            }
+            if (!resolved) resolved = _resolveFile(id, basedir);
+            if (resolved) _resolutionCache[cacheKey] = resolved;
+        }
         if (!resolved) {
             const err = new Error(`Cannot find module '${id}'`);
             err.code = 'MODULE_NOT_FOUND';
@@ -4154,7 +4414,9 @@ function _makeRequire(filename) {
         }
 
         // Check cache
-        if (_moduleCache[resolved]) return _moduleCache[resolved].exports;
+        if (_moduleCache[resolved]) {
+            return _moduleCache[resolved].exports;
+        }
 
         // Load and execute
         const source = std.loadFile(resolved);
@@ -4181,18 +4443,15 @@ function _makeRequire(filename) {
         };
         _moduleCache[resolved] = mod;
 
-        // Wrap and execute. Compile via evalScriptAsFunction (not `new Function`)
-        // so the wrapped script's [[ScriptOrModule]] carries `resolved` — that's
-        // what JS_GetScriptOrModuleName returns to the C-side module normalizer
-        // when this body calls dynamic `import()`. Without it, bare specifiers
-        // (`import('chalk')`) can't tell which node_modules tree to walk.
+        // Most CommonJS modules can compile as a direct function body, which
+        // uses much less native stack in browser wasm workers than parsing an
+        // extra wrapper expression. Modules that contain dynamic import still
+        // need evalScriptAsFunction so their [[ScriptOrModule]] carries
+        // `resolved`; the C-side module normalizer uses that filename to
+        // resolve bare specifiers such as `import('chalk')`.
         const dirname = path.dirname(resolved);
-        const wrappedFn = _nodeNative.evalScriptAsFunction(
-            '(function (exports, require, module, __filename, __dirname) {\n' +
-                source +
-                '\n})',
-            resolved
-        );
+        const wrappedFn = _compileCommonJSFunction(resolved, source);
+        _preloadPreludeRequires(resolved, source);
 
         const childRequire = _makeRequire(resolved);
         try {

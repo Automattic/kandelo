@@ -18,7 +18,7 @@ const presetsEl = document.getElementById("presets") as HTMLSelectElement;
 const clearBtn = document.getElementById("clear") as HTMLButtonElement;
 
 const VFS_IMAGE_URL = nodeVfsUrl;
-const NPM_CLI = "/usr/local/lib/npm/bin/npm-cli.js";
+const NPM_CLI = "/usr/local/lib/npm/bin/npm-browser-shim.js";
 const PROMPT = "\x1b[32m$\x1b[0m ";
 
 const decoder = new TextDecoder();
@@ -36,6 +36,7 @@ const NODE_ENV = [
   "PATH=/usr/local/bin:/usr/bin:/bin",
   "USER=user",
   "LOGNAME=user",
+  "npm_config_update_notifier=false",
 ];
 
 function prepareNodeFs(fs: MemoryFileSystem): void {
