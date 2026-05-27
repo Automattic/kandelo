@@ -18,6 +18,7 @@ depends_on = [
     "dash@0.5.12",
     "coreutils@9.6",
     "dinit@0.19.4",
+    "msmtpd@1.8.32",
 ]
 
 [source]

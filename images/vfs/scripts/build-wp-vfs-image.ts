@@ -2,7 +2,8 @@
  * Build a fully-bootable VFS image for the WordPress browser demo.
  * dinit (PID 1) brings up:
  *
- *   wp-config-init (internal) → php-fpm (process) → nginx (process)
+ *   wp-config-init (internal) + smtp-capture (process)
+ *       → php-fpm (process) → nginx (process)
  *
  * The browser host overwrites wp-config.php with the page-supplied
  * @@APP_PATH@@ and @@PROTO@@ values before dinit starts. Keeping that
@@ -28,6 +29,11 @@ import {
   webPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
+import {
+  populateSmtpCaptureConfig,
+  smtpCaptureService,
+  wordpressSmtpCaptureMuPlugin,
+} from "./smtp-capture-helpers";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -52,6 +58,7 @@ const SQLITE_DIR = ensureExtract({
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
+const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
 const PHP_FPM_WORKERS = 1;
 
@@ -273,7 +280,8 @@ include $docRoot . '/index.php';
  * dinit service tree:
  *   wp-config-init (internal) — dependency marker. The browser host writes
  *                               the runtime wp-config.php before dinit starts.
- *   php-fpm        (process)  — depends-on wp-config-init
+ *   smtp-capture   (process)  — local SMTP sink storing mail under /var/mail
+ *   php-fpm        (process)  — depends-on wp-config-init + smtp-capture
  *   nginx          (process)  — depends-on php-fpm
  */
 function buildServices(): DinitService[] {
@@ -283,6 +291,7 @@ function buildServices(): DinitService[] {
       type: "internal",
       restart: false,
     },
+    smtpCaptureService(),
     {
       name: "php-fpm",
       type: "process",
@@ -291,7 +300,7 @@ function buildServices(): DinitService[] {
       // the default /usr/local/lib/php/php.ini-development lookup, which
       // trips unsupported-config errors on our wasm port.
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
-      dependsOn: ["wp-config-init"],
+      dependsOn: ["wp-config-init", "smtp-capture"],
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },
@@ -379,11 +388,13 @@ async function main() {
   console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
+  populateSmtpCaptureConfig(fs);
 
-  console.log("Writing nginx + php-fpm binaries...");
+  console.log("Writing nginx + php-fpm + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
   writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/msmtpd", new Uint8Array(readFileSync(MSMTPD_PATH)));
 
   // Template + default wp-config. The browser host overwrites wp-config.php
   // with the current page prefix/protocol before dinit starts.
@@ -396,48 +407,13 @@ async function main() {
   ensureDirRecursive(fs, "/var/www/html/wp-content/database");
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
 
-  // Keep side-effectful operations disabled, but leave outbound HTTP enabled
-  // so WordPress can exercise the browser/kernel external request bridge.
-  const muPlugin = `<?php
-add_filter('pre_wp_mail', '__return_false');
-add_filter('http_request_args', function($args) {
-    $ca_file = '/etc/ssl/certs/ca-certificates.crt';
-    if (is_readable($ca_file)) {
-        $args['sslcertificates'] = $ca_file;
-    }
-    return $args;
-});
-add_filter('wp_admin_canonical_url', function($url) {
-    $home_path = wp_parse_url(home_url('/'), PHP_URL_PATH);
-    if (!$home_path || '/' === $home_path) {
-        return $url;
-    }
-
-    $prefix = rtrim($home_path, '/');
-    $parts = wp_parse_url($url);
-    if (empty($parts['path']) || 0 === strpos($parts['path'], $prefix . '/')) {
-        return $url;
-    }
-
-    $rebuilt = '';
-    if (!empty($parts['scheme'])) {
-        $rebuilt .= $parts['scheme'] . '://';
-    }
-    if (!empty($parts['host'])) {
-        $rebuilt .= $parts['host'];
-    }
-    if (!empty($parts['port'])) {
-        $rebuilt .= ':' . $parts['port'];
-    }
-    $rebuilt .= $prefix . '/' . ltrim($parts['path'], '/');
-    if (!empty($parts['query'])) {
-        $rebuilt .= '?' . $parts['query'];
-    }
-    return $rebuilt;
-});
-if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
-`;
-  writeVfsFile(fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", muPlugin);
+  // Keep file-mod operations disabled, but let mail route to the local
+  // SMTP capture service and leave outbound HTTP enabled for the bridge.
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",
+    wordpressSmtpCaptureMuPlugin(),
+  );
 
   // WordPress core files
   const excludeDb = (rel: string) => rel.endsWith(".db") || rel === "wp-config.php";
@@ -463,8 +439,9 @@ if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
   writeVfsBinary(fs, "/var/www/html/wp-content/db.php", new Uint8Array(dbCopy), 0o644);
   wpCount += 1;
 
-  // dinit + service tree. nginx → php-fpm → wp-config-init dependency
-  // chain ensures wp-config.php is finalized before any FastCGI request.
+  // dinit + service tree. nginx → php-fpm → wp-config-init/smtp-capture
+  // dependencies ensure wp-config.php is finalized and SMTP is listening
+  // before any FastCGI request.
   addDinitInit(fs, buildServices());
 
   // Prewarm opcache: compile the FPM router and every .php under the

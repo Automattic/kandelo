@@ -2,20 +2,21 @@
  * WordPress browser demo — boots a service-demo VFS image with dinit
  * as PID 1. dinit chains:
  *
- *   wp-config-init (scripted) — sed-substitutes @@APP_PATH@@/@@PROTO@@
- *                               from env vars passed by this page.
+ *   wp-config-init (internal) — dependency marker for the host-rendered
+ *                               runtime wp-config.php.
+ *   smtp-capture   (process)  — local SMTP sink on 127.0.0.1:1025
  *   php-fpm        (process)  — FastCGI on 127.0.0.1:9000
  *   nginx          (process)  — HTTP on :8080, FastCGI proxy to php-fpm
  *
- * The page exposes WP_APP_PATH and WP_PROTO via dinit's env so the
- * scripted wp-config-init service can finalize wp-config.php's
- * runtime-dependent values (WP_HOME / WP_SITEURL).
+ * The page patches wp-config.php before boot with runtime-dependent
+ * values (WP_HOME / WP_SITEURL).
  *
  * Process layout once boot completes:
  *   pid 100: dinit (PID 1, --container)
- *   pid N:   wp-config-init (sh — short-lived)
- *   pid N+1: php-fpm
- *   pid N+2: nginx
+ *   pid N:   wp-config-init (internal marker)
+ *   pid N+1: smtp-capture
+ *   pid N+2: php-fpm
+ *   pid N+3: nginx
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { setupServiceWorkerFetchBridge } from "../../lib/init/sw-bridge-fetch";
@@ -25,6 +26,7 @@ import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
+  renderWordPressConfig,
   wordpressConfigTemplate,
 } from "../../lib/init/wordpress-runtime-config";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
@@ -41,6 +43,7 @@ const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
 const PHP_FPM_WORKERS = 1;
+const AUTO_LOAD_FRAME = !new URLSearchParams(window.location.search).has("no-autoload");
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -64,8 +67,28 @@ const statusDiv = document.getElementById("status") as HTMLDivElement;
 let frame = document.getElementById("frame") as HTMLIFrameElement;
 
 const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+
+interface DemoCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+declare global {
+  interface Window {
+    __wordpressDemoReady?: boolean;
+    __wordpressDemoRunCommand?: (
+      script: string,
+      stdin?: string,
+      timeoutMs?: number,
+    ) => Promise<DemoCommandResult>;
+  }
+}
 
 let kernel: BrowserKernel | null = null;
+const activeCommandCaptures = new Set<{ stdout: string; stderr: string }>();
+window.__wordpressDemoReady = false;
 
 function appendLog(text: string, cls?: string) {
   const span = document.createElement("span");
@@ -125,7 +148,48 @@ function setupTerminalPane(kernel: BrowserKernel): void {
   });
 }
 
+async function runKernelCommand(
+  script: string,
+  stdin?: string,
+  timeoutMs = 60_000,
+): Promise<DemoCommandResult> {
+  if (!kernel) {
+    throw new Error("WordPress demo kernel is not initialized");
+  }
+
+  const capture = { stdout: "", stderr: "" };
+  activeCommandCaptures.add(capture);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const { exit } = await kernel.spawnFromVfs("/bin/sh", ["sh", "-lc", script], {
+      cwd: "/",
+      stdin: stdin === undefined ? undefined : encoder.encode(stdin),
+      env: [
+        "HOME=/root",
+        "TERM=xterm-256color",
+        "LANG=en_US.UTF-8",
+        "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+      ],
+    });
+    const exitCode = await Promise.race([
+      exit,
+      new Promise<number>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`command timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+    return { exitCode, stdout: capture.stdout, stderr: capture.stderr };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    activeCommandCaptures.delete(capture);
+  }
+}
+
 async function start() {
+  window.__wordpressDemoReady = false;
   startBtn.disabled = true;
   log.textContent = "";
   setStatus("Loading WordPress VFS image...", "loading");
@@ -159,6 +223,7 @@ async function start() {
     writeVfsFile(memfs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
     writeVfsFile(memfs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
     writeVfsFile(memfs, "/etc/wp-config-template.php", wordpressConfigTemplate("sqlite"));
+    writeVfsFile(memfs, "/var/www/html/wp-config.php", renderWordPressConfig("sqlite", APP_PATH, PROTO));
     ensureDirRecursive(memfs, "/var/www/html/wp-content/mu-plugins");
     writeVfsFile(
       memfs,
@@ -176,9 +241,12 @@ async function start() {
     const tryLoadFrame = () => {
       const allReady = REQUIRED_PORTS.every((p) => seenPorts.has(p));
       if (allReady && bridgeReady && reloadBtn.disabled) {
-        setStatus("WordPress running! Loading page...", "running");
+        setStatus(
+          AUTO_LOAD_FRAME ? "WordPress running! Loading page..." : "WordPress running!",
+          "running",
+        );
         reloadBtn.disabled = false;
-        loadFrame();
+        if (AUTO_LOAD_FRAME) loadFrame();
       }
     };
 
@@ -186,8 +254,16 @@ async function start() {
       kernelOwnedFs: true,
       maxWorkers: 12,
       maxMemoryPages: 4096,
-      onStdout: (data) => appendLog(decoder.decode(data)),
-      onStderr: (data) => appendLog(decoder.decode(data), "stderr"),
+      onStdout: (data) => {
+        const text = decoder.decode(data);
+        appendLog(text);
+        for (const capture of activeCommandCaptures) capture.stdout += text;
+      },
+      onStderr: (data) => {
+        const text = decoder.decode(data);
+        appendLog(text, "stderr");
+        for (const capture of activeCommandCaptures) capture.stderr += text;
+      },
       onListenTcp: (_pid, _fd, port) => {
         appendLog(`service listening on :${port}\n`, "info");
         seenPorts.add(port);
@@ -224,6 +300,8 @@ async function start() {
     tryLoadFrame();
 
     setupTerminalPane(kernel);
+    window.__wordpressDemoRunCommand = runKernelCommand;
+    window.__wordpressDemoReady = true;
 
     const code = await exit;
     appendLog(`\ndinit exited with code ${code}\n`, "info");

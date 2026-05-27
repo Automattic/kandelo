@@ -85,6 +85,7 @@ packages/registry/*-vfs/*.vfs
 
 # Per-package outliers
 packages/registry/mariadb/pcre2-*/
+packages/registry/msmtpd/msmtp-*.tar.xz
 packages/registry/ncurses/terminfo/
 packages/registry/nethack/runtime/
 packages/registry/php/config.cache

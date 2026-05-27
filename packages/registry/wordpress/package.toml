@@ -10,6 +10,7 @@ depends_on = [
     "nginx@1.24.0",
     "php@8.3.2",
     "dinit@0.19.4",
+    "msmtpd@1.8.32",
 ]
 
 [source]
