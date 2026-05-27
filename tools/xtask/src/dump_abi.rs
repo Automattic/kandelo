@@ -316,22 +316,23 @@ fn render_ts_module() -> String {
     ));
 
     out.push_str("export const HOST_INTERCEPTED_SYSCALLS = {\n");
-    for (name, number) in [
-        ("SYS_EXECVE", shared::abi::host_intercepted::SYS_EXECVE),
-        ("SYS_FORK", shared::abi::host_intercepted::SYS_FORK),
-        ("SYS_VFORK", shared::abi::host_intercepted::SYS_VFORK),
-        ("SYS_SPAWN", shared::abi::host_intercepted::SYS_SPAWN),
-        ("SYS_EXECVEAT", shared::abi::host_intercepted::SYS_EXECVEAT),
-    ] {
-        out.push_str(&format!("  {name}: {number},\n"));
+    for syscall in host_intercepted_syscall_metadata() {
+        out.push_str(&format!(
+            "  {}: {},\n",
+            syscall.constant_name, syscall.number
+        ));
     }
     out.push_str("} as const;\n\n");
 
     out.push_str("export const ABI_SYSCALLS = {\n");
-    for n in 0u32..1024 {
-        if let Some(syscall) = shared::Syscall::from_u32(n) {
-            out.push_str(&format!("  {syscall:?}: {n},\n"));
-        }
+    for (number, name) in all_syscall_metadata() {
+        out.push_str(&format!("  {name}: {number},\n"));
+    }
+    out.push_str("} as const;\n\n");
+
+    out.push_str("export const ABI_SYSCALL_NAMES: Record<number, string> = {\n");
+    for (number, name) in all_syscall_log_names() {
+        out.push_str(&format!("  {number}: {name:?},\n"));
     }
     out.push_str("} as const;\n\n");
 
@@ -709,21 +710,119 @@ fn marshalled_structs() -> Value {
 }
 
 fn syscalls() -> Value {
-    // Walk 0..1024 and collect every number the Syscall enum names.
-    // Gaps (numbers handled in wasm_api.rs dispatch but not named in the
-    // enum) are intentionally NOT in scope for this snapshot — they are
-    // tracked by a follow-up change that moves all syscall numbers into
-    // the enum as the single source of truth.
     let mut list = Vec::new();
-    for n in 0u32..1024 {
-        if let Some(s) = shared::Syscall::from_u32(n) {
-            let mut m: JsonMap = BTreeMap::new();
-            m.insert("number".into(), json!(n));
-            m.insert("name".into(), json!(format!("{s:?}")));
-            list.push(Value::Object(m.into_iter().collect()));
-        }
+    for (number, name) in all_syscall_metadata() {
+        let mut m: JsonMap = BTreeMap::new();
+        m.insert("number".into(), json!(number));
+        m.insert("name".into(), json!(name));
+        list.push(Value::Object(m.into_iter().collect()));
     }
     Value::Array(list)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HostInterceptedSyscall {
+    constant_name: &'static str,
+    number: u32,
+    log_name: &'static str,
+}
+
+fn host_intercepted_syscall_metadata() -> [HostInterceptedSyscall; 5] {
+    use shared::abi::host_intercepted::*;
+
+    [
+        HostInterceptedSyscall {
+            constant_name: "SYS_EXECVE",
+            number: SYS_EXECVE,
+            log_name: "execve",
+        },
+        HostInterceptedSyscall {
+            constant_name: "SYS_FORK",
+            number: SYS_FORK,
+            log_name: "fork",
+        },
+        HostInterceptedSyscall {
+            constant_name: "SYS_VFORK",
+            number: SYS_VFORK,
+            log_name: "vfork",
+        },
+        HostInterceptedSyscall {
+            constant_name: "SYS_SPAWN",
+            number: SYS_SPAWN,
+            log_name: "spawn",
+        },
+        HostInterceptedSyscall {
+            constant_name: "SYS_EXECVEAT",
+            number: SYS_EXECVEAT,
+            log_name: "execveat",
+        },
+    ]
+}
+
+fn all_syscall_metadata() -> BTreeMap<u32, String> {
+    let mut syscalls = BTreeMap::new();
+    for number in 0u32..1024 {
+        if let Some(syscall) = shared::Syscall::from_u32(number) {
+            insert_syscall_metadata(&mut syscalls, number, format!("{syscall:?}"));
+        }
+    }
+    for syscall in shared::abi::extended_syscalls::SYSCALLS {
+        insert_syscall_metadata(&mut syscalls, syscall.number, syscall.name.to_string());
+    }
+    syscalls
+}
+
+fn all_syscall_log_names() -> BTreeMap<u32, String> {
+    let mut names = BTreeMap::new();
+    for (number, name) in all_syscall_metadata() {
+        insert_syscall_metadata(&mut names, number, syscall_log_name(&name));
+    }
+    for syscall in host_intercepted_syscall_metadata() {
+        insert_syscall_metadata(&mut names, syscall.number, syscall.log_name.to_string());
+    }
+    names
+}
+
+fn syscall_log_name(name: &str) -> String {
+    match name {
+        "Seek" => "lseek".to_string(),
+        "GetEnv" => "getenv".to_string(),
+        "SetEnv" => "setenv".to_string(),
+        "UnsetEnv" => "unsetenv".to_string(),
+        "Statfs" => "statfs64".to_string(),
+        "Fstatfs" => "fstatfs64".to_string(),
+        "Llseek" => "_llseek".to_string(),
+        _ => pascal_to_snake_case(name),
+    }
+}
+
+fn pascal_to_snake_case(name: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = name.chars().collect();
+    for (idx, ch) in chars.iter().copied().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if idx > 0 {
+                let prev = chars[idx - 1];
+                let next = chars.get(idx + 1).copied();
+                if prev.is_ascii_lowercase()
+                    || prev.is_ascii_digit()
+                    || next.is_some_and(|next| next.is_ascii_lowercase())
+                {
+                    out.push('_');
+                }
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
+fn insert_syscall_metadata(syscalls: &mut BTreeMap<u32, String>, number: u32, name: String) {
+    if let Some(existing) = syscalls.insert(number, name.clone()) {
+        panic!("duplicate ABI syscall number {number}: {existing} and {name}");
+    }
 }
 
 fn host_intercepted_syscalls() -> Value {
@@ -732,18 +831,11 @@ fn host_intercepted_syscalls() -> Value {
     // outside `shared::Syscall` because they don't go through the same
     // channel handler. The snapshot still tracks them so add/remove/renumber
     // is caught by the structural drift check.
-    use shared::abi::host_intercepted::*;
     let mut list = Vec::new();
-    for (n, name) in [
-        (SYS_EXECVE, "SYS_EXECVE"),
-        (SYS_FORK, "SYS_FORK"),
-        (SYS_VFORK, "SYS_VFORK"),
-        (SYS_SPAWN, "SYS_SPAWN"),
-        (SYS_EXECVEAT, "SYS_EXECVEAT"),
-    ] {
+    for syscall in host_intercepted_syscall_metadata() {
         let mut m: JsonMap = BTreeMap::new();
-        m.insert("number".into(), json!(n));
-        m.insert("name".into(), json!(name));
+        m.insert("number".into(), json!(syscall.number));
+        m.insert("name".into(), json!(syscall.constant_name));
         list.push(Value::Object(m.into_iter().collect()));
     }
     Value::Array(list)
@@ -1244,6 +1336,42 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn syscall_log_names_match_existing_trace_spelling() {
+        let names = all_syscall_log_names();
+        assert_eq!(names.get(&(shared::Syscall::Seek as u32)).unwrap(), "lseek");
+        assert_eq!(
+            names
+                .get(&shared::abi::extended_syscalls::SYS_LLSEEK)
+                .unwrap(),
+            "_llseek"
+        );
+        assert_eq!(
+            names
+                .get(&shared::abi::extended_syscalls::SYS_GETRANDOM)
+                .unwrap(),
+            "getrandom"
+        );
+        assert_eq!(
+            names
+                .get(&shared::abi::extended_syscalls::SYS_TIMER_GETOVERRUN)
+                .unwrap(),
+            "timer_getoverrun"
+        );
+        assert_eq!(
+            names
+                .get(&shared::abi::host_intercepted::SYS_EXECVE)
+                .unwrap(),
+            "execve"
+        );
+        assert_eq!(
+            names
+                .get(&shared::abi::host_intercepted::SYS_SPAWN)
+                .unwrap(),
+            "spawn"
+        );
+    }
 
     fn base_snapshot() -> Value {
         json!({
