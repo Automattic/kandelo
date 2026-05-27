@@ -6251,8 +6251,9 @@ export class CentralizedKernelWorker {
   private consumeExitedChild(parentPid: number, childPid: number): void {
     this.exitedChildren.delete(childPid);
     this.childToParent.delete(childPid);
-    // Now that the zombie is reaped, remove from kernel process table
-    this.removeFromKernelProcessTable(childPid);
+    // Now that the zombie is reaped, let the kernel either remove it or keep
+    // a resource-free limbo record if it still leads a non-empty process group.
+    this.reapFromKernelProcessTable(childPid);
     const children = this.parentToChildren.get(parentPid);
     if (children) {
       children.delete(childPid);
@@ -6260,6 +6261,16 @@ export class CentralizedKernelWorker {
         this.parentToChildren.delete(parentPid);
       }
     }
+  }
+
+  private reapFromKernelProcessTable(pid: number): void {
+    const reapProcess = this.kernelInstance?.exports.kernel_reap_process as
+      ((pid: number) => number) | undefined;
+    if (reapProcess) {
+      reapProcess(pid);
+      return;
+    }
+    this.removeFromKernelProcessTable(pid);
   }
 
   /** Write wait status to the wstatus pointer in process memory. */
