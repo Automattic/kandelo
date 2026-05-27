@@ -633,8 +633,9 @@ export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
     const range = bodyRangeForFunc(funcIndex);
     if (!range) return null;
 
-    let pos = skipLocals(range.start, range.end);
-    if (pos === null) return null;
+    const localsEnd = skipLocals(range.start, range.end);
+    if (localsEnd === null) return null;
+    let pos = localsEnd;
     const bodyEnd = range.end;
 
     // Walk instructions and find the constant directly returned by this
