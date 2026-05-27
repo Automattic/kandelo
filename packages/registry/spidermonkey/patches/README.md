@@ -27,6 +27,10 @@ Kandelo wasm32 integration points needed by the standalone SpiderMonkey shell.
 - `0011-heap-autorunparallel-task-on-wasm32.patch`: stores transient GC helper
   tasks on the heap for wasm32 to avoid stack-allocated multiple-inheritance
   task layout corruption in Kandelo worker threads.
+- `0012-kandelo-node-compat-shell-entry.patch`: adds the Kandelo SpiderMonkey
+  Node-mode shell entry point, POSIX file/fd helpers, native crypto/zlib/TCP/TLS
+  hooks, and the shell job-loop integration needed by the shared JavaScript
+  CommonJS bootstrap.
 
 Revisit this set when bumping ESR versions. Most patches are
 Kandelo-specific integration glue, but any general wasm32 or POSIX portability

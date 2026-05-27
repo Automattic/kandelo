@@ -2,7 +2,7 @@
  * Node browser demo — xterm.js terminal. Each Enter spawns a fresh
  * `node`/`npm` process so `npm install foo && node use-foo` always starts
  * from the on-disk VFS image. Bare `node` instead drops into the
- * persistent QuickJS REPL backed by one long-lived process; `\q` exits.
+ * persistent SpiderMonkey-backed REPL; `\q` exits.
  */
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -114,12 +114,11 @@ function buildArgv(line: string): string[] | null {
     const rest = trimmed.slice(3).trim();
     const tokens = rest ? tokenize(rest) : [];
     const hasInstall = tokens[0] === "install" || tokens[0] === "i";
-    // Route npm through plain HTTP via the sentinel host `proxy.local` so it
-    // never hits the in-JS TLS engine — that path surfaces a QuickJS-NG GC bug
-    // on packuments above ~250 KB. tls-network-backend.ts recognises the alias
-    // and routes the fetch through the cors-proxy (dev) or service worker
-    // (prod) to https://registry.npmjs.org, and rewrites tarball URLs in JSON
-    // responses to keep them on the alias too.
+    // Route npm through plain HTTP via the sentinel host `proxy.local` so
+    // registry traffic can use the host fetch bridge. tls-network-backend.ts
+    // recognises the alias and routes the fetch through the cors-proxy (dev) or
+    // service worker (prod) to https://registry.npmjs.org, and rewrites tarball
+    // URLs in JSON responses to keep them on the alias too.
     //
     // "localhost" would NOT work: the kernel's synthetic /etc/hosts maps it to
     // 127.0.0.1 and the connect short-circuits to the in-process loopback path

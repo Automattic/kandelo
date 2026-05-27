@@ -264,7 +264,7 @@ fn nested_multivalue_params_uses_nested_switch_dispatch() {
 // ---------------------------------------------------------------------
 //
 // 2026-05-17 CI disproved the "modern flags remove every legacy Try"
-// invariant for C ports such as bash, quickjs, and vim. A fork in the
+// invariant for C ports such as bash, spidermonkey, and vim. A fork in the
 // legacy try body can use the same per-region nested-switch route as
 // Block/Loop/TryTable bodies. Legacy catch handlers still need their
 // exception path reconstructed and remain unsupported.

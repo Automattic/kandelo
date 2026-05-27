@@ -92,6 +92,8 @@ export interface SpawnOptions {
   /** Initial real/effective group ID for the process. */
   gid?: number;
   stdin?: Uint8Array;
+  /** Optional pre-compiled module for the supplied program bytes. */
+  programModule?: WebAssembly.Module;
   pty?: boolean;
   /** Initial PTY winsize. Applied before the wasm program starts so the
    *  first TIOCGWINSZ returns the correct cols/rows. */
@@ -174,6 +176,7 @@ export class NodeKernelHost {
       type: "spawn",
       requestId,
       programBytes,
+      programModule: options?.programModule,
       argv,
       env: options?.env,
       cwd: options?.cwd,

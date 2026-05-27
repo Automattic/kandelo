@@ -73,6 +73,7 @@ let sessionDir: string | null = null;
 interface ProcessInfo {
   memory: WebAssembly.Memory;
   programBytes: ArrayBuffer;
+  programModule?: WebAssembly.Module;
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
   channelOffset: number;
   ptrWidth: 4 | 8;
@@ -490,6 +491,7 @@ function handleSpawn(msg: SpawnMessage) {
       pid,
       ppid: 0,
       programBytes: msg.programBytes,
+      programModule: msg.programModule,
       memory,
       channelOffset,
       env: msg.env,
@@ -502,6 +504,7 @@ function handleSpawn(msg: SpawnMessage) {
     processes.set(pid, {
       memory,
       programBytes: msg.programBytes,
+      programModule: msg.programModule,
       worker,
       channelOffset,
       ptrWidth,
@@ -553,6 +556,10 @@ async function handleFork(
   const parentProgram = parentInfo?.programBytes;
   if (!parentProgram) throw new Error(`Unknown parent pid ${parentPid}`);
 
+  if (!parentInfo.programModule) {
+    parentInfo.programModule = await WebAssembly.compile(parentProgram);
+  }
+
   const ptrWidth = parentInfo.ptrWidth;
   const parentBuf = new Uint8Array(parentMemory.buffer);
   const parentPages = Math.ceil(parentBuf.byteLength / 65536);
@@ -578,6 +585,7 @@ async function handleFork(
     pid: childPid,
     ppid: parentPid,
     programBytes: parentProgram,
+    programModule: parentInfo.programModule,
     memory: childMemory,
     channelOffset: childChannelOffset,
     isForkChild: true,
@@ -592,6 +600,7 @@ async function handleFork(
   processes.set(childPid, {
     memory: childMemory,
     programBytes: parentProgram,
+    programModule: parentInfo.programModule,
     worker: childWorker,
     channelOffset: childChannelOffset,
     ptrWidth,
@@ -955,6 +964,15 @@ async function handleDestroy(msg: { requestId: number }) {
     await terminateThreadWorkers(pid);
     await terminateTrackedWorker(info.worker);
     try { kernelWorker.unregisterProcess(pid); } catch {}
+  }
+  // Process workers can still have pthread/JS-worker children. Terminate
+  // them explicitly before clearing the map so destroy does not leave worker
+  // threads keeping the Vitest fork alive.
+  for (const threads of threadWorkers.values()) {
+    for (const t of threads) {
+      intentionallyTerminated.add(t.worker as object);
+      t.worker.terminate().catch(() => {});
+    }
   }
   processes.clear();
   threadModuleCache.clear();

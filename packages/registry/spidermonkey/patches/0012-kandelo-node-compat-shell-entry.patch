@@ -1,0 +1,2019 @@
+--- a/js/src/shell/OSObject.cpp
++++ b/js/src/shell/OSObject.cpp
+@@ -13,7 +13,11 @@
+ #include "mozilla/TextUtils.h"
+
+ #include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
+ #include <stdlib.h>
++#include <string>
++#include <time.h>
+ #ifdef XP_WIN
+ #  include <direct.h>
+ #  include <process.h>
+@@ -22,10 +26,12 @@
+ #  include "util/WindowsWrapper.h"
+ #elif __wasi__
+ #  include <dirent.h>
++#  include <sys/stat.h>
+ #  include <sys/types.h>
+ #  include <unistd.h>
+ #else
+ #  include <dirent.h>
++#  include <sys/stat.h>
+ #  include <sys/types.h>
+ #  include <sys/wait.h>
+ #  include <unistd.h>
+@@ -36,6 +42,7 @@
+ #include "jsfriendapi.h"
+
+ #include "gc/GCContext.h"
++#include "js/ArrayBuffer.h"
+ #include "js/CharacterEncoding.h"
+ #include "js/Conversions.h"
+ #include "js/experimental/TypedData.h"  // JS_NewUint8Array
+@@ -591,9 +598,296 @@
+   }
+
+   args.rval().setUndefined();
++  return true;
++}
++
++static bool DefineStatNumber(JSContext* cx, HandleObject obj, const char* name,
++                             double number) {
++  RootedValue value(cx, NumberValue(number));
++  return JS_DefineProperty(cx, obj, name, value, JSPROP_ENUMERATE);
++}
++
++static bool StatPath(JSContext* cx, unsigned argc, Value* vp,
++                     const char* name, bool followSymlinks) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++
++  if (args.length() != 1 || !args[0].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, name);
++    return false;
++  }
++
++  RootedString givenPath(cx, args[0].toString());
++  RootedString str(cx, ResolvePath(cx, givenPath, RootRelative));
++  if (!str) {
++    return false;
++  }
++
++  UniqueChars filename = JS_EncodeStringToUTF8(cx, str);
++  if (!filename) {
++    return false;
++  }
++
++  struct stat st;
++#ifdef XP_WIN
++  int rc = stat(filename.get(), &st);
++#else
++  int rc = followSymlinks ? stat(filename.get(), &st) : lstat(filename.get(), &st);
++#endif
++  if (rc != 0) {
++    JS_ReportErrorUTF8(cx, "%s failed for %s: errno %d", name, filename.get(),
++                       errno);
++    return false;
++  }
++
++  RootedObject obj(cx, JS_NewPlainObject(cx));
++  if (!obj) {
++    return false;
++  }
++
++  if (!DefineStatNumber(cx, obj, "dev", double(st.st_dev)) ||
++      !DefineStatNumber(cx, obj, "ino", double(st.st_ino)) ||
++      !DefineStatNumber(cx, obj, "mode", double(st.st_mode)) ||
++      !DefineStatNumber(cx, obj, "nlink", double(st.st_nlink)) ||
++      !DefineStatNumber(cx, obj, "uid", double(st.st_uid)) ||
++      !DefineStatNumber(cx, obj, "gid", double(st.st_gid)) ||
++      !DefineStatNumber(cx, obj, "rdev", double(st.st_rdev)) ||
++      !DefineStatNumber(cx, obj, "size", double(st.st_size)) ||
++      !DefineStatNumber(cx, obj, "atime", double(st.st_atime)) ||
++      !DefineStatNumber(cx, obj, "mtime", double(st.st_mtime)) ||
++      !DefineStatNumber(cx, obj, "ctime", double(st.st_ctime))) {
++    return false;
++  }
++
++  args.rval().setObject(*obj);
++  return true;
++}
++
++static bool osfile_stat(JSContext* cx, unsigned argc, Value* vp) {
++  return StatPath(cx, argc, vp, "stat", true);
++}
++
++static bool osfile_lstat(JSContext* cx, unsigned argc, Value* vp) {
++  return StatPath(cx, argc, vp, "lstat", false);
++}
++
++static bool osfile_mkdir(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++
++  if (args.length() < 1 || args.length() > 2 || !args[0].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "mkdir");
++    return false;
++  }
++
++  int32_t mode = 0777;
++  if (args.length() == 2 && !JS::ToInt32(cx, args[1], &mode)) {
++    return false;
++  }
++
++  RootedString givenPath(cx, args[0].toString());
++  RootedString str(cx, ResolvePath(cx, givenPath, RootRelative));
++  if (!str) {
++    return false;
++  }
++
++  UniqueChars filename = JS_EncodeStringToUTF8(cx, str);
++  if (!filename) {
++    return false;
++  }
++
++#ifdef XP_WIN
++  int rc = _mkdir(filename.get());
++#else
++  int rc = mkdir(filename.get(), mode);
++#endif
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++  return true;
++}
++
++static bool osfile_remove(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++
++  if (args.length() != 1 || !args[0].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "remove");
++    return false;
++  }
++
++  RootedString givenPath(cx, args[0].toString());
++  RootedString str(cx, ResolvePath(cx, givenPath, RootRelative));
++  if (!str) {
++    return false;
++  }
++
++  UniqueChars filename = JS_EncodeStringToUTF8(cx, str);
++  if (!filename) {
++    return false;
++  }
++
++  int rc = remove(filename.get());
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++  return true;
++}
++
++static bool osfile_rename(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++
++  if (args.length() != 2 || !args[0].isString() || !args[1].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "rename");
++    return false;
++  }
++
++  RootedString oldGiven(cx, args[0].toString());
++  RootedString oldPath(cx, ResolvePath(cx, oldGiven, RootRelative));
++  RootedString newGiven(cx, args[1].toString());
++  RootedString newPath(cx, ResolvePath(cx, newGiven, RootRelative));
++  if (!oldPath || !newPath) {
++    return false;
++  }
++
++  UniqueChars oldFilename = JS_EncodeStringToUTF8(cx, oldPath);
++  UniqueChars newFilename = JS_EncodeStringToUTF8(cx, newPath);
++  if (!oldFilename || !newFilename) {
++    return false;
++  }
++
++  int rc = rename(oldFilename.get(), newFilename.get());
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++  return true;
++}
++
++static bool osfile_symlink(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++
++  if (args.length() != 2 || !args[0].isString() || !args[1].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "symlink");
++    return false;
++  }
++
++  RootedString targetStr(cx, args[0].toString());
++  UniqueChars target = JS_EncodeStringToUTF8(cx, targetStr);
++  RootedString linkGiven(cx, args[1].toString());
++  RootedString linkPath(cx, ResolvePath(cx, linkGiven, RootRelative));
++  UniqueChars linkFilename = linkPath ? JS_EncodeStringToUTF8(cx, linkPath) : nullptr;
++  if (!target || !linkFilename) {
++    return false;
++  }
++
++#ifdef XP_WIN
++  args.rval().setInt32(-ENOSYS);
++#else
++  int rc = symlink(target.get(), linkFilename.get());
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++#endif
+   return true;
+ }
+
++static bool osfile_readlink(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++
++  if (args.length() != 1 || !args[0].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "readlink");
++    return false;
++  }
++
++  RootedString givenPath(cx, args[0].toString());
++  RootedString str(cx, ResolvePath(cx, givenPath, RootRelative));
++  UniqueChars filename = str ? JS_EncodeStringToUTF8(cx, str) : nullptr;
++  if (!filename) {
++    return false;
++  }
++
++#ifdef XP_WIN
++  JS_ReportErrorASCII(cx, "readlink is not supported on this platform");
++  return false;
++#else
++  char buf[PATH_MAX];
++  ssize_t n = readlink(filename.get(), buf, sizeof(buf) - 1);
++  if (n < 0) {
++    JS_ReportErrorUTF8(cx, "readlink failed for %s: errno %d", filename.get(),
++                       errno);
++    return false;
++  }
++  buf[n] = '\0';
++  RootedString out(cx, JS_NewStringCopyZ(cx, buf));
++  if (!out) {
++    return false;
++  }
++  args.rval().setString(out);
++  return true;
++#endif
++}
++
++static bool osfile_realpath(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++
++  if (args.length() != 1 || !args[0].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "realpath");
++    return false;
++  }
++
++  RootedString givenPath(cx, args[0].toString());
++  RootedString str(cx, ResolvePath(cx, givenPath, RootRelative));
++  UniqueChars filename = str ? JS_EncodeStringToUTF8(cx, str) : nullptr;
++  if (!filename) {
++    return false;
++  }
++
++  char resolved[PATH_MAX];
++  if (!realpath(filename.get(), resolved)) {
++    JS_ReportErrorUTF8(cx, "realpath failed for %s: errno %d", filename.get(),
++                       errno);
++    return false;
++  }
++  RootedString out(cx, JS_NewStringCopyZ(cx, resolved));
++  if (!out) {
++    return false;
++  }
++  args.rval().setString(out);
++  return true;
++}
++
++static bool osfile_utimes(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++
++  if (args.length() != 3 || !args[0].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "utimes");
++    return false;
++  }
++
++  double atime;
++  double mtime;
++  if (!JS::ToNumber(cx, args[1], &atime) || !JS::ToNumber(cx, args[2], &mtime)) {
++    return false;
++  }
++
++  RootedString givenPath(cx, args[0].toString());
++  RootedString str(cx, ResolvePath(cx, givenPath, RootRelative));
++  UniqueChars filename = str ? JS_EncodeStringToUTF8(cx, str) : nullptr;
++  if (!filename) {
++    return false;
++  }
++
++#if defined(XP_WIN)
++  args.rval().setInt32(-ENOSYS);
++#else
++  struct timespec times[2];
++  times[0].tv_sec = time_t(atime);
++  times[0].tv_nsec = long((atime - double(times[0].tv_sec)) * 1000000000.0);
++  times[1].tv_sec = time_t(mtime);
++  times[1].tv_nsec = long((mtime - double(times[1].tv_sec)) * 1000000000.0);
++  int rc = utimensat(AT_FDCWD, filename.get(), times, 0);
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++#endif
++  return true;
++}
++
+ /* static */
+ RCFile* RCFile::create(JSContext* cx, const char* filename, const char* mode) {
+   FILE* fp = OpenFile(cx, filename, mode);
+@@ -839,6 +1133,42 @@
+     JS_FN_HELP("writeTypedArrayToFile", osfile_writeTypedArrayToFile, 2, 0,
+ "writeTypedArrayToFile(filename, data)",
+ "  Write the contents of a typed array to the named file."),
++
++    JS_FN_HELP("stat", osfile_stat, 1, 0,
++"stat(filename)",
++"  Return POSIX stat fields for filename."),
++
++    JS_FN_HELP("lstat", osfile_lstat, 1, 0,
++"lstat(filename)",
++"  Return POSIX lstat fields for filename."),
++
++    JS_FN_HELP("mkdir", osfile_mkdir, 1, 0,
++"mkdir(dirname[, mode])",
++"  Create a directory. Returns 0 on success or -errno on failure."),
++
++    JS_FN_HELP("remove", osfile_remove, 1, 0,
++"remove(path)",
++"  Remove a file or empty directory. Returns 0 on success or -errno on failure."),
++
++    JS_FN_HELP("rename", osfile_rename, 2, 0,
++"rename(oldPath, newPath)",
++"  Rename a file or directory. Returns 0 on success or -errno on failure."),
++
++    JS_FN_HELP("symlink", osfile_symlink, 2, 0,
++"symlink(target, linkPath)",
++"  Create a symbolic link. Returns 0 on success or -errno on failure."),
++
++    JS_FN_HELP("readlink", osfile_readlink, 1, 0,
++"readlink(path)",
++"  Return the symbolic link target."),
++
++    JS_FN_HELP("realpath", osfile_realpath, 1, 0,
++"realpath(path)",
++"  Return the canonical absolute path."),
++
++    JS_FN_HELP("utimes", osfile_utimes, 3, 0,
++"utimes(path, atime, mtime)",
++"  Change access and modification times. Returns 0 on success or -errno on failure."),
+
+     JS_FN_HELP("redirect", osfile_redirectOutput, 1, 0,
+ "redirect([path-or-object])",
+@@ -978,9 +1308,375 @@
+     return false;
+   }
+   args.rval().setInt32(getpid());
++  return true;
++}
++
++static bool os_getcwd(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 0) {
++    JS_ReportErrorASCII(cx, "os.getcwd takes no arguments");
++    return false;
++  }
++
++  UniqueChars cwd = GetCWD(cx);
++  if (!cwd) {
++    JS_ReportErrorASCII(cx, "os.getcwd failed");
++    return false;
++  }
++
++  RootedString str(cx, JS_NewStringCopyZ(cx, cwd.get()));
++  if (!str) {
++    return false;
++  }
++  args.rval().setString(str);
++  return true;
++}
++
++static bool os_chdir(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 1 || !args[0].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "chdir");
++    return false;
++  }
++
++  RootedString givenPath(cx, args[0].toString());
++  RootedString str(cx, ResolvePath(cx, givenPath, RootRelative));
++  if (!str) {
++    return false;
++  }
++
++  UniqueChars path = JS_EncodeStringToUTF8(cx, str);
++  if (!path) {
++    return false;
++  }
++
++#ifdef XP_WIN
++  int rc = _chdir(path.get());
++#else
++  int rc = chdir(path.get());
++#endif
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
+   return true;
+ }
+
++static bool os_setenv(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 2) {
++    JS_ReportErrorASCII(cx, "os.setenv requires 2 arguments");
++    return false;
++  }
++
++  RootedString key(cx, ToString(cx, args[0]));
++  RootedString value(cx, ToString(cx, args[1]));
++  if (!key || !value) {
++    return false;
++  }
++  UniqueChars keyBytes = JS_EncodeStringToUTF8(cx, key);
++  UniqueChars valueBytes = JS_EncodeStringToUTF8(cx, value);
++  if (!keyBytes || !valueBytes) {
++    return false;
++  }
++
++#ifdef XP_WIN
++  int rc = _putenv_s(keyBytes.get(), valueBytes.get());
++#else
++  int rc = setenv(keyBytes.get(), valueBytes.get(), 1);
++#endif
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++  return true;
++}
++
++static bool os_unsetenv(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 1) {
++    JS_ReportErrorASCII(cx, "os.unsetenv requires 1 argument");
++    return false;
++  }
++
++  RootedString key(cx, ToString(cx, args[0]));
++  if (!key) {
++    return false;
++  }
++  UniqueChars keyBytes = JS_EncodeStringToUTF8(cx, key);
++  if (!keyBytes) {
++    return false;
++  }
++
++#ifdef XP_WIN
++  int rc = _putenv_s(keyBytes.get(), "");
++#else
++  int rc = unsetenv(keyBytes.get());
++#endif
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++  return true;
++}
++
++static bool os_open(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() < 2 || args.length() > 3 || !args[0].isString()) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "open");
++    return false;
++  }
++
++  int32_t flags;
++  int32_t mode = 0666;
++  if (!JS::ToInt32(cx, args[1], &flags)) {
++    return false;
++  }
++  if (args.length() == 3 && !JS::ToInt32(cx, args[2], &mode)) {
++    return false;
++  }
++
++  RootedString givenPath(cx, args[0].toString());
++  RootedString str(cx, ResolvePath(cx, givenPath, RootRelative));
++  UniqueChars filename = str ? JS_EncodeStringToUTF8(cx, str) : nullptr;
++  if (!filename) {
++    return false;
++  }
++
++  int fd = open(filename.get(), flags, mode);
++  args.rval().setInt32(fd >= 0 ? fd : -errno);
++  return true;
++}
++
++static bool GetArrayBufferBytes(JSContext* cx, HandleValue value,
++                                uint8_t** dataOut, size_t* lengthOut) {
++  if (!value.isObject()) {
++    JS_ReportErrorASCII(cx, "expected ArrayBuffer");
++    return false;
++  }
++  RootedObject obj(cx, &value.toObject());
++  if (!JS::IsArrayBufferObject(obj)) {
++    JS_ReportErrorASCII(cx, "expected ArrayBuffer");
++    return false;
++  }
++  bool isShared = false;
++  JS::AutoCheckCannotGC nogc;
++  *dataOut = JS::GetArrayBufferData(obj, &isShared, nogc);
++  *lengthOut = JS::GetArrayBufferByteLength(obj);
++  if (isShared) {
++    JS_ReportErrorASCII(cx, "shared ArrayBuffer is not supported here");
++    return false;
++  }
++  return true;
++}
++
++static bool os_read(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 4) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "read");
++    return false;
++  }
++
++  int32_t fd;
++  int32_t offset;
++  int32_t length;
++  if (!JS::ToInt32(cx, args[0], &fd) || !JS::ToInt32(cx, args[2], &offset) ||
++      !JS::ToInt32(cx, args[3], &length)) {
++    return false;
++  }
++
++  uint8_t* data = nullptr;
++  size_t dataLen = 0;
++  if (!GetArrayBufferBytes(cx, args[1], &data, &dataLen)) {
++    return false;
++  }
++  if (offset < 0 || length < 0 || size_t(offset) > dataLen ||
++      size_t(length) > dataLen - size_t(offset)) {
++    JS_ReportErrorASCII(cx, "read offset/length out of range");
++    return false;
++  }
++
++  ssize_t n = read(fd, data + offset, size_t(length));
++  args.rval().setInt32(n >= 0 ? int32_t(n) : -errno);
++  return true;
++}
++
++static bool os_write(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 4) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "write");
++    return false;
++  }
++
++  int32_t fd;
++  int32_t offset;
++  int32_t length;
++  if (!JS::ToInt32(cx, args[0], &fd) || !JS::ToInt32(cx, args[2], &offset) ||
++      !JS::ToInt32(cx, args[3], &length)) {
++    return false;
++  }
++
++  uint8_t* data = nullptr;
++  size_t dataLen = 0;
++  if (!GetArrayBufferBytes(cx, args[1], &data, &dataLen)) {
++    return false;
++  }
++  if (offset < 0 || length < 0 || size_t(offset) > dataLen ||
++      size_t(length) > dataLen - size_t(offset)) {
++    JS_ReportErrorASCII(cx, "write offset/length out of range");
++    return false;
++  }
++
++  ssize_t n = write(fd, data + offset, size_t(length));
++  args.rval().setInt32(n >= 0 ? int32_t(n) : -errno);
++  return true;
++}
++
++static bool os_close_fd(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 1) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "close");
++    return false;
++  }
++
++  int32_t fd;
++  if (!JS::ToInt32(cx, args[0], &fd)) {
++    return false;
++  }
++  int rc = close(fd);
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++  return true;
++}
++
++static bool os_seek(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 3) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "seek");
++    return false;
++  }
++
++  int32_t fd;
++  int32_t offset;
++  int32_t whence;
++  if (!JS::ToInt32(cx, args[0], &fd) || !JS::ToInt32(cx, args[1], &offset) ||
++      !JS::ToInt32(cx, args[2], &whence)) {
++    return false;
++  }
++  off_t rc = lseek(fd, offset, whence);
++  args.rval().setInt32(rc >= 0 ? int32_t(rc) : -errno);
++  return true;
++}
++
++static bool StatArray(JSContext* cx, const struct stat& st, int err,
++                      MutableHandleValue rval) {
++  RootedObject arr(cx, JS::NewArrayObject(cx, 2));
++  if (!arr) {
++    return false;
++  }
++
++  if (err == 0) {
++    RootedObject obj(cx, JS_NewPlainObject(cx));
++    if (!obj || !DefineStatNumber(cx, obj, "dev", double(st.st_dev)) ||
++        !DefineStatNumber(cx, obj, "ino", double(st.st_ino)) ||
++        !DefineStatNumber(cx, obj, "mode", double(st.st_mode)) ||
++        !DefineStatNumber(cx, obj, "nlink", double(st.st_nlink)) ||
++        !DefineStatNumber(cx, obj, "uid", double(st.st_uid)) ||
++        !DefineStatNumber(cx, obj, "gid", double(st.st_gid)) ||
++        !DefineStatNumber(cx, obj, "rdev", double(st.st_rdev)) ||
++        !DefineStatNumber(cx, obj, "size", double(st.st_size)) ||
++        !DefineStatNumber(cx, obj, "atime", double(st.st_atime)) ||
++        !DefineStatNumber(cx, obj, "mtime", double(st.st_mtime)) ||
++        !DefineStatNumber(cx, obj, "ctime", double(st.st_ctime)) ||
++        !JS_DefineElement(cx, arr, 0, obj, JSPROP_ENUMERATE)) {
++      return false;
++    }
++  } else if (!JS_DefineElement(cx, arr, 0, NullHandleValue,
++                              JSPROP_ENUMERATE)) {
++    return false;
++  }
++
++  RootedValue errValue(cx, Int32Value(err));
++  if (!JS_DefineElement(cx, arr, 1, errValue, JSPROP_ENUMERATE)) {
++    return false;
++  }
++  rval.setObject(*arr);
++  return true;
++}
++
++static bool os_fstat(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 1) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "fstat");
++    return false;
++  }
++
++  int32_t fd;
++  if (!JS::ToInt32(cx, args[0], &fd)) {
++    return false;
++  }
++  struct stat st;
++  int rc = fstat(fd, &st);
++  return StatArray(cx, st, rc == 0 ? 0 : errno, args.rval());
++}
++
++static bool os_isatty(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 1) {
++    JS_ReportErrorNumberASCII(cx, my_GetErrorMessage, nullptr,
++                              JSSMSG_INVALID_ARGS, "isatty");
++    return false;
++  }
++
++  int32_t fd;
++  if (!JS::ToInt32(cx, args[0], &fd)) {
++    return false;
++  }
++  args.rval().setBoolean(isatty(fd));
++  return true;
++}
++
++static bool os_popenRead(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 1) {
++    JS_ReportErrorASCII(cx, "os.popenRead requires 1 argument");
++    return false;
++  }
++
++  RootedString commandStr(cx, ToString(cx, args[0]));
++  if (!commandStr) {
++    return false;
++  }
++  UniqueChars command = JS_EncodeStringToUTF8(cx, commandStr);
++  if (!command) {
++    return false;
++  }
++
++  FILE* pipe = popen(command.get(), "r");
++  if (!pipe) {
++    JS_ReportErrorUTF8(cx, "popen failed: errno %d", errno);
++    return false;
++  }
++
++  std::string output;
++  char buffer[4096];
++  while (fgets(buffer, sizeof(buffer), pipe)) {
++    output.append(buffer);
++  }
++  int status = pclose(pipe);
++#ifndef XP_WIN
++  if (WIFEXITED(status)) {
++    status = WEXITSTATUS(status);
++  }
++#endif
++
++  RootedObject obj(cx, JS_NewPlainObject(cx));
++  RootedString out(cx, JS_NewStringCopyN(cx, output.data(), output.size()));
++  if (!obj || !out || !JS_DefineProperty(cx, obj, "output", out, JSPROP_ENUMERATE) ||
++      !JS_DefineProperty(cx, obj, "status", status, JSPROP_ENUMERATE)) {
++    return false;
++  }
++  args.rval().setObject(*obj);
++  return true;
++}
++
+ #if !defined(XP_WIN)
+
+ // There are two possible definitions of strerror_r floating around. The GNU
+@@ -1201,11 +1897,59 @@
+     JS_FN_HELP("getenv", os_getenv, 1, 0,
+ "getenv(variable)",
+ "  Get the value of an environment variable."),
++
++    JS_FN_HELP("setenv", os_setenv, 2, 0,
++"setenv(variable, value)",
++"  Set an environment variable. Returns 0 on success or -errno on failure."),
+
++    JS_FN_HELP("unsetenv", os_unsetenv, 1, 0,
++"unsetenv(variable)",
++"  Unset an environment variable. Returns 0 on success or -errno on failure."),
++
+     JS_FN_HELP("getpid", os_getpid, 0, 0,
+ "getpid()",
+ "  Return the current process id."),
+
++    JS_FN_HELP("getcwd", os_getcwd, 0, 0,
++"getcwd()",
++"  Return the current working directory."),
++
++    JS_FN_HELP("chdir", os_chdir, 1, 0,
++"chdir(dirname)",
++"  Change the current working directory. Returns 0 on success or -errno on failure."),
++
++    JS_FN_HELP("open", os_open, 2, 0,
++"open(path, flags[, mode])",
++"  Open a file descriptor. Returns fd on success or -errno on failure."),
++
++    JS_FN_HELP("read", os_read, 4, 0,
++"read(fd, arrayBuffer, offset, length)",
++"  Read bytes into an ArrayBuffer. Returns bytes read or -errno."),
++
++    JS_FN_HELP("write", os_write, 4, 0,
++"write(fd, arrayBuffer, offset, length)",
++"  Write bytes from an ArrayBuffer. Returns bytes written or -errno."),
++
++    JS_FN_HELP("close", os_close_fd, 1, 0,
++"close(fd)",
++"  Close a file descriptor. Returns 0 on success or -errno on failure."),
++
++    JS_FN_HELP("seek", os_seek, 3, 0,
++"seek(fd, offset, whence)",
++"  Seek a file descriptor. Returns offset on success or -errno on failure."),
++
++    JS_FN_HELP("fstat", os_fstat, 1, 0,
++"fstat(fd)",
++"  Return [stat, errno] for a file descriptor."),
++
++    JS_FN_HELP("isatty", os_isatty, 1, 0,
++"isatty(fd)",
++"  Return whether fd is a terminal."),
++
++    JS_FN_HELP("popenRead", os_popenRead, 1, 0,
++"popenRead(command)",
++"  Execute command and return { output, status }."),
++
+ #ifndef __wasi__
+     JS_FN_HELP("system", os_system, 1, 0,
+ "system(command)",
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -44,6 +44,7 @@
+ #endif
+ #include <ctime>
+ #include <math.h>
++#include <poll.h>
+ #ifndef __wasi__
+ #  include <signal.h>
+ #endif
+@@ -53,14 +54,26 @@
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <utility>
++#include <vector>
++#include <zlib.h>
+ #ifdef XP_UNIX
+ #  ifndef __wasi__
++#    include <arpa/inet.h>
++#    include <netdb.h>
++#    include <netinet/in.h>
+ #    include <sys/mman.h>
++#    include <sys/socket.h>
+ #    include <sys/wait.h>
+ #  endif
+ #  include <sys/stat.h>
+ #  include <unistd.h>
+ #endif
++#include <openssl/err.h>
++#include <openssl/evp.h>
++#include <openssl/hmac.h>
++#include <openssl/pem.h>
++#include <openssl/ssl.h>
++#include <openssl/x509.h>
+ #ifdef XP_LINUX
+ #  include <sys/prctl.h>
+ #endif
+@@ -170,6 +183,7 @@
+ #include "proxy/DeadObjectProxy.h"  // js::IsDeadProxyObject
+ #include "shell/jsoptparse.h"
+ #include "shell/jsshell.h"
++#include "shell/kandelo-node-bootstrap.h"
+ #include "shell/OSObject.h"
+ #include "shell/ShellModuleObjectWrapper.h"
+ #include "shell/WasmTesting.h"
+@@ -236,6 +250,1070 @@
+ using mozilla::TimeDuration;
+ using mozilla::TimeStamp;
+ using mozilla::Utf8Unit;
++
++static JSObject* KandeloNewUint8ArrayCopy(JSContext* cx, const uint8_t* data,
++                                          size_t len) {
++  RootedObject obj(cx, JS_NewUint8Array(cx, len));
++  if (!obj) {
++    return nullptr;
++  }
++  auto& ta = obj->as<TypedArrayObject>();
++  if (ta.isSharedMemory()) {
++    JS_ReportErrorASCII(cx, "cannot write native bytes into shared memory");
++    return nullptr;
++  }
++  if (len > 0) {
++    memcpy(ta.dataPointerUnshared(), data, len);
++  }
++  return obj;
++}
++
++static bool KandeloValueToBytes(JSContext* cx, HandleValue value,
++                                std::vector<uint8_t>* out) {
++  out->clear();
++  if (value.isString()) {
++    RootedString strValue(cx, value.toString());
++    UniqueChars str = JS_EncodeStringToUTF8(cx, strValue);
++    if (!str) {
++      return false;
++    }
++    size_t len = strlen(str.get());
++    out->assign(reinterpret_cast<const uint8_t*>(str.get()),
++                reinterpret_cast<const uint8_t*>(str.get()) + len);
++    return true;
++  }
++  if (!value.isObject()) {
++    JS_ReportErrorASCII(cx, "expected string, ArrayBuffer, or typed array");
++    return false;
++  }
++
++  RootedObject obj(cx, &value.toObject());
++  JS::AutoCheckCannotGC nogc;
++  bool isShared = false;
++  if (JS_IsArrayBufferViewObject(obj)) {
++    uint8_t* data =
++        static_cast<uint8_t*>(JS_GetArrayBufferViewData(obj, &isShared, nogc));
++    size_t len = JS_GetArrayBufferViewByteLength(obj);
++    if (isShared) {
++      JS_ReportErrorASCII(cx, "shared typed arrays are not supported here");
++      return false;
++    }
++    out->assign(data, data + len);
++    return true;
++  }
++  if (JS::IsArrayBufferObject(obj)) {
++    uint8_t* data = JS::GetArrayBufferData(obj, &isShared, nogc);
++    size_t len = JS::GetArrayBufferByteLength(obj);
++    if (isShared) {
++      JS_ReportErrorASCII(cx, "shared ArrayBuffer is not supported here");
++      return false;
++    }
++    out->assign(data, data + len);
++    return true;
++  }
++  JS_ReportErrorASCII(cx, "expected string, ArrayBuffer, or typed array");
++  return false;
++}
++
++static bool KandeloGetString(JSContext* cx, HandleValue value,
++                             UniqueChars* out) {
++  RootedString str(cx, JS::ToString(cx, value));
++  if (!str) {
++    return false;
++  }
++  *out = JS_EncodeStringToUTF8(cx, str);
++  return *out != nullptr;
++}
++
++static JSObject* KandeloResolvedPromise(JSContext* cx, HandleValue value) {
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!promise) {
++    return nullptr;
++  }
++  if (!JS::ResolvePromise(cx, promise, value)) {
++    return nullptr;
++  }
++  return promise;
++}
++
++static JSObject* KandeloRejectedPromise(JSContext* cx, const char* message) {
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!promise) {
++    return nullptr;
++  }
++  RootedValue reason(cx);
++  JS_ReportErrorASCII(cx, "%s", message ? message : "native promise rejected");
++  if (!JS_GetPendingException(cx, &reason)) {
++    JS_ClearPendingException(cx);
++    RootedString str(cx, JS_NewStringCopyZ(cx, message ? message : "error"));
++    if (!str) {
++      return nullptr;
++    }
++    reason.setString(str);
++  }
++  JS_ClearPendingException(cx);
++  if (!JS::RejectPromise(cx, promise, reason)) {
++    return nullptr;
++  }
++  return promise;
++}
++
++struct KandeloHashState {
++  EVP_MD_CTX* md = nullptr;
++  HMAC_CTX* hmac = nullptr;
++};
++
++static const EVP_MD* KandeloResolveDigest(const char* name) {
++  if (!strcmp(name, "sha1")) return EVP_sha1();
++  if (!strcmp(name, "sha256")) return EVP_sha256();
++  if (!strcmp(name, "sha512")) return EVP_sha512();
++  if (!strcmp(name, "md5")) return EVP_md5();
++  return nullptr;
++}
++
++static void KandeloHashFinalize(JS::GCContext* gcx, JSObject* obj) {
++  auto* state =
++      static_cast<KandeloHashState*>(JS::GetReservedSlot(obj, 0).toPrivate());
++  if (!state) {
++    return;
++  }
++  if (state->md) EVP_MD_CTX_free(state->md);
++  if (state->hmac) HMAC_CTX_free(state->hmac);
++  js_delete(state);
++}
++
++static const JSClassOps KandeloHashClassOps = {
++    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
++    KandeloHashFinalize, nullptr, nullptr, nullptr};
++
++static const JSClass KandeloHashClass = {
++    "KandeloNodeHash",
++    JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE,
++    &KandeloHashClassOps,
++};
++
++static KandeloHashState* KandeloHashFromThis(JSContext* cx,
++                                             const CallArgs& args) {
++  if (!args.thisv().isObject()) {
++    JS_ReportErrorASCII(cx, "invalid hash receiver");
++    return nullptr;
++  }
++  RootedObject obj(cx, &args.thisv().toObject());
++  if (JS::GetClass(obj) != &KandeloHashClass) {
++    JS_ReportErrorASCII(cx, "invalid hash receiver");
++    return nullptr;
++  }
++  auto* state =
++      static_cast<KandeloHashState*>(JS::GetReservedSlot(obj, 0).toPrivate());
++  if (!state || (!state->md && !state->hmac)) {
++    JS_ReportErrorASCII(cx, "hash digest already called");
++    return nullptr;
++  }
++  return state;
++}
++
++static bool KandeloHashUpdate(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  KandeloHashState* state = KandeloHashFromThis(cx, args);
++  if (!state) {
++    return false;
++  }
++  if (args.length() < 1) {
++    JS_ReportErrorASCII(cx, "Hash.update requires data");
++    return false;
++  }
++  std::vector<uint8_t> bytes;
++  if (!KandeloValueToBytes(cx, args[0], &bytes)) {
++    return false;
++  }
++  if (state->md) {
++    if (EVP_DigestUpdate(state->md, bytes.data(), bytes.size()) != 1) {
++      JS_ReportErrorASCII(cx, "EVP_DigestUpdate failed");
++      return false;
++    }
++  } else if (HMAC_Update(state->hmac, bytes.data(), bytes.size()) != 1) {
++    JS_ReportErrorASCII(cx, "HMAC_Update failed");
++    return false;
++  }
++  args.rval().set(args.thisv());
++  return true;
++}
++
++static bool KandeloHashDigest(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  KandeloHashState* state = KandeloHashFromThis(cx, args);
++  if (!state) {
++    return false;
++  }
++  unsigned char out[EVP_MAX_MD_SIZE];
++  unsigned int outLen = 0;
++  if (state->md) {
++    if (EVP_DigestFinal_ex(state->md, out, &outLen) != 1) {
++      JS_ReportErrorASCII(cx, "EVP_DigestFinal_ex failed");
++      return false;
++    }
++    EVP_MD_CTX_free(state->md);
++    state->md = nullptr;
++  } else {
++    if (HMAC_Final(state->hmac, out, &outLen) != 1) {
++      JS_ReportErrorASCII(cx, "HMAC_Final failed");
++      return false;
++    }
++    HMAC_CTX_free(state->hmac);
++    state->hmac = nullptr;
++  }
++  RootedObject result(cx, KandeloNewUint8ArrayCopy(cx, out, outLen));
++  if (!result) {
++    return false;
++  }
++  args.rval().setObject(*result);
++  return true;
++}
++
++static bool KandeloCreateHashLike(JSContext* cx, const EVP_MD* md,
++                                  const std::vector<uint8_t>* key,
++                                  MutableHandleValue rval) {
++  RootedObject obj(cx, JS_NewObject(cx, &KandeloHashClass));
++  if (!obj) {
++    return false;
++  }
++  auto* state = js_new<KandeloHashState>();
++  if (!state) {
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
++  if (key) {
++    state->hmac = HMAC_CTX_new();
++    if (!state->hmac || HMAC_Init_ex(state->hmac, key->data(), key->size(), md,
++                                     nullptr) != 1) {
++      if (state->hmac) HMAC_CTX_free(state->hmac);
++      js_delete(state);
++      JS_ReportErrorASCII(cx, "HMAC_Init_ex failed");
++      return false;
++    }
++  } else {
++    state->md = EVP_MD_CTX_new();
++    if (!state->md || EVP_DigestInit_ex(state->md, md, nullptr) != 1) {
++      if (state->md) EVP_MD_CTX_free(state->md);
++      js_delete(state);
++      JS_ReportErrorASCII(cx, "EVP_DigestInit_ex failed");
++      return false;
++    }
++  }
++  JS::SetReservedSlot(obj, 0, JS::PrivateValue(state));
++  if (!JS_DefineFunction(cx, obj, "update", KandeloHashUpdate, 1, 0) ||
++      !JS_DefineFunction(cx, obj, "digest", KandeloHashDigest, 0, 0)) {
++    return false;
++  }
++  rval.setObject(*obj);
++  return true;
++}
++
++static bool KandeloNativeCreateHash(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() < 1) {
++    JS_ReportErrorASCII(cx, "createHash requires an algorithm");
++    return false;
++  }
++  UniqueChars algorithm;
++  if (!KandeloGetString(cx, args[0], &algorithm)) {
++    return false;
++  }
++  const EVP_MD* md = KandeloResolveDigest(algorithm.get());
++  if (!md) {
++    JS_ReportErrorASCII(cx, "unsupported hash algorithm");
++    return false;
++  }
++  return KandeloCreateHashLike(cx, md, nullptr, args.rval());
++}
++
++static bool KandeloNativeCreateHmac(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() < 2) {
++    JS_ReportErrorASCII(cx, "createHmac requires algorithm and key");
++    return false;
++  }
++  UniqueChars algorithm;
++  if (!KandeloGetString(cx, args[0], &algorithm)) {
++    return false;
++  }
++  const EVP_MD* md = KandeloResolveDigest(algorithm.get());
++  if (!md) {
++    JS_ReportErrorASCII(cx, "unsupported hmac algorithm");
++    return false;
++  }
++  std::vector<uint8_t> key;
++  if (!KandeloValueToBytes(cx, args[1], &key)) {
++    return false;
++  }
++  return KandeloCreateHashLike(cx, md, &key, args.rval());
++}
++
++struct KandeloZlibState {
++  z_stream stream{};
++  bool deflate = false;
++};
++
++static void KandeloZlibDestroy(KandeloZlibState* state) {
++  if (!state) return;
++  if (state->deflate) deflateEnd(&state->stream);
++  else inflateEnd(&state->stream);
++  js_delete(state);
++}
++
++static void KandeloZlibFinalize(JS::GCContext* gcx, JSObject* obj) {
++  auto* state =
++      static_cast<KandeloZlibState*>(JS::GetReservedSlot(obj, 0).toPrivate());
++  KandeloZlibDestroy(state);
++}
++
++static const JSClassOps KandeloZlibClassOps = {
++    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
++    KandeloZlibFinalize, nullptr, nullptr, nullptr};
++
++static const JSClass KandeloZlibClass = {
++    "KandeloNodeZlib",
++    JSCLASS_HAS_RESERVED_SLOTS(1) | JSCLASS_FOREGROUND_FINALIZE,
++    &KandeloZlibClassOps,
++};
++
++static bool KandeloZlibRun(JSContext* cx, KandeloZlibState* state,
++                           const uint8_t* input, size_t inputLen, bool finish,
++                           MutableHandleValue rval) {
++  state->stream.next_in = const_cast<Bytef*>(input);
++  state->stream.avail_in = uInt(inputLen);
++  const int flush = finish ? Z_FINISH : Z_NO_FLUSH;
++  std::vector<uint8_t> out;
++  uint8_t chunk[64 * 1024];
++  for (;;) {
++    state->stream.next_out = chunk;
++    state->stream.avail_out = sizeof(chunk);
++    int rc = state->deflate ? deflate(&state->stream, flush)
++                            : inflate(&state->stream, flush);
++    size_t produced = sizeof(chunk) - state->stream.avail_out;
++    out.insert(out.end(), chunk, chunk + produced);
++    if (rc == Z_STREAM_END) break;
++    if (rc == Z_BUF_ERROR && state->stream.avail_in == 0 && produced == 0) break;
++    if (rc != Z_OK) {
++      JS_ReportErrorASCII(cx, "%s", state->stream.msg ? state->stream.msg : "zlib error");
++      return false;
++    }
++    if (!finish && state->stream.avail_in == 0) break;
++  }
++  RootedObject result(cx, KandeloNewUint8ArrayCopy(
++                              cx, out.empty() ? nullptr : out.data(), out.size()));
++  if (!result) {
++    return false;
++  }
++  rval.setObject(*result);
++  return true;
++}
++
++static KandeloZlibState* KandeloZlibFromThis(JSContext* cx,
++                                             const CallArgs& args) {
++  if (!args.thisv().isObject()) {
++    JS_ReportErrorASCII(cx, "invalid zlib receiver");
++    return nullptr;
++  }
++  RootedObject obj(cx, &args.thisv().toObject());
++  if (JS::GetClass(obj) != &KandeloZlibClass) {
++    JS_ReportErrorASCII(cx, "invalid zlib receiver");
++    return nullptr;
++  }
++  auto* state =
++      static_cast<KandeloZlibState*>(JS::GetReservedSlot(obj, 0).toPrivate());
++  if (!state) {
++    JS_ReportErrorASCII(cx, "invalid zlib state");
++  }
++  return state;
++}
++
++static bool KandeloZlibWrite(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  KandeloZlibState* state = KandeloZlibFromThis(cx, args);
++  if (!state) {
++    return false;
++  }
++  if (args.length() < 1) {
++    JS_ReportErrorASCII(cx, "zlib.write requires input");
++    return false;
++  }
++  std::vector<uint8_t> input;
++  if (!KandeloValueToBytes(cx, args[0], &input)) {
++    return false;
++  }
++  bool finish = args.length() >= 2 && JS::ToBoolean(args[1]);
++  return KandeloZlibRun(cx, state, input.data(), input.size(), finish,
++                        args.rval());
++}
++
++static bool KandeloMakeZlib(JSContext* cx, bool deflateMode, int windowBits,
++                            int level, MutableHandleValue rval) {
++  auto* state = js_new<KandeloZlibState>();
++  if (!state) {
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
++  state->deflate = deflateMode;
++  int rc = deflateMode
++               ? deflateInit2(&state->stream, level, Z_DEFLATED, windowBits, 8,
++                              Z_DEFAULT_STRATEGY)
++               : inflateInit2(&state->stream, windowBits);
++  if (rc != Z_OK) {
++    js_delete(state);
++    JS_ReportErrorASCII(cx, "zlib init failed");
++    return false;
++  }
++  RootedObject obj(cx, JS_NewObject(cx, &KandeloZlibClass));
++  if (!obj) {
++    KandeloZlibDestroy(state);
++    return false;
++  }
++  JS::SetReservedSlot(obj, 0, JS::PrivateValue(state));
++  if (!JS_DefineFunction(cx, obj, "write", KandeloZlibWrite, 2, 0)) {
++    return false;
++  }
++  rval.setObject(*obj);
++  return true;
++}
++
++static int KandeloNormalizeZlibLevel(JSContext* cx, HandleValue value) {
++  if (value.isUndefined()) return Z_DEFAULT_COMPRESSION;
++  int32_t level;
++  if (!JS::ToInt32(cx, value, &level)) return Z_DEFAULT_COMPRESSION;
++  if (level != Z_DEFAULT_COMPRESSION && (level < 0 || level > 9)) {
++    JS_ReportErrorASCII(cx, "zlib level must be -1 or 0..9");
++    return Z_DEFAULT_COMPRESSION;
++  }
++  return level;
++}
++
++static bool KandeloNativeCreateDeflate(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int level = args.length() ? KandeloNormalizeZlibLevel(cx, args[0])
++                            : Z_DEFAULT_COMPRESSION;
++  return KandeloMakeZlib(cx, true, 15, level, args.rval());
++}
++
++static bool KandeloNativeCreateInflate(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloMakeZlib(cx, false, 15, 0, args.rval());
++}
++
++static bool KandeloNativeCreateGzip(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int level = args.length() ? KandeloNormalizeZlibLevel(cx, args[0])
++                            : Z_DEFAULT_COMPRESSION;
++  return KandeloMakeZlib(cx, true, 31, level, args.rval());
++}
++
++static bool KandeloNativeCreateGunzip(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloMakeZlib(cx, false, 31, 0, args.rval());
++}
++
++static bool KandeloZlibOneShot(JSContext* cx, const CallArgs& args,
++                               bool deflateMode, int windowBits, int level) {
++  if (args.length() < 1) {
++    JS_ReportErrorASCII(cx, "zlib input required");
++    return false;
++  }
++  std::vector<uint8_t> input;
++  if (!KandeloValueToBytes(cx, args[0], &input)) {
++    return false;
++  }
++  RootedValue streamValue(cx);
++  if (!KandeloMakeZlib(cx, deflateMode, windowBits, level, &streamValue)) {
++    return false;
++  }
++  RootedObject streamObj(cx, &streamValue.toObject());
++  auto* state =
++      static_cast<KandeloZlibState*>(JS::GetReservedSlot(streamObj, 0).toPrivate());
++  return KandeloZlibRun(cx, state, input.data(), input.size(), true, args.rval());
++}
++
++static bool KandeloNativeDeflateSync(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int level = args.length() >= 2 ? KandeloNormalizeZlibLevel(cx, args[1])
++                                 : Z_DEFAULT_COMPRESSION;
++  return KandeloZlibOneShot(cx, args, true, 15, level);
++}
++
++static bool KandeloNativeInflateSync(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloZlibOneShot(cx, args, false, 15, 0);
++}
++
++static bool KandeloNativeGzipSync(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int level = args.length() >= 2 ? KandeloNormalizeZlibLevel(cx, args[1])
++                                 : Z_DEFAULT_COMPRESSION;
++  return KandeloZlibOneShot(cx, args, true, 31, level);
++}
++
++static bool KandeloNativeGunzipSync(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloZlibOneShot(cx, args, false, 31, 0);
++}
++
++static int KandeloResolveHost(const char* host, struct in_addr* out) {
++  if (inet_aton(host, out)) return 0;
++  struct addrinfo hints = {};
++  hints.ai_family = AF_INET;
++  hints.ai_socktype = SOCK_STREAM;
++  struct addrinfo* res = nullptr;
++  int rc = getaddrinfo(host, nullptr, &hints, &res);
++  if (rc != 0 || !res) return -1;
++  *out = reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr;
++  freeaddrinfo(res);
++  return 0;
++}
++
++enum class KandeloSocketWatchKind {
++  Connect,
++  Read,
++  Write,
++};
++
++struct KandeloSocketWatch {
++  int fd = -1;
++  KandeloSocketWatchKind kind;
++  JSContext* cx = nullptr;
++  PersistentRootedObject promise;
++  std::vector<uint8_t> buffer;
++  size_t offset = 0;
++  KandeloSocketWatch* next = nullptr;
++
++  KandeloSocketWatch(JSContext* cx, int fd, KandeloSocketWatchKind kind,
++                     HandleObject promise)
++      : fd(fd), kind(kind), cx(cx), promise(cx, promise) {}
++};
++
++static KandeloSocketWatch* gKandeloSocketWatches = nullptr;
++
++static int KandeloSetNonblocking(int fd) {
++  int flags = fcntl(fd, F_GETFL, 0);
++  if (flags < 0) return -1;
++  return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
++}
++
++static void KandeloSocketWatchLink(KandeloSocketWatch* watch) {
++  watch->next = gKandeloSocketWatches;
++  gKandeloSocketWatches = watch;
++}
++
++static void KandeloSocketWatchUnlink(KandeloSocketWatch* target) {
++  KandeloSocketWatch** current = &gKandeloSocketWatches;
++  while (*current) {
++    if (*current == target) {
++      *current = target->next;
++      target->next = nullptr;
++      return;
++    }
++    current = &(*current)->next;
++  }
++}
++
++static bool KandeloSocketHasWatches() { return gKandeloSocketWatches != nullptr; }
++
++static bool KandeloResolvePromiseWithErrno(JSContext* cx, HandleObject promise,
++                                           int err, const char* fallback) {
++  const char* message = err ? strerror(err) : fallback;
++  RootedString str(cx, JS_NewStringCopyZ(cx, message ? message : "socket error"));
++  if (!str) return false;
++  RootedValue reason(cx, StringValue(str));
++  return JS::RejectPromise(cx, promise, reason);
++}
++
++static bool KandeloResolvePromiseWithInt(JSContext* cx, HandleObject promise,
++                                         int32_t value) {
++  RootedValue resolved(cx, Int32Value(value));
++  return JS::ResolvePromise(cx, promise, resolved);
++}
++
++static bool KandeloResolvePromiseWithBytes(JSContext* cx, HandleObject promise,
++                                           const uint8_t* bytes, size_t length) {
++  RootedObject array(cx, KandeloNewUint8ArrayCopy(cx, bytes, length));
++  if (!array) return false;
++  RootedValue resolved(cx, ObjectValue(*array));
++  return JS::ResolvePromise(cx, promise, resolved);
++}
++
++static int KandeloSocketDispatch(JSContext* cx) {
++  int count = 0;
++  for (KandeloSocketWatch* watch = gKandeloSocketWatches; watch;
++       watch = watch->next) {
++    count++;
++  }
++  if (count == 0) return 0;
++
++  std::vector<pollfd> pollfds;
++  pollfds.reserve(size_t(count));
++  for (KandeloSocketWatch* watch = gKandeloSocketWatches; watch;
++       watch = watch->next) {
++    pollfd pfd = {};
++    pfd.fd = watch->fd;
++    pfd.events = watch->kind == KandeloSocketWatchKind::Read ? POLLIN : POLLOUT;
++    pollfds.push_back(pfd);
++  }
++
++  int rc = poll(pollfds.data(), nfds_t(pollfds.size()), 0);
++  if (rc <= 0) return 0;
++
++  int processed = 0;
++  KandeloSocketWatch* watch = gKandeloSocketWatches;
++  size_t index = 0;
++  while (watch && index < pollfds.size()) {
++    KandeloSocketWatch* next = watch->next;
++    short revents = pollfds[index++].revents;
++    if (revents == 0) {
++      watch = next;
++      continue;
++    }
++
++    bool done = false;
++    if (watch->kind == KandeloSocketWatchKind::Connect) {
++      int err = 0;
++      socklen_t len = sizeof(err);
++      if (getsockopt(watch->fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 &&
++          err == 0) {
++        KandeloResolvePromiseWithInt(cx, watch->promise, watch->fd);
++      } else {
++        KandeloResolvePromiseWithErrno(cx, watch->promise,
++                                       err ? err : ECONNREFUSED, nullptr);
++      }
++      done = true;
++    } else if (watch->kind == KandeloSocketWatchKind::Read) {
++      ssize_t n = read(watch->fd, watch->buffer.data(), watch->buffer.size());
++      if (n >= 0) {
++        KandeloResolvePromiseWithBytes(cx, watch->promise, watch->buffer.data(),
++                                       size_t(n));
++        done = true;
++      } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
++        KandeloResolvePromiseWithErrno(cx, watch->promise, errno, nullptr);
++        done = true;
++      }
++    } else {
++      ssize_t n = write(watch->fd, watch->buffer.data() + watch->offset,
++                        watch->buffer.size() - watch->offset);
++      if (n > 0) {
++        watch->offset += size_t(n);
++        if (watch->offset >= watch->buffer.size()) {
++          KandeloResolvePromiseWithInt(cx, watch->promise,
++                                       int32_t(watch->buffer.size()));
++          done = true;
++        }
++      } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
++        KandeloResolvePromiseWithErrno(cx, watch->promise, errno, nullptr);
++        done = true;
++      }
++    }
++
++    if (done) {
++      KandeloSocketWatchUnlink(watch);
++      js_delete(watch);
++      processed++;
++    }
++    watch = next;
++  }
++
++  return processed;
++}
++
++static bool KandeloNativeSocketConnect(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  UniqueChars host;
++  if (args.length() < 2 || !KandeloGetString(cx, args[0], &host)) {
++    return false;
++  }
++  int32_t port;
++  if (!JS::ToInt32(cx, args[1], &port)) {
++    return false;
++  }
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!promise) return false;
++  args.rval().setObject(*promise);
++
++  struct in_addr addr;
++  if (port < 0 || port > 65535 || KandeloResolveHost(host.get(), &addr) != 0) {
++    return KandeloResolvePromiseWithErrno(cx, promise, 0, "ENOTFOUND");
++  }
++  int fd = socket(AF_INET, SOCK_STREAM, 0);
++  if (fd < 0) {
++    return KandeloResolvePromiseWithErrno(cx, promise, errno, nullptr);
++  }
++  KandeloSetNonblocking(fd);
++  struct sockaddr_in sa = {};
++  sa.sin_family = AF_INET;
++  sa.sin_port = htons(uint16_t(port));
++  sa.sin_addr = addr;
++  int rc = connect(fd, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa));
++  if (rc == 0) {
++    return KandeloResolvePromiseWithInt(cx, promise, fd);
++  }
++  if (errno != EINPROGRESS && errno != EAGAIN && errno != EALREADY) {
++    int err = errno;
++    close(fd);
++    return KandeloResolvePromiseWithErrno(cx, promise, err, nullptr);
++  }
++
++  auto* watch =
++      js_new<KandeloSocketWatch>(cx, fd, KandeloSocketWatchKind::Connect,
++                                 promise);
++  if (!watch) {
++    close(fd);
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
++  KandeloSocketWatchLink(watch);
++  return true;
++}
++
++static bool KandeloNativeSocketRead(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t fd;
++  int32_t length = 16384;
++  if (args.length() < 1 || !JS::ToInt32(cx, args[0], &fd)) return false;
++  if (args.length() >= 2 && !JS::ToInt32(cx, args[1], &length)) return false;
++  if (length <= 0) length = 16384;
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!promise) return false;
++  args.rval().setObject(*promise);
++
++  std::vector<uint8_t> buffer(static_cast<size_t>(length));
++  ssize_t n = read(fd, buffer.data(), buffer.size());
++  if (n >= 0) {
++    return KandeloResolvePromiseWithBytes(cx, promise, buffer.data(), size_t(n));
++  }
++  if (errno != EAGAIN && errno != EWOULDBLOCK) {
++    return KandeloResolvePromiseWithErrno(cx, promise, errno, nullptr);
++  }
++
++  auto* watch = js_new<KandeloSocketWatch>(cx, fd, KandeloSocketWatchKind::Read,
++                                           promise);
++  if (!watch) {
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
++  watch->buffer = std::move(buffer);
++  KandeloSocketWatchLink(watch);
++  return true;
++}
++
++static bool KandeloNativeSocketWrite(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t fd;
++  if (args.length() < 2 || !JS::ToInt32(cx, args[0], &fd)) return false;
++  std::vector<uint8_t> bytes;
++  if (!KandeloValueToBytes(cx, args[1], &bytes)) return false;
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!promise) return false;
++  args.rval().setObject(*promise);
++  if (bytes.empty()) {
++    return KandeloResolvePromiseWithInt(cx, promise, 0);
++  }
++
++  ssize_t n = write(fd, bytes.data(), bytes.size());
++  if (n >= 0 && size_t(n) == bytes.size()) {
++    return KandeloResolvePromiseWithInt(cx, promise, int32_t(n));
++  }
++  if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
++    return KandeloResolvePromiseWithErrno(cx, promise, errno, nullptr);
++  }
++
++  auto* watch =
++      js_new<KandeloSocketWatch>(cx, fd, KandeloSocketWatchKind::Write,
++                                 promise);
++  if (!watch) {
++    JS_ReportOutOfMemory(cx);
++    return false;
++  }
++  watch->buffer = std::move(bytes);
++  watch->offset = n > 0 ? size_t(n) : 0;
++  KandeloSocketWatchLink(watch);
++  return true;
++}
++
++static bool KandeloNativeSocketClose(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t fd;
++  if (args.length() >= 1 && JS::ToInt32(cx, args[0], &fd) && fd >= 0) {
++    KandeloSocketWatch** current = &gKandeloSocketWatches;
++    while (*current) {
++      KandeloSocketWatch* watch = *current;
++      if (watch->fd == fd) {
++        *current = watch->next;
++        KandeloResolvePromiseWithErrno(cx, watch->promise, 0, "socket closed");
++        js_delete(watch);
++      } else {
++        current = &watch->next;
++      }
++    }
++    close(fd);
++  }
++  args.rval().setUndefined();
++  return true;
++}
++
++struct KandeloTlsHandle {
++  bool active = false;
++  int fd = -1;
++  SSL* ssl = nullptr;
++  SSL_CTX* ctx = nullptr;
++};
++
++static constexpr int KandeloMaxTlsHandles = 1024;
++static KandeloTlsHandle gKandeloTlsHandles[KandeloMaxTlsHandles];
++
++static int KandeloAllocTlsHandle(int fd, SSL* ssl, SSL_CTX* ctx) {
++  for (int i = 0; i < KandeloMaxTlsHandles; i++) {
++    if (!gKandeloTlsHandles[i].active) {
++      gKandeloTlsHandles[i].active = true;
++      gKandeloTlsHandles[i].fd = fd;
++      gKandeloTlsHandles[i].ssl = ssl;
++      gKandeloTlsHandles[i].ctx = ctx;
++      return i + 1;
++    }
++  }
++  return -1;
++}
++
++static KandeloTlsHandle* KandeloGetTlsHandle(int handle) {
++  if (handle < 1 || handle > KandeloMaxTlsHandles) return nullptr;
++  auto* h = &gKandeloTlsHandles[handle - 1];
++  return h->active ? h : nullptr;
++}
++
++static void KandeloCloseTlsHandle(int handle) {
++  KandeloTlsHandle* h = KandeloGetTlsHandle(handle);
++  if (!h) return;
++  if (h->ssl) {
++    SSL_shutdown(h->ssl);
++    SSL_free(h->ssl);
++  }
++  if (h->ctx) SSL_CTX_free(h->ctx);
++  if (h->fd >= 0) close(h->fd);
++  *h = KandeloTlsHandle();
++}
++
++static SSL_CTX* KandeloMakeTlsContext(JSContext* cx, HandleValue optionsValue) {
++  SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
++  if (!ctx) return nullptr;
++  SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
++  bool rejectUnauthorized = true;
++  RootedValue caValue(cx);
++  if (optionsValue.isObject()) {
++    RootedObject opts(cx, &optionsValue.toObject());
++    RootedValue rejectValue(cx);
++    if (JS_GetProperty(cx, opts, "rejectUnauthorized", &rejectValue) &&
++        rejectValue.isBoolean()) {
++      rejectUnauthorized = rejectValue.toBoolean();
++    }
++    JS_GetProperty(cx, opts, "ca", &caValue);
++  }
++  if (!caValue.isUndefined() && !caValue.isNull()) {
++    UniqueChars ca;
++    if (!KandeloGetString(cx, caValue, &ca)) {
++      SSL_CTX_free(ctx);
++      return nullptr;
++    }
++    BIO* bio = BIO_new_mem_buf(ca.get(), -1);
++    if (!bio) {
++      SSL_CTX_free(ctx);
++      return nullptr;
++    }
++    X509_STORE* store = SSL_CTX_get_cert_store(ctx);
++    X509* cert = nullptr;
++    int count = 0;
++    while ((cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr))) {
++      if (X509_STORE_add_cert(store, cert)) count++;
++      X509_free(cert);
++    }
++    BIO_free(bio);
++    ERR_clear_error();
++    if (count == 0) {
++      SSL_CTX_free(ctx);
++      return nullptr;
++    }
++  } else {
++    SSL_CTX_set_default_verify_paths(ctx);
++  }
++  SSL_CTX_set_verify(ctx, rejectUnauthorized ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
++                     nullptr);
++  return ctx;
++}
++
++static bool KandeloNativeTlsConnect(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t fd;
++  if (args.length() < 2 || !JS::ToInt32(cx, args[0], &fd)) return false;
++  UniqueChars servername;
++  if (!KandeloGetString(cx, args[1], &servername)) return false;
++  RootedValue options(cx, args.length() >= 3 ? args[2] : UndefinedValue());
++  SSL_CTX* ctx = KandeloMakeTlsContext(cx, options);
++  if (!ctx) {
++    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS context failed"));
++    if (!promise) return false;
++    args.rval().setObject(*promise);
++    return true;
++  }
++  SSL* ssl = SSL_new(ctx);
++  if (!ssl) {
++    SSL_CTX_free(ctx);
++    RootedObject promise(cx, KandeloRejectedPromise(cx, "SSL_new failed"));
++    if (!promise) return false;
++    args.rval().setObject(*promise);
++    return true;
++  }
++  SSL_set_fd(ssl, fd);
++  SSL_set_tlsext_host_name(ssl, servername.get());
++  SSL_set1_host(ssl, servername.get());
++  if (SSL_connect(ssl) != 1) {
++    SSL_free(ssl);
++    SSL_CTX_free(ctx);
++    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS handshake failed"));
++    if (!promise) return false;
++    args.rval().setObject(*promise);
++    return true;
++  }
++  int handle = KandeloAllocTlsHandle(fd, ssl, ctx);
++  if (handle < 0) {
++    SSL_free(ssl);
++    SSL_CTX_free(ctx);
++    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS handle table full"));
++    if (!promise) return false;
++    args.rval().setObject(*promise);
++    return true;
++  }
++  RootedValue value(cx, Int32Value(handle));
++  RootedObject promise(cx, KandeloResolvedPromise(cx, value));
++  if (!promise) return false;
++  args.rval().setObject(*promise);
++  return true;
++}
++
++static bool KandeloNativeTlsRead(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t handle;
++  int32_t length = 16384;
++  if (args.length() < 1 || !JS::ToInt32(cx, args[0], &handle)) return false;
++  if (args.length() >= 2 && !JS::ToInt32(cx, args[1], &length)) return false;
++  if (length <= 0) length = 16384;
++  KandeloTlsHandle* h = KandeloGetTlsHandle(handle);
++  if (!h) return false;
++  std::vector<uint8_t> buffer(static_cast<size_t>(length));
++  int n = SSL_read(h->ssl, buffer.data(), int(buffer.size()));
++  if (n < 0) {
++    RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS read failed"));
++    if (!promise) return false;
++    args.rval().setObject(*promise);
++    return true;
++  }
++  RootedObject bytes(cx, KandeloNewUint8ArrayCopy(cx, buffer.data(), size_t(n)));
++  if (!bytes) return false;
++  RootedValue value(cx, ObjectValue(*bytes));
++  RootedObject promise(cx, KandeloResolvedPromise(cx, value));
++  if (!promise) return false;
++  args.rval().setObject(*promise);
++  return true;
++}
++
++static bool KandeloNativeTlsWrite(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t handle;
++  if (args.length() < 2 || !JS::ToInt32(cx, args[0], &handle)) return false;
++  KandeloTlsHandle* h = KandeloGetTlsHandle(handle);
++  if (!h) return false;
++  std::vector<uint8_t> bytes;
++  if (!KandeloValueToBytes(cx, args[1], &bytes)) return false;
++  size_t written = 0;
++  while (written < bytes.size()) {
++    int n = SSL_write(h->ssl, bytes.data() + written, int(bytes.size() - written));
++    if (n <= 0) {
++      RootedObject promise(cx, KandeloRejectedPromise(cx, "TLS write failed"));
++      if (!promise) return false;
++      args.rval().setObject(*promise);
++      return true;
++    }
++    written += size_t(n);
++  }
++  RootedValue value(cx, Int32Value(int32_t(written)));
++  RootedObject promise(cx, KandeloResolvedPromise(cx, value));
++  if (!promise) return false;
++  args.rval().setObject(*promise);
++  return true;
++}
++
++static bool KandeloNativeTlsClose(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t handle;
++  if (args.length() >= 1 && JS::ToInt32(cx, args[0], &handle)) {
++    KandeloCloseTlsHandle(handle);
++  }
++  args.rval().setUndefined();
++  return true;
++}
++
++static bool KandeloNativeEvalScriptAsFunction(JSContext* cx, unsigned argc,
++                                              Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() < 2) {
++    JS_ReportErrorASCII(cx, "evalScriptAsFunction(source, filename)");
++    return false;
++  }
++  UniqueChars source;
++  UniqueChars filename;
++  if (!KandeloGetString(cx, args[0], &source) ||
++      !KandeloGetString(cx, args[1], &filename)) {
++    return false;
++  }
++  JS::CompileOptions opts(cx);
++  opts.setFileAndLine(filename.get(), 1).setForceFullParse();
++  JS::SourceText<Utf8Unit> srcBuf;
++  if (!srcBuf.init(cx, reinterpret_cast<const Utf8Unit*>(source.get()),
++                   strlen(source.get()), JS::SourceOwnership::Borrowed)) {
++    return false;
++  }
++  RootedValue rval(cx);
++  if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
++    return false;
++  }
++  args.rval().set(rval);
++  return true;
++}
++
++static bool DefineKandeloNodeNative(JSContext* cx) {
++  RootedObject native(cx, JS_NewPlainObject(cx));
++  if (!native) {
++    return false;
++  }
++  const JSFunctionSpec funcs[] = {
++      JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),
++      JS_FN("createHash", KandeloNativeCreateHash, 1, 0),
++      JS_FN("createHmac", KandeloNativeCreateHmac, 2, 0),
++      JS_FN("createDeflate", KandeloNativeCreateDeflate, 1, 0),
++      JS_FN("createInflate", KandeloNativeCreateInflate, 0, 0),
++      JS_FN("createGzip", KandeloNativeCreateGzip, 1, 0),
++      JS_FN("createGunzip", KandeloNativeCreateGunzip, 0, 0),
++      JS_FN("deflateSync", KandeloNativeDeflateSync, 2, 0),
++      JS_FN("inflateSync", KandeloNativeInflateSync, 1, 0),
++      JS_FN("gzipSync", KandeloNativeGzipSync, 2, 0),
++      JS_FN("gunzipSync", KandeloNativeGunzipSync, 1, 0),
++      JS_FN("socketConnect", KandeloNativeSocketConnect, 2, 0),
++      JS_FN("socketRead", KandeloNativeSocketRead, 2, 0),
++      JS_FN("socketWrite", KandeloNativeSocketWrite, 2, 0),
++      JS_FN("socketClose", KandeloNativeSocketClose, 1, 0),
++      JS_FN("tlsConnect", KandeloNativeTlsConnect, 3, 0),
++      JS_FN("tlsRead", KandeloNativeTlsRead, 2, 0),
++      JS_FN("tlsWrite", KandeloNativeTlsWrite, 2, 0),
++      JS_FN("tlsClose", KandeloNativeTlsClose, 1, 0),
++      JS_FS_END,
++  };
++  if (!JS_DefineFunctions(cx, native, funcs)) {
++    return false;
++  }
++  return JS_DefineProperty(cx, cx->global(), "__kandeloNodeNative", native, 0);
++}
+ using mozilla::Variant;
+
+ bool InitOptionParser(OptionParser& op);
+@@ -1415,9 +2493,13 @@
+
+     // Run tasks (only finalization registry clean tasks are possible).
+     bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
+-    if (!ranTasks) {
++    int ranNative = KandeloSocketDispatch(cx);
++    if (!ranTasks && ranNative == 0 && !KandeloSocketHasWatches()) {
+       break;
+     }
++    if (!ranTasks && ranNative == 0) {
++      usleep(1000);
++    }
+   }
+ }
+
+@@ -6876,7 +7958,43 @@
+
+ int shell::sArgc;
+ char** shell::sArgv;
++
++static bool IsKandeloNodeProgramName(const char* argv0) {
++  if (!argv0 || !*argv0) {
++    return false;
++  }
++  const char* base = strrchr(argv0, '/');
++  base = base ? base + 1 : argv0;
++  return strcmp(base, "node") == 0 || strcmp(base, "node.wasm") == 0 ||
++         strcmp(base, "spidermonkey-node") == 0 ||
++         strcmp(base, "spidermonkey-node.wasm") == 0;
++}
+
++static bool IsKandeloNodeMode() {
++  return sArgc > 0 && sArgv && IsKandeloNodeProgramName(sArgv[0]);
++}
++
++static bool RunKandeloNodeBootstrap(JSContext* cx) {
++  if (!DefineKandeloNodeNative(cx)) {
++    return false;
++  }
++
++  JS::CompileOptions opts(cx);
++  opts.setFileAndLine("kandelo:spidermonkey-node-bootstrap", 1)
++      .setForceFullParse();
++
++  JS::SourceText<Utf8Unit> srcBuf;
++  if (!srcBuf.init(cx,
++                   reinterpret_cast<const Utf8Unit*>(kKandeloNodeBootstrap),
++                   kKandeloNodeBootstrapLen,
++                   JS::SourceOwnership::Borrowed)) {
++    return false;
++  }
++
++  RootedValue rval(cx);
++  return JS::Evaluate(cx, opts, srcBuf, &rval);
++}
++
+ #ifndef __wasi__
+ static const char sWasmCompileAndSerializeFlag[] =
+     "--wasm-compile-and-serialize";
+@@ -11703,6 +12821,10 @@
+
+   /* |scriptArgs| gets bound on the global before any code is run. */
+   if (!BindScriptArgs(cx, op)) {
++    return false;
++  }
++
++  if (IsKandeloNodeMode() && !RunKandeloNodeBootstrap(cx)) {
+     return false;
+   }
+
+@@ -12321,6 +13443,12 @@
+   int result;
+
+   setlocale(LC_ALL, "");
++
++  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr) && argc == 2 &&
++      (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
++    puts("v22.0.0");
++    return EXIT_SUCCESS;
++  }
+
+   // Special-case stdout and stderr. We bump their refcounts to prevent them
+   // from getting closed and then having some printf fail somewhere.
+@@ -13315,6 +14443,8 @@
+     } else {
+       return OptionFailure("shared-memory", str);
+     }
++  } else if (IsKandeloNodeMode()) {
++    enableSharedMemory = true;
+   }
+
+   reportWarnings = op.getBoolOption('w');

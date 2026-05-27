@@ -793,7 +793,7 @@ export async function centralizedWorkerMain(
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
     const ptrWidth = initData.ptrWidth ?? 4;
-    // Use pre-compiled module if provided (avoids recompilation in web workers)
+    // Use pre-compiled module if provided (avoids recompilation in workers)
     const module = initData.programModule
       ? initData.programModule
       : await WebAssembly.compile(programBytes);

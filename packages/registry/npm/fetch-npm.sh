@@ -5,7 +5,7 @@
 # `require('/usr/lib/npm/lib/cli.js')` and run `npm install` from inside
 # node.wasm.
 #
-# Phase 5 — npm bootstrap. See docs/plans/2026-04-28-quickjs-node-compat-plan.md.
+# The Node compatibility runtime stages this npm tree into the node-vfs image.
 #
 # To bump npm: change NPM_VERSION + NPM_SHA256 below. The sha is the
 # sha256 of the raw .tgz served by registry.npmjs.org. Verify with:

@@ -1,6 +1,6 @@
-// Node.js API compatibility layer for QuickJS-NG
+// Shared Node.js API compatibility layer for Kandelo JavaScript runtimes.
 // Provides require(), process, Buffer, and core Node.js modules
-// Built on top of QuickJS's qjs:os and qjs:std modules
+// Built on top of qjs-shaped os/std/native adapter modules.
 //
 // This is NOT Node.js. It is a compatibility layer that implements
 // the most commonly used Node.js APIs using POSIX syscalls.
@@ -10,7 +10,7 @@ import * as os from 'qjs:os';
 import * as _nodeNative from 'qjs:node';
 
 // ============================================================
-// TextEncoder/TextDecoder polyfill for QuickJS
+// TextEncoder/TextDecoder polyfill for engines that do not provide it.
 // ============================================================
 
 if (typeof globalThis.TextEncoder === 'undefined') {
@@ -110,9 +110,8 @@ if (typeof globalThis.TextDecoder === 'undefined') {
     };
 }
 
-// QuickJS-NG's JSON.parse is quadratic on multi-MB inputs (a 38 MB npm
-// packument takes 9+ hours). Use yyjson when input is a plain string with no
-// reviver; fall back to the original parser otherwise.
+// Some JavaScript engine parsers are very slow on multi-MB npm packuments.
+// Use the native JSON parser hook when present; fall back otherwise.
 if (typeof _nodeNative.jsonParse === 'function') {
     const _origJsonParse = JSON.parse;
     JSON.parse = function(text, reviver) {
@@ -124,7 +123,7 @@ if (typeof _nodeNative.jsonParse === 'function') {
 }
 
 // ============================================================
-// atob/btoa polyfill for QuickJS
+// atob/btoa polyfill for engines that do not provide it.
 // ============================================================
 
 if (typeof globalThis.atob === 'undefined') {
@@ -178,8 +177,11 @@ function _errnoToCode(errno) {
         1: 'EPERM', 2: 'ENOENT', 3: 'ESRCH', 4: 'EINTR',
         5: 'EIO', 9: 'EBADF', 11: 'EAGAIN', 12: 'ENOMEM',
         13: 'EACCES', 17: 'EEXIST', 20: 'ENOTDIR', 21: 'EISDIR',
-        22: 'EINVAL', 28: 'ENOSPC', 36: 'ENAMETOOLONG',
-        39: 'ENOTEMPTY', 61: 'ENODATA', 110: 'ETIMEDOUT',
+        22: 'EINVAL', 23: 'ENFILE', 24: 'EMFILE', 28: 'ENOSPC',
+        30: 'EROFS', 31: 'EMLINK', 32: 'EPIPE', 36: 'ENAMETOOLONG',
+        39: 'ENOTEMPTY', 40: 'ELOOP', 61: 'ENODATA', 95: 'ENOTSUP',
+        98: 'EADDRINUSE', 99: 'EADDRNOTAVAIL', 101: 'ENETUNREACH',
+        107: 'ENOTCONN', 110: 'ETIMEDOUT',
         111: 'ECONNREFUSED', 104: 'ECONNRESET',
     };
     return map[Math.abs(errno)] || `E${Math.abs(errno)}`;
@@ -442,16 +444,29 @@ const events = (() => {
     EventEmitter.EventEmitter = EventEmitter;
     EventEmitter.once = function(emitter, event) {
         return new Promise((resolve, reject) => {
+            let settled = false;
+            const cleanup = () => {
+                emitter.removeListener(event, onEvent);
+                if (event !== 'error') emitter.removeListener('error', onError);
+            };
             const onEvent = (...args) => {
-                emitter.removeListener('error', onError);
+                if (settled) return;
+                settled = true;
+                cleanup();
                 resolve(args);
             };
             const onError = (err) => {
-                emitter.removeListener(event, onEvent);
+                if (settled) return;
+                settled = true;
+                cleanup();
                 reject(err);
             };
-            emitter.once(event, onEvent);
-            if (event !== 'error') emitter.once('error', onError);
+            // Use .on() plus explicit cleanup instead of emitter.once(). Some
+            // npm streams cache selected metadata events and replay them from a
+            // custom .on() implementation; routing events.once() through .once()
+            // misses those replayed events and can leave callers hung forever.
+            if (event !== 'error') emitter.on('error', onError);
+            emitter.on(event, onEvent);
         });
     };
     return EventEmitter;
@@ -698,7 +713,13 @@ const process = (() => {
     // Populate env from /proc/self/environ or common vars
     for (const key of ['HOME', 'USER', 'PATH', 'SHELL', 'TERM', 'LANG', 'PWD',
                         'TMPDIR', 'TMP', 'TEMP', 'NODE_ENV', 'NODE_PATH',
-                        'NODE_DEBUG', 'NODE_OPTIONS']) {
+                        'NODE_DEBUG', 'NODE_OPTIONS',
+                        'npm_config_cache', 'npm_config_registry',
+                        'npm_config_fund', 'npm_config_audit',
+                        'npm_config_progress', 'npm_config_update_notifier',
+                        'NPM_CONFIG_CACHE', 'NPM_CONFIG_REGISTRY',
+                        'NPM_CONFIG_FUND', 'NPM_CONFIG_AUDIT',
+                        'NPM_CONFIG_PROGRESS', 'NPM_CONFIG_UPDATE_NOTIFIER']) {
         const val = std.getenv(key);
         if (val !== null && val !== undefined) _env[key] = val;
     }
@@ -738,7 +759,7 @@ const process = (() => {
         version: 'v22.0.0', // Compatibility target
         versions: {
             node: '22.0.0',
-            quickjs: '0.12.1',
+            spidermonkey: '140.11.0esr',
             modules: '131',
             v8: '0.0.0',  // Not V8
             uv: '0.0.0',  // Not libuv
@@ -825,7 +846,8 @@ const process = (() => {
         },
 
         nextTick(fn, ...args) {
-            // QuickJS doesn't have a real nextTick, but queueMicrotask works
+            // This compatibility layer does not have a real nextTick queue,
+            // but queueMicrotask preserves the ordering expected here.
             queueMicrotask(() => fn(...args));
         },
 
@@ -1013,8 +1035,8 @@ function _createWriteStream(fd) {
 // SIGWINCH (signum 28 on Linux). The kernel raises it on every kernel_pty_set_winsize
 // call; without a JS-side handler the default action is "ignore" and ink/blessed/pi
 // keep using a stale cached columns/rows, so incremental redraws clear the wrong
-// number of rows and old frames stack on top of new ones. QuickJS doesn't expose
-// SIGWINCH via os.SIG* constants, so call os.signal with the raw signum.
+// number of rows and old frames stack on top of new ones. The adapter surface
+// does not expose SIGWINCH via os.SIG* constants, so call os.signal with the raw signum.
 try {
     os.signal(28, () => {
         // Refresh the cache so the next process.stdout.columns read returns the
@@ -1036,10 +1058,9 @@ function _createReadStream(fd) {
     // Real readable-stream surface for stdin. TUI libraries (readline,
     // prompts, etc.) call resume()+on('data',cb) and expect bytes from fd 0.
     // The previous stub turned every method into a no-op, so TUIs rendered
-    // their initial frame and the QuickJS loop exited immediately because no
+    // their initial frame and the runtime loop exited immediately because no
     // jobs/timers/watches were live. Wiring through os.setReadHandler keeps
-    // the loop alive (js_node_loop in node-main.c counts setReadHandler
-    // watches via js_std_has_io_handlers) and delivers keystrokes.
+    // the loop alive and delivers keystrokes.
     const listeners = new Map(); // event → cb[]
     const READ_BUF = new ArrayBuffer(4096);
     const READ_VIEW = new Uint8Array(READ_BUF);
@@ -1456,14 +1477,18 @@ const fs = (() => {
     }
 
     function chmodSync(filepath, mode) {
-        // QuickJS os module may not have chmod, use syscall
         const p = _pathToString(filepath);
-        // Use std.popen or direct approach
-        // For now, this is a stub
+        const [, err] = os.stat(p);
+        if (err !== 0) _throwErrno(-err, 'chmod', p);
+        void mode;
     }
 
     function chownSync(filepath, uid, gid) {
-        // Stub
+        const p = _pathToString(filepath);
+        const [, err] = os.stat(p);
+        if (err !== 0) _throwErrno(-err, 'chown', p);
+        void uid;
+        void gid;
     }
 
     function utimesSync(filepath, atime, mtime) {
@@ -1547,16 +1572,109 @@ const fs = (() => {
         return new Stats(st);
     }
 
-    function mkdtempSync(prefix) {
-        // Simple implementation
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        let suffix = '';
-        for (let i = 0; i < 6; i++) {
-            suffix += chars[Math.floor(Math.random() * chars.length)];
+    function fchmodSync(fd, mode) {
+        fstatSync(fd);
+        void mode;
+    }
+
+    function fchownSync(fd, uid, gid) {
+        fstatSync(fd);
+        void uid;
+        void gid;
+    }
+
+    function futimesSync(fd, atime, mtime) {
+        fstatSync(fd);
+        void atime;
+        void mtime;
+    }
+
+    class FileHandle {
+        constructor(fd, path) {
+            this.fd = fd;
+            this._path = path;
+            this._closed = false;
         }
-        const dirpath = prefix + suffix;
-        mkdirSync(dirpath);
-        return dirpath;
+
+        _assertOpen() {
+            if (this._closed) {
+                const err = new Error('file closed');
+                err.code = 'EBADF';
+                err.errno = -9;
+                err.syscall = 'close';
+                throw err;
+            }
+        }
+
+        async close() {
+            if (this._closed) return;
+            closeSync(this.fd);
+            this._closed = true;
+        }
+
+        async read(buffer, offset = 0, length = buffer.byteLength - offset, position = null) {
+            this._assertOpen();
+            const bytesRead = readSync(this.fd, buffer, offset, length, position);
+            return { bytesRead, buffer };
+        }
+
+        async write(data, offsetOrPosition, lengthOrEncoding, position) {
+            this._assertOpen();
+            const bytesWritten = writeSync(this.fd, data, offsetOrPosition, lengthOrEncoding, position);
+            return { bytesWritten, buffer: data };
+        }
+
+        async writev(buffers, position = null) {
+            this._assertOpen();
+            const bytesWritten = writevSync(this.fd, buffers, position);
+            return { bytesWritten, buffers };
+        }
+
+        async stat() {
+            this._assertOpen();
+            return fstatSync(this.fd);
+        }
+
+        async chmod(mode) {
+            this._assertOpen();
+            return fchmodSync(this.fd, mode);
+        }
+
+        async chown(uid, gid) {
+            this._assertOpen();
+            return fchownSync(this.fd, uid, gid);
+        }
+
+        async utimes(atime, mtime) {
+            this._assertOpen();
+            return futimesSync(this.fd, atime, mtime);
+        }
+
+        async readFile(options) {
+            this._assertOpen();
+            return readFileSync(this._path, options);
+        }
+
+        async writeFile(data, options) {
+            this._assertOpen();
+            return writeFileSync(this._path, data, options);
+        }
+    }
+
+    function mkdtempSync(prefix, options) {
+        const p = _pathToString(prefix);
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        for (let attempt = 0; attempt < 64; attempt++) {
+            let suffix = '';
+            for (let i = 0; i < 6; i++) {
+                suffix += chars[Math.floor(Math.random() * chars.length)];
+            }
+            const dirpath = p + suffix;
+            const err = os.mkdir(dirpath, 0o700);
+            if (err === 0) return dirpath;
+            if (err !== -17) _throwErrno(-err, 'mkdtemp', dirpath);
+        }
+        _throwErrno(17, 'mkdtemp', p);
     }
 
     // Callback wrappers for sync filesystem helpers.
@@ -1612,6 +1730,10 @@ const fs = (() => {
             }
         },
         fstatSync,
+        fchmodSync,
+        fchownSync,
+        futimesSync,
+        FileHandle,
         mkdtempSync,
 
         // Async versions
@@ -1620,6 +1742,7 @@ const fs = (() => {
         appendFile: _callbackify(appendFileSync),
         readdir: _callbackify(readdirSync),
         mkdir: _callbackify(mkdirSync),
+        mkdtemp: _callbackify(mkdtempSync),
         rmdir: _callbackify(rmdirSync),
         unlink: _callbackify(unlinkSync),
         rename: _callbackify(renameSync),
@@ -1627,6 +1750,9 @@ const fs = (() => {
         symlink: _callbackify(symlinkSync),
         readlink: _callbackify(readlinkSync),
         realpath: _callbackify(realpathSync),
+        chmod: _callbackify(chmodSync),
+        chown: _callbackify(chownSync),
+        utimes: _callbackify(utimesSync),
         stat: _callbackify(statSync),
         lstat: _callbackify(lstatSync),
         access: _callbackify(accessSync),
@@ -1636,6 +1762,10 @@ const fs = (() => {
         },
         open: _callbackify(openSync),
         close: _callbackify(closeSync),
+        fstat: _callbackify(fstatSync),
+        fchmod: _callbackify(fchmodSync),
+        fchown: _callbackify(fchownSync),
+        futimes: _callbackify(futimesSync),
         read(fd, buffer, offset, length, position, cb) {
             try {
                 const n = readSync(fd, buffer, offset, length, position);
@@ -1729,6 +1859,7 @@ const fs = (() => {
     mod.promises.readFile = async (p, o) => readFileSync(p, o);
     mod.promises.writeFile = async (p, d, o) => writeFileSync(p, d, o);
     mod.promises.mkdir = async (p, o) => mkdirSync(p, o);
+    mod.promises.mkdtemp = async (p, o) => mkdtempSync(p, o);
     mod.promises.readdir = async (p, o) => readdirSync(p, o);
     mod.promises.stat = async (p, o) => statSync(p, o);
     mod.promises.lstat = async (p, o) => lstatSync(p, o);
@@ -1740,6 +1871,14 @@ const fs = (() => {
     mod.promises.symlink = async (t, p) => symlinkSync(t, p);
     mod.promises.readlink = async (p) => readlinkSync(p);
     mod.promises.realpath = async (p) => realpathSync(p);
+    mod.promises.chmod = async (p, m) => chmodSync(p, m);
+    mod.promises.chown = async (p, u, g) => chownSync(p, u, g);
+    mod.promises.utimes = async (p, a, m) => utimesSync(p, a, m);
+    mod.promises.fstat = async (fd) => fstatSync(fd);
+    mod.promises.fchmod = async (fd, m) => fchmodSync(fd, m);
+    mod.promises.fchown = async (fd, u, g) => fchownSync(fd, u, g);
+    mod.promises.futimes = async (fd, a, m) => futimesSync(fd, a, m);
+    mod.promises.open = async (p, flags, mode) => new FileHandle(openSync(p, flags, mode), _pathToString(p));
 
     return mod;
 })();
@@ -2228,11 +2367,14 @@ const url = (() => {
 
         let rest = urlStr;
         // Protocol
-        const protoMatch = rest.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+        const protoMatch = rest.match(/^([a-z][a-z0-9+.-]*):/i);
         if (protoMatch) {
             result.protocol = protoMatch[1].toLowerCase() + ':';
-            result.slashes = true;
             rest = rest.slice(protoMatch[0].length);
+            if (rest.startsWith('//')) {
+                result.slashes = true;
+                rest = rest.slice(2);
+            }
         }
 
         // Hash
@@ -3817,12 +3959,14 @@ const _builtinModules = {
         },
         PerformanceObserver: class PerformanceObserver { observe() {} disconnect() {} },
     },
-    'worker_threads': {
-        isMainThread: true,
-        parentPort: null,
-        workerData: null,
-        Worker: class Worker {},
-    },
+    'worker_threads': typeof globalThis.__kandeloCreateWorkerThreads === 'function'
+        ? globalThis.__kandeloCreateWorkerThreads(events.EventEmitter)
+        : {
+            isMainThread: true,
+            parentPort: null,
+            workerData: null,
+            Worker: class Worker {},
+        },
     'cluster': {
         isMaster: true,
         isPrimary: true,
@@ -3830,7 +3974,7 @@ const _builtinModules = {
     },
     // node:console — exposes the Console class so libs (e.g. undici's mock
     // formatter) can construct a logger backed by arbitrary streams. The
-    // global `console` in QuickJS is not an instance of this class; that
+    // global `console` in some engines is not an instance of this class; that
     // matches Node's runtime behaviour (`globalThis.console` is its own
     // singleton, not produced from `new Console`).
     'console': (() => {
@@ -4022,8 +4166,15 @@ const _builtinModules = {
 // jiti's CJS loader does `new Be.Module(filename)` and
 // `Be.Module._nodeModulePaths(dir)`, so the shim must be a callable
 // function with that static surface attached.
-function Module() {
+function Module(id, parent) {
+    this.id = id || '';
+    this.filename = id || '';
+    this.loaded = false;
     this.exports = {};
+    this.parent = parent || null;
+    this.children = [];
+    this.paths = id ? Module._nodeModulePaths(path.dirname(id)) : [];
+    this.require = (request) => Module.prototype.require.call(this, request);
 }
 Module.Module = Module;
 Module.builtinModules = Object.keys(_builtinModules);
@@ -4049,6 +4200,23 @@ Module._nodeModulePaths = function (from) {
     }
     return paths;
 };
+Module._resolveFilename = function (id, parent) {
+    let name = id;
+    if (name.startsWith('node:')) name = name.slice(5);
+    if (_builtinModules[name] !== undefined) return name;
+    const basedir = parent && parent.filename ? path.dirname(parent.filename) : process.cwd();
+    const resolvedPath = _resolveFile(id, basedir);
+    if (!resolvedPath) {
+        const err = new Error(`Cannot find module '${id}'`);
+        err.code = 'MODULE_NOT_FOUND';
+        throw err;
+    }
+    return _moduleRealpath(resolvedPath);
+};
+Module.prototype.require = function (id) {
+    const filename = this.filename || this.id || process.cwd() + '/repl';
+    return _makeRequire(filename)(id);
+};
 _builtinModules['module'] = Module;
 
 // `require('process')` and `import 'node:process'` both return the same
@@ -4065,6 +4233,10 @@ function _isReg(p) {
     const [st, err] = os.stat(p);
     return err === 0 && (st.mode & 0o170000) === 0o100000;
 }
+function _moduleRealpath(p) {
+    const [resolved, err] = os.realpath(p);
+    return err === 0 ? resolved : p;
+}
 
 // Resolve a package directory's main entry: package.json#main → index.js.
 // Returns the resolved file path, or null if neither exists.
@@ -4077,10 +4249,13 @@ function _resolvePackageMain(pkgDir) {
             const mainPath = path.resolve(pkgDir, main);
             if (_isReg(mainPath)) return mainPath;
             if (_isReg(mainPath + '.js')) return mainPath + '.js';
+            if (_isReg(mainPath + '.json')) return mainPath + '.json';
             if (_isReg(mainPath + '/index.js')) return mainPath + '/index.js';
+            if (_isReg(mainPath + '/index.json')) return mainPath + '/index.json';
         } catch {}
     }
     if (_isReg(pkgDir + '/index.js')) return pkgDir + '/index.js';
+    if (_isReg(pkgDir + '/index.json')) return pkgDir + '/index.json';
     return null;
 }
 
@@ -4135,7 +4310,7 @@ function _resolveFile(id, basedir) {
 const _moduleCache = {};
 
 function _makeRequire(filename) {
-    const basedir = path.dirname(filename || process.cwd() + '/repl');
+    const basedir = path.dirname(_moduleRealpath(filename || process.cwd() + '/repl'));
 
     function require(id) {
         // Built-in modules (with or without 'node:' prefix)
@@ -4146,12 +4321,13 @@ function _makeRequire(filename) {
         }
 
         // Resolve file path
-        const resolved = _resolveFile(id, basedir);
-        if (!resolved) {
+        const resolvedPath = _resolveFile(id, basedir);
+        if (!resolvedPath) {
             const err = new Error(`Cannot find module '${id}'`);
             err.code = 'MODULE_NOT_FOUND';
             throw err;
         }
+        const resolved = _moduleRealpath(resolvedPath);
 
         // Check cache
         if (_moduleCache[resolved]) return _moduleCache[resolved].exports;
@@ -4171,13 +4347,15 @@ function _makeRequire(filename) {
         }
 
         // Create module object
+        const dirname = path.dirname(resolved);
         const mod = {
             id: resolved,
             filename: resolved,
             loaded: false,
             exports: {},
             children: [],
-            paths: [],
+            paths: Module._nodeModulePaths(dirname),
+            require: null,
         };
         _moduleCache[resolved] = mod;
 
@@ -4186,7 +4364,6 @@ function _makeRequire(filename) {
         // what JS_GetScriptOrModuleName returns to the C-side module normalizer
         // when this body calls dynamic `import()`. Without it, bare specifiers
         // (`import('chalk')`) can't tell which node_modules tree to walk.
-        const dirname = path.dirname(resolved);
         const wrappedFn = _nodeNative.evalScriptAsFunction(
             '(function (exports, require, module, __filename, __dirname) {\n' +
                 source +
@@ -4195,6 +4372,7 @@ function _makeRequire(filename) {
         );
 
         const childRequire = _makeRequire(resolved);
+        mod.require = childRequire;
         try {
             wrappedFn(mod.exports, childRequire, mod, resolved, dirname);
         } catch (e) {
@@ -4209,13 +4387,13 @@ function _makeRequire(filename) {
         let name = id;
         if (name.startsWith('node:')) name = name.slice(5);
         if (_builtinModules[name] !== undefined) return name;
-        const resolved = _resolveFile(id, basedir);
-        if (!resolved) {
+        const resolvedPath = _resolveFile(id, basedir);
+        if (!resolvedPath) {
             const err = new Error(`Cannot find module '${id}'`);
             err.code = 'MODULE_NOT_FOUND';
             throw err;
         }
-        return resolved;
+        return _moduleRealpath(resolvedPath);
     };
 
     require.cache = _moduleCache;
@@ -4260,7 +4438,7 @@ globalThis.setImmediate = timers.setImmediate;
 globalThis.clearImmediate = timers.clearImmediate;
 
 // npm and hosted-git-info instantiate URL/URLSearchParams directly without
-// `require('url')`. QuickJS-NG doesn't ship them, so expose the bootstrap shims.
+// `require('url')`. Expose the bootstrap shims when the engine does not ship them.
 globalThis.URL = url.URL;
 globalThis.URLSearchParams = url.URLSearchParams;
 
@@ -4470,7 +4648,7 @@ if (typeof globalThis.AbortController === 'undefined') {
     };
 }
 
-// QuickJS-NG ships without ECMA-402 (Intl). TUIs use Intl.Segmenter for
+// Some engines ship without ECMA-402 (Intl). TUIs use Intl.Segmenter for
 // grapheme-based terminal-width math; a per-code-point fallback is good
 // enough for ASCII / BMP — non-trivial graphemes (emoji ZWJ sequences,
 // combining marks) collapse to multiple segments, which most UIs tolerate.
@@ -4507,15 +4685,20 @@ if (typeof globalThis.Intl === 'undefined') {
 }
 
 // __dirname and __filename for the main module (set when running a file)
-globalThis.__filename = '';
-globalThis.__dirname = '';
+const _mainScriptArg =
+    process.argv && process.argv.length > 1 && process.argv[1] && process.argv[1][0] === '/'
+        ? process.argv[1]
+        : '';
+const _mainScriptPath = _mainScriptArg ? _moduleRealpath(_mainScriptArg) : '';
+globalThis.__filename = _mainScriptPath;
+globalThis.__dirname = _mainScriptPath ? path.dirname(_mainScriptPath) : '';
 
 // Module reference
 globalThis.module = { exports: {} };
 globalThis.exports = globalThis.module.exports;
 
-// console already exists in QuickJS, but ensure it has all methods.
-// QuickJS-NG's js_std_add_helpers ships only console.log; npm and most Node
+// console may already exist, but ensure it has all methods.
+// Some engine helpers ship only console.log; npm and most Node
 // code expect .error/.warn to land on stderr.
 if (!console.error) {
     console.error = (...args) => {

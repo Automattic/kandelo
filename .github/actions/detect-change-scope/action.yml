@@ -27,7 +27,7 @@ description: |
 
   vitest gates on `!docs_only` rather than on `kernel` — its 51 test
   files exercise built packages (dash, bash, nginx, erlang, php,
-  quickjs, ...) on top of the kernel, so a PR that only touches
+  spidermonkey, ...) on top of the kernel, so a PR that only touches
   packages/registry/php/ must re-validate the PHP test against the new
   binary.
 

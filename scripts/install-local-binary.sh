@@ -64,31 +64,54 @@ install_local_binary() {
     # checkout before installing artifacts.
     local repo_root
     repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    local src_basename
+    src_basename="$(basename "$src")"
+    local host_target
+    host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
 
     if ! wasm_require_no_legacy_asyncify "$src"; then
         return 1
     fi
-    if wasm_imports_kernel_fork "$src" && ! wasm_has_complete_fork_instrumentation "$src"; then
-        if wasm_has_any_wpk_fork_export "$src"; then
-            wasm_require_fork_instrumentation_if_needed "$src"
-            return 1
-        fi
-        echo "  applying wasm-fork-instrument to $(basename "$src")"
-        local instrumented
-        instrumented="$(mktemp "${TMPDIR:-/tmp}/wpk-fork-instrument.XXXXXX.wasm")"
-        if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" -o "$instrumented"; then
-            rm -f "$instrumented"
-            return 1
-        fi
-        mv "$instrumented" "$src"
+    local fork_instrumentation="${WASM_POSIX_INSTALL_FORK_INSTRUMENTATION:-}"
+    if [ -z "$fork_instrumentation" ] && [ -n "$host_target" ]; then
+        fork_instrumentation="$(cd "$repo_root" && \
+            env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
+            cargo run -p xtask --target "$host_target" --quiet -- \
+                build-deps output-fork-instrumentation "$program" "$src_basename" 2>/dev/null || true)"
     fi
-    if ! wasm_require_fork_instrumentation_if_needed "$src"; then
-        return 1
-    fi
+    fork_instrumentation="${fork_instrumentation:-auto}"
+    case "$fork_instrumentation" in
+        auto)
+            if wasm_imports_kernel_fork "$src" && ! wasm_has_complete_fork_instrumentation "$src"; then
+                if wasm_has_any_wpk_fork_export "$src"; then
+                    wasm_require_fork_instrumentation_if_needed "$src"
+                    return 1
+                fi
+                echo "  applying wasm-fork-instrument to $(basename "$src")"
+                local instrumented
+                instrumented="$(mktemp "${TMPDIR:-/tmp}/wpk-fork-instrument.XXXXXX.wasm")"
+                if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" -o "$instrumented"; then
+                    rm -f "$instrumented"
+                    return 1
+                fi
+                mv "$instrumented" "$src"
+            fi
+            if ! wasm_require_fork_instrumentation_if_needed "$src"; then
+                return 1
+            fi
+            ;;
+        disabled)
+            if ! wasm_require_no_fork_instrumentation "$src"; then
+                return 1
+            fi
+            ;;
+        *)
+            echo "install_local_binary: unsupported WASM_POSIX_INSTALL_FORK_INSTRUMENTATION='$fork_instrumentation' (expected auto or disabled)" >&2
+            return 2
+            ;;
+    esac
 
     local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
-    local src_basename
-    src_basename="$(basename "$src")"
 
     # Take everything from the FIRST dot in the source basename onward
     # so compound extensions like `.vfs.zst` round-trip intact (matches
@@ -105,8 +128,6 @@ install_local_binary() {
     # call site, or no [[outputs]] entry for this basename) fall back
     # to the legacy heuristic so existing build scripts keep working.
     local rel=""
-    local host_target
-    host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
     if [ -n "$host_target" ]; then
         rel="$(cd "$repo_root" && \
             env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \

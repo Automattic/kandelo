@@ -136,3 +136,12 @@ wasm_require_fork_instrumentation_if_needed() {
         return 1
     fi
 }
+
+wasm_require_no_fork_instrumentation() {
+    local path="${1:-}"
+    if wasm_has_any_wpk_fork_export "$path"; then
+        echo "ERROR: refusing wasm artifact with disabled fork instrumentation policy: $path" >&2
+        echo "       Rebuild it without scripts/run-wasm-fork-instrument.sh." >&2
+        return 1
+    fi
+}

@@ -666,7 +666,10 @@ build_node() {
     fi
     need_kernel
     need_sdk
-    local node_wasm="$REPO_ROOT/packages/registry/quickjs/bin/node.wasm"
+    local node_wasm="$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm"
+    if [ ! -f "$node_wasm" ]; then
+        node_wasm="$REPO_ROOT/packages/registry/spidermonkey/bin/node.wasm"
+    fi
     if [ -f "$node_wasm" ]; then
         step "Installing existing node.wasm into local-binaries"
         source "$REPO_ROOT/scripts/install-local-binary.sh"
@@ -1584,7 +1587,7 @@ clean_target() {
             rm -f "$REPO_ROOT/apps/browser-demos/public/shell.vfs.zst"
             warn "Cleaned Shell VFS image" ;;
         node)
-            rm -rf "$REPO_ROOT/packages/registry/quickjs/bin" \
+            rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/node.wasm"
             warn "Cleaned node" ;;
         node-vfs)
@@ -2078,7 +2081,7 @@ cmd_list() {
     echo "  python-vfs  Python stdlib VFS image               $(has_python_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl-vfs    Perl stdlib VFS image                 $(has_perl_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  shell-vfs   Shell environment VFS image           $(has_shell_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  node        QuickJS-NG Node compatibility binary  $(has_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  node        SpiderMonkey Node compatibility binary $(has_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  node-vfs    Node + npm VFS image                  $(has_node_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

@@ -49,7 +49,8 @@ use sha2::{Digest, Sha256};
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::index_toml::{self, EntryStatus};
 use crate::pkg_manifest::{
-    BinarySource, BuildToml, DepRef, DepsManifest, HostTool, ManifestKind, TargetArch,
+    BinarySource, BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, HostTool,
+    ManifestKind, TargetArch,
 };
 use crate::remote_fetch;
 use crate::repo_root;
@@ -329,6 +330,10 @@ pub fn compute_sha(
                 h.update(out.name.as_bytes());
                 h.update(b"|");
                 h.update(out.wasm.as_bytes());
+                if out.fork_instrumentation != ForkInstrumentationPolicy::Auto {
+                    h.update(b"|fork_instrumentation=");
+                    h.update(out.fork_instrumentation.as_str().as_bytes());
+                }
                 h.update(b"\n");
             }
         }
@@ -1475,7 +1480,10 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
     Ok(facts)
 }
 
-fn wasm_artifact_policy_failures(bytes: &[u8]) -> Vec<String> {
+fn wasm_artifact_policy_failures(
+    bytes: &[u8],
+    fork_instrumentation: ForkInstrumentationPolicy,
+) -> Vec<String> {
     if !is_wasm_bytes(bytes) {
         return Vec::new();
     }
@@ -1502,6 +1510,15 @@ fn wasm_artifact_policy_failures(bytes: &[u8]) -> Vec<String> {
         .copied()
         .filter(|name| facts.exports.contains(*name))
         .collect();
+    if fork_instrumentation == ForkInstrumentationPolicy::Disabled {
+        if !wpk_present.is_empty() {
+            failures.push(
+                "has wasm-fork-instrument exports but this output disables fork instrumentation"
+                    .to_string(),
+            );
+        }
+        return failures;
+    }
     if !wpk_present.is_empty() && wpk_present.len() != WPK_FORK_EXPORTS.len() {
         let missing = WPK_FORK_EXPORTS
             .iter()
@@ -1521,9 +1538,12 @@ fn wasm_artifact_policy_failures(bytes: &[u8]) -> Vec<String> {
     failures
 }
 
-fn validate_wasm_artifact_policy(path: &Path) -> Result<(), String> {
+fn validate_wasm_artifact_policy(
+    path: &Path,
+    fork_instrumentation: ForkInstrumentationPolicy,
+) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let failures = wasm_artifact_policy_failures(&bytes);
+    let failures = wasm_artifact_policy_failures(&bytes, fork_instrumentation);
     if failures.is_empty() {
         Ok(())
     } else {
@@ -1544,7 +1564,7 @@ fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Result<(), Str
                 out.wasm
             ));
         }
-        validate_wasm_artifact_policy(&path)?;
+        validate_wasm_artifact_policy(&path, out.fork_instrumentation)?;
     }
     Ok(())
 }
@@ -1584,7 +1604,7 @@ fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String>
                         out.wasm
                     ));
                 }
-                validate_wasm_artifact_policy(&p)?;
+                validate_wasm_artifact_policy(&p, out.fork_instrumentation)?;
             }
         }
         // No outputs to validate for source-kind (Chunk C).
@@ -1755,13 +1775,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut it = rest.into_iter();
     let sub = it.next().ok_or(
         "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] \
-         <parse|sha|path|resolve|check|output-path> [<name|path> [<wasm-basename>]]",
+         <parse|sha|path|resolve|check|output-path|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
+         [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
-    // `output-path` takes a second positional arg (the wasm basename
-    // to resolve); every other subcommand stops at one arg. Pull the
-    // extra slot up-front so the unexpected-arg check below still
-    // catches stray inputs for the simple subcommands.
+    // Output metadata subcommands take a second positional arg (the wasm
+    // basename to resolve); every other subcommand stops at one arg. Pull the
+    // extra slot up-front so the unexpected-arg check below still catches stray
+    // inputs for the simple subcommands.
     let extra = it.next();
     if it.next().is_some() {
         return Err(format!("build-deps {sub}: unexpected extra args"));
@@ -1785,6 +1806,18 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 return Err("build-deps check: takes no arguments".into());
             }
             cmd_check(&registry)
+        }
+        "output-fork-instrumentation-for-rel" => {
+            let rel = target.ok_or_else(|| {
+                "build-deps output-fork-instrumentation-for-rel: missing <resolver-rel-path>"
+                    .to_string()
+            })?;
+            if extra.is_some() {
+                return Err(
+                    "build-deps output-fork-instrumentation-for-rel: unexpected extra arg".into(),
+                );
+            }
+            cmd_output_fork_instrumentation_for_rel(&registry, &rel)
         }
         _ => {
             let target = target.ok_or_else(|| format!("build-deps {sub}: missing <name|path>"))?;
@@ -1824,6 +1857,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                             .to_string()
                     })?;
                     cmd_output_path(&manifest, &basename)
+                }
+                "output-fork-instrumentation" => {
+                    let basename = extra.ok_or_else(|| {
+                        "build-deps output-fork-instrumentation: missing <wasm-basename> \
+                         (usage: build-deps output-fork-instrumentation <name|path> <wasm-basename>)"
+                            .to_string()
+                    })?;
+                    cmd_output_fork_instrumentation(&manifest, &basename)
                 }
                 other => Err(format!("build-deps: unknown subcommand {other:?}")),
             }
@@ -1931,6 +1972,40 @@ fn cmd_output_path(m: &DepsManifest, wasm_basename: &str) -> Result<(), String> 
     let rel = m.output_dest_rel(wasm_basename)?;
     println!("{}", rel.display());
     Ok(())
+}
+
+fn cmd_output_fork_instrumentation(m: &DepsManifest, wasm_basename: &str) -> Result<(), String> {
+    let policy = m.output_fork_instrumentation(wasm_basename)?;
+    println!("{}", policy.as_str());
+    Ok(())
+}
+
+fn cmd_output_fork_instrumentation_for_rel(
+    registry: &Registry,
+    resolver_rel: &str,
+) -> Result<(), String> {
+    let policy = output_fork_instrumentation_for_rel(registry, resolver_rel)?;
+    println!("{}", policy.as_str());
+    Ok(())
+}
+
+fn output_fork_instrumentation_for_rel(
+    registry: &Registry,
+    resolver_rel: &str,
+) -> Result<ForkInstrumentationPolicy, String> {
+    let rel = resolver_rel
+        .strip_prefix("programs/wasm32/")
+        .or_else(|| resolver_rel.strip_prefix("programs/wasm64/"))
+        .or_else(|| resolver_rel.strip_prefix("programs/"))
+        .unwrap_or(resolver_rel);
+    for (_, manifest) in programs_by_name(registry)? {
+        for out in &manifest.program_outputs {
+            if manifest.output_dest_rel_for(out).to_string_lossy().as_ref() == rel {
+                return Ok(out.fork_instrumentation);
+            }
+        }
+    }
+    Ok(ForkInstrumentationPolicy::Auto)
 }
 
 fn cmd_resolve(
@@ -2311,6 +2386,18 @@ libs = ["lib/lib{name}.a"]
         exports.push(0x00); // func index
         bytes.extend(wasm_section(7, exports));
         bytes.extend(wasm_section(10, vec![0x01, 0x04, 0x00, 0x41, 0x00, 0x0b]));
+        bytes
+    }
+
+    fn wasm_importing_kernel_fork_with_wpk_exports() -> Vec<u8> {
+        let mut bytes = wasm_importing_kernel_fork(&[]);
+        let mut exports = vec![WPK_FORK_EXPORTS.len() as u8];
+        for name in WPK_FORK_EXPORTS {
+            exports.extend(wasm_name(name));
+            exports.push(0x00); // func export
+            exports.push(0x00); // imported function index
+        }
+        bytes.extend(wasm_section(7, exports));
         bytes
     }
 
@@ -2782,6 +2869,75 @@ spdx = "TestLicense"
         assert_ne!(
             sha_before, sha_after,
             "renaming a program output's logical name must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn cache_key_sha_changes_when_program_output_fork_policy_changes() {
+        let root = tempdir("sha-prog-fork-policy");
+        write_program_manifest(
+            &root,
+            "spidermonkey",
+            "1.0.0",
+            "[[outputs]]\nname = \"js\"\nwasm = \"js.wasm\"\n",
+        );
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let sha_before = sha_of(&reg, "spidermonkey");
+
+        let toml_path = root.join("spidermonkey/package.toml");
+        let text = std::fs::read_to_string(&toml_path).unwrap();
+        std::fs::write(
+            &toml_path,
+            text.replace(
+                "wasm = \"js.wasm\"",
+                "wasm = \"js.wasm\"\nfork_instrumentation = \"disabled\"",
+            ),
+        )
+        .unwrap();
+        let sha_after = sha_of(&reg, "spidermonkey");
+
+        assert_ne!(
+            sha_before, sha_after,
+            "changing a program output's fork instrumentation policy must invalidate the cache key"
+        );
+    }
+
+    #[test]
+    fn output_fork_instrumentation_for_rel_is_arch_neutral() {
+        let root = tempdir("fork-policy-for-rel");
+        write_program_manifest(
+            &root,
+            "twobin",
+            "1.0.0",
+            r#"[[outputs]]
+name = "alpha"
+wasm = "alpha.wasm"
+
+[[outputs]]
+name = "beta"
+wasm = "beta.wasm"
+fork_instrumentation = "disabled"
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+
+        assert_eq!(
+            output_fork_instrumentation_for_rel(&reg, "programs/wasm32/twobin/beta.wasm").unwrap(),
+            ForkInstrumentationPolicy::Disabled
+        );
+        assert_eq!(
+            output_fork_instrumentation_for_rel(&reg, "programs/wasm64/twobin/beta.wasm").unwrap(),
+            ForkInstrumentationPolicy::Disabled
+        );
+        assert_eq!(
+            output_fork_instrumentation_for_rel(&reg, "programs/twobin/beta.wasm").unwrap(),
+            ForkInstrumentationPolicy::Disabled
+        );
+        assert_eq!(
+            output_fork_instrumentation_for_rel(&reg, "programs/wasm32/twobin/alpha.wasm").unwrap(),
+            ForkInstrumentationPolicy::Auto
         );
     }
 
@@ -4495,9 +4651,62 @@ wasm = "kernel.wasm"
     }
 
     #[test]
+    fn program_output_validation_accepts_disabled_fork_instrumentation_policy() {
+        let out = tempdir("prog-out-fork-disabled");
+        fs::write(out.join("js.wasm"), wasm_importing_kernel_fork(&[])).unwrap();
+        let m = DepsManifest::parse(
+            r#"kind = "program"
+name = "spidermonkey"
+version = "0.1.0"
+[source]
+url = "https://x.test/spidermonkey.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Test"
+[[outputs]]
+name = "js"
+wasm = "js.wasm"
+fork_instrumentation = "disabled"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+        validate_outputs(&m, &out).unwrap();
+    }
+
+    #[test]
+    fn program_output_validation_rejects_wpk_exports_when_policy_disabled() {
+        let out = tempdir("prog-out-fork-disabled-wpk");
+        fs::write(
+            out.join("js.wasm"),
+            wasm_importing_kernel_fork_with_wpk_exports(),
+        )
+        .unwrap();
+        let m = DepsManifest::parse(
+            r#"kind = "program"
+name = "spidermonkey"
+version = "0.1.0"
+[source]
+url = "https://x.test/spidermonkey.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Test"
+[[outputs]]
+name = "js"
+wasm = "js.wasm"
+fork_instrumentation = "disabled"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+        let err = validate_outputs(&m, &out).unwrap_err();
+        assert!(err.contains("disables fork instrumentation"), "got: {err}");
+    }
+
+    #[test]
     fn program_output_validation_accepts_relocatable_fork_objects() {
         let bytes = wasm_importing_kernel_fork(&["linking", "reloc.CODE"]);
-        let failures = wasm_artifact_policy_failures(&bytes);
+        let failures = wasm_artifact_policy_failures(&bytes, ForkInstrumentationPolicy::Auto);
         assert!(failures.is_empty(), "got: {failures:?}");
     }
 

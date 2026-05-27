@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
@@ -25,6 +25,7 @@ const LONG_TIMEOUT = process.env.CI ? 180_000 : 30_000;
 const LONG_TEST_TIMEOUT = LONG_TIMEOUT + 60_000;
 const CI_PROGRESS_INTERVAL = 15_000;
 const WORKER_TEARDOWN_ITERATIONS = process.env.CI ? 2 : 4;
+let jsModule: WebAssembly.Module | undefined;
 
 function loadWasm(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -41,6 +42,7 @@ async function runJs(
     label,
     runCentralizedProgram({
       programPath: jsWasm!,
+      programModule: jsModule,
       argv: ["js", ...(options.shellArgs ?? []), "-e", source],
       timeout: options.timeout ?? DEFAULT_TIMEOUT,
     }),
@@ -92,6 +94,13 @@ async function withCiProgress<T>(label: string, promise: Promise<T>): Promise<T>
 }
 
 describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
+  beforeAll(async () => {
+    jsModule = await withCiProgress(
+      "precompile js.wasm",
+      WebAssembly.compile(loadWasm(jsWasm!)),
+    );
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("evaluates a simple expression", async () => {
     const result = await runJs("print(1 + 1)");
 
