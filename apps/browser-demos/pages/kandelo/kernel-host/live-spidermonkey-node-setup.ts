@@ -1,8 +1,13 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
+import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
 import {
   COREUTILS_NAMES,
 } from "../../../lib/init/shell-binaries";
+import {
+  NODE_LAZY_BINARY_SPEC,
+  shellLazyPlaceholderUrl,
+} from "../../../../../images/vfs/lib/init/shell-binaries";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -29,6 +34,9 @@ import spiderMonkeyNodeWasmUrl from "@binaries/programs/wasm32/spidermonkey-node
 
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const COI_RELOAD_SESSION_KEY = "kandelo:sm-node-coi-reload-attempted";
+// npm's full dependency resolver can exceed 256 MB on large packuments.
+// Keep this demo on the BrowserKernel default instead of the lighter shell cap.
+const SPIDERMONKEY_NODE_MEMORY_PAGES = 16384;
 
 const SHELL_ENV = [
   "HOME=/work",
@@ -218,6 +226,16 @@ if (typeof drainJobQueue === 'function') drainJobQueue();
 process.exit(process.exitCode || 0);
 `;
 
+const NPM_LAUNCHER = `#!/usr/bin/node
+process.argv.splice(2, 0, 'npm');
+require('/usr/local/lib/kandelo/npm-runner.js');
+`;
+
+const NPX_LAUNCHER = `#!/usr/bin/node
+process.argv.splice(2, 0, 'npx');
+require('/usr/local/lib/kandelo/npm-runner.js');
+`;
+
 const NPM_DISPLAY_SHIM = `function plain(...args) {
   return args.map((arg) => String(arg)).join(' ');
 }
@@ -334,12 +352,14 @@ async function boot(host: LiveKernelHost, descriptor: BootDescriptor): Promise<v
     const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
       maxByteLength: 256 * 1024 * 1024,
     });
+    rewriteShellLazyFileUrls(memfs);
+    rewriteNodeLazyFileUrl(memfs);
     stageRuntime(memfs, bashBytes, dashBytes, coreutilsBytes, nodeBytes);
 
     const kernel = new BrowserKernel({
       memfs,
       maxWorkers: 4,
-      maxMemoryPages: 4096,
+      maxMemoryPages: SPIDERMONKEY_NODE_MEMORY_PAGES,
       onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
       onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
       onProcessEvent: (event) => host.emitProcessEvent(event),
@@ -369,6 +389,14 @@ async function boot(host: LiveKernelHost, descriptor: BootDescriptor): Promise<v
   }
 }
 
+function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {
+  const placeholder = shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC);
+  fs.rewriteLazyFileUrls((url) => {
+    if (url !== placeholder) return url;
+    return spiderMonkeyNodeWasmUrl;
+  });
+}
+
 function stageRuntime(
   fs: MemoryFileSystem,
   bashBytes: ArrayBuffer,
@@ -393,13 +421,13 @@ function stageRuntime(
   writeVfsFile(
     fs,
     "/usr/bin/npm",
-    "#!/bin/sh\nexec node /usr/local/lib/kandelo/npm-runner.js npm \"$@\"\n",
+    NPM_LAUNCHER,
     0o755,
   );
   writeVfsFile(
     fs,
     "/usr/bin/npx",
-    "#!/bin/sh\nexec node /usr/local/lib/kandelo/npm-runner.js npx \"$@\"\n",
+    NPX_LAUNCHER,
     0o755,
   );
   symlink(fs, "/bin/bash", "/usr/bin/bash");
@@ -511,7 +539,7 @@ function descriptorForSpiderMonkeyNode(id: SpiderMonkeyNodeDemoId): BootDescript
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
-      memoryPages: 4096,
+      memoryPages: SPIDERMONKEY_NODE_MEMORY_PAGES,
       features: ["shared-array-buffer", "pty", "js-workers"],
       time: "real",
     },

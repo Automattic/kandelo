@@ -536,8 +536,8 @@ describe("Kandelo demo config", () => {
     const guide = builtinDemoGuide("node");
 
     expect(guide).toEqual(nodeGuide());
-    expect(guide?.title).toBe("Node.js demo");
-    expect(guide?.groups?.[0].actions.map((action) => action.id)).toContain("node-version");
+    expect(guide?.title).toBe("SpiderMonkey Node.js demo");
+    expect(guide?.groups?.[0].actions.map((action) => action.id)).toContain("install-cowsay");
     expect(builtinDemoGuide("wordpress-sqlite")).toBeNull();
   });
 
