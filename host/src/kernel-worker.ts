@@ -52,11 +52,14 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  EPOLL_EVENTS,
   HOST_INTERCEPTED_SYSCALLS,
+  POLL_EVENTS,
   PROC_SNAPSHOT_COUNT_OFFSET,
   PROC_SNAPSHOT_COUNT_SIZE,
   PROC_SNAPSHOT_RECORD_FIELDS,
   PROC_SNAPSHOT_RECORD_FIXED_SIZE,
+  SELECT_FD_SET_BYTES,
   SYSCALL_ARGS,
   WAKEUP_EVENT_FIELDS,
   WAKEUP_EVENT_RECORD_SIZE,
@@ -3819,7 +3822,7 @@ export class CentralizedKernelWorker {
    * pure-sleep case, fast-path'd to a setTimeout.
    */
   private handleSelect(channel: ChannelInfo, origArgs: number[]): void {
-    const FD_SET_SIZE = 128;
+    const FD_SET_SIZE = SELECT_FD_SET_BYTES;
     const nfds = origArgs[0];
     const readPtr = origArgs[1];
     const writePtr = origArgs[2];
@@ -3970,7 +3973,7 @@ export class CentralizedKernelWorker {
   }
 
   private handlePselect6(channel: ChannelInfo, origArgs: number[]): void {
-    const FD_SET_SIZE = 128;
+    const FD_SET_SIZE = SELECT_FD_SET_BYTES;
     const processMem = new Uint8Array(channel.memory.buffer);
     const kernelMem = this.getKernelMem();
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
@@ -4311,14 +4314,8 @@ export class CentralizedKernelWorker {
     }
 
     // EPOLL event flags → poll event flags
-    const EPOLLIN = 0x001;
-    const EPOLLOUT = 0x004;
-    const EPOLLERR = 0x008;
-    const EPOLLHUP = 0x010;
-    const POLLIN = 0x001;
-    const POLLOUT = 0x004;
-    const POLLERR = 0x008;
-    const POLLHUP = 0x010;
+    const { EPOLLIN, EPOLLOUT, EPOLLERR, EPOLLHUP } = EPOLL_EVENTS;
+    const { POLLIN, POLLOUT, POLLERR, POLLHUP } = POLL_EVENTS;
 
     // Build pollfds in kernel scratch data area
     // struct pollfd = { fd: i32, events: i16, revents: i16 } = 8 bytes
