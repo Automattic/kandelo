@@ -219,6 +219,25 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
     expect(worker.relistenChannel).toHaveBeenCalledWith(channel);
   });
+
+  it("tcp listener target selection uses Rust-owned process policy", () => {
+    const kernelMemory = createSharedMemory();
+    const pickTarget = vi.fn((_port: number, _excludePid: number, outPtr: bigint) => {
+      const view = new DataView(kernelMemory.buffer);
+      view.setUint32(Number(outPtr), 44, true);
+      view.setInt32(Number(outPtr) + 4, 7, true);
+      return 1;
+    });
+    const worker = createWorkerHarness({
+      kernel_pick_tcp_listener_target: pickTarget,
+    });
+    worker.kernelMemory = kernelMemory;
+    worker.processes = new Map([[44, { pid: 44 }]]);
+    worker.tcpListenerTargets = new Map([[8080, [{ pid: 1, fd: 3 }]]]);
+
+    expect(worker.pickListenerTarget(8080)).toEqual({ pid: 44, fd: 7 });
+    expect(pickTarget).toHaveBeenCalledWith(8080, 0, BigInt(worker.scratchOffset));
+  });
 });
 
 function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4 | 8 = 4): any {
