@@ -32,10 +32,10 @@ use std::collections::BTreeMap;
 use std::mem::{offset_of, size_of};
 use std::path::PathBuf;
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use wasm_posix_shared as shared;
 
-use crate::{JsonMap, repo_root};
+use crate::{repo_root, JsonMap};
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
     let mut out_path: Option<PathBuf> = None;
@@ -426,6 +426,27 @@ fn render_ts_module() -> String {
     ));
 
     out.push_str(&format!(
+        "export const PROC_SNAPSHOT_COUNT_OFFSET = {} as const;\n",
+        shared::process_snapshot::COUNT_OFFSET
+    ));
+    out.push_str(&format!(
+        "export const PROC_SNAPSHOT_COUNT_SIZE = {} as const;\n",
+        shared::process_snapshot::COUNT_SIZE
+    ));
+    out.push_str(&format!(
+        "export const PROC_SNAPSHOT_RECORD_FIXED_SIZE = {} as const;\n",
+        shared::process_snapshot::RECORD_FIXED_SIZE
+    ));
+    out.push_str("export const PROC_SNAPSHOT_RECORD_FIELDS = {\n");
+    for field in process_snapshot_fields() {
+        out.push_str(&format!(
+            "  {}: {{ offset: {}, size: {}, type: {:?} }},\n",
+            field.name, field.offset, field.size, field.ty
+        ));
+    }
+    out.push_str("} as const;\n\n");
+
+    out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_STAT = {} as const;\n",
         size_of::<shared::WasmStat>()
     ));
@@ -660,6 +681,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("channel_header".into(), channel_header());
     root.insert("channel_signal_area".into(), channel_signal_area());
     root.insert("channel_buffers".into(), channel_buffers());
+    root.insert("process_snapshot".into(), process_snapshot());
 
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("syscalls".into(), syscalls());
@@ -878,6 +900,89 @@ fn channel_signal_area() -> Value {
     let mut m: JsonMap = BTreeMap::new();
     m.insert("base".into(), json!(SIG_BASE));
     m.insert("slots".into(), Value::Array(list));
+    Value::Object(m.into_iter().collect())
+}
+
+struct ProcessSnapshotField {
+    name: &'static str,
+    offset: usize,
+    size: usize,
+    ty: &'static str,
+}
+
+fn process_snapshot_fields() -> [ProcessSnapshotField; 8] {
+    use shared::process_snapshot::*;
+    [
+        ProcessSnapshotField {
+            name: "pid",
+            offset: RECORD_PID_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        ProcessSnapshotField {
+            name: "ppid",
+            offset: RECORD_PPID_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        ProcessSnapshotField {
+            name: "uid",
+            offset: RECORD_UID_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        ProcessSnapshotField {
+            name: "gid",
+            offset: RECORD_GID_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        ProcessSnapshotField {
+            name: "vsizeBytes",
+            offset: RECORD_VSIZE_BYTES_OFFSET,
+            size: 8,
+            ty: "u64",
+        },
+        ProcessSnapshotField {
+            name: "state",
+            offset: RECORD_STATE_OFFSET,
+            size: 4,
+            ty: "u32_ascii",
+        },
+        ProcessSnapshotField {
+            name: "commLen",
+            offset: RECORD_COMM_LEN_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        ProcessSnapshotField {
+            name: "cmdlineLen",
+            offset: RECORD_CMDLINE_LEN_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+    ]
+}
+
+fn process_snapshot() -> Value {
+    use shared::process_snapshot::*;
+    let fields = process_snapshot_fields()
+        .iter()
+        .map(|field| {
+            let mut m: JsonMap = BTreeMap::new();
+            m.insert("name".into(), json!(field.name));
+            m.insert("offset".into(), json!(field.offset));
+            m.insert("size".into(), json!(field.size));
+            m.insert("type".into(), json!(field.ty));
+            Value::Object(m.into_iter().collect())
+        })
+        .collect();
+
+    let mut m: JsonMap = BTreeMap::new();
+    m.insert("count_offset".into(), json!(COUNT_OFFSET));
+    m.insert("count_size".into(), json!(COUNT_SIZE));
+    m.insert("record_fixed_size".into(), json!(RECORD_FIXED_SIZE));
+    m.insert("record_fields".into(), Value::Array(fields));
     Value::Object(m.into_iter().collect())
 }
 
@@ -1858,7 +1963,10 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 }
 
 fn additive_top_level_section(section: &str) -> bool {
-    matches!(section, "host_adapter" | "syscall_arg_descriptors")
+    matches!(
+        section,
+        "host_adapter" | "process_snapshot" | "syscall_arg_descriptors"
+    )
 }
 
 fn classify_additive_object_by_key(
@@ -2066,6 +2174,14 @@ mod tests {
             "marshalled_structs": {
                 "WasmStat": {"size": 96, "fields": []}
             },
+            "process_snapshot": {
+                "count_offset": 0,
+                "count_size": 4,
+                "record_fixed_size": 36,
+                "record_fields": [
+                    {"name": "pid", "offset": 0, "size": 4, "type": "u32"}
+                ]
+            },
             "syscalls": [
                 {"number": 1, "name": "Open"},
                 {"number": 2, "name": "Close"}
@@ -2143,6 +2259,20 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"host_adapter\""]
+        );
+    }
+
+    #[test]
+    fn adding_process_snapshot_section_is_compatible() {
+        let mut old = base_snapshot();
+        old.as_object_mut().unwrap().remove("process_snapshot");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"process_snapshot\""]
         );
     }
 
