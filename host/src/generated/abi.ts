@@ -133,6 +133,25 @@ export const WAKEUP_EVENT_FIELDS = {
   wakeType: { offset: 4, size: 1, type: "u8" },
 } as const;
 
+export const POLL_EVENTS = {
+  POLLIN: 1,
+  POLLPRI: 2,
+  POLLOUT: 4,
+  POLLERR: 8,
+  POLLHUP: 16,
+  POLLNVAL: 32,
+} as const;
+
+export const EPOLL_EVENTS = {
+  EPOLLIN: 1,
+  EPOLLOUT: 4,
+  EPOLLERR: 8,
+  EPOLLHUP: 16,
+} as const;
+
+export const SELECT_FD_SETSIZE = 1024 as const;
+export const SELECT_FD_SET_BYTES = 128 as const;
+
 export const STRUCT_SIZE_WASM_STAT = 88 as const;
 export const STRUCT_SIZE_WASM_DIRENT = 16 as const;
 export const STRUCT_SIZE_WASM_TIMESPEC = 16 as const;

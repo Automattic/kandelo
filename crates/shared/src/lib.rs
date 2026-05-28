@@ -631,6 +631,14 @@ pub mod poll {
     pub const POLLNVAL: i16 = 0x0020;
 }
 
+/// Epoll event constants.
+pub mod epoll {
+    pub const EPOLLIN: u32 = 0x0001;
+    pub const EPOLLOUT: u32 = 0x0004;
+    pub const EPOLLERR: u32 = 0x0008;
+    pub const EPOLLHUP: u32 = 0x0010;
+}
+
 /// Seek whence constants.
 pub mod seek {
     pub const SEEK_SET: u32 = 0;
