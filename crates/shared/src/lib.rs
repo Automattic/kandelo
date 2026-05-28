@@ -17,6 +17,17 @@ pub mod process_snapshot {
     pub const RECORD_FIXED_SIZE: usize = 36;
 }
 
+pub mod wakeup_event {
+    pub const PIPE_IDX_OFFSET: usize = 0;
+    pub const PIPE_IDX_SIZE: usize = 4;
+    pub const TYPE_OFFSET: usize = 4;
+    pub const TYPE_SIZE: usize = 1;
+    pub const RECORD_SIZE: usize = 5;
+
+    pub const TYPE_READABLE: u8 = 1;
+    pub const TYPE_WRITABLE: u8 = 2;
+}
+
 /// Kernel ABI version.
 ///
 /// This number is baked into every compiled user program (wasm custom section

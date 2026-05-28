@@ -7,12 +7,13 @@
 
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use wasm_posix_shared::wakeup_event;
 
 /// Pipe became readable (data was written, or write-end closed).
-pub const WAKE_READABLE: u8 = 1;
+pub const WAKE_READABLE: u8 = wakeup_event::TYPE_READABLE;
 
 /// Pipe became writable (data was read, or read-end closed).
-pub const WAKE_WRITABLE: u8 = 2;
+pub const WAKE_WRITABLE: u8 = wakeup_event::TYPE_WRITABLE;
 
 /// A readiness change event for a pipe.
 #[derive(Debug, Clone, Copy)]
@@ -47,23 +48,22 @@ pub fn push(pipe_idx: u32, wake_type: u8) {
 /// Drain all pending wakeup events, writing them to the output buffer.
 /// Returns the number of events written.
 ///
-/// Each event is serialized as: pipe_idx (u32 LE) + wake_type (u8) = 5 bytes.
+/// Each event is serialized as: pipe_idx (u32 LE) + wake_type (u8).
 pub fn drain(out: &mut [u8], max_events: u32) -> u32 {
     let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
     let count = events.len().min(max_events as usize);
-    let bytes_per_event = 5;
-    let max_by_buf = out.len() / bytes_per_event;
+    let max_by_buf = out.len() / wakeup_event::RECORD_SIZE;
     let count = count.min(max_by_buf);
 
     for i in 0..count {
         let ev = &events[i];
-        let offset = i * bytes_per_event;
+        let offset = i * wakeup_event::RECORD_SIZE;
         let idx_bytes = ev.pipe_idx.to_le_bytes();
-        out[offset] = idx_bytes[0];
-        out[offset + 1] = idx_bytes[1];
-        out[offset + 2] = idx_bytes[2];
-        out[offset + 3] = idx_bytes[3];
-        out[offset + 4] = ev.wake_type;
+        out[offset + wakeup_event::PIPE_IDX_OFFSET] = idx_bytes[0];
+        out[offset + wakeup_event::PIPE_IDX_OFFSET + 1] = idx_bytes[1];
+        out[offset + wakeup_event::PIPE_IDX_OFFSET + 2] = idx_bytes[2];
+        out[offset + wakeup_event::PIPE_IDX_OFFSET + 3] = idx_bytes[3];
+        out[offset + wakeup_event::TYPE_OFFSET] = ev.wake_type;
     }
 
     events.clear();
