@@ -169,6 +169,7 @@ has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REP
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst" ]; }
 has_shell_vfs()     { pkg_has_output shell shell.vfs.zst; }
 has_node()          { pkg_has_output node node.wasm; }
+has_spidermonkey_node() { pkg_has_output spidermonkey-node node.wasm || [ -f "$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm" ]; }
 has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/packages/registry/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst" ]; }
@@ -700,10 +701,18 @@ build_node() {
     if [ ! -f "$node_wasm" ]; then
         node_wasm="$REPO_ROOT/packages/registry/spidermonkey/bin/node.wasm"
     fi
+    if [ ! -f "$node_wasm" ]; then
+        build_spidermonkey_node
+        node_wasm="$("$REPO_ROOT/scripts/resolve-binary.sh" programs/spidermonkey-node.wasm 2>/dev/null || true)"
+    fi
     if [ -f "$node_wasm" ]; then
         step "Installing existing node.wasm into local-binaries"
         source "$REPO_ROOT/scripts/install-local-binary.sh"
-        install_local_binary node "$node_wasm"
+        local tmp_dir
+        tmp_dir="$(mktemp -d)"
+        cp "$node_wasm" "$tmp_dir/node.wasm"
+        install_local_binary node "$tmp_dir/node.wasm"
+        rm -rf "$tmp_dir"
         info "node installed"
         return
     fi
@@ -712,6 +721,21 @@ build_node() {
     host_target="$(rustc -vV | awk '/^host/ {print $2}')"
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- build-deps resolve node)
     info "node built"
+}
+
+build_spidermonkey_node() {
+    if has_spidermonkey_node; then
+        info "spidermonkey-node"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving spidermonkey-node.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve spidermonkey-node)
+    info "spidermonkey-node resolved"
 }
 
 build_node_vfs() {
@@ -1379,6 +1403,7 @@ build_target() {
         perl-vfs)   build_perl_vfs ;;
         shell-vfs)  build_shell_vfs ;;
         node)       build_node ;;
+        spidermonkey-node) build_spidermonkey_node ;;
         node-vfs)   build_node_vfs ;;
         wordpress)  build_wordpress ;;
         wp-vfs)     build_wp_vfs ;;
@@ -1431,12 +1456,18 @@ build_target() {
 # through to slow local source builds for pages the dev server cannot serve.
 BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-vfs texlive redis)
 
+# Browser preparation intentionally does not fetch the `node` alias package or
+# the SpiderMonkey JS shell package directly. `spidermonkey-node` carries the
+# browser UI's Node-compatible runtime; `build_node` installs that same runtime
+# at `programs/node.wasm` for the Node demo.
+BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
+
 # All targets needed for enabled browser demos. Each entry's `has_X` short-
 # circuits when its release binary is in `binaries/`, so this loop is
 # a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
 # listed: they're toolchain prerequisites for source builds, and any
 # `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1446,7 +1477,7 @@ build_browser() {
 
 fetch_browser_binaries() {
     local disabled_pkgs
-    disabled_pkgs="${BROWSER_DISABLED_DEMO_PKGS[*]}"
+    disabled_pkgs="${BROWSER_DISABLED_DEMO_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
     WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $disabled_pkgs" \
         "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}"
 }
@@ -1628,6 +1659,10 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/node.wasm"
             warn "Cleaned node" ;;
+        spidermonkey-node)
+            rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
+                   "$REPO_ROOT/local-binaries/programs/wasm32/spidermonkey-node.wasm"
+            warn "Cleaned spidermonkey-node" ;;
         node-vfs)
             rm -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" \
                   "$REPO_ROOT/local-binaries/programs/wasm32/node-vfs.vfs.zst"
@@ -2122,6 +2157,7 @@ cmd_list() {
     echo "  perl-vfs    Perl stdlib VFS image                 $(has_perl_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  shell-vfs   Shell environment VFS image           $(has_shell_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  node        SpiderMonkey Node compatibility binary $(has_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  spidermonkey-node  SpiderMonkey Node-compatible binary $(has_spidermonkey_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  node-vfs    Node + npm VFS image                  $(has_node_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

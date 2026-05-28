@@ -71,7 +71,7 @@ fork_instrumentation_for_rel() {
         programs/wasm32/*) rel="${rel#programs/wasm32/}" ;;
         programs/wasm64/*) rel="${rel#programs/wasm64/}" ;;
         programs/*) rel="${rel#programs/}" ;;
-        *) echo auto; return 0 ;;
+        *) echo none; return 0 ;;
     esac
 
     local manifest policy
@@ -151,6 +151,9 @@ is_stale_wasm_artifact() {
     wasm_has_legacy_asyncify "$1" ||
         wasm_has_stale_abi "$1" "$current_abi" ||
         case "$fork_instrumentation" in
+            none)
+                false
+                ;;
             disabled)
                 wasm_has_any_wpk_fork_export "$1"
                 ;;

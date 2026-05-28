@@ -359,6 +359,6 @@ echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary spidermonkey "$BIN_DIR/js.wasm"
-install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
-install_local_binary node "$BIN_DIR/node.wasm"
+WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey "$BIN_DIR/js.wasm"
+WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
+WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled install_local_binary node "$BIN_DIR/node.wasm"

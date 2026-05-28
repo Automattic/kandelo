@@ -87,13 +87,13 @@ async function main() {
   writeVfsFile(
     fs,
     "/usr/bin/npm",
-    "#!/bin/sh\nexec node /usr/local/lib/npm/bin/npm-cli.js \"$@\"\n",
+    "#!/usr/bin/node\nrequire('/usr/local/lib/npm/bin/npm-cli.js')\n",
     0o755,
   );
   writeVfsFile(
     fs,
     "/usr/bin/npx",
-    "#!/bin/sh\nexec node /usr/local/lib/npm/bin/npx-cli.js \"$@\"\n",
+    "#!/usr/bin/node\nrequire('/usr/local/lib/npm/bin/npx-cli.js')\n",
     0o755,
   );
   symlink(fs, "/usr/bin/npm", "/bin/npm");

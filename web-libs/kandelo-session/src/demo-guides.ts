@@ -19,9 +19,28 @@ printf "files in /tmp before: "; ls /tmp | wc -l
 echo "written by the demo guide" > /tmp/kandelo-guide.txt
 cat /tmp/kandelo-guide.txt`;
 
-const nodeScript = `node -e "console.log('node:', process.version)"
-node -e "console.log(JSON.stringify(process.versions, null, 2))"
-npm --version`;
+const nodeRuntimeScript = [
+  "node -e \"",
+  "const {Worker}=require('worker_threads');",
+  "console.log('node', process.version, process.arch);",
+  "console.log('intl', new Intl.NumberFormat('de-DE').format(1234567.89));",
+  "const sab=new SharedArrayBuffer(4);",
+  "const view=new Int32Array(sab);",
+  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.notify(view,0);',{eval:true,workerData:sab});",
+  "Atomics.wait(view,0,0,5000);",
+  "console.log('worker', Atomics.load(view,0));",
+  "\"",
+].join(" ");
+
+const nodeCowsayScript = [
+  "rm -rf node_modules package-lock.json /tmp/.npm-cache",
+  "printf '%s\\n' '{\"name\":\"demo\",\"version\":\"0.0.1\"}' > package.json",
+  "npm install cowsay",
+  "./node_modules/.bin/cowsay Kandelo",
+].join(" && ");
+
+const nodeScript = `${nodeRuntimeScript}
+${nodeCowsayScript}`;
 
 const nginxScript = `curl -i http://127.0.0.1:8080/ | head -40
 echo "--- nginx processes ---"
@@ -113,29 +132,28 @@ export function shellGuide(): DemoGuideConfig {
 
 export function nodeGuide(): DemoGuideConfig {
   return scriptGuide(
-    "Node.js demo",
-    "Buttons can launch commands or feed a currently running REPL without leaving Kandelo.",
+    "SpiderMonkey Node.js demo",
+    "Run Node-compatible commands against the SpiderMonkey-backed runtime, including npm packages, Intl, and worker_threads shared memory.",
     [
       actionGroup("Commands", [
-        action("node-version", "Version", "Print the Node-compatible runtime version.", "terminal.run", "node --version"),
-        action("process-versions", "Versions", "Inspect process.versions from Node.", "terminal.run", `node -e "console.log(JSON.stringify(process.versions, null, 2))"`),
-        action("npm-version", "npm", "Print the bundled npm version.", "terminal.run", "npm --version"),
+        action("runtime-check", "Runtime check", "Exercise process metadata, Intl formatting, and a shared-memory worker.", "terminal.run", nodeRuntimeScript),
+        action("install-cowsay", "Install cowsay", "Install cowsay with npm and run its package bin.", "terminal.run", nodeCowsayScript),
       ]),
       actionGroup("REPL", [
-        action("enter-repl", "Open REPL", "Start an interactive Node REPL in the terminal.", "terminal.run", "node"),
+        action("enter-repl", "Open REPL", "Start an interactive Node-compatible REPL.", "terminal.run", "node"),
         action("repl-expression", "Send expr", "Send an expression to the current terminal.", "terminal.write", "process.version\n"),
       ]),
     ],
     {
-      title: "Node script",
+      title: "SpiderMonkey Node script",
       language: "sh",
       initialText: nodeScript,
     },
     {
       title: "Companion HTML",
-      srcDoc: companionHtml("Node companion", [
-        ["node-version", "Version"],
-        ["process-versions", "process.versions"],
+      srcDoc: companionHtml("SpiderMonkey Node companion", [
+        ["runtime-check", "Runtime"],
+        ["install-cowsay", "cowsay"],
         ["repl-expression", "REPL input"],
       ]),
     },

@@ -609,12 +609,12 @@ function installProcessWorkerListeners(
     if (exited) return;
     exited = true;
     if (processes.get(pid)?.worker !== worker) return; // already replaced (e.g. by exec)
-    console.warn(`[kernel-worker] pid=${pid} ${source} → forcing exit ${status}`);
-    // Crash path: the wasm kernel never saw a SYS_EXIT for this pid, so
-    // its ProcessTable still has the entry in state=Running. Tell the
-    // kernel to remove it so Inspector → Procs stops showing a dead pid
-    // and a parent waitpid() correctly returns ECHILD.
-    kernelWorker.removeProcessFromKernelTable(pid);
+    const message = `[kernel-worker] pid=${pid} ${source} -> forcing exit ${status}`;
+    if (status === 0 && source === "worker-main exit message") {
+      console.debug(message);
+    } else {
+      console.warn(message);
+    }
     handleExit(pid, status);
   };
 

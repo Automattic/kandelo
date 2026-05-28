@@ -78,6 +78,13 @@ describe('parseArgs', () => {
     expect(parsed.outputFile).toBe('out.wasm');
   });
 
+  it('treats LLVM .obj files as link inputs', () => {
+    const parsed = parseArgs(['foo.obj', 'bar.o', '-o', 'out.wasm']);
+    expect(parsed.compileOnly).toBe(false);
+    expect(parsed.objectFiles).toEqual(['foo.obj', 'bar.o']);
+    expect(parsed.outputFile).toBe('out.wasm');
+  });
+
   it('detects source files for compile+link', () => {
     const parsed = parseArgs(['foo.c', '-o', 'foo.wasm']);
     expect(parsed.sourceFiles).toEqual(['foo.c']);

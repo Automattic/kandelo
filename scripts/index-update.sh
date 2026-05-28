@@ -16,7 +16,7 @@
 #      in-place on the downloaded copy.
 #   5. Upload the staged archive + the mutated index.toml back to the
 #      release. Archive assets are content-addressed by their cache key,
-#      so matching existing assets are reused instead of clobbered.
+#      so byte-identical existing assets are reused instead of clobbered.
 #   6. Release the state-lock (also on failure via EXIT trap).
 #
 # Usage:
@@ -119,17 +119,63 @@ release_asset_info() {
   local info
 
   info="$(gh_retry gh api "/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}/releases/tags/${TARGET_TAG}" \
-    --jq ".assets[] | select(.name == \"$asset_name\") | [.id, .size] | @tsv"
+    --jq ".assets[] | select(.name == \"$asset_name\") | [.id, .size, (.digest // \"\")] | @tsv"
   )"
 
   [ -n "$info" ] || return 0
 
-  if ! [[ "$info" =~ ^[0-9]+[[:space:]][0-9]+$ ]]; then
+  if ! [[ "$info" =~ ^[0-9]+[[:space:]][0-9]+([[:space:]][^[:space:]]+)?$ ]]; then
     echo "index-update.sh: invalid release asset metadata for $asset_name: $info" >&2
     return 1
   fi
 
   printf '%s\n' "$info"
+}
+
+sha256_file() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+  else
+    shasum -a 256 "$path" | awk '{print $1}'
+  fi
+}
+
+release_asset_sha_matches() {
+  local asset_name="$1"
+  local expected_sha="$2"
+  local info asset_id asset_size asset_digest
+
+  info="$(release_asset_info "$asset_name")"
+  [ -n "$info" ] || return 1
+  read -r asset_id asset_size asset_digest <<< "$info"
+  if [[ "${asset_digest:-}" == sha256:* ]]; then
+    [ "${asset_digest#sha256:}" = "$expected_sha" ]
+    return
+  fi
+
+  local tmp_dir asset_path actual_sha
+
+  tmp_dir="$(mktemp -d)"
+  if ! gh_retry gh release download "$TARGET_TAG" \
+      --repo "$GITHUB_REPOSITORY" \
+      --pattern "$asset_name" \
+      --dir "$tmp_dir" \
+      --clobber >/dev/null; then
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  asset_path="$tmp_dir/$asset_name"
+  if [ ! -f "$asset_path" ]; then
+    echo "index-update.sh: downloaded asset $asset_name not found at $asset_path" >&2
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  actual_sha="$(sha256_file "$asset_path")"
+  rm -rf "$tmp_dir"
+  [ "$actual_sha" = "$expected_sha" ]
 }
 
 ensure_release_exists() {
@@ -204,30 +250,36 @@ file_size() {
 archive_asset_matches() {
   local expected_name="$1"
   local expected_size="$2"
+  local expected_sha="$3"
   local info
   info="$(release_asset_info "$expected_name")"
   [ -n "$info" ] || return 1
 
-  local asset_id asset_size
-  read -r asset_id asset_size <<< "$info"
-  [ -n "$asset_id" ] && [ "$asset_size" = "$expected_size" ]
+  local asset_id asset_size asset_digest
+  read -r asset_id asset_size asset_digest <<< "$info"
+  [ -n "$asset_id" ] &&
+    [ "$asset_size" = "$expected_size" ] &&
+    release_asset_sha_matches "$expected_name" "$expected_sha"
 }
 
 upload_archive_asset() {
   local expected_size
   expected_size="$(file_size "$ARCHIVE_PATH")"
+  local expected_sha
+  expected_sha="$(sha256_file "$ARCHIVE_PATH")"
 
   local info
   info="$(release_asset_info "$ARCHIVE_NAME")"
   if [ -n "$info" ]; then
-    local asset_id asset_size
-    read -r asset_id asset_size <<< "$info"
-    if [ "$asset_size" = "$expected_size" ]; then
-      echo "index-update.sh: archive asset $ARCHIVE_NAME already exists with matching size; reusing it."
+    local asset_id asset_size asset_digest
+    read -r asset_id asset_size asset_digest <<< "$info"
+    if [ "$asset_size" = "$expected_size" ] &&
+       release_asset_sha_matches "$ARCHIVE_NAME" "$expected_sha"; then
+      echo "index-update.sh: archive asset $ARCHIVE_NAME already exists with matching sha256; reusing it."
       return 0
     fi
 
-    echo "index-update.sh: archive asset $ARCHIVE_NAME exists with size $asset_size, expected $expected_size; replacing it." >&2
+    echo "index-update.sh: archive asset $ARCHIVE_NAME exists but does not match staged bytes; replacing it." >&2
     gh_retry gh api \
       -X DELETE \
       "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
@@ -245,8 +297,8 @@ upload_archive_asset() {
       return 0
     fi
 
-    if archive_asset_matches "$ARCHIVE_NAME" "$expected_size"; then
-      echo "index-update.sh: archive upload reported failure, but $ARCHIVE_NAME now exists with matching size; continuing."
+    if archive_asset_matches "$ARCHIVE_NAME" "$expected_size" "$expected_sha"; then
+      echo "index-update.sh: archive upload reported failure, but $ARCHIVE_NAME now exists with matching sha256; continuing."
       return 0
     fi
 

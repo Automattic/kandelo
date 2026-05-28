@@ -4179,6 +4179,10 @@ function Module(id, parent) {
 Module.Module = Module;
 Module.builtinModules = Object.keys(_builtinModules);
 Module.createRequire = function (filename) {
+    if (filename && typeof filename === 'object' && filename.href) filename = filename.href;
+    if (typeof filename === 'string' && filename.startsWith('file://')) {
+        filename = url.fileURLToPath(filename);
+    }
     return _makeRequire(filename);
 };
 Module._cache = {};
@@ -4309,6 +4313,15 @@ function _resolveFile(id, basedir) {
 // forever (each module gets its own cache and re-evaluates the cycle).
 const _moduleCache = {};
 
+function _stripShebang(source) {
+    if (source && source.charCodeAt(0) === 35 && source.charCodeAt(1) === 33) {
+        const end = source.indexOf('\n');
+        if (end < 0) return '';
+        return '//' + source.slice(2);
+    }
+    return source;
+}
+
 function _makeRequire(filename) {
     const basedir = path.dirname(_moduleRealpath(filename || process.cwd() + '/repl'));
 
@@ -4333,12 +4346,13 @@ function _makeRequire(filename) {
         if (_moduleCache[resolved]) return _moduleCache[resolved].exports;
 
         // Load and execute
-        const source = std.loadFile(resolved);
+        let source = std.loadFile(resolved);
         if (source === null) {
             const err = new Error(`Cannot find module '${id}'`);
             err.code = 'MODULE_NOT_FOUND';
             throw err;
         }
+        source = _stripShebang(source);
 
         if (resolved.endsWith('.json')) {
             const exports = JSON.parse(source);
@@ -4400,6 +4414,155 @@ function _makeRequire(filename) {
     require.main = null;
 
     return require;
+}
+
+function _nearestPackageType(filename) {
+    let dir = path.dirname(filename);
+    while (dir && dir !== '/') {
+        const pkgJson = dir + '/package.json';
+        if (_isReg(pkgJson)) {
+            try {
+                const pkg = JSON.parse(std.loadFile(pkgJson));
+                if (pkg && typeof pkg.type === 'string') return pkg.type;
+            } catch {}
+            return '';
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return '';
+}
+
+function _looksLikeEsmMain(filename, source) {
+    if (filename.endsWith('.mjs')) return true;
+    if (filename.endsWith('.cjs')) return false;
+    if (_nearestPackageType(filename) === 'module') return true;
+    const withoutShebang = _stripShebang(source);
+    return /(^|\n)\s*(import\s+(?:[^('"`]|[\r\n])+?\s+from\s*['"]|export\s+)/.test(withoutShebang);
+}
+
+function _namedImportBindings(bindings) {
+    return bindings
+        .replace(/^\s*\{|\}\s*$/g, '')
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => part.replace(/\s+as\s+/g, ': '))
+        .join(', ');
+}
+
+let _esmImportTempId = 0;
+function _defaultImportBinding(name, moduleRef) {
+    return `const ${name} = (${moduleRef} && Object.prototype.hasOwnProperty.call(${moduleRef}, 'default')) ? ${moduleRef}.default : ${moduleRef};`;
+}
+
+const _esmRequireBinding = '__kandelo_require';
+
+function _rewriteStaticEsmImports(source) {
+    source = source.replace(
+        /(^|\n)\s*import\s+([\s\S]*?)\s+from\s*(['"][^'"]+['"])[ \t]*;?/g,
+        (match, prefix, clause, specLiteral) => {
+            clause = clause.trim();
+            if (clause.startsWith('{')) {
+                return `${prefix}const { ${_namedImportBindings(clause)} } = ${_esmRequireBinding}(${specLiteral});`;
+            }
+            if (clause.startsWith('*')) {
+                const ns = clause.match(/^\*\s+as\s+([A-Za-z_$][\w$]*)$/);
+                if (!ns) return match;
+                return `${prefix}const ${ns[1]} = ${_esmRequireBinding}(${specLiteral});`;
+            }
+            const comma = clause.indexOf(',');
+            if (comma >= 0) {
+                const defaultName = clause.slice(0, comma).trim();
+                const named = clause.slice(comma + 1).trim();
+                const tmp = `__kandelo_esm_${_esmImportTempId++}`;
+                let out = `${prefix}const ${tmp} = ${_esmRequireBinding}(${specLiteral});\n${_defaultImportBinding(defaultName, tmp)}`;
+                if (named.startsWith('{')) {
+                    out += `\nconst { ${_namedImportBindings(named)} } = ${tmp};`;
+                }
+                return out;
+            }
+            return `${prefix}const __kandelo_esm_${_esmImportTempId} = ${_esmRequireBinding}(${specLiteral});\n` +
+                _defaultImportBinding(clause, `__kandelo_esm_${_esmImportTempId++}`);
+        },
+    );
+    return source.replace(
+        /(^|\n)\s*import\s+(['"][^'"]+['"])[ \t]*;?/g,
+        (_match, prefix, specLiteral) => `${prefix}${_esmRequireBinding}(${specLiteral});`,
+    );
+}
+
+function _runCommonJsMain(filename) {
+    const mainRequire = _makeRequire(filename);
+    mainRequire(filename);
+    if (typeof drainJobQueue === 'function') drainJobQueue();
+    process.exit(process.exitCode || 0);
+}
+
+function _formatThrownFailure(failure) {
+    if (!failure) return String(failure);
+    const text = String(failure);
+    const name = failure.name ? String(failure.name) : 'Error';
+    const message = failure.message ? String(failure.message) : '';
+    const headline = message ? `${name}: ${message}` : text;
+    const stack = failure.stack ? String(failure.stack) : '';
+    if (!stack) return headline;
+    if (stack.indexOf(headline) >= 0 || (message && stack.indexOf(message) >= 0)) {
+        return stack;
+    }
+    return headline + '\n' + stack;
+}
+
+function _runEsmMain(filename, source) {
+    const module = { id: filename, filename, loaded: false, exports: {}, children: [], paths: Module._nodeModulePaths(path.dirname(filename)) };
+    const require = _makeRequire(filename);
+    module.require = require;
+    const dirname = path.dirname(filename);
+    const fileUrl = url.pathToFileURL(filename).href;
+    const transformed = _rewriteStaticEsmImports(_stripShebang(source))
+        .replace(/\bimport\.meta\.url\b/g, JSON.stringify(fileUrl));
+    const wrappedFn = _nodeNative.evalScriptAsFunction(
+        '(async function () {\n' +
+            `const ${_esmRequireBinding} = arguments[0];\n` +
+            transformed +
+            '\n})',
+        filename,
+    );
+    let settled = false;
+    let failure = null;
+    Promise.resolve(wrappedFn(require)).then(
+        () => { settled = true; },
+        (err) => { failure = err; settled = true; },
+    );
+    let spins = 0;
+    while (!settled && typeof drainJobQueue === 'function') {
+        drainJobQueue();
+        if (++spins > 100000) {
+            failure = new Error('ES module main did not settle after draining the SpiderMonkey job queue');
+            settled = true;
+        }
+    }
+    if (failure) {
+        console.error(_formatThrownFailure(failure));
+        process.exitCode = process.exitCode || 1;
+    }
+    process.exit(process.exitCode || 0);
+}
+
+function _runMainScriptIfPresent() {
+    if (!_mainScriptPath) return;
+    const source = std.loadFile(_mainScriptPath);
+    if (source === null) {
+        const err = new Error(`Cannot find module '${_mainScriptPath}'`);
+        err.code = 'MODULE_NOT_FOUND';
+        throw err;
+    }
+    if (_looksLikeEsmMain(_mainScriptPath, source)) {
+        _runEsmMain(_mainScriptPath, source);
+    } else {
+        _runCommonJsMain(_mainScriptPath);
+    }
 }
 
 // ============================================================
@@ -5109,3 +5272,5 @@ if (!console.group) {
 
 // Export for the C entry point to detect successful bootstrap
 globalThis.__nodeBootstrapReady = true;
+
+_runMainScriptIfPresent();

@@ -29,8 +29,9 @@
  *     ===OCDUMP_END===\n
  *   ~33% overhead, irrelevant at build time, and fully binary-safe.
  *
- * Set `KANDELO_NO_OPCACHE_PREWARM=1` to skip; the build still produces a
- * working image, just without the first-request hit.
+ * Set `KANDELO_NO_OPCACHE_PREWARM=1` to skip. By default, failures are
+ * reported but do not fail the image build; set
+ * `KANDELO_OPCACHE_PREWARM_STRICT=1` to make them fatal.
  */
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -93,89 +94,99 @@ export async function prewarmOpcache(
 
   const { label } = options;
 
-  console.log(`[opcache-prewarm:${label}] booting kernel against in-memory VFS...`);
-  const imageBytes = await fs.saveImage();
-
-  // SpawnOptions has no per-call onStdout, so a single host-level
-  // callback delegates to whichever phase is currently running.
-  let activeStdoutSink: ((data: Uint8Array) => void) | null = null;
-  const host = new NodeKernelHost({
-    rootfsImage: imageBytes,
-    onStdout: (_pid, data) => {
-      activeStdoutSink?.(new Uint8Array(data));
-    },
-    onStderr: (_pid, data) => {
-      process.stderr.write(data);
-    },
-  });
-
-  let dumpBytes: Uint8Array;
   try {
-    await host.init();
-    const phpPath = resolveBinary("programs/php/php.wasm");
-    const phpBytes = readFileSync(phpPath);
-    const programBytes = phpBytes.buffer.slice(
-      phpBytes.byteOffset,
-      phpBytes.byteOffset + phpBytes.byteLength,
-    ) as ArrayBuffer;
+    console.log(`[opcache-prewarm:${label}] booting kernel against in-memory VFS...`);
+    const imageBytes = await fs.saveImage();
 
-    const runPhase = async (phase: string, job: PhpJob): Promise<Uint8Array> => {
-      const chunks: Uint8Array[] = [];
-      activeStdoutSink = (data) => chunks.push(data);
-      try {
-        const stdin = buildJobStdin(job);
-        const exitCode = await host.spawn(
-          programBytes,
-          ["php", ...PHP_INI_ARGS, "-r", buildJobScript(job)],
-          { env: PHP_ENV, stdin },
-        );
-        if (exitCode !== 0) {
-          const stdoutText = new TextDecoder("utf-8", { fatal: false }).decode(
-            concatChunks(chunks),
+    // SpawnOptions has no per-call onStdout, so a single host-level
+    // callback delegates to whichever phase is currently running.
+    let activeStdoutSink: ((data: Uint8Array) => void) | null = null;
+    const host = new NodeKernelHost({
+      rootfsImage: imageBytes,
+      onStdout: (_pid, data) => {
+        activeStdoutSink?.(new Uint8Array(data));
+      },
+      onStderr: (_pid, data) => {
+        process.stderr.write(data);
+      },
+    });
+
+    let dumpBytes: Uint8Array;
+    try {
+      await host.init();
+      const phpPath = resolveBinary("programs/php/php.wasm");
+      const phpBytes = readFileSync(phpPath);
+      const programBytes = phpBytes.buffer.slice(
+        phpBytes.byteOffset,
+        phpBytes.byteOffset + phpBytes.byteLength,
+      ) as ArrayBuffer;
+
+      const runPhase = async (phase: string, job: PhpJob): Promise<Uint8Array> => {
+        const chunks: Uint8Array[] = [];
+        activeStdoutSink = (data) => chunks.push(data);
+        try {
+          const stdin = buildJobStdin(job);
+          const exitCode = await host.spawn(
+            programBytes,
+            ["php", ...PHP_INI_ARGS, "-r", buildJobScript(job)],
+            { env: PHP_ENV, stdin },
           );
-          const stdoutTail = stdoutText.slice(-4096);
-          throw new Error(
-            `[opcache-prewarm:${label}] ${phase} php exited with code ${exitCode}` +
-            (stdoutTail ? `\n--- php stdout tail ---\n${stdoutTail}` : ""),
-          );
+          if (exitCode !== 0) {
+            const stdoutText = new TextDecoder("utf-8", { fatal: false }).decode(
+              concatChunks(chunks),
+            );
+            const stdoutTail = stdoutText.slice(-4096);
+            throw new Error(
+              `[opcache-prewarm:${label}] ${phase} php exited with code ${exitCode}` +
+              (stdoutTail ? `\n--- php stdout tail ---\n${stdoutTail}` : ""),
+            );
+          }
+        } finally {
+          activeStdoutSink = null;
         }
-      } finally {
-        activeStdoutSink = null;
+        return concatChunks(chunks);
+      };
+
+      // Phase 1: list every .php under the roots so the host can batch.
+      console.log(`[opcache-prewarm:${label}] listing .php files...`);
+      const listBytes = await runPhase("list", { kind: "list", roots: options.sourceRoots });
+      const excluded = new Set(options.excludePaths ?? []);
+      const listedPhpPaths = parseList(listBytes);
+      const phpPaths = listedPhpPaths.filter((path) => !excluded.has(path));
+      if (excluded.size > 0) {
+        console.log(
+          `[opcache-prewarm:${label}] excluded ${listedPhpPaths.length - phpPaths.length} php files from compile`,
+        );
       }
-      return concatChunks(chunks);
-    };
+      console.log(`[opcache-prewarm:${label}] ${phpPaths.length} php files to compile`);
 
-    // Phase 1: list every .php under the roots so the host can batch.
-    console.log(`[opcache-prewarm:${label}] listing .php files...`);
-    const listBytes = await runPhase("list", { kind: "list", roots: options.sourceRoots });
-    const excluded = new Set(options.excludePaths ?? []);
-    const listedPhpPaths = parseList(listBytes);
-    const phpPaths = listedPhpPaths.filter((path) => !excluded.has(path));
-    if (excluded.size > 0) {
-      console.log(
-        `[opcache-prewarm:${label}] excluded ${listedPhpPaths.length - phpPaths.length} php files from compile`,
-      );
+      // Phase 2: compile every listed PHP file into the shared kernel memfs
+      // cache dir. Some applications contain mutually exclusive fallback
+      // files that redeclare the same functions/classes; if a batch trips
+      // over one of those pairs, split it and continue in fresh PHP
+      // processes so each side can still populate the shared file cache.
+      console.log(`[opcache-prewarm:${label}] compiling ${phpPaths.length} files...`);
+      await compileFiles(label, phpPaths, runPhase);
+
+      // Phase 3: dump the populated /var/cache/opcache back over stdout.
+      console.log(`[opcache-prewarm:${label}] dumping cache files...`);
+      dumpBytes = await runPhase("dump", { kind: "dump" });
+    } finally {
+      await host.destroy().catch(() => {});
     }
-    console.log(`[opcache-prewarm:${label}] ${phpPaths.length} php files to compile`);
 
-    // Phase 2: compile every listed PHP file into the shared kernel memfs
-    // cache dir. Some applications contain mutually exclusive fallback
-    // files that redeclare the same functions/classes; if a batch trips
-    // over one of those pairs, split it and continue in fresh PHP
-    // processes so each side can still populate the shared file cache.
-    console.log(`[opcache-prewarm:${label}] compiling ${phpPaths.length} files...`);
-    await compileFiles(label, phpPaths, runPhase);
-
-    // Phase 3: dump the populated /var/cache/opcache back over stdout.
-    console.log(`[opcache-prewarm:${label}] dumping cache files...`);
-    dumpBytes = await runPhase("dump", { kind: "dump" });
-  } finally {
-    await host.destroy().catch(() => {});
+    const written = ingestDump(dumpBytes, fs);
+    console.log(`[opcache-prewarm:${label}] wrote ${written} cache files into ${CACHE_DIR}`);
+    return written;
+  } catch (err) {
+    if (process.env.KANDELO_OPCACHE_PREWARM_STRICT === "1") {
+      throw err;
+    }
+    console.warn(
+      `[opcache-prewarm:${label}] skipped after failure: ${summarizeError(err)}`,
+    );
+    return 0;
   }
-
-  const written = ingestDump(dumpBytes, fs);
-  console.log(`[opcache-prewarm:${label}] wrote ${written} cache files into ${CACHE_DIR}`);
-  return written;
 }
 
 type PhpJob =
