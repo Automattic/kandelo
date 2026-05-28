@@ -207,8 +207,8 @@ Set `MARIADB_BENCH_VERBOSE=1` to forward mariadbd stdout/stderr to the shell (us
 
 | Component | Path | Build command |
 |-----------|------|---------------|
-| MariaDB server (wasm32) | `packages/registry/mariadb/mariadb-install/bin/mariadbd`    | `bash packages/registry/mariadb/build-mariadb.sh` |
-| MariaDB server (wasm64) | `packages/registry/mariadb/mariadb-install-64/bin/mariadbd` | `bash packages/registry/mariadb/build-mariadb.sh --wasm64` |
+| MariaDB server (wasm32) | `packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm` | `bash packages/registry/mariadb/build-mariadb.sh` |
+| MariaDB server (wasm64) | `packages/registry/mariadb/mariadb-install-64/bin/mariadbd.wasm` | `bash packages/registry/mariadb/build-mariadb.sh --wasm64` |
 | mysqltest client        | `<install-dir>/bin/mysqltest.wasm` | (built by same script) |
 | System table SQL        | `<install-dir>/share/mysql/mysql_system_tables*.sql` | (built by same script) |
 

@@ -7,6 +7,9 @@ on:
       - 'host/src/**'
       - 'host/typedoc.json'
       - 'host/package.json'
+      - 'host/package-lock.json'
+      - 'host/tsconfig.json'
+      - 'host/tsup.config.ts'
 
 jobs:
   deploy-docs:
@@ -23,6 +26,10 @@ jobs:
       - name: Install dependencies
         working-directory: host
         run: npm ci
+
+      - name: Typecheck host package
+        working-directory: host
+        run: npm run typecheck
 
       - name: Build API docs
         working-directory: host

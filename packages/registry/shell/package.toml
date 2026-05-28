@@ -5,15 +5,14 @@ kernel_abi = 7
 # Implicit deps consumed by build-shell-vfs-image.ts and the
 # build-{vim,nethack}-zip.sh helpers it drives:
 #
-#   - dash.wasm via `resolveBinary("programs/dash.wasm")`.
-#   - utility wasm files via SHELL_LAZY_BINARY_SPECS; the shell image
-#     stores lazy-file stubs and their final sizes so browser boot does
-#     not need runtime HEAD probes.
-#   - magic.lite via `cargo xtask build-deps resolve file` →
-#     `<file-cache-canonical>/magic.lite`. file's package.toml declares
-#     `magic.lite` as an output and build-file.sh stages it into
-#     OUT_DIR. Falls back to `packages/registry/file/bin/magic.lite`
-#     for direct invocations.
+#   - rootfs.vfs via `resolveBinary("rootfs.vfs")`, falling back to
+#     `resolveBinary("programs/rootfs.vfs")`; that image
+#     carries the base shell, coreutils, grep/sed, file/magic, make/m4,
+#     findutils, and diffutils entries.
+#   - demo utility wasm files via SHELL_LAZY_BINARY_SPECS when they are
+#     not already present in rootfs.vfs; the shell image stores lazy-file
+#     stubs and their final sizes so browser boot does not need runtime
+#     HEAD probes.
 #   - vim.wasm + runtime/ via `cargo xtask build-deps resolve vim`
 #     (build-vim-zip.sh) — vim's package archive ships both.
 #   - nethack.wasm + runtime/ via `cargo xtask build-deps resolve
@@ -28,15 +27,8 @@ kernel_abi = 7
 # cache paths; those zips aren't published as part of vim/nethack's
 # release archives.
 depends_on = [
-  "dash@0.5.12",
-  "coreutils@9.6",
-  "grep@3.11",
-  "sed@4.9",
-  "bc@1.07.1",
-  "file@5.45",
+  "rootfs@0.1.0",
   "less@668",
-  "m4@1.4.19",
-  "make@4.4.1",
   "tar@1.35",
   "curl@8.11.1",
   "wget@1.25.0",
@@ -54,9 +46,9 @@ depends_on = [
   "fbdoom@0.1.0"
 ]
 
-# Composite VFS image for the browser shell demo: dash binary,
-# utility lazy-file stubs + symlinks, /etc system configs, magic database,
-# lazy-archive references for vim and nethack. Built by
+# Composite VFS image for the browser shell demo: canonical rootfs plus
+# shell-specific config, demo utility lazy-file stubs, Doom runtime, and
+# lazy-archive references for vim/nethack. Built by
 # images/vfs/scripts/build-shell-vfs-image.ts. The .vfs file is
 # wrapped (not double-compressed) inside the package-system .tar.zst
 # archive at archive-stage time.

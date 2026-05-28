@@ -43,7 +43,7 @@ const NPM_DIST = join(REPO_ROOT, "packages", "registry", "npm", "dist");
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "node-vfs.vfs.zst");
 
 const NPM_MOUNT = "/usr/local/lib/npm";
-const NODE_IMAGE_MAX_BYTES = 64 * 1024 * 1024;
+const NODE_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
 
 async function main() {
   if (!existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) {

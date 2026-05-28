@@ -1131,6 +1131,18 @@ pub extern "C" fn __abi_version() -> u32 {
     wasm_posix_shared::ABI_VERSION
 }
 
+/// Pointer to the Rust-owned host adapter manifest in kernel Wasm memory.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_host_adapter_manifest_ptr() -> usize {
+    &wasm_posix_shared::abi::HOST_ADAPTER_MANIFEST as *const _ as usize
+}
+
+/// Size in bytes of the Rust-owned host adapter manifest.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_host_adapter_manifest_len() -> u32 {
+    core::mem::size_of::<wasm_posix_shared::abi::HostAdapterManifest>() as u32
+}
+
 /// Set kernel operating mode. 0 = traditional, 1 = centralized.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_mode(mode: u32) {
@@ -1297,47 +1309,74 @@ pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
     }
 }
 
-/// Remove a process from the process table (centralized mode).
-/// Returns 0 on success, -ESRCH if pid not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
+fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
     use core::sync::atomic::Ordering;
+
+    let removed = result.process;
+    // /dev/fb0 cleanup: if the exiting process held a live mmap, tell the host
+    // to drop the canvas binding before the process Memory disappears. Then
+    // release the global owner claim — best-effort CAS makes this idempotent.
+    if removed.fb_binding.is_some() {
+        unsafe { host_unbind_framebuffer(pid as i32) };
+    }
+    let _ = crate::process_table::FB0_OWNER.compare_exchange(
+        pid as i32,
+        -1,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    );
+    // Tear down host-side AF_INET handles whose cross-process refcount hit zero
+    // during teardown. process_table.rs can't call host externs directly; we
+    // drain its close-list here.
+    for net_handle in result.host_net_closes {
+        unsafe { host_net_close(net_handle) };
+    }
+    // /dev/input/mice cleanup: drop ownership and any pending packets so a
+    // successor open starts clean. No host-side unbind — the device is
+    // host→kernel only.
+    crate::syscalls::maybe_release_mice(pid);
+    // /dev/dsp cleanup: drop ownership and flush the PCM ring. The host-side
+    // AudioContext keeps playing whatever is already scheduled; we just stop
+    // feeding it new samples from this dead pid.
+    crate::syscalls::maybe_release_dsp(pid);
+}
+
+fn remove_process_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.remove_process(pid) {
         Some(result) => {
-            let removed = result.process;
-            // /dev/fb0 cleanup: if the exiting process held a live mmap,
-            // tell the host to drop the canvas binding before the
-            // process Memory disappears. Then release the global owner
-            // claim — best-effort CAS makes this idempotent.
-            if removed.fb_binding.is_some() {
-                unsafe { host_unbind_framebuffer(pid as i32) };
-            }
-            let _ = crate::process_table::FB0_OWNER.compare_exchange(
-                pid as i32,
-                -1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
-            // Tear down host-side AF_INET handles whose cross-process
-            // refcount hit zero during teardown. process_table.rs can't
-            // call host externs directly; we drain its close-list here.
-            for net_handle in result.host_net_closes {
-                unsafe { host_net_close(net_handle) };
-            }
-            // /dev/input/mice cleanup: drop ownership and any pending
-            // packets so a successor open starts clean. No host-side
-            // unbind — the device is host→kernel only.
-            crate::syscalls::maybe_release_mice(pid);
-            // /dev/dsp cleanup: drop ownership and flush the PCM ring.
-            // The host-side AudioContext keeps playing whatever is
-            // already scheduled; we just stop feeding it new samples
-            // from this dead pid.
-            crate::syscalls::maybe_release_dsp(pid);
+            finish_removed_process(pid, result);
             0
         }
         None => -(Errno::ESRCH as i32),
     }
+}
+
+fn reap_process_and_cleanup(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.reap_process(pid) {
+        Some(result) => {
+            finish_removed_process(pid, result);
+            0
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Remove a process from the process table (centralized mode).
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_remove_process(pid: u32) -> i32 {
+    remove_process_and_cleanup(pid)
+}
+
+/// Reap a wait-consumed process from the process table (centralized mode).
+/// Reaped process-group leaders are retained as limbo records while group
+/// members remain, so getpgid/setpgid can still resolve the leader.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reap_process(pid: u32) -> i32 {
+    reap_process_and_cleanup(pid)
 }
 
 /// Fork a process in the process table (centralized mode).
@@ -1451,6 +1490,64 @@ pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
         Some(_) => -1,
         None => -(Errno::ESRCH as i32),
     }
+}
+
+/// Return the recorded parent pid for a process, or -ESRCH if absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.parent_pid(pid) {
+        Some(parent_pid) => parent_pid as i32,
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Mark a process as signal-terminated without removing it from the table.
+///
+/// Used by the host when the Worker dies before the guest reaches SYS_EXIT.
+/// The process remains as an Exited zombie until a parent wait consumes it.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.mark_process_signaled(pid, signum) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Poll for a waitable child matching waitpid-style `target_pid`.
+///
+/// Returns a child pid and writes its wait status to `status_ptr` when a
+/// zombie matches, 0 when a matching child is still running, or negative
+/// errno when no matching child exists.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait4_poll(parent_pid: u32, target_pid: i32, status_ptr: *mut i32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.poll_waitable_child(parent_pid, target_pid) {
+        Ok(Some((child_pid, wait_status))) => {
+            if !status_ptr.is_null() {
+                unsafe {
+                    *status_ptr = wait_status;
+                }
+            }
+            child_pid as i32
+        }
+        Ok(None) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Reap an exited direct child after wait/waitid consumes it.
+///
+/// This keeps the parent/child/exited invariant in Rust instead of allowing
+/// the host to remove arbitrary process-table entries during wait handling.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reap_exited_child(parent_pid: u32, child_pid: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if !table.is_exited_child_of(parent_pid, child_pid) {
+        return -(Errno::ECHILD as i32);
+    }
+    reap_process_and_cleanup(child_pid)
 }
 
 /// Check if a process has SA_NOCLDWAIT set for SIGCHLD (centralized mode).
@@ -2831,6 +2928,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
                             -(Errno::EPERM as i32)
                         } else {
                             target.pgid = new_pgid;
+                            table.prune_empty_limbo_groups();
                             0
                         }
                     }

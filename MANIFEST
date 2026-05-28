@@ -30,6 +30,8 @@
 /bin             d  0755  0  0
 /usr             d  0755  0  0
 /usr/bin         d  0755  0  0
+/usr/share       d  0755  0  0
+/usr/share/misc  d  0755  0  0
 
 # ── User home ──────────────────────────────────────────────────────
 /home/user       d  0755  1000  1000
@@ -54,10 +56,7 @@
 # is invisible to getservbyname/getservbyport callers.
 /etc/services      f  0644  0  0
 
-# ── /bin content ───────────────────────────────────────────────────
-# /bin/sh is a zero-byte stub. The exec resolver intercepts this path
-# and loads dash.wasm at exec time; the stub only exists so access(),
-# stat(), and similar existence checks return success. A real symlink
-# to /usr/bin/dash gets added in a later PR once the dash package is
-# wired through the rootfs build.
-/bin/sh            f  0755  0  0
+# ── Shells ─────────────────────────────────────────────────────────
+# /bin/sh is provided by the generated package manifest as a symlink to
+# /usr/bin/dash. The rootfs/bin/sh file is a legacy source-tree stub and is
+# intentionally no longer declared here.

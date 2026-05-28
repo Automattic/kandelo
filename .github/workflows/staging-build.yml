@@ -979,6 +979,12 @@ jobs:
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
+      - name: Typecheck host package
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            cd host && npm run typecheck
+          '
+
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive

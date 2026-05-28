@@ -181,6 +181,9 @@ pub trait HostIO {
 pub enum ProcessState {
     Running,
     Exited,
+    /// Reaped process-group leader retained only as a pgid/session identity
+    /// placeholder while live or zombie members remain in the group.
+    Limbo,
 }
 
 /// Per-process binding tracking the live mmap of `/dev/fb0`.

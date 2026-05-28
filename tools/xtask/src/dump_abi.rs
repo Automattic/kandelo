@@ -10,6 +10,8 @@
 //!   * Marshalled repr(C) structs — offsets via `core::mem::offset_of!`
 //!   * [`wasm_posix_shared::abi`] — expected process globals, export
 //!     deny-lists, custom-section name
+//!   * [`wasm_posix_shared::abi::HOST_ADAPTER_MANIFEST`] — kernel/host
+//!     adapter boot contract metadata
 //!   * [`wasm_posix_shared::host_abi`] — host adapter syscall marshalling
 //!     descriptors
 //!
@@ -203,6 +205,58 @@ fn render_ts_module() -> String {
         "export const ABI_KERNEL_EXPORT = {:?} as const;\n\n",
         shared::abi::ABI_KERNEL_EXPORT
     ));
+
+    out.push_str(&format!(
+        "export const HOST_ADAPTER_VERSION = {} as const;\n",
+        shared::abi::HOST_ADAPTER_VERSION
+    ));
+    out.push_str(&format!(
+        "export const HOST_ADAPTER_MANIFEST_MAGIC = {} as const;\n",
+        shared::abi::HOST_ADAPTER_MANIFEST_MAGIC
+    ));
+    out.push_str(&format!(
+        "export const HOST_ADAPTER_MANIFEST_VERSION = {} as const;\n",
+        shared::abi::HOST_ADAPTER_MANIFEST_VERSION
+    ));
+    out.push_str(&format!(
+        "export const HOST_ADAPTER_MANIFEST_SIZE = {} as const;\n",
+        shared::abi::HOST_ADAPTER_MANIFEST_SIZE
+    ));
+    out.push_str(&format!(
+        "export const HOST_ADAPTER_REQUIRED_WORKER_FEATURES = {} as const;\n",
+        shared::abi::HOST_ADAPTER_REQUIRED_WORKER_FEATURES
+    ));
+    out.push_str(&format!(
+        "export const HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES = {} as const;\n\n",
+        shared::abi::HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES
+    ));
+
+    out.push_str("export const HOST_ADAPTER_WORKER_FEATURES = {\n");
+    for feature in shared::abi::HOST_ADAPTER_WORKER_FEATURES {
+        out.push_str(&format!("  {}: {},\n", feature.name, feature.bit));
+    }
+    out.push_str("} as const;\n\n");
+
+    out.push_str("export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [\n");
+    for export_name in shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS {
+        out.push_str(&format!("  {:?},\n", export_name));
+    }
+    out.push_str("] as const;\n\n");
+
+    out.push_str("export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [\n");
+    for export_name in shared::abi::HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS {
+        out.push_str(&format!("  {:?},\n", export_name));
+    }
+    out.push_str("] as const;\n\n");
+
+    out.push_str("export const HOST_ADAPTER_MANIFEST_FIELDS = {\n");
+    for field in host_adapter_manifest_fields() {
+        out.push_str(&format!(
+            "  {}: {{ offset: {}, size: {} }},\n",
+            field.name, field.offset, field.size
+        ));
+    }
+    out.push_str("} as const;\n\n");
 
     out.push_str(&format!(
         "export const CHANNEL_STATUS_IDLE = {} as const;\n",
@@ -413,6 +467,75 @@ fn syscall_arg_direction_name(direction: shared::host_abi::SyscallArgDirection) 
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct HostAdapterManifestField {
+    name: &'static str,
+    offset: usize,
+    size: usize,
+}
+
+fn host_adapter_manifest_fields() -> [HostAdapterManifestField; 11] {
+    use shared::abi::HostAdapterManifest;
+
+    [
+        HostAdapterManifestField {
+            name: "magic",
+            offset: offset_of!(HostAdapterManifest, magic),
+            size: size_of::<u32>(),
+        },
+        HostAdapterManifestField {
+            name: "manifestVersion",
+            offset: offset_of!(HostAdapterManifest, manifest_version),
+            size: size_of::<u16>(),
+        },
+        HostAdapterManifestField {
+            name: "manifestSize",
+            offset: offset_of!(HostAdapterManifest, manifest_size),
+            size: size_of::<u16>(),
+        },
+        HostAdapterManifestField {
+            name: "abiVersion",
+            offset: offset_of!(HostAdapterManifest, abi_version),
+            size: size_of::<u32>(),
+        },
+        HostAdapterManifestField {
+            name: "requiredHostAdapterVersion",
+            offset: offset_of!(HostAdapterManifest, required_host_adapter_version),
+            size: size_of::<u32>(),
+        },
+        HostAdapterManifestField {
+            name: "requiredWorkerFeatures",
+            offset: offset_of!(HostAdapterManifest, required_worker_features),
+            size: size_of::<u32>(),
+        },
+        HostAdapterManifestField {
+            name: "optionalKernelFeatures",
+            offset: offset_of!(HostAdapterManifest, optional_kernel_features),
+            size: size_of::<u32>(),
+        },
+        HostAdapterManifestField {
+            name: "channelHeaderSize",
+            offset: offset_of!(HostAdapterManifest, channel_header_size),
+            size: size_of::<u32>(),
+        },
+        HostAdapterManifestField {
+            name: "channelDataOffset",
+            offset: offset_of!(HostAdapterManifest, channel_data_offset),
+            size: size_of::<u32>(),
+        },
+        HostAdapterManifestField {
+            name: "channelDataSize",
+            offset: offset_of!(HostAdapterManifest, channel_data_size),
+            size: size_of::<u32>(),
+        },
+        HostAdapterManifestField {
+            name: "channelMinSize",
+            offset: offset_of!(HostAdapterManifest, channel_min_size),
+            size: size_of::<u32>(),
+        },
+    ]
+}
+
 /// Collect per-field (name, offset) from a repr(C) struct using
 /// `offset_of!` and hand off to [`build_struct_layout`] for size
 /// computation + JSON rendering.
@@ -467,6 +590,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "host_intercepted_syscalls".into(),
         host_intercepted_syscalls(),
     );
+    root.insert("host_adapter".into(), host_adapter());
     root.insert("syscall_arg_descriptors".into(), syscall_arg_descriptors());
     root.insert("channel_status_codes".into(), channel_status_codes());
     root.insert("custom_sections".into(), custom_sections());
@@ -850,6 +974,98 @@ fn syscall_arg_descriptors() -> Value {
     Value::Object(descriptors.into_iter().collect())
 }
 
+fn host_adapter() -> Value {
+    let manifest = shared::abi::HOST_ADAPTER_MANIFEST;
+
+    let mut manifest_json: JsonMap = BTreeMap::new();
+    manifest_json.insert("magic".into(), json!(manifest.magic));
+    manifest_json.insert("manifest_version".into(), json!(manifest.manifest_version));
+    manifest_json.insert("manifest_size".into(), json!(manifest.manifest_size));
+    manifest_json.insert("abi_version".into(), json!(manifest.abi_version));
+    manifest_json.insert(
+        "required_host_adapter_version".into(),
+        json!(manifest.required_host_adapter_version),
+    );
+    manifest_json.insert(
+        "required_worker_features".into(),
+        json!(manifest.required_worker_features),
+    );
+    manifest_json.insert(
+        "optional_kernel_features".into(),
+        json!(manifest.optional_kernel_features),
+    );
+    manifest_json.insert(
+        "channel_header_size".into(),
+        json!(manifest.channel_header_size),
+    );
+    manifest_json.insert(
+        "channel_data_offset".into(),
+        json!(manifest.channel_data_offset),
+    );
+    manifest_json.insert(
+        "channel_data_size".into(),
+        json!(manifest.channel_data_size),
+    );
+    manifest_json.insert("channel_min_size".into(), json!(manifest.channel_min_size));
+
+    let fields = host_adapter_manifest_fields()
+        .into_iter()
+        .map(|field| {
+            let mut m: JsonMap = BTreeMap::new();
+            m.insert("name".into(), json!(field.name));
+            m.insert("offset".into(), json!(field.offset));
+            m.insert("size".into(), json!(field.size));
+            Value::Object(m.into_iter().collect())
+        })
+        .collect();
+
+    let worker_features = shared::abi::HOST_ADAPTER_WORKER_FEATURES
+        .iter()
+        .map(|feature| {
+            let mut m: JsonMap = BTreeMap::new();
+            m.insert("name".into(), json!(feature.name));
+            m.insert("bit".into(), json!(feature.bit));
+            Value::Object(m.into_iter().collect())
+        })
+        .collect();
+
+    let mut m: JsonMap = BTreeMap::new();
+    m.insert("version".into(), json!(shared::abi::HOST_ADAPTER_VERSION));
+    m.insert(
+        "manifest".into(),
+        Value::Object(manifest_json.into_iter().collect()),
+    );
+    m.insert("manifest_fields".into(), Value::Array(fields));
+    m.insert(
+        "required_worker_features".into(),
+        json!(shared::abi::HOST_ADAPTER_REQUIRED_WORKER_FEATURES),
+    );
+    m.insert(
+        "optional_kernel_features".into(),
+        json!(shared::abi::HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES),
+    );
+    m.insert("worker_features".into(), Value::Array(worker_features));
+    m.insert(
+        "required_kernel_exports".into(),
+        Value::Array(
+            shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS
+                .iter()
+                .map(|name| Value::String((*name).to_string()))
+                .collect(),
+        ),
+    );
+    m.insert(
+        "optional_kernel_exports".into(),
+        Value::Array(
+            shared::abi::HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS
+                .iter()
+                .map(|name| Value::String((*name).to_string()))
+                .collect(),
+        ),
+    );
+    Value::Object(m.into_iter().collect())
+}
+
 fn syscall_arg_desc_json(desc: &shared::host_abi::SyscallArgDesc) -> Value {
     let mut m: JsonMap = BTreeMap::new();
     m.insert("argIndex".into(), json!(desc.arg_index));
@@ -1205,7 +1421,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 }
 
 fn additive_top_level_section(section: &str) -> bool {
-    matches!(section, "syscall_arg_descriptors")
+    matches!(section, "host_adapter" | "syscall_arg_descriptors")
 }
 
 fn classify_additive_object_by_key(
@@ -1380,6 +1596,32 @@ mod tests {
             "host_intercepted_syscalls": [
                 {"number": 201, "name": "SYS_EXECVE"}
             ],
+            "host_adapter": {
+                "version": 1,
+                "manifest": {
+                    "abi_version": 10,
+                    "channel_data_offset": 72,
+                    "channel_data_size": 65536,
+                    "channel_header_size": 72,
+                    "channel_min_size": 65608,
+                    "magic": 1296781399,
+                    "manifest_size": 40,
+                    "manifest_version": 1,
+                    "optional_kernel_features": 0,
+                    "required_host_adapter_version": 1,
+                    "required_worker_features": 7
+                },
+                "manifest_fields": [
+                    {"name": "magic", "offset": 0, "size": 4}
+                ],
+                "optional_kernel_features": 0,
+                "optional_kernel_exports": [],
+                "required_kernel_exports": ["__abi_version"],
+                "required_worker_features": 7,
+                "worker_features": [
+                    {"name": "atomics_wait", "bit": 2}
+                ]
+            },
             "kernel_exports": [
                 {"name": "__abi_version", "kind": "func", "signature": "() -> (i32)"},
                 {"name": "kernel_set_current_pid", "kind": "func", "signature": "(i32) -> ()"}
@@ -1450,6 +1692,20 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"syscall_arg_descriptors\""]
+        );
+    }
+
+    #[test]
+    fn adding_host_adapter_section_is_compatible() {
+        let mut old = base_snapshot();
+        old.as_object_mut().unwrap().remove("host_adapter");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"host_adapter\""]
         );
     }
 

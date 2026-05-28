@@ -3,8 +3,11 @@ name = "mariadb-test"
 version = "0.1.0"
 kernel_abi = 7
 # Implicit deps: build-mariadb-test-vfs-image.ts
-#   - reads mariadbd + mysql-test + system-table SQL from
-#     `packages/registry/mariadb/mariadb-install/` (side effect of `build-mariadb.sh`)
+#   - reads mariadbd via `resolveBinary("programs/mariadb/mariadbd.wasm")`.
+#   - reads mysql-test + system-table SQL from
+#     `packages/registry/mariadb/mariadb-install/` when a local source build
+#     has populated it, otherwise extracts them from the MariaDB source tarball
+#     on demand.
 #   - calls `resolveBinary("programs/dash.wasm")` (strict — throws if missing)
 #     to bake `/bin/dash` + `/bin/sh` symlink
 #   - calls `addDinitInit(...)` which calls `resolveDinitBinaries()` (strict —
@@ -20,9 +23,7 @@ depends_on = ["mariadb@10.5.28", "dash@0.5.12", "dinit@0.19.4"]
 # images/vfs/scripts/build-mariadb-test-vfs-image.ts. Used by
 # apps/browser-demos/pages/mariadb-test/main.ts (Playwright harness).
 #
-# Not part of the binaries-abi-v6 release: this is a test fixture
-# that depends on a built MariaDB tree (packages/registry/mariadb/
-# mariadb-install/), which is local-only. The page imports it via
+# The page imports this via
 # `@binaries/programs/wasm32/mariadb-test.vfs.zst?url`; the @binaries
 # resolver in vite.config.ts falls back to local-binaries/ when no
 # released archive exists.
