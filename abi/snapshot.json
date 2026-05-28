@@ -4497,6 +4497,320 @@
       "number": 415
     }
   ],
+  "vfs_metadata": {
+    "access_modes": [
+      {
+        "name": "F_OK",
+        "value": 0
+      },
+      {
+        "name": "R_OK",
+        "value": 4
+      },
+      {
+        "name": "W_OK",
+        "value": 2
+      },
+      {
+        "name": "X_OK",
+        "value": 1
+      }
+    ],
+    "at_flags": [
+      {
+        "name": "AT_FDCWD",
+        "value": -100
+      },
+      {
+        "name": "AT_SYMLINK_NOFOLLOW",
+        "value": 256
+      },
+      {
+        "name": "AT_REMOVEDIR",
+        "value": 512
+      },
+      {
+        "name": "AT_EMPTY_PATH",
+        "value": 4096
+      }
+    ],
+    "dirent_types": [
+      {
+        "name": "DT_UNKNOWN",
+        "value": 0
+      },
+      {
+        "name": "DT_FIFO",
+        "value": 1
+      },
+      {
+        "name": "DT_CHR",
+        "value": 2
+      },
+      {
+        "name": "DT_DIR",
+        "value": 4
+      },
+      {
+        "name": "DT_BLK",
+        "value": 6
+      },
+      {
+        "name": "DT_REG",
+        "value": 8
+      },
+      {
+        "name": "DT_LNK",
+        "value": 10
+      },
+      {
+        "name": "DT_SOCK",
+        "value": 12
+      }
+    ],
+    "fcntl_commands": [
+      {
+        "name": "F_DUPFD",
+        "value": 0
+      },
+      {
+        "name": "F_GETFD",
+        "value": 1
+      },
+      {
+        "name": "F_SETFD",
+        "value": 2
+      },
+      {
+        "name": "F_GETFL",
+        "value": 3
+      },
+      {
+        "name": "F_SETFL",
+        "value": 4
+      },
+      {
+        "name": "F_GETLK",
+        "value": 12
+      },
+      {
+        "name": "F_SETLK",
+        "value": 13
+      },
+      {
+        "name": "F_SETLKW",
+        "value": 14
+      },
+      {
+        "name": "F_SETOWN",
+        "value": 8
+      },
+      {
+        "name": "F_GETOWN",
+        "value": 9
+      },
+      {
+        "name": "F_DUPFD_CLOEXEC",
+        "value": 1030
+      },
+      {
+        "name": "F_DUPFD_CLOFORK",
+        "value": 1028
+      },
+      {
+        "name": "F_OFD_GETLK",
+        "value": 36
+      },
+      {
+        "name": "F_OFD_SETLK",
+        "value": 37
+      },
+      {
+        "name": "F_OFD_SETLKW",
+        "value": 38
+      }
+    ],
+    "fd_flags": [
+      {
+        "name": "FD_CLOEXEC",
+        "value": 1
+      },
+      {
+        "name": "FD_CLOFORK",
+        "value": 2
+      }
+    ],
+    "file_modes": [
+      {
+        "name": "S_IFMT",
+        "value": 61440
+      },
+      {
+        "name": "S_IFSOCK",
+        "value": 49152
+      },
+      {
+        "name": "S_IFLNK",
+        "value": 40960
+      },
+      {
+        "name": "S_IFREG",
+        "value": 32768
+      },
+      {
+        "name": "S_IFBLK",
+        "value": 24576
+      },
+      {
+        "name": "S_IFDIR",
+        "value": 16384
+      },
+      {
+        "name": "S_IFCHR",
+        "value": 8192
+      },
+      {
+        "name": "S_IFIFO",
+        "value": 4096
+      },
+      {
+        "name": "S_ISUID",
+        "value": 2048
+      },
+      {
+        "name": "S_ISGID",
+        "value": 1024
+      },
+      {
+        "name": "S_ISVTX",
+        "value": 512
+      },
+      {
+        "name": "S_IRWXU",
+        "value": 448
+      },
+      {
+        "name": "S_IRUSR",
+        "value": 256
+      },
+      {
+        "name": "S_IWUSR",
+        "value": 128
+      },
+      {
+        "name": "S_IXUSR",
+        "value": 64
+      },
+      {
+        "name": "S_IRWXG",
+        "value": 56
+      },
+      {
+        "name": "S_IRGRP",
+        "value": 32
+      },
+      {
+        "name": "S_IWGRP",
+        "value": 16
+      },
+      {
+        "name": "S_IXGRP",
+        "value": 8
+      },
+      {
+        "name": "S_IRWXO",
+        "value": 7
+      },
+      {
+        "name": "S_IROTH",
+        "value": 4
+      },
+      {
+        "name": "S_IWOTH",
+        "value": 2
+      },
+      {
+        "name": "S_IXOTH",
+        "value": 1
+      },
+      {
+        "name": "S_MODE_BITS",
+        "value": 4095
+      }
+    ],
+    "open_flags": [
+      {
+        "name": "O_RDONLY",
+        "value": 0
+      },
+      {
+        "name": "O_WRONLY",
+        "value": 1
+      },
+      {
+        "name": "O_RDWR",
+        "value": 2
+      },
+      {
+        "name": "O_ACCMODE",
+        "value": 3
+      },
+      {
+        "name": "O_CREAT",
+        "value": 64
+      },
+      {
+        "name": "O_EXCL",
+        "value": 128
+      },
+      {
+        "name": "O_NOCTTY",
+        "value": 256
+      },
+      {
+        "name": "O_TRUNC",
+        "value": 512
+      },
+      {
+        "name": "O_APPEND",
+        "value": 1024
+      },
+      {
+        "name": "O_NONBLOCK",
+        "value": 2048
+      },
+      {
+        "name": "O_DIRECTORY",
+        "value": 65536
+      },
+      {
+        "name": "O_NOFOLLOW",
+        "value": 131072
+      },
+      {
+        "name": "O_CLOEXEC",
+        "value": 524288
+      },
+      {
+        "name": "O_CLOFORK",
+        "value": 8388608
+      }
+    ],
+    "seek_whence": [
+      {
+        "name": "SEEK_SET",
+        "value": 0
+      },
+      {
+        "name": "SEEK_CUR",
+        "value": 1
+      },
+      {
+        "name": "SEEK_END",
+        "value": 2
+      }
+    ]
+  },
   "wakeup_events": {
     "fields": [
       {

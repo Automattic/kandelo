@@ -34,6 +34,7 @@ import {
   ABI_KERNEL_EXPORT,
   ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
+  AT_FLAGS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_IDLE,
   CHANNEL_STATUS_PENDING,
@@ -5747,7 +5748,6 @@ export class CentralizedKernelWorker {
    * Resolves the fd path via kernel_get_fd_path, then delegates to exec flow.
    */
   private handleExecveat(channel: ChannelInfo, origArgs: number[]): void {
-    const AT_EMPTY_PATH = 0x1000;
     const dirfd = origArgs[0];
     const flags = origArgs[4];
 
@@ -5761,7 +5761,7 @@ export class CentralizedKernelWorker {
 
     let execPath: string;
 
-    if ((flags & AT_EMPTY_PATH) !== 0 && pathStr === "") {
+    if ((flags & AT_FLAGS.AT_EMPTY_PATH) !== 0 && pathStr === "") {
       // fexecve path: resolve fd to file path via kernel
       const getFdPath = this.kernelInstance!.exports.kernel_get_fd_path as
         ((pid: number, fd: number, bufPtr: bigint, bufLen: number) => number) | undefined;
