@@ -1502,6 +1502,36 @@ pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
     }
 }
 
+/// Pick the next live process/fd that should receive a host-bridged TCP
+/// connection for `port`.
+///
+/// Writes `{ u32 pid, i32 fd }` to `out_ptr`; returns 1 if a target was
+/// written, 0 if none exists, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pick_tcp_listener_target(
+    port: u32,
+    exclude_pid: u32,
+    out_ptr: *mut u8,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if port > u16::MAX as u32 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.pick_tcp_listener_target(port as u16, exclude_pid) {
+        Some((pid, fd)) => {
+            let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, 8) };
+            out[0..4].copy_from_slice(&pid.to_le_bytes());
+            out[4..8].copy_from_slice(&fd.to_le_bytes());
+            1
+        }
+        None => 0,
+    }
+}
+
 /// Mark a process as signal-terminated without removing it from the table.
 ///
 /// Used by the host when the Worker dies before the guest reaches SYS_EXIT.
