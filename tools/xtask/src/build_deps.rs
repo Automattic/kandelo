@@ -715,6 +715,111 @@ fn is_cycle_error(e: &str) -> bool {
     e.starts_with("cycle while building:")
 }
 
+/// Fast path for `build-deps resolve --binaries-dir <dir>` callers.
+///
+/// Browser/dev-server preparation needs to materialize self-contained program
+/// archives into `binaries/`. If one of those programs has a stale or corrupt
+/// dependency archive, resolving dependencies first can incorrectly force a
+/// source build even though the target archive itself is valid. Keep normal
+/// source-build resolution unchanged, but allow program archive fetches in
+/// binary-materialization mode to satisfy the request before walking deps.
+fn try_fetch_program_without_deps(
+    target: &DepsManifest,
+    registry: &Registry,
+    arch: TargetArch,
+    abi_version: u32,
+    opts: &ResolveOpts<'_>,
+    memo: &mut BTreeMap<String, [u8; 32]>,
+) -> Result<Option<PathBuf>, String> {
+    if opts.binaries_dir.is_none()
+        || !matches!(target.kind, ManifestKind::Program)
+        || target.program_outputs.is_empty()
+    {
+        return Ok(None);
+    }
+
+    let force_rebuild = opts
+        .force_source_build
+        .map(|s| s.contains(&target.name))
+        .unwrap_or(false);
+    if force_rebuild {
+        return Ok(None);
+    }
+
+    if let Some(lr) = opts.local_libs {
+        let override_dir = lr.join(&target.name).join("build");
+        if override_dir.is_dir() {
+            return Ok(Some(override_dir));
+        }
+    }
+
+    let mut chain: Vec<String> = Vec::new();
+    let sha = compute_sha(target, registry, arch, abi_version, memo, &mut chain)?;
+    let canonical = canonical_path(opts.cache_root, target, arch, &sha);
+
+    if canonical.is_dir() {
+        match validate_cache_artifacts(target, &canonical) {
+            Ok(()) => return Ok(Some(canonical)),
+            Err(e) => {
+                eprintln!(
+                    "warning: ignoring stale cached artifact for {} at {} ({})",
+                    target.spec(),
+                    canonical.display(),
+                    e,
+                );
+                std::fs::remove_dir_all(&canonical).map_err(|remove_err| {
+                    format!(
+                        "clear stale cache entry {} after validation failure: {remove_err}",
+                        canonical.display()
+                    )
+                })?;
+            }
+        }
+    }
+
+    let cache_key_sha_hex = hex(&sha);
+    if let Some(binary) = target.binary.get(&arch) {
+        match remote_fetch::fetch_and_install(
+            binary,
+            &canonical,
+            target,
+            arch,
+            abi_version,
+            &cache_key_sha_hex,
+        ) {
+            Ok(()) => match validate_cache_artifacts(target, &canonical) {
+                Ok(()) => return Ok(Some(canonical)),
+                Err(e) => {
+                    eprintln!(
+                        "warning: direct binary fetch for {} from {} produced \
+                         a stale artifact ({}); falling back to dependency \
+                         resolution/source build",
+                        target.spec(),
+                        binary.archive_url,
+                        e,
+                    );
+                    let _ = std::fs::remove_dir_all(&canonical);
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "warning: direct binary fetch for {} from {} failed ({}); \
+                     falling back to dependency resolution/source build",
+                    target.spec(),
+                    binary.archive_url,
+                    e,
+                );
+            }
+        }
+    }
+
+    if let Some(()) = try_index_install(target, arch, abi_version, &canonical, &cache_key_sha_hex) {
+        return Ok(Some(canonical));
+    }
+
+    Ok(None)
+}
+
 /// Resolve `target`, returning its on-disk path *and* the set of
 /// transitively-resolved lib paths underneath it (its direct deps, their
 /// deps, and so on — but NOT `target`'s own path; the caller adds that).
@@ -794,6 +899,13 @@ fn ensure_built_uncached(
         ));
     }
     building.push(target.name.clone());
+
+    if let Some(path) =
+        try_fetch_program_without_deps(target, registry, arch, abi_version, opts, memo)?
+    {
+        building.pop();
+        return Ok((path, BTreeSet::new()));
+    }
 
     // Recursively resolve direct deps first; remember their paths so
     // we can surface them to the build script via env vars. The
@@ -4208,6 +4320,47 @@ cache_key_sha = "{cache_key_sha}"
         )
     }
 
+    fn archived_program_manifest_text(
+        name: &str,
+        output_name: &str,
+        output_wasm: &str,
+        arch: &str,
+        abi_versions: &[u32],
+        cache_key_sha: &str,
+    ) -> String {
+        let abi_csv = abi_versions
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"
+kind = "program"
+name = "{name}"
+version = "1.0.0"
+revision = 1
+depends_on = []
+
+[source]
+url = "https://example.test/{name}-1.0.0.tar.gz"
+sha256 = "{:0>64}"
+
+[license]
+spdx = "TestLicense"
+
+[[outputs]]
+name = "{output_name}"
+wasm = "{output_wasm}"
+
+[compatibility]
+target_arch = "{arch}"
+abi_versions = [{abi_csv}]
+cache_key_sha = "{cache_key_sha}"
+"#,
+            ""
+        )
+    }
+
     /// Write a source `package.toml` + sibling `build.toml` for
     /// index-lookup-based resolution tests. The `build.toml`'s
     /// `[binary]` block points at `index_url` (typically a `file://`
@@ -4264,6 +4417,21 @@ touch \"$WASM_POSIX_DEP_OUT_DIR/via-build\"\n";
             p.set_mode(0o755);
             std::fs::set_permissions(&script_path, p).unwrap();
         }
+    }
+
+    fn write_program_build_toml(root: &Path, name: &str, index_url: &str) {
+        let dir = root.join(name);
+        let build_toml = format!(
+            r#"
+script_path = "packages/registry/{name}/build-{name}.sh"
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+[binary]
+index_url = "{index_url}"
+"#
+        );
+        std::fs::write(dir.join("build.toml"), build_toml).unwrap();
     }
 
     /// Stage an `index.toml` at `path` declaring `name@1.0.0` with a
@@ -4471,6 +4639,97 @@ archive_sha256 = "{archive_sha_hex}"
         // Manifest + artifacts dir stripped during reshape.
         assert!(!path.join("manifest.toml").exists());
         assert!(!path.join("artifacts").exists());
+    }
+
+    #[test]
+    fn binaries_dir_program_fetch_does_not_require_built_deps() {
+        let root = tempdir("prog-bdir-remote-first-reg");
+        let cache = tempdir("prog-bdir-remote-first-cache");
+        let bin_dir = tempdir("prog-bdir-remote-first-bin");
+        let archive_dir = tempdir("prog-bdir-remote-first-archive");
+        let index_dir = tempdir("prog-bdir-remote-first-index");
+
+        write_program(
+            &root,
+            "baddep",
+            "1.0.0",
+            &[],
+            "echo baddep source build should not run >&2; exit 42",
+            &[("baddep", "baddep.wasm")],
+        );
+        write_program(
+            &root,
+            "progIdx",
+            "1.0.0",
+            &["baddep@1.0.0"],
+            "echo progIdx source build should not run >&2; exit 43",
+            &[("progIdx", "progIdx.wasm")],
+        );
+
+        let index_path = index_dir.join("index.toml");
+        let index_url = format!("file://{}", index_path.display());
+        write_program_build_toml(&root, "progIdx", &index_url);
+
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let m = reg.load("progIdx").unwrap();
+        let cache_key_hex = hex(&compute_sha(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap());
+
+        let manifest_text = archived_program_manifest_text(
+            "progIdx",
+            "progIdx",
+            "progIdx.wasm",
+            "wasm32",
+            &[TEST_ABI],
+            &cache_key_hex,
+        );
+        let archive_bytes = crate::remote_fetch::build_test_archive(
+            &manifest_text,
+            &[("progIdx.wasm", b"\0asm\x01\0\0\0")],
+        );
+        let archive_sha_hex = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("progIdx-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
+        stage_index_toml(
+            &index_path,
+            "progIdx",
+            TargetArch::Wasm32,
+            &archive_url,
+            &archive_sha_hex,
+            &cache_key_hex,
+        );
+
+        let opts = ResolveOpts {
+            cache_root: &cache,
+            local_libs: None,
+            force_source_build: None,
+            repo_root: Some(&root),
+            binaries_dir: Some(&bin_dir),
+        };
+        let path = ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &opts).unwrap();
+
+        assert_eq!(
+            std::fs::read(path.join("progIdx.wasm")).unwrap(),
+            b"\0asm\x01\0\0\0"
+        );
+        let baddep_cached = std::fs::read_dir(cache.join("programs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("baddep-"));
+        assert!(
+            !baddep_cached,
+            "binary materialization should not have source-built baddep first"
+        );
     }
 
     #[test]

@@ -129,6 +129,12 @@ if [ ! -f src/auto/config.mk ]; then
     export ac_cv_func_sigaltstack=yes
     export ac_cv_func_getpwuid=yes
     export ac_cv_func_getpwnam=yes
+    # Vim's terminal tables use terminfo parameter syntax when
+    # vim_cv_terminfo=yes. Force HAVE_TGETENT so Vim uses the linked ncurses
+    # tinfo implementation instead of its tiny fallback tgoto(), which only
+    # understands classic termcap syntax and visibly returns "OOPS" for
+    # cursor-motion entries like %p1/%p2.
+    export ac_cv_func_tgetent=yes
 
     # -gline-tables-only retained for symbolication / debug stack traces.
     # -I<ncurses>/include pulls in the top-level termcap.h and
