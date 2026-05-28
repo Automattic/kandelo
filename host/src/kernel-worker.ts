@@ -2770,25 +2770,47 @@ export class CentralizedKernelWorker {
   }
 
   private wakeBlockedPoll(pid: number, pipeIdx: number): void {
+    this.wakeBlockedPollRetriesForPipe(pipeIdx, pid);
+  }
+
+  private clearPendingPollRetryTimer(entry: { timer: any }): void {
+    if (entry.timer !== null) {
+      clearTimeout(entry.timer);
+      clearImmediate(entry.timer);
+    }
+  }
+
+  private wakeBlockedPollRetriesForPipe(
+    pipeIdx: number,
+    pidFilter?: number,
+    options: { deferSignalSafe?: boolean } = {},
+  ): boolean {
     // retrySyscall runs handleSyscall synchronously, which can re-insert
     // the same key via pendingPollRetries.set when the kernel returns
     // EAGAIN. JS Map iterators are not snapshots — re-inserted entries
-    // appear at the new tail and the iterator yields them, livelocking
-    // wakeBlockedPoll-hit / poll / poll-register inside one tick. Mirror
+    // appear at the new tail and a live iterator yields them, livelocking
+    // wakeup-event / poll / poll-register inside one tick. Mirror
     // wakeAllBlockedRetries' snapshot-and-skip-if-replaced pattern.
+    let deferredSignalSafeWake = false;
     const matches = Array.from(this.pendingPollRetries.entries()).filter(
-      ([, e]) => e.channel.pid === pid && e.pipeIndices.includes(pipeIdx),
+      ([, entry]) => (
+        (pidFilter === undefined || entry.channel.pid === pidFilter)
+        && entry.pipeIndices.includes(pipeIdx)
+      ),
     );
     for (const [key, entry] of matches) {
       if (this.pendingPollRetries.get(key) !== entry) continue;
-      if (entry.timer !== null) {
-        clearTimeout(entry.timer);
+      if (options.deferSignalSafe && entry.needsSignalSafeWake) {
+        deferredSignalSafeWake = true;
+        continue;
       }
+      this.clearPendingPollRetryTimer(entry);
       this.pendingPollRetries.delete(key);
-      if (this.processes.has(pid)) {
+      if (this.processes.has(entry.channel.pid)) {
         this.retrySyscall(entry.channel);
       }
     }
+    return deferredSignalSafeWake;
   }
 
   /**
@@ -2823,15 +2845,7 @@ export class CentralizedKernelWorker {
       }
     }
     // 2. Blocked pollers watching this pipe
-    for (const [key, entry] of this.pendingPollRetries) {
-      if (pidFilter !== undefined && entry.channel.pid !== pidFilter) continue;
-      if (!entry.pipeIndices.includes(pipeIdx)) continue;
-      if (entry.timer !== null) clearTimeout(entry.timer);
-      this.pendingPollRetries.delete(key);
-      if (this.processes.has(entry.channel.pid)) {
-        this.retrySyscall(entry.channel);
-      }
-    }
+    this.wakeBlockedPollRetriesForPipe(pipeIdx, pidFilter);
     // 3. Broad wake for any other pending retries
     this.scheduleWakeBlockedRetries();
   }
@@ -2840,7 +2854,8 @@ export class CentralizedKernelWorker {
    * Public wake helper for host-side pipe reads (response pump in
    * the TCP/HTTP bridges). Call this AFTER directly reading data
    * from a pipe so any process blocked writing because the pipe was
-   * full can resume, plus a broad wake.
+   * full, or polling that pipe for writability, can resume. A broad
+   * wake still runs as a fallback for wait classes without pipe indices.
    */
   public notifyPipeWritable(pipeIdx: number): void {
     const writers = this.pendingPipeWriters.get(pipeIdx);
@@ -2852,6 +2867,7 @@ export class CentralizedKernelWorker {
         }
       }
     }
+    this.wakeBlockedPollRetriesForPipe(pipeIdx);
     this.scheduleWakeBlockedRetries();
   }
 
@@ -2886,12 +2902,16 @@ export class CentralizedKernelWorker {
     const pipeIdxField = WAKEUP_EVENT_FIELDS.pipeIdx;
     const wakeTypeField = WAKEUP_EVENT_FIELDS.wakeType;
     let needBroadWake = false;
+    let needSignalSafeDeferredWake = false;
 
     for (let i = 0; i < count; i++) {
       const off = this.scratchOffset + i * WAKEUP_EVENT_RECORD_SIZE;
       const pipeOff = off + pipeIdxField.offset;
-      const pipeIdx = kernelMem[pipeOff] | (kernelMem[pipeOff + 1] << 8) |
-                      (kernelMem[pipeOff + 2] << 16) | (kernelMem[pipeOff + 3] << 24);
+      const pipeIdx =
+        kernelMem[pipeOff] |
+        (kernelMem[pipeOff + 1] << 8) |
+        (kernelMem[pipeOff + 2] << 16) |
+        (kernelMem[pipeOff + 3] << 24);
       const wakeType = kernelMem[off + wakeTypeField.offset];
 
       if (wakeType & WAKEUP_EVENT_TYPES.readable) {
@@ -2920,6 +2940,12 @@ export class CentralizedKernelWorker {
         }
       }
 
+      if ((wakeType & WAKEUP_EVENT_TYPES.readable) || (wakeType & WAKEUP_EVENT_TYPES.writable)) {
+        if (this.wakeBlockedPollRetriesForPipe(pipeIdx, undefined, { deferSignalSafe: true })) {
+          needSignalSafeDeferredWake = true;
+        }
+      }
+
       needBroadWake = true;
     }
 
@@ -2943,12 +2969,12 @@ export class CentralizedKernelWorker {
     // time to land. Kill-triggered wakes (line ~2050) always use the
     // immediate setImmediate path — by the time kill has been processed
     // the signal is already queued, so there's no race. Pipe
-    // reader/writer wakes above run synchronously (not via this
-    // deferred path), so plain read/write throughput is unaffected. We
-    // only pay the delay when a pipe event happens to wake a ppoll or
-    // pselect6 caller.
+    // reader/writer and non-signal-safe poll wakes above run synchronously
+    // (not via this deferred path), so plain read/write throughput is
+    // unaffected. We only pay the delay when a pipe event happens to wake
+    // a ppoll or pselect6 caller.
     if (needBroadWake) {
-      if (this.anyPendingRetryNeedsSignalSafeWake()) {
+      if (needSignalSafeDeferredWake || this.anyPendingRetryNeedsSignalSafeWake()) {
         this.scheduleWakeBlockedRetriesDeferred();
       } else {
         this.scheduleWakeBlockedRetries();
