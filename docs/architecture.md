@@ -1537,6 +1537,15 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 `FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
 
+Guest-visible VFS numbers come from `crates/shared` and are recorded under
+`vfs_metadata` in `abi/snapshot.json`. The generated
+`host/src/generated/abi.ts` bindings supply open and `*at` flags, descriptor
+and `fcntl` values, access modes, file modes, directory-entry types, and seek
+constants to shared Node/browser host adapters. This records Kandelo's existing
+guest ABI; it does not establish a general Linux-compatibility contract. The
+standalone OPFS worker and the vendored SharedFS implementation retain local
+copies at their explicit entry-point and vendor boundaries.
+
 - **`MemoryFileSystem`** (`vfs/memory-fs.ts`) — SAB-backed in-memory FS. Used for the rootfs image mount and for browser scratch mounts. Honours uid/gid/mode stored on each inode.
 - **`HostFileSystem`** (`vfs/host-fs.ts`) — proxies a Node host directory. Used for Node scratch mounts. Normalises stat uid/gid to `0/0` so the user's macOS/Linux uid does not leak into the kernel. Native creation receives the requested file/directory mode, but later guest `chmod`/`chown` updates are held in VFS metadata only; the Node host never applies native ownership changes.
 - **`OpfsFileSystem`** (`vfs/opfs.ts`) — browser-persistent Origin Private File

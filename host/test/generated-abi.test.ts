@@ -8,6 +8,8 @@ import {
   ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
   ABI_VERSION,
+  ACCESS_MODES,
+  AT_FLAGS,
   CHANNEL_STATUS,
   CH_ARG_SIZE,
   CH_ARGS,
@@ -35,7 +37,11 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  DIRENT_TYPES,
   EPOLL_EVENTS,
+  FCNTL_COMMANDS,
+  FD_FLAGS,
+  FILE_MODES,
   HOST_ADAPTER_MANIFEST_FIELDS,
   HOST_ADAPTER_MANIFEST_MAGIC,
   HOST_ADAPTER_MANIFEST_SIZE,
@@ -47,6 +53,7 @@ import {
   HOST_ADAPTER_VERSION,
   HOST_ADAPTER_WORKER_FEATURES,
   HOST_INTERCEPTED_SYSCALLS,
+  OPEN_FLAGS,
   PROCESS_MEMORY_DEFAULT_INITIAL_PAGES,
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_DEFAULT_THREAD_SLOTS,
@@ -102,6 +109,7 @@ import {
   SYSCALL_ARGS,
   SELECT_FD_SET_BYTES,
   SELECT_FD_SETSIZE,
+  SEEK_WHENCE,
   WAKEUP_EVENT_FIELDS,
   WAKEUP_EVENT_RECORD_BYTES,
   WAKEUP_EVENT_TYPES,
@@ -517,6 +525,25 @@ describe("generated host ABI bindings", () => {
       .toBe(snapshot.io_multiplexing.select.fd_setsize);
     expect(SELECT_FD_SET_BYTES)
       .toBe(snapshot.io_multiplexing.select.fd_set_bytes);
+  });
+
+  it("match Rust-owned VFS metadata", () => {
+    expect(OPEN_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.open_flags));
+    expect(AT_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.at_flags));
+    expect(FD_FLAGS).toEqual(namedValueMap(snapshot.vfs_metadata.fd_flags));
+    expect(FCNTL_COMMANDS).toEqual(
+      namedValueMap(snapshot.vfs_metadata.fcntl_commands),
+    );
+    expect(ACCESS_MODES).toEqual(
+      namedValueMap(snapshot.vfs_metadata.access_modes),
+    );
+    expect(FILE_MODES).toEqual(namedValueMap(snapshot.vfs_metadata.file_modes));
+    expect(DIRENT_TYPES).toEqual(
+      namedValueMap(snapshot.vfs_metadata.dirent_types),
+    );
+    expect(SEEK_WHENCE).toEqual(
+      namedValueMap(snapshot.vfs_metadata.seek_whence),
+    );
   });
 
   it("match the atomic process-metadata transaction contract", () => {

@@ -79,6 +79,7 @@ import {
   ABI_KERNEL_EXPORT,
   ABI_SYSCALL_NAMES,
   ABI_SYSCALLS,
+  AT_FLAGS,
   CHANNEL_STATUS_COMPLETE,
   CHANNEL_STATUS_PENDING,
   CH_ARG_SIZE,
@@ -103,9 +104,12 @@ import {
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   CHANNEL_REQUEST_FLAGS_KNOWN_MASK,
   EPOLL_EVENTS,
+  FCNTL_COMMANDS,
   FCNTL_FLOCK_BYTES,
+  FILE_MODES,
   HOST_INTERCEPTED_SYSCALLS,
   IOCTL_REQUESTS,
+  OPEN_FLAGS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   POLL_EVENTS,
@@ -965,13 +969,13 @@ const PROT_WRITE = 0x02;
 const MAP_FIXED = 0x10;
 const MAP_ANONYMOUS = 0x20;
 const MREMAP_FIXED = 0x02;
-const O_RDONLY = 0;
-const O_WRONLY = 1;
-const O_RDWR = 2;
-const O_ACCMODE = 3;
-const O_TRUNC = 0o1000;
+const O_RDONLY = OPEN_FLAGS.O_RDONLY;
+const O_WRONLY = OPEN_FLAGS.O_WRONLY;
+const O_RDWR = OPEN_FLAGS.O_RDWR;
+const O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
+const O_TRUNC = OPEN_FLAGS.O_TRUNC;
 const FILE_PAGE_SIZE = 4096;
-const AT_FDCWD = -100;
+const AT_FDCWD = AT_FLAGS.AT_FDCWD;
 
 /** clone flags whose corresponding channel slots are process pointers. */
 const CLONE_PARENT_SETTID = 0x00100000;
@@ -989,10 +993,10 @@ const FUTEX_WAKE_BITSET = 10;
 const FUTEX_PRIVATE_FLAG = 128;
 const FUTEX_CLOCK_REALTIME = 256;
 
-const F_DUPFD = 0;
-const F_GETFL = 3;
-const F_DUPFD_CLOFORK = 1028;
-const F_DUPFD_CLOEXEC = 1030;
+const F_DUPFD = FCNTL_COMMANDS.F_DUPFD;
+const F_GETFL = FCNTL_COMMANDS.F_GETFL;
+const F_DUPFD_CLOFORK = FCNTL_COMMANDS.F_DUPFD_CLOFORK;
+const F_DUPFD_CLOEXEC = FCNTL_COMMANDS.F_DUPFD_CLOEXEC;
 
 function alignWasmPageLength(len: number): number {
   return Math.ceil(len / WASM_PAGE_SIZE) * WASM_PAGE_SIZE;
@@ -22621,7 +22625,6 @@ export class CentralizedKernelWorker {
     origArgs: number[],
     entry: KernelWorkerEntryContext,
   ): void {
-    const AT_EMPTY_PATH = 0x1000;
     const dirfd = origArgs[0];
     const flags = origArgs[4];
 
@@ -22705,7 +22708,7 @@ export class CentralizedKernelWorker {
 
     let execPath: string;
 
-    if ((flags & AT_EMPTY_PATH) !== 0 && pathStr === "") {
+    if ((flags & AT_FLAGS.AT_EMPTY_PATH) !== 0 && pathStr === "") {
       const output = this.#readKernelOwnedPath(channel.pid, dirfd, entry);
       if (output.kind === "error" || output.value.byteLength === 0) {
         this.completeChannel(
@@ -25623,7 +25626,9 @@ export class CentralizedKernelWorker {
     const statResult = this.getFdStatForSharedMapping(channel, fd, entry);
     if (statResult.kind === "error") return statResult;
     const stat = statResult.value;
-    if ((stat.mode & 0o170000) !== 0o100000) return { kind: "unsupported" };
+    if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
+      return { kind: "unsupported" };
+    }
     if (stat.hostHandle === null) {
       // MemFd and synthetic regular files complete fstat inside the kernel,
       // so there is no persistent host capability to retain. They need a
@@ -26052,7 +26057,7 @@ export class CentralizedKernelWorker {
         backing.sizeValid = false;
         return EIO;
       }
-      if ((snapshot.mode & 0o170000) !== 0o100000) {
+      if ((snapshot.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
         backing.sizeValid = false;
         return EIO;
       }
@@ -26645,7 +26650,7 @@ export class CentralizedKernelWorker {
       });
       if (
         !Number.isSafeInteger(snapshot.mode)
-        || (snapshot.mode & 0o170000) !== 0o100000
+        || (snapshot.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG
       ) return null;
       const key = snapshot.key;
       return key ? this.sharedMmapBackings.get(key) ?? null : null;
@@ -27030,7 +27035,9 @@ export class CentralizedKernelWorker {
       }
       return null;
     }
-    if ((statResult.value.mode & 0o170000) !== 0o100000) {
+    if (
+      (statResult.value.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG
+    ) {
       this.sharedMmapFdCache.set(cacheKey, { backingKey: null });
       return null;
     }

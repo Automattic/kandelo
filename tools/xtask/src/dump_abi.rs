@@ -18,6 +18,10 @@
 //!     and retry/lifecycle reason bits consumed by shared hosts
 //!   * [`wasm_posix_shared::poll`], [`wasm_posix_shared::epoll`], and
 //!     [`wasm_posix_shared::select`] — I/O multiplexing event metadata
+//!   * [`wasm_posix_shared::flags`], [`wasm_posix_shared::access`],
+//!     [`wasm_posix_shared::mode`], [`wasm_posix_shared::dirent`], and
+//!     [`wasm_posix_shared::seek`] — VFS-visible constants consumed by host
+//!     adapters
 //!
 //! When `--kernel-wasm <path>` is provided, the snapshot also covers
 //! every export in the built kernel `.wasm` (after filtering through
@@ -1920,6 +1924,46 @@ fn render_ts_module() -> String {
         out.push_str(&format!("  {}: {},\n", name, value));
     }
     out.push_str("} as const;\n\n");
+    out.push_str("export const OPEN_FLAGS = {\n");
+    for (name, value) in open_flags() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const AT_FLAGS = {\n");
+    for (name, value) in at_flags() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const FD_FLAGS = {\n");
+    for (name, value) in fd_flags() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const FCNTL_COMMANDS = {\n");
+    for (name, value) in fcntl_commands() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const ACCESS_MODES = {\n");
+    for (name, value) in access_modes() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const FILE_MODES = {\n");
+    for (name, value) in file_modes() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const DIRENT_TYPES = {\n");
+    for (name, value) in dirent_types() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const SEEK_WHENCE = {\n");
+    for (name, value) in seek_whence() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
     out.push_str(&format!(
         "export const KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES = {} as const;\n",
         shared::kernel_scratch_wire::SIGNAL_DELIVERY_BYTES
@@ -3334,6 +3378,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     );
     root.insert("wakeup_event_wire".into(), wakeup_event_wire());
     root.insert("io_multiplexing".into(), io_multiplexing());
+    root.insert("vfs_metadata".into(), vfs_metadata());
     root.insert("spawn_contract".into(), spawn_contract());
 
     root.insert("channel_header".into(), channel_header());
@@ -3560,6 +3605,166 @@ fn io_multiplexing() -> Value {
             "fd_setsize": shared::select::FD_SETSIZE,
             "fd_set_bytes": shared::select::FD_SET_BYTES,
         },
+    })
+}
+
+fn open_flags() -> [(&'static str, u32); 16] {
+    use shared::flags::*;
+
+    [
+        ("O_RDONLY", O_RDONLY),
+        ("O_WRONLY", O_WRONLY),
+        ("O_RDWR", O_RDWR),
+        ("O_ACCMODE", O_ACCMODE),
+        ("O_CREAT", O_CREAT),
+        ("O_EXCL", O_EXCL),
+        ("O_NOCTTY", O_NOCTTY),
+        ("O_TRUNC", O_TRUNC),
+        ("O_APPEND", O_APPEND),
+        ("O_NONBLOCK", O_NONBLOCK),
+        ("O_ASYNC", O_ASYNC),
+        ("O_DIRECTORY", O_DIRECTORY),
+        ("O_NOFOLLOW", O_NOFOLLOW),
+        ("O_CLOEXEC", O_CLOEXEC),
+        ("O_PATH", O_PATH),
+        ("O_CLOFORK", O_CLOFORK),
+    ]
+}
+
+fn at_flags() -> [(&'static str, i32); 4] {
+    use shared::flags::*;
+
+    [
+        ("AT_FDCWD", AT_FDCWD),
+        ("AT_SYMLINK_NOFOLLOW", AT_SYMLINK_NOFOLLOW as i32),
+        ("AT_REMOVEDIR", AT_REMOVEDIR as i32),
+        ("AT_EMPTY_PATH", AT_EMPTY_PATH as i32),
+    ]
+}
+
+fn fd_flags() -> [(&'static str, u32); 2] {
+    use shared::fd_flags::*;
+
+    [("FD_CLOEXEC", FD_CLOEXEC), ("FD_CLOFORK", FD_CLOFORK)]
+}
+
+fn fcntl_commands() -> [(&'static str, u32); 15] {
+    use shared::fcntl_cmd::*;
+
+    [
+        ("F_DUPFD", F_DUPFD),
+        ("F_GETFD", F_GETFD),
+        ("F_SETFD", F_SETFD),
+        ("F_GETFL", F_GETFL),
+        ("F_SETFL", F_SETFL),
+        ("F_GETLK", F_GETLK),
+        ("F_SETLK", F_SETLK),
+        ("F_SETLKW", F_SETLKW),
+        ("F_SETOWN", F_SETOWN),
+        ("F_GETOWN", F_GETOWN),
+        ("F_DUPFD_CLOEXEC", F_DUPFD_CLOEXEC),
+        ("F_DUPFD_CLOFORK", F_DUPFD_CLOFORK),
+        ("F_OFD_GETLK", F_OFD_GETLK),
+        ("F_OFD_SETLK", F_OFD_SETLK),
+        ("F_OFD_SETLKW", F_OFD_SETLKW),
+    ]
+}
+
+fn access_modes() -> [(&'static str, u32); 4] {
+    use shared::access::*;
+
+    [
+        ("F_OK", F_OK),
+        ("R_OK", R_OK),
+        ("W_OK", W_OK),
+        ("X_OK", X_OK),
+    ]
+}
+
+fn file_modes() -> [(&'static str, u32); 24] {
+    use shared::mode::*;
+
+    [
+        ("S_IFMT", S_IFMT),
+        ("S_IFSOCK", S_IFSOCK),
+        ("S_IFLNK", S_IFLNK),
+        ("S_IFREG", S_IFREG),
+        ("S_IFBLK", S_IFBLK),
+        ("S_IFDIR", S_IFDIR),
+        ("S_IFCHR", S_IFCHR),
+        ("S_IFIFO", S_IFIFO),
+        ("S_ISUID", S_ISUID),
+        ("S_ISGID", S_ISGID),
+        ("S_ISVTX", S_ISVTX),
+        ("S_IRWXU", S_IRWXU),
+        ("S_IRUSR", S_IRUSR),
+        ("S_IWUSR", S_IWUSR),
+        ("S_IXUSR", S_IXUSR),
+        ("S_IRWXG", S_IRWXG),
+        ("S_IRGRP", S_IRGRP),
+        ("S_IWGRP", S_IWGRP),
+        ("S_IXGRP", S_IXGRP),
+        ("S_IRWXO", S_IRWXO),
+        ("S_IROTH", S_IROTH),
+        ("S_IWOTH", S_IWOTH),
+        ("S_IXOTH", S_IXOTH),
+        ("S_MODE_BITS", S_MODE_BITS),
+    ]
+}
+
+fn dirent_types() -> [(&'static str, u32); 8] {
+    use shared::dirent::*;
+
+    [
+        ("DT_UNKNOWN", DT_UNKNOWN),
+        ("DT_FIFO", DT_FIFO),
+        ("DT_CHR", DT_CHR),
+        ("DT_DIR", DT_DIR),
+        ("DT_BLK", DT_BLK),
+        ("DT_REG", DT_REG),
+        ("DT_LNK", DT_LNK),
+        ("DT_SOCK", DT_SOCK),
+    ]
+}
+
+fn seek_whence() -> [(&'static str, u32); 3] {
+    use shared::seek::*;
+
+    [
+        ("SEEK_SET", SEEK_SET),
+        ("SEEK_CUR", SEEK_CUR),
+        ("SEEK_END", SEEK_END),
+    ]
+}
+
+fn named_values<const N: usize>(entries: [(&'static str, u32); N]) -> Value {
+    Value::Array(
+        entries
+            .into_iter()
+            .map(|(name, value)| json!({ "name": name, "value": value }))
+            .collect(),
+    )
+}
+
+fn named_signed_values<const N: usize>(entries: [(&'static str, i32); N]) -> Value {
+    Value::Array(
+        entries
+            .into_iter()
+            .map(|(name, value)| json!({ "name": name, "value": value }))
+            .collect(),
+    )
+}
+
+fn vfs_metadata() -> Value {
+    json!({
+        "open_flags": named_values(open_flags()),
+        "at_flags": named_signed_values(at_flags()),
+        "fd_flags": named_values(fd_flags()),
+        "fcntl_commands": named_values(fcntl_commands()),
+        "access_modes": named_values(access_modes()),
+        "file_modes": named_values(file_modes()),
+        "dirent_types": named_values(dirent_types()),
+        "seek_whence": named_values(seek_whence()),
     })
 }
 
@@ -6193,7 +6398,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 fn additive_top_level_section(section: &str) -> bool {
     matches!(
         section,
-        "host_adapter" | "io_multiplexing" | "syscall_arg_descriptors"
+        "host_adapter" | "io_multiplexing" | "syscall_arg_descriptors" | "vfs_metadata"
     )
 }
 
@@ -6577,6 +6782,59 @@ mod tests {
         assert!(rendered.contains("  POLLNVAL: 32,"));
         assert!(rendered.contains("export const EPOLL_EVENTS = {"));
         assert!(rendered.contains("  EPOLLHUP: 16,"));
+    }
+
+    #[test]
+    fn generated_vfs_metadata_is_complete() {
+        let metadata = vfs_metadata();
+        assert_eq!(metadata["open_flags"].as_array().unwrap().len(), 16);
+        assert_eq!(metadata["at_flags"].as_array().unwrap().len(), 4);
+        assert_eq!(metadata["fd_flags"].as_array().unwrap().len(), 2);
+        assert_eq!(metadata["fcntl_commands"].as_array().unwrap().len(), 15);
+        assert_eq!(metadata["access_modes"].as_array().unwrap().len(), 4);
+        assert_eq!(metadata["file_modes"].as_array().unwrap().len(), 24);
+        assert_eq!(metadata["dirent_types"].as_array().unwrap().len(), 8);
+        assert_eq!(metadata["seek_whence"].as_array().unwrap().len(), 3);
+
+        for (section, name, value) in [
+            ("open_flags", "O_NOCTTY", json!(0o400)),
+            ("open_flags", "O_ASYNC", json!(0o20000)),
+            ("open_flags", "O_PATH", json!(0o10000000)),
+            ("at_flags", "AT_FDCWD", json!(-100)),
+            ("at_flags", "AT_EMPTY_PATH", json!(0x1000)),
+            ("fd_flags", "FD_CLOFORK", json!(2)),
+            ("fcntl_commands", "F_DUPFD_CLOFORK", json!(1028)),
+            ("access_modes", "X_OK", json!(1)),
+            ("file_modes", "S_IFREG", json!(0o100000)),
+            ("file_modes", "S_MODE_BITS", json!(0o7777)),
+            ("dirent_types", "DT_SOCK", json!(12)),
+            ("seek_whence", "SEEK_END", json!(2)),
+        ] {
+            assert!(
+                metadata[section]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!({ "name": name, "value": value })),
+                "missing {section}.{name}",
+            );
+        }
+
+        let rendered = render_ts_module();
+        for expected in [
+            "export const OPEN_FLAGS = {",
+            "  O_PATH: 2097152,",
+            "export const AT_FLAGS = {",
+            "  AT_FDCWD: -100,",
+            "export const FD_FLAGS = {",
+            "export const FCNTL_COMMANDS = {",
+            "export const ACCESS_MODES = {",
+            "export const FILE_MODES = {",
+            "  S_MODE_BITS: 4095,",
+            "export const DIRENT_TYPES = {",
+            "export const SEEK_WHENCE = {",
+        ] {
+            assert!(rendered.contains(expected), "missing generated TS: {expected}");
+        }
     }
 
     #[test]
@@ -7275,7 +7533,8 @@ mod tests {
                         "size": {"type": "cstring"}
                     }
                 ]
-            }
+            },
+            "vfs_metadata": vfs_metadata()
         })
     }
 
@@ -7354,6 +7613,20 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"io_multiplexing\""]
+        );
+    }
+
+    #[test]
+    fn adding_vfs_metadata_section_is_compatible() {
+        let mut old = base_snapshot();
+        old.as_object_mut().unwrap().remove("vfs_metadata");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"vfs_metadata\""]
         );
     }
 

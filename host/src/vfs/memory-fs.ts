@@ -13,6 +13,7 @@ import {
 } from "../file-offset";
 import { filesystemPathconf } from "../pathconf";
 import { SFFS_SUPER_MAGIC } from "../statfs";
+import { DIRENT_TYPES, FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
   O_CREAT,
@@ -402,12 +403,10 @@ const VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES = 1 << 1;
 const VFS_IMAGE_FLAG_HAS_METADATA = 1 << 2;
 const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES = 1 << 3;
 const VFS_IMAGE_HEADER_SIZE = 16; // magic(4) + version(4) + flags(4) + sabLen(4)
-const S_IFMT = 0xf000;
-const S_IFREG = 0x8000;
-const S_IFDIR = 0x4000;
-const S_IFLNK = 0xa000;
-const O_RDONLY = 0x0000;
-const O_WRONLY_CREAT_TRUNC = 0o1101;
+const { S_IFMT, S_IFREG, S_IFDIR, S_IFLNK } = FILE_MODES;
+const O_RDONLY = OPEN_FLAGS.O_RDONLY;
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 const COPY_CHUNK_BYTES = 1024 * 1024;
 const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
@@ -1416,7 +1415,7 @@ function validateLazyTreeSourceInventory(
       entry.mode,
       `Lazy tree source entry ${sourcePath} mode`,
       0,
-      0o7777,
+      FILE_MODES.S_MODE_BITS,
     );
     const size = requireLazyTreeInteger(
       entry.size,
@@ -1794,7 +1793,7 @@ function validateLazyTreeDefinition(
       record.mode,
       `Lazy tree entry ${vfsPath} mode`,
       0,
-      0o7777,
+      FILE_MODES.S_MODE_BITS,
     );
     const size = requireLazyTreeInteger(
       record.size,
@@ -3152,7 +3151,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             : S_IFREG;
         if (
           (identity.mode & S_IFMT) !== expectedType ||
-          (identity.mode & 0o7777) !== inventoryEntry.mode
+          (identity.mode & FILE_MODES.S_MODE_BITS) !== inventoryEntry.mode
         ) {
           throw new Error(
             `Lazy tree namespace entry ${inventoryEntry.vfsPath} ` +
@@ -4673,7 +4672,7 @@ export class MemoryFileSystem implements FileSystemBackend {
               inventoryAtPath;
             if (
               !inventoryEntry || (st.mode & S_IFMT) !== S_IFREG || st.size !== 0 ||
-              (st.mode & 0o7777) !== inventoryEntry.mode ||
+              (st.mode & FILE_MODES.S_MODE_BITS) !== inventoryEntry.mode ||
               (inventoryAtPath?.inodeGroup !== undefined &&
                 inventoryAtPath.inodeGroup !== inventoryEntry.inodeGroup)
             ) {
@@ -4742,7 +4741,7 @@ export class MemoryFileSystem implements FileSystemBackend {
             : S_IFLNK;
           if (
             (st.mode & S_IFMT) !== expectedType ||
-            (st.mode & 0o7777) !== inventoryEntry.mode ||
+            (st.mode & FILE_MODES.S_MODE_BITS) !== inventoryEntry.mode ||
             (
               inventoryEntry.type === "symlink" &&
               (
@@ -5370,7 +5369,7 @@ export class MemoryFileSystem implements FileSystemBackend {
               : (entry.mode & 0o111) !== 0
                 ? 0o755
                 : 0o644
-          : entry.mode & 0o7777;
+          : entry.mode & FILE_MODES.S_MODE_BITS;
         if (
           actualType !== expected.type ||
           actualMode !== expected.mode
@@ -5455,7 +5454,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           `Lazy tree member ${sourcePath} is ${actual.type}, expected ${expectedType}`,
         );
       }
-      if ((actual.mode & 0o7777) !== expected.mode) {
+      if ((actual.mode & FILE_MODES.S_MODE_BITS) !== expected.mode) {
         throw new Error(`Lazy tree member ${sourcePath} mode differs from inventory`);
       }
       if (expectedType === "file" && actual.data?.byteLength !== expected.size) {
@@ -5903,7 +5902,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           : S_IFREG;
       if (
         (st.mode & S_IFMT) !== expectedType ||
-        (st.mode & 0o7777) !== inventoryEntry.mode
+        (st.mode & FILE_MODES.S_MODE_BITS) !== inventoryEntry.mode
       ) {
         throw new Error(
           `Lazy atomic tree changed at ${inventoryEntry.vfsPath}`,
@@ -7094,7 +7093,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     gid: number,
     content: Uint8Array,
   ): void {
-    const fd = this.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
+    const fd = this.open(path, O_WRONLY_CREAT_TRUNC, mode);
     if (content.length > 0) this.write(fd, content, null, content.length);
     this.close(fd);
     this.chown(path, uid, gid);
@@ -7126,7 +7125,7 @@ export class MemoryFileSystem implements FileSystemBackend {
   ): void {
     const st = this.lstat(path);
     const kind = st.mode & S_IFMT;
-    const mode = st.mode & 0o7777;
+    const mode = st.mode & FILE_MODES.S_MODE_BITS;
 
     if (kind === S_IFDIR) {
       if (path === "/") {
@@ -7267,12 +7266,13 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (!entry) return null;
     // Determine d_type from mode
     const mode = entry.stat.mode;
-    let dtype = 0; // DT_UNKNOWN
-    if ((mode & 0xf000) === 0x8000)
-      dtype = 8; // DT_REG
-    else if ((mode & 0xf000) === 0x4000)
-      dtype = 4; // DT_DIR
-    else if ((mode & 0xf000) === 0xa000) dtype = 10; // DT_LNK
+    let dtype: number = DIRENT_TYPES.DT_UNKNOWN;
+    if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFREG)
+      dtype = DIRENT_TYPES.DT_REG;
+    else if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR)
+      dtype = DIRENT_TYPES.DT_DIR;
+    else if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFLNK)
+      dtype = DIRENT_TYPES.DT_LNK;
     return { name: entry.name, type: dtype, ino: entry.stat.ino };
   }
 

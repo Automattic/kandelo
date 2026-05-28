@@ -38,7 +38,6 @@ const CREATION_FLAGS: u32 =
 
 // Linux fstatat/statx flags mirrored by the guest's <fcntl.h>.
 const AT_NO_AUTOMOUNT: u32 = 0x800;
-const AT_EMPTY_PATH: u32 = 0x1000;
 const AT_STATX_SYNC_TYPE: u32 = 0x6000;
 const FSTATAT_VALID_FLAGS: u32 = AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH;
 
@@ -8021,8 +8020,6 @@ pub fn sys_execveat(
     path: &[u8],
     flags: u32,
 ) -> Result<(), Errno> {
-    const AT_EMPTY_PATH: u32 = 0x1000;
-
     if flags & AT_EMPTY_PATH != 0 && path.is_empty() {
         // fexecve path: exec the file referenced by dirfd
         let entry = proc.fd_table.get(dirfd)?;
