@@ -3879,26 +3879,30 @@ pub(crate) fn release_blocking_retry_bindings_for_tid(
     }
 }
 
-/// Consume every resource owned by one exiting task before removing its
-/// process-table record.
+/// Consume one exiting task and return its kernel-owned non-identity state.
 ///
 /// WHY: the host may still hold an immutable retry snapshot for this TID.
 /// Removing the thread first would make that snapshot unreachable while its
-/// stable OFD/MQ/IPC target remained pinned for the process lifetime.
-pub(crate) fn cleanup_exiting_thread(
+/// stable OFD/MQ/IPC target remained pinned for the process lifetime. The host
+/// must also clear and wake `CLONE_CHILD_CLEARTID` in process memory, but the
+/// pointer itself belongs to the Rust ThreadInfo lifecycle. Returning the
+/// consumed state keeps one authoritative owner without moving process-memory
+/// mutation into kernel memory.
+pub(crate) fn cleanup_exiting_thread_with_state(
     proc: &mut Process,
     locks: &mut AdvisoryLockManager,
     host: &mut dyn HostIO,
     tid: u32,
-) -> Result<(), Errno> {
+) -> Result<crate::process::ThreadState, Errno> {
     if proc.get_thread(tid).is_none() {
         return Err(Errno::ESRCH);
     }
     let release_result = release_blocking_retry_bindings_for_tid(proc, locks, host, tid);
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     cancel_fifo_open_for_owner(proc, owner);
-    proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
-    release_result
+    let thread = proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
+    release_result?;
+    Ok(thread)
 }
 
 pub(crate) fn release_all_blocking_retry_bindings(
@@ -19018,7 +19022,8 @@ mod tests {
             Err(Errno::EAGAIN),
         );
         set_test_current_tid(0);
-        cleanup_exiting_thread(&mut opener, &mut locks, &mut host, worker_tid).unwrap();
+        cleanup_exiting_thread_with_state(&mut opener, &mut locks, &mut host, worker_tid)
+            .unwrap();
 
         let released_fd = opener.fd_table.reserve().unwrap();
         assert_eq!(released_fd, 3);
@@ -41887,7 +41892,8 @@ mod tests {
     fn thread_exit_consumes_its_blocked_retry_target() {
         let mut proc = Process::new(74);
         let tid = 75;
-        proc.add_thread(crate::process::ThreadInfo::new(tid, 0, 0, 0));
+        let ctid_ptr = 0x2000;
+        proc.add_thread(crate::process::ThreadInfo::new(tid, ctid_ptr, 0, 0));
         let mut host = MockHostIO::new();
         let mut locks = AdvisoryLockManager::new();
         let fd = sys_open(&mut proc, &mut host, b"/thread-blocked", O_RDONLY, 0).unwrap();
@@ -41898,13 +41904,15 @@ mod tests {
         assert!(proc.ofd_table.get(ofd_idx).is_some());
         assert_eq!(proc.blocked_retries.binding_count(), 1);
 
-        cleanup_exiting_thread(&mut proc, &mut locks, &mut host, tid).unwrap();
+        let thread =
+            cleanup_exiting_thread_with_state(&mut proc, &mut locks, &mut host, tid).unwrap();
+        assert_eq!(thread.ctid_ptr, ctid_ptr);
         assert!(proc.ofd_table.get(ofd_idx).is_none());
         assert_eq!(proc.blocked_retries.binding_count(), 0);
         assert!(proc.get_thread(tid).is_none());
-        assert_eq!(
-            cleanup_exiting_thread(&mut proc, &mut locks, &mut host, tid),
+        assert!(matches!(
+            cleanup_exiting_thread_with_state(&mut proc, &mut locks, &mut host, tid),
             Err(Errno::ESRCH)
-        );
+        ));
     }
 }

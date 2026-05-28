@@ -2525,7 +2525,6 @@ interface WaitableChildCapacityProbeTestOptions {
 interface ThreadTransportStateTestResult {
   readonly channelTidEntries: number;
   readonly forkContextEntries: number;
-  readonly clearTidEntries: number;
   readonly activeThreadChannels: number;
 }
 
@@ -2942,8 +2941,6 @@ export class CentralizedKernelWorker {
     string,
     { pid: number; deadline: number }
   >();
-  /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
-  private threadCtidPtrs = new Map<string, number>();
   /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
   private tcpListeners = new Map<string, TcpListenerBridge>();
   /** TCP listener targets: port → listener aliases for round-robin dispatch.
@@ -4354,10 +4351,11 @@ export class CentralizedKernelWorker {
           inputError?: TypeError;
           value?: ThreadTransportStateTestResult;
         } = {};
-        // WHY: unregister cleanup has no public observer for its three
+        // WHY: unregister cleanup has no public observer for its two
         // host-only pthread ownership indexes. Return only their per-PID
         // aggregate counts so the test can prove retirement without learning
-        // or mutating any channel, continuation, clear-TID pointer, or Map.
+        // or mutating any channel, continuation, or Map. Rust owns clear-TID
+        // pointers, so they are intentionally absent from this host observer.
         this.#runImmediateKernelEntry(
           "pthread transport state lifecycle inspection",
           () => {
@@ -4374,7 +4372,6 @@ export class CentralizedKernelWorker {
             const prefix = `${pid}:`;
             let channelTidEntries = 0;
             let forkContextEntries = 0;
-            let clearTidEntries = 0;
             let activeThreadChannels = 0;
             for (const [key, tid] of this.channelTids) {
               if (key.startsWith(prefix) && tid !== pid) {
@@ -4383,9 +4380,6 @@ export class CentralizedKernelWorker {
             }
             for (const key of this.threadForkContexts.keys()) {
               if (key.startsWith(prefix)) forkContextEntries++;
-            }
-            for (const key of this.threadCtidPtrs.keys()) {
-              if (key.startsWith(prefix)) clearTidEntries++;
             }
             for (const channel of this.activeChannels) {
               if (channel.pid !== pid) continue;
@@ -4399,7 +4393,6 @@ export class CentralizedKernelWorker {
             outcome.value = kernelEntryIntrinsicObjectFreeze({
               channelTidEntries,
               forkContextEntries,
-              clearTidEntries,
               activeThreadChannels,
             });
             return undefined;
@@ -8611,8 +8604,8 @@ export class CentralizedKernelWorker {
       if (channel.pid === pid) this.activeChannelRequests.delete(channel);
     }
 
-    // Thread mailbox identity and fork/clear-TID metadata belong to the old
-    // image even though exec preserves the process id.
+    // Thread mailbox identity belongs to the old image even though exec
+    // preserves the process id. Rust retires its own clear-TID metadata.
     this.clearProcessThreadTransportState(pid);
 
     for (const [key, entry] of this.posixTimers) {
@@ -8652,9 +8645,6 @@ export class CentralizedKernelWorker {
     // Clean up any orphaned pre-invariant context left by a failed launch.
     for (const key of this.threadForkContexts.keys()) {
       if (key.startsWith(prefix)) this.threadForkContexts.delete(key);
-    }
-    for (const key of this.threadCtidPtrs.keys()) {
-      if (key.startsWith(prefix)) this.threadCtidPtrs.delete(key);
     }
   }
 
@@ -22824,12 +22814,6 @@ export class CentralizedKernelWorker {
       const stackPtr = origArgs[1];
       const tlsPtr = origArgs[3];
 
-      // Register only the effective CLONE_CHILD_CLEARTID pointer before the
-      // Worker starts. A short-lived pthread can reach SYS_EXIT immediately.
-      if (ctidPtr !== 0) {
-        this.threadCtidPtrs.set(`${channel.pid}:${tid}`, ctidPtr);
-      }
-
       const createdAttachment = createThreadChannelAttachment(
         this,
         channel.pid,
@@ -23072,7 +23056,6 @@ export class CentralizedKernelWorker {
       }
       state.pendingAttachment!.attachedChannelOffset = undefined;
     }
-    this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
     if (state.parentTidWritten) {
       new DataView(channel.memory.buffer).setInt32(ptidPtr, 0, true);
       state.parentTidWritten = false;
@@ -24572,17 +24555,16 @@ export class CentralizedKernelWorker {
 
   /**
    * Notify the kernel that a thread has exited.
-   * Removes thread state from the process's thread table.
+   *
+   * WHY: whole-process forced teardown retires the process memory, so it does
+   * not need to publish a clear-TID wake. A surviving process must instead use
+   * `finalizeThreadExit`, which clears and wakes the pointer returned by Rust.
    */
   notifyThreadExit(pid: number, tid: number): void {
     this.#runOrDeferKernelEntry(
       "thread exit",
       (entry) => {
-        this.#notifyThreadExitWithinKernelEntry(
-          pid,
-          tid,
-          entry,
-        );
+        this.#notifyThreadExitWithinKernelEntry(pid, tid, entry);
         return undefined;
       },
     );
@@ -24592,16 +24574,16 @@ export class CentralizedKernelWorker {
     pid: number,
     tid: number,
     entry?: KernelWorkerEntryContext,
-  ): void {
+  ): number {
     const threadExit = this.#kernelInstanceForEntry(entry).exports
       .kernel_thread_exit as
-      ((pid: number, tid: number) => number) | undefined;
+      ((pid: number, tid: number) => bigint) | undefined;
     if (!threadExit) {
       throw new Error("Kernel missing required kernel_thread_exit export");
     }
     const result = threadExit(pid, tid);
-    if (result !== 0) {
-      const errno = result < 0 ? -result : EIO;
+    if (result < 0n) {
+      const errno = Number(-result);
       throw new KernelTaskBindingError(
         pid,
         tid,
@@ -24609,6 +24591,16 @@ export class CentralizedKernelWorker {
         `Kernel could not remove tid ${tid} from process ${pid}: errno ${errno}`,
       );
     }
+    const ctidPtr = Number(result);
+    if (!Number.isSafeInteger(ctidPtr)) {
+      throw new KernelTaskBindingError(
+        pid,
+        tid,
+        EIO,
+        `Kernel returned an invalid clear-TID pointer for tid ${tid} in process ${pid}`,
+      );
+    }
+    return ctidPtr;
   }
 
   /**
@@ -24663,8 +24655,6 @@ export class CentralizedKernelWorker {
     channelOffset: number,
     entry: KernelWorkerEntryContext,
   ): void {
-    const ctidKey = `${pid}:${tid}`;
-    const ctidPtr = this.threadCtidPtrs.get(ctidKey);
     const channel = this.activeChannels.find(
       (ch) => ch.pid === pid && ch.channelOffset === channelOffset,
     );
@@ -24673,14 +24663,14 @@ export class CentralizedKernelWorker {
     // Remove authoritative ThreadInfo before any host-memory bookkeeping can
     // fail. The clone path prevalidates ctid, but this check also rejects stale
     // or externally-constructed registrations without stranding a kernel TID.
-    this.#notifyThreadExitWithinKernelEntry(pid, tid, entry);
+    const ctidPtr = this.#notifyThreadExitWithinKernelEntry(pid, tid, entry);
     if (channel) {
       // kernel_thread_exit consumed this TID's exact retry binding before it
       // removed task authority. Host retirement must not release it twice.
       this.#forgetBlockingRetrySnapshotAfterKernelLifecycle(channel);
     }
     try {
-      if (ctidPtr && ctidPtr !== 0) {
+      if (ctidPtr !== 0) {
         if (!memory) {
           throw new KernelTaskBindingError(
             pid,
@@ -24704,7 +24694,6 @@ export class CentralizedKernelWorker {
         Atomics.notify(i32View, ctidPtr / 4, 1);
       }
     } finally {
-      this.threadCtidPtrs.delete(ctidKey);
       this.#removeChannelWithinKernelEntry(pid, channelOffset, entry);
     }
   }

@@ -2416,10 +2416,6 @@ describe("Rust-owned process wait lifecycle", () => {
       [`${pid}:0`, { fnPtr: 1, argPtr: 2 }],
       [`${otherPid}:0`, { fnPtr: 3, argPtr: 4 }],
     ]);
-    worker.threadCtidPtrs = new Map([
-      [`${pid}:1001`, 3000],
-      [`${otherPid}:2001`, 4000],
-    ]);
     worker.processes = new Map([
       [pid, { channels: [channel], memory }],
       [otherPid, { channels: [otherChannel], memory: otherMemory }],
@@ -2436,9 +2432,6 @@ describe("Rust-owned process wait lifecycle", () => {
     ]);
     expect(Array.from(worker.threadForkContexts.entries())).toEqual([
       [`${otherPid}:0`, { fnPtr: 3, argPtr: 4 }],
-    ]);
-    expect(Array.from(worker.threadCtidPtrs.entries())).toEqual([
-      [`${otherPid}:2001`, 4000],
     ]);
     expect(worker.processes.has(pid)).toBe(false);
     expect(worker.activeChannels).toEqual([otherChannel]);
@@ -2688,6 +2681,38 @@ describe("Rust-owned process wait lifecycle", () => {
       -1,
       10,
     );
+  });
+
+  it("thread exit uses Rust-owned ctid metadata for clear-tid wakeup", () => {
+    const memory = createSharedMemory();
+    const ctidPtr = 2048;
+    new DataView(memory.buffer).setInt32(ctidPtr, 123, true);
+
+    const mainChannel = createChannel(10, memory, 0);
+    const threadChannel = createChannel(10, memory, 1024);
+    const kernelThreadExit = vi.fn(() => BigInt(ctidPtr));
+    const worker = createWorkerHarness({
+      kernel_thread_exit: kernelThreadExit,
+    });
+    worker.processes = new Map([
+      [10, {
+        pid: 10,
+        memory,
+        channels: [mainChannel, threadChannel],
+        ptrWidth: 4,
+      }],
+    ]);
+    worker.activeChannels = [mainChannel, threadChannel];
+    worker.channelTids = new Map([["10:1024", 77]]);
+    worker.threadForkContexts = new Map([["10:1024", { fnPtr: 1, argPtr: 2 }]]);
+    worker.finalizeThreadExit(10, 77, threadChannel.channelOffset);
+
+    expect(kernelThreadExit).toHaveBeenCalledWith(10, 77);
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    expect(worker.processes.get(10).channels).toEqual([mainChannel]);
+    expect(worker.activeChannels).toEqual([mainChannel]);
+    expect(worker.channelTids.has("10:1024")).toBe(false);
+    expect(worker.threadForkContexts.has("10:1024")).toBe(false);
   });
 });
 

@@ -169,10 +169,6 @@ describe("exec host-state transition", () => {
           ["7:256", { fnPtr: 1, argPtr: 2 }],
           ["8:0", { fnPtr: 3, argPtr: 4 }],
         ]),
-        threadCtidPtrs: new Map([
-          ["7:11", 0x1000],
-          ["8:8", 0x2000],
-        ]),
       });
       const notify = vi.spyOn(Atomics, "notify");
       const parkedMain = worker.parkedChannelCompletions.get(mainChannel);
@@ -219,8 +215,6 @@ describe("exec host-state transition", () => {
       expect(worker.channelTids.get("8:0")).toBe(8);
       expect(worker.threadForkContexts.has("7:256")).toBe(false);
       expect(worker.threadForkContexts.has("8:0")).toBe(true);
-      expect(worker.threadCtidPtrs.has("7:11")).toBe(false);
-      expect(worker.threadCtidPtrs.get("8:8")).toBe(0x2000);
       expect(notify).toHaveBeenCalledWith(
         expect.any(Int32Array),
         4,
