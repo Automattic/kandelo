@@ -729,8 +729,6 @@ export class CentralizedKernelWorker {
     retVal: number;
     errVal: number;
   }>();
-  /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
-  private threadCtidPtrs = new Map<string, number>();
   /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
   private tcpListeners = new Map<string, {
     server: import("net").Server;
@@ -6225,30 +6223,12 @@ export class CentralizedKernelWorker {
     const tlsPtr = origArgs[3];
     const ctidPtr = origArgs[4];
 
-    // Register the clear-TID pointer before starting the host Worker. A very
-    // short-lived pthread can reach SYS_EXIT before onClone resolves.
-    if (ctidPtr !== 0) {
-      this.threadCtidPtrs.set(`${channel.pid}:${tid}`, ctidPtr);
-    }
-
     this.callbacks.onClone(
       channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
     ).then((assignedTid) => {
-      if (!this.processes.has(channel.pid)) {
-        if (ctidPtr !== 0) {
-          this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
-        }
-        return;
-      }
-      if (assignedTid !== tid && ctidPtr !== 0) {
-        this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
-        this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
-      }
+      if (!this.processes.has(channel.pid)) return;
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
     }).catch((err) => {
-      if (ctidPtr !== 0) {
-        this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
-      }
       console.error(`[kernel-worker] onClone failed: ${err}`);
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 12); // ENOMEM
     });
@@ -6858,15 +6838,18 @@ export class CentralizedKernelWorker {
 
   /**
    * Notify the kernel that a thread has exited.
-   * Removes thread state from the process's thread table.
+   * Removes thread state from the process's thread table and returns the
+   * CLONE_CHILD_CLEARTID pointer the kernel recorded at clone time.
    */
-  notifyThreadExit(pid: number, tid: number): void {
-    if (!this.kernelInstance) return;
+  notifyThreadExit(pid: number, tid: number): number {
+    if (!this.kernelInstance) return 0;
     const threadExit = this.kernelInstance.exports.kernel_thread_exit as
       ((pid: number, tid: number) => number) | undefined;
     if (threadExit) {
-      threadExit(pid, tid);
+      const ret = threadExit(pid, tid);
+      return ret === 0 ? 0 : ret >>> 0;
     }
+    return 0;
   }
 
   /**
@@ -6883,10 +6866,8 @@ export class CentralizedKernelWorker {
     this.channelTids.delete(tidKey);
     this.threadForkContexts.delete(tidKey);
 
-    const ctidKey = `${pid}:${tid}`;
-    const ctidPtr = this.threadCtidPtrs.get(ctidKey);
-    if (ctidPtr && ctidPtr !== 0) {
-      this.threadCtidPtrs.delete(ctidKey);
+    const ctidPtr = this.notifyThreadExit(pid, tid);
+    if (ctidPtr !== 0) {
       const channel = this.activeChannels.find(
         (ch) => ch.pid === pid && ch.channelOffset === channelOffset,
       );
@@ -6899,7 +6880,6 @@ export class CentralizedKernelWorker {
       }
     }
 
-    this.notifyThreadExit(pid, tid);
     this.removeChannel(pid, channelOffset);
   }
 
