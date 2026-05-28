@@ -34,6 +34,10 @@ import {
   HOST_ADAPTER_VERSION,
   HOST_ADAPTER_WORKER_FEATURES,
   HOST_INTERCEPTED_SYSCALLS,
+  PROC_SNAPSHOT_COUNT_OFFSET,
+  PROC_SNAPSHOT_COUNT_SIZE,
+  PROC_SNAPSHOT_RECORD_FIELDS,
+  PROC_SNAPSHOT_RECORD_FIXED_SIZE,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
@@ -77,6 +81,12 @@ function hostAdapterManifestField(name: string): { offset: number; size: number 
   const field = snapshot.host_adapter.manifest_fields.find((f: { name: string }) => f.name === name);
   if (!field) throw new Error(`missing host_adapter manifest field ${name}`);
   return { offset: field.offset, size: field.size };
+}
+
+function processSnapshotField(name: string): { offset: number; size: number; type: string } {
+  const field = snapshot.process_snapshot.record_fields.find((f: { name: string }) => f.name === name);
+  if (!field) throw new Error(`missing process_snapshot field ${name}`);
+  return { offset: field.offset, size: field.size, type: field.type };
 }
 
 describe("generated host ABI bindings", () => {
@@ -164,6 +174,22 @@ describe("generated host ABI bindings", () => {
           fieldName as keyof typeof HOST_ADAPTER_MANIFEST_FIELDS
         ],
       ).toEqual(hostAdapterManifestField(fieldName));
+    }
+  });
+
+  it("match Rust-owned process snapshot schema metadata", () => {
+    expect(PROC_SNAPSHOT_COUNT_OFFSET).toBe(snapshot.process_snapshot.count_offset);
+    expect(PROC_SNAPSHOT_COUNT_SIZE).toBe(snapshot.process_snapshot.count_size);
+    expect(PROC_SNAPSHOT_RECORD_FIXED_SIZE).toBe(
+      snapshot.process_snapshot.record_fixed_size,
+    );
+
+    for (const fieldName of Object.keys(PROC_SNAPSHOT_RECORD_FIELDS)) {
+      expect(
+        PROC_SNAPSHOT_RECORD_FIELDS[
+          fieldName as keyof typeof PROC_SNAPSHOT_RECORD_FIELDS
+        ],
+      ).toEqual(processSnapshotField(fieldName));
     }
   });
 });
