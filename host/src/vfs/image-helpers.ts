@@ -6,10 +6,12 @@
  * For host-disk-aware utilities (walking a directory, saving to a file),
  * see scripts-side helpers.
  */
+import { OPEN_FLAGS } from "../generated/abi";
 import type { MemoryFileSystem } from "./memory-fs";
 import { EEXIST } from "./sharedfs-vendor";
 
-const O_WRONLY_CREAT_TRUNC = 0o1101;
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 /** Write text content to a path in the memfs. Creates parent dirs implicitly via writeVfsBinary. */
 export function writeVfsFile(

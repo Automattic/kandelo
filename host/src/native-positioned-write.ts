@@ -1,13 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { OPEN_FLAGS } from "./generated/abi";
 
-const LINUX_O_ACCMODE = 0o3;
-const LINUX_O_WRONLY = 0o1;
-const LINUX_O_RDWR = 0o2;
-const LINUX_O_CREAT = 0o100;
-const LINUX_O_EXCL = 0o200;
-const LINUX_O_APPEND = 0o2000;
-const LINUX_O_NOFOLLOW = 0o400000;
+const LINUX_O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
+const LINUX_O_WRONLY = OPEN_FLAGS.O_WRONLY;
+const LINUX_O_RDWR = OPEN_FLAGS.O_RDWR;
+const LINUX_O_CREAT = OPEN_FLAGS.O_CREAT;
+const LINUX_O_EXCL = OPEN_FLAGS.O_EXCL;
+const LINUX_O_APPEND = OPEN_FLAGS.O_APPEND;
+const LINUX_O_NOFOLLOW = OPEN_FLAGS.O_NOFOLLOW;
 const NATIVE_BACKING_MODE = 0o600;
 const MAX_SYMLINK_TRAVERSALS = 40;
 

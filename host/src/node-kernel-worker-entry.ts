@@ -64,6 +64,7 @@ import {
   isWasmModuleBytes,
 } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
+import { FILE_MODES, OPEN_FLAGS } from "./generated/abi";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -131,6 +132,8 @@ if (!parentPort) {
 }
 
 const port = parentPort;
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 // --- State ---
 
@@ -779,7 +782,7 @@ async function readExecFromVfs(path: string): Promise<ArrayBuffer | null> {
   if (!io) return null;
   try {
     const { data, stat } = await readPreparedPlatformFile(io, path);
-    if ((stat.mode & 0o170000) === 0o040000) return null;
+    if ((stat.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR) return null;
     return bufferToArrayBuffer(data);
   } catch (error) {
     if (isMissingPathError(error)) return null;
@@ -2731,7 +2734,7 @@ async function handleReadVfsFile(
       "read or materialize a rootfs file",
     );
     const { data, stat } = await readPreparedPlatformFile(io, msg.path);
-    if ((stat.mode & 0o170000) !== 0o100000) {
+    if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
       respond(msg.requestId, null);
       return;
     }
@@ -2765,8 +2768,8 @@ function handleWriteVfsFile(
     );
     fd = io.open(
       msg.path,
-      0o1101 /* O_WRONLY | O_CREAT | O_TRUNC */,
-      msg.mode & 0o7777,
+      O_WRONLY_CREAT_TRUNC,
+      msg.mode & FILE_MODES.S_MODE_BITS,
     );
     let offset = 0;
     while (offset < msg.data.byteLength) {
@@ -2785,7 +2788,7 @@ function handleWriteVfsFile(
     fd = null;
     // open(O_CREAT) preserves an existing file's mode. Apply the caller's
     // requested mode explicitly so replacement and creation behave alike.
-    io.chmod(msg.path, msg.mode & 0o7777);
+    io.chmod(msg.path, msg.mode & FILE_MODES.S_MODE_BITS);
     respond(msg.requestId, true);
   } catch (error) {
     if (fd !== null) {
