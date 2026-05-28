@@ -2929,6 +2929,7 @@ pub mod abi {
         "kernel_spawn_scratch_capacity",
         "kernel_spawn_scratch_pointer",
         "kernel_spawn_scratch_retained_capacity",
+        "kernel_take_process_timer_cleanup",
         "kernel_thread_exit",
         "kernel_thread_has_deliverable",
         "kernel_transfer_channel_execute",

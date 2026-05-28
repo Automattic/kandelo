@@ -2018,6 +2018,53 @@ pub extern "C" fn kernel_pick_tcp_listener_target(
     }
 }
 
+/// Drain the complete bounded Rust-owned timer identity list for host teardown.
+///
+/// Writes `{ u32 cancel_alarm, u32 posix_count, u32 timer_ids[posix_count] }`
+/// into the caller's exact scratch capacity. The return value is
+/// `posix_count`. If the complete list does not fit, returns `ERANGE` without
+/// consuming any timer state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_take_process_timer_cleanup(
+    pid: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    const HEADER_BYTES: usize = 8;
+    const TIMER_ID_BYTES: usize = 4;
+
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    let out_capacity = out_capacity as usize;
+    if out_capacity < HEADER_BYTES + TIMER_ID_BYTES
+        || (out_capacity - HEADER_BYTES) % TIMER_ID_BYTES != 0
+    {
+        return -(Errno::EINVAL as i32);
+    }
+    let max_timer_ids = (out_capacity - HEADER_BYTES) / TIMER_ID_BYTES;
+
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let cleanup = match proc.take_host_timer_cleanup(max_timer_ids) {
+        Ok(cleanup) => cleanup,
+        Err(error) => return -(error as i32),
+    };
+
+    let out_len = HEADER_BYTES + cleanup.posix_timer_ids.len() * TIMER_ID_BYTES;
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_len) };
+    out[0..4].copy_from_slice(&(cleanup.cancel_alarm as u32).to_le_bytes());
+    out[4..8].copy_from_slice(&(cleanup.posix_timer_ids.len() as u32).to_le_bytes());
+    for (index, timer_id) in cleanup.posix_timer_ids.iter().enumerate() {
+        let offset = HEADER_BYTES + index * TIMER_ID_BYTES;
+        out[offset..offset + TIMER_ID_BYTES].copy_from_slice(&timer_id.to_le_bytes());
+    }
+    cleanup.posix_timer_ids.len() as i32
+}
+
 /// Mark a process as signal-terminated without removing it from the table.
 ///
 /// Used by the host when the Worker dies before the guest reaches SYS_EXIT.

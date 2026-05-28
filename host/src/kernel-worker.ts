@@ -2379,6 +2379,13 @@ interface TcpListenerCleanupPlan {
   readonly listenerServersToClose: readonly import("net").Server[];
 }
 
+interface ProcessHostTimerCleanupPlan {
+  readonly cancelAlarm: boolean;
+  readonly posixTimerIds: readonly number[];
+  /** Coherence failure to raise only after every named host handle is retired. */
+  readonly mismatch: string | null;
+}
+
 /**
  * Module-private observation seams for the legacy scratch-boundary suite.
  *
@@ -7715,7 +7722,7 @@ export class CentralizedKernelWorker {
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
 
-    this.cancelAlarmTimerForProcess(pid);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
     this.waitingForChild = (this.waitingForChild ?? []).filter(
@@ -7822,6 +7829,180 @@ export class CentralizedKernelWorker {
     this.#cancelRegisteredTimeout(alarmTimer);
   }
 
+  private hostPosixTimerIdsForProcess(pid: number): number[] {
+    const prefix = `${pid}:`;
+    const timerIds: number[] = [];
+    for (const key of this.posixTimers.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const timerId = Number(key.slice(prefix.length));
+      if (!Number.isSafeInteger(timerId) || timerId < 0 || timerId > 0xffff_ffff) {
+        throw new Error(`invalid host POSIX timer identity ${key}`);
+      }
+      timerIds.push(timerId);
+    }
+    return timerIds;
+  }
+
+  /** Materialize Rust-owned timer identities before a process can be reaped. */
+  #prepareProcessHostTimerCleanupWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+    allowMissingRustProcess: boolean,
+  ): ProcessHostTimerCleanupPlan {
+    const scratch = this.#requireMainScratchRegion();
+    const headerBytes = 8;
+    const timerIdBytes = 4;
+    if (scratch.capacity < headerBytes + timerIdBytes) {
+      throw new KernelScratchError(
+        "kernel timer cleanup scratch cannot hold one timer identity",
+        EIO,
+      );
+    }
+    const outCapacity = scratch.capacity
+      - ((scratch.capacity - headerBytes) % timerIdBytes);
+    const maxTimerIds = (outCapacity - headerBytes) / timerIdBytes;
+    const output = scratch.withLease((lease) => {
+      const result = this.#invokeEntryScratchExport(
+        entry,
+        lease,
+        "kernel_take_process_timer_cleanup",
+        [pid, lease.exportPointer(0, outCapacity), outCapacity],
+      );
+      if (result < 0) return { result, bytes: null };
+      if (!Number.isSafeInteger(result) || result > maxTimerIds) {
+        throw new KernelScratchError(
+          `kernel returned invalid timer cleanup count ${result}`,
+          EIO,
+        );
+      }
+      return {
+        result,
+        bytes: lease.copyOut(0, headerBytes + result * timerIdBytes),
+      };
+    });
+
+    if (
+      output.result === -ERANGE
+      || (output.result === -ESRCH && allowMissingRustProcess)
+    ) {
+      // WHY: an oversized list remains wholly Rust-owned, while wait/reap may
+      // remove a zombie before asynchronous Worker detachment. In either
+      // explicit boundary, these maps are still exact platform-handle evidence
+      // and Rust has consumed no partial cleanup list.
+      return {
+        cancelAlarm: this.alarmTimers.has(pid),
+        posixTimerIds: this.hostPosixTimerIdsForProcess(pid),
+        mismatch: null,
+      };
+    }
+    if (output.result < 0) {
+      throw new KernelScratchError(
+        `kernel process timer cleanup failed: ${output.result}`,
+        -output.result,
+      );
+    }
+    const bytes = output.bytes;
+    if (bytes === null) {
+      throw new KernelScratchError(
+        "kernel timer cleanup omitted a successful output",
+        EIO,
+      );
+    }
+    const view = new DataView(
+      bytes.buffer,
+      bytes.byteOffset,
+      bytes.byteLength,
+    );
+    const headerCount = view.getUint32(4, true);
+    if (headerCount !== output.result) {
+      throw new KernelScratchError(
+        `kernel timer cleanup header count ${headerCount} did not match `
+          + `result ${output.result}`,
+        EIO,
+      );
+    }
+    const cancelAlarm = view.getUint32(0, true) !== 0;
+    const rustTimerIds: number[] = [];
+    const seenTimerIds = new Set<number>();
+    for (let index = 0; index < headerCount; index++) {
+      const timerId = view.getUint32(
+        headerBytes + index * timerIdBytes,
+        true,
+      );
+      if (seenTimerIds.has(timerId)) {
+        throw new KernelScratchError(
+          `kernel repeated timer cleanup identity ${timerId}`,
+          EIO,
+        );
+      }
+      seenTimerIds.add(timerId);
+      rustTimerIds.push(timerId);
+    }
+
+    const hostAlarmExists = this.alarmTimers.has(pid);
+    const extraHostTimerIds = this.hostPosixTimerIdsForProcess(pid)
+      .filter((timerId) => !seenTimerIds.has(timerId));
+    const mismatchParts: string[] = [];
+    if (hostAlarmExists && !cancelAlarm) {
+      mismatchParts.push("host alarm had no Rust owner");
+    }
+    if (extraHostTimerIds.length !== 0) {
+      mismatchParts.push(
+        `${extraHostTimerIds.length} host POSIX timer(s) had no Rust owner`,
+      );
+    }
+    return {
+      cancelAlarm: cancelAlarm || hostAlarmExists,
+      posixTimerIds: [...rustTimerIds, ...extraHostTimerIds],
+      mismatch: mismatchParts.length === 0 ? null : mismatchParts.join("; "),
+    };
+  }
+
+  private applyProcessHostTimerCleanup(
+    pid: number,
+    plan: ProcessHostTimerCleanupPlan,
+  ): void {
+    if (plan.cancelAlarm) this.cancelAlarmTimerForProcess(pid);
+    for (const timerId of plan.posixTimerIds) {
+      const key = `${pid}:${timerId}`;
+      const timer = this.posixTimers.get(key);
+      if (timer === undefined) continue;
+      // Delete first so an already-queued callback cannot act on a generation
+      // whose Rust timer identity has just been consumed.
+      this.posixTimers.delete(key);
+      this.#cancelRegisteredTimeout(timer.timeout);
+      if (timer.interval !== undefined) {
+        this.#cancelRegisteredInterval(timer.interval);
+      }
+    }
+    if (plan.mismatch !== null) {
+      throw new Error(`process ${pid} timer ownership mismatch: ${plan.mismatch}`);
+    }
+  }
+
+  #retireProcessHostTimersWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+    allowMissingRustProcess = false,
+  ): void {
+    const plan = this.#prepareProcessHostTimerCleanupWithinKernelEntry(
+      pid,
+      entry,
+      allowMissingRustProcess,
+    );
+    if (
+      !plan.cancelAlarm
+      && plan.posixTimerIds.length === 0
+      && plan.mismatch === null
+    ) {
+      return;
+    }
+    entry.deferProtocolEffect(() => {
+      this.applyProcessHostTimerCleanup(pid, plan);
+      return undefined;
+    });
+  }
+
   deactivateProcess(
     pid: number,
     expectedMemory?: WebAssembly.Memory,
@@ -7845,16 +8026,7 @@ export class CentralizedKernelWorker {
     if (deferred) {
       throw new KernelReentrantEntryError(`process deactivation pid=${pid}`);
     }
-    if (!result) return false;
-    // Cancel any pending posix timers for this process
-    for (const [key, entry] of this.posixTimers) {
-      if (key.startsWith(`${pid}:`)) {
-        clearTimeout(entry.timeout);
-        if (entry.interval) clearInterval(entry.interval);
-        this.posixTimers.delete(key);
-      }
-    }
-    return true;
+    return result;
   }
 
   #deactivateProcessWithinKernelEntry(
@@ -7865,7 +8037,7 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return true;
     if (expectedMemory && registration.memory !== expectedMemory) return false;
-    this.cancelAlarmTimerForProcess(pid);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
     this.waitingForChild = (this.waitingForChild ?? []).filter(
@@ -23187,6 +23359,7 @@ export class CentralizedKernelWorker {
     // produce two SIGCHLDs / two parent wake-ups. Cleared by
     // deactivateProcess and registerProcess.
     if (!this.hostReaped.has(exitingPid)) {
+      this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry);
       this.hostReaped.add(exitingPid);
       this.notifyParentOfExitedProcess(exitingPid, entry);
     }
@@ -23249,6 +23422,7 @@ export class CentralizedKernelWorker {
     // consume and reap the zombie, after which the kernel query returns ESRCH.
     const signal = this.#getProcessExitSignal(exitingPid, entry);
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(exitingPid);
+    this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry);
     this.hostReaped.add(exitingPid);
     this.releaseAllSharedMemoryForProcess(exitingPid, true, entry);
     // Default signal delivery has already transitioned the Rust Process to
@@ -23360,6 +23534,7 @@ export class CentralizedKernelWorker {
       );
     }
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
     this.hostReaped.add(pid);
     this.releaseAllSharedMemoryForProcess(pid, true, entry);
@@ -23475,6 +23650,7 @@ export class CentralizedKernelWorker {
     if (this.hostReaped.has(pid)) return signal;
 
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry);
     this.hostReaped.add(pid);
     this.releaseAllSharedMemoryForProcess(pid, true, entry);
     this.notifyParentOfExitedProcess(pid, entry);

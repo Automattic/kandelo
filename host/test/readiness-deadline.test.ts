@@ -25,7 +25,10 @@ import {
 import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
-import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import {
+  emptyProcessTimerCleanup,
+  installKernelWorkerTestScratch,
+} from "./kernel-worker-test-scratch";
 import {
   createKernelScratchTestInstance,
 } from "./support/kernel-scratch-instance";
@@ -197,6 +200,7 @@ function createHarness(
     ),
     kernel_handle_channel: handleChannel,
     kernel_set_current_tid: setCurrentTid,
+    kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
   };
   const gate = new KernelEntryGate();
   const kernelInstance = createKernelEntryGatedInstance(
@@ -216,6 +220,7 @@ function createHarness(
         "kernel_get_fd_pipe_idx",
         "kernel_handle_channel",
         "kernel_set_current_tid",
+        "kernel_take_process_timer_cleanup",
       ],
     ),
     gate,
