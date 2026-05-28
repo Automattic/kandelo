@@ -265,6 +265,16 @@ rollback, and teardown use the separate explicit-process
 `kernel_ipc_shmat_for_process` and `kernel_ipc_shmdt_for_process` exports.
 The former `kernel_set_current_pid` export is removed.
 
+ABI 43 also moves host-bridged TCP listener selection into the process table.
+`kernel_pick_tcp_listener_target(port, exclude_pid, out_ptr, out_capacity)`
+writes one little-endian `{ u32 pid, i32 fd }` record into eight bytes of kernel
+scratch when `out_capacity` is exactly eight and returns `1`, returns `0` when
+no live listener exists, or returns a negative errno. Rust filters
+authoritative process, descriptor, open-file-description, and socket state and
+owns the per-port round-robin cursor. The
+shared Node/browser host retains only the platform listener objects, stable
+accept-wakeup identities, and their lifecycle mirrors.
+
 The pending ABI 43 contract additionally makes the Rust `Process` authoritative
 for each System V shared-memory attachment's process address, segment id, and
 size. After the host has materialized an attachment and its byte-coherence

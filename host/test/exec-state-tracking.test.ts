@@ -602,13 +602,14 @@ describe("exec host-state transition", () => {
       port: 8080,
       connections: new Set(),
     };
+    const kernelMemory = new WebAssembly.Memory({ initial: 2 });
     const worker = createWorker({
       processes: new Map([[7, { channels: [channel], memory }]]),
       callbacks: {
         onResolveSpawn: vi.fn(async () => resolvedProgram()),
         onSpawn: vi.fn(() => spawned),
       },
-      kernelMemory: new WebAssembly.Memory({ initial: 2 }),
+      kernelMemory,
       kernelInstance: {
         exports: {
           kernel_spawn_process: () => 100,
@@ -617,6 +618,18 @@ describe("exec host-state transition", () => {
             fd === 4 ? 41 : -1,
           kernel_find_listener_fd_by_accept_wake:
             (_pid: number, wakeIdx: number) => wakeIdx === 41 ? 4 : -1,
+          kernel_pick_tcp_listener_target: (
+            _port: number,
+            _excludePid: number,
+            outPtr: number,
+            outCapacity: number,
+          ) => {
+            if (outCapacity !== 8) return -22;
+            const view = new DataView(kernelMemory.buffer, outPtr, outCapacity);
+            view.setUint32(0, 100, true);
+            view.setInt32(4, 4, true);
+            return 1;
+          },
         },
       },
       tcpListenerTargets: new Map([[8080, [{
@@ -648,7 +661,7 @@ describe("exec host-state transition", () => {
     });
     worker.cleanupTcpListeners(7);
     expect(close).not.toHaveBeenCalled();
-    expect(worker.pickListenerTarget(8080)).toBeNull();
+    expect(worker.pickListenerTarget(8080)).toEqual({ pid: 100, fd: 4 });
 
     const childMemory = new WebAssembly.Memory({
       initial: 1,

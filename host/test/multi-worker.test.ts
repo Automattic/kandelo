@@ -662,6 +662,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       shared: true,
     });
     publishMainForkContinuation(parentMemory, oldChannelOffset);
+    let selectedListenerPid = parentPid;
     let finishFork!: (offsets: number[]) => void;
     const forkLaunch = new Promise<number[]>((resolve) => {
       finishFork = resolve;
@@ -675,6 +676,22 @@ describe("CentralizedKernelWorker Process Management", () => {
           _pid: number,
           fd: number,
         ) => fd === listenerFd ? 41 : -1,
+        kernel_pick_tcp_listener_target: (
+          _port: number,
+          _excludePid: number,
+          outPtr: number,
+          outCapacity: number,
+        ) => {
+          if (outCapacity !== 8) return -22;
+          const view = new DataView(
+            harness.kernelMemory.buffer,
+            outPtr,
+            outCapacity,
+          );
+          view.setUint32(0, selectedListenerPid, true);
+          view.setInt32(4, listenerFd, true);
+          return 1;
+        },
       },
     });
     const [oldChannel] = harness.worker.testAuthority
@@ -707,6 +724,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       () => onFork.mock.calls.length === 1,
       "fork worker launch",
     );
+    selectedListenerPid = childPid;
 
     // The fork path must install child mirrors before the async worker launch.
     // Replace the parent generation while that launch is pending, then remove

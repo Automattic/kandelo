@@ -25,6 +25,7 @@ use crate::ofd::FileType;
 #[cfg(test)]
 use crate::process::ThreadInfo;
 use crate::process::{ChildWaitEvent, Process, ProcessState, StdioConfig};
+use crate::socket::SocketState;
 
 const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
 const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
@@ -101,6 +102,8 @@ pub struct ProcessTable {
     /// Keeping the pair prevents a stale or misrouted host dispatch from
     /// applying one process's valid TID to another process.
     current_tid_pid: u32,
+    /// Round-robin cursor for host-bridged TCP listener target selection.
+    tcp_listener_rr: BTreeMap<u16, usize>,
 }
 
 /// Outcome of `ProcessTable::remove_process`. Bundles the side effects the
@@ -415,6 +418,7 @@ impl ProcessTable {
             next_task_id: FIRST_TASK_ID,
             current_tid: 0,
             current_tid_pid: 0,
+            tcp_listener_rr: BTreeMap::new(),
         }
     }
 
@@ -1481,6 +1485,70 @@ impl ProcessTable {
     /// Return the recorded parent pid for a process.
     pub fn parent_pid(&self, pid: u32) -> Option<u32> {
         self.processes.get(&pid).map(|proc| proc.ppid)
+    }
+
+    /// Pick the process/fd that should receive the next host-bridged TCP
+    /// connection for `port`.
+    ///
+    /// JS still owns the actual `net.Server`/service-worker bridge, but the
+    /// process table owns which live process currently has an inherited
+    /// listening socket. When children inherited a listener through fork,
+    /// prefer them over the original parent just as the previous host-side
+    /// policy did.
+    pub fn pick_tcp_listener_target(
+        &mut self,
+        port: u16,
+        exclude_pid: u32,
+    ) -> Option<(u32, i32)> {
+        let mut targets = self.tcp_listener_targets(port, exclude_pid);
+        if targets.len() > 1 {
+            let children: Vec<(u32, i32)> = targets
+                .iter()
+                .copied()
+                .filter(|(pid, _fd)| {
+                    self.processes
+                        .get(pid)
+                        .is_some_and(|proc| proc.ppid > 0)
+                })
+                .collect();
+            if !children.is_empty() {
+                targets = children;
+            }
+        }
+
+        if targets.is_empty() {
+            self.tcp_listener_rr.remove(&port);
+            return None;
+        }
+
+        let idx = self.tcp_listener_rr.get(&port).copied().unwrap_or(0) % targets.len();
+        self.tcp_listener_rr.insert(port, idx + 1);
+        Some(targets[idx])
+    }
+
+    fn tcp_listener_targets(&self, port: u16, exclude_pid: u32) -> Vec<(u32, i32)> {
+        let mut targets = Vec::new();
+        for (&pid, proc) in &self.processes {
+            if pid == exclude_pid || proc.state != ProcessState::Running {
+                continue;
+            }
+            for (fd, entry) in proc.fd_table.iter() {
+                let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) else {
+                    continue;
+                };
+                if ofd.file_type != FileType::Socket || ofd.host_handle >= 0 {
+                    continue;
+                }
+                let sock_idx = (-(ofd.host_handle + 1)) as usize;
+                let Some(sock) = proc.sockets.get(sock_idx) else {
+                    continue;
+                };
+                if sock.state == SocketState::Listening && sock.bind_port == port {
+                    targets.push((pid, fd));
+                }
+            }
+        }
+        targets
     }
 
     /// Select the latest status-information record for a direct child.
@@ -3368,5 +3436,74 @@ mod tests {
         assert!(table.get_process_containing_task(second_pid).is_none());
 
         assert!(table.get_process_containing_task(9999).is_none());
+    }
+
+    #[test]
+    fn tcp_listener_target_policy_prefers_fork_children() {
+        let mut table = ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let first_child = table.create_process().unwrap();
+        let second_child = table.create_process().unwrap();
+        table.processes.get_mut(&first_child).unwrap().ppid = parent;
+        table.processes.get_mut(&second_child).unwrap().ppid = parent;
+
+        add_listening_socket(&mut table, parent, 8080, 3);
+        add_listening_socket(&mut table, first_child, 8080, 3);
+        add_listening_socket(&mut table, second_child, 8080, 3);
+
+        assert_eq!(
+            table.pick_tcp_listener_target(8080, 0),
+            Some((first_child, 3))
+        );
+        assert_eq!(
+            table.pick_tcp_listener_target(8080, 0),
+            Some((second_child, 3))
+        );
+        assert_eq!(
+            table.pick_tcp_listener_target(8080, 0),
+            Some((first_child, 3))
+        );
+    }
+
+    #[test]
+    fn tcp_listener_target_policy_can_exclude_a_process_during_cleanup() {
+        let mut table = ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let child = table.create_process().unwrap();
+        table.processes.get_mut(&child).unwrap().ppid = parent;
+
+        add_listening_socket(&mut table, parent, 8080, 3);
+        add_listening_socket(&mut table, child, 8080, 3);
+
+        assert_eq!(
+            table.pick_tcp_listener_target(8080, parent),
+            Some((child, 3))
+        );
+        assert_eq!(
+            table.pick_tcp_listener_target(8080, child),
+            Some((parent, 3))
+        );
+        assert_eq!(table.pick_tcp_listener_target(9999, 0), None);
+    }
+
+    fn add_listening_socket(table: &mut ProcessTable, pid: u32, port: u16, fd: i32) {
+        use crate::fd::OpenFileDescRef;
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+        use wasm_posix_shared::flags::O_RDWR;
+
+        let proc = table.processes.get_mut(&pid).unwrap();
+        let mut sock = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+        sock.state = SocketState::Listening;
+        sock.bind_port = port;
+        let sock_idx = proc.sockets.alloc(sock);
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Socket,
+            O_RDWR,
+            -((sock_idx as i64) + 1),
+            b"socket".to_vec(),
+        );
+        proc.fd_table
+            .alloc_at_min(OpenFileDescRef(ofd_idx), 0, fd)
+            .unwrap();
     }
 }

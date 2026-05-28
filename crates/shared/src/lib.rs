@@ -2907,6 +2907,7 @@ pub mod abi {
         "kernel_mark_process_signaled",
         "kernel_mq_descriptor_msgsize",
         "kernel_msqid_ds_bytes",
+        "kernel_pick_tcp_listener_target",
         "kernel_pick_signal_target_tid",
         "kernel_pipe_has_readers",
         "kernel_posix_timer_fire",

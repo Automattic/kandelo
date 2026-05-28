@@ -144,6 +144,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_pipe2",
   "kernel_pipe_read",
   "kernel_pipe_write",
+  "kernel_pick_tcp_listener_target",
   "kernel_poll",
   "kernel_process_metadata_stage",
   "kernel_pty_master_read",
@@ -241,6 +242,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_ipc_shm_write_chunk":
     case "kernel_pipe_read":
     case "kernel_pipe_write":
+    case "kernel_pick_tcp_listener_target":
     case "kernel_spawn_process":
     case "kernel_tcsetattr":
       return REQUIRED_POINTER_2;
@@ -274,6 +276,7 @@ function kernelScratchPointerAlignment(
 ): number {
   if (
     (name === "kernel_pipe2" && pointerIndex === 1)
+    || (name === "kernel_pick_tcp_listener_target" && pointerIndex === 2)
     || (name === "kernel_poll" && pointerIndex === 0)
     || (name === "kernel_socketpair" && pointerIndex === 3)
   ) {
@@ -304,6 +307,7 @@ function isKernelScratchExportName(
     case "kernel_pipe2":
     case "kernel_pipe_read":
     case "kernel_pipe_write":
+    case "kernel_pick_tcp_listener_target":
     case "kernel_poll":
     case "kernel_process_metadata_stage":
     case "kernel_pty_master_read":
