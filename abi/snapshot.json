@@ -585,6 +585,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_fd_accept_wake_idx",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_fd_path",
       "signature": "(i32,i32,i64,i32) -> (i32)"
     },
@@ -4520,5 +4525,36 @@
       "name": "ThreadCancel",
       "number": 415
     }
-  ]
+  ],
+  "wakeup_events": {
+    "fields": [
+      {
+        "name": "idx",
+        "offset": 0,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "wakeType",
+        "offset": 4,
+        "size": 1,
+        "type": "u8"
+      }
+    ],
+    "record_size": 5,
+    "types": [
+      {
+        "bit": 1,
+        "name": "readable"
+      },
+      {
+        "bit": 2,
+        "name": "writable"
+      },
+      {
+        "bit": 4,
+        "name": "accept"
+      }
+    ]
+  }
 }

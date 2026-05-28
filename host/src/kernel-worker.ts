@@ -58,6 +58,9 @@ import {
   PROC_SNAPSHOT_RECORD_FIELDS,
   PROC_SNAPSHOT_RECORD_FIXED_SIZE,
   SYSCALL_ARGS,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_SIZE,
+  WAKEUP_EVENT_TYPES,
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
@@ -2977,25 +2980,24 @@ export class CentralizedKernelWorker {
     if (!drainFn) return;
 
     const MAX_EVENTS = 256;
-    const BYTES_PER_EVENT = 5;
-    const bufSize = MAX_EVENTS * BYTES_PER_EVENT;
+    const bufSize = MAX_EVENTS * WAKEUP_EVENT_RECORD_SIZE;
 
     const count = drainFn(BigInt(this.scratchOffset), bufSize, MAX_EVENTS);
     if (count === 0) return;
 
     const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
-    const WAKE_READABLE = 1;
-    const WAKE_WRITABLE = 2;
-    const WAKE_ACCEPT = 4;
+    const wakeIdxField = WAKEUP_EVENT_FIELDS.idx;
+    const wakeTypeField = WAKEUP_EVENT_FIELDS.wakeType;
     let needBroadWake = false;
 
     for (let i = 0; i < count; i++) {
-      const off = this.scratchOffset + i * BYTES_PER_EVENT;
-      const wakeIdx = kernelMem[off] | (kernelMem[off + 1] << 8) |
-                      (kernelMem[off + 2] << 16) | (kernelMem[off + 3] << 24);
-      const wakeType = kernelMem[off + 4];
+      const off = this.scratchOffset + i * WAKEUP_EVENT_RECORD_SIZE;
+      const idxOff = off + wakeIdxField.offset;
+      const wakeIdx = kernelMem[idxOff] | (kernelMem[idxOff + 1] << 8) |
+                      (kernelMem[idxOff + 2] << 16) | (kernelMem[idxOff + 3] << 24);
+      const wakeType = kernelMem[off + wakeTypeField.offset];
 
-      if (wakeType & WAKE_READABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.readable) {
         // Pipe became readable — wake pending readers on this pipe
         const readers = this.pendingPipeReaders.get(wakeIdx);
         if (readers && readers.length > 0) {
@@ -3008,7 +3010,7 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_WRITABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.writable) {
         // Pipe became writable — wake pending writers on this pipe
         const writers = this.pendingPipeWriters.get(wakeIdx);
         if (writers && writers.length > 0) {
@@ -3021,7 +3023,7 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_ACCEPT) {
+      if (wakeType & WAKEUP_EVENT_TYPES.accept) {
         this.wakeBlockedAccept(wakeIdx);
       }
 
