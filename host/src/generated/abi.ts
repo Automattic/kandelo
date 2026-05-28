@@ -103,6 +103,20 @@ export const CH_SIG_HANDLER = 65564 as const;
 export const CH_SIG_FLAGS = 65568 as const;
 export const CH_SIG_OLD_MASK = 65576 as const;
 
+export const PROC_SNAPSHOT_COUNT_OFFSET = 0 as const;
+export const PROC_SNAPSHOT_COUNT_SIZE = 4 as const;
+export const PROC_SNAPSHOT_RECORD_FIXED_SIZE = 36 as const;
+export const PROC_SNAPSHOT_RECORD_FIELDS = {
+  pid: { offset: 0, size: 4, type: "u32" },
+  ppid: { offset: 4, size: 4, type: "u32" },
+  uid: { offset: 8, size: 4, type: "u32" },
+  gid: { offset: 12, size: 4, type: "u32" },
+  vsizeBytes: { offset: 16, size: 8, type: "u64" },
+  state: { offset: 24, size: 4, type: "u32_ascii" },
+  commLen: { offset: 28, size: 4, type: "u32" },
+  cmdlineLen: { offset: 32, size: 4, type: "u32" },
+} as const;
+
 export const STRUCT_SIZE_WASM_STAT = 88 as const;
 export const STRUCT_SIZE_WASM_DIRENT = 16 as const;
 export const STRUCT_SIZE_WASM_TIMESPEC = 16 as const;

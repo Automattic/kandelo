@@ -845,8 +845,18 @@
     },
     {
       "kind": "func",
+      "name": "kernel_ipc_shm_lookup_mapping",
+      "signature": "(i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_ipc_shm_read_chunk",
       "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shm_record_mapping",
+      "signature": "(i64,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -862,6 +872,11 @@
       "kind": "func",
       "name": "kernel_ipc_shmdt",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmdt_addr",
+      "signature": "(i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1002,6 +1017,11 @@
       "kind": "func",
       "name": "kernel_pick_signal_target_tid",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_pick_tcp_listener_target",
+      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1472,6 +1492,11 @@
       "kind": "func",
       "name": "kernel_sysconf",
       "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_take_process_timer_cleanup",
+      "signature": "(i32,i64,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2181,6 +2206,61 @@
       "pages_per_slot": 4
     },
     "wasm_page_size": 65536
+  },
+  "process_snapshot": {
+    "count_offset": 0,
+    "count_size": 4,
+    "record_fields": [
+      {
+        "name": "pid",
+        "offset": 0,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "ppid",
+        "offset": 4,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "uid",
+        "offset": 8,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "gid",
+        "offset": 12,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "vsizeBytes",
+        "offset": 16,
+        "size": 8,
+        "type": "u64"
+      },
+      {
+        "name": "state",
+        "offset": 24,
+        "size": 4,
+        "type": "u32_ascii"
+      },
+      {
+        "name": "commLen",
+        "offset": 28,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "cmdlineLen",
+        "offset": 32,
+        "size": 4,
+        "type": "u32"
+      }
+    ],
+    "record_fixed_size": 36
   },
   "syscall_arg_descriptors": {
     "1": [
