@@ -5374,15 +5374,6 @@ export class CentralizedKernelWorker {
     this.callbacks.onFork(parentPid, childPid, channel.memory, threadFork).then((childChannelOffsets) => {
       if (!this.processes.has(parentPid)) return;
 
-      // Inherit TCP listener targets: if parent listens on a port, register
-      // the child as an additional target (fork children share listening sockets)
-      for (const [port, targets] of this.tcpListenerTargets) {
-        const parentTarget = targets.find(t => t.pid === parentPid);
-        if (parentTarget && !targets.some(t => t.pid === childPid)) {
-          targets.push({ pid: childPid, fd: parentTarget.fd });
-        }
-      }
-
       // Inherit epoll interest lists from parent
       for (const [key, interests] of this.epollInterests) {
         if (key.startsWith(`${parentPid}:`)) {
@@ -6974,9 +6965,9 @@ export class CentralizedKernelWorker {
     // Avoid duplicate listeners on the same pid:fd
     if (this.tcpListeners.has(key)) return;
 
-    // Register this pid:fd as a target for this port (needed for both
-    // Node.js TCP bridging and browser service worker bridging via
-    // pickListenerTarget + injectConnection)
+    // Register this pid:fd as a fallback/readiness target for this port.
+    // Runtime target selection is Rust-owned via kernel_pick_tcp_listener_target
+    // when that export is available.
     if (!this.tcpListenerTargets.has(port)) {
       this.tcpListenerTargets.set(port, []);
       this.tcpListenerRRIndex.set(port, 0);
@@ -7028,6 +7019,9 @@ export class CentralizedKernelWorker {
    * resolve a port to a {pid, fd} before injecting a connection.
    */
   pickListenerTarget(port: number): {pid: number, fd: number} | null {
+    const rustTarget = this.pickRustTcpListenerTarget(port, 0);
+    if (rustTarget !== undefined) return rustTarget;
+
     const targets = this.tcpListenerTargets.get(port);
     if (!targets || targets.length === 0) return null;
 
@@ -7053,6 +7047,21 @@ export class CentralizedKernelWorker {
     const idx = (this.tcpListenerRRIndex.get(port) ?? 0) % candidates.length;
     this.tcpListenerRRIndex.set(port, idx + 1);
     return candidates[idx]!;
+  }
+
+  private pickRustTcpListenerTarget(port: number, excludePid: number): {pid: number, fd: number} | null | undefined {
+    const pick = this.kernelInstance!.exports.kernel_pick_tcp_listener_target as
+      ((port: number, excludePid: number, outPtr: bigint) => number) | undefined;
+    if (!pick) return undefined;
+
+    const result = pick(port, excludePid, BigInt(this.scratchOffset));
+    if (result <= 0) return null;
+
+    const view = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const pid = view.getUint32(0, true);
+    const fd = view.getInt32(4, true);
+    if (!this.processes.has(pid)) return null;
+    return { pid, fd };
   }
 
   // ---------------------------------------------------------------------------
@@ -7501,7 +7510,10 @@ export class CentralizedKernelWorker {
     for (const [key, entry] of this.tcpListeners) {
       if (entry.pid === pid) {
         // Only close the server if no other processes share this port
-        const hasOtherTargets = this.tcpListenerTargets.has(entry.port);
+        const rustTarget = this.pickRustTcpListenerTarget(entry.port, pid);
+        const hasOtherTargets = rustTarget !== undefined
+          ? rustTarget !== null
+          : this.tcpListenerTargets.has(entry.port);
         if (!hasOtherTargets) {
           entry.server.close();
           for (const conn of entry.connections) {
