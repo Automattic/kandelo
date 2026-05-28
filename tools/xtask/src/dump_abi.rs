@@ -14,6 +14,8 @@
 //!     adapter boot contract metadata
 //!   * [`wasm_posix_shared::host_abi`] — host adapter syscall marshalling
 //!     descriptors
+//!   * [`wasm_posix_shared::wakeup_event`] — kernel wakeup event record
+//!     layout consumed by the host retry scheduler
 //!
 //! When `--kernel-wasm <path>` is provided, the snapshot also covers
 //! every export in the built kernel `.wasm` (after filtering through
@@ -370,6 +372,31 @@ fn render_ts_module() -> String {
     out.push_str("} as const;\n\n");
 
     out.push_str(&format!(
+        "export const WAKEUP_EVENT_RECORD_SIZE = {} as const;\n",
+        shared::wakeup_event::RECORD_SIZE
+    ));
+    out.push_str(&format!(
+        "export const WAKEUP_EVENT_TYPE_READABLE = {} as const;\n",
+        shared::wakeup_event::TYPE_READABLE
+    ));
+    out.push_str(&format!(
+        "export const WAKEUP_EVENT_TYPE_WRITABLE = {} as const;\n",
+        shared::wakeup_event::TYPE_WRITABLE
+    ));
+    out.push_str("export const WAKEUP_EVENT_TYPES = {\n");
+    out.push_str("  readable: WAKEUP_EVENT_TYPE_READABLE,\n");
+    out.push_str("  writable: WAKEUP_EVENT_TYPE_WRITABLE,\n");
+    out.push_str("} as const;\n");
+    out.push_str("export const WAKEUP_EVENT_FIELDS = {\n");
+    for field in wakeup_event_fields() {
+        out.push_str(&format!(
+            "  {}: {{ offset: {}, size: {}, type: {:?} }},\n",
+            field.name, field.offset, field.size, field.ty
+        ));
+    }
+    out.push_str("} as const;\n\n");
+
+    out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_STAT = {} as const;\n",
         size_of::<shared::WasmStat>()
     ));
@@ -605,6 +632,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("channel_signal_area".into(), channel_signal_area());
     root.insert("channel_buffers".into(), channel_buffers());
     root.insert("process_snapshot".into(), process_snapshot());
+    root.insert("wakeup_events".into(), wakeup_events());
 
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("syscalls".into(), syscalls());
@@ -794,6 +822,62 @@ fn process_snapshot() -> Value {
     m.insert("count_size".into(), json!(COUNT_SIZE));
     m.insert("record_fixed_size".into(), json!(RECORD_FIXED_SIZE));
     m.insert("record_fields".into(), Value::Array(fields));
+    Value::Object(m.into_iter().collect())
+}
+
+struct WakeupEventField {
+    name: &'static str,
+    offset: usize,
+    size: usize,
+    ty: &'static str,
+}
+
+fn wakeup_event_fields() -> [WakeupEventField; 2] {
+    use shared::wakeup_event::*;
+    [
+        WakeupEventField {
+            name: "pipeIdx",
+            offset: PIPE_IDX_OFFSET,
+            size: PIPE_IDX_SIZE,
+            ty: "u32",
+        },
+        WakeupEventField {
+            name: "wakeType",
+            offset: TYPE_OFFSET,
+            size: TYPE_SIZE,
+            ty: "u8",
+        },
+    ]
+}
+
+fn wakeup_events() -> Value {
+    use shared::wakeup_event::*;
+    let fields = wakeup_event_fields()
+        .iter()
+        .map(|field| {
+            let mut m: JsonMap = BTreeMap::new();
+            m.insert("name".into(), json!(field.name));
+            m.insert("offset".into(), json!(field.offset));
+            m.insert("size".into(), json!(field.size));
+            m.insert("type".into(), json!(field.ty));
+            Value::Object(m.into_iter().collect())
+        })
+        .collect();
+
+    let types = [("readable", TYPE_READABLE), ("writable", TYPE_WRITABLE)]
+        .into_iter()
+        .map(|(name, bit)| {
+            let mut m: JsonMap = BTreeMap::new();
+            m.insert("name".into(), json!(name));
+            m.insert("bit".into(), json!(bit));
+            Value::Object(m.into_iter().collect())
+        })
+        .collect();
+
+    let mut m: JsonMap = BTreeMap::new();
+    m.insert("record_size".into(), json!(RECORD_SIZE));
+    m.insert("fields".into(), Value::Array(fields));
+    m.insert("types".into(), Value::Array(types));
     Value::Object(m.into_iter().collect())
 }
 
@@ -1528,7 +1612,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 fn additive_top_level_section(section: &str) -> bool {
     matches!(
         section,
-        "host_adapter" | "process_snapshot" | "syscall_arg_descriptors"
+        "host_adapter" | "process_snapshot" | "syscall_arg_descriptors" | "wakeup_events"
     )
 }
 
@@ -1745,6 +1829,17 @@ mod tests {
                     {"name": "pid", "offset": 0, "size": 4, "type": "u32"}
                 ]
             },
+            "wakeup_events": {
+                "record_size": 5,
+                "fields": [
+                    {"name": "pipeIdx", "offset": 0, "size": 4, "type": "u32"},
+                    {"name": "wakeType", "offset": 4, "size": 1, "type": "u8"}
+                ],
+                "types": [
+                    {"name": "readable", "bit": 1},
+                    {"name": "writable", "bit": 2}
+                ]
+            },
             "syscalls": [
                 {"number": 1, "name": "Open"},
                 {"number": 2, "name": "Close"}
@@ -1836,6 +1931,20 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"process_snapshot\""]
+        );
+    }
+
+    #[test]
+    fn adding_wakeup_events_section_is_compatible() {
+        let mut old = base_snapshot();
+        old.as_object_mut().unwrap().remove("wakeup_events");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"wakeup_events\""]
         );
     }
 
