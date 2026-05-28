@@ -45,10 +45,22 @@ int main(void) {
     }
     printf("read back: %c%c%c\n", buf[0], buf[1], buf[2]);
 
-    // Also test: write more data, munmap (should not auto-flush for our impl),
-    // and verify the previous msync data persists
+    // Also test: write more data and verify munmap flushes it back to
+    // the file. Some linkers write their output via MAP_SHARED and rely
+    // on munmap for final writeback.
     ptr[3] = 'w';
-    munmap(ptr, pagesize);
+    if (munmap(ptr, pagesize) < 0) { perror("munmap"); return 1; }
+
+    lseek(fd, 0, SEEK_SET);
+    char munmap_buf[5] = {0};
+    if (read(fd, munmap_buf, 4) != 4) { perror("read after munmap"); return 1; }
+    if (memcmp(munmap_buf, "xyzw", 4) != 0) {
+        fprintf(stderr, "munmap writeback failed: got '%c%c%c%c'\n",
+                munmap_buf[0], munmap_buf[1], munmap_buf[2], munmap_buf[3]);
+        return 1;
+    }
+    printf("read after munmap: %c%c%c%c\n",
+           munmap_buf[0], munmap_buf[1], munmap_buf[2], munmap_buf[3]);
 
     close(fd);
     unlink(path);

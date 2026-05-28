@@ -2244,8 +2244,9 @@ export class CentralizedKernelWorker {
       this.flushSharedMappings(channel, origArgs);
     }
 
-    // --- munmap: clean up shared mapping tracking ---
+    // --- munmap: flush + clean up shared mapping tracking ---
     if (syscallNr === SYS_MUNMAP && retVal === 0) {
+      this.flushSharedMappings(channel, origArgs);
       this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
     }
 
