@@ -1627,20 +1627,7 @@ export class CentralizedKernelWorker {
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
     this.releaseAdvisoryLocksForPid(pid);
-    // Cancel any pending alarm timer for this process
-    const alarmTimer = this.alarmTimers.get(pid);
-    if (alarmTimer) {
-      clearTimeout(alarmTimer);
-      this.alarmTimers.delete(pid);
-    }
-    // Cancel any pending posix timers for this process
-    for (const [key, entry] of this.posixTimers) {
-      if (key.startsWith(`${pid}:`)) {
-        clearTimeout(entry.timeout);
-        if (entry.interval) clearInterval(entry.interval);
-        this.posixTimers.delete(key);
-      }
-    }
+    this.cancelProcessHostTimers(pid);
     // Cancel any pending sleep timer for this process
     const sleepTimer = this.pendingSleeps.get(pid);
     if (sleepTimer) {
@@ -1658,6 +1645,59 @@ export class CentralizedKernelWorker {
     // pid is later reused for a fresh fork+register, the new process
     // gets its own reaping decision.
     this.hostReaped.delete(pid);
+  }
+
+  private cancelProcessHostTimers(pid: number): void {
+    const cleanup = this.takeRustProcessTimerCleanup(pid);
+    if (cleanup !== undefined) {
+      if (cleanup.cancelAlarm) {
+        const alarmTimer = this.alarmTimers.get(pid);
+        if (alarmTimer) clearTimeout(alarmTimer);
+        this.alarmTimers.delete(pid);
+      }
+      for (const timerId of cleanup.posixTimerIds) {
+        const key = `${pid}:${timerId}`;
+        const entry = this.posixTimers.get(key);
+        if (entry) {
+          clearTimeout(entry.timeout);
+          if (entry.interval) clearInterval(entry.interval);
+          this.posixTimers.delete(key);
+        }
+      }
+      return;
+    }
+
+    const alarmTimer = this.alarmTimers.get(pid);
+    if (alarmTimer) {
+      clearTimeout(alarmTimer);
+      this.alarmTimers.delete(pid);
+    }
+    for (const [key, entry] of this.posixTimers) {
+      if (key.startsWith(`${pid}:`)) {
+        clearTimeout(entry.timeout);
+        if (entry.interval) clearInterval(entry.interval);
+        this.posixTimers.delete(key);
+      }
+    }
+  }
+
+  private takeRustProcessTimerCleanup(pid: number): { cancelAlarm: boolean; posixTimerIds: number[] } | undefined {
+    const takeCleanup = this.kernelInstance!.exports.kernel_take_process_timer_cleanup as
+      ((pid: number, outPtr: bigint, maxTimerIds: number) => number) | undefined;
+    if (!takeCleanup) return undefined;
+
+    const maxTimerIds = Math.floor((SCRATCH_SIZE - 8) / 4);
+    const result = takeCleanup(pid, BigInt(this.scratchOffset), maxTimerIds);
+    if (result < 0) return undefined;
+
+    const view = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const cancelAlarm = view.getUint32(0, true) !== 0;
+    const count = view.getUint32(4, true);
+    const posixTimerIds: number[] = [];
+    for (let i = 0; i < count; i++) {
+      posixTimerIds.push(view.getUint32(8 + i * 4, true));
+    }
+    return { cancelAlarm, posixTimerIds };
   }
 
   /**

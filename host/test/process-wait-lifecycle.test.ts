@@ -238,6 +238,47 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.pickListenerTarget(8080)).toEqual({ pid: 44, fd: 7 });
     expect(pickTarget).toHaveBeenCalledWith(8080, 0, BigInt(worker.scratchOffset));
   });
+
+  it("host timer cancellation follows Rust-owned cleanup metadata", () => {
+    vi.useFakeTimers();
+    try {
+      const kernelMemory = createSharedMemory();
+      const takeCleanup = vi.fn((_pid: number, outPtr: bigint, _maxTimerIds: number) => {
+        const view = new DataView(kernelMemory.buffer);
+        view.setUint32(Number(outPtr), 1, true);
+        view.setUint32(Number(outPtr) + 4, 2, true);
+        view.setUint32(Number(outPtr) + 8, 4, true);
+        view.setUint32(Number(outPtr) + 12, 8, true);
+        return 2;
+      });
+      const worker = createWorkerHarness({
+        kernel_take_process_timer_cleanup: takeCleanup,
+      });
+      worker.kernelMemory = kernelMemory;
+      worker.alarmTimers = new Map([
+        [11, setTimeout(() => {}, 1000)],
+        [12, setTimeout(() => {}, 1000)],
+      ]);
+      worker.posixTimers = new Map([
+        ["11:4", { timeout: setTimeout(() => {}, 1000) }],
+        ["11:8", { timeout: setTimeout(() => {}, 1000), interval: setInterval(() => {}, 1000) }],
+        ["11:9", { timeout: setTimeout(() => {}, 1000) }],
+        ["12:4", { timeout: setTimeout(() => {}, 1000) }],
+      ]);
+
+      worker.cancelProcessHostTimers(11);
+
+      expect(takeCleanup).toHaveBeenCalledWith(11, BigInt(worker.scratchOffset), expect.any(Number));
+      expect(worker.alarmTimers.has(11)).toBe(false);
+      expect(worker.alarmTimers.has(12)).toBe(true);
+      expect(worker.posixTimers.has("11:4")).toBe(false);
+      expect(worker.posixTimers.has("11:8")).toBe(false);
+      expect(worker.posixTimers.has("11:9")).toBe(true);
+      expect(worker.posixTimers.has("12:4")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4 | 8 = 4): any {

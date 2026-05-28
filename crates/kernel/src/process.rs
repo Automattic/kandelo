@@ -390,6 +390,12 @@ pub struct ShmMapping {
     pub size: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostTimerCleanup {
+    pub cancel_alarm: bool,
+    pub posix_timer_ids: Vec<usize>,
+}
+
 /// Per-thread state within a process.
 #[derive(Debug, Clone)]
 pub struct ThreadInfo {
@@ -854,6 +860,27 @@ impl Process {
         Some(self.shm_mappings.swap_remove(idx))
     }
 
+    /// Return host timer handles that should be cancelled for this process and
+    /// clear the Rust timer state that made them live.
+    pub fn take_host_timer_cleanup(&mut self) -> HostTimerCleanup {
+        let cancel_alarm = self.alarm_deadline_ns != 0 || self.alarm_interval_ns != 0;
+        self.alarm_deadline_ns = 0;
+        self.alarm_interval_ns = 0;
+
+        let mut posix_timer_ids = Vec::new();
+        for (timer_id, slot) in self.posix_timers.iter_mut().enumerate() {
+            if slot.is_some() {
+                posix_timer_ids.push(timer_id);
+                *slot = None;
+            }
+        }
+
+        HostTimerCleanup {
+            cancel_alarm,
+            posix_timer_ids,
+        }
+    }
+
     /// True if `tid` names the process's main thread. The main thread's TID
     /// equals the process PID (Linux convention) and is not tracked in
     /// [`Process::threads`]; per-thread signal state for the main thread lives
@@ -1278,6 +1305,42 @@ mod tests {
             })
         );
         assert_eq!(proc.shm_mapping_at(0x20000), None);
+    }
+
+    #[test]
+    fn host_timer_cleanup_drains_alarm_and_posix_timer_state() {
+        let mut proc = Process::new(1);
+        proc.alarm_deadline_ns = 10;
+        proc.alarm_interval_ns = 5;
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 0,
+            sigev_signo: 14,
+            sigev_value: 0,
+            interval_sec: 0,
+            interval_nsec: 0,
+            value_sec: 1,
+            value_nsec: 0,
+            overrun: 0,
+        }));
+        proc.posix_timers.push(None);
+        proc.posix_timers.push(Some(PosixTimerState {
+            clock_id: 0,
+            sigev_signo: 15,
+            sigev_value: 0,
+            interval_sec: 1,
+            interval_nsec: 0,
+            value_sec: 1,
+            value_nsec: 0,
+            overrun: 0,
+        }));
+
+        let cleanup = proc.take_host_timer_cleanup();
+
+        assert!(cleanup.cancel_alarm);
+        assert_eq!(cleanup.posix_timer_ids, alloc::vec![0, 2]);
+        assert_eq!(proc.alarm_deadline_ns, 0);
+        assert_eq!(proc.alarm_interval_ns, 0);
+        assert!(proc.posix_timers.iter().all(|slot| slot.is_none()));
     }
 
     #[test]
