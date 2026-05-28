@@ -96,9 +96,14 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
+import { FILE_MODES, OPEN_FLAGS } from "./generated/abi";
 
 const PAGE_SIZE = 65536;
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
+const FILE_PERMISSION_BITS =
+  FILE_MODES.S_IRWXU | FILE_MODES.S_IRWXG | FILE_MODES.S_IRWXO;
 
 // State
 let kernelWorker: CentralizedKernelWorker;
@@ -292,12 +297,12 @@ function overlayEtcFromRootfs(target: MemoryFileSystem, rootfsImage: Uint8Array)
       // Only handle regular files for now; the canonical images/rootfs/etc/*
       // is flat (no subdirs, no symlinks).
       const st = source.stat(sourcePath);
-      const isRegular = (st.mode & 0xf000) === 0x8000;
+      const isRegular = (st.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFREG;
       if (!isRegular) continue;
 
       // Read full content (sequential — pass null offset for read/write
       // semantics rather than pread/pwrite).
-      const fdR = source.open(sourcePath, 0, 0); // O_RDONLY
+      const fdR = source.open(sourcePath, OPEN_FLAGS.O_RDONLY, 0);
       const size = st.size;
       const buf = new Uint8Array(size);
       let read = 0;
@@ -309,7 +314,11 @@ function overlayEtcFromRootfs(target: MemoryFileSystem, rootfsImage: Uint8Array)
       source.close(fdR);
 
       // Write into target.
-      const fdW = target.open(targetPath, 0o1101 /* O_WRONLY|O_CREAT|O_TRUNC */, st.mode & 0o777);
+      const fdW = target.open(
+        targetPath,
+        O_WRONLY_CREAT_TRUNC,
+        st.mode & FILE_PERMISSION_BITS,
+      );
       if (read > 0) target.write(fdW, buf.subarray(0, read), null, read);
       target.close(fdW);
     }
@@ -405,7 +414,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       try { memfs.mkdir(dir, 0o755); } catch { /* exists */ }
     }
     const certBytes = new TextEncoder().encode(caCertPem);
-    const certFd = memfs.open("/etc/ssl/certs/ca-certificates.crt", 0o1101, 0o644);
+    const certFd = memfs.open(
+      "/etc/ssl/certs/ca-certificates.crt",
+      O_WRONLY_CREAT_TRUNC,
+      0o644,
+    );
     memfs.write(certFd, certBytes, 0, certBytes.length);
     memfs.close(certFd);
   } catch (e) {

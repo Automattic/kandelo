@@ -501,6 +501,7 @@ pub mod flags {
     pub const O_ACCMODE: u32 = 3;
     pub const O_CREAT: u32 = 0o100;
     pub const O_EXCL: u32 = 0o200;
+    pub const O_NOCTTY: u32 = 0o400;
     pub const O_TRUNC: u32 = 0o1000;
     pub const O_APPEND: u32 = 0o2000;
     pub const O_NONBLOCK: u32 = 0o4000;
@@ -512,6 +513,7 @@ pub mod flags {
     pub const AT_FDCWD: i32 = -100;
     pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
     pub const AT_REMOVEDIR: u32 = 0x200;
+    pub const AT_EMPTY_PATH: u32 = 0x1000;
 }
 
 /// File descriptor flags (FD_*).
@@ -673,6 +675,11 @@ pub mod mode {
     pub const S_IFCHR: u32 = 0o020000;
     pub const S_IFIFO: u32 = 0o010000;
 
+    // Special permission bits
+    pub const S_ISUID: u32 = 0o4000;
+    pub const S_ISGID: u32 = 0o2000;
+    pub const S_ISVTX: u32 = 0o1000;
+
     // Owner permissions
     pub const S_IRWXU: u32 = 0o700;
     pub const S_IRUSR: u32 = 0o400;
@@ -690,6 +697,8 @@ pub mod mode {
     pub const S_IROTH: u32 = 0o004;
     pub const S_IWOTH: u32 = 0o002;
     pub const S_IXOTH: u32 = 0o001;
+
+    pub const S_MODE_BITS: u32 = S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO;
 }
 
 /// Shared-memory channel layout offsets and sizes.
