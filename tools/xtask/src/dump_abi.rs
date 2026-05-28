@@ -16,6 +16,8 @@
 //!     descriptors
 //!   * [`wasm_posix_shared::wakeup_event`] — kernel wakeup event record
 //!     layout consumed by the host retry scheduler
+//!   * [`wasm_posix_shared::poll`], [`wasm_posix_shared::epoll`], and
+//!     [`wasm_posix_shared::select`] — I/O multiplexing event metadata
 //!
 //! When `--kernel-wasm <path>` is provided, the snapshot also covers
 //! every export in the built kernel `.wasm` (after filtering through
@@ -478,6 +480,27 @@ fn render_ts_module() -> String {
     }
     out.push_str("} as const;\n\n");
 
+    out.push_str("export const POLL_EVENTS = {\n");
+    for (name, value) in poll_events() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+
+    out.push_str("export const EPOLL_EVENTS = {\n");
+    for (name, value) in epoll_events() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+
+    out.push_str(&format!(
+        "export const SELECT_FD_SETSIZE = {} as const;\n",
+        shared::select::FD_SETSIZE
+    ));
+    out.push_str(&format!(
+        "export const SELECT_FD_SET_BYTES = {} as const;\n\n",
+        shared::select::FD_SET_BYTES
+    ));
+
     out.push_str(&format!(
         "export const STRUCT_SIZE_WASM_STAT = {} as const;\n",
         size_of::<shared::WasmStat>()
@@ -715,6 +738,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("channel_buffers".into(), channel_buffers());
     root.insert("process_snapshot".into(), process_snapshot());
     root.insert("wakeup_events".into(), wakeup_events());
+    root.insert("io_multiplexing".into(), io_multiplexing());
 
     root.insert("marshalled_structs".into(), marshalled_structs());
     root.insert("syscalls".into(), syscalls());
@@ -1076,6 +1100,59 @@ fn wakeup_events() -> Value {
     m.insert("record_size".into(), json!(RECORD_SIZE));
     m.insert("fields".into(), Value::Array(fields));
     m.insert("types".into(), Value::Array(types));
+    Value::Object(m.into_iter().collect())
+}
+
+fn poll_events() -> [(&'static str, i16); 6] {
+    use shared::poll::*;
+    [
+        ("POLLIN", POLLIN),
+        ("POLLPRI", POLLPRI),
+        ("POLLOUT", POLLOUT),
+        ("POLLERR", POLLERR),
+        ("POLLHUP", POLLHUP),
+        ("POLLNVAL", POLLNVAL),
+    ]
+}
+
+fn epoll_events() -> [(&'static str, u32); 4] {
+    use shared::epoll::*;
+    [
+        ("EPOLLIN", EPOLLIN),
+        ("EPOLLOUT", EPOLLOUT),
+        ("EPOLLERR", EPOLLERR),
+        ("EPOLLHUP", EPOLLHUP),
+    ]
+}
+
+fn io_multiplexing() -> Value {
+    let poll_events = poll_events()
+        .into_iter()
+        .map(|(name, value)| {
+            let mut m: JsonMap = BTreeMap::new();
+            m.insert("name".into(), json!(name));
+            m.insert("value".into(), json!(value));
+            Value::Object(m.into_iter().collect())
+        })
+        .collect();
+    let epoll_events = epoll_events()
+        .into_iter()
+        .map(|(name, value)| {
+            let mut m: JsonMap = BTreeMap::new();
+            m.insert("name".into(), json!(name));
+            m.insert("value".into(), json!(value));
+            Value::Object(m.into_iter().collect())
+        })
+        .collect();
+
+    let mut select: JsonMap = BTreeMap::new();
+    select.insert("fd_setsize".into(), json!(shared::select::FD_SETSIZE));
+    select.insert("fd_set_bytes".into(), json!(shared::select::FD_SET_BYTES));
+
+    let mut m: JsonMap = BTreeMap::new();
+    m.insert("poll_events".into(), Value::Array(poll_events));
+    m.insert("epoll_events".into(), Value::Array(epoll_events));
+    m.insert("select".into(), Value::Object(select.into_iter().collect()));
     Value::Object(m.into_iter().collect())
 }
 
@@ -1810,7 +1887,11 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 fn additive_top_level_section(section: &str) -> bool {
     matches!(
         section,
-        "host_adapter" | "process_snapshot" | "syscall_arg_descriptors" | "wakeup_events"
+        "host_adapter"
+            | "io_multiplexing"
+            | "process_snapshot"
+            | "syscall_arg_descriptors"
+            | "wakeup_events"
     )
 }
 
@@ -2038,6 +2119,26 @@ mod tests {
                     {"name": "writable", "bit": 2}
                 ]
             },
+            "io_multiplexing": {
+                "poll_events": [
+                    {"name": "POLLIN", "value": 1},
+                    {"name": "POLLPRI", "value": 2},
+                    {"name": "POLLOUT", "value": 4},
+                    {"name": "POLLERR", "value": 8},
+                    {"name": "POLLHUP", "value": 16},
+                    {"name": "POLLNVAL", "value": 32}
+                ],
+                "epoll_events": [
+                    {"name": "EPOLLIN", "value": 1},
+                    {"name": "EPOLLOUT", "value": 4},
+                    {"name": "EPOLLERR", "value": 8},
+                    {"name": "EPOLLHUP", "value": 16}
+                ],
+                "select": {
+                    "fd_setsize": 1024,
+                    "fd_set_bytes": 128
+                }
+            },
             "syscalls": [
                 {"number": 1, "name": "Open"},
                 {"number": 2, "name": "Close"}
@@ -2129,6 +2230,20 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"process_snapshot\""]
+        );
+    }
+
+    #[test]
+    fn adding_io_multiplexing_section_is_compatible() {
+        let mut old = base_snapshot();
+        old.as_object_mut().unwrap().remove("io_multiplexing");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"io_multiplexing\""]
         );
     }
 
