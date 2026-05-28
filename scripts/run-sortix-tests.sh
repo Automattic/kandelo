@@ -297,6 +297,13 @@ build_runtime_test() {
     mkdir -p "$(dirname "$wasm")"
 
     local -a cflags=("${CFLAGS_BASE[@]}" -D_GNU_SOURCE -I"$OS_TEST")
+    case "$suite/$test_name" in
+        process/waitpid-pgid-empty-on-setpgid|\
+        process/waitpid-pgid-empty-on-setpgid-rejoin|\
+        process/waitpid-pgid-empty-on-setsid)
+            cflags+=(-include "$REPO_ROOT/tests/sortix/os-test-overrides/min-waitpid-alarm.h")
+            ;;
+    esac
 
     "$CC" "${cflags[@]}" \
         "$src" "${LINK_FLAGS[@]}" \
@@ -821,8 +828,17 @@ run_suite() {
             local src="$OS_TEST/$suite/${test_name}.c"
             local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
             mkdir -p "$(dirname "$wasm")"
+            # shellcheck disable=SC2206
+            local -a cflags=($CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST")
+            case "$suite/$test_name" in
+                process/waitpid-pgid-empty-on-setpgid|\
+                process/waitpid-pgid-empty-on-setpgid-rejoin|\
+                process/waitpid-pgid-empty-on-setsid)
+                    cflags+=(-include "$REPO_ROOT/tests/sortix/os-test-overrides/min-waitpid-alarm.h")
+                    ;;
+            esac
             # shellcheck disable=SC2086
-            "$CC" $CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST" \
+            "$CC" "${cflags[@]}" \
                 "$src" $LINK_FLAGS_STR \
                 -o "$wasm" 2>/dev/null || return 1
             "$FORK_INSTRUMENT" "$wasm" -o "$wasm"
