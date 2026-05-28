@@ -2058,6 +2058,7 @@ mod tests {
     fn test_roundtrip_default_process() {
         let mut proc = Process::new(1);
         proc.terminal.foreground_pgid = 313;
+        proc.record_shm_mapping(0x20000, 17, 4096).unwrap();
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
         assert!(written > 12);
@@ -2075,6 +2076,9 @@ mod tests {
         assert_eq!(child.signals.pending, 0);
         assert_eq!(child.main_thread_signals.pending, 0);
         assert_eq!(child.terminal.foreground_pgid, 313);
+        // The host fork transaction records child attachments only after the
+        // corresponding shmat and byte materialization have both succeeded.
+        assert!(child.shm_mappings.is_empty());
     }
 
     #[test]
@@ -2319,6 +2323,7 @@ mod tests {
     fn test_exec_roundtrip_default_process() {
         let mut proc = Process::new(1);
         proc.terminal.foreground_pgid = 919;
+        proc.record_shm_mapping(0x20000, 17, 4096).unwrap();
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
         assert!(written > 12);
@@ -2330,6 +2335,7 @@ mod tests {
         assert_eq!(restored.signals.pending, 0);
         assert_eq!(restored.main_thread_signals.pending, 0);
         assert_eq!(restored.terminal.foreground_pgid, 919);
+        assert!(restored.shm_mappings.is_empty());
     }
 
     #[test]

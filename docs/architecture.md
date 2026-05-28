@@ -86,9 +86,12 @@ kernel_commit_process_exit(status) → committed_low_8_bits
 kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
 kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr, out_capacity) → child_pid | 0 | -errno
 kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno
-kernel_ipc_shmdt_for_task(pid, tid, shmid) → 0 | -errno
+kernel_ipc_shm_record_mapping_for_task(pid, tid, addr, shmid, size) → 0 | -errno
+kernel_ipc_shm_lookup_mapping_for_task(pid, tid, addr) → packed_size_and_shmid | -errno
+kernel_ipc_shmdt_addr_for_task(pid, tid, addr) → 0 | -errno
 kernel_ipc_shmat_for_process(pid, shmid, addr, flags) → segment_size | -errno
-kernel_ipc_shmdt_for_process(pid, shmid) → 0 | -errno
+kernel_ipc_shm_record_mapping_for_process(pid, addr, shmid, size) → 0 | -errno
+kernel_ipc_shmdt_addr_for_process(pid, addr) → 0 | -errno
 kernel_alloc_scratch(size) → kernel_owned_pointer | 0
 kernel_transfer_scratch_begin(minimum_capacity) → reservation_token | -errno
 kernel_transfer_scratch_pointer(reservation_token) → kernel_owned_pointer | 0
@@ -943,8 +946,11 @@ exit trap from an older ABI 42 kernel, then applies the same authoritative
 `Exited` state check. The compatibility path does not treat a trap alone as
 successful exit.
 Signal dequeue, child-wait polling, write-limit preparation, and guest SysV
-shared-memory attachment also carry the exact live caller TID explicitly;
-lifecycle cleanup uses separately named process-level SysV exports.
+shared-memory attachment also carry the exact live caller TID explicitly.
+Rust owns each attachment's address, segment id, size, and lifetime; the shared
+host retains versioned snapshots only to reconcile bytes between distinct
+process memories. Fork-child materialization and lifecycle cleanup use
+separately named process-level SysV exports.
 Fork and spawn carry the channel's caller TID to the kernel, which validates it
 as a live task belonging to the parent. That value selects caller-specific
 state; it is never a candidate child identity. Clone validates the bound caller
@@ -1169,9 +1175,10 @@ remaining POSIX gap is tracked in [posix-status.md](posix-status.md) and
    behind surviving descriptors are never fork-cloned or reconstructed: socket
    queues, eventfd/epoll/timerfd/signalfd state, memfd contents, procfs
    snapshots, terminal input, and OFD identity therefore survive without
-   refcount churn. After that commit the host forgets the old mapping trackers
-   and detaches SysV segments. The calling pthread's signal mask and directed
-   queue become the process state; sibling workers terminate.
+   refcount churn. At that same commit Rust detaches the old address space's
+   SysV segments; the host then forgets its non-authoritative byte mirrors and
+   the other old mapping trackers. The calling pthread's signal mask and
+   directed queue become the process state; sibling workers terminate.
    `alarm()`/`ITIMER_REAL` survives, while `timer_create()` timers are deleted.
    The conformance gaps in [posix-status.md](posix-status.md) still apply,
    notably numeric-fd epoll tracking and main-thread-directed signal

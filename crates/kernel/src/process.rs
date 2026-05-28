@@ -431,6 +431,19 @@ pub struct DriBoBinding {
     pub bo_id: crate::dri::BoId,
 }
 
+/// Kernel-owned identity for one System V shared-memory attachment.
+///
+/// The host retains byte-coherence snapshots because it owns guest Memory,
+/// but attachment identity and lifetime belong to the process table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShmMapping {
+    pub addr: usize,
+    pub shmid: i32,
+    pub size: usize,
+}
+
+const MAX_SYSV_SHM_MAPPINGS_PER_PROCESS: usize = 4096;
+
 /// Read-only identity of a thread owned by [`crate::process_table::ProcessTable`].
 ///
 /// [`ThreadInfo`] dereferences to this view so existing `thread.tid` reads stay
@@ -806,6 +819,9 @@ pub struct Process {
     /// memory region with the bo currently bound there so `sys_munmap`
     /// can issue the matching [`HostIO::gbm_bo_unbind`].
     pub dri_bindings: Vec<DriBoBinding>,
+    /// SysV shared-memory attachments keyed by the process virtual address
+    /// returned from `shmat`.
+    pub shm_mappings: Vec<ShmMapping>,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -1077,6 +1093,7 @@ impl Process {
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),
+            shm_mappings: Vec::new(),
             fork_count: 0,
         }
     }
@@ -1327,6 +1344,52 @@ impl Process {
     /// Remove all non-leader tasks during exec replacement.
     pub(crate) fn clear_threads(&mut self) {
         self.identity.threads.clear();
+    }
+
+    /// Record one SysV shared-memory attachment after the host commits mmap.
+    pub fn record_shm_mapping(
+        &mut self,
+        addr: usize,
+        shmid: i32,
+        size: usize,
+    ) -> Result<(), Errno> {
+        if addr == 0 || shmid < 0 || size == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if size > i32::MAX as usize {
+            return Err(Errno::EOVERFLOW);
+        }
+        if let Some(mapping) = self.shm_mapping_at(addr) {
+            return if mapping.shmid == shmid && mapping.size == size {
+                Ok(())
+            } else {
+                Err(Errno::EINVAL)
+            };
+        }
+        if self.shm_mappings.len() >= MAX_SYSV_SHM_MAPPINGS_PER_PROCESS {
+            return Err(Errno::ENOMEM);
+        }
+        self.shm_mappings
+            .try_reserve_exact(1)
+            .map_err(|_| Errno::ENOMEM)?;
+        self.shm_mappings.push(ShmMapping { addr, shmid, size });
+        Ok(())
+    }
+
+    /// Find a SysV shared-memory attachment by its process address.
+    pub fn shm_mapping_at(&self, addr: usize) -> Option<ShmMapping> {
+        self.shm_mappings.iter().copied().find(|m| m.addr == addr)
+    }
+
+    /// Remove and return a SysV shared-memory attachment by its process address.
+    pub fn remove_shm_mapping(&mut self, addr: usize) -> Option<ShmMapping> {
+        let idx = self.shm_mappings.iter().position(|m| m.addr == addr)?;
+        Some(self.shm_mappings.swap_remove(idx))
+    }
+
+    /// Drain every SysV attachment owned by the discarded address space.
+    pub(crate) fn take_shm_mappings(&mut self) -> Vec<ShmMapping> {
+        core::mem::take(&mut self.shm_mappings)
     }
 
     /// True if `tid` names the process's main thread. The main thread's TID
@@ -2524,6 +2587,40 @@ mod tests {
             assert_eq!(ofd.host_handle, fd as i64);
         }
         assert_eq!(proc.terminal.foreground_pgid, 1);
+    }
+
+    #[test]
+    fn shm_mapping_bookkeeping_is_keyed_by_process_addr() {
+        let mut proc = Process::new(1);
+
+        proc.record_shm_mapping(0x20000, 7, 4096).unwrap();
+        assert_eq!(
+            proc.shm_mapping_at(0x20000),
+            Some(ShmMapping {
+                addr: 0x20000,
+                shmid: 7,
+                size: 4096,
+            })
+        );
+
+        assert_eq!(
+            proc.record_shm_mapping(0x20000, 8, 8192),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            proc.record_shm_mapping(0x30000, 8, i32::MAX as usize + 1),
+            Err(Errno::EOVERFLOW)
+        );
+        assert_eq!(proc.shm_mappings.len(), 1);
+        assert_eq!(
+            proc.remove_shm_mapping(0x20000),
+            Some(ShmMapping {
+                addr: 0x20000,
+                shmid: 7,
+                size: 4096,
+            })
+        );
+        assert_eq!(proc.shm_mapping_at(0x20000), None);
     }
 
     #[test]

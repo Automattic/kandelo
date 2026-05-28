@@ -757,6 +757,13 @@ impl ProcessTable {
             crate::wakeup::push_advisory_lock();
         }
 
+        // Drop SysV shared-memory attachments that were still live when the
+        // process exited or was reaped.
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        for mapping in &proc.shm_mappings {
+            let _ = ipc.shmdt(mapping.shmid, pid);
+        }
+
         if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {
             self.processes.insert(pid, Self::limbo_process_from(&proc));
         }

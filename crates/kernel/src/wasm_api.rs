@@ -4646,8 +4646,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             kernel_ipc_shmat(a1, a2, a3)
         }
         346 => {
-            let _shmaddr = conditional_process_address!(0);
-            kernel_ipc_shmdt(a1)
+            let shmaddr = conditional_process_address!(0);
+            kernel_ipc_shmdt_addr(shmaddr)
         }
         347 => {
             // SYS_SHMCTL: (shmid, cmd, buf_ptr)
@@ -5977,7 +5977,13 @@ pub extern "C" fn kernel_ipc_shmat_for_process(
     };
     let ipc = unsafe { crate::ipc::global_ipc_table() };
     match ipc.shmat(shmid, pid, flags as u32, uid, gid) {
-        Ok(size) => size as i32,
+        Ok(size) => match i32::try_from(size) {
+            Ok(size) => size,
+            Err(_) => {
+                let _ = ipc.shmdt(shmid, pid);
+                -(Errno::EOVERFLOW as i32)
+            }
+        },
         Err(e) => -(e as i32),
     }
 }
@@ -5996,6 +6002,153 @@ pub extern "C" fn kernel_ipc_shmat_for_task(
         return -(Errno::ESRCH as i32);
     }
     kernel_ipc_shmat_for_process(pid, shmid, shmaddr, flags)
+}
+
+fn ipc_record_shm_mapping(
+    pid: u32,
+    addr: usize,
+    shmid: i32,
+    size: u32,
+    require_live_process: bool,
+) -> Result<(), Errno> {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = table.get_mut(pid).ok_or(Errno::ESRCH)?;
+    if proc.state == ProcessState::Limbo
+        || (require_live_process
+            && !matches!(proc.state, ProcessState::Running | ProcessState::Stopped))
+    {
+        return Err(Errno::ESRCH);
+    }
+    proc.record_shm_mapping(addr, shmid, size as usize)
+}
+
+/// Record one host-materialized attachment for a retained process.
+///
+/// This process form is used while a fork child exists in Rust but has no
+/// running guest task yet. The host byte mirror is not authoritative for
+/// attachment identity or lifetime.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_record_mapping_for_process(
+    pid: u32,
+    addr: usize,
+    shmid: i32,
+    size: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    match ipc_record_shm_mapping(pid, addr, shmid, size, true) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Record one host-materialized attachment for an exact live calling task.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_record_mapping_for_task(
+    pid: u32,
+    tid: u32,
+    addr: usize,
+    shmid: i32,
+    size: u32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(e) = table.validate_task(pid, tid) {
+        return -(e as i32);
+    }
+    match ipc_record_shm_mapping(pid, addr, shmid, size, true) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Look up an attachment owned by an exact live task.
+///
+/// The nonnegative result packs the byte size in the upper 32 bits and the
+/// shmid in the lower 32 bits. Sizes are capped when recorded so every valid
+/// result remains distinguishable from a negative errno without borrowing the
+/// shared scratch channel.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_lookup_mapping_for_task(
+    pid: u32,
+    tid: u32,
+    addr: usize,
+) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(e) = table.validate_task(pid, tid) {
+        return -(e as i64);
+    }
+    let mapping = match table.get(pid).and_then(|proc| proc.shm_mapping_at(addr)) {
+        Some(mapping) => mapping,
+        None => return -(Errno::EINVAL as i64),
+    };
+    let size = match u32::try_from(mapping.size) {
+        Ok(size) if size <= i32::MAX as u32 => size,
+        _ => return -(Errno::EOVERFLOW as i64),
+    };
+    ((size as i64) << 32) | i64::from(mapping.shmid as u32)
+}
+
+fn ipc_shmdt_addr(pid: u32, addr: usize, require_live_process: bool) -> Result<(), Errno> {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mapping = {
+        let proc = table.get(pid).ok_or(Errno::ESRCH)?;
+        if pid == crate::process_table::SYNTHETIC_INIT_PID
+            || proc.state == ProcessState::Limbo
+            || (require_live_process
+                && !matches!(proc.state, ProcessState::Running | ProcessState::Stopped))
+        {
+            return Err(Errno::ESRCH);
+        }
+        proc.shm_mapping_at(addr).ok_or(Errno::EINVAL)?
+    };
+
+    // Remove metadata only after nattch was released. A failed detach leaves
+    // the exact record available for teardown or a truthful retry.
+    unsafe { crate::ipc::global_ipc_table() }.shmdt(mapping.shmid, pid)?;
+    match table.get_mut(pid).and_then(|proc| proc.remove_shm_mapping(addr)) {
+        Some(removed) if removed == mapping => Ok(()),
+        _ => Err(Errno::EIO),
+    }
+}
+
+/// Detach the attachment at an exact address for a retained process.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_addr_for_process(pid: u32, addr: usize) -> i32 {
+    let _gkl = GklGuard::acquire();
+    match ipc_shmdt_addr(pid, addr, false) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Detach the attachment at an exact address for a live calling task.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_addr_for_task(pid: u32, tid: u32, addr: usize) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if let Err(e) = table.validate_task(pid, tid) {
+        return -(e as i32);
+    }
+    match ipc_shmdt_addr(pid, addr, true) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Dispatch-bound shmdt wrapper used by the scalar syscall path.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_addr(addr: usize) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let pid = table.current_pid();
+    let tid = table.current_tid();
+    if pid == 0 || tid == 0 || table.validate_task(pid, tid).is_err() {
+        return -(Errno::ESRCH as i32);
+    }
+    match ipc_shmdt_addr(pid, addr, true) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
 }
 
 /// Detach from shared memory segment.

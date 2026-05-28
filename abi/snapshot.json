@@ -1064,8 +1064,13 @@
       "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
+      "kernel_ipc_shm_lookup_mapping_for_task",
+      "kernel_ipc_shm_record_mapping_for_process",
+      "kernel_ipc_shm_record_mapping_for_task",
       "kernel_ipc_shmat_for_process",
       "kernel_ipc_shmat_for_task",
+      "kernel_ipc_shmdt_addr_for_process",
+      "kernel_ipc_shmdt_addr_for_task",
       "kernel_ipc_shmdt_for_process",
       "kernel_ipc_shmdt_for_task",
       "kernel_is_fd_nonblock",
@@ -2195,8 +2200,23 @@
     },
     {
       "kind": "func",
+      "name": "kernel_ipc_shm_lookup_mapping_for_task",
+      "signature": "(i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_ipc_shm_read_chunk",
       "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shm_record_mapping_for_process",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shm_record_mapping_for_task",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2222,6 +2242,21 @@
       "kind": "func",
       "name": "kernel_ipc_shmdt",
       "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmdt_addr",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmdt_addr_for_process",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_ipc_shmdt_addr_for_task",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

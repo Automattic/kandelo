@@ -265,6 +265,31 @@ rollback, and teardown use the separate explicit-process
 `kernel_ipc_shmat_for_process` and `kernel_ipc_shmdt_for_process` exports.
 The former `kernel_set_current_pid` export is removed.
 
+The pending ABI 43 contract additionally makes the Rust `Process` authoritative
+for each System V shared-memory attachment's process address, segment id, and
+size. After the host has materialized an attachment and its byte-coherence
+mirror, it commits that identity through
+`kernel_ipc_shm_record_mapping_for_task(pid, tid, addr, shmid, size)`. Fork
+materialization uses the corresponding `for_process` form because the child
+does not have a running guest task yet. `shmdt` first calls
+`kernel_ipc_shm_lookup_mapping_for_task(pid, tid, addr)`, whose nonnegative
+`i64` result packs the size in the upper 32 bits and shmid in the lower 32
+bits; negative values are negated errno values. After publishing dirty bytes,
+the host calls `kernel_ipc_shmdt_addr_for_task`; lifecycle rollback and teardown
+use `kernel_ipc_shmdt_addr_for_process`. The older segment-id detach export is
+used only to roll back a `shmat` that acquired `nattch` but failed before an
+address record could be committed.
+
+These address records are not serialized in the ordinary fork wire image.
+The existing host inheritance transaction records each child attachment only
+after `shmat` succeeds and rolls back by exact address before publishing child
+bytes. Successful exec drains the records and decrements `nattch` in Rust at
+the irreversible image commit; failed exec leaves both records and host byte
+mirrors intact. Process removal provides the final Rust-owned cleanup path.
+The host mirror remains necessary because separate WebAssembly memories do not
+share physical bytes, but it no longer determines attachment identity or
+lifetime.
+
 The Rust kernel Wasm's obsolete direct `kernel_fork` export and its
 host-supplied `host_fork` and `host_clone` imports are also removed. Guest libc
 still imports `kernel_fork` from its process-worker adapter; that adapter routes
