@@ -1908,7 +1908,7 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
     // First pass: compute total bytes we need to write so we can fail fast
     // on a too-small buffer rather than partial-writing. Skip zombies on
     // the count too so the size estimate matches what we actually emit.
-    const HDR_BYTES: usize = 4 + 4 + 4 + 4 + 4 + 8 + 4 + 4 + 4; // 40 bytes per record
+    const HDR_BYTES: usize = wasm_posix_shared::process_snapshot::RECORD_FIXED_SIZE;
     let mut need: usize = 4; // count u32
     for pid in &pids {
         let proc = match table.get(*pid) {

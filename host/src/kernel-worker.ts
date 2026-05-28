@@ -53,6 +53,10 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
+  PROC_SNAPSHOT_COUNT_OFFSET,
+  PROC_SNAPSHOT_COUNT_SIZE,
+  PROC_SNAPSHOT_RECORD_FIELDS,
+  PROC_SNAPSHOT_RECORD_FIXED_SIZE,
   SYSCALL_ARGS,
   type SyscallArgDesc,
 } from "./generated/abi";
@@ -322,22 +326,26 @@ export interface ProcessSnapshot {
 }
 
 function parseProcSnapshots(mem: Uint8Array): ProcessSnapshot[] {
-  if (mem.byteLength < 4) return [];
+  if (mem.byteLength < PROC_SNAPSHOT_COUNT_SIZE) return [];
   const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-  const count = dv.getUint32(0, true);
-  let off = 4;
+  const count = dv.getUint32(PROC_SNAPSHOT_COUNT_OFFSET, true);
+  let off = PROC_SNAPSHOT_COUNT_SIZE;
   const out: ProcessSnapshot[] = [];
   const dec = new TextDecoder("utf-8", { fatal: false });
   for (let i = 0; i < count; i++) {
-    if (off + 36 > mem.byteLength) break;
-    const pid = dv.getUint32(off, true); off += 4;
-    const ppid = dv.getUint32(off, true); off += 4;
-    const uid = dv.getUint32(off, true); off += 4;
-    const gid = dv.getUint32(off, true); off += 4;
-    const vsizeBytes = Number(dv.getBigUint64(off, true)); off += 8;
-    const state = String.fromCharCode(dv.getUint32(off, true)) as ProcessSnapshot["state"]; off += 4;
-    const commLen = dv.getUint32(off, true); off += 4;
-    const cmdLen = dv.getUint32(off, true); off += 4;
+    if (off + PROC_SNAPSHOT_RECORD_FIXED_SIZE > mem.byteLength) break;
+    const record = off;
+    const pid = dv.getUint32(record + PROC_SNAPSHOT_RECORD_FIELDS.pid.offset, true);
+    const ppid = dv.getUint32(record + PROC_SNAPSHOT_RECORD_FIELDS.ppid.offset, true);
+    const uid = dv.getUint32(record + PROC_SNAPSHOT_RECORD_FIELDS.uid.offset, true);
+    const gid = dv.getUint32(record + PROC_SNAPSHOT_RECORD_FIELDS.gid.offset, true);
+    const vsizeBytes = Number(dv.getBigUint64(record + PROC_SNAPSHOT_RECORD_FIELDS.vsizeBytes.offset, true));
+    const state = String.fromCharCode(
+      dv.getUint32(record + PROC_SNAPSHOT_RECORD_FIELDS.state.offset, true),
+    ) as ProcessSnapshot["state"];
+    const commLen = dv.getUint32(record + PROC_SNAPSHOT_RECORD_FIELDS.commLen.offset, true);
+    const cmdLen = dv.getUint32(record + PROC_SNAPSHOT_RECORD_FIELDS.cmdlineLen.offset, true);
+    off += PROC_SNAPSHOT_RECORD_FIXED_SIZE;
     if (off + commLen + cmdLen > mem.byteLength) break;
     const comm = dec.decode(mem.subarray(off, off + commLen));
     off += commLen;
