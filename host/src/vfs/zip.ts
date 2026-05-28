@@ -7,6 +7,7 @@
  */
 
 import { inflateSync } from "fflate";
+import { FILE_MODES } from "../generated/abi";
 
 // --- Zip format signatures ---
 
@@ -29,9 +30,7 @@ const COMPRESSION_DEFLATE = 8;
 // Unix creator OS code
 const CREATOR_UNIX = 3;
 
-// Unix file type mask for symlinks
-const S_IFLNK = 0xa000;
-const S_IFMT = 0xf000;
+const { S_IFLNK, S_IFMT } = FILE_MODES;
 
 export interface ZipEntry {
   fileName: string;

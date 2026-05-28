@@ -152,6 +152,104 @@ export const EPOLL_EVENTS = {
 export const SELECT_FD_SETSIZE = 1024 as const;
 export const SELECT_FD_SET_BYTES = 128 as const;
 
+export const OPEN_FLAGS = {
+  O_RDONLY: 0,
+  O_WRONLY: 1,
+  O_RDWR: 2,
+  O_ACCMODE: 3,
+  O_CREAT: 64,
+  O_EXCL: 128,
+  O_NOCTTY: 256,
+  O_TRUNC: 512,
+  O_APPEND: 1024,
+  O_NONBLOCK: 2048,
+  O_DIRECTORY: 65536,
+  O_NOFOLLOW: 131072,
+  O_CLOEXEC: 524288,
+  O_CLOFORK: 8388608,
+} as const;
+
+export const AT_FLAGS = {
+  AT_FDCWD: -100,
+  AT_SYMLINK_NOFOLLOW: 256,
+  AT_REMOVEDIR: 512,
+  AT_EMPTY_PATH: 4096,
+} as const;
+
+export const FD_FLAGS = {
+  FD_CLOEXEC: 1,
+  FD_CLOFORK: 2,
+} as const;
+
+export const FCNTL_COMMANDS = {
+  F_DUPFD: 0,
+  F_GETFD: 1,
+  F_SETFD: 2,
+  F_GETFL: 3,
+  F_SETFL: 4,
+  F_GETLK: 12,
+  F_SETLK: 13,
+  F_SETLKW: 14,
+  F_SETOWN: 8,
+  F_GETOWN: 9,
+  F_DUPFD_CLOEXEC: 1030,
+  F_DUPFD_CLOFORK: 1028,
+  F_OFD_GETLK: 36,
+  F_OFD_SETLK: 37,
+  F_OFD_SETLKW: 38,
+} as const;
+
+export const ACCESS_MODES = {
+  F_OK: 0,
+  R_OK: 4,
+  W_OK: 2,
+  X_OK: 1,
+} as const;
+
+export const FILE_MODES = {
+  S_IFMT: 61440,
+  S_IFSOCK: 49152,
+  S_IFLNK: 40960,
+  S_IFREG: 32768,
+  S_IFBLK: 24576,
+  S_IFDIR: 16384,
+  S_IFCHR: 8192,
+  S_IFIFO: 4096,
+  S_ISUID: 2048,
+  S_ISGID: 1024,
+  S_ISVTX: 512,
+  S_IRWXU: 448,
+  S_IRUSR: 256,
+  S_IWUSR: 128,
+  S_IXUSR: 64,
+  S_IRWXG: 56,
+  S_IRGRP: 32,
+  S_IWGRP: 16,
+  S_IXGRP: 8,
+  S_IRWXO: 7,
+  S_IROTH: 4,
+  S_IWOTH: 2,
+  S_IXOTH: 1,
+  S_MODE_BITS: 4095,
+} as const;
+
+export const DIRENT_TYPES = {
+  DT_UNKNOWN: 0,
+  DT_FIFO: 1,
+  DT_CHR: 2,
+  DT_DIR: 4,
+  DT_BLK: 6,
+  DT_REG: 8,
+  DT_LNK: 10,
+  DT_SOCK: 12,
+} as const;
+
+export const SEEK_WHENCE = {
+  SEEK_SET: 0,
+  SEEK_CUR: 1,
+  SEEK_END: 2,
+} as const;
+
 export const STRUCT_SIZE_WASM_STAT = 88 as const;
 export const STRUCT_SIZE_WASM_DIRENT = 16 as const;
 export const STRUCT_SIZE_WASM_TIMESPEC = 16 as const;
