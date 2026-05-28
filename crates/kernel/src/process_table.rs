@@ -195,6 +195,11 @@ fn bump_inherited_resource_refcounts(child: &Process) {
             }
         }
     }
+
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    for mapping in &child.shm_mappings {
+        let _ = ipc.shm_attach_inherited(mapping.shmid, child.pid);
+    }
 }
 
 /// Build the fork-only `fork_pipe_replay` table: a list of (read_fd,
@@ -458,6 +463,13 @@ impl ProcessTable {
         for (ofd_idx, ofd) in proc.ofd_table.iter() {
             let ofd_lock_owner = (ofd_idx as u32) | 0x80000000;
             fallback_locks.remove_for_handle(ofd.host_handle, ofd_lock_owner);
+        }
+
+        // Drop SysV shared-memory attachments that were still live when the
+        // process exited or was reaped.
+        let ipc = unsafe { crate::ipc::global_ipc_table() };
+        for mapping in &proc.shm_mappings {
+            let _ = ipc.shmdt(mapping.shmid, pid);
         }
 
         if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {

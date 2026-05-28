@@ -175,6 +175,50 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.threadForkContexts.has("10:1024")).toBe(false);
     expect(worker.completeChannelRaw).toHaveBeenCalledWith(threadChannel, 0, 0);
   });
+
+  it("shmdt resolves attachment metadata from Rust before syncing bytes", () => {
+    const kernelMemory = createSharedMemory();
+    const processMemory = createSharedMemory();
+    const addr = 4096;
+    new Uint8Array(processMemory.buffer).set([3, 1, 4, 1], addr);
+
+    const setCurrentPid = vi.fn();
+    const lookupMapping = vi.fn((_addr: number, outPtr: bigint) => {
+      const view = new DataView(kernelMemory.buffer);
+      view.setInt32(Number(outPtr), 9, true);
+      view.setUint32(Number(outPtr) + 4, 4, true);
+      return 0;
+    });
+    const writeChunk = vi.fn((_shmid: number, _offset: number, dataPtr: bigint, dataLen: number) => {
+      const bytes = new Uint8Array(kernelMemory.buffer, Number(dataPtr), dataLen);
+      expect(Array.from(bytes)).toEqual([3, 1, 4, 1]);
+      return dataLen;
+    });
+    const detachByAddr = vi.fn(() => 0);
+    const worker = createWorkerHarness({
+      kernel_set_current_pid: setCurrentPid,
+      kernel_ipc_shm_lookup_mapping: lookupMapping,
+      kernel_ipc_shm_write_chunk: writeChunk,
+      kernel_ipc_shmdt_addr: detachByAddr,
+    });
+    worker.kernelMemory = kernelMemory;
+    worker.completeChannelRaw = vi.fn();
+    worker.relistenChannel = vi.fn();
+
+    const channel = createChannel(11, processMemory);
+    worker.handleIpcShmdt(channel, [addr]);
+
+    expect(setCurrentPid).toHaveBeenCalledWith(11);
+    expect(lookupMapping).toHaveBeenCalledWith(addr, BigInt(worker.scratchOffset));
+    expect(writeChunk).toHaveBeenCalledTimes(1);
+    expect(writeChunk.mock.calls[0][0]).toBe(9);
+    expect(writeChunk.mock.calls[0][1]).toBe(0);
+    expect(typeof writeChunk.mock.calls[0][2]).toBe("bigint");
+    expect(writeChunk.mock.calls[0][3]).toBe(4);
+    expect(detachByAddr).toHaveBeenCalledWith(addr);
+    expect(worker.completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
+    expect(worker.relistenChannel).toHaveBeenCalledWith(channel);
+  });
 });
 
 function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4 | 8 = 4): any {

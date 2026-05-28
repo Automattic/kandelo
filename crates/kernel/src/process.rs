@@ -382,6 +382,14 @@ pub struct DriBoBinding {
     pub bo_id: crate::dri::BoId,
 }
 
+/// Per-process SysV shared-memory attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShmMapping {
+    pub addr: usize,
+    pub shmid: i32,
+    pub size: usize,
+}
+
 /// Per-thread state within a process.
 #[derive(Debug, Clone)]
 pub struct ThreadInfo {
@@ -583,6 +591,9 @@ pub struct Process {
     /// memory region with the bo currently bound there so `sys_munmap`
     /// can issue the matching [`HostIO::gbm_bo_unbind`].
     pub dri_bindings: Vec<DriBoBinding>,
+    /// SysV shared-memory attachments keyed by the process virtual address
+    /// returned from `shmat`.
+    pub shm_mappings: Vec<ShmMapping>,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -741,6 +752,7 @@ impl Process {
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),
+            shm_mappings: Vec::new(),
             fork_count: 0,
         }
     }
@@ -820,6 +832,26 @@ impl Process {
     /// Find a thread by TID (mutable).
     pub fn get_thread_mut(&mut self, tid: u32) -> Option<&mut ThreadInfo> {
         self.threads.iter_mut().find(|t| t.tid == tid)
+    }
+
+    /// Record or replace a SysV shared-memory attachment for an address.
+    pub fn record_shm_mapping(&mut self, addr: usize, shmid: i32, size: usize) {
+        if let Some(mapping) = self.shm_mappings.iter_mut().find(|m| m.addr == addr) {
+            *mapping = ShmMapping { addr, shmid, size };
+        } else {
+            self.shm_mappings.push(ShmMapping { addr, shmid, size });
+        }
+    }
+
+    /// Find a SysV shared-memory attachment by its process address.
+    pub fn shm_mapping_at(&self, addr: usize) -> Option<ShmMapping> {
+        self.shm_mappings.iter().copied().find(|m| m.addr == addr)
+    }
+
+    /// Remove and return a SysV shared-memory attachment by its process address.
+    pub fn remove_shm_mapping(&mut self, addr: usize) -> Option<ShmMapping> {
+        let idx = self.shm_mappings.iter().position(|m| m.addr == addr)?;
+        Some(self.shm_mappings.swap_remove(idx))
     }
 
     /// True if `tid` names the process's main thread. The main thread's TID
@@ -1219,6 +1251,33 @@ mod tests {
             assert_eq!(ofd.file_type, FileType::CharDevice);
             assert_eq!(ofd.host_handle, fd as i64);
         }
+    }
+
+    #[test]
+    fn shm_mapping_bookkeeping_is_keyed_by_process_addr() {
+        let mut proc = Process::new(1);
+
+        proc.record_shm_mapping(0x20000, 7, 4096);
+        assert_eq!(
+            proc.shm_mapping_at(0x20000),
+            Some(ShmMapping {
+                addr: 0x20000,
+                shmid: 7,
+                size: 4096,
+            })
+        );
+
+        proc.record_shm_mapping(0x20000, 8, 8192);
+        assert_eq!(proc.shm_mappings.len(), 1);
+        assert_eq!(
+            proc.remove_shm_mapping(0x20000),
+            Some(ShmMapping {
+                addr: 0x20000,
+                shmid: 8,
+                size: 8192,
+            })
+        );
+        assert_eq!(proc.shm_mapping_at(0x20000), None);
     }
 
     #[test]
