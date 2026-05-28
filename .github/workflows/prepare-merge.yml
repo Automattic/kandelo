@@ -1431,7 +1431,7 @@ jobs:
             --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             || true
 
-  test-gate:
+  test-gate-prepare:
     needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
     if: |
       !cancelled() &&
@@ -1579,11 +1579,9 @@ jobs:
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
 
       - name: Build kernel + test programs + install host deps
-        # `npx playwright install chromium` mirrors staging-build.yml: the
-        # wordpress-site-editor E2E test invokes `chromium.launch()`
-        # directly, so the browser binary must be present in the runner
-        # cache before vitest runs. `npm install` alone only fetches the
-        # @playwright/test JS package, not the browser.
+        # The vitest suite installs Chromium in its own runner because
+        # browser downloads are not part of the prepared workspace
+        # artifact.
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
@@ -1596,45 +1594,193 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
-            npx --prefix host playwright install chromium
           '
 
-      - name: Run cargo tests (kernel unit tests)
-        if: needs.change-scope.outputs.kernel == 'true'
+      - name: Pack prepared test workspace
         run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
-          '
+          bash scripts/pack-ci-test-workspace.sh "$RUNNER_TEMP/test-workspace.tar.zst"
 
-      - name: Run fork-instrument tests
-        if: needs.change-scope.outputs.kernel == 'true'
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo test -p fork-instrument --target "$HOST_TARGET"
-          '
+      - name: Upload prepared test workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-workspace
+          path: ${{ runner.temp }}/test-workspace.tar.zst
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Run vitest (host integration tests)
+  test-suite:
+    name: test-suite (${{ matrix.suite }})
+    needs: [synthesize-merge, change-scope, test-gate-prepare]
+    if: |
+      !cancelled() &&
+      needs.test-gate-prepare.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: cargo-kernel
+            kernel_only: true
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: false
+          - suite: fork-instrument
+            kernel_only: true
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: false
+          - suite: vitest
+            kernel_only: false
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: true
+          - suite: libc
+            kernel_only: true
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: posix
+            kernel_only: true
+            needs_submodules: false
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            kernel_only: true
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+    env:
+      KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
+      KERNEL_ONLY: ${{ matrix.kernel_only }}
+      SUITE: ${{ matrix.suite }}
+    steps:
+      - name: Decide whether to run suite
+        id: suite
         run: |
-          bash scripts/dev-shell.sh bash -c '
-            cd host && npx vitest run
-          '
+          set -euo pipefail
+          if [ "$KERNEL_ONLY" = "true" ] && [ "$KERNEL_CHANGED" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$SUITE is kernel-only and this diff does not require kernel suites."
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Run libc-test conformance suite
-        if: needs.change-scope.outputs.kernel == 'true'
-        run: |
-          bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
+      - uses: actions/checkout@v4
+        if: steps.suite.outputs.skip != 'true'
+        with:
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
 
-      - name: Run Open POSIX Test Suite
-        if: needs.change-scope.outputs.kernel == 'true'
-        run: |
-          bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
+      - uses: actions/download-artifact@v4
+        if: steps.suite.outputs.skip != 'true'
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
 
-      - name: Run Sortix os-test suite
-        if: needs.change-scope.outputs.kernel == 'true'
+      - name: Checkout synthesized PR merge
+        if: steps.suite.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
         run: |
-          bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
+
+      - name: Fetch submodules (musl, libc-test, os-test)
+        if: steps.suite.outputs.skip != 'true' && matrix.needs_submodules == true
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
+
+      - name: Install Nix
+        if: steps.suite.outputs.skip != 'true'
+        uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        if: steps.suite.outputs.skip != 'true'
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Download toolchain sysroots artifact
+        if: steps.suite.outputs.skip != 'true' && matrix.needs_toolchain == true
+        uses: actions/download-artifact@v4
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract toolchain sysroots
+        if: steps.suite.outputs.skip != 'true' && matrix.needs_toolchain == true
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Download prepared test workspace
+        if: steps.suite.outputs.skip != 'true' && matrix.needs_workspace == true
+        uses: actions/download-artifact@v4
+        with:
+          name: test-workspace
+          path: ${{ runner.temp }}/test-workspace
+
+      - name: Extract prepared test workspace
+        if: steps.suite.outputs.skip != 'true' && matrix.needs_workspace == true
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
+
+      - name: Run ${{ matrix.suite }} suite
+        if: steps.suite.outputs.skip != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+
+  test-gate:
+    needs: [test-gate-prepare, test-suite]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.test-gate-prepare.result != 'skipped'
+    runs-on: ubuntu-latest
+    outputs:
+      merge_base_sha: ${{ steps.gate.outputs.merge_base_sha }}
+    steps:
+      - name: Check split test suites
+        id: gate
+        env:
+          MERGE_BASE_SHA: ${{ needs.test-gate-prepare.outputs.merge_base_sha }}
+          PREPARE_RESULT: ${{ needs.test-gate-prepare.result }}
+          TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
+        run: |
+          set -euo pipefail
+          echo "merge_base_sha=$MERGE_BASE_SHA" >> "$GITHUB_OUTPUT"
+          if [ "$PREPARE_RESULT" != "success" ]; then
+            echo "::error::test preparation completed with result: $PREPARE_RESULT"
+            exit 1
+          fi
+          if [ "$TEST_SUITE_RESULT" != "success" ]; then
+            echo "::error::split test suites completed with result: $TEST_SUITE_RESULT"
+            exit 1
+          fi
 
   # publish / generate-index / amend-package-toml — REMOVED.
   #

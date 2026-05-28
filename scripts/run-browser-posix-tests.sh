@@ -13,10 +13,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
-POSIX_TEST="$REPO_ROOT/open-posix-testsuite"
+POSIX_TEST="$REPO_ROOT/tests/posix/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures (same as Node.js version) ──────────────────
 
@@ -146,6 +145,13 @@ discover_interfaces() {
     done | sort
 }
 
+verify_test_tree() {
+    if [ ! -d "$IFACE_DIR" ]; then
+        echo "Error: Open POSIX Test Suite interfaces not found at $IFACE_DIR" >&2
+        exit 1
+    fi
+}
+
 # ── Main ───────────────────────────────────────────────────────────
 
 INTERFACES=()
@@ -153,10 +159,17 @@ while [ $# -gt 0 ]; do
     INTERFACES+=("$1"); shift
 done
 
+verify_test_tree
+
 if [ ${#INTERFACES[@]} -eq 0 ]; then
     while IFS= read -r iface; do
         INTERFACES+=("$iface")
     done < <(discover_interfaces)
+fi
+
+if [ ${#INTERFACES[@]} -eq 0 ]; then
+    echo "Error: no Open POSIX Test Suite interfaces discovered under $IFACE_DIR" >&2
+    exit 1
 fi
 
 # Verify prerequisites
@@ -164,6 +177,7 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
     exit 1
 fi
+KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
