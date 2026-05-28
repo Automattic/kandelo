@@ -465,6 +465,10 @@ function signatures(
       parameters: [i32, i32],
       result: i32,
     },
+    kernel_pick_tcp_listener_target: {
+      parameters: [i32, i32, pointer, i32],
+      result: i32,
+    },
     kernel_transfer_scratch_begin: {
       parameters: [pointer],
       result: i64,

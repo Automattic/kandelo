@@ -21138,8 +21138,8 @@ export class CentralizedKernelWorker {
     // The kernel child is real before its host Worker launches. Install its
     // host-only fd mirrors synchronously so a sibling exec cannot remove the
     // parent's last listener and close the shared backend during onFork's
-    // async worker setup. Exact listener selection still ignores the child
-    // until onFork registers its process memory.
+    // async worker setup. Rust owns target selection; these mirrors retain the
+    // host backend and stable wake identity across that launch window.
     try {
       this.inheritHostFdMirrors(parentPid, childPid, entry);
     } catch (err) {
@@ -29237,8 +29237,9 @@ export class CentralizedKernelWorker {
       );
     }
 
-    // Register this pid:fd as a target for this port (needed for both
-    // Node.js TCP bridging and browser service-worker connection injection).
+    // Register this pid:fd as a fallback/readiness target for this port.
+    // Runtime target selection is Rust-owned; Node and browser still need this
+    // mirror to retain bridge resources and stable accept-wakeup identities.
     if (!this.tcpListenerTargets.has(port)) {
       this.tcpListenerTargets.set(port, []);
       this.tcpListenerRRIndex.set(port, 0);
@@ -29313,6 +29314,7 @@ export class CentralizedKernelWorker {
     this.tcpListeners.set(key, { server, pid, port, connections });
   }
 
+  /** Select the Rust-authoritative listener target for host-side injection. */
   pickListenerTarget(port: number): { pid: number; fd: number } | null {
     if (!Number.isSafeInteger(port) || port < 0 || port > 0xffff) {
       throw new RangeError(`invalid listener port ${String(port)}`);
@@ -29337,31 +29339,46 @@ export class CentralizedKernelWorker {
   #pickListenerTargetWithinKernelEntry(
     port: number,
     entry: KernelWorkerEntryContext,
+    excludePid = 0,
   ): TcpListenerTarget | null {
-    const targets = this.tcpListenerTargets.get(port);
-    if (!targets || targets.length === 0) return null;
-    const alive = targets.filter((target) => this.processes.has(target.pid));
-    if (alive.length === 0) return null;
-
-    // Do not prune unregistered targets here: a fork/spawn child owns its
-    // kernel listener before async Worker registration completes. Explicit
-    // process teardown removes truly dead targets.
-
-    // If there are fork children among targets, prefer them over the original
-    // listener (the master doesn't accept connections, workers do).
-    let candidates = alive;
-    if (alive.length > 1) {
-      const children = alive.filter(
-        (target) => this.getParentPid(target.pid, entry) !== undefined,
+    const scratch = this.#requireMainScratchRegion();
+    return scratch.withLease((lease) => {
+      const result = this.#invokeEntryScratchExport(
+        entry,
+        lease,
+        "kernel_pick_tcp_listener_target",
+        [port, excludePid, lease.exportPointer(0, 8), 8],
       );
-      if (children.length > 0) {
-        candidates = children;
+      if (result < 0) {
+        throw new KernelScratchError(
+          `kernel listener target selection failed: ${result}`,
+          -result,
+        );
       }
-    }
+      if (result === 0) return null;
+      if (result !== 1) {
+        throw new KernelScratchError(
+          `kernel returned invalid listener target count ${result}`,
+          EIO,
+        );
+      }
 
-    const idx = (this.tcpListenerRRIndex.get(port) ?? 0) % candidates.length;
-    this.tcpListenerRRIndex.set(port, idx + 1);
-    return candidates[idx]!;
+      const bytes = lease.copyOut(0, 8);
+      const view = new DataView(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength,
+      );
+      const pid = view.getUint32(0, true);
+      const fd = view.getInt32(4, true);
+      if (pid === 0 || fd < 0) {
+        throw new KernelScratchError(
+          `kernel returned invalid listener target pid=${pid} fd=${fd}`,
+          EIO,
+        );
+      }
+      return { pid, fd };
+    });
   }
 
   /**

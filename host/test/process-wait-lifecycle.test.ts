@@ -2714,6 +2714,42 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.channelTids.has("10:1024")).toBe(false);
     expect(worker.threadForkContexts.has("10:1024")).toBe(false);
   });
+
+  it.each([
+    ["wasm32", 4],
+    ["wasm64", 8],
+  ] as const)(
+    "%s TCP listener target selection uses Rust-owned process policy",
+    (_name, kernelPtrWidth) => {
+      const kernelMemory = createSharedMemory();
+      const pickTarget = vi.fn((
+        _port: number,
+        _excludePid: number,
+        outPtr: number | bigint,
+        outCapacity: number,
+      ) => {
+        if (outCapacity !== 8) return -22;
+        const view = new DataView(kernelMemory.buffer);
+        view.setUint32(Number(outPtr), 44, true);
+        view.setInt32(Number(outPtr) + 4, 7, true);
+        return 1;
+      });
+      const worker = createWorkerHarness({
+        kernel_pick_tcp_listener_target: pickTarget,
+      }, kernelPtrWidth, kernelMemory);
+      // The host mirror is deliberately contradictory. Process/fd selection
+      // comes from Rust; JS retains this map only for bridge resources.
+      worker.tcpListenerTargets = new Map([[8080, [{ pid: 1, fd: 3 }]]]);
+
+      expect(worker.pickListenerTarget(8080)).toEqual({ pid: 44, fd: 7 });
+      expect(pickTarget).toHaveBeenCalledWith(
+        8080,
+        0,
+        kernelPtrWidth === 8 ? 128n : 128,
+        8,
+      );
+    },
+  );
 });
 
 function createWorkerHarness(
