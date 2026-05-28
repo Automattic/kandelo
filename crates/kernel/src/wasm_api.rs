@@ -9221,6 +9221,46 @@ pub extern "C" fn kernel_timer_delete(timerid: i32) -> i32 {
     0
 }
 
+/// Drain the process-owned timer cleanup list for host-side timer handles.
+///
+/// Writes `{ u32 cancel_alarm, u32 posix_count, u32 timer_ids[posix_count] }`
+/// to `out_ptr`, clears the Rust timer state, and returns `posix_count`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_take_process_timer_cleanup(
+    pid: u32,
+    out_ptr: *mut u8,
+    max_timer_ids: u32,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+
+    let timer_count = proc
+        .posix_timers
+        .iter()
+        .filter(|slot| slot.is_some())
+        .count();
+    if timer_count > max_timer_ids as usize {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let cleanup = proc.take_host_timer_cleanup();
+    let out_len = 8 + cleanup.posix_timer_ids.len() * 4;
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, out_len) };
+    out[0..4].copy_from_slice(&(cleanup.cancel_alarm as u32).to_le_bytes());
+    out[4..8].copy_from_slice(&(cleanup.posix_timer_ids.len() as u32).to_le_bytes());
+    for (idx, timer_id) in cleanup.posix_timer_ids.iter().enumerate() {
+        let offset = 8 + idx * 4;
+        out[offset..offset + 4].copy_from_slice(&(*timer_id as u32).to_le_bytes());
+    }
+    cleanup.posix_timer_ids.len() as i32
+}
+
 /// Called by the host when a repeating POSIX timer fires to increment the overrun counter.
 /// This is used for timer_getoverrun() support.
 #[unsafe(no_mangle)]
