@@ -49,7 +49,10 @@ import {
   PROCESS_STATE_RUNNING,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
-import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import {
+  emptyProcessTimerCleanup,
+  installKernelWorkerTestScratch,
+} from "./kernel-worker-test-scratch";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 const WASM32_CONTINUATION_HEADER_SIZE =
@@ -152,6 +155,7 @@ function createGatedLifecycleHarness(options: {
     kernel_remove_process: vi.fn(() => 0),
     kernel_set_current_tid: vi.fn(() => 0),
     kernel_set_max_addr: vi.fn(() => 0),
+    kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: vi.fn(() => 0),
     kernel_validate_task: vi.fn(() => 0),
     ...(options.kernelExports ?? {}),

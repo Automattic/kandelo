@@ -275,6 +275,17 @@ owns the per-port round-robin cursor. The
 shared Node/browser host retains only the platform listener objects, stable
 accept-wakeup identities, and their lifecycle mirrors.
 
+Process teardown in ABI 43 also consumes platform-timer cleanup from Rust via
+`kernel_take_process_timer_cleanup(pid, out_ptr, out_capacity)`. Each bounded
+little-endian list begins with `{ u32 cancel_alarm, u32 posix_count }` and is
+followed by `posix_count` timer IDs. Rust clears exactly those process-owned
+identities before a parent can reap the zombie; the shared Node/browser host
+uses the detached list only to cancel its `setTimeout`/`setInterval` handles.
+An oversized list returns `ERANGE` without consuming any Rust state. The host
+may use its remaining handle maps only at that bounded-output fallback or after
+Rust reports `ESRCH`, which is the explicit post-reap worker-detachment
+boundary.
+
 The pending ABI 43 contract additionally makes the Rust `Process` authoritative
 for each System V shared-memory attachment's process address, segment id, and
 size. After the host has materialized an attachment and its byte-coherence
