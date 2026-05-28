@@ -241,6 +241,56 @@
       "number": 386
     }
   ],
+  "io_multiplexing": {
+    "epoll_events": [
+      {
+        "name": "EPOLLIN",
+        "value": 1
+      },
+      {
+        "name": "EPOLLOUT",
+        "value": 4
+      },
+      {
+        "name": "EPOLLERR",
+        "value": 8
+      },
+      {
+        "name": "EPOLLHUP",
+        "value": 16
+      }
+    ],
+    "poll_events": [
+      {
+        "name": "POLLIN",
+        "value": 1
+      },
+      {
+        "name": "POLLPRI",
+        "value": 2
+      },
+      {
+        "name": "POLLOUT",
+        "value": 4
+      },
+      {
+        "name": "POLLERR",
+        "value": 8
+      },
+      {
+        "name": "POLLHUP",
+        "value": 16
+      },
+      {
+        "name": "POLLNVAL",
+        "value": 32
+      }
+    ],
+    "select": {
+      "fd_set_bytes": 128,
+      "fd_setsize": 1024
+    }
+  },
   "kernel_exports": [
     {
       "kind": "func",

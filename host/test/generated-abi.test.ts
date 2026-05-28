@@ -23,6 +23,7 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  EPOLL_EVENTS,
   HOST_ADAPTER_MANIFEST_FIELDS,
   HOST_ADAPTER_MANIFEST_MAGIC,
   HOST_ADAPTER_MANIFEST_SIZE,
@@ -34,10 +35,13 @@ import {
   HOST_ADAPTER_VERSION,
   HOST_ADAPTER_WORKER_FEATURES,
   HOST_INTERCEPTED_SYSCALLS,
+  POLL_EVENTS,
   PROC_SNAPSHOT_COUNT_OFFSET,
   PROC_SNAPSHOT_COUNT_SIZE,
   PROC_SNAPSHOT_RECORD_FIELDS,
   PROC_SNAPSHOT_RECORD_FIXED_SIZE,
+  SELECT_FD_SET_BYTES,
+  SELECT_FD_SETSIZE,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
@@ -78,6 +82,10 @@ function signalOffset(name: string): number {
 
 function namedNumberMap(entries: NamedNumber[]): Record<string, number> {
   return Object.fromEntries(entries.map(({ name, number }) => [name, number]));
+}
+
+function namedValueMap(entries: Array<{ name: string; value: number }>): Record<string, number> {
+  return Object.fromEntries(entries.map(({ name, value }) => [name, value]));
 }
 
 function hostAdapterManifestField(name: string): { offset: number; size: number } {
@@ -218,5 +226,12 @@ describe("generated host ABI bindings", () => {
         ],
       ).toEqual(wakeupEventField(fieldName));
     }
+  });
+
+  it("match Rust-owned I/O multiplexing metadata", () => {
+    expect(POLL_EVENTS).toEqual(namedValueMap(snapshot.io_multiplexing.poll_events));
+    expect(EPOLL_EVENTS).toEqual(namedValueMap(snapshot.io_multiplexing.epoll_events));
+    expect(SELECT_FD_SETSIZE).toBe(snapshot.io_multiplexing.select.fd_setsize);
+    expect(SELECT_FD_SET_BYTES).toBe(snapshot.io_multiplexing.select.fd_set_bytes);
   });
 });
