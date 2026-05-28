@@ -604,8 +604,6 @@ export class CentralizedKernelWorker {
     retVal: number;
     errVal: number;
   }>();
-  /** Maps "pid:tid" to ctidPtr for CLONE_CHILD_CLEARTID on thread exit */
-  private threadCtidPtrs = new Map<string, number>();
   /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
   private tcpListeners = new Map<string, {
     server: import("net").Server;
@@ -5831,10 +5829,6 @@ export class CentralizedKernelWorker {
       channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
     ).then((assignedTid) => {
       if (!this.processes.has(channel.pid)) return;
-      // Store ctidPtr for CLONE_CHILD_CLEARTID on thread exit
-      if (ctidPtr !== 0) {
-        this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
-      }
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
     }).catch((err) => {
       console.error(`[kernel-worker] onClone failed: ${err}`);
@@ -5866,24 +5860,15 @@ export class CentralizedKernelWorker {
         this.threadForkContexts.delete(tidKey);
       }
 
-      // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it.
-      // This is normally done by the Linux kernel on thread exit; we must
-      // do it here because the thread worker never returns from __pthread_exit
-      // (it loops on SYS_EXIT).
-      if (tid > 0) {
-        const ctidKey = `${channel.pid}:${tid}`;
-        const ctidPtr = this.threadCtidPtrs.get(ctidKey);
-        if (ctidPtr && ctidPtr !== 0) {
-          this.threadCtidPtrs.delete(ctidKey);
-          const procView = new DataView(channel.memory.buffer);
-          procView.setInt32(ctidPtr, 0, true);
-          const i32View = new Int32Array(channel.memory.buffer);
-          Atomics.notify(i32View, ctidPtr >>> 2, 1);
-        }
-      }
-
-      if (tid > 0) {
-        this.notifyThreadExit(channel.pid, tid);
+      // CLONE_CHILD_CLEARTID: ask the kernel to remove ThreadInfo and return
+      // the ctid pointer it recorded at clone time. The pointer still names
+      // process memory, so the host performs the actual clear + futex wake.
+      const ctidPtr = tid > 0 ? this.notifyThreadExit(channel.pid, tid) : 0;
+      if (ctidPtr !== 0) {
+        const procView = new DataView(channel.memory.buffer);
+        procView.setInt32(ctidPtr, 0, true);
+        const i32View = new Int32Array(channel.memory.buffer);
+        Atomics.notify(i32View, ctidPtr >>> 2, 1);
       }
       this.removeChannel(channel.pid, channel.channelOffset);
       // Complete channel to unblock the thread worker so it can exit cleanly
@@ -6449,15 +6434,18 @@ export class CentralizedKernelWorker {
 
   /**
    * Notify the kernel that a thread has exited.
-   * Removes thread state from the process's thread table.
+   * Removes thread state from the process's thread table and returns the
+   * CLONE_CHILD_CLEARTID pointer the kernel recorded at clone time.
    */
-  notifyThreadExit(pid: number, tid: number): void {
-    if (!this.kernelInstance) return;
+  notifyThreadExit(pid: number, tid: number): number {
+    if (!this.kernelInstance) return 0;
     const threadExit = this.kernelInstance.exports.kernel_thread_exit as
       ((pid: number, tid: number) => number) | undefined;
     if (threadExit) {
-      threadExit(pid, tid);
+      const ret = threadExit(pid, tid);
+      return ret === 0 ? 0 : ret >>> 0;
     }
+    return 0;
   }
 
   /**
