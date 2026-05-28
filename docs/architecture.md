@@ -877,6 +877,23 @@ This mechanism is critical: asynchronous scheduling never owns a live scratch
 view, while Rust retains the resource identity and lifetime needed by the next
 synchronous entry.
 
+Rust serializes readiness and lifecycle changes through one packed wake-event
+stream. `crates/shared::wakeup_event_wire` owns its five-byte record layout and
+every reason bit; generated bindings give the shared Node/browser host the
+same offsets and values. The host owns a complete copied batch before acting
+on any event, because process stop/continue handling can synchronously reenter
+kernel operations that reuse scratch. The same generated ABI surface owns the
+`poll` and `epoll` event bits and `fd_set` sizing used by host-side readiness
+marshalling, so the host does not restate those values.
+
+For pipe-readable and pipe-writable records, the host first retries ordinary
+`poll()` and `ppoll()` channels whose captured kernel pipe index matches the
+event. A signal-mask-swapping `ppoll()` remains parked for the existing
+signal-safe grace period, and the broad fallback still covers wait classes
+without an exact pipe identity, including `select()` and `pselect6()`.
+Host-originated pipe bridge notifications use the same target-before-fallback
+order in the shared Node.js/browser runtime.
+
 Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one absolute
 deadline from their first attempt. Targeted readiness events, broad wakeups,
 and safety retries use the remaining duration instead of restarting the

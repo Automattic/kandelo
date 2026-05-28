@@ -286,6 +286,16 @@ may use its remaining handle maps only at that bounded-output fallback or after
 Rust reports `ESRCH`, which is the explicit post-reap worker-detachment
 boundary.
 
+ABI 43 publishes the existing kernel wake stream as the generated
+`wakeup_event_wire` contract. Each packed record is five bytes: a
+little-endian `u32` identity followed by a one-byte reason bitset. Rust owns
+the offsets and the readable, writable, accept, datagram-writable,
+process-stopped, process-continued, and advisory-lock bits. The shared
+Node/browser host decodes the stream only through generated constants before
+rescheduling its platform-owned retry queues. This metadata adds no extra
+host-to-kernel call; it makes the already-observable stream explicit in the
+ABI snapshot.
+
 The pending ABI 43 contract additionally makes the Rust `Process` authoritative
 for each System V shared-memory attachment's process address, segment id, and
 size. After the host has materialized an attachment and its byte-coherence

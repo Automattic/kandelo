@@ -190,6 +190,29 @@ pub mod process_snapshot_wire {
     pub const HEADER_BYTES: usize = CMDLINE_LEN_OFFSET + size_of::<u32>();
 }
 
+/// Packed kernel/host wire layout for one readiness or lifecycle wake event.
+///
+/// The event type is a bitset because one kernel transition may make several
+/// host-owned retry classes eligible at once. Keep both producers and the
+/// shared Node/browser consumer on these generated values.
+pub mod wakeup_event_wire {
+    use core::mem::size_of;
+
+    pub const IDX_OFFSET: usize = 0;
+    pub const IDX_BYTES: usize = size_of::<u32>();
+    pub const TYPE_OFFSET: usize = IDX_OFFSET + IDX_BYTES;
+    pub const TYPE_BYTES: usize = size_of::<u8>();
+    pub const RECORD_BYTES: usize = TYPE_OFFSET + TYPE_BYTES;
+
+    pub const TYPE_READABLE: u8 = 1;
+    pub const TYPE_WRITABLE: u8 = 2;
+    pub const TYPE_ACCEPT: u8 = 4;
+    pub const TYPE_DATAGRAM_WRITABLE: u8 = 8;
+    pub const TYPE_PROCESS_STOPPED: u8 = 16;
+    pub const TYPE_PROCESS_CONTINUED: u8 = 32;
+    pub const TYPE_ADVISORY_LOCK: u8 = 64;
+}
+
 /// Cross-layer layout values and defensive limits for the non-forking spawn
 /// protocol.
 ///
@@ -1081,6 +1104,14 @@ pub mod poll {
     pub const POLLNVAL: i16 = 0x0020;
 }
 
+/// Epoll event constants.
+pub mod epoll {
+    pub const EPOLLIN: u32 = 0x0001;
+    pub const EPOLLOUT: u32 = 0x0004;
+    pub const EPOLLERR: u32 = 0x0008;
+    pub const EPOLLHUP: u32 = 0x0010;
+}
+
 /// Seek whence constants.
 pub mod seek {
     pub const SEEK_SET: u32 = 0;
@@ -1447,9 +1478,9 @@ pub mod wait {
     pub const PROCESS_STATE_EXITED: i32 = 2;
 
     /// Host retry wake reason: the process entered a stopped state.
-    pub const WAKE_PROCESS_STOPPED: u8 = 16;
+    pub const WAKE_PROCESS_STOPPED: u8 = super::wakeup_event_wire::TYPE_PROCESS_STOPPED;
     /// Host retry wake reason: the process resumed from a stopped state.
-    pub const WAKE_PROCESS_CONTINUED: u8 = 32;
+    pub const WAKE_PROCESS_CONTINUED: u8 = super::wakeup_event_wire::TYPE_PROCESS_CONTINUED;
 }
 
 /// Fixed-width kernel/musl resource-usage wire record.

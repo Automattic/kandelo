@@ -14798,10 +14798,7 @@ pub fn sys_epoll_pwait(
     }
 
     // Map EPOLL events to poll events
-    const EPOLLIN: u32 = 0x001;
-    const EPOLLOUT: u32 = 0x004;
-    const EPOLLERR: u32 = 0x008;
-    const EPOLLHUP: u32 = 0x010;
+    use wasm_posix_shared::epoll::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT};
     #[allow(dead_code)]
     const EPOLLRDHUP: u32 = 0x2000;
 

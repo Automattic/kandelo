@@ -14,6 +14,10 @@
 //!     adapter boot contract metadata
 //!   * [`wasm_posix_shared::host_abi`] — host adapter syscall marshalling
 //!     descriptors
+//!   * [`wasm_posix_shared::wakeup_event_wire`] — kernel wakeup-event layout
+//!     and retry/lifecycle reason bits consumed by shared hosts
+//!   * [`wasm_posix_shared::poll`], [`wasm_posix_shared::epoll`], and
+//!     [`wasm_posix_shared::select`] — I/O multiplexing event metadata
 //!
 //! When `--kernel-wasm <path>` is provided, the snapshot also covers
 //! every export in the built kernel `.wasm` (after filtering through
@@ -1890,6 +1894,33 @@ fn render_ts_module() -> String {
         shared::process_snapshot_wire::CMDLINE_LEN_OFFSET
     ));
     out.push_str(&format!(
+        "export const WAKEUP_EVENT_RECORD_BYTES = {} as const;\n",
+        shared::wakeup_event_wire::RECORD_BYTES
+    ));
+    out.push_str("export const WAKEUP_EVENT_TYPES = {\n");
+    for event_type in wakeup_event_types() {
+        out.push_str(&format!("  {}: {},\n", event_type.name, event_type.bit));
+    }
+    out.push_str("} as const;\n");
+    out.push_str("export const WAKEUP_EVENT_FIELDS = {\n");
+    for field in wakeup_event_fields() {
+        out.push_str(&format!(
+            "  {}: {{ offset: {}, size: {}, type: {:?} }},\n",
+            field.name, field.offset, field.size, field.ty
+        ));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const POLL_EVENTS = {\n");
+    for (name, value) in poll_events() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str("export const EPOLL_EVENTS = {\n");
+    for (name, value) in epoll_events() {
+        out.push_str(&format!("  {}: {},\n", name, value));
+    }
+    out.push_str("} as const;\n\n");
+    out.push_str(&format!(
         "export const KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES = {} as const;\n",
         shared::kernel_scratch_wire::SIGNAL_DELIVERY_BYTES
     ));
@@ -3301,6 +3332,8 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "process_snapshot_wire".into(),
         process_snapshot_wire(),
     );
+    root.insert("wakeup_event_wire".into(), wakeup_event_wire());
+    root.insert("io_multiplexing".into(), io_multiplexing());
     root.insert("spawn_contract".into(), spawn_contract());
 
     root.insert("channel_header".into(), channel_header());
@@ -3388,6 +3421,145 @@ fn process_snapshot_wire() -> Value {
                 ("cmdline_len", wire::CMDLINE_LEN_OFFSET),
             ],
         ),
+    })
+}
+
+struct WakeupEventField {
+    name: &'static str,
+    offset: usize,
+    size: usize,
+    ty: &'static str,
+}
+
+fn wakeup_event_fields() -> [WakeupEventField; 2] {
+    use shared::wakeup_event_wire as wire;
+
+    [
+        WakeupEventField {
+            name: "idx",
+            offset: wire::IDX_OFFSET,
+            size: wire::IDX_BYTES,
+            ty: "u32",
+        },
+        WakeupEventField {
+            name: "wakeType",
+            offset: wire::TYPE_OFFSET,
+            size: wire::TYPE_BYTES,
+            ty: "u8",
+        },
+    ]
+}
+
+struct WakeupEventType {
+    name: &'static str,
+    bit: u8,
+}
+
+fn wakeup_event_types() -> [WakeupEventType; 7] {
+    use shared::wakeup_event_wire as wire;
+
+    [
+        WakeupEventType {
+            name: "readable",
+            bit: wire::TYPE_READABLE,
+        },
+        WakeupEventType {
+            name: "writable",
+            bit: wire::TYPE_WRITABLE,
+        },
+        WakeupEventType {
+            name: "accept",
+            bit: wire::TYPE_ACCEPT,
+        },
+        WakeupEventType {
+            name: "datagramWritable",
+            bit: wire::TYPE_DATAGRAM_WRITABLE,
+        },
+        WakeupEventType {
+            name: "processStopped",
+            bit: wire::TYPE_PROCESS_STOPPED,
+        },
+        WakeupEventType {
+            name: "processContinued",
+            bit: wire::TYPE_PROCESS_CONTINUED,
+        },
+        WakeupEventType {
+            name: "advisoryLock",
+            bit: wire::TYPE_ADVISORY_LOCK,
+        },
+    ]
+}
+
+fn wakeup_event_wire() -> Value {
+    let fields: Vec<Value> = wakeup_event_fields()
+        .iter()
+        .map(|field| {
+            json!({
+                "name": field.name,
+                "offset": field.offset,
+                "size": field.size,
+                "type": field.ty,
+            })
+        })
+        .collect();
+    let types: Vec<Value> = wakeup_event_types()
+        .iter()
+        .map(|event_type| {
+            json!({
+                "name": event_type.name,
+                "bit": event_type.bit,
+            })
+        })
+        .collect();
+
+    json!({
+        "record_size": shared::wakeup_event_wire::RECORD_BYTES,
+        "fields": fields,
+        "types": types,
+    })
+}
+
+fn poll_events() -> [(&'static str, i16); 6] {
+    use shared::poll::*;
+
+    [
+        ("POLLIN", POLLIN),
+        ("POLLPRI", POLLPRI),
+        ("POLLOUT", POLLOUT),
+        ("POLLERR", POLLERR),
+        ("POLLHUP", POLLHUP),
+        ("POLLNVAL", POLLNVAL),
+    ]
+}
+
+fn epoll_events() -> [(&'static str, u32); 4] {
+    use shared::epoll::*;
+
+    [
+        ("EPOLLIN", EPOLLIN),
+        ("EPOLLOUT", EPOLLOUT),
+        ("EPOLLERR", EPOLLERR),
+        ("EPOLLHUP", EPOLLHUP),
+    ]
+}
+
+fn io_multiplexing() -> Value {
+    let poll_events: Vec<Value> = poll_events()
+        .into_iter()
+        .map(|(name, value)| json!({ "name": name, "value": value }))
+        .collect();
+    let epoll_events: Vec<Value> = epoll_events()
+        .into_iter()
+        .map(|(name, value)| json!({ "name": name, "value": value }))
+        .collect();
+
+    json!({
+        "poll_events": poll_events,
+        "epoll_events": epoll_events,
+        "select": {
+            "fd_setsize": shared::select::FD_SETSIZE,
+            "fd_set_bytes": shared::select::FD_SET_BYTES,
+        },
     })
 }
 
@@ -6019,7 +6191,10 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 }
 
 fn additive_top_level_section(section: &str) -> bool {
-    matches!(section, "host_adapter" | "syscall_arg_descriptors")
+    matches!(
+        section,
+        "host_adapter" | "io_multiplexing" | "syscall_arg_descriptors"
+    )
 }
 
 fn classify_host_adapter(
@@ -6249,6 +6424,12 @@ mod tests {
         assert!(
             rendered.contains("export const PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET = 32 as const;")
         );
+        assert!(rendered.contains("export const WAKEUP_EVENT_RECORD_BYTES = 5 as const;"));
+        assert!(rendered.contains("  processContinued: 32,"));
+        assert!(rendered.contains("  advisoryLock: 64,"));
+        assert!(
+            rendered.contains("  wakeType: { offset: 4, size: 1, type: \"u8\" },")
+        );
         assert!(rendered.contains("export const PR_SET_NAME = 15 as const;"));
         assert!(rendered.contains("export const PR_GET_NAME = 16 as const;"));
         assert!(rendered.contains("export const PRCTL_NAME_BYTES = 16 as const;"));
@@ -6338,6 +6519,64 @@ mod tests {
                 { "name": "cmdline_len", "offset": 32, "span": 4 },
             ])
         );
+    }
+
+    #[test]
+    fn generated_wakeup_event_wire_is_packed_and_complete() {
+        let wire = wakeup_event_wire();
+        assert_eq!(wire["record_size"], json!(5));
+        assert_eq!(
+            wire["fields"],
+            json!([
+                { "name": "idx", "offset": 0, "size": 4, "type": "u32" },
+                { "name": "wakeType", "offset": 4, "size": 1, "type": "u8" },
+            ])
+        );
+        assert_eq!(
+            wire["types"],
+            json!([
+                { "name": "readable", "bit": 1 },
+                { "name": "writable", "bit": 2 },
+                { "name": "accept", "bit": 4 },
+                { "name": "datagramWritable", "bit": 8 },
+                { "name": "processStopped", "bit": 16 },
+                { "name": "processContinued", "bit": 32 },
+                { "name": "advisoryLock", "bit": 64 },
+            ])
+        );
+    }
+
+    #[test]
+    fn generated_io_multiplexing_metadata_is_complete() {
+        assert_eq!(
+            io_multiplexing(),
+            json!({
+                "poll_events": [
+                    { "name": "POLLIN", "value": 1 },
+                    { "name": "POLLPRI", "value": 2 },
+                    { "name": "POLLOUT", "value": 4 },
+                    { "name": "POLLERR", "value": 8 },
+                    { "name": "POLLHUP", "value": 16 },
+                    { "name": "POLLNVAL", "value": 32 },
+                ],
+                "epoll_events": [
+                    { "name": "EPOLLIN", "value": 1 },
+                    { "name": "EPOLLOUT", "value": 4 },
+                    { "name": "EPOLLERR", "value": 8 },
+                    { "name": "EPOLLHUP", "value": 16 },
+                ],
+                "select": {
+                    "fd_setsize": 1024,
+                    "fd_set_bytes": 128,
+                },
+            }),
+        );
+
+        let rendered = render_ts_module();
+        assert!(rendered.contains("export const POLL_EVENTS = {"));
+        assert!(rendered.contains("  POLLNVAL: 32,"));
+        assert!(rendered.contains("export const EPOLL_EVENTS = {"));
+        assert!(rendered.contains("  EPOLLHUP: 16,"));
     }
 
     #[test]
@@ -6984,6 +7223,7 @@ mod tests {
         json!({
             "abi_version": 10,
             "channel_header": {"size": 64},
+            "io_multiplexing": io_multiplexing(),
             "platform_limits": platform_limits(),
             "process_native_layouts": process_native_layouts(),
             "spawn_contract": spawn_contract(),
@@ -7100,6 +7340,33 @@ mod tests {
         assert_eq!(
             report.additive,
             vec!["added top-level section \"host_adapter\""]
+        );
+    }
+
+    #[test]
+    fn adding_io_multiplexing_section_is_compatible() {
+        let mut old = base_snapshot();
+        old.as_object_mut().unwrap().remove("io_multiplexing");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"io_multiplexing\""]
+        );
+    }
+
+    #[test]
+    fn adding_wakeup_event_wire_section_requires_an_abi_bump() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["wakeup_event_wire"] = wakeup_event_wire();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            vec!["added top-level section \"wakeup_event_wire\""]
         );
     }
 

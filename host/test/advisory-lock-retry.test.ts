@@ -643,6 +643,7 @@ function createWorker(
     kernel_blocking_retry_token: () => 1n,
     kernel_dequeue_signal: () => 0,
     kernel_drain_wakeup_events: () => 0,
+    kernel_generate_host_signal: () => 0,
     kernel_get_parent_pid: () => 0,
     kernel_get_process_exit_signal: () => -1,
     kernel_get_process_exit_status: () => -1,
