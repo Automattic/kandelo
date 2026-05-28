@@ -2,6 +2,21 @@
 
 pub mod host_abi;
 
+pub mod process_snapshot {
+    pub const COUNT_OFFSET: usize = 0;
+    pub const COUNT_SIZE: usize = 4;
+
+    pub const RECORD_PID_OFFSET: usize = 0;
+    pub const RECORD_PPID_OFFSET: usize = 4;
+    pub const RECORD_UID_OFFSET: usize = 8;
+    pub const RECORD_GID_OFFSET: usize = 12;
+    pub const RECORD_VSIZE_BYTES_OFFSET: usize = 16;
+    pub const RECORD_STATE_OFFSET: usize = 24;
+    pub const RECORD_COMM_LEN_OFFSET: usize = 28;
+    pub const RECORD_CMDLINE_LEN_OFFSET: usize = 32;
+    pub const RECORD_FIXED_SIZE: usize = 36;
+}
+
 /// Kernel ABI version.
 ///
 /// This number is baked into every compiled user program (wasm custom section
