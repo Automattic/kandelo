@@ -10,7 +10,9 @@ import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const KERNEL_EXPORT_NAMES = [
   "kernel_ipc_shm_read_chunk",
+  "kernel_ipc_shm_record_mapping_for_process",
   "kernel_ipc_shmat_for_process",
+  "kernel_ipc_shmdt_addr_for_process",
   "kernel_ipc_shmdt_for_process",
 ] as const;
 
@@ -116,7 +118,9 @@ function makeHarness(
 ): InheritanceHarness {
   const implementations: Record<string, unknown> = {
     kernel_ipc_shm_read_chunk: () => 0,
+    kernel_ipc_shm_record_mapping_for_process: () => 0,
     kernel_ipc_shmat_for_process: () => -1,
+    kernel_ipc_shmdt_addr_for_process: () => 0,
     kernel_ipc_shmdt_for_process: () => 0,
     ...options.implementations,
   };
@@ -477,6 +481,8 @@ describe("shared-memory inheritance entry authority", () => {
     const shmat = vi.fn((_pid: number, segId: number) =>
       segId === 11 ? size : -12);
     const shmdt = vi.fn(() => 0);
+    const recordMapping = vi.fn(() => 0);
+    const shmdtAddr = vi.fn(() => 0);
     const readChunk = vi.fn((
       segId: number,
       offset: number,
@@ -494,7 +500,9 @@ describe("shared-memory inheritance entry authority", () => {
     harness = makeHarness({
       implementations: {
         kernel_ipc_shm_read_chunk: readChunk,
+        kernel_ipc_shm_record_mapping_for_process: recordMapping,
         kernel_ipc_shmat_for_process: shmat,
+        kernel_ipc_shmdt_addr_for_process: shmdtAddr,
         kernel_ipc_shmdt_for_process: shmdt,
       },
     });
@@ -542,7 +550,17 @@ describe("shared-memory inheritance entry authority", () => {
       [childPid, 12, secondSysvAddr, 0],
     ]);
     expect(readChunk).toHaveBeenCalledOnce();
-    expect(shmdt).toHaveBeenCalledExactlyOnceWith(childPid, 11);
+    expect(recordMapping).toHaveBeenCalledExactlyOnceWith(
+      childPid,
+      firstSysvAddr,
+      11,
+      size,
+    );
+    expect(shmdtAddr).toHaveBeenCalledExactlyOnceWith(
+      childPid,
+      firstSysvAddr,
+    );
+    expect(shmdt).not.toHaveBeenCalled();
     expect(backing.refCount).toBe(1);
     expect(harness.state.sharedMappings.has(childPid)).toBe(false);
     expect(harness.state.shmMappings.has(childPid)).toBe(false);
@@ -570,6 +588,59 @@ describe("shared-memory inheritance entry authority", () => {
     expect(
       new Uint8Array(childMemory.buffer)[secondSysvAddr],
     ).toBe(0x42);
+  });
+
+  it("releases an unrecorded child attachment when Rust rejects its address", () => {
+    const parentPid = 53;
+    const childPid = 54;
+    const mapAddr = 0x2000;
+    const size = 16;
+    const childMemory = processMemory();
+    new Uint8Array(childMemory.buffer).fill(0x77);
+    const shmat = vi.fn(() => size);
+    const recordMapping = vi.fn(() => -12);
+    const shmdt = vi.fn(() => 0);
+    const shmdtAddr = vi.fn(() => 0);
+    const readChunk = vi.fn(() => size);
+    const harness = makeHarness({
+      implementations: {
+        kernel_ipc_shm_read_chunk: readChunk,
+        kernel_ipc_shm_record_mapping_for_process: recordMapping,
+        kernel_ipc_shmat_for_process: shmat,
+        kernel_ipc_shmdt_addr_for_process: shmdtAddr,
+        kernel_ipc_shmdt_for_process: shmdt,
+      },
+    });
+    harness.state.processes.set(
+      childPid,
+      processRegistration(childPid, childMemory),
+    );
+    harness.state.shmMappings.set(parentPid, new Map([
+      [mapAddr, {
+        segId: 11,
+        size,
+        readOnly: false,
+        snapshot: new Uint8Array(size),
+        seenVersion: 0,
+      }],
+    ]));
+
+    expect(() => {
+      harness.worker.inheritProcessSharedMappings(parentPid, childPid);
+    }).toThrow(/Cannot record inherited SysV segment 11/);
+
+    expect(shmat).toHaveBeenCalledExactlyOnceWith(childPid, 11, mapAddr, 0);
+    expect(recordMapping).toHaveBeenCalledExactlyOnceWith(
+      childPid,
+      mapAddr,
+      11,
+      size,
+    );
+    expect(shmdt).toHaveBeenCalledExactlyOnceWith(childPid, 11);
+    expect(shmdtAddr).not.toHaveBeenCalled();
+    expect(readChunk).not.toHaveBeenCalled();
+    expect(harness.state.shmMappings.has(childPid)).toBe(false);
+    expect(new Uint8Array(childMemory.buffer)[mapAddr]).toBe(0x77);
   });
 
   it("restores bytes and prior refcounts if host publication fails mid-retain", () => {

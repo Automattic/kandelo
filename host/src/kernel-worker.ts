@@ -3172,7 +3172,13 @@ export class CentralizedKernelWorker {
    *  to convert epoll_pwait to poll without calling kernel_handle_channel
    *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
-  /** Per-process SysV shared-memory attachments. */
+  /**
+   * Byte-coherence mirrors for Rust-owned SysV shared-memory attachments.
+   *
+   * WHY: separate WebAssembly memories cannot directly share segment bytes.
+   * Rust owns attachment identity and lifetime; the shared host still needs
+   * snapshots and versions to reconcile bytes across those memories.
+   */
   private shmMappings = new Map<number, Map<number, SysvShmMapping>>();
   /** Authoritative segment version, incremented after each merged publication. */
   private shmSegmentVersions = new Map<number, number>();
@@ -8467,11 +8473,7 @@ export class CentralizedKernelWorker {
     }
   }
 
-  /**
-   * Forget mappings and detach SysV segments after the irreversible kernel
-   * exec commit. A failure here is post-commit and must be treated as fatal by
-   * the caller; returning to the discarded image is no longer possible.
-   */
+  /** Forget host byte mirrors after Rust commits the exec address-space drop. */
   finalizeAddressSpaceForExec(pid: number): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
@@ -8504,23 +8506,11 @@ export class CentralizedKernelWorker {
     }
     this.invalidateSharedMmapFdCacheForPid(pid);
 
-    const sysv = this.shmMappings.get(pid);
-    if (!sysv) return 0;
-    const detach = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmdt_for_process as
-      ((pid: number, shmid: number) => number) | undefined;
-    let result = 0;
-    try {
-      if (!detach) return -EIO;
-      for (const mapping of sysv.values()) {
-        if (detach(pid, mapping.segId) < 0) result = -EIO;
-      }
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      result = -EIO;
-    } finally {
-      this.shmMappings.delete(pid);
-    }
-    return result;
+    // kernelExecSetup is the irreversible Rust commit. It has already drained
+    // the authoritative attachment records and decremented nattch; repeating
+    // detach here would release a different same-segment attachment.
+    this.shmMappings.delete(pid);
+    return 0;
   }
 
   /**
@@ -28049,41 +28039,111 @@ export class CentralizedKernelWorker {
     const kernelShmdt = this.#kernelInstanceForEntry(entry).exports
       .kernel_ipc_shmdt_for_process as
       ((pid: number, shmid: number) => number) | undefined;
+    const recordMapping = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shm_record_mapping_for_process as
+      ((
+        pid: number,
+        addr: KernelPointer,
+        shmid: number,
+        size: number,
+      ) => number) | undefined;
+    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shmdt_addr_for_process as
+      ((pid: number, addr: KernelPointer) => number) | undefined;
     if (
       prepared.sysvMappings.length > 0
-      && (!kernelShmat || !kernelShmdt)
+      && (!kernelShmat || !kernelShmdt || !recordMapping || !kernelShmdtAddr)
     ) {
       return new Error("Kernel lacks SysV SHM inheritance exports");
     }
 
-    const attachedSegments: number[] = [];
+    let kernelMapAddrs: KernelPointer[];
+    try {
+      // Validate the complete child set before the first shmat. A mixed-model
+      // guest address that the kernel usize cannot represent must not acquire
+      // an attachment that Rust is then unable to identify for rollback.
+      kernelMapAddrs = prepared.sysvMappings.map((mapping) =>
+        this.toKernelPtr(mapping.mapAddr));
+    } catch (cause) {
+      return new Error(
+        "Cannot represent inherited SysV mapping in the kernel address model",
+        { cause },
+      );
+    }
+
+    const attachedMappings: Array<{ mapAddr: number; segId: number }> = [];
     const materializedSysv: MaterializedInheritedSysvMapping[] = [];
-    for (const mapping of prepared.sysvMappings) {
+    for (const [mappingIndex, mapping] of prepared.sysvMappings.entries()) {
       const result = kernelShmat!(
         prepared.childPid,
         mapping.segId,
         mapping.mapAddr,
         mapping.readOnly ? SHM_RDONLY : 0,
       );
-      // Every non-negative return represents a completed attachment, even if
-      // an incompatible kernel reports an unexpected size.
-      if (Number.isSafeInteger(result) && result >= 0) {
-        attachedSegments.push(mapping.segId);
-      }
       if (
         !Number.isSafeInteger(result)
         || result < 0
         || result !== mapping.size
       ) {
+        // Every nonnegative shmat result already incremented nattch, even when
+        // an incompatible kernel reports an unexpected size. It has no Rust
+        // address record yet, so release this one by segment identity.
+        if (Number.isSafeInteger(result) && result >= 0) {
+          const detachResult = kernelShmdt!(
+            prepared.childPid,
+            mapping.segId,
+          );
+          if (!Number.isSafeInteger(detachResult) || detachResult !== 0) {
+            throw new Error(
+              `SysV shmdt rollback failed for segment ${mapping.segId}`,
+            );
+          }
+        }
         this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
           prepared.childPid,
-          attachedSegments,
+          attachedMappings,
           entry,
         );
         return new Error(
           `SysV shmat inheritance failed for segment ${mapping.segId}`,
         );
       }
+      const recordResult = recordMapping!(
+        prepared.childPid,
+        kernelMapAddrs[mappingIndex]!,
+        mapping.segId,
+        mapping.size,
+      );
+      if (!Number.isSafeInteger(recordResult) || recordResult !== 0) {
+        if (Number.isSafeInteger(recordResult) && recordResult < 0) {
+          const detachResult = kernelShmdt!(
+            prepared.childPid,
+            mapping.segId,
+          );
+          if (!Number.isSafeInteger(detachResult) || detachResult !== 0) {
+            throw new Error(
+              `SysV shmdt rollback failed for segment ${mapping.segId}`,
+            );
+          }
+          this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
+            prepared.childPid,
+            attachedMappings,
+            entry,
+          );
+          return new Error(
+            `Cannot record inherited SysV segment ${mapping.segId}`,
+          );
+        }
+        // A positive or imprecise response violates the additive ABI's
+        // 0/-errno contract, so attachment state is no longer provable.
+        throw new Error(
+          `Invalid SysV mapping record result for segment ${mapping.segId}`,
+        );
+      }
+      attachedMappings.push({
+        mapAddr: mapping.mapAddr,
+        segId: mapping.segId,
+      });
       const latest = this.readSysvShmRange(
         mapping.segId,
         0,
@@ -28093,7 +28153,7 @@ export class CentralizedKernelWorker {
       if (!latest) {
         this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
           prepared.childPid,
-          attachedSegments,
+          attachedMappings,
           entry,
         );
         return new Error(
@@ -28114,7 +28174,7 @@ export class CentralizedKernelWorker {
     if (postExportValidation !== null) {
       this.#rollbackInheritedSysvAttachmentsWithinKernelEntry(
         prepared.childPid,
-        attachedSegments,
+        attachedMappings,
         entry,
       );
       return postExportValidation;
@@ -28136,21 +28196,24 @@ export class CentralizedKernelWorker {
 
   #rollbackInheritedSysvAttachmentsWithinKernelEntry(
     childPid: number,
-    attachedSegments: readonly number[],
+    attachedMappings: readonly { mapAddr: number; segId: number }[],
     entry: KernelWorkerEntryContext,
   ): void {
-    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports
-      .kernel_ipc_shmdt_for_process as
-      ((pid: number, shmid: number) => number) | undefined;
-    if (!kernelShmdt) {
+    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shmdt_addr_for_process as
+      ((pid: number, addr: KernelPointer) => number) | undefined;
+    if (!kernelShmdtAddr) {
       throw new Error("Kernel lost required SysV SHM rollback export");
     }
-    for (let index = attachedSegments.length - 1; index >= 0; index--) {
-      const segId = attachedSegments[index]!;
-      const result = kernelShmdt(childPid, segId);
+    for (let index = attachedMappings.length - 1; index >= 0; index--) {
+      const mapping = attachedMappings[index]!;
+      const result = kernelShmdtAddr(
+        childPid,
+        this.toKernelPtr(mapping.mapAddr),
+      );
       if (!Number.isSafeInteger(result) || result < 0) {
         throw new Error(
-          `SysV shmdt rollback failed for inherited segment ${segId}`,
+          `SysV shmdt rollback failed for inherited segment ${mapping.segId}`,
         );
       }
     }
@@ -28276,10 +28339,19 @@ export class CentralizedKernelWorker {
         entry,
       );
     }
-    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmdt_for_process as
-      ((pid: number, shmid: number) => number) | undefined;
-    if (kernelShmdt) {
-      for (const mapping of pidMap.values()) kernelShmdt(pid, mapping.segId);
+    const kernelShmdtAddr = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shmdt_addr_for_process as
+      ((pid: number, addr: KernelPointer) => number) | undefined;
+    if (!kernelShmdtAddr) {
+      throw new Error("Kernel lacks address-owned SysV SHM teardown export");
+    }
+    for (const [addr, mapping] of pidMap) {
+      const result = kernelShmdtAddr(pid, this.toKernelPtr(addr));
+      if (!Number.isSafeInteger(result) || result !== 0) {
+        throw new Error(
+          `Cannot detach SysV segment ${mapping.segId} at ${addr} for pid=${pid}`,
+        );
+      }
     }
     this.shmMappings.delete(pid);
   }
@@ -31663,6 +31735,12 @@ export class CentralizedKernelWorker {
         return;
       }
 
+      // Validate the kernel-side identity before materializing either bytes or
+      // a host mirror. If a memory64 address cannot fit the kernel's pointer
+      // model, the catch path can still roll back the raw nattch and mmap
+      // without leaving non-authoritative state behind.
+      const kernelAllocatedAddr = this.toKernelPtr(allocatedAddr);
+
       this.ensureProcessMemoryCovers(
         channel.pid,
         channel.memory,
@@ -31702,6 +31780,18 @@ export class CentralizedKernelWorker {
         pidMappings = new Map();
         this.shmMappings.set(channel.pid, pidMappings);
       }
+      if (pidMappings.has(allocatedAddr)) {
+        this.#rollbackIpcShmatWithinKernelEntry(
+          channel,
+          shmid,
+          size,
+          allocatedAddr,
+          entry,
+        );
+        if (this.hostReaped.has(channel.pid)) return;
+        this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
+        return;
+      }
       pidMappings.set(allocatedAddr, {
         segId: shmid,
         size,
@@ -31709,6 +31799,41 @@ export class CentralizedKernelWorker {
         snapshot,
         seenVersion: this.shmSegmentVersions.get(shmid) ?? 0,
       });
+      const recordMapping = this.#kernelInstanceForEntry(entry).exports
+        .kernel_ipc_shm_record_mapping_for_task as
+        ((
+          pid: number,
+          tid: number,
+          addr: KernelPointer,
+          shmid: number,
+          size: number,
+        ) => number) | undefined;
+      const recordResult = recordMapping
+        ? recordMapping(
+          channel.pid,
+          callerTid,
+          kernelAllocatedAddr,
+          shmid,
+          size,
+        )
+        : -EIO;
+      if (!Number.isSafeInteger(recordResult) || recordResult !== 0) {
+        pidMappings.delete(allocatedAddr);
+        if (pidMappings.size === 0) this.shmMappings.delete(channel.pid);
+        this.#rollbackIpcShmatWithinKernelEntry(
+          channel,
+          shmid,
+          size,
+          allocatedAddr,
+          entry,
+        );
+        if (this.hostReaped.has(channel.pid)) return;
+        const errno = Number.isSafeInteger(recordResult) && recordResult < 0
+          ? -recordResult
+          : EIO;
+        this.completeChannelRawAndRelisten(channel, -errno, errno, entry);
+        return;
+      }
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
       if (err instanceof KernelIpcShmatRollbackError) throw err;
@@ -31749,16 +31874,56 @@ export class CentralizedKernelWorker {
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
+    let kernelAddr: KernelPointer;
+    try {
+      kernelAddr = this.toKernelPtr(addr);
+    } catch {
+      // A valid wasm64 pointer can still exceed the kernel's address model.
+      // No successful shmat can have recorded that address, so POSIX shmdt
+      // reports an invalid attachment without truncating to a low mapping.
+      this.completeChannelRawAndRelisten(channel, -EINVAL, EINVAL, entry);
+      return;
+    }
     const callerTid = this.guestTidForChannel(channel);
     this.validateKernelTid(channel.pid, callerTid, entry);
+    const lookupMapping = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shm_lookup_mapping_for_task as
+      ((pid: number, tid: number, addr: KernelPointer) => bigint) | undefined;
+    if (!lookupMapping) {
+      this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
+      return;
+    }
+    const packed = lookupMapping(
+      channel.pid,
+      callerTid,
+      kernelAddr,
+    );
+    if (packed < 0n) {
+      const errno = Number(-packed);
+      this.completeChannelRawAndRelisten(channel, -errno, errno, entry);
+      return;
+    }
+    const kernelMapping = {
+      segId: Number(BigInt.asIntN(32, packed)),
+      size: Number((packed >> 32n) & 0xffff_ffffn),
+    };
     const pidMappings = this.shmMappings.get(channel.pid);
     if (!pidMappings) {
-      this.completeChannelRawAndRelisten(channel, -22, 22, entry); // EINVAL
+      this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
       return;
     }
     const mapping = pidMappings.get(addr);
-    if (!mapping) {
-      this.completeChannelRawAndRelisten(channel, -22, 22, entry); // EINVAL
+    // Rust is authoritative. A missing or divergent byte mirror means the
+    // host cannot publish the attachment safely, so retain the Rust record
+    // for teardown and report the internal coherence failure truthfully.
+    if (
+      !mapping
+      || kernelMapping.segId < 0
+      || kernelMapping.size <= 0
+      || mapping.segId !== kernelMapping.segId
+      || mapping.size !== kernelMapping.size
+    ) {
+      this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
       return;
     }
 
@@ -31774,13 +31939,12 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports.kernel_ipc_shmdt_for_task as
-      (pid: number, tid: number, shmid: number) => number;
-    const result = kernelShmdt(
-      channel.pid,
-      callerTid,
-      mapping.segId,
-    );
+    const kernelShmdt = this.#kernelInstanceForEntry(entry).exports
+      .kernel_ipc_shmdt_addr_for_task as
+      ((pid: number, tid: number, addr: KernelPointer) => number) | undefined;
+    const result = kernelShmdt
+      ? kernelShmdt(channel.pid, callerTid, kernelAddr)
+      : -EIO;
 
     if (result < 0) {
       this.completeChannelRawAndRelisten(channel, result, -result, entry);

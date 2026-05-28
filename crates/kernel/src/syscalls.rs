@@ -865,6 +865,14 @@ fn commit_exec_state_impl(
     }
 
     release_exec_image_state(proc, host);
+    // SysV attachments describe the old address space, not the persistent
+    // process identity. The host preflight has already published dirty bytes;
+    // drain Rust's authoritative attachment records at the exec commit so a
+    // failed preflight keeps them and a successful exec cannot leak nattch.
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    for mapping in proc.take_shm_mappings() {
+        let _ = ipc.shmdt(mapping.shmid, proc.pid);
+    }
     proc.signals.reset_dispositions_for_exec();
 
     // Kernel-backed process-shared primitives outlive the process address
@@ -25409,6 +25417,22 @@ mod tests {
         assert_eq!(&buf, b"queued before exec");
         sys_close(&mut proc, &mut host, writer).unwrap();
         sys_close(&mut proc, &mut host, reader).unwrap();
+    }
+
+    #[test]
+    fn exec_discards_sysv_attachment_identity_at_the_commit() {
+        let mut proc = Process::new(0x6eec_0043);
+        let mut host = MockHostIO::new();
+        // No real segment can reach this id in the test run. The commit still
+        // proves that image-owned metadata is drained when detach reports a
+        // segment already removed by IPC_RMID.
+        proc.record_shm_mapping(0x20000, i32::MAX, 4096)
+            .unwrap();
+        let pid = proc.pid;
+
+        commit_exec_state(&mut proc, &mut host, pid).unwrap();
+
+        assert!(proc.shm_mappings.is_empty());
     }
 
     #[test]

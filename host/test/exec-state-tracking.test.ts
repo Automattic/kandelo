@@ -1074,7 +1074,7 @@ describe("exec host-state transition", () => {
     expect(worker.currentHandlePid).toBe(0);
   });
 
-  it("copies SysV mappings before commit and detaches them afterward", () => {
+  it("copies SysV mappings before commit and forgets mirrors after Rust detaches", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     new Uint8Array(memory.buffer, 0x1000, 4).set([1, 2, 3, 4]);
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
@@ -1120,7 +1120,7 @@ describe("exec host-state transition", () => {
     expect(worker.shmMappings.has(7)).toBe(true);
 
     expect(worker.finalizeAddressSpaceForExec(7)).toBe(0);
-    expect(detach).toHaveBeenCalledWith(7, 3);
+    expect(detach).not.toHaveBeenCalled();
     expect(worker.shmMappings.has(7)).toBe(false);
   });
 

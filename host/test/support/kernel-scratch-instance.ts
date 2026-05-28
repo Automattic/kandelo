@@ -207,6 +207,18 @@ function signatures(
       parameters: [i32, i32, pointer, i32],
       result: i32,
     },
+    kernel_ipc_shm_lookup_mapping_for_task: {
+      parameters: [i32, i32, pointer],
+      result: i64,
+    },
+    kernel_ipc_shm_record_mapping_for_process: {
+      parameters: [i32, pointer, i32, i32],
+      result: i32,
+    },
+    kernel_ipc_shm_record_mapping_for_task: {
+      parameters: [i32, i32, pointer, i32, i32],
+      result: i32,
+    },
     kernel_ipc_shmat_for_process: {
       parameters: [i32, i32, i32, i32],
       result: i32,
@@ -217,6 +229,18 @@ function signatures(
     },
     kernel_ipc_shmdt_for_process: {
       parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_ipc_shmdt_addr: {
+      parameters: [pointer],
+      result: i32,
+    },
+    kernel_ipc_shmdt_addr_for_process: {
+      parameters: [i32, pointer],
+      result: i32,
+    },
+    kernel_ipc_shmdt_addr_for_task: {
+      parameters: [i32, i32, pointer],
       result: i32,
     },
     kernel_ipc_shmdt_for_task: {
