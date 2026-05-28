@@ -379,7 +379,7 @@ const [kernelBuf, vfsImageBuf] = await Promise.all([
 // Restore filesystem from image (single buffer copy — fast)
 const memfs = MemoryFileSystem.fromImage(
   new Uint8Array(vfsImageBuf),
-  { maxByteLength: 512 * 1024 * 1024 },  // allow growth
+  { maxByteLength: 512 * 1024 * 1024 },  // allow growth up to the image's filesystem max
 );
 
 // Create kernel with pre-populated filesystem
