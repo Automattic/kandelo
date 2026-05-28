@@ -2239,6 +2239,10 @@ pub extern "C" fn kernel_exec_setup(pid: u32) -> i32 {
     match crate::fork::deserialize_exec_state(&buf[..written], pid) {
         Ok(new_proc) => {
             table.get_mut(pid).map(|p| {
+                let ipc = unsafe { crate::ipc::global_ipc_table() };
+                for mapping in &p.shm_mappings {
+                    let _ = ipc.shmdt(mapping.shmid, pid);
+                }
                 *p = new_proc;
                 p.has_exec = true;
             });
@@ -3322,7 +3326,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         }
         // SYS_SHMAT (345), SYS_SHMDT (346): intercepted by host for process memory management
         345 => kernel_ipc_shmat(a1, a2, a3),
-        346 => kernel_ipc_shmdt(a1),
+        346 => kernel_ipc_shmdt_addr(a1 as usize),
         347 => {
             // SYS_SHMCTL: (shmid, cmd, buf_ptr)
             let ipc = unsafe { crate::ipc::global_ipc_table() };
@@ -4175,6 +4179,34 @@ pub extern "C" fn kernel_ipc_shmat(shmid: i32, _shmaddr: i32, flags: i32) -> i32
     }
 }
 
+/// Record the process address chosen by the host-managed mmap for a SysV
+/// shared-memory attachment.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_record_mapping(addr: usize, shmid: i32, size: u32) -> i32 {
+    let (_guard, proc) = unsafe { get_process() };
+    proc.record_shm_mapping(addr, shmid, size as usize);
+    0
+}
+
+/// Look up a SysV shared-memory attachment by process address.
+/// Writes `{ i32 shmid, u32 size }` to `out_ptr`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shm_lookup_mapping(addr: usize, out_ptr: *mut u8) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+
+    let (_guard, proc) = unsafe { get_process() };
+    let Some(mapping) = proc.shm_mapping_at(addr) else {
+        return -(Errno::EINVAL as i32);
+    };
+
+    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, 8) };
+    out[0..4].copy_from_slice(&mapping.shmid.to_le_bytes());
+    out[4..8].copy_from_slice(&(mapping.size as u32).to_le_bytes());
+    0
+}
+
 /// Detach from shared memory segment.
 /// Host should call kernel_ipc_shm_write_chunk first to sync data back.
 #[unsafe(no_mangle)]
@@ -4182,6 +4214,22 @@ pub extern "C" fn kernel_ipc_shmdt(shmid: i32) -> i32 {
     let ipc = unsafe { crate::ipc::global_ipc_table() };
     let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
     match ipc.shmdt(shmid, pid) {
+        Ok(()) => 0,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Detach from a shared-memory segment by process address.
+/// Host should call kernel_ipc_shm_lookup_mapping and sync data back first.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_ipc_shmdt_addr(addr: usize) -> i32 {
+    let ipc = unsafe { crate::ipc::global_ipc_table() };
+    let (_guard, proc) = unsafe { get_process() };
+    let Some(mapping) = proc.remove_shm_mapping(addr) else {
+        return -(Errno::EINVAL as i32);
+    };
+
+    match ipc.shmdt(mapping.shmid, proc.pid) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     }

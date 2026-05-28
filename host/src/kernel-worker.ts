@@ -763,8 +763,6 @@ export class CentralizedKernelWorker {
    *  (which crashes in Chrome for epoll_pwait due to a suspected V8 bug). */
   private epollInterests = new Map<string, Array<{ fd: number; events: number; data: bigint }>>();
   private lockTable: SharedLockTable | null = null;
-  /** Per-process shared memory mappings: pid → Map<addr, {segId, size}> */
-  private shmMappings = new Map<number, Map<number, { segId: number; size: number }>>();
 
   /** PTY index → pid mapping (for draining output after syscalls) */
   private ptyIndexByPid = new Map<number, number>();
@@ -7945,7 +7943,6 @@ export class CentralizedKernelWorker {
       }
     }
     this.tcpConnections.delete(pid);
-    this.shmMappings.delete(pid);
   }
 
   // =========================================================================
@@ -8134,37 +8131,38 @@ export class CentralizedKernelWorker {
       transferred += nRead;
     }
 
-    // Track the mapping for shmdt
-    let pidMappings = this.shmMappings.get(channel.pid);
-    if (!pidMappings) {
-      pidMappings = new Map();
-      this.shmMappings.set(channel.pid, pidMappings);
+    const recordMapping = this.kernelInstance!.exports.kernel_ipc_shm_record_mapping as (addr: number, shmid: number, size: number) => number;
+    const recordResult = recordMapping(addr >>> 0, shmid, size);
+    if (recordResult < 0) {
+      const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as ((shmid: number) => number) | undefined;
+      if (kernelShmdt) kernelShmdt(shmid);
+      this.completeChannelRaw(channel, recordResult, -recordResult);
+      this.relistenChannel(channel);
+      return;
     }
-    pidMappings.set(addr >>> 0, { segId: shmid, size });
 
     this.completeChannelRaw(channel, addr, 0);
     this.relistenChannel(channel);
   }
 
-  /** shmdt: copy process memory back to segment, untrack mapping */
+  /** shmdt: copy process memory back to segment, then detach Rust-owned mapping */
   private handleIpcShmdt(channel: ChannelInfo, args: number[]): void {
-    const addr = args[0];
-    const pidMappings = this.shmMappings.get(channel.pid);
-    if (!pidMappings) {
-      this.completeChannelRaw(channel, -22, 22); // EINVAL
-      this.relistenChannel(channel);
-      return;
-    }
-    const mapping = pidMappings.get(addr);
-    if (!mapping) {
-      this.completeChannelRaw(channel, -22, 22); // EINVAL
-      this.relistenChannel(channel);
-      return;
-    }
+    const addr = args[0] >>> 0;
 
     // Set current pid for kernel exports
     const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as ((pid: number) => void) | undefined;
     if (setCurrentPid) setCurrentPid(channel.pid);
+
+    const lookupMapping = this.kernelInstance!.exports.kernel_ipc_shm_lookup_mapping as (addr: number, outPtr: bigint) => number;
+    const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+    const lookupResult = lookupMapping(addr, BigInt(this.scratchOffset));
+    if (lookupResult < 0) {
+      this.completeChannelRaw(channel, lookupResult, -lookupResult);
+      this.relistenChannel(channel);
+      return;
+    }
+    const shmid = kernelView.getInt32(0, true);
+    const size = kernelView.getUint32(4, true);
 
     // Sync process memory back to kernel segment via write_chunk
     const writeChunk = this.kernelInstance!.exports.kernel_ipc_shm_write_chunk as (shmid: number, offset: number, dataPtr: bigint, dataLen: number) => number;
@@ -8173,20 +8171,17 @@ export class CentralizedKernelWorker {
     const chunkSize = CH_DATA_SIZE;
     const chunkPtr = this.scratchOffset + CH_DATA;
     let transferred = 0;
-    while (transferred < mapping.size) {
-      const remaining = mapping.size - transferred;
+    while (transferred < size) {
+      const remaining = size - transferred;
       const toWrite = Math.min(remaining, chunkSize);
       kernelMem.set(processMem.subarray(addr + transferred, addr + transferred + toWrite), chunkPtr);
-      const nWritten = writeChunk(mapping.segId, transferred, BigInt(chunkPtr), toWrite);
+      const nWritten = writeChunk(shmid, transferred, BigInt(chunkPtr), toWrite);
       if (nWritten <= 0) break;
       transferred += nWritten;
     }
 
-    // Kernel-side detach bookkeeping
-    const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as (shmid: number) => number;
-    const result = kernelShmdt(mapping.segId);
-
-    pidMappings.delete(addr);
+    const kernelShmdtAddr = this.kernelInstance!.exports.kernel_ipc_shmdt_addr as (addr: number) => number;
+    const result = kernelShmdtAddr(addr);
 
     if (result < 0) {
       this.completeChannelRaw(channel, result, -result);
