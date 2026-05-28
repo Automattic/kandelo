@@ -58,6 +58,9 @@ import {
   PROC_SNAPSHOT_RECORD_FIELDS,
   PROC_SNAPSHOT_RECORD_FIXED_SIZE,
   SYSCALL_ARGS,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_SIZE,
+  WAKEUP_EVENT_TYPES,
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
@@ -2874,24 +2877,24 @@ export class CentralizedKernelWorker {
     if (!drainFn) return;
 
     const MAX_EVENTS = 256;
-    const BYTES_PER_EVENT = 5;
-    const bufSize = MAX_EVENTS * BYTES_PER_EVENT;
+    const bufSize = MAX_EVENTS * WAKEUP_EVENT_RECORD_SIZE;
 
     const count = drainFn(BigInt(this.scratchOffset), bufSize, MAX_EVENTS);
     if (count === 0) return;
 
     const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
-    const WAKE_READABLE = 1;
-    const WAKE_WRITABLE = 2;
+    const pipeIdxField = WAKEUP_EVENT_FIELDS.pipeIdx;
+    const wakeTypeField = WAKEUP_EVENT_FIELDS.wakeType;
     let needBroadWake = false;
 
     for (let i = 0; i < count; i++) {
-      const off = this.scratchOffset + i * BYTES_PER_EVENT;
-      const pipeIdx = kernelMem[off] | (kernelMem[off + 1] << 8) |
-                      (kernelMem[off + 2] << 16) | (kernelMem[off + 3] << 24);
-      const wakeType = kernelMem[off + 4];
+      const off = this.scratchOffset + i * WAKEUP_EVENT_RECORD_SIZE;
+      const pipeOff = off + pipeIdxField.offset;
+      const pipeIdx = kernelMem[pipeOff] | (kernelMem[pipeOff + 1] << 8) |
+                      (kernelMem[pipeOff + 2] << 16) | (kernelMem[pipeOff + 3] << 24);
+      const wakeType = kernelMem[off + wakeTypeField.offset];
 
-      if (wakeType & WAKE_READABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.readable) {
         // Pipe became readable — wake pending readers on this pipe
         const readers = this.pendingPipeReaders.get(pipeIdx);
         if (readers && readers.length > 0) {
@@ -2904,7 +2907,7 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_WRITABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.writable) {
         // Pipe became writable — wake pending writers on this pipe
         const writers = this.pendingPipeWriters.get(pipeIdx);
         if (writers && writers.length > 0) {
