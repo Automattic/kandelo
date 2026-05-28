@@ -121,6 +121,41 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.sendSignalToProcess).not.toHaveBeenCalled();
     expect(worker.wakeWaitingParent).not.toHaveBeenCalled();
   });
+
+  it("thread exit uses Rust-owned ctid metadata for clear-tid wakeup", () => {
+    const memory = createSharedMemory();
+    const ctidPtr = 2048;
+    new DataView(memory.buffer).setInt32(ctidPtr, 123, true);
+
+    const mainChannel = createChannel(10, memory, 0);
+    const threadChannel = createChannel(10, memory, 1024);
+    const kernelThreadExit = vi.fn(() => ctidPtr);
+    const worker = createWorkerHarness({
+      kernel_thread_exit: kernelThreadExit,
+    });
+    worker.processes = new Map([
+      [10, {
+        pid: 10,
+        memory,
+        channels: [mainChannel, threadChannel],
+        ptrWidth: 4,
+      }],
+    ]);
+    worker.activeChannels = [mainChannel, threadChannel];
+    worker.channelTids = new Map([["10:1024", 77]]);
+    worker.threadForkContexts = new Map([["10:1024", { fnPtr: 1, argPtr: 2 }]]);
+    worker.completeChannelRaw = vi.fn();
+
+    worker.handleExit(threadChannel, ABI_SYSCALLS.Exit, [0]);
+
+    expect(kernelThreadExit).toHaveBeenCalledWith(10, 77);
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    expect(worker.processes.get(10).channels).toEqual([mainChannel]);
+    expect(worker.activeChannels).toEqual([mainChannel]);
+    expect(worker.channelTids.has("10:1024")).toBe(false);
+    expect(worker.threadForkContexts.has("10:1024")).toBe(false);
+    expect(worker.completeChannelRaw).toHaveBeenCalledWith(threadChannel, 0, 0);
+  });
 });
 
 function createWorkerHarness(exports: Record<string, unknown>): any {
@@ -139,12 +174,12 @@ function createSharedMemory(): WebAssembly.Memory {
   });
 }
 
-function createChannel(pid: number, memory: WebAssembly.Memory): any {
+function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset = 0): any {
   return {
     pid,
     memory,
-    channelOffset: 0,
-    i32View: new Int32Array(memory.buffer, 0),
+    channelOffset,
+    i32View: new Int32Array(memory.buffer, channelOffset),
     consecutiveSyscalls: 0,
   };
 }

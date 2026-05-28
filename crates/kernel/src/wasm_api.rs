@@ -9254,13 +9254,18 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: 
 
 /// thread_exit — clean up thread state in the kernel.
 /// Called by the host when a thread Worker exits.
-/// Removes the thread from the process's thread table.
+/// Removes the thread from the process's thread table and returns the
+/// CLONE_CHILD_CLEARTID pointer recorded in ThreadInfo, or 0 if no clear-tid
+/// wake is needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
     if crate::is_centralized_mode() {
         let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
         if let Some(proc) = pt.get_mut(pid) {
-            proc.remove_thread(tid);
+            return proc
+                .remove_thread(tid)
+                .map(|thread| thread.ctid_ptr as i32)
+                .unwrap_or(0);
         }
     }
     0
