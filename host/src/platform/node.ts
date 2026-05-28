@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { PlatformIO, StatResult, StatfsResult } from "../types";
+import { OPEN_FLAGS } from "../generated/abi";
 import { nativeStatfs, translateOpenFlags } from "../vfs/host-fs";
 import { NativeMetadataOverlay } from "./native-metadata";
 
@@ -62,7 +63,7 @@ export class NodePlatformIO implements PlatformIO {
 
   open(path: string, flags: number, mode: number): number {
     const nativePath = this.rewritePath(path);
-    const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
+    const created = (flags & OPEN_FLAGS.O_CREAT) !== 0 && !fs.existsSync(nativePath);
     const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
     if (created) this.metadata.chmod(fs.fstatSync(fd), mode);
     this.fdPositions.set(fd, 0);

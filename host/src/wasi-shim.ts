@@ -16,6 +16,7 @@
 
 import {
   ABI_SYSCALLS,
+  AT_FLAGS,
   CHANNEL_STATUS_IDLE,
   CHANNEL_STATUS_PENDING,
   CH_ARG_SIZE,
@@ -26,6 +27,10 @@ import {
   CH_RETURN,
   CH_STATUS,
   CH_SYSCALL,
+  FCNTL_COMMANDS,
+  FILE_MODES,
+  OPEN_FLAGS,
+  SEEK_WHENCE,
   STRUCT_SIZE_WASM_STAT,
 } from "./generated/abi";
 
@@ -74,38 +79,36 @@ const SYS_DUP2 = ABI_SYSCALLS.Dup2;
 const SYS_SHUTDOWN = ABI_SYSCALLS.Shutdown;
 
 // --- POSIX flags (from crates/shared/src/lib.rs) ---
-const O_RDONLY = 0;
-const O_WRONLY = 1;
-const O_RDWR = 2;
-const O_CREAT = 0o100;
-const O_EXCL = 0o200;
-const O_TRUNC = 0o1000;
-const O_APPEND = 0o2000;
-const O_NONBLOCK = 0o4000;
-const O_DIRECTORY = 0o200000;
-const O_NOFOLLOW = 0o400000;
+const O_RDONLY = OPEN_FLAGS.O_RDONLY;
+const O_RDWR = OPEN_FLAGS.O_RDWR;
+const O_ACCMODE = OPEN_FLAGS.O_ACCMODE;
+const O_CREAT = OPEN_FLAGS.O_CREAT;
+const O_EXCL = OPEN_FLAGS.O_EXCL;
+const O_TRUNC = OPEN_FLAGS.O_TRUNC;
+const O_APPEND = OPEN_FLAGS.O_APPEND;
+const O_NONBLOCK = OPEN_FLAGS.O_NONBLOCK;
+const O_DIRECTORY = OPEN_FLAGS.O_DIRECTORY;
+const O_NOFOLLOW = OPEN_FLAGS.O_NOFOLLOW;
 
-const AT_FDCWD = -100;
-const AT_SYMLINK_NOFOLLOW = 0x100;
-const AT_REMOVEDIR = 0x200;
+const AT_FDCWD = AT_FLAGS.AT_FDCWD;
+const AT_SYMLINK_NOFOLLOW = AT_FLAGS.AT_SYMLINK_NOFOLLOW;
+const AT_REMOVEDIR = AT_FLAGS.AT_REMOVEDIR;
 
-const F_GETFL = 3;
-const F_SETFL = 4;
+const F_GETFL = FCNTL_COMMANDS.F_GETFL;
+const F_SETFL = FCNTL_COMMANDS.F_SETFL;
 
-// SEEK constants (POSIX)
-const SEEK_SET = 0;
-const SEEK_CUR = 1;
-const SEEK_END = 2;
+const SEEK_SET = SEEK_WHENCE.SEEK_SET;
+const SEEK_CUR = SEEK_WHENCE.SEEK_CUR;
+const SEEK_END = SEEK_WHENCE.SEEK_END;
 
-// S_IFMT mode bits
-const S_IFDIR = 0o040000;
-const S_IFCHR = 0o020000;
-const S_IFBLK = 0o060000;
-const S_IFREG = 0o100000;
-const S_IFIFO = 0o010000;
-const S_IFLNK = 0o120000;
-const S_IFSOCK = 0o140000;
-const S_IFMT = 0o170000;
+const S_IFDIR = FILE_MODES.S_IFDIR;
+const S_IFCHR = FILE_MODES.S_IFCHR;
+const S_IFBLK = FILE_MODES.S_IFBLK;
+const S_IFREG = FILE_MODES.S_IFREG;
+const S_IFIFO = FILE_MODES.S_IFIFO;
+const S_IFLNK = FILE_MODES.S_IFLNK;
+const S_IFSOCK = FILE_MODES.S_IFSOCK;
+const S_IFMT = FILE_MODES.S_IFMT;
 
 // Stat struct size written by kernel
 const WASM_STAT_SIZE = STRUCT_SIZE_WASM_STAT;
@@ -1124,8 +1127,10 @@ export class WasiShim {
     if (errno) {
       // If O_RDWR fails with EISDIR or EACCES, retry with O_RDONLY
       if ((errno === 21 || errno === 13) && !(posixFlags & O_CREAT)) {
-        posixFlags = (posixFlags & ~3) | O_RDONLY;
-        const retry = this.doSyscall(SYS_OPENAT, kernelDirfd, pathAddr, posixFlags, 0o666);
+        posixFlags = (posixFlags & ~O_ACCMODE) | O_RDONLY;
+        const retry = this.doSyscall(
+          SYS_OPENAT, kernelDirfd, pathAddr, posixFlags, 0o666,
+        );
         if (retry.errno) return translateLinuxErrno(retry.errno);
         new DataView(this.memory.buffer).setUint32(fdOut, retry.result, true);
         return WASI_ESUCCESS;
