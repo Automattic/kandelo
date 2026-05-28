@@ -97,6 +97,18 @@ export const PROC_SNAPSHOT_RECORD_FIELDS = {
   cmdlineLen: { offset: 32, size: 4, type: "u32" },
 } as const;
 
+export const WAKEUP_EVENT_RECORD_SIZE = 5 as const;
+export const WAKEUP_EVENT_TYPE_READABLE = 1 as const;
+export const WAKEUP_EVENT_TYPE_WRITABLE = 2 as const;
+export const WAKEUP_EVENT_TYPES = {
+  readable: WAKEUP_EVENT_TYPE_READABLE,
+  writable: WAKEUP_EVENT_TYPE_WRITABLE,
+} as const;
+export const WAKEUP_EVENT_FIELDS = {
+  pipeIdx: { offset: 0, size: 4, type: "u32" },
+  wakeType: { offset: 4, size: 1, type: "u8" },
+} as const;
+
 export const STRUCT_SIZE_WASM_STAT = 88 as const;
 export const STRUCT_SIZE_WASM_DIRENT = 16 as const;
 export const STRUCT_SIZE_WASM_TIMESPEC = 16 as const;

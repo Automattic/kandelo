@@ -44,6 +44,9 @@ import {
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
   SYSCALL_ARGS,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_SIZE,
+  WAKEUP_EVENT_TYPES,
 } from "../src/generated/abi";
 
 const snapshot = JSON.parse(
@@ -86,6 +89,12 @@ function hostAdapterManifestField(name: string): { offset: number; size: number 
 function processSnapshotField(name: string): { offset: number; size: number; type: string } {
   const field = snapshot.process_snapshot.record_fields.find((f: { name: string }) => f.name === name);
   if (!field) throw new Error(`missing process_snapshot field ${name}`);
+  return { offset: field.offset, size: field.size, type: field.type };
+}
+
+function wakeupEventField(name: string): { offset: number; size: number; type: string } {
+  const field = snapshot.wakeup_events.fields.find((f: { name: string }) => f.name === name);
+  if (!field) throw new Error(`missing wakeup_events field ${name}`);
   return { offset: field.offset, size: field.size, type: field.type };
 }
 
@@ -190,6 +199,24 @@ describe("generated host ABI bindings", () => {
           fieldName as keyof typeof PROC_SNAPSHOT_RECORD_FIELDS
         ],
       ).toEqual(processSnapshotField(fieldName));
+    }
+  });
+
+  it("match Rust-owned wakeup event schema metadata", () => {
+    expect(WAKEUP_EVENT_RECORD_SIZE).toBe(snapshot.wakeup_events.record_size);
+    expect(Object.entries(WAKEUP_EVENT_TYPES)).toEqual(
+      snapshot.wakeup_events.types.map((t: { name: string; bit: number }) => [
+        t.name,
+        t.bit,
+      ]),
+    );
+
+    for (const fieldName of Object.keys(WAKEUP_EVENT_FIELDS)) {
+      expect(
+        WAKEUP_EVENT_FIELDS[
+          fieldName as keyof typeof WAKEUP_EVENT_FIELDS
+        ],
+      ).toEqual(wakeupEventField(fieldName));
     }
   });
 });
