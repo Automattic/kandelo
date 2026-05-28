@@ -298,6 +298,17 @@ export class MemoryFileSystem implements FileSystemBackend {
     return entries;
   }
 
+  /** Return lazy metadata for `path`, following symlinks through stat(). */
+  getLazyEntry(path: string): LazyFileEntry | null {
+    try {
+      const st = this.fs.stat(path);
+      const entry = this.lazyFiles.get(st.ino);
+      return entry ? { ino: st.ino, path: entry.path, url: entry.url, size: entry.size } : null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Rewrite the URL of every registered lazy file. Useful when a VFS image
    * was built with placeholder URLs and the browser runtime needs to replace
@@ -651,12 +662,17 @@ export class MemoryFileSystem implements FileSystemBackend {
     const flags = parsed.flags;
     const sabLen = parsed.sabLen;
 
-    // Restore SharedArrayBuffer (optionally growable). The 2-arg form is
-    // typed via the ES2024.SharedMemory lib (see host/tsconfig.json).
+    // Restore SharedArrayBuffer (optionally growable). Some TypeScript lib
+    // versions still expose only the 1-arg constructor even on runtimes that
+    // support the options object.
     const sabOptions = options?.maxByteLength
       ? { maxByteLength: options.maxByteLength }
       : undefined;
-    const sab = new SharedArrayBuffer(sabLen, sabOptions);
+    const SharedArrayBufferCtor = SharedArrayBuffer as new (
+      byteLength: number,
+      options?: { maxByteLength?: number },
+    ) => SharedArrayBuffer;
+    const sab = new SharedArrayBufferCtor(sabLen, sabOptions);
     const sabView = new Uint8Array(sab);
     sabView.set(image.subarray(VFS_IMAGE_HEADER_SIZE, VFS_IMAGE_HEADER_SIZE + sabLen));
 

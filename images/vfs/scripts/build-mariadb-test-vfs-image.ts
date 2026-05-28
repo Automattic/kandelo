@@ -29,7 +29,6 @@ import { resolveBinary, tryResolveBinary, findRepoRoot } from "../../../host/src
 import { saveImage, walkAndWrite } from "./vfs-image-helpers";
 import { addDinitInit, type DinitService } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
-import { existsSync } from "node:fs";
 
 const REPO_ROOT = findRepoRoot();
 // Local source-build keeps everything under mariadb-install/; for
@@ -200,15 +199,17 @@ function buildServices(): DinitService[] {
 
 async function main() {
   if (!existsSync(MARIADB_PATH)) {
-    console.error("mariadbd.wasm not found. Run: bash packages/registry/mariadb/build-mariadb.sh");
+    console.error("mariadbd.wasm not found. Run scripts/fetch-binaries.sh or bash packages/registry/mariadb/build-mariadb.sh");
     process.exit(1);
   }
   if (!existsSync(join(MYSQL_TEST_DIR, "main"))) {
-    console.error("mysql-test directory not found. Run: bash packages/registry/mariadb/build-mariadb.sh");
+    console.error(`MariaDB mysql-test directory missing.`);
+    console.error(`  Looked at: ${MYSQL_TEST_DIR}`);
     process.exit(1);
   }
   if (!existsSync(SYSTEM_TABLES_PATH) || !existsSync(SYSTEM_DATA_PATH)) {
-    console.error(`MariaDB bootstrap SQL files missing under packages/registry/mariadb/mariadb-install/share/mysql/`);
+    console.error(`MariaDB bootstrap SQL files missing.`);
+    console.error(`  Looked at:\n    ${SYSTEM_TABLES_PATH}\n    ${SYSTEM_DATA_PATH}`);
     process.exit(1);
   }
 

@@ -184,15 +184,17 @@ fn expand_tilde(s: &str) -> PathBuf {
 /// Library / program kind (arch- and ABI-specific artifacts):
 ///   domain `"wasm-posix-pkg\n"`, then
 ///   `name`, `version`, `revision`, `target_arch`, `abi_version`,
-///   `source.url`, `source.sha256`, then for each dep (sorted by
-///   name): `dep.name`, `dep.version`, hex(dep_sha).
+///   `source.url`, `source.sha256`, declared build input content
+///   digests, then for each dep (sorted by name): `dep.name`,
+///   `dep.version`, hex(dep_sha).
 ///
 /// Source kind (raw upstream archive, arch- and ABI-agnostic):
 ///   domain `"wasm-posix-pkg-source\n"`, then
 ///   `name`, `version`, `revision`, `source.url`, `source.sha256`,
-///   then the same per-dep tail. `target_arch` and `abi_version` are
-///   intentionally omitted — a source tarball does not change when
-///   the kernel ABI bumps or when we cross-compile for a new arch.
+///   declared build input content digests, then the same per-dep
+///   tail. `target_arch` and `abi_version` are intentionally omitted
+///   — a source tarball does not change when the kernel ABI bumps or
+///   when we cross-compile for a new arch.
 ///
 /// ABI-bump propagation: a kernel ABI bump shifts every library and
 /// program leaf sha (because `abi_version` is in their input set),
@@ -258,6 +260,8 @@ pub fn compute_sha(
     dep_shas.sort_by(|a, b| a.0.name.cmp(&b.0.name));
 
     chain.pop();
+
+    let build_inputs = build_input_digests(target, registry)?;
 
     let mut h = Sha256::new();
     match target.kind {
@@ -338,6 +342,15 @@ pub fn compute_sha(
             }
         }
     }
+    if !build_inputs.is_empty() {
+        h.update(b"build-inputs:\n");
+        for input in &build_inputs {
+            h.update(input.label.as_bytes());
+            h.update(b"\n");
+            h.update(input.digest);
+            h.update(b"\n");
+        }
+    }
     for (dref, dsha) in &dep_shas {
         h.update(dref.name.as_bytes());
         h.update(b"@");
@@ -350,6 +363,115 @@ pub fn compute_sha(
     let out: [u8; 32] = h.finalize().into();
     memo.insert(memo_key, out);
     Ok(out)
+}
+
+struct BuildInputDigest {
+    label: String,
+    digest: [u8; 32],
+}
+
+fn build_input_digests(
+    target: &DepsManifest,
+    registry: &Registry,
+) -> Result<Vec<BuildInputDigest>, String> {
+    if !target.dir.join("build.toml").exists() {
+        return Ok(Vec::new());
+    }
+    let build = BuildToml::load(&target.dir)?;
+    let mut out = Vec::with_capacity(build.inputs.len());
+    for input in &build.inputs {
+        let path = resolve_build_input_path(target, registry, input)?;
+        out.push(BuildInputDigest {
+            label: input.clone(),
+            digest: hash_build_input(&path)?,
+        });
+    }
+    Ok(out)
+}
+
+fn resolve_build_input_path(
+    target: &DepsManifest,
+    registry: &Registry,
+    input: &str,
+) -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+    candidates.push(repo_root().join(input));
+    candidates.extend(registry.roots.iter().map(|root| root.join(input)));
+    candidates.push(target.dir.join(input));
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Ok(candidate.clone());
+        }
+    }
+
+    let tried = candidates
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "{} build input {:?} not found (tried: {})",
+        target.spec(),
+        input,
+        tried
+    ))
+}
+
+fn hash_build_input(path: &Path) -> Result<[u8; 32], String> {
+    let mut h = Sha256::new();
+    hash_build_input_entry(&mut h, path, path)?;
+    Ok(h.finalize().into())
+}
+
+fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<(), String> {
+    let meta =
+        std::fs::symlink_metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?;
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let rel = rel.to_string_lossy();
+
+    if meta.file_type().is_symlink() {
+        let target =
+            std::fs::read_link(path).map_err(|e| format!("readlink {}: {e}", path.display()))?;
+        h.update(b"symlink\0");
+        h.update(rel.as_bytes());
+        h.update(b"\0");
+        h.update(target.to_string_lossy().as_bytes());
+        h.update(b"\0");
+        return Ok(());
+    }
+
+    if meta.is_file() {
+        let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        h.update(b"file\0");
+        h.update(rel.as_bytes());
+        h.update(b"\0");
+        h.update((bytes.len() as u64).to_le_bytes());
+        h.update(b"\0");
+        h.update(bytes);
+        h.update(b"\0");
+        return Ok(());
+    }
+
+    if meta.is_dir() {
+        h.update(b"dir\0");
+        h.update(rel.as_bytes());
+        h.update(b"\0");
+        let mut entries = std::fs::read_dir(path)
+            .map_err(|e| format!("read_dir {}: {e}", path.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("read_dir {}: {e}", path.display()))?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            hash_build_input_entry(h, root, &entry.path())?;
+        }
+        return Ok(());
+    }
+
+    Err(format!(
+        "build input {} is not a file, directory, or symlink",
+        path.display()
+    ))
 }
 
 /// Canonical cache directory for a resolved manifest.
@@ -2690,6 +2812,85 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
     }
 
     #[test]
+    fn compute_cache_key_sha_uses_build_toml_inputs() {
+        let root = tempdir("ckcs-build-inputs");
+        write(&root, "libInput", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+
+        let pkg = root.join("libInput");
+        std::fs::write(pkg.join("recipe.txt"), "one\n").unwrap();
+        std::fs::create_dir(pkg.join("recipe-dir")).unwrap();
+        std::fs::write(pkg.join("recipe-dir/nested.txt"), "alpha\n").unwrap();
+        std::fs::write(
+            pkg.join("build.toml"),
+            r#"
+script_path = "libInput/build-libInput.sh"
+inputs = ["libInput/recipe.txt", "libInput/recipe-dir"]
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = 1
+
+[binary]
+index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+
+        let sha_before =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
+
+        std::fs::write(pkg.join("recipe.txt"), "two\n").unwrap();
+
+        let sha_after =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
+        assert_ne!(
+            sha_before, sha_after,
+            "build.toml input content changes must change cache_key_sha"
+        );
+
+        std::fs::write(pkg.join("recipe-dir/nested.txt"), "beta\n").unwrap();
+
+        let sha_after_dir_change =
+            compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI).unwrap();
+        assert_ne!(
+            sha_after, sha_after_dir_change,
+            "build.toml directory input content changes must change cache_key_sha"
+        );
+    }
+
+    #[test]
+    fn compute_cache_key_sha_rejects_missing_build_toml_input() {
+        let root = tempdir("ckcs-missing-build-input");
+        write(&root, "libMissingInput", "1.0.0", &[]);
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+
+        let pkg = root.join("libMissingInput");
+        std::fs::write(
+            pkg.join("build.toml"),
+            r#"
+script_path = "libMissingInput/build-libMissingInput.sh"
+inputs = ["libMissingInput/nope.txt"]
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = 1
+
+[binary]
+index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.toml"
+"#,
+        )
+        .unwrap();
+
+        let err = compute_cache_key_sha_for_package(&pkg, &reg, TargetArch::Wasm32, TEST_ABI)
+            .unwrap_err();
+        assert!(err.contains("build input"), "got: {err}");
+        assert!(err.contains("nope.txt"), "got: {err}");
+    }
+
+    #[test]
     fn compute_cache_key_sha_is_deterministic_across_invocations() {
         let root = tempdir("ckcs-deterministic");
         write(&root, "libDet", "1.0.0", &[]);
@@ -4199,8 +4400,10 @@ archive_sha256 = "{archive_sha_hex}"
 
         // Compute the cache_key_sha the resolver will produce for the
         // (fixed-shape) source manifest. cache_key_sha hashes
-        // name/version/revision/source/arch/abi/dep-shas; the sibling
-        // build.toml is invisible to compute_sha.
+        // name/version/revision/source/arch/abi/dep-shas. This
+        // fixture's build.toml declares no extra cache inputs, so it
+        // does not affect compute_sha beyond the revision already
+        // loaded onto the manifest.
         let throwaway_root = tempdir("idx-happy-pre");
         write_lib(
             &throwaway_root,

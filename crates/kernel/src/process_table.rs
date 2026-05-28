@@ -22,7 +22,7 @@ use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
 
 use crate::ofd::FileType;
-use crate::process::Process;
+use crate::process::{Process, ProcessState};
 
 /// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
 ///
@@ -252,6 +252,26 @@ impl ProcessTable {
     /// Cleans up all cross-process resources: pipe ref counts, socket pipes,
     /// and listening socket backlogs in the global pipe table.
     pub fn remove_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
+        let result = self.remove_process_inner(pid, false)?;
+        self.prune_empty_limbo_groups();
+        Some(result)
+    }
+
+    /// Reap a wait-consumed process from the table. If it is still the
+    /// process-group leader for remaining members, keep a resource-free limbo
+    /// record so getpgid/setpgid can still address the leader until the group
+    /// empties.
+    pub fn reap_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
+        let result = self.remove_process_inner(pid, true)?;
+        self.prune_empty_limbo_groups();
+        Some(result)
+    }
+
+    fn remove_process_inner(
+        &mut self,
+        pid: u32,
+        retain_limbo_leader: bool,
+    ) -> Option<RemoveProcessResult> {
         let proc = self.processes.remove(&pid)?;
         let mut host_net_closes: Vec<i32> = Vec::new();
 
@@ -390,10 +410,64 @@ impl ProcessTable {
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
 
+        if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {
+            self.processes.insert(pid, Self::limbo_process_from(&proc));
+        }
+
         Some(RemoveProcessResult {
             process: proc,
             host_net_closes,
         })
+    }
+
+    fn group_has_member(&self, pgid: u32) -> bool {
+        self.processes.iter().any(|(&pid, proc)| {
+            pid != pgid && proc.pgid == pgid && proc.state != ProcessState::Limbo
+        })
+    }
+
+    fn limbo_process_from(proc: &Process) -> Process {
+        let mut limbo = Process::new(proc.pid);
+        limbo.ppid = proc.ppid;
+        limbo.uid = proc.uid;
+        limbo.gid = proc.gid;
+        limbo.euid = proc.euid;
+        limbo.egid = proc.egid;
+        limbo.pgid = proc.pgid;
+        limbo.sid = proc.sid;
+        limbo.is_session_leader = proc.is_session_leader;
+        limbo.state = ProcessState::Limbo;
+        limbo.exit_status = proc.exit_status;
+        limbo.cwd = proc.cwd.clone();
+        limbo.environ = proc.environ.clone();
+        limbo.argv = proc.argv.clone();
+        limbo.umask = proc.umask;
+        limbo.nice = proc.nice;
+        limbo.rlimits = proc.rlimits;
+        limbo.thread_name = proc.thread_name;
+        limbo.has_exec = proc.has_exec;
+
+        // Process::new preopens stdio; limbo records must not own any
+        // resources because teardown already ran for the real process.
+        limbo.fd_table = crate::fd::FdTable::new();
+        limbo.ofd_table = crate::ofd::OfdTable::new();
+        limbo
+    }
+
+    pub fn prune_empty_limbo_groups(&mut self) {
+        let limbo_pids: Vec<u32> = self
+            .processes
+            .iter()
+            .filter(|(pid, proc)| {
+                let pid = **pid;
+                proc.state == ProcessState::Limbo && proc.pgid == pid && !self.group_has_member(pid)
+            })
+            .map(|(pid, _)| *pid)
+            .collect();
+
+        for pid in limbo_pids {
+            self.processes.remove(&pid);
+        }
     }
 
     /// Set the current pid for syscall dispatch.
@@ -726,9 +800,144 @@ impl ProcessTable {
     pub fn pids_in_group(&self, pgid: u32) -> Vec<u32> {
         self.processes
             .iter()
-            .filter(|(_, p)| p.pgid == pgid)
+            .filter(|(_, p)| p.pgid == pgid && p.state != ProcessState::Limbo)
             .map(|(&pid, _)| pid)
             .collect()
+    }
+
+    /// Return the recorded parent pid for a process.
+    pub fn parent_pid(&self, pid: u32) -> Option<u32> {
+        self.processes.get(&pid).map(|proc| proc.ppid)
+    }
+
+    /// Mark a process as terminated by a host-observed signal death.
+    ///
+    /// Used when the worker dies without reaching the normal `SYS_EXIT`
+    /// path. The process remains in the table as an Exited zombie until its
+    /// parent reaps it, so wait semantics stay kernel-owned.
+    pub fn mark_process_signaled(&mut self, pid: u32, signum: u32) -> Result<(), Errno> {
+        let proc = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
+        proc.state = ProcessState::Exited;
+        proc.exit_status = 128 + signum as i32;
+        Ok(())
+    }
+
+    /// Poll for a waitable child owned by `parent_pid` matching a waitpid-style
+    /// target.
+    ///
+    /// Returns:
+    /// - `Ok(Some((child_pid, wait_status)))` when a matching zombie exists.
+    /// - `Ok(None)` when a matching child exists but is still running.
+    /// - `Err(ECHILD)` when no matching child belongs to the parent.
+    pub fn poll_waitable_child(
+        &self,
+        parent_pid: u32,
+        target_pid: i32,
+    ) -> Result<Option<(u32, i32)>, Errno> {
+        let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+        let mut saw_matching_child = false;
+
+        for (&child_pid, child) in &self.processes {
+            if child.ppid != parent_pid {
+                continue;
+            }
+            if !Self::child_matches_wait_target(child_pid, child, target_pid, parent.pgid) {
+                continue;
+            }
+            saw_matching_child = true;
+            if child.state == ProcessState::Exited {
+                return Ok(Some((
+                    child_pid,
+                    Self::wait_status_from_exit_status(child.exit_status),
+                )));
+            }
+        }
+
+        if saw_matching_child {
+            Ok(None)
+        } else {
+            Err(Errno::ECHILD)
+        }
+    }
+
+    /// True when `child_pid` is an exited direct child of `parent_pid`.
+    pub fn is_exited_child_of(&self, parent_pid: u32, child_pid: u32) -> bool {
+        self.processes
+            .get(&child_pid)
+            .map(|child| child.ppid == parent_pid && child.state == ProcessState::Exited)
+            .unwrap_or(false)
+    }
+
+    fn child_matches_wait_target(
+        child_pid: u32,
+        child: &Process,
+        target_pid: i32,
+        parent_pgid: u32,
+    ) -> bool {
+        if target_pid > 0 {
+            return child_pid == target_pid as u32;
+        }
+        if target_pid == -1 {
+            return true;
+        }
+        if target_pid == 0 {
+            return child.pgid == parent_pgid;
+        }
+        let Some(target_pgid) = target_pid.checked_neg().map(|pid| pid as u32) else {
+            return false;
+        };
+        child.pgid == target_pgid
+    }
+
+    fn wait_status_from_exit_status(exit_status: i32) -> i32 {
+        if exit_status >= 128 {
+            (exit_status - 128) & 0x7f
+        } else {
+            (exit_status & 0xff) << 8
+        }
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[test]
+    fn reap_retains_group_leader_as_limbo_until_group_empties() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.fork_process(100, 101).unwrap();
+        table.fork_process(100, 102).unwrap();
+        table.processes.get_mut(&101).unwrap().pgid = 101;
+        table.processes.get_mut(&102).unwrap().pgid = 101;
+        table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
+
+        table.reap_process(101).expect("reap group leader");
+
+        let limbo = table.get(101).expect("limbo leader retained");
+        assert_eq!(limbo.state, ProcessState::Limbo);
+        assert_eq!(limbo.pgid, 101);
+        assert_eq!(limbo.ppid, 100);
+
+        table.processes.get_mut(&102).unwrap().state = ProcessState::Exited;
+        table.reap_process(102).expect("reap final member");
+        assert!(table.get(101).is_none(), "empty limbo group is pruned");
+    }
+
+    #[test]
+    fn remove_process_does_not_create_limbo_record() {
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+        table.fork_process(100, 101).unwrap();
+        table.fork_process(100, 102).unwrap();
+        table.processes.get_mut(&101).unwrap().pgid = 101;
+        table.processes.get_mut(&102).unwrap().pgid = 101;
+        table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
+
+        table.remove_process(101).expect("remove group leader");
+
+        assert!(table.get(101).is_none());
+        assert_eq!(table.get(102).unwrap().pgid, 101);
     }
 }
 
@@ -756,4 +965,76 @@ pub fn current_tid() -> u32 {
 #[inline]
 pub fn current_pid() -> u32 {
     unsafe { (*GLOBAL_PROCESS_TABLE.0.get()).current_pid() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_waitable_child_returns_exited_child_status() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        let child = table.processes.get_mut(&11).unwrap();
+        child.ppid = 10;
+        child.state = ProcessState::Exited;
+        child.exit_status = 7;
+
+        assert_eq!(
+            table.poll_waitable_child(10, -1).unwrap(),
+            Some((11, 7 << 8))
+        );
+    }
+
+    #[test]
+    fn poll_waitable_child_encodes_signal_status() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        table.mark_process_signaled(11, 15).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
+
+        assert_eq!(table.poll_waitable_child(10, 11).unwrap(), Some((11, 15)));
+    }
+
+    #[test]
+    fn poll_waitable_child_distinguishes_running_from_no_child() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.create_process(11).unwrap();
+        table.processes.get_mut(&11).unwrap().ppid = 10;
+
+        assert_eq!(table.poll_waitable_child(10, -1).unwrap(), None);
+        assert_eq!(table.poll_waitable_child(10, 12), Err(Errno::ECHILD));
+    }
+
+    #[test]
+    fn poll_waitable_child_matches_process_groups() {
+        let mut table = ProcessTable::new();
+        table.create_process(10).unwrap();
+        table.processes.get_mut(&10).unwrap().pgid = 20;
+        table.create_process(11).unwrap();
+        {
+            let child = table.processes.get_mut(&11).unwrap();
+            child.ppid = 10;
+            child.pgid = 20;
+            child.state = ProcessState::Exited;
+            child.exit_status = 0;
+        }
+        table.create_process(12).unwrap();
+        {
+            let child = table.processes.get_mut(&12).unwrap();
+            child.ppid = 10;
+            child.pgid = 30;
+            child.state = ProcessState::Exited;
+            child.exit_status = 1;
+        }
+
+        assert_eq!(table.poll_waitable_child(10, 0).unwrap(), Some((11, 0)));
+        assert_eq!(
+            table.poll_waitable_child(10, -30).unwrap(),
+            Some((12, 1 << 8))
+        );
+    }
 }

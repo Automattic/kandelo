@@ -1,0 +1,168 @@
+kind = "program"
+name = "posix-utils-lite"
+version = "0.1.0"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/posix-utils-lite/build-posix-utils-lite.sh"
+
+[[outputs]]
+name = "ar"
+wasm = "ar.wasm"
+
+[[outputs]]
+name = "asa"
+wasm = "asa.wasm"
+
+[[outputs]]
+name = "cal"
+wasm = "cal.wasm"
+
+[[outputs]]
+name = "cflow"
+wasm = "cflow.wasm"
+
+[[outputs]]
+name = "compress"
+wasm = "compress.wasm"
+
+[[outputs]]
+name = "ctags"
+wasm = "ctags.wasm"
+
+[[outputs]]
+name = "cxref"
+wasm = "cxref.wasm"
+
+[[outputs]]
+name = "ed"
+wasm = "ed.wasm"
+
+[[outputs]]
+name = "ex"
+wasm = "ex.wasm"
+
+[[outputs]]
+name = "fuser"
+wasm = "fuser.wasm"
+
+[[outputs]]
+name = "gencat"
+wasm = "gencat.wasm"
+
+[[outputs]]
+name = "getconf"
+wasm = "getconf.wasm"
+
+[[outputs]]
+name = "gettext"
+wasm = "gettext.wasm"
+
+[[outputs]]
+name = "iconv"
+wasm = "iconv.wasm"
+
+[[outputs]]
+name = "ipcrm"
+wasm = "ipcrm.wasm"
+
+[[outputs]]
+name = "ipcs"
+wasm = "ipcs.wasm"
+
+[[outputs]]
+name = "lex"
+wasm = "lex.wasm"
+
+[[outputs]]
+name = "locale"
+wasm = "locale.wasm"
+
+[[outputs]]
+name = "logger"
+wasm = "logger.wasm"
+
+[[outputs]]
+name = "man"
+wasm = "man.wasm"
+
+[[outputs]]
+name = "more"
+wasm = "more.wasm"
+
+[[outputs]]
+name = "msgfmt"
+wasm = "msgfmt.wasm"
+
+[[outputs]]
+name = "ngettext"
+wasm = "ngettext.wasm"
+
+[[outputs]]
+name = "nm"
+wasm = "nm.wasm"
+
+[[outputs]]
+name = "patch"
+wasm = "patch.wasm"
+
+[[outputs]]
+name = "pax"
+wasm = "pax.wasm"
+
+[[outputs]]
+name = "ps"
+wasm = "ps.wasm"
+
+[[outputs]]
+name = "renice"
+wasm = "renice.wasm"
+
+[[outputs]]
+name = "strings"
+wasm = "strings.wasm"
+
+[[outputs]]
+name = "strip"
+wasm = "strip.wasm"
+
+[[outputs]]
+name = "tabs"
+wasm = "tabs.wasm"
+
+[[outputs]]
+name = "tput"
+wasm = "tput.wasm"
+
+[[outputs]]
+name = "uncompress"
+wasm = "uncompress.wasm"
+
+[[outputs]]
+name = "uudecode"
+wasm = "uudecode.wasm"
+
+[[outputs]]
+name = "uuencode"
+wasm = "uuencode.wasm"
+
+[[outputs]]
+name = "what"
+wasm = "what.wasm"
+
+[[outputs]]
+name = "xgettext"
+wasm = "xgettext.wasm"
+
+[[outputs]]
+name = "yacc"
+wasm = "yacc.wasm"

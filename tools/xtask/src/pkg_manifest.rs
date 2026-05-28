@@ -38,13 +38,12 @@
 //!
 //! The cache-key sha for a library is computed over
 //! `(name, version, revision, source.url, source.sha256, sorted transitive
-//! dep cache-key shas)`. Identical inputs → identical cache path →
-//! shared artifact. Changing any input invalidates downstream consumers
-//! automatically.
+//! dep cache-key shas, plus declared build.toml inputs when present)`.
+//! Identical inputs → identical cache path → shared artifact. Changing
+//! any input invalidates downstream consumers automatically.
 //!
 //! `revision` is the knob for "same upstream source, different build
-//! flags" — bump when the build script or cross-compile config changes
-//! in a way that affects the output.
+//! flags" that are not already declared as build inputs.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -537,6 +536,12 @@ impl Default for Build {
 #[derive(Clone, Debug)]
 pub struct BuildToml {
     pub script_path: String,
+    /// Repo-relative files or directories that are part of the build
+    /// recipe even though they are not represented by package deps,
+    /// source URL/sha, or declared outputs. The resolver folds their
+    /// contents into `compute_sha` so changes to shared build helpers
+    /// invalidate package caches automatically.
+    pub inputs: Vec<String>,
     pub repo_url: String,
     pub commit: String,
     /// Publish-time revision counter for this package on this project.
@@ -576,6 +581,8 @@ pub enum BinarySource {
 #[serde(deny_unknown_fields)]
 struct BuildTomlRaw {
     script_path: String,
+    #[serde(default)]
+    inputs: Vec<String>,
     repo_url: String,
     commit: String,
     #[serde(default)]
@@ -633,8 +640,12 @@ impl BuildToml {
                 return Err("build.toml [binary] must specify one of: index_url, url".to_string());
             }
         };
+        for input in &raw.inputs {
+            validate_build_input_path(input)?;
+        }
         Ok(BuildToml {
             script_path: raw.script_path,
+            inputs: raw.inputs,
             repo_url: raw.repo_url,
             commit: raw.commit,
             revision: raw.revision,
@@ -650,6 +661,26 @@ impl BuildToml {
             std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
+}
+
+fn validate_build_input_path(path: &str) -> Result<(), String> {
+    let p = Path::new(path);
+    if path.is_empty() {
+        return Err("build.toml inputs entries must not be empty".to_string());
+    }
+    if p.is_absolute() {
+        return Err(format!(
+            "build.toml inputs entries must be repo-relative paths, got {path:?}"
+        ));
+    }
+    if p.components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "build.toml inputs entries must not contain '..', got {path:?}"
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -2245,12 +2276,10 @@ install_hints = { darwin = "brew install cmake", linux = "apt install cmake" }
 
         // cmake has explicit probe + hints.
         assert_eq!(m.host_tools[1].name, "cmake");
-        assert!(
-            m.host_tools[1]
-                .probe
-                .version_regex
-                .starts_with("cmake version")
-        );
+        assert!(m.host_tools[1]
+            .probe
+            .version_regex
+            .starts_with("cmake version"));
         assert_eq!(
             m.host_tools[1]
                 .install_hints
@@ -2722,6 +2751,10 @@ archive_sha256 = "33333333333333333333333333333333333333333333333333333333333333
     fn parses_build_toml_with_indexed_binary() {
         let toml = r#"
 script_path = "packages/registry/foo/build-foo.sh"
+inputs = [
+  "packages/registry/foo/build-foo.sh",
+  "scripts/build-helpers.sh",
+]
 repo_url = "https://github.com/example/foo.git"
 commit = "abc123"
 
@@ -2730,6 +2763,13 @@ index_url = "https://example.com/releases/download/binaries-abi-v{abi}/index.tom
 "#;
         let bt = BuildToml::parse(toml).expect("should parse");
         assert_eq!(bt.script_path, "packages/registry/foo/build-foo.sh");
+        assert_eq!(
+            bt.inputs,
+            vec![
+                "packages/registry/foo/build-foo.sh".to_string(),
+                "scripts/build-helpers.sh".to_string(),
+            ]
+        );
         assert_eq!(bt.repo_url, "https://github.com/example/foo.git");
         assert_eq!(bt.commit, "abc123");
         assert!(matches!(
@@ -2814,6 +2854,34 @@ index_url = "https://example.com/index.toml"
             err.contains("typo_field") || err.contains("unknown"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn rejects_build_toml_with_absolute_input() {
+        let toml = r#"
+script_path = "x"
+inputs = ["/abs/path"]
+repo_url = "y"
+commit = "z"
+[binary]
+index_url = "https://example.com/index.toml"
+"#;
+        let err = BuildToml::parse(toml).unwrap_err();
+        assert!(err.contains("repo-relative"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_build_toml_with_parent_dir_input() {
+        let toml = r#"
+script_path = "x"
+inputs = ["../outside"]
+repo_url = "y"
+commit = "z"
+[binary]
+index_url = "https://example.com/index.toml"
+"#;
+        let err = BuildToml::parse(toml).unwrap_err();
+        assert!(err.contains(".."), "got: {err}");
     }
 
     #[test]

@@ -8,7 +8,8 @@
  *   mariadb           (process)  — depends-on mariadb-bootstrap
  *   wp-config-init    (internal) — dependency marker. The browser host writes
  *                                  runtime wp-config.php before dinit starts.
- *   php-fpm           (process)  — depends-on mariadb, wp-config-init
+ *   smtp-capture      (process)  — local SMTP sink storing mail under /var/mail
+ *   php-fpm           (process)  — depends-on mariadb, wp-config-init, smtp-capture
  *   nginx             (process)  — depends-on php-fpm
  *
  * Produces: apps/browser-demos/public/lamp.vfs
@@ -31,18 +32,23 @@ import {
   webPresentation,
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
+import {
+  populateSmtpCaptureConfig,
+  smtpCaptureService,
+  wordpressSmtpCaptureMuPlugin,
+} from "./smtp-capture-helpers";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 // WordPress + MariaDB source-tree fallbacks so the demo builds in a
-// fetch-only checkout. The mariadbd binary comes from the resolver
-// (already in the binary release); the system_tables SQL files are
-// shipped only in the upstream MariaDB source tarball, so we extract
-// it on demand the same way build-mariadb-vfs-image.ts does.
+// fetch-only checkout. The mariadbd binary comes from the resolver;
+// the system_tables SQL files are shipped only in the upstream MariaDB
+// source tarball, so we extract them on demand the same way
+// build-mariadb-vfs-image.ts does.
 const WP_DIR = ensureSourceExtract(
   "wordpress",
   REPO_ROOT,
-  join(REPO_ROOT, "examples", "wordpress", "wordpress"),
+  join(REPO_ROOT, "packages", "registry", "wordpress", "wordpress"),
 );
 const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages", "registry", "mariadb", "mariadb-install");
 const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
@@ -58,6 +64,7 @@ const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
+const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 
@@ -391,11 +398,12 @@ function buildServices(): DinitService[] {
       type: "internal",
       restart: false,
     },
+    smtpCaptureService(),
     {
       name: "php-fpm",
       type: "process",
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
-      dependsOn: ["mariadb", "wp-config-init"],
+      dependsOn: ["mariadb", "wp-config-init", "smtp-capture"],
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },
@@ -412,7 +420,10 @@ function buildServices(): DinitService[] {
 
 async function main() {
   try { lstatSync(MARIADB_PATH); }
-  catch { console.error("mariadbd.wasm not found. fetch-binaries should provide programs/mariadb/mariadbd.wasm"); process.exit(1); }
+  catch {
+    console.error("mariadbd.wasm not found. Run scripts/fetch-binaries.sh or bash packages/registry/mariadb/build-mariadb.sh");
+    process.exit(1);
+  }
 
   // 256 MiB initial — WordPress core + SQLite plugin (~80 MiB) + MariaDB
   // binary (~14 MiB) + bootstrap SQL (~1 MiB) plus headroom. Worker entry
@@ -425,16 +436,18 @@ async function main() {
   populateBootstrapShell(fs);
   populateMariadbDataDirs(fs);
 
-  console.log("Writing nginx + php-fpm binaries...");
+  console.log("Writing nginx + php-fpm + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
   writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/msmtpd", new Uint8Array(readFileSync(MSMTPD_PATH)));
 
   console.log("Writing MariaDB binary + bootstrap SQL...");
   populateMariadb(fs);
 
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
+  populateSmtpCaptureConfig(fs);
 
   // Bootstrap scripts + default wp-config. The browser host overwrites
   // wp-config.php with the current page prefix/protocol before dinit starts.
@@ -451,48 +464,11 @@ async function main() {
 
   // WordPress-specific dirs + mu-plugin
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
-  // Keep side-effectful operations disabled, but leave outbound HTTP enabled
-  // so WordPress can exercise the browser/kernel external request bridge.
-  const muPlugin = `<?php
-add_filter('pre_wp_mail', '__return_false');
-add_filter('http_request_args', function($args) {
-    $ca_file = '/etc/ssl/certs/ca-certificates.crt';
-    if (is_readable($ca_file)) {
-        $args['sslcertificates'] = $ca_file;
-    }
-    return $args;
-});
-add_filter('wp_admin_canonical_url', function($url) {
-    $home_path = wp_parse_url(home_url('/'), PHP_URL_PATH);
-    if (!$home_path || '/' === $home_path) {
-        return $url;
-    }
-
-    $prefix = rtrim($home_path, '/');
-    $parts = wp_parse_url($url);
-    if (empty($parts['path']) || 0 === strpos($parts['path'], $prefix . '/')) {
-        return $url;
-    }
-
-    $rebuilt = '';
-    if (!empty($parts['scheme'])) {
-        $rebuilt .= $parts['scheme'] . '://';
-    }
-    if (!empty($parts['host'])) {
-        $rebuilt .= $parts['host'];
-    }
-    if (!empty($parts['port'])) {
-        $rebuilt .= ':' . $parts['port'];
-    }
-    $rebuilt .= $prefix . '/' . ltrim($parts['path'], '/');
-    if (!empty($parts['query'])) {
-        $rebuilt .= '?' . $parts['query'];
-    }
-    return $rebuilt;
-});
-if (!defined('DISALLOW_FILE_MODS')) define('DISALLOW_FILE_MODS', true);
-`;
-  writeVfsFile(fs, "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php", muPlugin);
+  writeVfsFile(
+    fs,
+    "/var/www/html/wp-content/mu-plugins/wasm-optimizations.php",
+    wordpressSmtpCaptureMuPlugin(),
+  );
 
   console.log("Writing WordPress core files...");
   const excludeDb = (rel: string) =>

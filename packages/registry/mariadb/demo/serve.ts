@@ -15,6 +15,7 @@
 import { readFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { resolve, dirname } from "path";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
+import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../../../..");
@@ -37,9 +38,13 @@ function loadBytes(path: string): ArrayBuffer {
 }
 
 async function main() {
-    const mysqldWasm = resolve(installDir, "bin/mariadbd");
+    const resolverPath = useWasm64
+        ? "programs/wasm64/mariadb/mariadbd.wasm"
+        : "programs/mariadb/mariadbd.wasm";
+    const mysqldWasm = tryResolveBinary(resolverPath)
+        ?? resolve(installDir, "bin/mariadbd.wasm");
     if (!existsSync(mysqldWasm)) {
-        console.error("mariadbd not found. Run: bash packages/registry/mariadb/build-mariadb.sh");
+        console.error("mariadbd.wasm not found. Run: scripts/fetch-binaries.sh or bash packages/registry/mariadb/build-mariadb.sh");
         process.exit(1);
     }
 

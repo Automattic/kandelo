@@ -4,9 +4,9 @@
  *   - Interactive: xterm.js terminal with PTY-backed I/O (real terminal)
  *   - Batch (Script): textarea for entering a full script, click Run
  *
- * The shell environment is pre-built into a VFS image (shell.vfs) containing
- * dash, symlinks, magic database, vim runtime, and system configs. At runtime
- * we restore the image, rewrite lazy asset URLs, and spawn bash.
+ * The shell environment is pre-built into a VFS image (shell.vfs) layered on
+ * the canonical base rootfs. At runtime we restore the image, rewrite lazy
+ * asset URLs to Vite-emitted assets, and spawn bash from the VFS.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
@@ -17,7 +17,6 @@ import {
 } from "../../lib/init/shell-lazy-files";
 import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
 import kernelWasmUrl from "@kernel-wasm?url";
-import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/shell.vfs.zst?url";
 import "@xterm/xterm/css/xterm.css";
 
@@ -73,18 +72,13 @@ function hideStatus() {
 
 // --- Binary loading ---
 let kernelBytes: ArrayBuffer | null = null;
-let bashBytes: ArrayBuffer | null = null;
-
 async function loadBinaries(): Promise<void> {
-  if (kernelBytes && bashBytes && vfsImageBuf) return;
+  if (kernelBytes && vfsImageBuf) return;
 
-  setStatus("Loading kernel, shell, and VFS image...", "loading");
+  setStatus("Loading kernel and VFS image...", "loading");
 
-  // Eagerly fetch the kernel, bash (needed for spawning), and VFS image.
-  // dash and utility metadata are baked into the image.
-  const [kernelResult, bashResult, vfsResult] = await Promise.all([
+  const [kernelResult, vfsResult] = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(bashWasmUrl).then((r) => r.arrayBuffer()),
     fetch(VFS_IMAGE_URL).then((r) => {
       if (!r.ok) {
         throw new Error(
@@ -96,11 +90,9 @@ async function loadBinaries(): Promise<void> {
     }),
   ]);
   kernelBytes = kernelResult;
-  bashBytes = bashResult;
   vfsImageBuf = vfsResult;
   loadInfo = [
     `Kernel: ${(kernelBytes.byteLength / 1024).toFixed(0)}KB`,
-    `bash: ${(bashBytes.byteLength / 1024).toFixed(0)}KB`,
     `VFS image: ${(vfsImageBuf.byteLength / (1024 * 1024)).toFixed(1)}MB`,
   ].join(", ");
 }
@@ -195,7 +187,7 @@ async function startInteractiveShell() {
     // (xterm, gnome-terminal, ssh, etc.) typically spawn bash as a login
     // shell too, so this matches what users expect: /etc/profile is
     // sourced, aliases and environment set up there are applied.
-    const exitCode = await ptyTerminal.spawn(bashBytes!, ["bash", "-l", "-i"], {
+    const exitCode = await ptyTerminal.spawnFromVfs("/usr/bin/bash", ["bash", "-l", "-i"], {
       env: SHELL_ENV,
       cwd: DEMO_HOME,
       uid: DEMO_UID,
@@ -431,13 +423,14 @@ async function runBatch() {
 
     await kernel.init(kernelBytes!);
 
-    const exitCode = await kernel.spawn(bashBytes!, ["bash"], {
+    const { exit } = await kernel.spawnFromVfs("/usr/bin/bash", ["bash"], {
       env: SHELL_ENV.filter((kv) => !kv.startsWith("TERM=") && !kv.startsWith("PS1=")).concat("TERM=dumb"),
       cwd: DEMO_HOME,
       uid: DEMO_UID,
       gid: DEMO_GID,
       stdin: encoder.encode(commands),
     });
+    const exitCode = await exit;
 
     appendBatchOutput(`\nExited with code ${exitCode}\n`, "info");
     hideStatus();

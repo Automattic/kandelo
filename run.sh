@@ -150,8 +150,8 @@ has_programs() {
 has_nginx()         { pkg_has_output nginx nginx.wasm || [ -f "$REPO_ROOT/packages/registry/nginx/nginx.wasm" ]; }
 has_php()           { pkg_has_output php php.wasm || [ -f "$REPO_ROOT/packages/registry/php/php-src/sapi/cli/php" ]; }
 has_php_fpm()       { pkg_has_output php php-fpm.wasm || [ -f "$REPO_ROOT/packages/registry/php/php-src/sapi/fpm/php-fpm" ]; }
-has_mariadb()       { pkg_has_output mariadb mariadbd.wasm || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd" ]; }
-has_mariadb64()     { pkg_has_output mariadb mariadbd.wasm wasm64 || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64/bin/mariadbd" ]; }
+has_mariadb()       { pkg_has_output mariadb mariadbd.wasm || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install/bin/mariadbd.wasm" ]; }
+has_mariadb64()     { pkg_has_output mariadb mariadbd.wasm wasm64 || [ -f "$REPO_ROOT/packages/registry/mariadb/mariadb-install-64/bin/mariadbd.wasm" ]; }
 has_mariadb_vfs()   { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst; }
 has_mariadb64_vfs() { pkg_has_output mariadb-vfs mariadb-vfs.vfs.zst wasm64; }
 has_wordpress()     { [ -f "$REPO_ROOT/packages/registry/wordpress/wordpress/wp-settings.php" ]; }
@@ -163,6 +163,7 @@ has_grep()          { pkg_has_output grep grep.wasm || [ -f "$REPO_ROOT/packages
 has_sed()           { pkg_has_output sed sed.wasm || [ -f "$REPO_ROOT/packages/registry/sed/bin/sed.wasm" ]; }
 has_redis()         { pkg_has_output redis redis-server.wasm || [ -f "$REPO_ROOT/packages/registry/redis/bin/redis-server.wasm" ]; }
 has_dinit()         { pkg_has_output dinit dinit.wasm || [ -f "$REPO_ROOT/packages/registry/dinit/bin/dinit.wasm" ]; }
+has_msmtpd()        { pkg_has_output msmtpd msmtpd.wasm || [ -f "$REPO_ROOT/packages/registry/msmtpd/bin/msmtpd.wasm" ]; }
 has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/packages/registry/cpython/bin/python.wasm" ]; }
 has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/python.vfs.zst" ]; }
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst" ]; }
@@ -250,6 +251,16 @@ need_sysroot() {
         # an existing sysroot without forcing a full musl rebuild.
         bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$REPO_ROOT/sysroot"
         info "Sysroot"
+    fi
+}
+
+need_fork_instrument() {
+    if [ ! -x "$REPO_ROOT/tools/bin/wasm-fork-instrument" ]; then
+        step "Building wasm-fork-instrument"
+        bash "$REPO_ROOT/scripts/build-fork-instrument-tool.sh"
+        info "wasm-fork-instrument built"
+    else
+        info "wasm-fork-instrument"
     fi
 }
 
@@ -492,6 +503,7 @@ build_wp_vfs() {
     fi
     # Source needed only if we have to build the VFS from scratch.
     build_wordpress
+    build_msmtpd
     step "Building WordPress VFS image"
     # Delegate to the package-system wrapper so install_local_binary
     # populates local-binaries/programs/wasm32/wordpress.vfs.zst (the path
@@ -615,6 +627,24 @@ build_dinit() {
         info "dinit built"
     else
         info "dinit"
+    fi
+}
+
+build_msmtpd() {
+    if has_msmtpd; then
+        info "msmtpd"
+        return
+    fi
+    need_kernel
+    need_sdk
+    need_sysroot
+    need_fork_instrument
+    if ! has_msmtpd; then
+        step "Building msmtpd"
+        bash "$REPO_ROOT/packages/registry/msmtpd/build-msmtpd.sh"
+        info "msmtpd built"
+    else
+        info "msmtpd"
     fi
 }
 
@@ -773,6 +803,7 @@ build_lamp_vfs() {
         return
     fi
     build_wordpress
+    build_msmtpd
     step "Building LAMP VFS image"
     # Delegate to the package-system wrapper so install_local_binary
     # populates local-binaries/programs/wasm32/lamp.vfs.zst (the path the
@@ -1342,6 +1373,7 @@ build_target() {
         mariadb-test) build_mariadb_test_vfs ;;
         redis)      build_redis ;;
         dinit)      build_dinit ;;
+        msmtpd)     build_msmtpd ;;
         cpython)    build_cpython ;;
         python-vfs) build_python_vfs ;;
         perl-vfs)   build_perl_vfs ;;
@@ -1404,7 +1436,7 @@ BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-
 # a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
 # listed: they're toolchain prerequisites for source builds, and any
 # `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1456,6 +1488,7 @@ build_all() {
     build_mariadb_vfs
     build_redis
     build_dinit
+    build_msmtpd
     build_cpython
     build_python_vfs
     build_perl
@@ -1570,6 +1603,11 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/dinit/dinit-src" \
                    "$REPO_ROOT/packages/registry/dinit/bin"
             warn "Cleaned dinit" ;;
+        msmtpd)
+            rm -rf "$REPO_ROOT/packages/registry/msmtpd/msmtp-src" \
+                   "$REPO_ROOT/packages/registry/msmtpd/bin" \
+                   "$REPO_ROOT/packages/registry/msmtpd"/msmtp-*.tar.xz
+            warn "Cleaned msmtpd" ;;
         cpython)
             rm -rf "$REPO_ROOT/packages/registry/cpython/cpython-src" \
                    "$REPO_ROOT/packages/registry/cpython/cpython-host-build" \
@@ -1768,7 +1806,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -2077,6 +2115,8 @@ cmd_list() {
     echo "  mariadb     MariaDB 10.5 Wasm binary (wasm32)     $(has_mariadb && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  mariadb64   MariaDB 10.5 Wasm binary (wasm64)     $(has_mariadb64 && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  redis       Redis 7.2 Wasm binary                 $(has_redis && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  dinit       dinit service supervisor              $(has_dinit && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  msmtpd      Local SMTP capture server             $(has_msmtpd && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  cpython     CPython 3.13 Wasm binary              $(has_cpython && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  python-vfs  Python stdlib VFS image               $(has_python_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  perl-vfs    Perl stdlib VFS image                 $(has_perl_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

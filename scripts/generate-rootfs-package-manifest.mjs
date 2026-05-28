@@ -1,0 +1,240 @@
+#!/usr/bin/env node
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function usage() {
+  return [
+    "Usage: node scripts/generate-rootfs-package-manifest.mjs [options]",
+    "",
+    "Options:",
+    "  --packages <path>  package mapping TOML (default: images/rootfs/PACKAGES.toml)",
+    "  --out <path>       generated mkrootfs manifest fragment (required)",
+    "  --help             print this message",
+    "",
+  ].join("\n");
+}
+
+function parseArgs(argv) {
+  let packages = "images/rootfs/PACKAGES.toml";
+  let out;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") return "help";
+    if (arg === "--packages") {
+      packages = argv[++i];
+      if (!packages) throw new Error("--packages requires a value");
+      continue;
+    }
+    if (arg === "--out") {
+      out = argv[++i];
+      if (!out) throw new Error("--out requires a value");
+      continue;
+    }
+    throw new Error(`unknown argument: ${arg}`);
+  }
+  if (!out) throw new Error("--out is required");
+  return { packages, out };
+}
+
+function stripComment(line) {
+  let inString = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"' && line[i - 1] !== "\\") inString = !inString;
+    if (ch === "#" && !inString) return line.slice(0, i);
+  }
+  return line;
+}
+
+function parseValue(raw) {
+  const value = raw.trim();
+  if (value.startsWith("[") && value.endsWith("]")) {
+    const inner = value.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0)
+      .map((part) => parseValue(part));
+  }
+  if (value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  if (/^[0-9]+$/.test(value)) return Number(value);
+  throw new Error(`unsupported TOML value: ${raw}`);
+}
+
+function parsePackagesToml(text) {
+  const root = {
+    default_install: "lazy",
+    lazy_url_prefix: "",
+    packages: [],
+  };
+  let currentPackage = null;
+  let currentOutput = null;
+
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = stripComment(lines[i]).trim();
+    if (!line) continue;
+
+    if (line === "[[packages]]") {
+      currentPackage = { outputs: [] };
+      root.packages.push(currentPackage);
+      currentOutput = null;
+      continue;
+    }
+    if (line === "[[packages.outputs]]") {
+      if (!currentPackage) {
+        throw new Error(`line ${i + 1}: [[packages.outputs]] before [[packages]]`);
+      }
+      currentOutput = {};
+      currentPackage.outputs.push(currentOutput);
+      continue;
+    }
+
+    const match = /^([A-Za-z0-9_]+)\s*=\s*(.+)$/.exec(line);
+    if (!match) throw new Error(`line ${i + 1}: expected key = value`);
+    const [, key] = match;
+    let raw = match[2];
+    if (raw.trim().startsWith("[") && !raw.trim().endsWith("]")) {
+      const startLine = i + 1;
+      while (++i < lines.length) {
+        const next = stripComment(lines[i]).trim();
+        raw += ` ${next}`;
+        if (next.endsWith("]")) break;
+      }
+      if (!raw.trim().endsWith("]")) {
+        throw new Error(`line ${startLine}: unterminated array`);
+      }
+    }
+    const target = currentOutput ?? currentPackage ?? root;
+    target[key] = parseValue(raw);
+  }
+
+  return root;
+}
+
+function asArray(value, name) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) {
+    throw new Error(`${name} must be an array of strings`);
+  }
+  return value;
+}
+
+function modeString(mode) {
+  if (typeof mode === "string" && /^[0-7]+$/.test(mode)) {
+    return mode.padStart(4, "0");
+  }
+  const numeric = mode ?? 0o755;
+  if (!Number.isInteger(numeric) || numeric < 0) {
+    throw new Error(`mode must be a non-negative integer`);
+  }
+  return numeric.toString(8).padStart(4, "0");
+}
+
+function requireString(obj, key, context) {
+  const value = obj[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${context}: ${key} is required`);
+  }
+  if (/\s/.test(value)) {
+    throw new Error(`${context}: ${key} must not contain whitespace`);
+  }
+  return value;
+}
+
+function resolveBinary(binaryRel) {
+  const local = resolve(repoRoot, "local-binaries", binaryRel);
+  if (existsSync(local)) return local;
+  const fetched = resolve(repoRoot, "binaries", binaryRel);
+  if (existsSync(fetched)) return fetched;
+  throw new Error(
+    `binary not found for rootfs package output: ${binaryRel}\n` +
+      `  checked: ${local}\n` +
+      `  checked: ${fetched}\n` +
+      `  Run scripts/fetch-binaries.sh or build the package locally.`,
+  );
+}
+
+function manifestToken(value, context) {
+  if (/\s/.test(value)) throw new Error(`${context} contains whitespace: ${value}`);
+  return value;
+}
+
+function generateManifest(config) {
+  const lines = [
+    "# Generated by scripts/generate-rootfs-package-manifest.mjs; do not edit.",
+    "",
+  ];
+  const installed = [];
+
+  for (const pkg of config.packages) {
+    const packageName = requireString(pkg, "name", "package");
+    const packageInstall = pkg.install ?? config.default_install ?? "lazy";
+    if (!Array.isArray(pkg.outputs) || pkg.outputs.length === 0) {
+      throw new Error(`package ${packageName}: at least one output is required`);
+    }
+
+    lines.push(`# ${packageName}`);
+    for (const output of pkg.outputs) {
+      const binaryRel = requireString(output, "binary", `package ${packageName} output`);
+      const path = requireString(output, "path", `package ${packageName} output ${binaryRel}`);
+      const install = output.install ?? packageInstall;
+      const mode = modeString(output.mode);
+      const uid = output.uid ?? 0;
+      const gid = output.gid ?? 0;
+      const resolvedBinary = resolveBinary(binaryRel);
+
+      if (install === "lazy") {
+        const lazyUrl = output.lazy_url ?? `${config.lazy_url_prefix ?? ""}${binaryRel}`;
+        const size = statSync(resolvedBinary).size;
+        lines.push(
+          `${path} f ${mode} ${uid} ${gid} lazy_url=${manifestToken(lazyUrl, "lazy_url")} lazy_size=${size}`,
+        );
+      } else if (install === "eager") {
+        const src = relative(repoRoot, resolvedBinary);
+        lines.push(`${path} f ${mode} ${uid} ${gid} src=${manifestToken(src, "src")}`);
+      } else {
+        throw new Error(`package ${packageName} output ${binaryRel}: unsupported install=${install}`);
+      }
+
+      installed.push(path);
+      for (const alias of asArray(output.aliases, `package ${packageName} output ${binaryRel} aliases`)) {
+        lines.push(`${alias} l 0777 ${uid} ${gid} target=${path}`);
+        installed.push(alias);
+      }
+    }
+    lines.push("");
+  }
+
+  return { manifest: lines.join("\n"), installed };
+}
+
+try {
+  const args = parseArgs(process.argv.slice(2));
+  if (args === "help") {
+    process.stdout.write(usage());
+    process.exit(0);
+  }
+
+  const packagesPath = resolve(repoRoot, args.packages);
+  const outPath = resolve(repoRoot, args.out);
+  const config = parsePackagesToml(readFileSync(packagesPath, "utf8"));
+  const { manifest, installed } = generateManifest(config);
+
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, manifest);
+  process.stdout.write(
+    `generated ${relative(repoRoot, outPath)} with ${installed.length} VFS path(s)\n`,
+  );
+  for (const path of installed) process.stdout.write(`  ${path}\n`);
+} catch (e) {
+  const msg = e instanceof Error ? e.message : String(e);
+  process.stderr.write(`generate-rootfs-package-manifest: ${msg}\n`);
+  process.exit(1);
+}

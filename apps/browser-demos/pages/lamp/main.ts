@@ -4,12 +4,14 @@
  *
  *   mariadb-bootstrap (scripted) — populates /data via mariadbd --bootstrap
  *   mariadb           (process)  — daemon, listens 127.0.0.1:3306
- *   wp-config-init    (scripted) — sed-substitutes @@APP_PATH@@/@@PROTO@@
+ *   wp-config-init    (internal) — dependency marker for the host-rendered
+ *                                  runtime wp-config.php.
+ *   smtp-capture      (process)  — local SMTP sink on 127.0.0.1:1025
  *   php-fpm           (process)  — FastCGI on 127.0.0.1:9000
  *   nginx             (process)  — HTTP on :8080
  *
- * The page passes WP_APP_PATH and WP_PROTO via env so wp-config-init
- * can finalize wp-config.php's runtime values (WP_HOME / WP_SITEURL).
+ * The page patches wp-config.php before boot with runtime-dependent
+ * values (WP_HOME / WP_SITEURL).
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { setupServiceWorkerFetchBridge } from "../../lib/init/sw-bridge-fetch";
@@ -19,6 +21,7 @@ import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
+  renderWordPressConfig,
   wordpressConfigTemplate,
 } from "../../lib/init/wordpress-runtime-config";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
@@ -283,6 +286,7 @@ async function start() {
     writeVfsFile(fs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
     writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
     writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
+    writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("mariadb", APP_PATH, PROTO));
     ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
     writeVfsFile(
       fs,

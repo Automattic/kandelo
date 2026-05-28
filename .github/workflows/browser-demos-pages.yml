@@ -14,6 +14,8 @@ on:
       - "host/package.json"
       - "host/package-lock.json"
       - "host/src/**"
+      - "host/tsconfig.json"
+      - "host/tsup.config.ts"
       - "web-libs/**"
       - "Cargo.lock"
       - "Cargo.toml"
@@ -46,6 +48,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # Exercise GitHub's post-Node-20 action runtime now, before it becomes
+  # the runner default for actions that still declare node20.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -64,13 +71,22 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             apps/browser-demos/package-lock.json
+            host/package-lock.json
 
       - name: Install root dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Install host dependencies
+        working-directory: host
+        run: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+
       - name: Install browser demo dependencies
         working-directory: apps/browser-demos
         run: npm ci --no-audit --no-fund
+
+      - name: Typecheck host package
+        working-directory: host
+        run: npm run typecheck
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v22

@@ -111,6 +111,114 @@
       "__abi_"
     ]
   },
+  "host_adapter": {
+    "manifest": {
+      "abi_version": 12,
+      "channel_data_offset": 72,
+      "channel_data_size": 65536,
+      "channel_header_size": 72,
+      "channel_min_size": 65608,
+      "magic": 1296781399,
+      "manifest_size": 40,
+      "manifest_version": 1,
+      "optional_kernel_features": 0,
+      "required_host_adapter_version": 1,
+      "required_worker_features": 7
+    },
+    "manifest_fields": [
+      {
+        "name": "magic",
+        "offset": 0,
+        "size": 4
+      },
+      {
+        "name": "manifestVersion",
+        "offset": 4,
+        "size": 2
+      },
+      {
+        "name": "manifestSize",
+        "offset": 6,
+        "size": 2
+      },
+      {
+        "name": "abiVersion",
+        "offset": 8,
+        "size": 4
+      },
+      {
+        "name": "requiredHostAdapterVersion",
+        "offset": 12,
+        "size": 4
+      },
+      {
+        "name": "requiredWorkerFeatures",
+        "offset": 16,
+        "size": 4
+      },
+      {
+        "name": "optionalKernelFeatures",
+        "offset": 20,
+        "size": 4
+      },
+      {
+        "name": "channelHeaderSize",
+        "offset": 24,
+        "size": 4
+      },
+      {
+        "name": "channelDataOffset",
+        "offset": 28,
+        "size": 4
+      },
+      {
+        "name": "channelDataSize",
+        "offset": 32,
+        "size": 4
+      },
+      {
+        "name": "channelMinSize",
+        "offset": 36,
+        "size": 4
+      }
+    ],
+    "optional_kernel_exports": [
+      "kernel_set_cwd",
+      "kernel_set_max_addr",
+      "kernel_set_process_argv"
+    ],
+    "optional_kernel_features": 0,
+    "required_kernel_exports": [
+      "__abi_version",
+      "kernel_alloc_scratch",
+      "kernel_create_process",
+      "kernel_get_parent_pid",
+      "kernel_handle_channel",
+      "kernel_host_adapter_manifest_len",
+      "kernel_host_adapter_manifest_ptr",
+      "kernel_mark_process_signaled",
+      "kernel_reap_exited_child",
+      "kernel_remove_process",
+      "kernel_set_mode",
+      "kernel_wait4_poll"
+    ],
+    "required_worker_features": 7,
+    "version": 1,
+    "worker_features": [
+      {
+        "bit": 2,
+        "name": "atomics_wait"
+      },
+      {
+        "bit": 4,
+        "name": "atomics_wait_async"
+      },
+      {
+        "bit": 1,
+        "name": "shared_array_buffer"
+      }
+    ]
+  },
   "host_intercepted_syscalls": [
     {
       "name": "SYS_EXECVE",
@@ -526,6 +634,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_parent_pid",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_pipe_ofds",
       "signature": "(i64,i32) -> (i32)"
     },
@@ -691,6 +804,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_host_adapter_manifest_len",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_host_adapter_manifest_ptr",
+      "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_init",
       "signature": "(i32) -> ()"
     },
@@ -798,6 +921,11 @@
       "kind": "func",
       "name": "kernel_madvise",
       "signature": "(i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mark_process_signaled",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1026,6 +1154,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_reap_exited_child",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_reap_process",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_recv",
       "signature": "(i32,i64,i32,i32) -> (i32)"
     },
@@ -1158,6 +1296,11 @@
       "kind": "func",
       "name": "kernel_set_process_argv",
       "signature": "(i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_process_credentials",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1443,6 +1586,11 @@
       "kind": "func",
       "name": "kernel_wait4",
       "signature": "(i32,i64,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait4_poll",
+      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",

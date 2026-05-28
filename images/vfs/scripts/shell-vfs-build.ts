@@ -3,14 +3,14 @@
  *
  * Encapsulates everything build-shell-vfs-image.ts used to do inline so
  * the WordPress (SQLite) and LAMP demo builders can stand up the same
- * shell layout — dash + bash + coreutils + grep + sed + extended
- * utilities + magic + vim/nethack lazy archives + /etc/profile/gitconfig
- * /services — on top of which they layer nginx/php-fpm (+ MariaDB) and
- * the WordPress tree.
+ * shell layout — shell-specific config plus optional bash/coreutils/grep/sed
+ * and extended utilities — on top of which demos layer nginx/php-fpm
+ * (+ MariaDB) and the WordPress tree.
  *
  * The flag that distinguishes Shell from WP/LAMP usage is `eagerBinaries`.
- * Shell uses `false`: dash, magic, lazy archives, and lazy utility stubs
- * are baked into shell.vfs.zst; utility bytes are fetched on first exec.
+ * Shell uses `false`: the canonical rootfs provides base utility lazy stubs,
+ * then shell.vfs.zst overlays demo lazy stubs and lazy archives. Utility
+ * bytes are fetched on first exec.
  * WP/LAMP use `true`: every tool binary is baked into the image, because those
  * demos run in `kernelOwnedFs: true` mode where the main thread has no
  * VFS to lazy-register against.
@@ -80,11 +80,16 @@ export interface ShellVfsOptions {
    * for demos that run in `kernelOwnedFs: true` mode — there is no
    * main-thread filesystem to lazy-register against post-boot.
    *
-   * When false, dash + magic + the lazy archives (vim.zip, nethack.zip)
-   * + lazy utility stubs are baked; the page only rewrites the stubs'
-   * placeholder URLs to Vite's deployed asset URLs at runtime.
+   * When false, utility binaries are stored as lazy VFS metadata. If a base
+   * rootfs image was provided, only missing shell-demo tools are added here.
    */
   eagerBinaries: boolean;
+  /**
+   * When true, `fs` is already initialized from the canonical base rootfs.
+   * Base utilities and static system files are left in place; this helper only
+   * overlays shell/demo-specific directories, config, and non-base tools.
+   */
+  baseProvided?: boolean;
 }
 
 /**
@@ -101,22 +106,31 @@ export function populateShellEnvironment(
   fs: MemoryFileSystem,
   opts: ShellVfsOptions,
 ): void {
-  populateSystem(fs);
-  populateDash(fs);
-  if (opts.eagerBinaries) populateBash(fs);
-  if (!opts.eagerBinaries) populateLazyBinaries(fs);
-  populateCoreutilsSymlinks(fs);
-  if (opts.eagerBinaries) populateCoreutils(fs);
-  populateGrepSedSymlinks(fs);
-  if (opts.eagerBinaries) {
-    populateGrep(fs);
-    populateSed(fs);
+  if (opts.baseProvided) {
+    populateShellOverlay(fs);
+  } else {
+    populateSystem(fs);
+    populateDash(fs);
+    if (opts.eagerBinaries) populateBash(fs);
+    if (!opts.eagerBinaries) populateLazyBinaries(fs);
+    populateCoreutilsSymlinks(fs);
+    if (opts.eagerBinaries) populateCoreutils(fs);
+    populateGrepSedSymlinks(fs);
+    if (opts.eagerBinaries) {
+      populateGrep(fs);
+      populateSed(fs);
+    }
+    populateBaseExtendedSymlinks(fs);
+    if (opts.eagerBinaries) populateBaseExtendedBinaries(fs);
+    populateMagic(fs);
+  }
+  if (opts.baseProvided && !opts.eagerBinaries) {
+    populateLazyBinaries(fs, { skipExisting: true });
   }
   populateVimArchive(fs);
   populateNetHackArchive(fs);
-  populateExtendedSymlinks(fs);
-  if (opts.eagerBinaries) populateExtendedBinaries(fs);
-  populateMagic(fs);
+  populateDemoExtendedSymlinks(fs);
+  if (opts.eagerBinaries) populateDemoExtendedBinaries(fs);
 }
 
 // ── System layout ───────────────────────────────────────────────
@@ -197,6 +211,43 @@ function populateSystem(fs: MemoryFileSystem): void {
   writeVfsFile(fs, "/etc/profile", profile);
 }
 
+function populateShellOverlay(fs: MemoryFileSystem): void {
+  for (const dir of [
+    "/usr/local", "/usr/local/bin", "/usr/share/file", "/dev", "/usr/sbin",
+    "/home/.nethack",
+  ]) {
+    ensureDirRecursive(fs, dir);
+  }
+  fs.chmod("/home/.nethack", 0o777);
+
+  writeVfsFile(fs, "/home/.nethack/perm", "");
+
+  const gitconfig = [
+    "[maintenance]",
+    "\tauto = false",
+    "[gc]",
+    "\tauto = 0",
+    "[core]",
+    "\tpager = cat",
+    "[user]",
+    "\tname = User",
+    "\temail = user@wasm.local",
+    "[init]",
+    "\tdefaultBranch = main",
+    "",
+  ].join("\n");
+  writeVfsFile(fs, "/etc/gitconfig", gitconfig);
+
+  const profile = [
+    "alias ls='ls --color=auto'",
+    "alias grep='grep --color=auto'",
+    "export USER=player",
+    "export NETHACKOPTIONS='windowtype:curses,color,lit_corridor,hilite_pet'",
+    "",
+  ].join("\n");
+  writeVfsFile(fs, "/etc/profile", profile);
+}
+
 // ── Shell binaries ──────────────────────────────────────────────
 
 function populateDash(fs: MemoryFileSystem): void {
@@ -245,8 +296,12 @@ function populateSed(fs: MemoryFileSystem): void {
   writeVfsBinary(fs, "/usr/bin/sed", new Uint8Array(bytes));
 }
 
-function populateLazyBinaries(fs: MemoryFileSystem): void {
+function populateLazyBinaries(
+  fs: MemoryFileSystem,
+  opts: { skipExisting?: boolean } = {},
+): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
+    if (opts.skipExisting && fs.getLazyEntry(spec.vfsPath)) continue;
     const resolved = resolveVfsArtifact(spec.resolverPath, spec.id);
     const size = statSync(resolved).size;
     fs.registerLazyFile(
@@ -260,12 +315,15 @@ function populateLazyBinaries(fs: MemoryFileSystem): void {
 
 // ── Extended toolset ────────────────────────────────────────────
 
-function populateExtendedSymlinks(fs: MemoryFileSystem): void {
+function populateBaseExtendedSymlinks(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/bc", "/bin/bc");
   symlink(fs, "/usr/bin/file", "/bin/file");
-  symlink(fs, "/usr/bin/less", "/bin/less");
   symlink(fs, "/usr/bin/m4", "/bin/m4");
   symlink(fs, "/usr/bin/make", "/bin/make");
+}
+
+function populateDemoExtendedSymlinks(fs: MemoryFileSystem): void {
+  symlink(fs, "/usr/bin/less", "/bin/less");
   symlink(fs, "/usr/bin/tar", "/bin/tar");
   symlink(fs, "/usr/bin/curl", "/bin/curl");
   symlink(fs, "/usr/bin/wget", "/bin/wget");
@@ -322,14 +380,23 @@ function populateExtendedSymlinks(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/lsof", "/bin/lsof");
 }
 
-/** Bake every extended-toolset binary. Required for kernelOwnedFs demos. */
-function populateExtendedBinaries(fs: MemoryFileSystem): void {
+function populateBaseExtendedBinaries(fs: MemoryFileSystem): void {
   const extended: Array<{ relPath: string; vfsPath: string }> = [
     { relPath: "programs/bc.wasm",                   vfsPath: "/usr/bin/bc" },
     { relPath: "programs/file/file.wasm",            vfsPath: "/usr/bin/file" },
-    { relPath: "programs/less.wasm",                 vfsPath: "/usr/bin/less" },
     { relPath: "programs/m4.wasm",                   vfsPath: "/usr/bin/m4" },
     { relPath: "programs/make.wasm",                 vfsPath: "/usr/bin/make" },
+  ];
+  for (const { relPath, vfsPath } of extended) {
+    const bytes = readFileSync(resolveBinary(relPath));
+    writeVfsBinary(fs, vfsPath, new Uint8Array(bytes));
+  }
+}
+
+/** Bake every demo extended-toolset binary. Required for kernelOwnedFs demos. */
+function populateDemoExtendedBinaries(fs: MemoryFileSystem): void {
+  const extended: Array<{ relPath: string; vfsPath: string }> = [
+    { relPath: "programs/less.wasm",                 vfsPath: "/usr/bin/less" },
     { relPath: "programs/tar.wasm",                  vfsPath: "/usr/bin/tar" },
     { relPath: "programs/curl.wasm",                 vfsPath: "/usr/bin/curl" },
     { relPath: "programs/wget.wasm",                 vfsPath: "/usr/bin/wget" },

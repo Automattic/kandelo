@@ -28,6 +28,31 @@ describe("manifest parser — directories, files, symlinks, devices", () => {
         { kind: "node", path: "/etc/foo", type: "f", mode: 0o644, uid: 0, gid: 0, src: "configs/foo", lineNumber: 1 },
       ]);
     });
+
+    it("parses a lazy file entry", () => {
+      expect(parseManifest("/usr/bin/find  f  0755  0  0  lazy_url=binaries/find.wasm  lazy_size=12345\n")).toEqual([
+        {
+          kind: "node",
+          path: "/usr/bin/find",
+          type: "f",
+          mode: 0o755,
+          uid: 0,
+          gid: 0,
+          lazyUrl: "binaries/find.wasm",
+          lazySize: 12345,
+          lineNumber: 1,
+        },
+      ]);
+    });
+
+    it("rejects lazy files missing their paired size or URL", () => {
+      expect(() => parseManifest("/usr/bin/find  f  0755  0  0  lazy_url=binaries/find.wasm\n")).toThrow(/lazy_size=/);
+      expect(() => parseManifest("/usr/bin/find  f  0755  0  0  lazy_size=12345\n")).toThrow(/lazy_url=/);
+    });
+
+    it("rejects lazy files combined with src=", () => {
+      expect(() => parseManifest("/usr/bin/find  f  0755  0  0  src=find.wasm  lazy_url=binaries/find.wasm  lazy_size=12345\n")).toThrow(/cannot combine/);
+    });
   });
 
   describe("symlinks", () => {

@@ -20,7 +20,7 @@ import { CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
-import { resolveBinary } from "../../../../host/src/binary-resolver";
+import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
 import type {
     CentralizedWorkerInitMessage,
     CentralizedThreadInitMessage,
@@ -128,12 +128,13 @@ let currentTestWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | null = nu
 let needsRestart = false;
 
 async function main() {
-    const mysqldPath = resolve(installDir, "bin/mariadbd");
+    const mysqldPath = tryResolveBinary("programs/mariadb/mariadbd.wasm")
+        ?? resolve(installDir, "bin/mariadbd.wasm");
     const mysqlTestPath = resolveBinary("programs/mariadb/mysqltest.wasm");
     const kernelPath = resolveBinary("kernel.wasm");
 
     for (const [label, path] of [
-        ["mariadbd", mysqldPath],
+        ["mariadbd.wasm", mysqldPath],
         ["mysqltest.wasm", mysqlTestPath],
         ["kernel wasm", kernelPath],
         ["mysql-test dir", mysqlTestDir],

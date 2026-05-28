@@ -383,6 +383,136 @@ test.skip("@slow redis: starts and accepts commands", async ({ page }) => {
 
 // ─── WordPress ──────────────────────────────────────────────────────
 
+test("@slow wordpress: captures wp_mail through local SMTP sink", async ({
+  page,
+}) => {
+  test.setTimeout(420_000);
+
+  const consoleMessages: string[] = [];
+  page.on("console", (msg) => {
+    consoleMessages.push(`[${msg.type()}] ${msg.text()}`);
+  });
+  page.on("pageerror", (err) => {
+    consoleMessages.push(`[pageerror] ${err.message}`);
+  });
+
+  await gotoOrSkip(page, "/pages/wordpress/?no-autoload=1");
+  await page.click("#start");
+  await waitForRunning(page, 180_000);
+  await page.waitForFunction(() => (window as any).__wordpressDemoReady === true, {
+    timeout: 30_000,
+  });
+
+  const clearResult = await page.evaluate(async () => {
+    return (window as any).__wordpressDemoRunCommand(
+      "rm -f /var/mail/smtp-capture/new/*.eml /var/mail/smtp-capture/tmp/*.eml",
+      undefined,
+      30_000,
+    );
+  });
+  expect(clearResult.exitCode, clearResult.stdout + clearResult.stderr).toBe(0);
+
+  const smtpTriggerPhp = `<?php
+define('WP_USE_THEMES', false);
+define('WP_INSTALLING', true);
+require __DIR__ . '/wp-load.php';
+
+$ok = wp_mail('playwright@example.test', 'SMTP capture Playwright', "SMTP_CAPTURE_PLAYWRIGHT\\n");
+header('Content-Type: text/plain');
+if (!$ok) {
+    http_response_code(500);
+    echo "failed\\n";
+    exit;
+}
+echo "sent\\n";
+`;
+
+  const writeResult = await page.evaluate(async (contents) => {
+    return (window as any).__wordpressDemoRunCommand(
+      "cat > /var/www/html/smtp-capture-playwright.php",
+      contents,
+      60_000,
+    );
+  }, smtpTriggerPhp);
+  expect(writeResult.exitCode, writeResult.stdout + writeResult.stderr).toBe(0);
+
+  const pingResult = await page.evaluate(async () => {
+    await (window as any).__wordpressDemoRunCommand(
+      "cat > /var/www/html/smtp-capture-ping.php",
+      `<?php
+header('Content-Type: text/plain');
+echo "pong\\n";
+`,
+      30_000,
+    );
+    const response = await fetch(`/app/smtp-capture-ping.php?ts=${Date.now()}`);
+    return { status: response.status, text: await response.text() };
+  });
+  expect(pingResult.status, pingResult.text).toBe(200);
+  expect(pingResult.text).toContain("pong");
+
+  const triggerResult = await page.evaluate(async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 240_000);
+    try {
+      const response = await fetch(`/app/smtp-capture-playwright.php?ts=${Date.now()}`, {
+        signal: controller.signal,
+      });
+      return { status: response.status, text: await response.text(), error: "" };
+    } catch (err: any) {
+      return { status: 0, text: "", error: err?.message || String(err) };
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+  if (triggerResult.status !== 200) {
+    const logs = await page.evaluate(async () => {
+      return (window as any).__wordpressDemoRunCommand(
+        "cat /var/log/php-fpm.log /var/log/nginx/error.log /var/log/msmtpd.log /var/log/smtp-capture.log 2>&1 || true",
+        undefined,
+        30_000,
+      );
+    });
+    console.log("=== WORDPRESS SMTP CONSOLE (last 50) ===");
+    for (const msg of consoleMessages.slice(-50)) console.log(msg);
+    console.log("=== WORDPRESS SMTP LOG ===");
+    console.log(await page.locator("#log").textContent());
+    console.log("=== WORDPRESS SERVICE LOGS ===");
+    console.log(logs.stdout + logs.stderr);
+  }
+  expect(triggerResult.status, triggerResult.text + triggerResult.error).toBe(200);
+  expect(triggerResult.text).toContain("sent");
+
+  const waitForMailScript = `
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do
+  for f in /var/mail/smtp-capture/new/*.eml; do
+    if [ -f "$f" ]; then
+      echo "captured:$f"
+      cat "$f"
+      grep -q 'SMTP_CAPTURE_PLAYWRIGHT' "$f" && grep -q 'playwright@example.test' "$f" && exit 0
+    fi
+  done
+  sleep 1
+done
+echo 'no captured SMTP message'
+echo 'new dir:'
+ls -la /var/mail/smtp-capture/new 2>&1 || true
+echo 'msmtpd log:'
+cat /var/log/msmtpd.log 2>&1 || true
+echo 'capture log:'
+cat /var/log/smtp-capture.log 2>&1 || true
+exit 1
+`;
+  const mailResult = await page.evaluate(async (script) => {
+    return (window as any).__wordpressDemoRunCommand(script, undefined, 90_000);
+  }, waitForMailScript);
+
+  expect(mailResult.exitCode, mailResult.stdout + mailResult.stderr).toBe(0);
+  expect(mailResult.stdout).toContain("SMTP_CAPTURE_PLAYWRIGHT");
+  expect(mailResult.stdout).toContain("playwright@example.test");
+  await assertNoError(page);
+});
+
 test("@slow wordpress: install, login, and load site editor from menu", async ({
   page,
 }) => {

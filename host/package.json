@@ -111,6 +111,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "typecheck": "tsup --dts-only",
     "docs": "typedoc",
     "test": "vitest",
     "prepack": "npm run build && bash ../scripts/prepare-host-package.sh"

@@ -1,0 +1,433 @@
+# Base VFS package composition.
+#
+# Entries here are turned into a generated mkrootfs manifest fragment by
+# scripts/generate-rootfs-package-manifest.mjs and included by
+# scripts/build-rootfs.sh. Package outputs default to lazy files: rootfs.vfs
+# stores an executable stub plus URL/size metadata, and the real Wasm is fetched
+# on first exec by hosts that run programs from the VFS.
+
+default_install = "lazy"
+
+# Runtime URL prefix for lazy files. The generator resolves binary sizes from
+# local-binaries/ first and binaries/ second, but the image metadata should name
+# the release/deployment URL. Hosts with a different deployment layout can
+# rewrite lazy file URLs after MemoryFileSystem.fromImage().
+lazy_url_prefix = "binaries/"
+
+[[packages]]
+name = "dash"
+
+[[packages.outputs]]
+binary = "programs/wasm32/dash.wasm"
+path = "/usr/bin/dash"
+aliases = ["/bin/dash", "/bin/sh", "/usr/bin/sh"]
+
+[[packages]]
+name = "bash"
+
+[[packages.outputs]]
+binary = "programs/wasm32/bash.wasm"
+path = "/usr/bin/bash"
+aliases = ["/bin/bash"]
+
+[[packages]]
+name = "coreutils"
+
+[[packages.outputs]]
+binary = "programs/wasm32/coreutils.wasm"
+path = "/usr/bin/coreutils"
+aliases = [
+  "/bin/coreutils",
+  "/usr/bin/[", "/bin/[",
+  "/usr/bin/arch", "/bin/arch",
+  "/usr/bin/b2sum", "/bin/b2sum",
+  "/usr/bin/base32", "/bin/base32",
+  "/usr/bin/base64", "/bin/base64",
+  "/usr/bin/basename", "/bin/basename",
+  "/usr/bin/basenc", "/bin/basenc",
+  "/usr/bin/cat", "/bin/cat",
+  "/usr/bin/chcon", "/bin/chcon",
+  "/usr/bin/chgrp", "/bin/chgrp",
+  "/usr/bin/chmod", "/bin/chmod",
+  "/usr/bin/chown", "/bin/chown",
+  "/usr/bin/chroot", "/bin/chroot",
+  "/usr/bin/cksum", "/bin/cksum",
+  "/usr/bin/comm", "/bin/comm",
+  "/usr/bin/cp", "/bin/cp",
+  "/usr/bin/csplit", "/bin/csplit",
+  "/usr/bin/cut", "/bin/cut",
+  "/usr/bin/date", "/bin/date",
+  "/usr/bin/dd", "/bin/dd",
+  "/usr/bin/df", "/bin/df",
+  "/usr/bin/dir", "/bin/dir",
+  "/usr/bin/dircolors", "/bin/dircolors",
+  "/usr/bin/dirname", "/bin/dirname",
+  "/usr/bin/du", "/bin/du",
+  "/usr/bin/echo", "/bin/echo",
+  "/usr/bin/env", "/bin/env",
+  "/usr/bin/expand", "/bin/expand",
+  "/usr/bin/expr", "/bin/expr",
+  "/usr/bin/factor", "/bin/factor",
+  "/usr/bin/false", "/bin/false",
+  "/usr/bin/fmt", "/bin/fmt",
+  "/usr/bin/fold", "/bin/fold",
+  "/usr/bin/groups", "/bin/groups",
+  "/usr/bin/head", "/bin/head",
+  "/usr/bin/hostid", "/bin/hostid",
+  "/usr/bin/id", "/bin/id",
+  "/usr/bin/install", "/bin/install",
+  "/usr/bin/join", "/bin/join",
+  "/usr/bin/link", "/bin/link",
+  "/usr/bin/ln", "/bin/ln",
+  "/usr/bin/logname", "/bin/logname",
+  "/usr/bin/ls", "/bin/ls",
+  "/usr/bin/md5sum", "/bin/md5sum",
+  "/usr/bin/mkdir", "/bin/mkdir",
+  "/usr/bin/mkfifo", "/bin/mkfifo",
+  "/usr/bin/mknod", "/bin/mknod",
+  "/usr/bin/mktemp", "/bin/mktemp",
+  "/usr/bin/mv", "/bin/mv",
+  "/usr/bin/nice", "/bin/nice",
+  "/usr/bin/nl", "/bin/nl",
+  "/usr/bin/nohup", "/bin/nohup",
+  "/usr/bin/nproc", "/bin/nproc",
+  "/usr/bin/numfmt", "/bin/numfmt",
+  "/usr/bin/od", "/bin/od",
+  "/usr/bin/paste", "/bin/paste",
+  "/usr/bin/pathchk", "/bin/pathchk",
+  "/usr/bin/pr", "/bin/pr",
+  "/usr/bin/printenv", "/bin/printenv",
+  "/usr/bin/printf", "/bin/printf",
+  "/usr/bin/ptx", "/bin/ptx",
+  "/usr/bin/pwd", "/bin/pwd",
+  "/usr/bin/readlink", "/bin/readlink",
+  "/usr/bin/realpath", "/bin/realpath",
+  "/usr/bin/rm", "/bin/rm",
+  "/usr/bin/rmdir", "/bin/rmdir",
+  "/usr/bin/runcon", "/bin/runcon",
+  "/usr/bin/seq", "/bin/seq",
+  "/usr/bin/sha1sum", "/bin/sha1sum",
+  "/usr/bin/sha224sum", "/bin/sha224sum",
+  "/usr/bin/sha256sum", "/bin/sha256sum",
+  "/usr/bin/sha384sum", "/bin/sha384sum",
+  "/usr/bin/sha512sum", "/bin/sha512sum",
+  "/usr/bin/shred", "/bin/shred",
+  "/usr/bin/shuf", "/bin/shuf",
+  "/usr/bin/sleep", "/bin/sleep",
+  "/usr/bin/sort", "/bin/sort",
+  "/usr/bin/split", "/bin/split",
+  "/usr/bin/stat", "/bin/stat",
+  "/usr/bin/stty", "/bin/stty",
+  "/usr/bin/sum", "/bin/sum",
+  "/usr/bin/sync", "/bin/sync",
+  "/usr/bin/tac", "/bin/tac",
+  "/usr/bin/tail", "/bin/tail",
+  "/usr/bin/tee", "/bin/tee",
+  "/usr/bin/test", "/bin/test",
+  "/usr/bin/timeout", "/bin/timeout",
+  "/usr/bin/touch", "/bin/touch",
+  "/usr/bin/tr", "/bin/tr",
+  "/usr/bin/true", "/bin/true",
+  "/usr/bin/truncate", "/bin/truncate",
+  "/usr/bin/tsort", "/bin/tsort",
+  "/usr/bin/tty", "/bin/tty",
+  "/usr/bin/uname", "/bin/uname",
+  "/usr/bin/unexpand", "/bin/unexpand",
+  "/usr/bin/uniq", "/bin/uniq",
+  "/usr/bin/unlink", "/bin/unlink",
+  "/usr/bin/vdir", "/bin/vdir",
+  "/usr/bin/wc", "/bin/wc",
+  "/usr/bin/whoami", "/bin/whoami",
+  "/usr/bin/yes", "/bin/yes",
+]
+
+[[packages]]
+name = "gawk"
+
+[[packages.outputs]]
+binary = "programs/wasm32/gawk.wasm"
+path = "/usr/bin/gawk"
+aliases = ["/usr/bin/awk", "/bin/awk"]
+
+[[packages]]
+name = "grep"
+
+[[packages.outputs]]
+binary = "programs/wasm32/grep.wasm"
+path = "/usr/bin/grep"
+aliases = ["/bin/grep", "/usr/bin/egrep", "/bin/egrep", "/usr/bin/fgrep", "/bin/fgrep"]
+
+[[packages]]
+name = "sed"
+
+[[packages.outputs]]
+binary = "programs/wasm32/sed.wasm"
+path = "/usr/bin/sed"
+aliases = ["/bin/sed"]
+
+[[packages]]
+name = "bc"
+
+[[packages.outputs]]
+binary = "programs/wasm32/bc.wasm"
+path = "/usr/bin/bc"
+aliases = ["/bin/bc"]
+
+[[packages]]
+name = "file"
+
+[[packages.outputs]]
+binary = "programs/wasm32/file/file.wasm"
+path = "/usr/bin/file"
+aliases = ["/bin/file"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/file/file-magic.lite"
+path = "/usr/share/misc/magic.mgc"
+install = "eager"
+mode = "0644"
+
+[[packages]]
+name = "m4"
+
+[[packages.outputs]]
+binary = "programs/wasm32/m4.wasm"
+path = "/usr/bin/m4"
+aliases = ["/bin/m4"]
+
+[[packages]]
+name = "make"
+
+[[packages.outputs]]
+binary = "programs/wasm32/make.wasm"
+path = "/usr/bin/make"
+aliases = ["/bin/make"]
+
+[[packages]]
+name = "findutils"
+
+[[packages.outputs]]
+binary = "programs/wasm32/findutils/find.wasm"
+path = "/usr/bin/find"
+aliases = ["/bin/find"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/findutils/xargs.wasm"
+path = "/usr/bin/xargs"
+aliases = ["/bin/xargs"]
+
+[[packages]]
+name = "diffutils"
+
+[[packages.outputs]]
+binary = "programs/wasm32/diffutils/diff.wasm"
+path = "/usr/bin/diff"
+aliases = ["/bin/diff"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/diffutils/cmp.wasm"
+path = "/usr/bin/cmp"
+aliases = ["/bin/cmp"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/diffutils/diff3.wasm"
+path = "/usr/bin/diff3"
+aliases = ["/bin/diff3"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/diffutils/sdiff.wasm"
+path = "/usr/bin/sdiff"
+aliases = ["/bin/sdiff"]
+
+[[packages]]
+name = "posix-utils-lite"
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ar.wasm"
+path = "/usr/bin/ar"
+aliases = ["/bin/ar"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/asa.wasm"
+path = "/usr/bin/asa"
+aliases = ["/bin/asa"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/cal.wasm"
+path = "/usr/bin/cal"
+aliases = ["/bin/cal"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/cflow.wasm"
+path = "/usr/bin/cflow"
+aliases = ["/bin/cflow"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/compress.wasm"
+path = "/usr/bin/compress"
+aliases = ["/bin/compress"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ctags.wasm"
+path = "/usr/bin/ctags"
+aliases = ["/bin/ctags"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/cxref.wasm"
+path = "/usr/bin/cxref"
+aliases = ["/bin/cxref"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ed.wasm"
+path = "/usr/bin/ed"
+aliases = ["/bin/ed"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ex.wasm"
+path = "/usr/bin/ex"
+aliases = ["/bin/ex"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/fuser.wasm"
+path = "/usr/bin/fuser"
+aliases = ["/bin/fuser"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/gencat.wasm"
+path = "/usr/bin/gencat"
+aliases = ["/bin/gencat"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/getconf.wasm"
+path = "/usr/bin/getconf"
+aliases = ["/bin/getconf"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/gettext.wasm"
+path = "/usr/bin/gettext"
+aliases = ["/bin/gettext"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/iconv.wasm"
+path = "/usr/bin/iconv"
+aliases = ["/bin/iconv"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ipcrm.wasm"
+path = "/usr/bin/ipcrm"
+aliases = ["/bin/ipcrm"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ipcs.wasm"
+path = "/usr/bin/ipcs"
+aliases = ["/bin/ipcs"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/lex.wasm"
+path = "/usr/bin/lex"
+aliases = ["/bin/lex"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/locale.wasm"
+path = "/usr/bin/locale"
+aliases = ["/bin/locale"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/logger.wasm"
+path = "/usr/bin/logger"
+aliases = ["/bin/logger"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/man.wasm"
+path = "/usr/bin/man"
+aliases = ["/bin/man"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/more.wasm"
+path = "/usr/bin/more"
+aliases = ["/bin/more"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/msgfmt.wasm"
+path = "/usr/bin/msgfmt"
+aliases = ["/bin/msgfmt"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ngettext.wasm"
+path = "/usr/bin/ngettext"
+aliases = ["/bin/ngettext"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/nm.wasm"
+path = "/usr/bin/nm"
+aliases = ["/bin/nm"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/patch.wasm"
+path = "/usr/bin/patch"
+aliases = ["/bin/patch"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/pax.wasm"
+path = "/usr/bin/pax"
+aliases = ["/bin/pax"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/ps.wasm"
+path = "/usr/bin/ps"
+aliases = ["/bin/ps"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/renice.wasm"
+path = "/usr/bin/renice"
+aliases = ["/bin/renice"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/strings.wasm"
+path = "/usr/bin/strings"
+aliases = ["/bin/strings"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/strip.wasm"
+path = "/usr/bin/strip"
+aliases = ["/bin/strip"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/tabs.wasm"
+path = "/usr/bin/tabs"
+aliases = ["/bin/tabs"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/tput.wasm"
+path = "/usr/bin/tput"
+aliases = ["/bin/tput"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/uncompress.wasm"
+path = "/usr/bin/uncompress"
+aliases = ["/bin/uncompress"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/uudecode.wasm"
+path = "/usr/bin/uudecode"
+aliases = ["/bin/uudecode"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/uuencode.wasm"
+path = "/usr/bin/uuencode"
+aliases = ["/bin/uuencode"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/what.wasm"
+path = "/usr/bin/what"
+aliases = ["/bin/what"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/xgettext.wasm"
+path = "/usr/bin/xgettext"
+aliases = ["/bin/xgettext"]
+
+[[packages.outputs]]
+binary = "programs/wasm32/posix-utils-lite/yacc.wasm"
+path = "/usr/bin/yacc"
+aliases = ["/bin/yacc"]

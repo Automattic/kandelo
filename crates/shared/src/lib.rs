@@ -959,6 +959,94 @@ pub mod abi {
     /// changes.
     pub const ABI_VALUE_CAPTURE_PREFIXES: &[&str] = &["__abi_"];
 
+    /// Binary manifest exported by the kernel so host adapters can validate the
+    /// boot-time host/kernel contract from Rust-owned metadata.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct HostAdapterManifest {
+        pub magic: u32,
+        pub manifest_version: u16,
+        pub manifest_size: u16,
+        pub abi_version: u32,
+        pub required_host_adapter_version: u32,
+        pub required_worker_features: u32,
+        pub optional_kernel_features: u32,
+        pub channel_header_size: u32,
+        pub channel_data_offset: u32,
+        pub channel_data_size: u32,
+        pub channel_min_size: u32,
+    }
+
+    pub const HOST_ADAPTER_MANIFEST_MAGIC: u32 = 0x4d4b_5057; // "WPKM", little-endian.
+    pub const HOST_ADAPTER_MANIFEST_VERSION: u16 = 1;
+    pub const HOST_ADAPTER_VERSION: u32 = 1;
+    pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
+
+    pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
+    pub const HOST_FEATURE_ATOMICS_WAIT: u32 = 1 << 1;
+    pub const HOST_FEATURE_ATOMICS_WAIT_ASYNC: u32 = 1 << 2;
+
+    pub const HOST_ADAPTER_REQUIRED_WORKER_FEATURES: u32 = HOST_FEATURE_SHARED_ARRAY_BUFFER
+        | HOST_FEATURE_ATOMICS_WAIT
+        | HOST_FEATURE_ATOMICS_WAIT_ASYNC;
+    pub const HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES: u32 = 0;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct HostAdapterFeature {
+        pub name: &'static str,
+        pub bit: u32,
+    }
+
+    pub const HOST_ADAPTER_WORKER_FEATURES: &[HostAdapterFeature] = &[
+        HostAdapterFeature {
+            name: "atomics_wait",
+            bit: HOST_FEATURE_ATOMICS_WAIT,
+        },
+        HostAdapterFeature {
+            name: "atomics_wait_async",
+            bit: HOST_FEATURE_ATOMICS_WAIT_ASYNC,
+        },
+        HostAdapterFeature {
+            name: "shared_array_buffer",
+            bit: HOST_FEATURE_SHARED_ARRAY_BUFFER,
+        },
+    ];
+
+    pub const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS: &[&str] = &[
+        "__abi_version",
+        "kernel_alloc_scratch",
+        "kernel_create_process",
+        "kernel_get_parent_pid",
+        "kernel_handle_channel",
+        "kernel_host_adapter_manifest_len",
+        "kernel_host_adapter_manifest_ptr",
+        "kernel_mark_process_signaled",
+        "kernel_reap_exited_child",
+        "kernel_remove_process",
+        "kernel_set_mode",
+        "kernel_wait4_poll",
+    ];
+
+    pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_set_cwd",
+        "kernel_set_max_addr",
+        "kernel_set_process_argv",
+    ];
+
+    pub static HOST_ADAPTER_MANIFEST: HostAdapterManifest = HostAdapterManifest {
+        magic: HOST_ADAPTER_MANIFEST_MAGIC,
+        manifest_version: HOST_ADAPTER_MANIFEST_VERSION,
+        manifest_size: HOST_ADAPTER_MANIFEST_SIZE,
+        abi_version: crate::ABI_VERSION,
+        required_host_adapter_version: HOST_ADAPTER_VERSION,
+        required_worker_features: HOST_ADAPTER_REQUIRED_WORKER_FEATURES,
+        optional_kernel_features: HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES,
+        channel_header_size: crate::channel::HEADER_SIZE as u32,
+        channel_data_offset: crate::channel::DATA_OFFSET as u32,
+        channel_data_size: crate::channel::DATA_SIZE as u32,
+        channel_min_size: crate::channel::MIN_CHANNEL_SIZE as u32,
+    };
+
     /// One named syscall number in the host/kernel ABI metadata.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct AbiSyscallNumber {
@@ -1374,7 +1462,12 @@ pub mod abi {
 
     #[cfg(test)]
     mod tests {
-        use super::extended_syscalls::SYSCALLS;
+        use super::{
+            HOST_ADAPTER_MANIFEST, HOST_ADAPTER_MANIFEST_MAGIC, HOST_ADAPTER_MANIFEST_SIZE,
+            HOST_ADAPTER_MANIFEST_VERSION, HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS,
+            HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS, HOST_ADAPTER_REQUIRED_WORKER_FEATURES,
+            HOST_ADAPTER_VERSION, HOST_ADAPTER_WORKER_FEATURES, extended_syscalls::SYSCALLS,
+        };
         use crate::Syscall;
 
         #[test]
@@ -1393,6 +1486,83 @@ pub mod abi {
                     syscall.name
                 );
                 prev = Some(syscall.number);
+            }
+        }
+
+        #[test]
+        fn host_adapter_manifest_matches_channel_and_abi_metadata() {
+            assert_eq!(HOST_ADAPTER_MANIFEST.magic, HOST_ADAPTER_MANIFEST_MAGIC);
+            assert_eq!(
+                HOST_ADAPTER_MANIFEST.manifest_version,
+                HOST_ADAPTER_MANIFEST_VERSION
+            );
+            assert_eq!(
+                HOST_ADAPTER_MANIFEST.manifest_size,
+                HOST_ADAPTER_MANIFEST_SIZE
+            );
+            assert_eq!(HOST_ADAPTER_MANIFEST.abi_version, crate::ABI_VERSION);
+            assert_eq!(
+                HOST_ADAPTER_MANIFEST.required_host_adapter_version,
+                HOST_ADAPTER_VERSION
+            );
+            assert_eq!(
+                HOST_ADAPTER_MANIFEST.required_worker_features,
+                HOST_ADAPTER_REQUIRED_WORKER_FEATURES
+            );
+            assert_eq!(
+                HOST_ADAPTER_MANIFEST.channel_header_size,
+                crate::channel::HEADER_SIZE as u32
+            );
+            assert_eq!(
+                HOST_ADAPTER_MANIFEST.channel_data_offset,
+                crate::channel::DATA_OFFSET as u32
+            );
+            assert_eq!(
+                HOST_ADAPTER_MANIFEST.channel_data_size,
+                crate::channel::DATA_SIZE as u32
+            );
+            assert_eq!(
+                HOST_ADAPTER_MANIFEST.channel_min_size,
+                crate::channel::MIN_CHANNEL_SIZE as u32
+            );
+        }
+
+        #[test]
+        fn host_adapter_export_and_feature_lists_are_sorted_unique() {
+            assert_sorted_unique(HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS);
+            assert_sorted_unique(HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS);
+
+            let mut required_worker_features = 0;
+            let mut previous_name = "";
+            for feature in HOST_ADAPTER_WORKER_FEATURES {
+                assert!(previous_name < feature.name, "features must be sorted");
+                assert_ne!(feature.bit, 0, "feature bit must be non-zero");
+                assert_eq!(
+                    feature.bit.count_ones(),
+                    1,
+                    "feature bit must be a single bit"
+                );
+                assert_eq!(
+                    required_worker_features & feature.bit,
+                    0,
+                    "feature bits must be unique"
+                );
+                required_worker_features |= feature.bit;
+                previous_name = feature.name;
+            }
+            assert_eq!(
+                required_worker_features,
+                HOST_ADAPTER_REQUIRED_WORKER_FEATURES
+            );
+        }
+
+        fn assert_sorted_unique(items: &[&str]) {
+            let mut prev = None;
+            for item in items {
+                if let Some(prev) = prev {
+                    assert!(prev < *item, "items must be sorted and unique");
+                }
+                prev = Some(*item);
             }
         }
     }
