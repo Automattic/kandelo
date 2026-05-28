@@ -12528,14 +12528,20 @@ pub extern "C" fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: 
 
 /// thread_exit — clean up thread state in the kernel.
 /// Called by the host when a thread Worker exits.
-/// Removes the thread from the process's thread table.
+/// Removes the thread from the process's thread table and returns the
+/// CLONE_CHILD_CLEARTID pointer recorded in ThreadInfo, or 0 if no clear-tid
+/// wake is needed. Errors are returned as negative errno values.
+///
+/// WHY: an i64 keeps every wasm32 `usize` pointer nonnegative while reserving
+/// negative results for errno; narrowing to i32 would make high pointers
+/// indistinguishable from failures.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i32 {
+pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i64 {
     let _gkl = GklGuard::acquire();
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
     match kernel_thread_exit_in_table(pt, pid, tid) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
+        Ok(ctid_ptr) => ctid_ptr as i64,
+        Err(e) => -(e as i64),
     }
 }
 
@@ -12543,10 +12549,11 @@ fn kernel_thread_exit_in_table(
     pt: &mut crate::process_table::ProcessTable,
     pid: u32,
     tid: u32,
-) -> Result<(), Errno> {
+) -> Result<usize, Errno> {
     let (proc, locks) = pt.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
     let mut host = WasmHostIO;
-    syscalls::cleanup_exiting_thread(proc, locks, &mut host, tid)
+    syscalls::cleanup_exiting_thread_with_state(proc, locks, &mut host, tid)
+        .map(|thread| thread.ctid_ptr)
 }
 
 #[cfg(test)]
@@ -12558,14 +12565,14 @@ mod thread_exit_tests {
         let mut pt = crate::process_table::ProcessTable::new();
         let first = pt.create_process().unwrap();
         let second = pt.create_process().unwrap();
-        let tid = pt.create_thread(first, first, 0, 0, 0).unwrap();
+        let tid = pt.create_thread(first, first, 0, 0, 0x2000).unwrap();
 
         assert_eq!(
             kernel_thread_exit_in_table(&mut pt, second, tid),
             Err(Errno::ESRCH)
         );
         assert!(pt.get(first).unwrap().get_thread(tid).is_some());
-        assert_eq!(kernel_thread_exit_in_table(&mut pt, first, tid), Ok(()));
+        assert_eq!(kernel_thread_exit_in_table(&mut pt, first, tid), Ok(0x2000));
         assert!(pt.get(first).unwrap().get_thread(tid).is_none());
         assert_eq!(
             kernel_thread_exit_in_table(&mut pt, first, tid),

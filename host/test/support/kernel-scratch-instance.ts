@@ -435,7 +435,7 @@ function signatures(
     },
     kernel_thread_exit: {
       parameters: [i32, i32],
-      result: i32,
+      result: i64,
     },
     kernel_thread_has_deliverable: {
       parameters: [i32, i32],

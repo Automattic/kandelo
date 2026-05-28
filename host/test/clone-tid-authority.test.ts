@@ -108,7 +108,6 @@ function makeCloneHarness(
       memory,
       explicitMaxAddr: true,
     }]]),
-    threadCtidPtrs: new Map<string, number>(),
     threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
     usePolling: true,
   });
@@ -190,7 +189,6 @@ function makeChannelOwnershipHarness() {
         explicitMaxAddr: true,
       }],
     ]),
-    threadCtidPtrs: new Map<string, number>(),
     threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
     usePolling: true,
   });
@@ -342,7 +340,7 @@ describe("kernel TID authority", () => {
     await flushCloneContinuation();
 
     expect(onClone.mock.calls[0][0]).toMatchObject({ ctidPtr: 0 });
-    expect((harness.worker as any).threadCtidPtrs.size).toBe(0);
+    expect(harness.notifyThreadExit).not.toHaveBeenCalled();
   });
 
   it("rejects zero before a host callback can attach an unallocated task", () => {

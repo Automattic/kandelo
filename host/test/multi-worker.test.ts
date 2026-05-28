@@ -925,7 +925,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => 0n);
     harness = createGatedLifecycleHarness({
       callbacks: { onClone, onThreadExit },
       kernelExports: {
@@ -997,7 +997,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => 0n);
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1045,7 +1045,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       maximum: 4,
       shared: true,
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => 0n);
     const onThreadExit = vi.fn();
     const harness = createGatedLifecycleHarness({
       callbacks: { onThreadExit },
@@ -1217,7 +1217,9 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn()
+      .mockReturnValueOnce(BigInt(ctidPtr))
+      .mockReturnValueOnce(0n);
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1300,7 +1302,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => BigInt(ctidPtr));
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1388,7 +1390,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       view.setUint32(CH_ERRNO, 0, true);
       return 0;
     });
-    const threadExit = vi.fn(() => 0);
+    const threadExit = vi.fn(() => BigInt(newCtidPtr));
     harness = createGatedLifecycleHarness({
       callbacks: { onClone },
       kernelExports: {
@@ -1837,7 +1839,6 @@ describe("CentralizedKernelWorker Process Management", () => {
       ).toEqual({
         channelTidEntries: 1,
         forkContextEntries: 1,
-        clearTidEntries: 1,
         activeThreadChannels: 1,
       });
     }
@@ -1850,7 +1851,6 @@ describe("CentralizedKernelWorker Process Management", () => {
     ).toEqual({
       channelTidEntries: 0,
       forkContextEntries: 0,
-      clearTidEntries: 0,
       activeThreadChannels: 0,
     });
     expect(
@@ -1859,7 +1859,6 @@ describe("CentralizedKernelWorker Process Management", () => {
     ).toEqual({
       channelTidEntries: 1,
       forkContextEntries: 1,
-      clearTidEntries: 1,
       activeThreadChannels: 1,
     });
     expect(kw.getProcessMemory(firstPid)).toBeUndefined();
@@ -1872,7 +1871,6 @@ describe("CentralizedKernelWorker Process Management", () => {
     ).toEqual({
       channelTidEntries: 0,
       forkContextEntries: 0,
-      clearTidEntries: 0,
       activeThreadChannels: 0,
     });
     expect(kw.getProcessMemory(secondPid)).toBeUndefined();

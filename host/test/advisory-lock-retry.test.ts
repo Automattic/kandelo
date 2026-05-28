@@ -291,7 +291,6 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
     state.pendingFutexWaits = new Map();
     state.pendingCancels = new Set();
     state.threadForkContexts = new Map();
-    state.threadCtidPtrs = new Map();
     state.posixTimers = new Map();
     state.socketTimeoutTimers = new Map();
 
@@ -621,7 +620,6 @@ interface MutableWorkerState {
   pendingPipeWriters: Map<number, unknown[]>;
   pendingCancels: Set<TestChannel>;
   threadForkContexts: Map<string, unknown>;
-  threadCtidPtrs: Map<string, unknown>;
   posixTimers: Map<unknown, unknown>;
   socketTimeoutTimers: Map<TestChannel, ReturnType<typeof setTimeout>>;
   sharedMappings: Map<number, Map<number, unknown>>;

@@ -151,7 +151,6 @@ function makeHarness(
     syscallTraceCap: 64,
     syscallTraceEnabled: false,
     syscallTraceRing: [],
-    threadCtidPtrs: new Map(),
     threadForkContexts: new Map(),
     usePolling: true,
   });
