@@ -135,14 +135,33 @@ export class NodeKernelHost {
     });
 
     // Send init and wait for ready
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        this.worker.removeListener("message", readyHandler);
+        this.worker.removeListener("error", errorHandler);
+        this.worker.removeListener("exit", exitHandler);
+      };
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn();
+      };
       const readyHandler = (msg: KernelToMainMessage) => {
         if (msg.type === "ready") {
-          this.worker.removeListener("message", readyHandler);
-          resolve();
+          settle(resolve);
         }
       };
+      const errorHandler = (err: Error) => {
+        settle(() => reject(err));
+      };
+      const exitHandler = (code: number) => {
+        settle(() => reject(new Error(`kernel worker exited before ready (code ${code})`)));
+      };
       this.worker.on("message", readyHandler);
+      this.worker.once("error", errorHandler);
+      this.worker.once("exit", exitHandler);
 
       const initMsg: MainToKernelMessage = {
         type: "init",

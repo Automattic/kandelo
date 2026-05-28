@@ -133,7 +133,7 @@ export interface ParsedArgs {
 }
 
 const SOURCE_EXTS = new Set(['.c', '.cc', '.cpp', '.cxx', '.m', '.mm', '.i', '.ii']);
-const OBJECT_EXTS = new Set(['.o']);
+const OBJECT_EXTS = new Set(['.o', '.obj']);
 const ARCHIVE_EXTS = new Set(['.a']);
 
 // Flags that consume the next argument as a value (not a file path).

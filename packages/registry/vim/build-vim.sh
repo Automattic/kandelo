@@ -93,6 +93,11 @@ if [ ! -f src/auto/config.mk ]; then
     export vim_cv_toupper_broken=no
     export vim_cv_terminfo=yes
     export vim_cv_tgetent=zero
+    # Keep TERMINFO and HAVE_TGETENT in sync. If terminfo is enabled but
+    # configure misses tgetent while cross-compiling, Vim falls back to its
+    # tiny built-in tgoto() parser, which prints literal "OOPS" for terminfo
+    # %p cursor-addressing strings.
+    export ac_cv_func_tgetent=yes
     export vim_cv_getcwd_broken=no
     export vim_cv_stat_ignores_slash=no
     export vim_cv_memmove_handles_overlap=yes
@@ -129,6 +134,12 @@ if [ ! -f src/auto/config.mk ]; then
     export ac_cv_func_sigaltstack=yes
     export ac_cv_func_getpwuid=yes
     export ac_cv_func_getpwnam=yes
+    # Vim's terminal tables use terminfo parameter syntax when
+    # vim_cv_terminfo=yes. Force HAVE_TGETENT so Vim uses the linked ncurses
+    # tinfo implementation instead of its tiny fallback tgoto(), which only
+    # understands classic termcap syntax and visibly returns "OOPS" for
+    # cursor-motion entries like %p1/%p2.
+    export ac_cv_func_tgetent=yes
 
     # -gline-tables-only retained for symbolication / debug stack traces.
     # -I<ncurses>/include pulls in the top-level termcap.h and

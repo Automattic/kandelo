@@ -651,6 +651,147 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     }
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("runs shebang CommonJS main scripts through the Node loader", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "sm-node-shebang-cjs-"));
+    writeFileSync(
+      join(tempDir, "tool.js"),
+      [
+        "#!/usr/bin/env node",
+        "const path = require('path')",
+        "console.log(path.basename(__filename), __dirname, process.argv.slice(2).join(','))",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    let stdout = "";
+    let stderr = "";
+    const host = new NodeKernelHost({
+      maxWorkers: 4,
+      rootfsImage: "default",
+      extraMounts: [{ mountPoint: "/mnt", hostPath: tempDir, readonly: true }],
+      onStdout: (_pid, data) => {
+        stdout += new TextDecoder().decode(data);
+      },
+      onStderr: (_pid, data) => {
+        stderr += new TextDecoder().decode(data);
+      },
+    });
+
+    try {
+      await host.init();
+      const exitCode = await host.spawn(
+        loadWasm(nodeWasm!),
+        ["node", "/mnt/tool.js", "alpha", "beta"],
+        { programModule: nodeModule },
+      );
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout.trim()).toBe("tool.js /mnt alpha,beta");
+    } finally {
+      await host.destroy().catch(() => {});
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("runs type=module shebang bins with static imports and top-level await", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "sm-node-shebang-esm-"));
+    const pkgDir = join(tempDir, "pkg");
+    const binDir = join(pkgDir, "bin");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "esm-bin", type: "module" }));
+    writeFileSync(
+      join(binDir, "tool.js"),
+      [
+        "#!/usr/bin/env node",
+        "import path from 'path'",
+        "import { createRequire } from 'module'",
+        "import { fileURLToPath } from 'url'",
+        "const require = createRequire(import.meta.url)",
+        "const __filename = fileURLToPath(import.meta.url)",
+        "await Promise.resolve()",
+        "console.log('esm', typeof require, path.basename(__filename), process.argv.slice(2).join(','))",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    let stdout = "";
+    let stderr = "";
+    const host = new NodeKernelHost({
+      maxWorkers: 4,
+      rootfsImage: "default",
+      extraMounts: [{ mountPoint: "/mnt", hostPath: tempDir, readonly: true }],
+      onStdout: (_pid, data) => {
+        stdout += new TextDecoder().decode(data);
+      },
+      onStderr: (_pid, data) => {
+        stderr += new TextDecoder().decode(data);
+      },
+    });
+
+    try {
+      await host.init();
+      const exitCode = await host.spawn(
+        loadWasm(nodeWasm!),
+        ["node", "/mnt/pkg/bin/tool.js", "alpha", "beta"],
+        { programModule: nodeModule },
+      );
+
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(stdout.trim()).toBe("esm function tool.js alpha,beta");
+    } finally {
+      await host.destroy().catch(() => {});
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("prints ES module main error messages before SpiderMonkey stacks", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "sm-node-esm-error-"));
+    const pkgDir = join(tempDir, "pkg");
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "esm-error", type: "module" }));
+    writeFileSync(
+      join(pkgDir, "fail.js"),
+      [
+        "#!/usr/bin/env node",
+        "throw new Error('visible esm failure')",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    let stdout = "";
+    let stderr = "";
+    const host = new NodeKernelHost({
+      maxWorkers: 4,
+      rootfsImage: "default",
+      extraMounts: [{ mountPoint: "/mnt", hostPath: tempDir, readonly: true }],
+      onStdout: (_pid, data) => {
+        stdout += new TextDecoder().decode(data);
+      },
+      onStderr: (_pid, data) => {
+        stderr += new TextDecoder().decode(data);
+      },
+    });
+
+    try {
+      await host.init();
+      const exitCode = await host.spawn(
+        loadWasm(nodeWasm!),
+        ["node", "/mnt/pkg/fail.js"],
+        { programModule: nodeModule },
+      );
+
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("Error: visible esm failure");
+      expect(stderr).toContain("/mnt/pkg/fail.js");
+    } finally {
+      await host.destroy().catch(() => {});
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("runs SpiderMonkey shell workers from worker_threads with shared memory enabled by Node mode", async () => {
     const result = await runNode(
       [

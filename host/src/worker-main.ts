@@ -54,13 +54,18 @@ const MAP_PRIVATE_ANONYMOUS = 0x22;
  * On wasm64, pointer params arrive as BigInt (i64). The helper `n()` converts
  * BigInt|number → number for memory access (all addresses < 4GB).
  */
+type KernelImports = Record<string, WebAssembly.ExportValue> & {
+  kernel_exit: (status: number) => void;
+  kernel_fork: (...args: unknown[]) => number;
+};
+
 function buildKernelImports(
   memory: WebAssembly.Memory,
   channelOffset: number,
   argv?: string[],
   envVars?: string[],
   onKernelExit?: (status: number) => void,
-): Record<string, WebAssembly.ExportValue> {
+): KernelImports {
   const _argv = argv || [];
   const _envVars = envVars || [];
   const encoder = new TextEncoder();
@@ -1028,6 +1033,10 @@ export async function centralizedWorkerMain(
           }
 
           // Normal return — program finished
+          if (kernelExitStatus === null) {
+            kernelImports.kernel_exit(0);
+            exitCode = kernelExitStatus ?? 0;
+          }
           break;
         }
       } catch (e) {
@@ -1087,8 +1096,16 @@ export async function centralizedWorkerMain(
           throw e;
         }
       }
+      if (kernelExitStatus === null) {
+        kernelImports.kernel_exit(exitCode);
+        exitCode = kernelExitStatus ?? exitCode;
+      }
 
-      console.error(`[worker] pid=${pid} _start() returned, exitCode=${exitCode}`);
+      if (exitCode === 0) {
+        console.debug(`[worker] pid=${pid} _start() returned, exitCode=0`);
+      } else {
+        console.error(`[worker] pid=${pid} _start() returned, exitCode=${exitCode}`);
+      }
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {
