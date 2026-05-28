@@ -892,8 +892,10 @@ describe("Rust-owned process wait lifecycle", () => {
       );
       return 1;
     });
+    const generateHostSignal = vi.fn(() => 0);
     const worker = createWorkerHarness({
       kernel_drain_wakeup_events: drain,
+      kernel_generate_host_signal: generateHostSignal,
       kernel_get_parent_pid: vi.fn((pid: number) => pid === 42 ? 7 : 0),
       kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
       kernel_handle_channel: handleChannel,
@@ -933,7 +935,8 @@ describe("Rust-owned process wait lifecycle", () => {
     });
     expect(worker.stoppedPids.has(42)).toBe(false);
     expect(relistenChannel).toHaveBeenCalledWith(parentChannel);
-    expect(handleChannel).toHaveBeenCalledTimes(2);
+    expect(handleChannel).toHaveBeenCalledOnce();
+    expect(generateHostSignal).toHaveBeenCalledWith(7, SIGCHLD);
   });
 
   it("does not report CONTINUED when resume preflight stops the process again", () => {
@@ -2873,6 +2876,7 @@ function createWorkerHarness(
     kernel_dequeue_signal: vi.fn(() => 0),
     kernel_drain_wakeup_events: vi.fn(() => 0),
     kernel_get_parent_pid: vi.fn(() => 0),
+    kernel_generate_host_signal: vi.fn(() => 0),
     kernel_get_process_exit_signal: vi.fn(() => -1),
     kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
     kernel_mark_process_signaled: vi.fn(() => 0),

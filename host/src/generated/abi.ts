@@ -356,6 +356,37 @@ export const PROCESS_SNAPSHOT_STATE_OFFSET = 24 as const;
 export const PROCESS_SNAPSHOT_COMM_LEN_OFFSET = 28 as const;
 export const PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET = 32 as const;
 
+export const WAKEUP_EVENT_RECORD_BYTES = 5 as const;
+export const WAKEUP_EVENT_TYPES = {
+  readable: 1,
+  writable: 2,
+  accept: 4,
+  datagramWritable: 8,
+  processStopped: 16,
+  processContinued: 32,
+  advisoryLock: 64,
+} as const;
+export const WAKEUP_EVENT_FIELDS = {
+  idx: { offset: 0, size: 4, type: "u32" },
+  wakeType: { offset: 4, size: 1, type: "u8" },
+} as const;
+
+export const POLL_EVENTS = {
+  POLLIN: 1,
+  POLLPRI: 2,
+  POLLOUT: 4,
+  POLLERR: 8,
+  POLLHUP: 16,
+  POLLNVAL: 32,
+} as const;
+
+export const EPOLL_EVENTS = {
+  EPOLLIN: 1,
+  EPOLLOUT: 4,
+  EPOLLERR: 8,
+  EPOLLHUP: 16,
+} as const;
+
 export const KERNEL_SCRATCH_SIGNAL_DELIVERY_BYTES = 56 as const;
 export const KERNEL_SCRATCH_FD_PAIR_BYTES = 8 as const;
 export const KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES = 8 as const;

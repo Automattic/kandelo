@@ -1150,6 +1150,56 @@
       "number": 386
     }
   ],
+  "io_multiplexing": {
+    "epoll_events": [
+      {
+        "name": "EPOLLIN",
+        "value": 1
+      },
+      {
+        "name": "EPOLLOUT",
+        "value": 4
+      },
+      {
+        "name": "EPOLLERR",
+        "value": 8
+      },
+      {
+        "name": "EPOLLHUP",
+        "value": 16
+      }
+    ],
+    "poll_events": [
+      {
+        "name": "POLLIN",
+        "value": 1
+      },
+      {
+        "name": "POLLPRI",
+        "value": 2
+      },
+      {
+        "name": "POLLOUT",
+        "value": 4
+      },
+      {
+        "name": "POLLERR",
+        "value": 8
+      },
+      {
+        "name": "POLLHUP",
+        "value": 16
+      },
+      {
+        "name": "POLLNVAL",
+        "value": 32
+      }
+    ],
+    "select": {
+      "fd_set_bytes": 128,
+      "fd_setsize": 1024
+    }
+  },
   "ioctl_request_contracts": {
     "1074025521": {
       "argKind": "pointer",
@@ -9328,5 +9378,52 @@
     "WAIT_WUNTRACED": 2,
     "WAKE_PROCESS_CONTINUED": 32,
     "WAKE_PROCESS_STOPPED": 16
+  },
+  "wakeup_event_wire": {
+    "fields": [
+      {
+        "name": "idx",
+        "offset": 0,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "wakeType",
+        "offset": 4,
+        "size": 1,
+        "type": "u8"
+      }
+    ],
+    "record_size": 5,
+    "types": [
+      {
+        "bit": 1,
+        "name": "readable"
+      },
+      {
+        "bit": 2,
+        "name": "writable"
+      },
+      {
+        "bit": 4,
+        "name": "accept"
+      },
+      {
+        "bit": 8,
+        "name": "datagramWritable"
+      },
+      {
+        "bit": 16,
+        "name": "processStopped"
+      },
+      {
+        "bit": 32,
+        "name": "processContinued"
+      },
+      {
+        "bit": 64,
+        "name": "advisoryLock"
+      }
+    ]
   }
 }

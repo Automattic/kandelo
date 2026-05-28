@@ -102,11 +102,13 @@ import {
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   CHANNEL_REQUEST_FLAGS_KNOWN_MASK,
+  EPOLL_EVENTS,
   FCNTL_FLOCK_BYTES,
   HOST_INTERCEPTED_SYSCALLS,
   IOCTL_REQUESTS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
+  POLL_EVENTS,
   KERNEL_WAIT_RESULT_CHILD_UID_OFFSET,
   KERNEL_WAIT_RESULT_RUSAGE_OFFSET,
   KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
@@ -252,8 +254,9 @@ import {
   WAIT_WNOWAIT,
   WAIT_WSTOPPED,
   WAIT_WUNTRACED,
-  WAKE_PROCESS_CONTINUED,
-  WAKE_PROCESS_STOPPED,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_BYTES,
+  WAKEUP_EVENT_TYPES,
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
@@ -3892,13 +3895,13 @@ export class CentralizedKernelWorker {
         return result;
       },
       drainWakeupEventsForTest: (): void => {
-        // WHY: advisory-lock tests must exercise the real Rust wake decoder
+        // WHY: wake-stream tests must exercise the real Rust event decoder
         // under one exact generation scope. Expose only this argument-free
         // operation; returning the instance, scratch, or a target-bearing
         // dispatcher would reopen the authority boundary that the sealed
         // worker is meant to protect.
         this.#runImmediateKernelEntry(
-          "advisory-lock wake drain test",
+          "kernel wake-event drain test",
           (entry) => {
             this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
             return undefined;
@@ -14498,7 +14501,7 @@ export class CentralizedKernelWorker {
       pollfds.inputBytes.byteOffset,
       pollfds.inputBytes.byteLength,
     );
-    const POLLIN = 0x001;
+    const { POLLIN } = POLL_EVENTS;
     for (let i = 0; i < nfds; i++) {
       const pollfdOffset = i * STRUCT_SIZE_WASM_POLL_FD;
       const fd = pollView.getInt32(
@@ -14545,7 +14548,7 @@ export class CentralizedKernelWorker {
     const key = `${pid}:`;
     const indices: number[] = [];
     const acceptIndices: number[] = [];
-    const EPOLLIN = 0x001;
+    const { EPOLLIN } = EPOLL_EVENTS;
     for (const [k, interests] of this.epollInterests) {
       if (!k.startsWith(key)) continue;
       for (const interest of interests) {
@@ -14582,18 +14585,29 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private wakeBlockedPoll(pid: number, pipeIdx: number): void {
+  private wakeBlockedPollRetriesForPipe(
+    pipeIdx: number,
+    pidFilter?: number,
+    options: { deferSignalSafe?: boolean } = {},
+  ): boolean {
     // retrySyscall runs handleSyscall synchronously, which can re-insert
     // the same key via pendingPollRetries.set when the kernel returns
     // EAGAIN. JS Map iterators are not snapshots — re-inserted entries
     // appear at the new tail and the iterator yields them, livelocking
-    // wakeBlockedPoll-hit / poll / poll-register inside one tick. Mirror
+    // wakeup-event / poll / poll-register inside one tick. Mirror
     // wakeAllBlockedRetries' snapshot-and-skip-if-replaced pattern.
+    let deferredSignalSafeWake = false;
     const matches = Array.from(this.pendingPollRetries.entries()).filter(
-      ([, e]) => e.channel.pid === pid && e.pipeIndices.includes(pipeIdx),
+      ([, entry]) =>
+        (pidFilter === undefined || entry.channel.pid === pidFilter)
+        && entry.pipeIndices.includes(pipeIdx),
     );
     for (const [key, entry] of matches) {
       if (this.pendingPollRetries.get(key) !== entry) continue;
+      if (options.deferSignalSafe && entry.needsSignalSafeWake) {
+        deferredSignalSafeWake = true;
+        continue;
+      }
       if (entry.timer !== null) {
         this.#cancelRegisteredTimeout(entry.timer);
       }
@@ -14602,6 +14616,7 @@ export class CentralizedKernelWorker {
         this.retrySyscall(entry.channel);
       }
     }
+    return deferredSignalSafeWake;
   }
 
   /**
@@ -14621,8 +14636,8 @@ export class CentralizedKernelWorker {
    *
    * Without step 2, blocked pollers wait for the fallback timer in
    * `handleBlockingRetry` to fire, which is the bug behind PR fixing
-  * the WordPress LAMP demo's slow install.php (see commit history).
-  */
+   * the WordPress LAMP demo's slow install.php (see commit history).
+   */
   public notifyPipeReadable(pipeIdx: number, pidFilter?: number): void {
     this.#runOrDeferKernelEntry(
       `pipe readable notification index=${pipeIdx}`,
@@ -14652,23 +14667,8 @@ export class CentralizedKernelWorker {
         }
       }
     }
-    // 2. Blocked pollers watching this pipe. Snapshot-and-skip-if-replaced:
-    //    retrySyscall runs synchronously and a re-parking wait re-inserts the
-    //    same exact-channel key, which a raw for..of over the live Map would
-    //    revisit forever (see wakeBlockedPoll / sendSignalToProcess).
-    const pollMatches = Array.from(this.pendingPollRetries.entries()).filter(
-      ([, e]) =>
-        (pidFilter === undefined || e.channel.pid === pidFilter) &&
-        e.pipeIndices.includes(pipeIdx),
-    );
-    for (const [key, entry] of pollMatches) {
-      if (this.pendingPollRetries.get(key) !== entry) continue;
-      if (entry.timer !== null) this.#cancelRegisteredTimeout(entry.timer);
-      this.pendingPollRetries.delete(key);
-      if (this.isRegisteredChannel(entry.channel)) {
-        this.retrySyscall(entry.channel);
-      }
-    }
+    // 2. Blocked pollers watching this pipe.
+    this.wakeBlockedPollRetriesForPipe(pipeIdx, pidFilter);
     // 3. Broad wake for any other pending retries
     this.scheduleWakeBlockedRetries(entry);
   }
@@ -14677,8 +14677,9 @@ export class CentralizedKernelWorker {
    * Public wake helper for host-side pipe reads (response pump in
    * the TCP/HTTP bridges). Call this AFTER directly reading data
    * from a pipe so any process blocked writing because the pipe was
-  * full can resume, plus a broad wake.
-  */
+   * full, or polling that pipe for writability, can resume. A broad
+   * wake still runs for wait classes without pipe identities.
+   */
   public notifyPipeWritable(pipeIdx: number): void {
     this.#runOrDeferKernelEntry(
       `pipe writable notification index=${pipeIdx}`,
@@ -14702,6 +14703,7 @@ export class CentralizedKernelWorker {
         }
       }
     }
+    this.wakeBlockedPollRetriesForPipe(pipeIdx);
     this.scheduleWakeBlockedRetries(entry);
   }
 
@@ -14755,8 +14757,7 @@ export class CentralizedKernelWorker {
     if (!drainFn) return;
 
     const MAX_EVENTS = 256;
-    const BYTES_PER_EVENT = 5;
-    const bufSize = MAX_EVENTS * BYTES_PER_EVENT;
+    const bufSize = MAX_EVENTS * WAKEUP_EVENT_RECORD_BYTES;
 
     // Own the complete batch before acting on any event. STOPPED/CONTINUED
     // processing can send SIGCHLD and complete a parent wait, both of which
@@ -14786,50 +14787,56 @@ export class CentralizedKernelWorker {
         return {
           count,
           bytes: count > 0
-            ? lease.copyOut(0, count * BYTES_PER_EVENT)
+            ? lease.copyOut(0, count * WAKEUP_EVENT_RECORD_BYTES)
             : new Uint8Array(0),
         };
       });
       const { count } = batch;
       if (count <= 0) break;
       for (let i = 0; i < count; i++) {
-        const off = i * BYTES_PER_EVENT;
+        const off = i * WAKEUP_EVENT_RECORD_BYTES;
+        const idxOffset = off + WAKEUP_EVENT_FIELDS.idx.offset;
         events.push({
           wakeIdx:
-            (batch.bytes[off] |
-              (batch.bytes[off + 1] << 8) |
-              (batch.bytes[off + 2] << 16) |
-              (batch.bytes[off + 3] << 24)) >>>
+            (batch.bytes[idxOffset] |
+              (batch.bytes[idxOffset + 1] << 8) |
+              (batch.bytes[idxOffset + 2] << 16) |
+              (batch.bytes[idxOffset + 3] << 24)) >>>
             0,
-          wakeType: batch.bytes[off + 4],
+          wakeType: batch.bytes[off + WAKEUP_EVENT_FIELDS.wakeType.offset],
         });
       }
       if (count < MAX_EVENTS) break;
     }
     if (events.length === 0) return;
 
-    const WAKE_READABLE = 1;
-    const WAKE_WRITABLE = 2;
-    const WAKE_ACCEPT = 4;
-    const WAKE_DATAGRAM_WRITABLE = 8;
-    const WAKE_ADVISORY_LOCK = 64;
     let needBroadWake = false;
     let needDatagramWriterWake = false;
     let needAdvisoryLockWake = false;
+    let needSignalSafeDeferredWake = false;
 
     for (const { wakeIdx, wakeType } of events) {
       const lifecycleEvent =
-        wakeType & (WAKE_PROCESS_STOPPED | WAKE_PROCESS_CONTINUED);
+        wakeType & (
+          WAKEUP_EVENT_TYPES.processStopped
+          | WAKEUP_EVENT_TYPES.processContinued
+        );
       const lifecycleSupersededByExit =
         lifecycleEvent !== 0 &&
         this.finalizeExitedProcessBeforeLifecycleNotification(wakeIdx, entry);
 
-      if (!lifecycleSupersededByExit && wakeType & WAKE_PROCESS_STOPPED) {
+      if (
+        !lifecycleSupersededByExit
+        && wakeType & WAKEUP_EVENT_TYPES.processStopped
+      ) {
         (this.stoppedPids ??= new Set()).add(wakeIdx);
         this.notifyParentOfChildStateTransition(wakeIdx, entry);
       }
 
-      if (!lifecycleSupersededByExit && wakeType & WAKE_PROCESS_CONTINUED) {
+      if (
+        !lifecycleSupersededByExit
+        && wakeType & WAKEUP_EVENT_TYPES.processContinued
+      ) {
         if (this.resumeStoppedProcess(wakeIdx, entry)) {
           this.notifyParentOfChildStateTransition(wakeIdx, entry);
         } else {
@@ -14841,7 +14848,7 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_READABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.readable) {
         // Pipe became readable — wake pending readers on this pipe
         const readers = this.pendingPipeReaders.get(wakeIdx);
         if (readers && readers.length > 0) {
@@ -14854,7 +14861,7 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_WRITABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.writable) {
         // Pipe became writable — wake pending writers on this pipe
         const writers = this.pendingPipeWriters.get(wakeIdx);
         if (writers && writers.length > 0) {
@@ -14867,11 +14874,26 @@ export class CentralizedKernelWorker {
         }
       }
 
-      if (wakeType & WAKE_ACCEPT) {
+      if (
+        wakeType
+        & (WAKEUP_EVENT_TYPES.readable | WAKEUP_EVENT_TYPES.writable)
+      ) {
+        if (
+          this.wakeBlockedPollRetriesForPipe(
+            wakeIdx,
+            undefined,
+            { deferSignalSafe: true },
+          )
+        ) {
+          needSignalSafeDeferredWake = true;
+        }
+      }
+
+      if (wakeType & WAKEUP_EVENT_TYPES.accept) {
         this.wakeBlockedAccept(wakeIdx);
       }
 
-      if (wakeType & WAKE_DATAGRAM_WRITABLE) {
+      if (wakeType & WAKEUP_EVENT_TYPES.datagramWritable) {
         // Datagram queues have no pipe token that identifies every blocked
         // sender. Retry generic blocked writes synchronously so a short
         // SO_SNDTIMEO cannot win after the send has become ready or acquired
@@ -14881,13 +14903,16 @@ export class CentralizedKernelWorker {
         needDatagramWriterWake = true;
       }
 
-      if (wakeType & WAKE_ADVISORY_LOCK) {
+      if (wakeType & WAKEUP_EVENT_TYPES.advisoryLock) {
         needAdvisoryLockWake = true;
       }
 
       if (
         wakeType &
-        (WAKE_READABLE | WAKE_WRITABLE | WAKE_ACCEPT | WAKE_DATAGRAM_WRITABLE)
+        (WAKEUP_EVENT_TYPES.readable
+          | WAKEUP_EVENT_TYPES.writable
+          | WAKEUP_EVENT_TYPES.accept
+          | WAKEUP_EVENT_TYPES.datagramWritable)
       ) {
         needBroadWake = true;
       }
@@ -14913,10 +14938,9 @@ export class CentralizedKernelWorker {
     // time to land. Kill-triggered wakes (line ~2050) always use the
     // immediate setImmediate path — by the time kill has been processed
     // the signal is already queued, so there's no race. Pipe
-    // reader/writer wakes above run synchronously (not via this
-    // deferred path), so plain read/write throughput is unaffected. We
-    // only pay the delay when a pipe event happens to wake a ppoll or
-    // pselect6 caller.
+    // reader/writer and non-signal-safe poll wakes above run synchronously
+    // (not via this deferred path). Only matching signal-safe ppoll entries
+    // remain parked for the grace period.
     if (needDatagramWriterWake) {
       this.wakeBlockedFallbackWriters();
     }
@@ -14924,7 +14948,10 @@ export class CentralizedKernelWorker {
       this.wakeBlockedAdvisoryLockRetries();
     }
     if (needBroadWake) {
-      if (this.anyPendingRetryNeedsSignalSafeWake()) {
+      if (
+        needSignalSafeDeferredWake
+        || this.anyPendingRetryNeedsSignalSafeWake()
+      ) {
         this.scheduleWakeBlockedRetriesDeferred(entry);
       } else {
         this.scheduleWakeBlockedRetries(entry);
@@ -18681,14 +18708,8 @@ export class CentralizedKernelWorker {
     }
 
     // EPOLL event flags → poll event flags
-    const EPOLLIN = 0x001;
-    const EPOLLOUT = 0x004;
-    const EPOLLERR = 0x008;
-    const EPOLLHUP = 0x010;
-    const POLLIN = 0x001;
-    const POLLOUT = 0x004;
-    const POLLERR = 0x008;
-    const POLLHUP = 0x010;
+    const { EPOLLIN, EPOLLOUT, EPOLLERR, EPOLLHUP } = EPOLL_EVENTS;
+    const { POLLIN, POLLOUT, POLLERR, POLLHUP } = POLL_EVENTS;
 
     // Build fixed pollfd records in kernel scratch data.
     const nfds = interests.length;
