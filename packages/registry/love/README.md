@@ -5,8 +5,8 @@ It builds a `wasm32posix` executable with `wasm32posix-c++`, opens
 `/dev/fb0`, and renders with a small software backend.
 
 It intentionally does not use Emscripten. The package also bundles
-the local game gallery and a BYTEPATH port as `love-examples.zip`; the shell VFS image unpacks it
-to `/usr/local/share/love/examples` and launches:
+the local game gallery, BYTEPATH, and SNKRX as `love-examples.zip`; the shell
+VFS image unpacks it to `/usr/local/share/love/examples` and launches:
 
 ```sh
 /usr/local/bin/love /usr/local/share/love/examples
@@ -16,6 +16,12 @@ BYTEPATH can be launched directly with:
 
 ```sh
 /usr/local/bin/love /usr/local/share/love/examples/bytepath
+```
+
+SNKRX can be launched directly with:
+
+```sh
+/usr/local/bin/love /usr/local/share/love/examples/snkrx
 ```
 
 The upstream LÖVE 11.5 source is still pinned and fetched by the build script
@@ -29,3 +35,8 @@ game code plus permissive Lua dependencies needed for gameplay. It omits the
 bundled Windows runtime, tutorial archive, GPL windfield dependency, and audio
 assets; Kandelo supplies small compatibility shims for the omitted runtime
 pieces.
+
+The SNKRX staging step pins upstream `a327ex/SNKRX` and keeps the MIT game
+code. Upstream notes that assets have separate licenses, so Kandelo omits the
+sound/font/image/media assets and supplies framebuffer-friendly placeholders
+and no-op audio/Steam shims.

@@ -1,7 +1,7 @@
 script_path = "packages/registry/love/build-love.sh"
 repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
 commit      = "d32e6e34d2a81eeac77a67818a8e1ef51305e704"
-revision    = 3
+revision    = 4
 
 [binary]
 index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
