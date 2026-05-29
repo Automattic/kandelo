@@ -113,4 +113,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["/usr/games/fbdoom"],
     estimatedUrlBytes: 1018,
   },
+  {
+    id: "love",
+    title: "LOVE games",
+    summary: "Lua game demos rendered by a native LOVE-style /dev/fb0 runtime.",
+    base: "kandelo:shell@abi8",
+    packages: ["love@local", "bash@local", "coreutils@local"],
+    accent: "#e04b83",
+    glyph: "lv",
+    bootCommand: ["/usr/local/bin/love", "/usr/local/share/love/examples"],
+    estimatedUrlBytes: 1056,
+  },
 ];

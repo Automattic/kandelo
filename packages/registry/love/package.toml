@@ -1,0 +1,27 @@
+kind = "program"
+name = "love"
+version = "11.5-kandelo-fb"
+# Native Kandelo framebuffer port. The wasm executable is built with the
+# wasm32posix SDK and renders through /dev/fb0; no Emscripten/browser shim is
+# involved. The second output carries the bundled Lua game demo tree.
+kernel_abi = 7
+depends_on = ["libcxx@21"]
+
+[source]
+url = "https://github.com/love2d/love"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "Zlib"
+url = "https://github.com/love2d/love/blob/11.5/license.txt"
+
+[build]
+script_path = "packages/registry/love/build-love.sh"
+
+[[outputs]]
+name = "love"
+wasm = "love.wasm"
+
+[[outputs]]
+name = "love-examples"
+wasm = "love-examples.zip"
