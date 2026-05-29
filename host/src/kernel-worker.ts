@@ -57,6 +57,7 @@ import {
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
+import { PROCESS_MMAP_BASE, growMemoryToCover } from "./process-memory";
 
 import type { KernelConfig, PlatformIO } from "./types";
 
@@ -415,6 +416,16 @@ interface ProcessRegistration {
   channels: ChannelInfo[];
   /** Pointer width: 4 for wasm32, 8 for wasm64. */
   ptrWidth: 4 | 8;
+}
+
+interface RegisterProcessOptions {
+  skipKernelCreate?: boolean;
+  argv?: string[];
+  ptrWidth?: 4 | 8;
+  /** mmap ceiling in process address space; defaults to legacy channel cap. */
+  maxAddr?: number;
+  /** brk ceiling below host-owned control pages. */
+  brkLimit?: number;
 }
 
 type WaitPollResult =
@@ -929,7 +940,7 @@ export class CentralizedKernelWorker {
     pid: number,
     memory: WebAssembly.Memory,
     channelOffsets: number[],
-    options?: { skipKernelCreate?: boolean; argv?: string[]; ptrWidth?: 4 | 8 },
+    options?: RegisterProcessOptions,
   ): void {
     if (!this.initialized) throw new Error("Kernel not initialized");
 
@@ -964,13 +975,27 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Cap mmap address space at the channel offset to prevent overlap
+    // Cap mmap address space. New hosts pass the process memory maximum here
+    // because syscall channels live below PROCESS_MMAP_BASE in a reserved
+    // control arena. Legacy callers without maxAddr still cap at the lowest
+    // channel offset, preserving the old high-channel layout behavior.
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: bigint) => number) | undefined;
-    if (setMaxAddr && channelOffsets.length > 0) {
-      // Use the lowest channel offset as the upper bound for mmap
-      const minChannelOffset = Math.min(...channelOffsets);
-      setMaxAddr(pid, BigInt(minChannelOffset));
+    if (setMaxAddr) {
+      const maxAddr = options?.maxAddr ?? (
+        channelOffsets.length > 0 ? Math.min(...channelOffsets) : undefined
+      );
+      if (maxAddr !== undefined) {
+        setMaxAddr(pid, BigInt(maxAddr));
+      }
+    }
+
+    if (options?.brkLimit !== undefined) {
+      if (!this.setBrkLimit(pid, options.brkLimit)) {
+        throw new Error(
+          "Kernel export kernel_set_brk_limit is required for low process control layout",
+        );
+      }
     }
 
     const channels: ChannelInfo[] = channelOffsets.map((offset) => ({
@@ -1519,14 +1544,16 @@ export class CentralizedKernelWorker {
       });
     }
 
-    // Lower the kernel's mmap ceiling to prevent overlap with thread TLS/channel pages.
-    // Thread layout: channelOffset (2 pages), gap (1 page), TLS (1 page).
-    // The TLS page is at channelOffset - 2*WASM_PAGE_SIZE, which is the lowest address used.
+    // Lower the kernel's mmap ceiling only for legacy high-address thread
+    // control pages. New process memories place thread pages below
+    // PROCESS_MMAP_BASE, where mmap never allocates.
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: bigint) => number) | undefined;
     if (setMaxAddr) {
       const tlsPageAddr = channelOffset - 2 * 65536;
-      setMaxAddr(pid, BigInt(tlsPageAddr));
+      if (tlsPageAddr >= PROCESS_MMAP_BASE) {
+        setMaxAddr(pid, BigInt(tlsPageAddr));
+      }
     }
 
     // In polling mode, the poller picks up new channels automatically.
@@ -2194,25 +2221,26 @@ export class CentralizedKernelWorker {
     // KERNEL's Wasm memory, not the process's. We must grow the process's
     // WebAssembly.Memory here so the process can access the new addresses.
     if (retVal > 0) {
-      this.ensureProcessMemoryCovers(channel.memory, syscallNr, retVal, origArgs);
+      this.ensureProcessMemoryCovers(channel.pid, channel.memory, syscallNr, retVal, origArgs);
     }
 
-    // --- DEBUG: detect memory operations in thread region ---
+    // --- DEBUG: detect memory operations in legacy high control pages ---
+    const highControlFloor = this.highControlFloorForProcess(channel.pid);
     if (syscallNr === SYS_MMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
       const mmapAddr = retVal >>> 0;
       const mmapLen = origArgs[1] >>> 0;
-      if (mmapAddr + mmapLen > 0x3fdc0000) {
+      if (highControlFloor !== null && mmapAddr + mmapLen > highControlFloor) {
         console.error(`[MMAP ALERT] pid=${channel.pid} mmap returned 0x${mmapAddr.toString(16)} len=${mmapLen} — OVERLAPS THREAD REGION! args=[${origArgs.map(a => '0x' + (a >>> 0).toString(16)).join(',')}]`);
       }
     }
     if (syscallNr === SYS_MREMAP && retVal > 0 && (retVal >>> 0) !== 0xffffffff) {
       const mremapAddr = retVal >>> 0;
       const mremapLen = origArgs[2] >>> 0;
-      if (mremapAddr + mremapLen > 0x3fdc0000) {
+      if (highControlFloor !== null && mremapAddr + mremapLen > highControlFloor) {
         console.error(`[MREMAP ALERT] pid=${channel.pid} mremap returned 0x${mremapAddr.toString(16)} len=${mremapLen} — OVERLAPS THREAD REGION!`);
       }
     }
-    if (syscallNr === SYS_BRK && retVal > 0x3fdc0000) {
+    if (highControlFloor !== null && syscallNr === SYS_BRK && retVal > highControlFloor) {
       console.error(`[BRK ALERT] pid=${channel.pid} brk returned 0x${(retVal >>> 0).toString(16)} — IN THREAD REGION!`);
     }
 
@@ -6550,6 +6578,7 @@ export class CentralizedKernelWorker {
   // -----------------------------------------------------------------------
 
   private ensureProcessMemoryCovers(
+    pid: number,
     processMemory: WebAssembly.Memory,
     syscallNr: number,
     retVal: number,
@@ -6585,13 +6614,13 @@ export class CentralizedKernelWorker {
     const currentBytes = processMemory.buffer.byteLength;
 
     if (endAddr > 0 && endAddr > currentBytes) {
-      const neededPages = Math.ceil((endAddr - currentBytes) / 65536);
-      processMemory.grow(neededPages);
+      const ptrWidth = this.processes.get(pid)?.ptrWidth ?? 4;
+      growMemoryToCover(processMemory, endAddr, ptrWidth);
       // Memory.grow detaches any TypedArray bound to the previous SAB.
       // Any cached framebuffer view on this pid is now invalid; the
       // renderer must rebuild it on the next frame from the new
       // Memory.buffer. Idempotent for pids without a binding.
-      this.kernel.framebuffers.rebindMemory(this.currentHandlePid);
+      this.kernel.framebuffers.rebindMemory(pid);
     }
 
     // Zero the mmap'd region. Anonymous mmap must return zeroed pages (like
@@ -6859,6 +6888,33 @@ export class CentralizedKernelWorker {
     if (setMaxAddrFn) {
       setMaxAddrFn(pid, BigInt(maxAddr));
     }
+  }
+
+  /**
+   * Set the program-break ceiling for a process. Hosts use this to reserve
+   * low in-memory control pages for syscall channels and pthread TLS without
+   * letting brk grow into them.
+   */
+  setBrkLimit(pid: number, brkLimit: number): boolean {
+    const setBrkLimitFn = this.kernelInstance!.exports.kernel_set_brk_limit as
+      ((pid: number, brkLimit: bigint) => number) | undefined;
+    if (!setBrkLimitFn) {
+      return false;
+    }
+    return setBrkLimitFn(pid, BigInt(brkLimit)) >= 0;
+  }
+
+  private highControlFloorForProcess(pid: number): number | null {
+    const registration = this.processes.get(pid);
+    if (!registration) return null;
+    let floor: number | null = null;
+    for (const ch of registration.channels) {
+      const tlsPageAddr = ch.channelOffset - 2 * 65536;
+      if (tlsPageAddr >= PROCESS_MMAP_BASE) {
+        floor = floor === null ? tlsPageAddr : Math.min(floor, tlsPageAddr);
+      }
+    }
+    return floor;
   }
 
   /**
@@ -7698,7 +7754,7 @@ export class CentralizedKernelWorker {
     }
 
     // Grow process memory to cover the allocated address
-    this.ensureProcessMemoryCovers(channel.memory, SYS_MMAP, addr, [0, size, 3, 0x22, -1, 0]);
+    this.ensureProcessMemoryCovers(channel.pid, channel.memory, SYS_MMAP, addr, [0, size, 3, 0x22, -1, 0]);
 
     // Transfer segment data from kernel to process memory via read_chunk
     const readChunk = this.kernelInstance!.exports.kernel_ipc_shm_read_chunk as (shmid: number, offset: number, outPtr: bigint, maxLen: number) => number;

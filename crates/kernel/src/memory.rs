@@ -18,6 +18,9 @@ pub struct MemoryManager {
     program_break: usize,
     /// Upper bound for mmap allocation (default 1GB = Wasm max-memory).
     max_addr: usize,
+    /// Upper bound for brk allocation. Defaults to MMAP_BASE and can be
+    /// lowered by the host to reserve in-memory syscall/thread control pages.
+    brk_limit: usize,
     /// RLIMIT_DATA soft limit (updated by setrlimit). u64::MAX = unlimited.
     data_limit: u64,
     /// Program break at process start, used to compute data segment growth.
@@ -46,6 +49,7 @@ impl MemoryManager {
             mappings: Vec::new(),
             program_break: Self::INITIAL_BRK,
             max_addr: Self::DEFAULT_MAX_ADDR,
+            brk_limit: Self::MMAP_BASE,
             data_limit: u64::MAX,
             initial_brk: Self::INITIAL_BRK,
         }
@@ -80,9 +84,10 @@ impl MemoryManager {
 
         let addr = if hint != 0 && (flags & MAP_FIXED) != 0 {
             // MAP_FIXED: use the exact address, removing any overlapping mappings
-            // Reject if the region extends past max_addr (protects thread TLS/channel pages)
+            // Reject if the region extends past max_addr or overlaps host
+            // control pages reserved between brk_limit and MMAP_BASE.
             let end = hint.saturating_add(aligned_len);
-            if end > self.max_addr {
+            if end > self.max_addr || self.overlaps_host_control(hint, aligned_len) {
                 return wasm_posix_shared::mmap::MAP_FAILED;
             }
             self.mappings.retain(|m| {
@@ -139,6 +144,14 @@ impl MemoryManager {
         } else {
             None
         }
+    }
+
+    fn overlaps_host_control(&self, addr: usize, len: usize) -> bool {
+        let end = match addr.checked_add(len) {
+            Some(e) => e,
+            None => return true,
+        };
+        addr < Self::MMAP_BASE && end > self.brk_limit
     }
 
     /// Unmap a region [addr, addr+len). Supports partial unmapping:
@@ -218,8 +231,8 @@ impl MemoryManager {
             // Query current break
             return self.program_break;
         }
-        // brk can't grow past mmap base (shared address space)
-        if new_brk > Self::MMAP_BASE {
+        // brk can't grow into mmap or host-reserved control pages.
+        if new_brk > self.brk_limit {
             return self.program_break;
         }
         // Enforce RLIMIT_DATA: data segment growth from initial_brk
@@ -255,6 +268,9 @@ impl MemoryManager {
         if end > self.max_addr {
             return false;
         }
+        if self.overlaps_host_control(addr, len) {
+            return false;
+        }
         for m in &self.mappings {
             let m_end = m.addr.saturating_add(m.len);
             // Check overlap: [addr, end) vs [m.addr, m_end)
@@ -272,6 +288,13 @@ impl MemoryManager {
     pub fn set_max_addr(&mut self, addr: usize) {
         if addr < self.max_addr {
             self.max_addr = addr;
+        }
+    }
+
+    /// Lower the upper bound for brk allocation.
+    pub fn set_brk_limit(&mut self, addr: usize) {
+        if addr < self.brk_limit {
+            self.brk_limit = addr;
         }
     }
 
@@ -417,6 +440,37 @@ mod tests {
         let new_brk = mm.set_brk(initial + 4096);
         assert_eq!(new_brk, initial + 4096);
         assert_eq!(mm.get_brk(), initial + 4096);
+    }
+
+    #[test]
+    fn test_brk_respects_host_control_limit() {
+        let mut mm = MemoryManager::new();
+        let initial = mm.get_brk();
+        let limit = initial + 0x20000;
+        mm.set_brk_limit(limit);
+
+        assert_eq!(mm.set_brk(limit), limit);
+        assert_eq!(mm.set_brk(limit + 1), limit);
+        assert_eq!(mm.get_brk(), limit);
+    }
+
+    #[test]
+    fn test_mmap_fixed_respects_host_control_limit() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let fixed_anon = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+        let initial = mm.get_brk();
+        let limit = initial + 0x20000;
+        mm.set_brk_limit(limit);
+
+        let below_control = mm.mmap_anonymous(limit - 0x10000, 0x10000, rw, fixed_anon);
+        assert_eq!(below_control, limit - 0x10000);
+
+        let in_control = mm.mmap_anonymous(limit + 0x10000, 0x10000, rw, fixed_anon);
+        assert_eq!(in_control, wasm_posix_shared::mmap::MAP_FAILED);
+
+        let mmap_region = mm.mmap_anonymous(MemoryManager::MMAP_BASE, 0x10000, rw, fixed_anon);
+        assert_eq!(mmap_region, MemoryManager::MMAP_BASE);
     }
 
     #[test]

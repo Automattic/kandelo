@@ -32,8 +32,8 @@ export interface BrowserKernelOptions {
   fsSize?: number;
   /** Maximum VFS size the SharedArrayBuffer can grow to (default: 4x fsSize). */
   maxFsSize?: number;
-  /** Maximum wasm memory pages per process (default: 16384 = 1GB). Reduce for
-   *  multi-process demos to avoid exhausting browser memory limits. */
+  /** Maximum wasm memory pages per process (default: 16384 = 1GB). This caps
+   *  guest brk/mmap growth; initial process memory is computed separately. */
   maxMemoryPages?: number;
   /** Additional VFS mount points */
   extraMounts?: Array<{ mountPoint: string; backend: { open: Function } }>;

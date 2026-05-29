@@ -329,4 +329,4 @@ See the [Porting Guide](porting-guide.md) for creating browser demos.
 - **For fork support**: Run `scripts/run-wasm-fork-instrument.sh` as the final
   post-link step. Without complete `wpk_fork_*` exports, fork-using programs
   are invalid.
-- **Memory limit**: Default max memory is 1GB (16384 pages). For multi-process demos, consider reducing `maxMemoryPages` to avoid exhausting browser memory.
+- **Memory limit**: Default max memory is 1GB (16384 pages). Processes start with a smaller computed shared memory and grow on demand up to `maxMemoryPages`.

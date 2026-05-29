@@ -1,4 +1,5 @@
 import { CH_TOTAL_SIZE, WASM_PAGE_SIZE, PAGES_PER_THREAD } from "./constants";
+import { FORK_SAVE_BUFFER_SIZE, growMemoryToCover } from "./process-memory";
 
 export interface ThreadAllocation {
   /** Base page number (highest page of the thread's region) */
@@ -9,27 +10,51 @@ export interface ThreadAllocation {
   tlsAllocAddr: number;
 }
 
+export interface ThreadPageAllocatorOptions {
+  /** First page whose start address will hold a thread channel. */
+  firstBasePage: number;
+  /** Exclusive upper page bound for control-arena allocations. */
+  maxPageExclusive: number;
+  /** Pointer width of the process memory, used when growing memory64. */
+  ptrWidth?: 4 | 8;
+}
+
 /**
- * Manages thread channel page allocation within a WebAssembly.Memory.
+ * Manages pthread channel/TLS allocation within a process WebAssembly.Memory.
  *
- * Pages are allocated top-down: the main process channel sits at the top
- * two pages, and each thread gets PAGES_PER_THREAD pages counting downward.
- * Freed pages go to a free list for reuse.
+ * New process launches use a low control arena below the kernel mmap base.
+ * Allocations move upward from the main process channel so the initial memory
+ * only needs to include the main channel; clone() grows to the thread control
+ * pages on demand.
  *
- * Per-thread layout (from basePage going down):
- *   basePage+1  — channel spill (40 bytes of header past 64 KiB boundary)
- *   basePage    — channel start (64 KiB data buffer)
- *   basePage-1  — gap page
- *   basePage-2  — TLS page
- * The spill page is absorbed by PAGES_PER_THREAD spacing between threads.
+ * Per-thread layout:
+ *   basePage-2  - TLS page
+ *   basePage-1  - gap page, including the fork save buffer below channel
+ *   basePage    - channel start
+ *   basePage+1  - channel spill
  */
 export class ThreadPageAllocator {
   private nextPage: number;
   private freePages: number[] = [];
+  private readonly maxPageExclusive: number;
+  private readonly direction: "up" | "down";
+  private readonly ptrWidth: 4 | 8;
 
-  constructor(maxPages: number) {
-    // Main channel occupies top 2 pages; first thread region starts below
-    this.nextPage = maxPages - 2 - PAGES_PER_THREAD;
+  constructor(options: ThreadPageAllocatorOptions);
+  constructor(maxPages: number);
+  constructor(options: ThreadPageAllocatorOptions | number) {
+    if (typeof options === "number") {
+      // Back-compatibility for existing external users of the old allocator.
+      this.nextPage = options - 2 - PAGES_PER_THREAD;
+      this.maxPageExclusive = options;
+      this.direction = "down";
+      this.ptrWidth = 4;
+    } else {
+      this.nextPage = options.firstBasePage;
+      this.maxPageExclusive = options.maxPageExclusive;
+      this.direction = "up";
+      this.ptrWidth = options.ptrWidth ?? 4;
+    }
   }
 
   /** Allocate pages for a new thread. Zeros the channel and TLS regions. */
@@ -39,11 +64,23 @@ export class ThreadPageAllocator {
       basePage = this.freePages.pop()!;
     } else {
       basePage = this.nextPage;
-      this.nextPage -= PAGES_PER_THREAD;
+      if (this.direction === "up") {
+        this.nextPage += PAGES_PER_THREAD;
+      } else {
+        this.nextPage -= PAGES_PER_THREAD;
+      }
+    }
+
+    if (
+      basePage < 2 ||
+      basePage + Math.ceil(CH_TOTAL_SIZE / WASM_PAGE_SIZE) > this.maxPageExclusive
+    ) {
+      throw new Error("process control arena exhausted");
     }
 
     const channelOffset = basePage * WASM_PAGE_SIZE;
     const tlsAllocAddr = (basePage - 2) * WASM_PAGE_SIZE;
+    growMemoryToCover(memory, channelOffset + CH_TOTAL_SIZE, this.ptrWidth);
 
     // Check if TLS page already has data (diagnostic: detect address space overlap)
     const preCheck = new DataView(memory.buffer);
@@ -60,9 +97,14 @@ export class ThreadPageAllocator {
       console.error(`[thread-alloc]   data: ${vals.join(' ')}`);
     }
 
-    // Zero channel and TLS regions
+    // Zero channel, TLS, and the per-thread fork save buffer.
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
     new Uint8Array(memory.buffer, tlsAllocAddr, WASM_PAGE_SIZE).fill(0);
+    new Uint8Array(
+      memory.buffer,
+      channelOffset - FORK_SAVE_BUFFER_SIZE,
+      FORK_SAVE_BUFFER_SIZE,
+    ).fill(0);
 
     return { basePage, channelOffset, tlsAllocAddr };
   }

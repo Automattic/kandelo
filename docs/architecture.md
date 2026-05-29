@@ -135,7 +135,7 @@ Compiled into every user program. Three main files:
 
 ## Syscall Channel Protocol
 
-Each process has a dedicated channel region in its SharedArrayBuffer memory. The channel is placed at the end of the address space (last 2 pages = 128KB) to avoid collision with heap and mmap regions.
+Each process has a dedicated channel region in its SharedArrayBuffer memory. The channel is placed in a host-reserved control arena below the mmap base, not at the maximum memory address. This lets a process start with a small shared `WebAssembly.Memory` while keeping the channel address stable as guest brk/mmap activity grows memory on demand.
 
 ### Channel Layout
 
@@ -315,14 +315,19 @@ Address           Region
 0x00000000        Wasm data segment (globals, static data)
 0x00110000        Global base (--global-base=1114112)
 __heap_base       Heap start (brk grows up)
+brk_limit         End of brk heap; below host control pages
+...               Main channel fork buffer + main syscall channel
+...               Pthread TLS/channel control pages, allocated upward on clone()
 0x04000000        MMAP base (64MB) — mmap regions grow up
 ...
-MAX_PAGES-4       Thread channel + TLS regions (grow down)
-MAX_PAGES-2       Main process channel (last 2 pages)
 MAX_PAGES         End of memory (1GB default)
 ```
 
-The channel occupies the last 2 pages (128KB). Thread channels are allocated counting down from the main channel, with 3 pages per thread (2 for channel + 1 for TLS).
+The main channel occupies two Wasm pages plus a 16KB fork save buffer immediately below it. The host computes `brk_limit` from the program's memory import and `__heap_base`, reserves a modest brk window, then calls `kernel_set_brk_limit(pid, brk_limit)` before `_start` can run. Pthread channels are allocated upward in the same low control arena and grow the process memory only to the newly required control pages.
+
+`mmap` remains coherent because the kernel allocator starts at 64MB and is capped by the configured process maximum (`maxMemoryPages * 64KiB`), not by the low channel address. `MAP_FIXED` and `mremap` growth are rejected when they would overlap the reserved control arena. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls so returned guest addresses are backed before user code touches them.
+
+Every spawn or exec computes a fresh layout from the target binary's memory import and `__heap_base`; the layout is process-local and is discarded when the process is unregistered. Fork children copy the parent's current memory length, not the configured maximum, and pthread workers share the owning process memory plus that process's thread allocator. Correctness must not depend on page reloads, context resets, periodic kernel resets, or browser garbage collection reclaiming old shared memories.
 
 ### Heap initialization (brk)
 
