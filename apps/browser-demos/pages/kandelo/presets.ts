@@ -135,4 +135,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["/usr/local/bin/love", "/usr/local/share/love/examples/bytepath"],
     estimatedUrlBytes: 1120,
   },
+  {
+    id: "snkrx",
+    title: "SNKRX",
+    summary: "The open-source LÖVE snake roguelite running through Kandelo's native framebuffer runtime.",
+    base: "kandelo:shell@abi8",
+    packages: ["love@local", "bash@local", "coreutils@local"],
+    accent: "#f0cf45",
+    glyph: "SX",
+    bootCommand: ["/usr/local/bin/love", "/usr/local/share/love/examples/snkrx"],
+    estimatedUrlBytes: 1140,
+  },
 ];

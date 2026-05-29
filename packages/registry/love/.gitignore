@@ -1,5 +1,6 @@
 build/
 bytepath-src/
+snkrx-src/
 love-src/
 example-browser-src/
 love.wasm

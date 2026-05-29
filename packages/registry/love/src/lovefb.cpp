@@ -105,6 +105,7 @@ struct Source {
   double pitch = 1.0;
   bool looping = false;
   bool playing = false;
+  double cursor = 0.0;
 };
 
 struct FileHandle {
@@ -134,12 +135,17 @@ struct Body {
   double vy = 0.0;
   double angle = 0.0;
   bool dynamic = false;
+  bool fixedRotation = false;
+  double angularVelocity = 0.0;
 };
 
 struct Fixture {
   Body *body = nullptr;
   Shape *shape = nullptr;
   int userDataRef = LUA_NOREF;
+  bool sensor = false;
+  double friction = 0.0;
+  double restitution = 0.0;
 };
 
 struct KeyEvent {
@@ -813,6 +819,13 @@ int gcFile(lua_State *L) {
 }
 int gcVideo(lua_State *L) { delete checkObj<Video>(L, 1, MT_VIDEO); return 0; }
 int gcShape(lua_State *L) { delete checkObj<Shape>(L, 1, MT_SHAPE); return 0; }
+int gcFixture(lua_State *L) {
+  Fixture *f = checkObj<Fixture>(L, 1, MT_FIXTURE);
+  if (f->userDataRef != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, f->userDataRef);
+  delete f->shape;
+  delete f;
+  return 0;
+}
 
 // ── love.graphics ─────────────────────────────────────────────────────────
 
@@ -922,13 +935,21 @@ int l_font_setFilter(lua_State *) { return 0; }
 
 int l_g_print(lua_State *L) {
   std::string s = printableText(L, 1);
-  double x = luaL_optnumber(L, 2, 0);
-  double y = luaL_optnumber(L, 3, 0);
-  double r = luaL_optnumber(L, 4, 0);
-  double sx = luaL_optnumber(L, 5, 1);
-  double sy = luaL_optnumber(L, 6, sx);
-  double ox = luaL_optnumber(L, 7, 0);
-  double oy = luaL_optnumber(L, 8, 0);
+  int arg = 2;
+  Font *savedFont = G.font;
+  if (hasMeta(L, 2, MT_FONT)) {
+    G.font = checkObj<Font>(L, 2, MT_FONT);
+    arg = 3;
+  } else if ((lua_isnil(L, 2) || lua_isboolean(L, 2)) && lua_gettop(L) >= 3) {
+    arg = 3;
+  }
+  double x = luaL_optnumber(L, arg, 0);
+  double y = luaL_optnumber(L, arg + 1, 0);
+  double r = luaL_optnumber(L, arg + 2, 0);
+  double sx = luaL_optnumber(L, arg + 3, 1);
+  double sy = luaL_optnumber(L, arg + 4, sx);
+  double ox = luaL_optnumber(L, arg + 5, 0);
+  double oy = luaL_optnumber(L, arg + 6, 0);
   Transform saved = G.transform;
   appendTransform(Transform{1, 0, 0, 1, x, y});
   if (r != 0) {
@@ -938,6 +959,7 @@ int l_g_print(lua_State *L) {
   appendTransform(Transform{sx, 0, 0, sy, -ox * sx, -oy * sy});
   drawText(*G.target, s, 0, 0);
   G.transform = saved;
+  G.font = savedFont;
   return 0;
 }
 
@@ -993,6 +1015,59 @@ int l_g_circle(lua_State *L) {
   return 0;
 }
 
+int l_g_arc(lua_State *L) {
+  std::string mode = luaL_checkstring(L, 1);
+  int arg = 2;
+  if (lua_isstring(L, 2)) arg = 3;
+  int cx = int(luaL_checknumber(L, arg));
+  int cy = int(luaL_checknumber(L, arg + 1));
+  int r = int(luaL_checknumber(L, arg + 2));
+  double a0 = luaL_checknumber(L, arg + 3);
+  double a1 = luaL_checknumber(L, arg + 4);
+  int seg = std::max(8, int(std::ceil(std::abs(a1 - a0) * 12.0)));
+  std::vector<int> pts;
+  if (mode == "fill") {
+    pts.push_back(cx);
+    pts.push_back(cy);
+  }
+  for (int i = 0; i <= seg; ++i) {
+    double t = a0 + (a1 - a0) * double(i) / double(seg);
+    pts.push_back(cx + int(std::lround(std::cos(t) * r)));
+    pts.push_back(cy + int(std::lround(std::sin(t) * r)));
+  }
+  if (mode == "fill") fillPolygon(*G.target, pts, G.color);
+  else {
+    for (size_t i = 0; i + 3 < pts.size(); i += 2)
+      drawLine(*G.target, pts[i], pts[i + 1], pts[i + 2], pts[i + 3], G.color);
+  }
+  return 0;
+}
+
+int l_g_ellipse(lua_State *L) {
+  std::string mode = luaL_checkstring(L, 1);
+  int cx = int(luaL_checknumber(L, 2));
+  int cy = int(luaL_checknumber(L, 3));
+  int rx = std::max(1, int(luaL_checknumber(L, 4)));
+  int ry = std::max(1, int(luaL_checknumber(L, 5)));
+  if (mode == "fill") {
+    for (int y = -ry; y <= ry; ++y)
+      for (int x = -rx; x <= rx; ++x)
+        if ((double(x) * x) / (rx * rx) + (double(y) * y) / (ry * ry) <= 1.0)
+          blendPixel(*G.target, cx + x, cy + y, G.color);
+  } else {
+    int seg = 48;
+    int px = cx + rx, py = cy;
+    for (int i = 1; i <= seg; ++i) {
+      double a = i * 2.0 * kPi / seg;
+      int x = cx + int(std::lround(std::cos(a) * rx));
+      int y = cy + int(std::lround(std::sin(a) * ry));
+      drawLine(*G.target, px, py, x, y, G.color);
+      px = x; py = y;
+    }
+  }
+  return 0;
+}
+
 int l_g_polygon(lua_State *L) {
   std::string mode = luaL_checkstring(L, 1);
   std::vector<double> nums = collectNumbers(L, 2);
@@ -1012,6 +1087,41 @@ int l_g_point(lua_State *L) {
   blendPixel(*G.target, int(luaL_checknumber(L, 1)), int(luaL_checknumber(L, 2)), G.color);
   return 0;
 }
+
+int l_g_stencil(lua_State *L) {
+  if (lua_isfunction(L, 1)) {
+    lua_pushvalue(L, 1);
+    lua_call(L, 0, 0);
+  }
+  return 0;
+}
+int l_g_setStencilTest(lua_State *) { return 0; }
+
+int l_g_getSystemLimits(lua_State *L) {
+  lua_newtable(L);
+  lua_pushinteger(L, 1); lua_setfield(L, -2, "anisotropy");
+  lua_pushinteger(L, 0); lua_setfield(L, -2, "canvasmsaa");
+  return 1;
+}
+int l_g_getSupported(lua_State *L) { lua_newtable(L); return 1; }
+int l_g_getRendererInfo(lua_State *L) {
+  lua_pushstring(L, "Kandelo");
+  lua_pushstring(L, "lovefb");
+  lua_pushstring(L, "software");
+  lua_pushstring(L, "1.0");
+  return 4;
+}
+int l_g_getImageFormats(lua_State *L) {
+  lua_newtable(L);
+  lua_pushboolean(L, 1); lua_setfield(L, -2, "png");
+  return 1;
+}
+int l_g_getCanvasFormats(lua_State *L) {
+  lua_newtable(L);
+  lua_pushboolean(L, 1); lua_setfield(L, -2, "normal");
+  return 1;
+}
+int l_g_getStats(lua_State *L) { lua_newtable(L); return 1; }
 
 int l_g_setScissor(lua_State *L) {
   if (lua_gettop(L) == 0 || lua_isnil(L, 1)) {
@@ -1033,7 +1143,7 @@ int l_g_translate(lua_State *L) {
 
 int l_g_newImage(lua_State *L) {
   ImageData data;
-  if (lua_isstring(L, 1)) {
+  if (lua_type(L, 1) == LUA_TSTRING) {
     if (!loadPng(lua_tostring(L, 1), data)) return luaL_error(L, "could not load image");
   } else {
     ImageData *src = checkObj<ImageData>(L, 1, MT_IMAGEDATA);
@@ -1067,7 +1177,11 @@ int l_canvas_getHeight(lua_State *L) { lua_pushinteger(L, checkObj<Surface>(L, 1
 
 int l_g_setCanvas(lua_State *L) {
   if (lua_gettop(L) == 0 || lua_isnil(L, 1)) G.target = &G.screen;
-  else G.target = checkObj<Surface>(L, 1, MT_CANVAS);
+  else if (lua_istable(L, 1)) {
+    lua_rawgeti(L, 1, 1);
+    G.target = checkObj<Surface>(L, -1, MT_CANVAS);
+    lua_pop(L, 1);
+  } else G.target = checkObj<Surface>(L, 1, MT_CANVAS);
   return 0;
 }
 
@@ -1231,7 +1345,7 @@ int l_video_getSource(lua_State *L) {
 
 int l_image_newImageData(lua_State *L) {
   ImageData *img = new ImageData;
-  if (lua_isstring(L, 1)) {
+  if (lua_type(L, 1) == LUA_TSTRING) {
     if (!loadPng(lua_tostring(L, 1), *img)) {
       delete img;
       return luaL_error(L, "could not load image data");
@@ -1317,6 +1431,13 @@ int l_fs_isDirectory(lua_State *L) {
 }
 
 int l_fs_setIdentity(lua_State *) { return 0; }
+int l_fs_createDirectory(lua_State *L) {
+  std::string path = normalizePath(luaL_optstring(L, 1, "."));
+  lua_pushboolean(L, mkdir(path.c_str(), 0777) == 0 || errno == EEXIST);
+  return 1;
+}
+int l_fs_getSaveDirectory(lua_State *L) { lua_pushstring(L, G.root.c_str()); return 1; }
+int l_fs_getSource(lua_State *L) { lua_pushstring(L, G.root.c_str()); return 1; }
 int l_fs_remove(lua_State *L) {
   lua_pushboolean(L, unlink(normalizePath(luaL_checkstring(L, 1)).c_str()) == 0);
   return 1;
@@ -1469,12 +1590,21 @@ int l_mouse_setVisible(lua_State *L) { G.mouseVisible = lua_toboolean(L, 1); ret
 int l_mouse_isVisible(lua_State *L) { lua_pushboolean(L, G.mouseVisible); return 1; }
 int l_mouse_newCursor(lua_State *L) { lua_newtable(L); return 1; }
 int l_mouse_setCursor(lua_State *) { return 0; }
+int l_mouse_setGrabbed(lua_State *) { return 0; }
+int l_mouse_getSystemCursor(lua_State *L) { lua_newtable(L); return 1; }
 
 int l_timer_getTime(lua_State *L) { lua_pushnumber(L, nowSeconds() - G.start); return 1; }
 int l_timer_getDelta(lua_State *L) { lua_pushnumber(L, G.dt); return 1; }
 int l_timer_getFPS(lua_State *L) { lua_pushinteger(L, G.fps); return 1; }
 int l_timer_sleep(lua_State *L) { usleep(useconds_t(luaL_checknumber(L, 1) * 1000000.0)); return 0; }
-int l_timer_step(lua_State *) { return 0; }
+int l_timer_step(lua_State *L) {
+  double t = nowSeconds();
+  if (G.last == 0.0) G.last = t;
+  G.dt = std::min(0.1, std::max(0.0, t - G.last));
+  G.last = t;
+  lua_pushnumber(L, G.dt);
+  return 1;
+}
 
 int l_window_setTitle(lua_State *L) {
   fprintf(stderr, "lovefb: %s\n", luaL_optstring(L, 1, "LOVE"));
@@ -1494,6 +1624,16 @@ int l_window_getFullscreenModes(lua_State *L) {
 }
 
 int l_window_setMode(lua_State *) { return 0; }
+int l_window_getMode(lua_State *L) {
+  lua_pushinteger(L, kLogicalWidth);
+  lua_pushinteger(L, kLogicalHeight);
+  lua_newtable(L);
+  lua_pushinteger(L, 1); lua_setfield(L, -2, "display");
+  lua_pushinteger(L, 60); lua_setfield(L, -2, "refreshrate");
+  lua_pushboolean(L, 0); lua_setfield(L, -2, "fullscreen");
+  return 3;
+}
+int l_window_setIcon(lua_State *) { return 0; }
 int l_window_getDesktopDimensions(lua_State *L) {
   lua_pushinteger(L, kLogicalWidth);
   lua_pushinteger(L, kLogicalHeight);
@@ -1516,10 +1656,17 @@ int l_source_clone(lua_State *L) {
 int l_source_setVolume(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->volume = luaL_optnumber(L, 2, 1); return 0; }
 int l_source_getVolume(lua_State *L) { lua_pushnumber(L, checkObj<Source>(L, 1, MT_SOURCE)->volume); return 1; }
 int l_source_setPitch(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->pitch = luaL_optnumber(L, 2, 1); return 0; }
+int l_source_getPitch(lua_State *L) { lua_pushnumber(L, checkObj<Source>(L, 1, MT_SOURCE)->pitch); return 1; }
 int l_source_setLooping(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->looping = lua_toboolean(L, 2); return 0; }
+int l_source_isLooping(lua_State *L) { lua_pushboolean(L, checkObj<Source>(L, 1, MT_SOURCE)->looping); return 1; }
 int l_source_play(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->playing = true; return 0; }
+int l_source_pause(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->playing = false; return 0; }
 int l_source_stop(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->playing = false; return 0; }
+int l_source_isPlaying(lua_State *L) { lua_pushboolean(L, checkObj<Source>(L, 1, MT_SOURCE)->playing); return 1; }
 int l_source_isStopped(lua_State *L) { lua_pushboolean(L, !checkObj<Source>(L, 1, MT_SOURCE)->playing); return 1; }
+int l_source_seek(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->cursor = luaL_optnumber(L, 2, 0); return 0; }
+int l_source_setEffect(lua_State *) { return 0; }
+int l_audio_setEffect(lua_State *) { return 0; }
 
 int l_math_random(lua_State *L) {
   int top = lua_gettop(L);
@@ -1595,7 +1742,7 @@ int l_world_update(lua_State *L) {
     b->vy += w->gy * dt;
     b->x += b->vx * dt;
     b->y += b->vy * dt;
-    b->angle += b->vx * dt * 0.002;
+    if (!b->fixedRotation) b->angle += b->angularVelocity * dt;
     if (b->y > 568) { b->y = 568; b->vy *= -0.55; }
     if (b->y < 16) { b->y = 16; b->vy *= -0.55; }
     if (b->x < 16) { b->x = 16; b->vx *= -0.55; }
@@ -1620,13 +1767,20 @@ int l_world_getBodies(lua_State *L) {
   }
   return 1;
 }
+int l_world_destroy(lua_State *L) {
+  World *w = checkObj<World>(L, 1, MT_WORLD);
+  w->bodies.clear();
+  return 0;
+}
+int l_world_rayCast(lua_State *) { return 0; }
 int l_phys_newBody(lua_State *L) {
   World *w = checkObj<World>(L, 1, MT_WORLD);
   Body *b = new Body;
   b->world = w;
   b->x = luaL_optnumber(L, 2, 0);
   b->y = luaL_optnumber(L, 3, 0);
-  b->dynamic = std::string(luaL_optstring(L, 4, "static")) == "dynamic";
+  std::string kind = luaL_optstring(L, 4, "static");
+  b->dynamic = kind == "dynamic" || kind == "kinematic";
   w->bodies.push_back(b);
   pushObj(L, b, MT_BODY);
   return 1;
@@ -1641,9 +1795,10 @@ int l_body_getPosition(lua_State *L) {
 int l_body_getWorldPoints(lua_State *L) {
   Body *b = checkObj<Body>(L, 1, MT_BODY);
   int out = 0;
-  for (int i = 2; i <= lua_gettop(L); i += 2) {
+  int top = lua_gettop(L);
+  for (int i = 2; i <= top; i += 2) {
     lua_pushnumber(L, b->x + luaL_checknumber(L, i)); ++out;
-    if (i + 1 <= lua_gettop(L)) { lua_pushnumber(L, b->y + luaL_checknumber(L, i + 1)); ++out; }
+    if (i + 1 <= top) { lua_pushnumber(L, b->y + luaL_checknumber(L, i + 1)); ++out; }
   }
   return out;
 }
@@ -1653,11 +1808,54 @@ int l_body_applyLinearImpulse(lua_State *L) {
   b->vy += luaL_optnumber(L, 3, 0) * 0.25;
   return 0;
 }
+int l_body_setPosition(lua_State *L) {
+  Body *b = checkObj<Body>(L, 1, MT_BODY);
+  b->x = luaL_checknumber(L, 2);
+  b->y = luaL_checknumber(L, 3);
+  return 0;
+}
+int l_body_setBullet(lua_State *) { return 0; }
+int l_body_setFixedRotation(lua_State *L) { checkObj<Body>(L, 1, MT_BODY)->fixedRotation = lua_toboolean(L, 2); return 0; }
+int l_body_setLinearVelocity(lua_State *L) {
+  Body *b = checkObj<Body>(L, 1, MT_BODY);
+  b->vx = luaL_optnumber(L, 2, 0);
+  b->vy = luaL_optnumber(L, 3, 0);
+  return 0;
+}
+int l_body_getLinearVelocity(lua_State *L) {
+  Body *b = checkObj<Body>(L, 1, MT_BODY);
+  lua_pushnumber(L, b->vx);
+  lua_pushnumber(L, b->vy);
+  return 2;
+}
+int l_body_setLinearDamping(lua_State *) { return 0; }
+int l_body_setAngularVelocity(lua_State *L) { checkObj<Body>(L, 1, MT_BODY)->angularVelocity = luaL_optnumber(L, 2, 0); return 0; }
+int l_body_setAngularDamping(lua_State *) { return 0; }
+int l_body_setAngle(lua_State *L) { checkObj<Body>(L, 1, MT_BODY)->angle = luaL_optnumber(L, 2, 0); return 0; }
+int l_body_applyAngularImpulse(lua_State *L) { checkObj<Body>(L, 1, MT_BODY)->angularVelocity += luaL_optnumber(L, 2, 0); return 0; }
+int l_body_applyForce(lua_State *L) {
+  Body *b = checkObj<Body>(L, 1, MT_BODY);
+  b->vx += luaL_optnumber(L, 2, 0) * 0.01;
+  b->vy += luaL_optnumber(L, 3, 0) * 0.01;
+  return 0;
+}
+int l_body_applyTorque(lua_State *L) { checkObj<Body>(L, 1, MT_BODY)->angularVelocity += luaL_optnumber(L, 2, 0) * 0.01; return 0; }
+int l_body_setMass(lua_State *) { return 0; }
+int l_body_setGravityScale(lua_State *) { return 0; }
 int l_body_setMassData(lua_State *) { return 0; }
 int l_body_setAwake(lua_State *) { return 0; }
+int l_body_destroy(lua_State *) { return 0; }
 int l_phys_newRectangleShape(lua_State *L) {
-  double cx = luaL_optnumber(L, 1, 0), cy = luaL_optnumber(L, 2, 0);
-  double w = luaL_checknumber(L, 3), h = luaL_checknumber(L, 4);
+  double cx = 0, cy = 0, w = 0, h = 0;
+  if (lua_gettop(L) >= 4) {
+    cx = luaL_optnumber(L, 1, 0);
+    cy = luaL_optnumber(L, 2, 0);
+    w = luaL_checknumber(L, 3);
+    h = luaL_checknumber(L, 4);
+  } else {
+    w = luaL_checknumber(L, 1);
+    h = luaL_checknumber(L, 2);
+  }
   Shape *s = new Shape;
   s->kind = Shape::Polygon;
   s->points = {cx - w / 2, cy - h / 2, cx + w / 2, cy - h / 2,
@@ -1676,9 +1874,34 @@ int l_phys_newEdgeShape(lua_State *L) {
 int l_phys_newCircleShape(lua_State *L) {
   Shape *s = new Shape;
   s->kind = Shape::Circle;
-  s->points = {luaL_optnumber(L, 1, 0), luaL_optnumber(L, 2, 0)};
-  s->radius = luaL_checknumber(L, 3);
+  if (lua_gettop(L) >= 3) {
+    s->points = {luaL_optnumber(L, 1, 0), luaL_optnumber(L, 2, 0)};
+    s->radius = luaL_checknumber(L, 3);
+  } else {
+    s->points = {0, 0};
+    s->radius = luaL_checknumber(L, 1);
+  }
   pushObj(L, s, MT_SHAPE);
+  return 1;
+}
+int l_phys_newPolygonShape(lua_State *L) {
+  Shape *s = new Shape;
+  s->kind = Shape::Polygon;
+  s->points = collectNumbers(L, 1);
+  pushObj(L, s, MT_SHAPE);
+  return 1;
+}
+int l_phys_newChainShape(lua_State *L) {
+  Shape *s = new Shape;
+  s->kind = Shape::Edge;
+  s->points = collectNumbers(L, 2);
+  pushObj(L, s, MT_SHAPE);
+  return 1;
+}
+int l_phys_newRevoluteJoint(lua_State *L) {
+  lua_newtable(L);
+  lua_pushcfunction(L, [](lua_State *) -> int { return 0; });
+  lua_setfield(L, -2, "destroy");
   return 1;
 }
 int l_shape_getPoints(lua_State *L) {
@@ -1695,7 +1918,7 @@ int l_shape_computeMass(lua_State *L) {
 int l_phys_newFixture(lua_State *L) {
   Fixture *f = new Fixture;
   f->body = checkObj<Body>(L, 1, MT_BODY);
-  f->shape = checkObj<Shape>(L, 2, MT_SHAPE);
+  f->shape = new Shape(*checkObj<Shape>(L, 2, MT_SHAPE));
   pushObj(L, f, MT_FIXTURE);
   return 1;
 }
@@ -1712,6 +1935,18 @@ int l_fixture_getUserData(lua_State *L) {
   else lua_rawgeti(L, LUA_REGISTRYINDEX, f->userDataRef);
   return 1;
 }
+int l_fixture_getShape(lua_State *L) {
+  Fixture *f = checkObj<Fixture>(L, 1, MT_FIXTURE);
+  pushObj(L, new Shape(*f->shape), MT_SHAPE);
+  return 1;
+}
+int l_fixture_setCategory(lua_State *) { return 0; }
+int l_fixture_setMask(lua_State *) { return 0; }
+int l_fixture_setSensor(lua_State *L) { checkObj<Fixture>(L, 1, MT_FIXTURE)->sensor = lua_toboolean(L, 2); return 0; }
+int l_fixture_isSensor(lua_State *L) { lua_pushboolean(L, checkObj<Fixture>(L, 1, MT_FIXTURE)->sensor); return 1; }
+int l_fixture_setFriction(lua_State *L) { checkObj<Fixture>(L, 1, MT_FIXTURE)->friction = luaL_optnumber(L, 2, 0); return 0; }
+int l_fixture_setRestitution(lua_State *L) { checkObj<Fixture>(L, 1, MT_FIXTURE)->restitution = luaL_optnumber(L, 2, 0); return 0; }
+int l_fixture_destroy(lua_State *) { return 0; }
 int l_fixture_number0(lua_State *L) { lua_pushnumber(L, 0); return 1; }
 int l_fixture_positions(lua_State *L) { lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0); lua_pushnumber(L, 0); return 4; }
 int l_fixture_normal(lua_State *L) { lua_pushnumber(L, 0); lua_pushnumber(L, -1); return 2; }
@@ -1745,12 +1980,12 @@ void registerLove(lua_State *L) {
   const luaL_Reg text[] = {{"getWidth", l_text_getWidth}, {"getHeight", l_text_getHeight}, {nullptr, nullptr}};
   const luaL_Reg file[] = {{"open", l_file_open}, {"read", l_file_read}, {"close", l_file_close}, {nullptr, nullptr}};
   const luaL_Reg video[] = {{"getWidth", l_video_getWidth}, {"getHeight", l_video_getHeight}, {"play", l_video_play}, {"pause", l_video_pause}, {"isPlaying", l_video_isPlaying}, {"seek", l_video_seek}, {"tell", l_video_tell}, {"getSource", l_video_getSource}, {nullptr, nullptr}};
-  const luaL_Reg source[] = {{"clone", l_source_clone}, {"setVolume", l_source_setVolume}, {"getVolume", l_source_getVolume}, {"setPitch", l_source_setPitch}, {"setLooping", l_source_setLooping}, {"play", l_source_play}, {"stop", l_source_stop}, {"isStopped", l_source_isStopped}, {nullptr, nullptr}};
+  const luaL_Reg source[] = {{"clone", l_source_clone}, {"setVolume", l_source_setVolume}, {"getVolume", l_source_getVolume}, {"setPitch", l_source_setPitch}, {"getPitch", l_source_getPitch}, {"setLooping", l_source_setLooping}, {"isLooping", l_source_isLooping}, {"play", l_source_play}, {"pause", l_source_pause}, {"stop", l_source_stop}, {"isPlaying", l_source_isPlaying}, {"isStopped", l_source_isStopped}, {"seek", l_source_seek}, {"setEffect", l_source_setEffect}, {nullptr, nullptr}};
   const luaL_Reg shader[] = {{"send", l_shader_send}, {nullptr, nullptr}};
-  const luaL_Reg world[] = {{"update", l_world_update}, {"setGravity", l_world_setGravity}, {"setCallbacks", l_world_setCallbacks}, {"getBodies", l_world_getBodies}, {nullptr, nullptr}};
-  const luaL_Reg body[] = {{"getX", l_body_getX}, {"getY", l_body_getY}, {"getAngle", l_body_getAngle}, {"getPosition", l_body_getPosition}, {"getWorldPoints", l_body_getWorldPoints}, {"applyLinearImpulse", l_body_applyLinearImpulse}, {"setMassData", l_body_setMassData}, {"setAwake", l_body_setAwake}, {nullptr, nullptr}};
+  const luaL_Reg world[] = {{"update", l_world_update}, {"setGravity", l_world_setGravity}, {"setCallbacks", l_world_setCallbacks}, {"getBodies", l_world_getBodies}, {"destroy", l_world_destroy}, {"rayCast", l_world_rayCast}, {nullptr, nullptr}};
+  const luaL_Reg body[] = {{"getX", l_body_getX}, {"getY", l_body_getY}, {"getAngle", l_body_getAngle}, {"getPosition", l_body_getPosition}, {"setPosition", l_body_setPosition}, {"getWorldPoints", l_body_getWorldPoints}, {"applyLinearImpulse", l_body_applyLinearImpulse}, {"setLinearVelocity", l_body_setLinearVelocity}, {"getLinearVelocity", l_body_getLinearVelocity}, {"setLinearDamping", l_body_setLinearDamping}, {"setAngularVelocity", l_body_setAngularVelocity}, {"setAngularDamping", l_body_setAngularDamping}, {"setAngle", l_body_setAngle}, {"applyAngularImpulse", l_body_applyAngularImpulse}, {"applyForce", l_body_applyForce}, {"applyTorque", l_body_applyTorque}, {"setMass", l_body_setMass}, {"setGravityScale", l_body_setGravityScale}, {"setMassData", l_body_setMassData}, {"setAwake", l_body_setAwake}, {"setBullet", l_body_setBullet}, {"setFixedRotation", l_body_setFixedRotation}, {"destroy", l_body_destroy}, {nullptr, nullptr}};
   const luaL_Reg shape[] = {{"getPoints", l_shape_getPoints}, {"getRadius", l_shape_getRadius}, {"computeMass", l_shape_computeMass}, {nullptr, nullptr}};
-  const luaL_Reg fixture[] = {{"setUserData", l_fixture_setUserData}, {"getUserData", l_fixture_getUserData}, {"getFriction", l_fixture_number0}, {"getRestitution", l_fixture_number0}, {"getSeparation", l_fixture_number0}, {"getPositions", l_fixture_positions}, {"getNormal", l_fixture_normal}, {"getVelocity", l_fixture_normal}, {nullptr, nullptr}};
+  const luaL_Reg fixture[] = {{"setUserData", l_fixture_setUserData}, {"getUserData", l_fixture_getUserData}, {"getShape", l_fixture_getShape}, {"setCategory", l_fixture_setCategory}, {"setMask", l_fixture_setMask}, {"setSensor", l_fixture_setSensor}, {"isSensor", l_fixture_isSensor}, {"setFriction", l_fixture_setFriction}, {"setRestitution", l_fixture_setRestitution}, {"destroy", l_fixture_destroy}, {"getFriction", l_fixture_number0}, {"getRestitution", l_fixture_number0}, {"getSeparation", l_fixture_number0}, {"getPositions", l_fixture_positions}, {"getNormal", l_fixture_normal}, {"getVelocity", l_fixture_normal}, {nullptr, nullptr}};
 
   createMeta(L, MT_FONT, font);
   createMeta(L, MT_IMAGE, image, gcImage);
@@ -1766,7 +2001,7 @@ void registerLove(lua_State *L) {
   createMeta(L, MT_WORLD, world);
   createMeta(L, MT_BODY, body);
   createMeta(L, MT_SHAPE, shape, gcShape);
-  createMeta(L, MT_FIXTURE, fixture);
+  createMeta(L, MT_FIXTURE, fixture, gcFixture);
 
   const luaL_Reg graphics[] = {
     {"getWidth", l_g_getWidth}, {"getHeight", l_g_getHeight}, {"getDimensions", l_g_getDimensions},
@@ -1777,7 +2012,12 @@ void registerLove(lua_State *L) {
     {"clear", l_g_clear}, {"isActive", l_g_isActive}, {"present", l_g_present},
     {"newFont", l_g_newFont}, {"setFont", l_g_setFont}, {"getFont", l_g_getFont},
     {"print", l_g_print}, {"rectangle", l_g_rectangle}, {"line", l_g_line},
-    {"circle", l_g_circle}, {"polygon", l_g_polygon}, {"point", l_g_point},
+    {"circle", l_g_circle}, {"arc", l_g_arc}, {"ellipse", l_g_ellipse},
+    {"polygon", l_g_polygon}, {"point", l_g_point},
+    {"stencil", l_g_stencil}, {"setStencilTest", l_g_setStencilTest},
+    {"getSystemLimits", l_g_getSystemLimits}, {"getSupported", l_g_getSupported},
+    {"getRendererInfo", l_g_getRendererInfo}, {"getImageFormats", l_g_getImageFormats},
+    {"getCanvasFormats", l_g_getCanvasFormats}, {"getStats", l_g_getStats},
     {"setScissor", l_g_setScissor}, {"getScissor", l_g_getScissor},
     {"push", l_g_push}, {"pop", l_g_pop}, {"origin", l_g_origin},
     {"translate", l_g_translate}, {"scale", l_g_scale}, {"rotate", l_g_rotate},
@@ -1791,7 +2031,9 @@ void registerLove(lua_State *L) {
     {"getDirectoryItems", l_fs_getDirectoryItems}, {"getInfo", l_fs_getInfo},
     {"exists", l_fs_exists}, {"read", l_fs_read}, {"load", l_fs_load},
     {"isFile", l_fs_isFile}, {"isDirectory", l_fs_isDirectory},
-    {"setIdentity", l_fs_setIdentity}, {"remove", l_fs_remove}, {"write", l_fs_write},
+    {"setIdentity", l_fs_setIdentity}, {"createDirectory", l_fs_createDirectory},
+    {"getSaveDirectory", l_fs_getSaveDirectory}, {"getSource", l_fs_getSource},
+    {"remove", l_fs_remove}, {"write", l_fs_write},
     {"newFileData", l_fs_newFileData}, {"newFile", l_fs_newFile}, {"lines", l_fs_lines}, {nullptr, nullptr},
   };
   const luaL_Reg imageMod[] = {{"newImageData", l_image_newImageData}, {nullptr, nullptr}};
@@ -1800,16 +2042,17 @@ void registerLove(lua_State *L) {
     {"getPosition", l_mouse_getPosition}, {"getX", l_mouse_getX}, {"getY", l_mouse_getY},
     {"setPosition", l_mouse_setPosition}, {"isDown", l_mouse_isDown},
     {"setVisible", l_mouse_setVisible}, {"isVisible", l_mouse_isVisible},
-    {"newCursor", l_mouse_newCursor}, {"setCursor", l_mouse_setCursor}, {nullptr, nullptr},
+    {"newCursor", l_mouse_newCursor}, {"setCursor", l_mouse_setCursor},
+    {"setGrabbed", l_mouse_setGrabbed}, {"getSystemCursor", l_mouse_getSystemCursor}, {nullptr, nullptr},
   };
   const luaL_Reg timer[] = {{"getTime", l_timer_getTime}, {"getDelta", l_timer_getDelta}, {"getFPS", l_timer_getFPS}, {"sleep", l_timer_sleep}, {"step", l_timer_step}, {nullptr, nullptr}};
-  const luaL_Reg window[] = {{"setTitle", l_window_setTitle}, {"setMode", l_window_setMode}, {"getFullscreenModes", l_window_getFullscreenModes}, {"getDesktopDimensions", l_window_getDesktopDimensions}, {"getDisplayCount", l_window_getDisplayCount}, {nullptr, nullptr}};
-  const luaL_Reg physics[] = {{"setMeter", l_phys_setMeter}, {"newWorld", l_phys_newWorld}, {"newBody", l_phys_newBody}, {"newRectangleShape", l_phys_newRectangleShape}, {"newEdgeShape", l_phys_newEdgeShape}, {"newCircleShape", l_phys_newCircleShape}, {"newFixture", l_phys_newFixture}, {nullptr, nullptr}};
-  const luaL_Reg audio[] = {{"newSource", l_audio_newSource}, {nullptr, nullptr}};
+  const luaL_Reg window[] = {{"setTitle", l_window_setTitle}, {"setMode", l_window_setMode}, {"getMode", l_window_getMode}, {"setIcon", l_window_setIcon}, {"getFullscreenModes", l_window_getFullscreenModes}, {"getDesktopDimensions", l_window_getDesktopDimensions}, {"getDisplayCount", l_window_getDisplayCount}, {nullptr, nullptr}};
+  const luaL_Reg physics[] = {{"setMeter", l_phys_setMeter}, {"newWorld", l_phys_newWorld}, {"newBody", l_phys_newBody}, {"newRectangleShape", l_phys_newRectangleShape}, {"newEdgeShape", l_phys_newEdgeShape}, {"newCircleShape", l_phys_newCircleShape}, {"newPolygonShape", l_phys_newPolygonShape}, {"newChainShape", l_phys_newChainShape}, {"newRevoluteJoint", l_phys_newRevoluteJoint}, {"newFixture", l_phys_newFixture}, {nullptr, nullptr}};
+  const luaL_Reg audio[] = {{"newSource", l_audio_newSource}, {"setEffect", l_audio_setEffect}, {nullptr, nullptr}};
   const luaL_Reg mathMod[] = {{"random", l_math_random}, {"setRandomSeed", l_math_setRandomSeed}, {"isConvex", l_math_isConvex}, {"triangulate", l_math_triangulate}, {"newRandomGenerator", l_math_newRandomGenerator}, {nullptr, nullptr}};
   const luaL_Reg event[] = {{"quit", l_event_quit}, {"push", l_event_push}, {"pump", l_event_pump}, {"poll", l_event_poll}, {nullptr, nullptr}};
   const luaL_Reg system[] = {{"openURL", l_system_openURL}, {nullptr, nullptr}};
-  const luaL_Reg joystick[] = {{"getJoysticks", l_joystick_getJoysticks}, {nullptr, nullptr}};
+  const luaL_Reg joystick[] = {{"getJoysticks", l_joystick_getJoysticks}, {"loadGamepadMappings", l_event_pump}, {nullptr, nullptr}};
 
   setModule(L, "graphics", graphics);
   setModule(L, "filesystem", fs);

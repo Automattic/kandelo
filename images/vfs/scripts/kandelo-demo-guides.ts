@@ -10,4 +10,6 @@ export {
   nginxPhpGuide,
   nodeGuide,
   shellGuide,
+  SNKRX_COMMAND,
+  snkrxGuide,
 } from "../../../web-libs/kandelo-session/src/demo-guides";
