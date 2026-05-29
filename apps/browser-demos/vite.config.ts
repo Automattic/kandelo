@@ -343,6 +343,40 @@ function corsProxyPlugin(): Plugin {
 }
 
 /**
+ * Resolve a TLS cert/key pair for the dev server when VITE_HTTPS=1.
+ *
+ * Off by default — when VITE_HTTPS is unset the dev server runs over plain
+ * HTTP exactly as before. Opt-in is for the WebRTC manual-SDP demo
+ * (`pages/webrtc/`), which requires a secure context on a second LAN
+ * machine (RTCPeerConnection + SharedArrayBuffer both refuse to load
+ * over `http://<lan-ip>` from anything other than `localhost`).
+ *
+ * Cert path is the mkcert-friendly default
+ * `$HOME/.local/share/wasm-posix-kernel/certs/{cert.pem,key.pem}`.
+ * If `VITE_HTTPS=1` but the files are missing, fail loudly at config-load
+ * time so the user gets a single clear error instead of a confusing
+ * mid-boot failure. See `pages/webrtc/README.md` for the recipe.
+ */
+function resolveHttpsConfig(): { cert: Buffer; key: Buffer } | undefined {
+  if (process.env.VITE_HTTPS !== "1") return undefined;
+  const certDir = path.resolve(process.env.HOME ?? "", ".local/share/wasm-posix-kernel/certs");
+  const certPath = path.join(certDir, "cert.pem");
+  const keyPath = path.join(certDir, "key.pem");
+  const missing = [certPath, keyPath].filter((p) => !fs.existsSync(p));
+  if (missing.length > 0) {
+    throw new Error(
+      "VITE_HTTPS=1 but cert/key files are missing:\n" +
+      missing.map((p) => `  ${p}`).join("\n") + "\n" +
+      "See apps/browser-demos/pages/webrtc/README.md for how to generate them."
+    );
+  }
+  return {
+    cert: fs.readFileSync(certPath),
+    key: fs.readFileSync(keyPath),
+  };
+}
+
+/**
  * Vite plugin: inject CORS proxy URL into service-worker.js during build.
  * Replaces the __CORS_PROXY_URL__ placeholder with the value from
  * VITE_CORS_PROXY_URL env var. In dev mode this is a no-op (the dev server's
@@ -385,6 +419,7 @@ export default defineConfig({
     injectCorsProxyUrl(),
   ],
   server: {
+    https: resolveHttpsConfig(),
     headers: crossOriginIsolationHeaders,
     fs: {
       allow: [repoRoot],
@@ -415,6 +450,7 @@ export default defineConfig({
         "git-test": path.resolve(__dirname, "pages/git-test/index.html"),
         "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
         benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
+        webrtc: path.resolve(__dirname, "pages/webrtc/index.html"),
         doom: path.resolve(__dirname, "pages/doom/index.html"),
         kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
         // The perl, python, ruby, erlang, texlive, and redis pages
