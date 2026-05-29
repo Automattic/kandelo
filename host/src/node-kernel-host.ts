@@ -40,7 +40,8 @@ const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 export interface NodeKernelHostOptions {
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
-  /** Maximum wasm memory pages per process (default: 16384 = 1GB) */
+  /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
+   *  memory is smaller and grows on demand up to this cap. */
   maxPages?: number;
   /** Size of the data buffer for syscall data transfer (default: 65536).
    *  Increase for programs that do large pwrite() calls (e.g. InnoDB). */

@@ -1233,6 +1233,20 @@ pub extern "C" fn kernel_set_max_addr(pid: u32, max_addr: usize) -> i32 {
     }
 }
 
+/// Set the brk address space upper bound for a process.
+/// Used to prevent brk from overlapping low host control pages.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_brk_limit(pid: u32, brk_limit: usize) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.set_brk_limit(brk_limit);
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
 /// Set the working directory for a process (centralized mode).
 /// Called by host to set the initial cwd before the process starts.
 /// Returns 0 on success, -ESRCH if pid not found.

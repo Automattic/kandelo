@@ -3,36 +3,43 @@ import { ThreadPageAllocator } from "../src/thread-allocator";
 import { WASM_PAGE_SIZE, PAGES_PER_THREAD, CH_TOTAL_SIZE } from "../src/constants";
 
 const MAX_PAGES = 256;
+const FIRST_THREAD_BASE_PAGE = 24;
+const THREAD_ARENA_END_PAGE = 64;
 
-function makeMemory(): WebAssembly.Memory {
-  return new WebAssembly.Memory({ initial: MAX_PAGES, maximum: MAX_PAGES, shared: true });
+function makeAllocator(): ThreadPageAllocator {
+  return new ThreadPageAllocator({
+    firstBasePage: FIRST_THREAD_BASE_PAGE,
+    maxPageExclusive: THREAD_ARENA_END_PAGE,
+  });
+}
+
+function makeMemory(initial = FIRST_THREAD_BASE_PAGE): WebAssembly.Memory {
+  return new WebAssembly.Memory({ initial, maximum: MAX_PAGES, shared: true });
 }
 
 describe("ThreadPageAllocator", () => {
-  it("allocates from top-down below main channel", () => {
-    const alloc = new ThreadPageAllocator(MAX_PAGES);
+  it("allocates upward in the process control arena", () => {
+    const alloc = makeAllocator();
     const mem = makeMemory();
     const t = alloc.allocate(mem);
 
-    // Main channel is at top 2 pages, first thread at maxPages - 2 - PAGES_PER_THREAD
-    const expectedBase = MAX_PAGES - 2 - PAGES_PER_THREAD;
-    expect(t.basePage).toBe(expectedBase);
-    expect(t.channelOffset).toBe(expectedBase * WASM_PAGE_SIZE);
-    expect(t.tlsAllocAddr).toBe((expectedBase - 2) * WASM_PAGE_SIZE);
+    expect(t.basePage).toBe(FIRST_THREAD_BASE_PAGE);
+    expect(t.channelOffset).toBe(FIRST_THREAD_BASE_PAGE * WASM_PAGE_SIZE);
+    expect(t.tlsAllocAddr).toBe((FIRST_THREAD_BASE_PAGE - 2) * WASM_PAGE_SIZE);
   });
 
-  it("allocates consecutive threads downward", () => {
-    const alloc = new ThreadPageAllocator(MAX_PAGES);
+  it("allocates consecutive threads upward", () => {
+    const alloc = makeAllocator();
     const mem = makeMemory();
     const t1 = alloc.allocate(mem);
     const t2 = alloc.allocate(mem);
 
-    expect(t2.basePage).toBe(t1.basePage - PAGES_PER_THREAD);
+    expect(t2.basePage).toBe(t1.basePage + PAGES_PER_THREAD);
     expect(t2.channelOffset).toBe(t2.basePage * WASM_PAGE_SIZE);
   });
 
   it("reuses freed pages", () => {
-    const alloc = new ThreadPageAllocator(MAX_PAGES);
+    const alloc = makeAllocator();
     const mem = makeMemory();
     const t1 = alloc.allocate(mem);
     const t2 = alloc.allocate(mem);
@@ -46,12 +53,11 @@ describe("ThreadPageAllocator", () => {
   });
 
   it("zeros channel and TLS regions on allocate", () => {
-    const alloc = new ThreadPageAllocator(MAX_PAGES);
-    const mem = makeMemory();
+    const alloc = makeAllocator();
+    const mem = makeMemory(THREAD_ARENA_END_PAGE);
 
     // Write non-zero data where the allocation will go
-    const expectedBase = MAX_PAGES - 2 - PAGES_PER_THREAD;
-    const offset = expectedBase * WASM_PAGE_SIZE;
+    const offset = FIRST_THREAD_BASE_PAGE * WASM_PAGE_SIZE;
     new Uint8Array(mem.buffer, offset, 16).fill(0xff);
 
     const t = alloc.allocate(mem);
@@ -66,7 +72,7 @@ describe("ThreadPageAllocator", () => {
   });
 
   it("zeros reused pages", () => {
-    const alloc = new ThreadPageAllocator(MAX_PAGES);
+    const alloc = makeAllocator();
     const mem = makeMemory();
     const t1 = alloc.allocate(mem);
 
@@ -85,7 +91,7 @@ describe("ThreadPageAllocator", () => {
   });
 
   it("free list is LIFO", () => {
-    const alloc = new ThreadPageAllocator(MAX_PAGES);
+    const alloc = makeAllocator();
     const mem = makeMemory();
     const t1 = alloc.allocate(mem);
     const t2 = alloc.allocate(mem);
@@ -102,6 +108,26 @@ describe("ThreadPageAllocator", () => {
 
     // Next allocation should continue top-down from where t3 left off
     const r3 = alloc.allocate(mem);
-    expect(r3.basePage).toBe(t3.basePage - PAGES_PER_THREAD);
+    expect(r3.basePage).toBe(t3.basePage + PAGES_PER_THREAD);
+  });
+
+  it("grows memory only far enough to cover the allocated control pages", () => {
+    const alloc = makeAllocator();
+    const mem = makeMemory(8);
+
+    const t = alloc.allocate(mem);
+
+    expect(mem.buffer.byteLength).toBe((t.basePage + 2) * WASM_PAGE_SIZE);
+    expect(mem.buffer.byteLength).toBeLessThan(MAX_PAGES * WASM_PAGE_SIZE);
+  });
+
+  it("throws when the thread control arena is exhausted", () => {
+    const alloc = new ThreadPageAllocator({
+      firstBasePage: 24,
+      maxPageExclusive: 25,
+    });
+    const mem = makeMemory();
+
+    expect(() => alloc.allocate(mem)).toThrow(/control arena exhausted/);
   });
 });
