@@ -237,6 +237,7 @@ const LIVE_DEMO_IDS = [
   "doom",
   "modeset",
   "love",
+  "bytepath",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -325,6 +326,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     features: ["kms"],
   },
   love: {
+    image: "shell",
+    features: ["framebuffer"],
+  },
+  bytepath: {
     image: "shell",
     features: ["framebuffer"],
   },
