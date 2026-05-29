@@ -125,7 +125,7 @@ function buildArgv(line: string): string[] | null {
     // (no listener → ECONNREFUSED).
     const extras = hasInstall
       ? ["--prefix", "/work", "--cache", "/tmp/.npm-cache",
-         "--no-fund", "--no-audit", "--no-progress",
+         "--no-fund", "--no-audit", "--progress=true",
          "--registry=http://proxy.local/"]
       : [];
     return ["node", NPM_CLI, ...tokens, ...extras];
@@ -275,12 +275,18 @@ async function runCommand(line: string): Promise<void> {
       await kernel.init(kernelBytes!);
 
       const t0 = performance.now();
-      lastExit = await kernel.spawn(nodeBytes!, argv, {
-        env: NODE_ENV.filter((kv) => !kv.startsWith("TERM=")).concat("TERM=dumb"),
+      const pid = kernel.nextPid;
+      const exitPromise = kernel.spawn(nodeBytes!, argv, {
+        env: NODE_ENV,
         cwd: NODE_WORKDIR,
         uid: DEMO_UID,
         gid: DEMO_GID,
+        pty: true,
+        ptyCols: term.cols,
+        ptyRows: term.rows,
       });
+      kernel.onPtyOutput(pid, (data) => term.write(data));
+      lastExit = await exitPromise;
       lastDt = ((performance.now() - t0) / 1000).toFixed(2);
       if (lastExit !== 0) break;
     }

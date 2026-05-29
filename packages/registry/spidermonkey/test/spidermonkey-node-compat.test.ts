@@ -49,10 +49,24 @@ Promise.resolve(run(process)).then(
   () => { settled = true; },
   (err) => { failure = err; settled = true; }
 );
+const sleepView = typeof SharedArrayBuffer === 'function' && typeof Atomics === 'object'
+  ? new Int32Array(new SharedArrayBuffer(4))
+  : null;
+function pumpSpiderMonkeyJobs() {
+  if (typeof drainJobQueue === 'function') drainJobQueue();
+  if (typeof __kandeloRunDueTimers === 'function') __kandeloRunDueTimers();
+  if (sleepView && typeof __kandeloNextTimerDelay === 'function') {
+    const delay = __kandeloNextTimerDelay();
+    if (delay > 0) {
+      try { Atomics.wait(sleepView, 0, 0, Math.min(delay, 5)); } catch {}
+    }
+  }
+}
 let spins = 0;
+const started = Date.now();
 while (!settled && typeof drainJobQueue === 'function') {
-  drainJobQueue();
-  if (++spins > 100000) {
+  pumpSpiderMonkeyJobs();
+  if (++spins > 500000 && Date.now() - started > 300000) {
     failure = new Error('npm did not settle after draining the SpiderMonkey job queue');
     settled = true;
   }
@@ -61,7 +75,7 @@ if (failure) {
   console.error(failure && failure.stack ? failure.stack : failure);
   process.exitCode = process.exitCode || 1;
 }
-if (typeof drainJobQueue === 'function') drainJobQueue();
+pumpSpiderMonkeyJobs();
 process.exit(process.exitCode || 0);
 `;
 
@@ -424,8 +438,11 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
       const { npmDir, helperDir } = prepareNpmRuntime(tempDir);
       const { registryDir, cowsayTarballFilename } = createCowsayPackages(tempDir);
       const nodeBytes = loadWasm(nodeWasm!);
+      const decoder = new TextDecoder();
+      const ptyDecoder = new TextDecoder();
       let stdout = "";
       let stderr = "";
+      let ptyOutput = "";
       const env = [
         "HOME=/work",
         "PWD=/work",
@@ -438,11 +455,11 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "npm_config_cache=/tmp/.npm-cache",
         "npm_config_fund=false",
         "npm_config_audit=false",
-        "npm_config_progress=false",
+        "npm_config_progress=true",
         "npm_config_update_notifier=false",
         "NPM_CONFIG_FUND=false",
         "NPM_CONFIG_AUDIT=false",
-        "NPM_CONFIG_PROGRESS=false",
+        "NPM_CONFIG_PROGRESS=true",
         "NPM_CONFIG_UPDATE_NOTIFIER=false",
       ];
       const host = new NodeKernelHost({
@@ -456,10 +473,13 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
           { mountPoint: "/work", hostPath: workDir, readonly: false },
         ],
         onStdout: (_pid, data) => {
-          stdout += new TextDecoder().decode(data);
+          stdout += decoder.decode(data);
         },
         onStderr: (_pid, data) => {
-          stderr += new TextDecoder().decode(data);
+          stderr += decoder.decode(data);
+        },
+        onPtyOutput: (_pid, data) => {
+          ptyOutput += ptyDecoder.decode(data, { stream: true });
         },
       });
 
@@ -477,18 +497,19 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
               `file:///registry/${cowsayTarballFilename}`,
               "--no-fund",
               "--no-audit",
-              "--no-progress",
             ],
-            { programModule: nodeModule, cwd: "/work", env },
+            { programModule: nodeModule, cwd: "/work", env, pty: true, ptyCols: 100, ptyRows: 30 },
           ),
         );
 
         expect(stderr).not.toContain("Exit handler never called");
+        ptyOutput += ptyDecoder.decode();
         const logsDir = join(tmpMountDir, ".npm-cache", "_logs");
         const npmLogs = existsSync(logsDir)
           ? readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n--- npm log ---\n")
           : "";
-        expect(installExitCode, `stdout:\n${stdout}\nstderr:\n${stderr}\nlogs:\n${npmLogs}`).toBe(0);
+        expect(installExitCode, `stdout:\n${stdout}\nstderr:\n${stderr}\npty:\n${ptyOutput}\nlogs:\n${npmLogs}`).toBe(0);
+        expect(ptyOutput).toMatch(/[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]/);
         expect(existsSync(join(workDir, "node_modules/cowsay/package.json"))).toBe(true);
 
         stdout = "";
