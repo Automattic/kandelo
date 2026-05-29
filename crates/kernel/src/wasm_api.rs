@@ -106,6 +106,16 @@ unsafe extern "C" {
         addr_c: u32,
         addr_d: u32,
     ) -> i32;
+    fn host_send_dgram(
+        src_port: u32,
+        dst_a: u32,
+        dst_b: u32,
+        dst_c: u32,
+        dst_d: u32,
+        dst_port: u32,
+        data_ptr: *const u8,
+        data_len: u32,
+    ) -> i32;
     fn host_getaddrinfo(
         name_ptr: *const u8,
         name_len: u32,
@@ -661,6 +671,35 @@ impl HostIO for WasmHostIO {
             )
         };
         i32_to_result(result)
+    }
+
+    fn send_dgram(
+        &mut self,
+        src_port: u16,
+        dst_ip: [u8; 4],
+        dst_port: u16,
+        data: &[u8],
+    ) -> Result<usize, Errno> {
+        let result = unsafe {
+            host_send_dgram(
+                src_port as u32,
+                dst_ip[0] as u32,
+                dst_ip[1] as u32,
+                dst_ip[2] as u32,
+                dst_ip[3] as u32,
+                dst_port as u32,
+                data.as_ptr(),
+                data.len() as u32,
+            )
+        };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
+        }
     }
 
     fn host_getaddrinfo(&mut self, name: &[u8], result_buf: &mut [u8]) -> Result<usize, Errno> {
@@ -9435,6 +9474,55 @@ pub extern "C" fn kernel_inject_connection(
     }
 
     recv_pipe_idx as i32
+}
+
+/// Inject an inbound UDP datagram from the host into process `pid`'s
+/// `SOCK_DGRAM` bound to `dst_port`. The kernel scans `proc.sockets` for
+/// a matching DGRAM socket in `Bound`/`Connected` state on `dst_port`,
+/// pushes a `Datagram { data, src_addr, src_port }` onto its `dgram_queue`
+/// (the same FIFO `sys_sendto`'s loopback branch populates), and wakes any
+/// `sys_recvfrom` blocked on that socket via the existing wakeup machinery.
+///
+/// Port-based addressing rather than fd-based: `sys_bind` does not notify
+/// the host of DGRAM binds (no analogue of `host_net_listen`), so the host
+/// has no fd to pass in. The page knows the bound port from the program's
+/// CLI flags; the kernel scans for it. Mirrors `sys_sendto`'s own loopback
+/// scan rather than introducing a parallel lookup table.
+///
+/// Backpressure: capped at `MAX_INJECT_DGRAM_QUEUE_LEN` per matching socket.
+/// A remote peer over an RTCDataChannel can otherwise feed this queue at
+/// line rate while the userspace reader stalls, growing the kernel heap
+/// without bound. Overflow returns 0 (success) — UDP is best-effort, the
+/// peer has no recourse and an errno return would just propagate noise.
+///
+/// Returns 0 on success (or silent overflow drop), negative errno on failure:
+///   -ESRCH        — no such pid
+///   -ECONNREFUSED — no bound DGRAM socket on that port
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_inject_datagram(
+    pid: u32,
+    dst_port: u32,
+    src_a: u32,
+    src_b: u32,
+    src_c: u32,
+    src_d: u32,
+    src_port: u32,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    let data = unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
+    crate::syscalls::inject_datagram_into(
+        proc,
+        dst_port as u16,
+        [src_a as u8, src_b as u8, src_c as u8, src_d as u8],
+        src_port as u16,
+        data,
+    )
 }
 
 /// Read data from a pipe buffer into kernel memory.
