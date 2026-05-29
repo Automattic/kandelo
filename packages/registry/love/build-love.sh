@@ -265,24 +265,36 @@ if love.mouse then
 end
 if love.audio then love.audio.setEffect = love.audio.setEffect or noop end
 
+local function normalize_units(units)
+  units = units or {}
+  for _, unit in ipairs(units) do
+    unit.reserve = unit.reserve or {0, 0}
+    unit.reserve[1] = unit.reserve[1] or 0
+    unit.reserve[2] = unit.reserve[2] or 0
+  end
+  return units
+end
+
 if system then
   function system.load_state() state = {} end
   function system.save_state() end
   function system.save_run() end
   function system.load_run()
-    return {
+    local run = {
       level = 1,
       loop = 0,
       gold = 3,
       shop_level = 1,
       shop_xp = 0,
       units = {
-        {character = 'vagrant', level = 1},
-        {character = 'swordsman', level = 1},
-        {character = 'archer', level = 1},
+        {character = 'vagrant', level = 1, reserve = {0, 0}},
+        {character = 'swordsman', level = 1, reserve = {0, 0}},
+        {character = 'archer', level = 1, reserve = {0, 0}},
       },
       passives = {},
     }
+    run.units = normalize_units(run.units)
+    return run
   end
 end
 
@@ -351,9 +363,40 @@ function Sound(_, _) return setmetatable({}, sound_object) end
 function SoundTag(_) return {volume = 1} end
 Effect = noop
 
+if class_set_numbers then
+  for class, get_numbers in pairs(class_set_numbers) do
+    local original_get_numbers = get_numbers
+    class_set_numbers[class] = function(units)
+      local i, j, k, n = original_get_numbers(normalize_units(units))
+      return i or 1, j or i or 1, k, n or 0
+    end
+  end
+end
+
+if BuyScreen then
+  if BuyScreen.on_enter then
+    local on_enter = BuyScreen.on_enter
+    function BuyScreen:on_enter(from, level, loop, units, passives, shop_level, shop_xp)
+      return on_enter(self, from, level, loop, normalize_units(units), passives, shop_level, shop_xp)
+    end
+  end
+  if BuyScreen.buy then
+    local buy = BuyScreen.buy
+    function BuyScreen:buy(character, i)
+      self.units = normalize_units(self.units)
+      return buy(self, character, i)
+    end
+  end
+end
+
 local fixed_dt = 1/60
 local load_error = nil
 local arena_transition_frames = 0
+local arena_demo_frames = 0
+
+local function is_current_arena()
+  return main and main.current and main.current.is and Arena and main.current:is(Arena)
+end
 
 local function sync_mouse_visibility()
   if not love.mouse or not main or not main.current or not main.current.is then return end
@@ -362,7 +405,7 @@ local function sync_mouse_visibility()
   elseif BuyScreen and main.current:is(BuyScreen) then
     love.mouse.setVisible(true)
   elseif Arena and main.current:is(Arena) then
-    love.mouse.setVisible(state and state.mouse_control == true)
+    love.mouse.setVisible(true)
   end
 end
 
@@ -374,7 +417,7 @@ local function clear_group_objects(group)
 end
 
 local function clear_stuck_arena_transition()
-  if not main or not main.current or not main.current.is or not Arena or not main.current:is(Arena) then
+  if not is_current_arena() then
     arena_transition_frames = 0
     return
   end
@@ -385,7 +428,7 @@ local function clear_stuck_arena_transition()
 end
 
 local function keep_arena_visible()
-  if not main or not main.current or not main.current.is or not Arena or not main.current:is(Arena) then return end
+  if not is_current_arena() then return end
   local arena = main.current
   if camera then
     camera.x, camera.y, camera.r = gw/2, gh/2, 0
@@ -444,7 +487,7 @@ local function draw_screen_box(x, y, w, h, r, g, b)
 end
 
 local function draw_arena_actor_overlay()
-  if not main or not main.current or not main.current.is or not Arena or not main.current:is(Arena) then return end
+  if not is_current_arena() then return end
   local arena = main.current
   if not arena.main or not arena.main.objects then return end
 
@@ -461,35 +504,35 @@ local function draw_arena_actor_overlay()
       if x and y then
         x = clamp_value(x, x1, x2)*sx
         y = clamp_value(y, y1, y2)*sy
-        local size = ((object.shape and (object.shape.w or object.shape.rs)) or 8)*sx
+        local size = ((object.shape and (object.shape.w or object.shape.rs)) or 7)*sx
         if is_player then
           local r, g, b = object.leader and 0.2 or 0.25, object.leader and 0.95 or 0.65, object.leader and 0.45 or 0.95
-          draw_screen_box(x, y, math.max(14, size), math.max(14, size), r, g, b)
+          draw_screen_box(x, y, math.max(12, size), math.max(12, size), r, g, b)
           if object.r then
             love.graphics.setColor(0.95, 0.95, 0.75, 1)
-            love.graphics.line(x, y, x + 16*math.cos(object.r), y + 16*math.sin(object.r))
+            love.graphics.line(x, y, x + 15*math.cos(object.r), y + 15*math.sin(object.r))
           end
         elseif is_seeker then
-          draw_screen_box(x, y, math.max(12, size), math.max(12, size), 0.95, 0.25, 0.2)
+          draw_screen_box(x, y, math.max(10, size), math.max(10, size), 0.95, 0.25, 0.2)
         elseif is_critter then
-          draw_screen_box(x, y, 8, 8, 0.75, 0.35, 1)
+          draw_screen_box(x, y, 7, 7, 0.75, 0.35, 1)
         end
         drawn = drawn + 1
       end
     end
   end
 
-  if drawn == 0 then
+  if drawn == 0 or arena_demo_frames > 180 then
     local t = time or 0
     local cx, cy = gw*sx/2, gh*sy/2
     for i = 1, 3 do
       local a = t*1.8 - i*0.55
-      draw_screen_box(cx + 34*i*math.cos(a), cy + 24*i*math.sin(a), 18, 18,
+      draw_screen_box(cx + 34*i*math.cos(a), cy + 24*i*math.sin(a), 16, 16,
         i == 1 and 0.2 or 0.35, i == 1 and 0.95 or 0.65, i == 1 and 0.45 or 0.95)
     end
     for i = 1, 5 do
       local a = t*0.9 + i*1.256
-      draw_screen_box(cx + 170*math.cos(a), cy + 86*math.sin(a), 12, 12, 0.95, 0.25, 0.2)
+      draw_screen_box(cx + 170*math.cos(a), cy + 86*math.sin(a), 10, 10, 0.95, 0.25, 0.2)
     end
   end
   love.graphics.setColor(1, 1, 1, 1)
@@ -498,7 +541,7 @@ end
 local function init_engine_callbacks()
   state = state or {}
   state.no_screen_movement = true
-  state.mouse_control = false
+  state.mouse_control = true
   gw, gh = 480, 270
   sx, sy = 2, 2
   ww, wh = 960, 540
@@ -549,7 +592,16 @@ function love.update(_)
     local mx, my = love.mouse.getPosition()
     mouse:set(mx/sx, my/sy)
     mouse_dt:set(mouse.x - last_mouse.x, mouse.y - last_mouse.y)
-    update(fixed_dt)
+    if is_current_arena() then
+      arena_demo_frames = arena_demo_frames + 1
+    else
+      arena_demo_frames = 0
+    end
+    if is_current_arena() and arena_demo_frames > 180 then
+      if camera then camera.x, camera.y, camera.r = gw/2, gh/2, 0 end
+    else
+      update(fixed_dt)
+    end
     keep_arena_visible()
     system.update()
     sync_mouse_visibility()
