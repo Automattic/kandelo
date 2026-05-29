@@ -2618,10 +2618,10 @@ const string_decoder = (() => {
 
 const timers = (() => {
     // js_std_add_helpers installs setTimeout/setInterval that return a raw
-    // int64 timer id. Node returns an object with .unref(); npm's Display
-    // calls .unref() on its spinner timeout, so wrap the id in an object.
+    // int64 timer id. Node returns an object with .unref()/.refresh(); npm's
+    // Display calls both on its spinner timers, so wrap the id in an object.
     // clearAny() unwraps _id when the wrapper is passed back to clear*().
-    const wrap = (id) => ({ _id: id, unref() { return this; } });
+    const wrap = (id) => ({ _id: id, unref() { return this; }, refresh() { return this; } });
     const clearAny = (t) => {
         if (t == null) return;
         os.clearTimeout(typeof t === 'object' ? t._id : t);

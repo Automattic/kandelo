@@ -17,7 +17,7 @@
     const decoder = typeof TextDecoder === 'function' ? new TextDecoder() : null;
     const nativeJsonParse = JSON.parse.bind(JSON);
     let nextTimerId = 1;
-    const cancelledTimers = new Set();
+    const pendingTimers = new Map();
 
     function encodeUtf8(value) {
         value = String(value);
@@ -216,14 +216,51 @@
         setReadHandler() {},
         setTimeout(fn, delay) {
             const id = nextTimerId++;
-            queueMicrotask(() => {
-                if (!cancelledTimers.has(id)) fn();
-                cancelledTimers.delete(id);
-            });
+            const ms = Math.max(0, Number(delay) || 0);
+            pendingTimers.set(id, { fn, due: Date.now() + ms });
+            if (ms === 0) {
+                queueMicrotask(() => runTimer(id));
+            }
             return id;
         },
-        clearTimeout(id) { cancelledTimers.add(id); },
+        clearTimeout(id) { pendingTimers.delete(id); },
     };
+
+    function runTimer(id) {
+        const timer = pendingTimers.get(id);
+        if (!timer) return false;
+        pendingTimers.delete(id);
+        timer.fn();
+        return true;
+    }
+
+    function runDueTimers() {
+        let ran = 0;
+        while (true) {
+            const now = Date.now();
+            const dueIds = [];
+            for (const [id, timer] of pendingTimers) {
+                if (timer.due <= now) dueIds.push(id);
+            }
+            if (dueIds.length === 0) break;
+            for (const id of dueIds) {
+                if (runTimer(id)) ran++;
+            }
+        }
+        return ran;
+    }
+
+    function nextTimerDelay() {
+        let next = Infinity;
+        const now = Date.now();
+        for (const timer of pendingTimers.values()) {
+            if (timer.due < next) next = timer.due;
+        }
+        return next === Infinity ? null : Math.max(0, next - now);
+    }
+
+    globalThis.__kandeloRunDueTimers = runDueTimers;
+    globalThis.__kandeloNextTimerDelay = nextTimerDelay;
 
     globalThis.__kandeloCreateWorkerThreads = function(EventEmitter) {
         class MessagePort extends EventEmitter {
