@@ -15,3 +15,5 @@ to `/usr/local/share/love/examples` and launches:
 The upstream LÖVE 11.5 source is still pinned and fetched by the build script
 for the port baseline and bundled libraries such as `lodepng`, but the
 framebuffer backend here replaces the upstream SDL/OpenGL presentation path.
+Lua is provided by the separate `lua` registry package and linked as
+`liblua.a`.

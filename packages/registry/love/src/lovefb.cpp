@@ -16,7 +16,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
 #include <dirent.h>
 #include <fcntl.h>
 #include <linux/fb.h>
@@ -1567,45 +1566,6 @@ int runLove(lua_State *L) {
 }
 
 }  // namespace
-
-extern "C" {
-static int lovefb_os_clock(lua_State *L) {
-  lua_pushnumber(L, double(clock()) / double(CLOCKS_PER_SEC));
-  return 1;
-}
-
-static int lovefb_os_difftime(lua_State *L) {
-  lua_pushnumber(L, difftime(time_t(luaL_checknumber(L, 1)), time_t(luaL_checknumber(L, 2))));
-  return 1;
-}
-
-static int lovefb_os_time(lua_State *L) {
-  lua_pushnumber(L, double(time(nullptr)));
-  return 1;
-}
-
-static int lovefb_os_date(lua_State *L) {
-  const char *fmt = luaL_optstring(L, 1, "%c");
-  time_t t = lua_isnoneornil(L, 2) ? time(nullptr) : time_t(luaL_checknumber(L, 2));
-  char buf[128];
-  struct tm tmv;
-  localtime_r(&t, &tmv);
-  if (strftime(buf, sizeof(buf), fmt, &tmv) == 0) buf[0] = '\0';
-  lua_pushstring(L, buf);
-  return 1;
-}
-
-int luaopen_os(lua_State *L) {
-  lua_newtable(L);
-  lua_pushcfunction(L, lovefb_os_clock); lua_setfield(L, -2, "clock");
-  lua_pushcfunction(L, lovefb_os_date); lua_setfield(L, -2, "date");
-  lua_pushcfunction(L, lovefb_os_difftime); lua_setfield(L, -2, "difftime");
-  lua_pushcfunction(L, lovefb_os_time); lua_setfield(L, -2, "time");
-  lua_pushvalue(L, -1);
-  lua_setglobal(L, LUA_OSLIBNAME);
-  return 1;
-}
-}
 
 int main(int argc, char **argv) {
   G.root = argc > 1 ? argv[1] : ".";

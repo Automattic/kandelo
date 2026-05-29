@@ -1,6 +1,5 @@
 build/
 love-src/
-lua-src/
 example-browser-src/
 love.wasm
 love-examples.zip
