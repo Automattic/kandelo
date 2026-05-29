@@ -218,6 +218,7 @@ interface LiveProfileSpec {
   maxVfsByteLength?: number;
   network?: boolean;
   features?: string[];
+  autoCommand?: string;
   init?: {
     argv: string[];
     env?: InitEnvProfile;
@@ -270,6 +271,7 @@ const LIVE_DEMO_IDS = [
   "wordpress-mariadb",
   "doom",
   "modeset",
+  "love",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -357,6 +359,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   modeset: {
     image: "shell",
     features: ["kms"],
+  },
+  love: {
+    image: "shell",
+    features: ["framebuffer"],
   },
 };
 

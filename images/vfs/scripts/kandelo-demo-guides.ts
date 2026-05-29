@@ -2,6 +2,8 @@ export {
   DOOM_COMMAND,
   DOOM_WAD_SHA256,
   DOOM_WAD_URL,
+  LOVE_COMMAND,
+  loveGuide,
   nginxGuide,
   nginxPhpGuide,
   nodeGuide,
