@@ -10,10 +10,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 SRC="$HERE/love-src"
+BYTEPATH_SRC="$HERE/bytepath-src"
 GAME_DEMOS_SRC="$HERE/game-demos"
 BUILD="$HERE/build"
 
 LOVE_COMMIT="6eb8d546736d5915a8b5af30b2cf33456dfdcb1a" # 11.5
+BYTEPATH_COMMIT="51ee3086ae3369a2c80e4e47d4b62d480af4fe89"
 
 source "$REPO_ROOT/sdk/activate.sh"
 export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
@@ -90,6 +92,15 @@ if [ "$(cd "$SRC" && git rev-parse HEAD)" != "$LOVE_COMMIT" ]; then
     (cd "$SRC" && git fetch --depth 1 origin "$LOVE_COMMIT" && git checkout "$LOVE_COMMIT")
 fi
 
+if [ ! -d "$BYTEPATH_SRC/.git" ]; then
+    echo "==> Cloning BYTEPATH $BYTEPATH_COMMIT..."
+    git clone --depth 1 https://github.com/a327ex/BYTEPATH.git "$BYTEPATH_SRC"
+fi
+if [ "$(cd "$BYTEPATH_SRC" && git rev-parse HEAD)" != "$BYTEPATH_COMMIT" ]; then
+    echo "==> Checking out BYTEPATH $BYTEPATH_COMMIT..."
+    (cd "$BYTEPATH_SRC" && git fetch --depth 1 origin "$BYTEPATH_COMMIT" && git checkout "$BYTEPATH_COMMIT")
+fi
+
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
 
@@ -117,8 +128,88 @@ echo "==> Linking love.wasm..."
     -o "$HERE/love.wasm"
 
 echo "==> Bundling Love game demos..."
+EXAMPLES_BUILD="$BUILD/examples"
+BYTEPATH_BUILD="$EXAMPLES_BUILD/bytepath"
+mkdir -p "$EXAMPLES_BUILD" "$BYTEPATH_BUILD"
+cp -R "$GAME_DEMOS_SRC"/. "$EXAMPLES_BUILD"/
+
+cp "$BYTEPATH_SRC"/GameObject.lua "$BYTEPATH_BUILD"/
+cp "$BYTEPATH_SRC"/LICENSE "$BYTEPATH_BUILD"/
+cp "$BYTEPATH_SRC"/README.md "$BYTEPATH_BUILD"/
+cp "$BYTEPATH_SRC"/conf.lua "$BYTEPATH_BUILD"/
+cp "$BYTEPATH_SRC"/globals.lua "$BYTEPATH_BUILD"/
+cp "$BYTEPATH_SRC"/main.lua "$BYTEPATH_BUILD"/
+cp "$BYTEPATH_SRC"/tree.lua "$BYTEPATH_BUILD"/
+cp "$BYTEPATH_SRC"/utils.lua "$BYTEPATH_BUILD"/
+cp -R "$BYTEPATH_SRC"/objects "$BYTEPATH_BUILD"/objects
+cp -R "$BYTEPATH_SRC"/rooms "$BYTEPATH_BUILD"/rooms
+mkdir -p "$BYTEPATH_BUILD"/libraries "$BYTEPATH_BUILD"/resources
+for lib in classic enhanced_timer boipushy moses hump draft mlib grid STALKER-X chrono HC; do
+    cp -R "$BYTEPATH_SRC/libraries/$lib" "$BYTEPATH_BUILD/libraries/$lib"
+done
+cp "$BYTEPATH_SRC"/libraries/sound.lua "$BYTEPATH_BUILD"/libraries/sound.lua
+cp "$BYTEPATH_SRC"/libraries/utf8.lua "$BYTEPATH_BUILD"/libraries/utf8.lua
+cp -R "$BYTEPATH_SRC"/resources/shaders "$BYTEPATH_BUILD"/resources/shaders
+
+cat > "$BYTEPATH_BUILD/libraries/windfield.lua" <<'LUA'
+local wf = {}
+function wf.newWorld()
+  return {destroy = function() end}
+end
+return wf
+LUA
+
+cat > "$BYTEPATH_BUILD/kandelo_compat.lua" <<'LUA'
+local shader_names = {'combine', 'displacement', 'distort', 'flat_color', 'glitch', 'grayscale', 'rgb', 'rgb_shift'}
+
+function loadFonts(_)
+  fonts = {}
+  for i = 8, 16 do
+    fonts['Anonymous_' .. i] = love.graphics.newFont(i)
+    fonts['Arch_' .. i] = love.graphics.newFont(i)
+    fonts['m5x7_' .. i] = love.graphics.newFont(i)
+  end
+end
+
+function loadGraphics(_)
+  assets = {
+    shockwave_displacement = {
+      getWidth = function() return 128 end,
+      getHeight = function() return 128 end,
+      getDimensions = function() return 128, 128 end,
+    },
+  }
+end
+
+function loadShaders(_)
+  shaders = {}
+  for _, name in ipairs(shader_names) do shaders[name] = love.graphics.newShader('') end
+end
+
+bitser = bitser or {}
+bitser.dumpLoveFile = bitser.dumpLoveFile or function() end
+bitser.loadLoveFile = bitser.loadLoveFile or function() return {} end
+bitser.dumps = bitser.dumps or function() return '', 0 end
+bitser.loads = bitser.loads or function() return {} end
+binser = binser or {serialize = function() return '' end, deserialize = function() return {} end}
+
+function load()
+  setPermanentGlobals()
+  setTransientGlobals()
+  first_run_ever = false
+end
+LUA
+
+perl -0pi -e "s/^Steam = require 'libraries\\/steamworks'\\nif type\\(Steam\\) == 'boolean' then Steam = nil end/Steam = nil/m" "$BYTEPATH_BUILD/main.lua"
+perl -0pi -e "s/^bitser = require 'libraries\\/bitser\\/bitser'/bitser = {dumpLoveFile = function() end, loadLoveFile = function() return {} end, dumps = function() return '', 0 end, loads = function() return {} end}/m" "$BYTEPATH_BUILD/main.lua"
+perl -0pi -e "s/^binser = require 'libraries\\/binser\\/binser'/binser = {serialize = function() return '' end, deserialize = function() return {} end}/m" "$BYTEPATH_BUILD/main.lua"
+perl -0pi -e "s/^ffi = require\\('ffi'\\)/ffi = nil/m" "$BYTEPATH_BUILD/main.lua"
+printf '\nrequire "kandelo_compat"\n' >> "$BYTEPATH_BUILD/main.lua"
+
+find "$BYTEPATH_BUILD" -name '*.lua' -print0 | xargs -0 perl -0pi -e 's/goto continue/return/g; s/^[ \t]*::continue::[ \t]*\n//mg'
+
 rm -f "$HERE/love-examples.zip"
-(cd "$GAME_DEMOS_SRC" && zip -qr "$HERE/love-examples.zip" . -x '*.DS_Store')
+(cd "$EXAMPLES_BUILD" && zip -qr "$HERE/love-examples.zip" . -x '*.DS_Store')
 
 ls -lh "$HERE/love.wasm" "$HERE/love-examples.zip"
 

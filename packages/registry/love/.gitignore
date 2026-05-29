@@ -1,4 +1,5 @@
 build/
+bytepath-src/
 love-src/
 example-browser-src/
 love.wasm
