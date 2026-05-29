@@ -9,9 +9,12 @@
  * Usage: npx tsx images/vfs/scripts/build-shell-vfs-image.ts
  */
 import { readFileSync } from "node:fs";
+import { posix as pathPosix } from "node:path";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
+  ensureDirRecursive,
   saveImage,
   writeVfsBinary,
 } from "./vfs-image-helpers";
@@ -27,6 +30,8 @@ import {
   DOOM_COMMAND,
   DOOM_WAD_SHA256,
   DOOM_WAD_URL,
+  LOVE_COMMAND,
+  loveGuide,
   shellGuide,
 } from "./kandelo-demo-guides";
 
@@ -53,6 +58,8 @@ async function main() {
   populateDoomRuntime(fs);
   console.log("Populating modeset runtime...");
   populateModesetRuntime(fs);
+  console.log("Populating LOVE runtime...");
+  populateLoveRuntime(fs);
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {
@@ -74,6 +81,10 @@ async function main() {
       },
       modeset: {
         presentation: kmsPresentation("/usr/local/bin/modeset"),
+      },
+      love: {
+        presentation: framebufferPresentation(LOVE_COMMAND),
+        guide: loveGuide(),
       },
     },
   });
@@ -104,4 +115,27 @@ function kmsPresentation(autoCommand: string): DemoPresentationConfig {
     internalsAccess: "drawer",
     autoCommand,
   };
+}
+
+function populateLoveRuntime(fs: MemoryFileSystem): void {
+  const loveBytes = readFileSync(resolveVfsArtifact("programs/love/love.wasm", "love"));
+  writeVfsBinary(fs, "/usr/local/bin/love", new Uint8Array(loveBytes), 0o755);
+
+  const zipBytes = new Uint8Array(
+    readFileSync(resolveVfsArtifact("programs/love/love-examples.zip", "love")),
+  );
+  const root = "/usr/local/share/love/examples";
+  ensureDirRecursive(fs, root);
+  for (const entry of parseZipCentralDirectory(zipBytes)) {
+    const cleanName = entry.fileName.replace(/^\/+/, "");
+    if (!cleanName || cleanName.includes("..")) continue;
+    const target = `${root}/${cleanName}`;
+    if (entry.isDirectory) {
+      ensureDirRecursive(fs, target);
+      continue;
+    }
+    if (entry.isSymlink) continue;
+    ensureDirRecursive(fs, pathPosix.dirname(target));
+    writeVfsBinary(fs, target, extractZipEntry(zipBytes, entry), entry.mode & 0o777 || 0o644);
+  }
 }
