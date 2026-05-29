@@ -124,4 +124,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["/usr/local/bin/love", "/usr/local/share/love/examples"],
     estimatedUrlBytes: 1056,
   },
+  {
+    id: "bytepath",
+    title: "BYTEPATH",
+    summary: "The open-source LÖVE arcade shooter running through Kandelo's native framebuffer runtime.",
+    base: "kandelo:shell@abi8",
+    packages: ["love@local", "bash@local", "coreutils@local"],
+    accent: "#7bd7c2",
+    glyph: "BP",
+    bootCommand: ["/usr/local/bin/love", "/usr/local/share/love/examples/bytepath"],
+    estimatedUrlBytes: 1120,
+  },
 ];

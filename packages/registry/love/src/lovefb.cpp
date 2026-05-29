@@ -63,6 +63,11 @@ struct Font {
   int size = 11;
 };
 
+struct Text {
+  Font *font = nullptr;
+  std::string text;
+};
+
 struct ImageData {
   int w = 0;
   int h = 0;
@@ -88,6 +93,17 @@ struct Video {
   int w = 320;
   int h = 180;
   double t = 0.0;
+  bool playing = false;
+};
+
+struct Mesh {
+  std::vector<double> points;
+};
+
+struct Source {
+  double volume = 1.0;
+  double pitch = 1.0;
+  bool looping = false;
   bool playing = false;
 };
 
@@ -136,6 +152,15 @@ struct MouseButtonEvent {
   bool pressed = false;
 };
 
+struct Transform {
+  double a = 1.0;
+  double b = 0.0;
+  double c = 0.0;
+  double d = 1.0;
+  double e = 0.0;
+  double f = 0.0;
+};
+
 struct Runtime {
   std::string root;
   int fbFd = -1;
@@ -152,8 +177,8 @@ struct Runtime {
   Font defaultFont{11};
   Font *font = &defaultFont;
   int lineWidth = 1;
-  double tx = 0.0;
-  double ty = 0.0;
+  Transform transform;
+  std::vector<Transform> transformStack;
   bool scissor = false;
   int sx = 0;
   int sy = 0;
@@ -168,7 +193,7 @@ struct Runtime {
   int mouseDx = 0;
   int mouseDy = 0;
   std::vector<MouseButtonEvent> mouseEvents;
-  bool mouseVisible = true;
+  bool mouseVisible = false;
 
   double start = 0.0;
   double last = 0.0;
@@ -176,6 +201,7 @@ struct Runtime {
   double fpsT0 = 0.0;
   int fpsFrames = 0;
   int fps = 60;
+  std::string lastError;
   termios savedTermios{};
   bool haveSavedTermios = false;
   int savedStdinFlags = -1;
@@ -189,8 +215,11 @@ const char *MT_IMAGEDATA = "lovefb.ImageData";
 const char *MT_CANVAS = "lovefb.Canvas";
 const char *MT_QUAD = "lovefb.Quad";
 const char *MT_FONT = "lovefb.Font";
+const char *MT_TEXT = "lovefb.Text";
 const char *MT_FILE = "lovefb.File";
 const char *MT_VIDEO = "lovefb.Video";
+const char *MT_MESH = "lovefb.Mesh";
+const char *MT_SOURCE = "lovefb.Source";
 const char *MT_SHADER = "lovefb.Shader";
 const char *MT_WORLD = "lovefb.World";
 const char *MT_BODY = "lovefb.Body";
@@ -293,6 +322,43 @@ void createMeta(lua_State *L, const char *name, const luaL_Reg *methods,
   lua_pop(L, 1);
 }
 
+Transform multiply(const Transform &m, const Transform &n) {
+  return Transform{
+    m.a * n.a + m.c * n.b,
+    m.b * n.a + m.d * n.b,
+    m.a * n.c + m.c * n.d,
+    m.b * n.c + m.d * n.d,
+    m.a * n.e + m.c * n.f + m.e,
+    m.b * n.e + m.d * n.f + m.f,
+  };
+}
+
+void appendTransform(const Transform &t) {
+  G.transform = multiply(G.transform, t);
+}
+
+void transformPoint(double x, double y, int &outX, int &outY) {
+  outX = int(std::lround(G.transform.a * x + G.transform.c * y + G.transform.e));
+  outY = int(std::lround(G.transform.b * x + G.transform.d * y + G.transform.f));
+}
+
+std::vector<double> collectNumbers(lua_State *L, int start) {
+  std::vector<double> out;
+  for (int i = start; i <= lua_gettop(L); ++i) {
+    if (lua_istable(L, i)) {
+      int n = int(lua_objlen(L, i));
+      for (int j = 1; j <= n; ++j) {
+        lua_rawgeti(L, i, j);
+        if (lua_isnumber(L, -1)) out.push_back(lua_tonumber(L, -1));
+        lua_pop(L, 1);
+      }
+    } else {
+      out.push_back(luaL_checknumber(L, i));
+    }
+  }
+  return out;
+}
+
 std::string luaToString(lua_State *L, int idx) {
   if (lua_isnil(L, idx)) return "nil";
   if (lua_isboolean(L, idx)) return lua_toboolean(L, idx) ? "true" : "false";
@@ -354,8 +420,7 @@ bool loadPng(const std::string &path, ImageData &img) {
 }
 
 void blendPixel(Surface &s, int x, int y, Color c) {
-  x += int(std::lround(G.tx));
-  y += int(std::lround(G.ty));
+  transformPoint(x, y, x, y);
   if (x < 0 || y < 0 || x >= s.w || y >= s.h) return;
   if (G.scissor &&
       (x < G.sx || y < G.sy || x >= G.sx + G.sw || y >= G.sy + G.sh)) {
@@ -556,13 +621,29 @@ void drawRgbaToTarget(const uint8_t *rgba, int sw, int sh, int srcX, int srcY,
   }
 }
 
-void canvasToRgba(const Surface &s, std::vector<uint8_t> &rgba) {
-  rgba.resize(size_t(s.w) * s.h * 4);
-  for (int y = 0; y < s.h; ++y) {
-    for (int x = 0; x < s.w; ++x) {
-      Color c = unpackBgra(s.bgra[size_t(y) * s.w + x]);
-      uint8_t *p = rgba.data() + (size_t(y) * s.w + x) * 4;
-      p[0] = c.r; p[1] = c.g; p[2] = c.b; p[3] = c.a;
+void drawSurfaceToTarget(const Surface &src, int srcX, int srcY, int srcW, int srcH,
+                         double x, double y, double rot, double scaleX,
+                         double scaleY, double ox, double oy) {
+  double cs = std::cos(rot);
+  double sn = std::sin(rot);
+  for (int yy = 0; yy < srcH; ++yy) {
+    int sy = srcY + yy;
+    if (sy < 0 || sy >= src.h) continue;
+    for (int xx = 0; xx < srcW; ++xx) {
+      int sx = srcX + xx;
+      if (sx < 0 || sx >= src.w) continue;
+      Color base = unpackBgra(src.bgra[size_t(sy) * src.w + sx]);
+      if (base.a == 0) continue;
+      double lx = (double(xx) - ox) * scaleX;
+      double ly = (double(yy) - oy) * scaleY;
+      int dx = int(std::lround(x + lx * cs - ly * sn));
+      int dy = int(std::lround(y + lx * sn + ly * cs));
+      Color c;
+      c.r = uint8_t((int(base.r) * int(G.color.r)) / 255);
+      c.g = uint8_t((int(base.g) * int(G.color.g)) / 255);
+      c.b = uint8_t((int(base.b) * int(G.color.b)) / 255);
+      c.a = uint8_t((int(base.a) * int(G.color.a)) / 255);
+      blendPixel(*G.target, dx, dy, c);
     }
   }
 }
@@ -721,6 +802,9 @@ int gcImage(lua_State *L) { delete checkObj<Image>(L, 1, MT_IMAGE); return 0; }
 int gcImageData(lua_State *L) { delete checkObj<ImageData>(L, 1, MT_IMAGEDATA); return 0; }
 int gcCanvas(lua_State *L) { delete checkObj<Surface>(L, 1, MT_CANVAS); return 0; }
 int gcQuad(lua_State *L) { delete checkObj<Quad>(L, 1, MT_QUAD); return 0; }
+int gcText(lua_State *L) { delete checkObj<Text>(L, 1, MT_TEXT); return 0; }
+int gcMesh(lua_State *L) { delete checkObj<Mesh>(L, 1, MT_MESH); return 0; }
+int gcSource(lua_State *L) { delete checkObj<Source>(L, 1, MT_SOURCE); return 0; }
 int gcFile(lua_State *L) {
   FileHandle *f = checkObj<FileHandle>(L, 1, MT_FILE);
   if (f->fp) fclose(f->fp);
@@ -734,13 +818,68 @@ int gcShape(lua_State *L) { delete checkObj<Shape>(L, 1, MT_SHAPE); return 0; }
 
 int l_g_getWidth(lua_State *L) { lua_pushinteger(L, kLogicalWidth); return 1; }
 int l_g_getHeight(lua_State *L) { lua_pushinteger(L, kLogicalHeight); return 1; }
+int l_g_getDimensions(lua_State *L) { lua_pushinteger(L, kLogicalWidth); lua_pushinteger(L, kLogicalHeight); return 2; }
 
 int l_g_setColor(lua_State *L) { G.color = readColor(L, 1); return 0; }
 int l_g_setBackgroundColor(lua_State *L) { G.background = readColor(L, 1); return 0; }
 int l_g_setLineWidth(lua_State *L) { G.lineWidth = std::max(1, int(luaL_checkinteger(L, 1))); return 0; }
+int l_g_getLineWidth(lua_State *L) { lua_pushinteger(L, G.lineWidth); return 1; }
 int l_g_setLineStyle(lua_State *) { return 0; }
 int l_g_setBlendMode(lua_State *) { return 0; }
 int l_g_setShader(lua_State *) { return 0; }
+int l_g_setDefaultFilter(lua_State *) { return 0; }
+int l_g_isActive(lua_State *L) { lua_pushboolean(L, 1); return 1; }
+int l_g_present(lua_State *) { return 0; }
+
+int l_g_getColor(lua_State *L) {
+  lua_pushinteger(L, G.color.r); lua_pushinteger(L, G.color.g);
+  lua_pushinteger(L, G.color.b); lua_pushinteger(L, G.color.a);
+  return 4;
+}
+
+int l_g_getBackgroundColor(lua_State *L) {
+  lua_pushinteger(L, G.background.r); lua_pushinteger(L, G.background.g);
+  lua_pushinteger(L, G.background.b); lua_pushinteger(L, G.background.a);
+  return 4;
+}
+
+int l_g_getScissor(lua_State *L) {
+  if (!G.scissor) return 0;
+  lua_pushinteger(L, G.sx); lua_pushinteger(L, G.sy);
+  lua_pushinteger(L, G.sw); lua_pushinteger(L, G.sh);
+  return 4;
+}
+
+int l_g_push(lua_State *) {
+  G.transformStack.push_back(G.transform);
+  return 0;
+}
+
+int l_g_pop(lua_State *L) {
+  if (G.transformStack.empty()) return luaL_error(L, "graphics transform stack underflow");
+  G.transform = G.transformStack.back();
+  G.transformStack.pop_back();
+  return 0;
+}
+
+int l_g_origin(lua_State *) {
+  G.transform = Transform{};
+  return 0;
+}
+
+int l_g_scale(lua_State *L) {
+  double sx = luaL_checknumber(L, 1);
+  double sy = luaL_optnumber(L, 2, sx);
+  appendTransform(Transform{sx, 0, 0, sy, 0, 0});
+  return 0;
+}
+
+int l_g_rotate(lua_State *L) {
+  double r = luaL_checknumber(L, 1);
+  double cs = std::cos(r), sn = std::sin(r);
+  appendTransform(Transform{cs, sn, -sn, cs, 0, 0});
+  return 0;
+}
 
 int l_g_clear(lua_State *L) {
   clearSurface(*G.target, lua_gettop(L) > 0 ? readColor(L, 1) : G.background);
@@ -779,12 +918,26 @@ int l_font_getWidth(lua_State *L) {
   lua_pushinteger(L, int(s.size()) * 6 * scale);
   return 1;
 }
+int l_font_setFilter(lua_State *) { return 0; }
 
 int l_g_print(lua_State *L) {
   std::string s = printableText(L, 1);
-  int x = int(luaL_optnumber(L, 2, 0));
-  int y = int(luaL_optnumber(L, 3, 0));
-  drawText(*G.target, s, x, y);
+  double x = luaL_optnumber(L, 2, 0);
+  double y = luaL_optnumber(L, 3, 0);
+  double r = luaL_optnumber(L, 4, 0);
+  double sx = luaL_optnumber(L, 5, 1);
+  double sy = luaL_optnumber(L, 6, sx);
+  double ox = luaL_optnumber(L, 7, 0);
+  double oy = luaL_optnumber(L, 8, 0);
+  Transform saved = G.transform;
+  appendTransform(Transform{1, 0, 0, 1, x, y});
+  if (r != 0) {
+    double cs = std::cos(r), sn = std::sin(r);
+    appendTransform(Transform{cs, sn, -sn, cs, 0, 0});
+  }
+  appendTransform(Transform{sx, 0, 0, sy, -ox * sx, -oy * sy});
+  drawText(*G.target, s, 0, 0);
+  G.transform = saved;
   return 0;
 }
 
@@ -808,10 +961,10 @@ int l_g_rectangle(lua_State *L) {
 }
 
 int l_g_line(lua_State *L) {
-  int n = lua_gettop(L);
-  if (n < 4) return 0;
+  std::vector<double> nums = collectNumbers(L, 1);
+  if (nums.size() < 4) return 0;
   std::vector<int> pts;
-  for (int i = 1; i <= n; ++i) pts.push_back(int(luaL_checknumber(L, i)));
+  for (double n : nums) pts.push_back(int(n));
   for (size_t i = 0; i + 3 < pts.size(); i += 2)
     drawLine(*G.target, pts[i], pts[i + 1], pts[i + 2], pts[i + 3], G.color);
   return 0;
@@ -842,8 +995,9 @@ int l_g_circle(lua_State *L) {
 
 int l_g_polygon(lua_State *L) {
   std::string mode = luaL_checkstring(L, 1);
+  std::vector<double> nums = collectNumbers(L, 2);
   std::vector<int> pts;
-  for (int i = 2; i <= lua_gettop(L); ++i) pts.push_back(int(luaL_checknumber(L, i)));
+  for (double n : nums) pts.push_back(int(n));
   if (mode == "fill") fillPolygon(*G.target, pts, G.color);
   else {
     for (size_t i = 0; i + 3 < pts.size(); i += 2)
@@ -851,6 +1005,11 @@ int l_g_polygon(lua_State *L) {
     if (pts.size() >= 6)
       drawLine(*G.target, pts[pts.size() - 2], pts[pts.size() - 1], pts[0], pts[1], G.color);
   }
+  return 0;
+}
+
+int l_g_point(lua_State *L) {
+  blendPixel(*G.target, int(luaL_checknumber(L, 1)), int(luaL_checknumber(L, 2)), G.color);
   return 0;
 }
 
@@ -868,8 +1027,7 @@ int l_g_setScissor(lua_State *L) {
 }
 
 int l_g_translate(lua_State *L) {
-  G.tx += luaL_checknumber(L, 1);
-  G.ty += luaL_checknumber(L, 2);
+  appendTransform(Transform{1, 0, 0, 1, luaL_checknumber(L, 1), luaL_checknumber(L, 2)});
   return 0;
 }
 
@@ -928,18 +1086,89 @@ int l_g_newQuad(lua_State *L) {
 int l_quad_getWidth(lua_State *L) { lua_pushinteger(L, checkObj<Quad>(L, 1, MT_QUAD)->w); return 1; }
 int l_quad_getHeight(lua_State *L) { lua_pushinteger(L, checkObj<Quad>(L, 1, MT_QUAD)->h); return 1; }
 
+int l_g_newText(lua_State *L) {
+  Text *t = new Text;
+  t->font = checkObj<Font>(L, 1, MT_FONT);
+  if (lua_gettop(L) >= 2) t->text = printableText(L, 2);
+  pushObj(L, t, MT_TEXT);
+  return 1;
+}
+
+int l_text_getWidth(lua_State *L) {
+  Text *t = checkObj<Text>(L, 1, MT_TEXT);
+  int scale = std::max(1, (t->font ? t->font->size : G.font->size) / 8);
+  lua_pushinteger(L, int(t->text.size()) * 6 * scale);
+  return 1;
+}
+
+int l_text_getHeight(lua_State *L) {
+  Text *t = checkObj<Text>(L, 1, MT_TEXT);
+  lua_pushinteger(L, std::max(8, t->font ? t->font->size : G.font->size));
+  return 1;
+}
+
+int l_g_newMesh(lua_State *L) {
+  Mesh *m = new Mesh;
+  if (lua_istable(L, 1)) {
+    int n = int(lua_objlen(L, 1));
+    for (int i = 1; i <= n; ++i) {
+      lua_rawgeti(L, 1, i);
+      if (lua_istable(L, -1)) {
+        lua_rawgeti(L, -1, 1);
+        lua_rawgeti(L, -2, 2);
+        m->points.push_back(luaL_optnumber(L, -2, 0));
+        m->points.push_back(luaL_optnumber(L, -1, 0));
+        lua_pop(L, 2);
+      }
+      lua_pop(L, 1);
+    }
+  }
+  pushObj(L, m, MT_MESH);
+  return 1;
+}
+
 int l_g_draw(lua_State *L) {
   int arg = 2;
   Quad *q = nullptr;
   int srcX = 0, srcY = 0, srcW = 0, srcH = 0, srcFullW = 0, srcFullH = 0;
   const uint8_t *rgba = nullptr;
-  std::vector<uint8_t> canvasRgba;
+  Surface *surface = nullptr;
 
   if (Image *img = toObj<Image>(L, 1, MT_IMAGE)) {
     rgba = img->rgba.data(); srcFullW = srcW = img->w; srcFullH = srcH = img->h;
   } else if (Surface *can = toObj<Surface>(L, 1, MT_CANVAS)) {
-    canvasToRgba(*can, canvasRgba);
-    rgba = canvasRgba.data(); srcFullW = srcW = can->w; srcFullH = srcH = can->h;
+    surface = can; srcFullW = srcW = can->w; srcFullH = srcH = can->h;
+  } else if (Text *text = toObj<Text>(L, 1, MT_TEXT)) {
+    Font *savedFont = G.font;
+    Transform savedTransform = G.transform;
+    if (text->font) G.font = text->font;
+    double x = luaL_optnumber(L, 2, 0);
+    double y = luaL_optnumber(L, 3, 0);
+    double r = luaL_optnumber(L, 4, 0);
+    double sx = luaL_optnumber(L, 5, 1);
+    double sy = luaL_optnumber(L, 6, sx);
+    double ox = luaL_optnumber(L, 7, 0);
+    double oy = luaL_optnumber(L, 8, 0);
+    appendTransform(Transform{1, 0, 0, 1, x, y});
+    if (r != 0) {
+      double cs = std::cos(r), sn = std::sin(r);
+      appendTransform(Transform{cs, sn, -sn, cs, 0, 0});
+    }
+    appendTransform(Transform{sx, 0, 0, sy, -ox * sx, -oy * sy});
+    drawText(*G.target, text->text, 0, 0);
+    G.transform = savedTransform;
+    G.font = savedFont;
+    return 0;
+  } else if (Mesh *mesh = toObj<Mesh>(L, 1, MT_MESH)) {
+    std::vector<int> pts;
+    double x = luaL_optnumber(L, 2, 0);
+    double y = luaL_optnumber(L, 3, 0);
+    for (size_t i = 0; i + 1 < mesh->points.size(); i += 2) {
+      pts.push_back(int(std::lround(mesh->points[i] + x)));
+      pts.push_back(int(std::lround(mesh->points[i + 1] + y)));
+    }
+    fillPolygon(*G.target, pts, G.color);
+    return 0;
   } else if (toObj<Video>(L, 1, MT_VIDEO)) {
     int x = int(luaL_optnumber(L, 2, 0));
     int y = int(luaL_optnumber(L, 3, 0));
@@ -966,7 +1195,8 @@ int l_g_draw(lua_State *L) {
   double sy = luaL_optnumber(L, arg + 4, sx);
   double ox = luaL_optnumber(L, arg + 5, 0);
   double oy = luaL_optnumber(L, arg + 6, 0);
-  drawRgbaToTarget(rgba, srcFullW, srcFullH, srcX, srcY, srcW, srcH, x, y, r, sx, sy, ox, oy);
+  if (surface) drawSurfaceToTarget(*surface, srcX, srcY, srcW, srcH, x, y, r, sx, sy, ox, oy);
+  else drawRgbaToTarget(rgba, srcFullW, srcFullH, srcX, srcY, srcW, srcH, x, y, r, sx, sy, ox, oy);
   return 0;
 }
 
@@ -990,10 +1220,10 @@ int l_video_pause(lua_State *L) { checkObj<Video>(L, 1, MT_VIDEO)->playing = fal
 int l_video_isPlaying(lua_State *L) { lua_pushboolean(L, checkObj<Video>(L, 1, MT_VIDEO)->playing); return 1; }
 int l_video_seek(lua_State *L) { checkObj<Video>(L, 1, MT_VIDEO)->t = luaL_optnumber(L, 2, 0); return 0; }
 int l_video_tell(lua_State *L) { lua_pushnumber(L, checkObj<Video>(L, 1, MT_VIDEO)->t); return 1; }
-int l_source_setVolume(lua_State *) { return 0; }
+int l_video_source_setVolume(lua_State *) { return 0; }
 int l_video_getSource(lua_State *L) {
   lua_newtable(L);
-  addFunc(L, "setVolume", l_source_setVolume);
+  addFunc(L, "setVolume", l_video_source_setVolume);
   return 1;
 }
 
@@ -1071,6 +1301,46 @@ int l_fs_getInfo(lua_State *L) {
 int l_fs_exists(lua_State *L) {
   struct stat st{};
   lua_pushboolean(L, stat(normalizePath(luaL_checkstring(L, 1)).c_str(), &st) == 0);
+  return 1;
+}
+
+int l_fs_isFile(lua_State *L) {
+  struct stat st{};
+  lua_pushboolean(L, stat(normalizePath(luaL_checkstring(L, 1)).c_str(), &st) == 0 && S_ISREG(st.st_mode));
+  return 1;
+}
+
+int l_fs_isDirectory(lua_State *L) {
+  struct stat st{};
+  lua_pushboolean(L, stat(normalizePath(luaL_checkstring(L, 1)).c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+  return 1;
+}
+
+int l_fs_setIdentity(lua_State *) { return 0; }
+int l_fs_remove(lua_State *L) {
+  lua_pushboolean(L, unlink(normalizePath(luaL_checkstring(L, 1)).c_str()) == 0);
+  return 1;
+}
+
+int l_fs_write(lua_State *L) {
+  std::string path = normalizePath(luaL_checkstring(L, 1));
+  size_t n = 0;
+  const char *data = luaL_checklstring(L, 2, &n);
+  FILE *f = fopen(path.c_str(), "wb");
+  if (!f) { lua_pushboolean(L, 0); return 1; }
+  size_t wrote = fwrite(data, 1, n, f);
+  fclose(f);
+  lua_pushboolean(L, wrote == n);
+  return 1;
+}
+
+int l_fs_newFileData(lua_State *L) {
+  std::vector<uint8_t> bytes;
+  if (!readFile(luaL_checkstring(L, 1), bytes)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushlstring(L, reinterpret_cast<const char *>(bytes.data()), bytes.size());
   return 1;
 }
 
@@ -1179,6 +1449,7 @@ int l_key_isDown(lua_State *L) {
   lua_pushboolean(L, 0);
   return 1;
 }
+int l_key_setKeyRepeat(lua_State *) { return 0; }
 
 int l_mouse_getPosition(lua_State *L) { lua_pushinteger(L, G.mouseX); lua_pushinteger(L, G.mouseY); return 2; }
 int l_mouse_getX(lua_State *L) { lua_pushinteger(L, G.mouseX); return 1; }
@@ -1203,6 +1474,7 @@ int l_timer_getTime(lua_State *L) { lua_pushnumber(L, nowSeconds() - G.start); r
 int l_timer_getDelta(lua_State *L) { lua_pushnumber(L, G.dt); return 1; }
 int l_timer_getFPS(lua_State *L) { lua_pushinteger(L, G.fps); return 1; }
 int l_timer_sleep(lua_State *L) { usleep(useconds_t(luaL_checknumber(L, 1) * 1000000.0)); return 0; }
+int l_timer_step(lua_State *) { return 0; }
 
 int l_window_setTitle(lua_State *L) {
   fprintf(stderr, "lovefb: %s\n", luaL_optstring(L, 1, "LOVE"));
@@ -1220,6 +1492,89 @@ int l_window_getFullscreenModes(lua_State *L) {
   }
   return 1;
 }
+
+int l_window_setMode(lua_State *) { return 0; }
+int l_window_getDesktopDimensions(lua_State *L) {
+  lua_pushinteger(L, kLogicalWidth);
+  lua_pushinteger(L, kLogicalHeight);
+  return 2;
+}
+int l_window_getDisplayCount(lua_State *L) { lua_pushinteger(L, 1); return 1; }
+
+// ── audio, math, event, system compatibility ─────────────────────────────
+
+int l_audio_newSource(lua_State *L) {
+  Source *s = new Source;
+  pushObj(L, s, MT_SOURCE);
+  return 1;
+}
+int l_source_clone(lua_State *L) {
+  Source *src = checkObj<Source>(L, 1, MT_SOURCE);
+  pushObj(L, new Source(*src), MT_SOURCE);
+  return 1;
+}
+int l_source_setVolume(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->volume = luaL_optnumber(L, 2, 1); return 0; }
+int l_source_getVolume(lua_State *L) { lua_pushnumber(L, checkObj<Source>(L, 1, MT_SOURCE)->volume); return 1; }
+int l_source_setPitch(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->pitch = luaL_optnumber(L, 2, 1); return 0; }
+int l_source_setLooping(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->looping = lua_toboolean(L, 2); return 0; }
+int l_source_play(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->playing = true; return 0; }
+int l_source_stop(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->playing = false; return 0; }
+int l_source_isStopped(lua_State *L) { lua_pushboolean(L, !checkObj<Source>(L, 1, MT_SOURCE)->playing); return 1; }
+
+int l_math_random(lua_State *L) {
+  int top = lua_gettop(L);
+  int start = lua_istable(L, 1) ? 2 : 1;
+  int n = std::max(0, top - start + 1);
+  lua_getglobal(L, "math");
+  lua_getfield(L, -1, "random");
+  lua_remove(L, -2);
+  for (int i = start; i <= top; ++i) lua_pushvalue(L, i);
+  lua_call(L, n, 1);
+  return 1;
+}
+int l_math_setRandomSeed(lua_State *L) {
+  lua_getglobal(L, "math");
+  lua_getfield(L, -1, "randomseed");
+  lua_remove(L, -2);
+  lua_pushinteger(L, luaL_checkinteger(L, 1));
+  lua_call(L, 1, 0);
+  return 0;
+}
+int l_math_isConvex(lua_State *L) { lua_pushboolean(L, 1); return 1; }
+int l_math_triangulate(lua_State *L) {
+  std::vector<double> nums;
+  if (!lua_istable(L, 1)) nums = collectNumbers(L, 1);
+  lua_newtable(L);
+  if (lua_istable(L, 1)) lua_pushvalue(L, 1);
+  else {
+    lua_newtable(L);
+    for (size_t i = 0; i < nums.size(); ++i) {
+      lua_pushnumber(L, nums[i]);
+      lua_rawseti(L, -2, int(i + 1));
+    }
+  }
+  lua_rawseti(L, -2, 1);
+  return 1;
+}
+int l_math_newRandomGenerator(lua_State *L) {
+  lua_newtable(L);
+  addFunc(L, "random", l_math_random);
+  return 1;
+}
+
+int l_event_quit(lua_State *) { gRunning = 0; return 0; }
+int l_event_push(lua_State *L) {
+  if (lua_gettop(L) > 0 && std::string(luaL_checkstring(L, 1)) == "quit") gRunning = 0;
+  return 0;
+}
+int l_event_pump(lua_State *) { return 0; }
+int l_event_poll(lua_State *L) {
+  lua_pushcfunction(L, [](lua_State *L) -> int { return 0; });
+  return 1;
+}
+
+int l_system_openURL(lua_State *) { return 0; }
+int l_joystick_getJoysticks(lua_State *L) { lua_newtable(L); return 1; }
 
 // ── love.physics lightweight compatibility ───────────────────────────────
 
@@ -1382,13 +1737,15 @@ void registerLove(lua_State *L) {
   lua_pushboolean(L, 1);
   lua_setglobal(L, "Animations_legacy_support");
 
-  const luaL_Reg font[] = {{"getHeight", l_font_getHeight}, {"getWidth", l_font_getWidth}, {nullptr, nullptr}};
+  const luaL_Reg font[] = {{"getHeight", l_font_getHeight}, {"getWidth", l_font_getWidth}, {"setFilter", l_font_setFilter}, {nullptr, nullptr}};
   const luaL_Reg image[] = {{"getWidth", l_img_getWidth}, {"getHeight", l_img_getHeight}, {"getDimensions", l_img_getDimensions}, {nullptr, nullptr}};
   const luaL_Reg imageData[] = {{"getWidth", l_id_getWidth}, {"getHeight", l_id_getHeight}, {"paste", l_id_paste}, {nullptr, nullptr}};
   const luaL_Reg canvas[] = {{"getWidth", l_canvas_getWidth}, {"getHeight", l_canvas_getHeight}, {nullptr, nullptr}};
   const luaL_Reg quad[] = {{"getWidth", l_quad_getWidth}, {"getHeight", l_quad_getHeight}, {nullptr, nullptr}};
+  const luaL_Reg text[] = {{"getWidth", l_text_getWidth}, {"getHeight", l_text_getHeight}, {nullptr, nullptr}};
   const luaL_Reg file[] = {{"open", l_file_open}, {"read", l_file_read}, {"close", l_file_close}, {nullptr, nullptr}};
   const luaL_Reg video[] = {{"getWidth", l_video_getWidth}, {"getHeight", l_video_getHeight}, {"play", l_video_play}, {"pause", l_video_pause}, {"isPlaying", l_video_isPlaying}, {"seek", l_video_seek}, {"tell", l_video_tell}, {"getSource", l_video_getSource}, {nullptr, nullptr}};
+  const luaL_Reg source[] = {{"clone", l_source_clone}, {"setVolume", l_source_setVolume}, {"getVolume", l_source_getVolume}, {"setPitch", l_source_setPitch}, {"setLooping", l_source_setLooping}, {"play", l_source_play}, {"stop", l_source_stop}, {"isStopped", l_source_isStopped}, {nullptr, nullptr}};
   const luaL_Reg shader[] = {{"send", l_shader_send}, {nullptr, nullptr}};
   const luaL_Reg world[] = {{"update", l_world_update}, {"setGravity", l_world_setGravity}, {"setCallbacks", l_world_setCallbacks}, {"getBodies", l_world_getBodies}, {nullptr, nullptr}};
   const luaL_Reg body[] = {{"getX", l_body_getX}, {"getY", l_body_getY}, {"getAngle", l_body_getAngle}, {"getPosition", l_body_getPosition}, {"getWorldPoints", l_body_getWorldPoints}, {"applyLinearImpulse", l_body_applyLinearImpulse}, {"setMassData", l_body_setMassData}, {"setAwake", l_body_setAwake}, {nullptr, nullptr}};
@@ -1400,8 +1757,11 @@ void registerLove(lua_State *L) {
   createMeta(L, MT_IMAGEDATA, imageData, gcImageData);
   createMeta(L, MT_CANVAS, canvas, gcCanvas);
   createMeta(L, MT_QUAD, quad, gcQuad);
+  createMeta(L, MT_TEXT, text, gcText);
   createMeta(L, MT_FILE, file, gcFile);
   createMeta(L, MT_VIDEO, video, gcVideo);
+  createMeta(L, MT_MESH, nullptr, gcMesh);
+  createMeta(L, MT_SOURCE, source, gcSource);
   createMeta(L, MT_SHADER, shader);
   createMeta(L, MT_WORLD, world);
   createMeta(L, MT_BODY, body);
@@ -1409,34 +1769,47 @@ void registerLove(lua_State *L) {
   createMeta(L, MT_FIXTURE, fixture);
 
   const luaL_Reg graphics[] = {
-    {"getWidth", l_g_getWidth}, {"getHeight", l_g_getHeight},
-    {"setColor", l_g_setColor}, {"setBackgroundColor", l_g_setBackgroundColor},
-    {"setLineWidth", l_g_setLineWidth}, {"setLineStyle", l_g_setLineStyle},
-    {"setBlendMode", l_g_setBlendMode}, {"clear", l_g_clear},
+    {"getWidth", l_g_getWidth}, {"getHeight", l_g_getHeight}, {"getDimensions", l_g_getDimensions},
+    {"setColor", l_g_setColor}, {"getColor", l_g_getColor},
+    {"setBackgroundColor", l_g_setBackgroundColor}, {"getBackgroundColor", l_g_getBackgroundColor},
+    {"setLineWidth", l_g_setLineWidth}, {"getLineWidth", l_g_getLineWidth}, {"setLineStyle", l_g_setLineStyle},
+    {"setBlendMode", l_g_setBlendMode}, {"setDefaultFilter", l_g_setDefaultFilter},
+    {"clear", l_g_clear}, {"isActive", l_g_isActive}, {"present", l_g_present},
     {"newFont", l_g_newFont}, {"setFont", l_g_setFont}, {"getFont", l_g_getFont},
     {"print", l_g_print}, {"rectangle", l_g_rectangle}, {"line", l_g_line},
-    {"circle", l_g_circle}, {"polygon", l_g_polygon}, {"setScissor", l_g_setScissor},
-    {"translate", l_g_translate}, {"newImage", l_g_newImage}, {"draw", l_g_draw},
+    {"circle", l_g_circle}, {"polygon", l_g_polygon}, {"point", l_g_point},
+    {"setScissor", l_g_setScissor}, {"getScissor", l_g_getScissor},
+    {"push", l_g_push}, {"pop", l_g_pop}, {"origin", l_g_origin},
+    {"translate", l_g_translate}, {"scale", l_g_scale}, {"rotate", l_g_rotate},
+    {"newImage", l_g_newImage}, {"draw", l_g_draw},
     {"newCanvas", l_g_newCanvas}, {"setCanvas", l_g_setCanvas}, {"newQuad", l_g_newQuad},
     {"newShader", l_g_newShader}, {"setShader", l_g_setShader}, {"newVideo", l_g_newVideo},
+    {"newText", l_g_newText}, {"newMesh", l_g_newMesh},
     {nullptr, nullptr},
   };
   const luaL_Reg fs[] = {
     {"getDirectoryItems", l_fs_getDirectoryItems}, {"getInfo", l_fs_getInfo},
     {"exists", l_fs_exists}, {"read", l_fs_read}, {"load", l_fs_load},
-    {"newFile", l_fs_newFile}, {"lines", l_fs_lines}, {nullptr, nullptr},
+    {"isFile", l_fs_isFile}, {"isDirectory", l_fs_isDirectory},
+    {"setIdentity", l_fs_setIdentity}, {"remove", l_fs_remove}, {"write", l_fs_write},
+    {"newFileData", l_fs_newFileData}, {"newFile", l_fs_newFile}, {"lines", l_fs_lines}, {nullptr, nullptr},
   };
   const luaL_Reg imageMod[] = {{"newImageData", l_image_newImageData}, {nullptr, nullptr}};
-  const luaL_Reg keyboard[] = {{"isDown", l_key_isDown}, {nullptr, nullptr}};
+  const luaL_Reg keyboard[] = {{"isDown", l_key_isDown}, {"setKeyRepeat", l_key_setKeyRepeat}, {nullptr, nullptr}};
   const luaL_Reg mouse[] = {
     {"getPosition", l_mouse_getPosition}, {"getX", l_mouse_getX}, {"getY", l_mouse_getY},
     {"setPosition", l_mouse_setPosition}, {"isDown", l_mouse_isDown},
     {"setVisible", l_mouse_setVisible}, {"isVisible", l_mouse_isVisible},
     {"newCursor", l_mouse_newCursor}, {"setCursor", l_mouse_setCursor}, {nullptr, nullptr},
   };
-  const luaL_Reg timer[] = {{"getTime", l_timer_getTime}, {"getDelta", l_timer_getDelta}, {"getFPS", l_timer_getFPS}, {"sleep", l_timer_sleep}, {nullptr, nullptr}};
-  const luaL_Reg window[] = {{"setTitle", l_window_setTitle}, {"getFullscreenModes", l_window_getFullscreenModes}, {nullptr, nullptr}};
+  const luaL_Reg timer[] = {{"getTime", l_timer_getTime}, {"getDelta", l_timer_getDelta}, {"getFPS", l_timer_getFPS}, {"sleep", l_timer_sleep}, {"step", l_timer_step}, {nullptr, nullptr}};
+  const luaL_Reg window[] = {{"setTitle", l_window_setTitle}, {"setMode", l_window_setMode}, {"getFullscreenModes", l_window_getFullscreenModes}, {"getDesktopDimensions", l_window_getDesktopDimensions}, {"getDisplayCount", l_window_getDisplayCount}, {nullptr, nullptr}};
   const luaL_Reg physics[] = {{"setMeter", l_phys_setMeter}, {"newWorld", l_phys_newWorld}, {"newBody", l_phys_newBody}, {"newRectangleShape", l_phys_newRectangleShape}, {"newEdgeShape", l_phys_newEdgeShape}, {"newCircleShape", l_phys_newCircleShape}, {"newFixture", l_phys_newFixture}, {nullptr, nullptr}};
+  const luaL_Reg audio[] = {{"newSource", l_audio_newSource}, {nullptr, nullptr}};
+  const luaL_Reg mathMod[] = {{"random", l_math_random}, {"setRandomSeed", l_math_setRandomSeed}, {"isConvex", l_math_isConvex}, {"triangulate", l_math_triangulate}, {"newRandomGenerator", l_math_newRandomGenerator}, {nullptr, nullptr}};
+  const luaL_Reg event[] = {{"quit", l_event_quit}, {"push", l_event_push}, {"pump", l_event_pump}, {"poll", l_event_poll}, {nullptr, nullptr}};
+  const luaL_Reg system[] = {{"openURL", l_system_openURL}, {nullptr, nullptr}};
+  const luaL_Reg joystick[] = {{"getJoysticks", l_joystick_getJoysticks}, {nullptr, nullptr}};
 
   setModule(L, "graphics", graphics);
   setModule(L, "filesystem", fs);
@@ -1446,6 +1819,11 @@ void registerLove(lua_State *L) {
   setModule(L, "timer", timer);
   setModule(L, "window", window);
   setModule(L, "physics", physics);
+  setModule(L, "audio", audio);
+  setModule(L, "math", mathMod);
+  setModule(L, "event", event);
+  setModule(L, "system", system);
+  setModule(L, "joystick", joystick);
 }
 
 bool callLove(lua_State *L, const char *name, int nargs = 0) {
@@ -1458,10 +1836,13 @@ bool callLove(lua_State *L, const char *name, int nargs = 0) {
   }
   if (nargs > 0) lua_insert(L, -1 - nargs);
   if (lua_pcall(L, nargs, 0, 0) != 0) {
-    fprintf(stderr, "lovefb: %s error: %s\n", name, lua_tostring(L, -1));
+    const char *msg = lua_tostring(L, -1);
+    G.lastError = std::string(name) + " error: " + (msg ? msg : "unknown");
+    fprintf(stderr, "lovefb: %s\n", G.lastError.c_str());
     lua_pop(L, 1);
     return false;
   }
+  if (std::string(name) != "draw") G.lastError.clear();
   return true;
 }
 
@@ -1553,9 +1934,23 @@ int runLove(lua_State *L) {
     callLove(L, "update", 1);
 
     G.target = &G.screen;
-    G.tx = 0; G.ty = 0; G.scissor = false;
+    G.transform = Transform{};
+    G.transformStack.clear();
+    G.scissor = false;
     clearSurface(G.screen, G.background);
     callLove(L, "draw", 0);
+    if (!G.lastError.empty()) {
+      Font *savedFont = G.font;
+      Color savedColor = G.color;
+      Transform savedTransform = G.transform;
+      G.font = &G.defaultFont;
+      G.color = Color{255, 80, 80, 255};
+      G.transform = Transform{};
+      drawText(G.screen, G.lastError, 12, 12);
+      G.transform = savedTransform;
+      G.color = savedColor;
+      G.font = savedFont;
+    }
     drawSoftwareCursor();
     flushFramebuffer();
 
