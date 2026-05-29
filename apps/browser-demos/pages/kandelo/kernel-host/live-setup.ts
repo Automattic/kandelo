@@ -162,6 +162,7 @@ interface LiveProfileSpec {
   maxVfsByteLength?: number;
   network?: boolean;
   features?: string[];
+  autoCommand?: string;
   init?: {
     argv: string[];
     env?: InitEnvProfile;
@@ -194,6 +195,7 @@ const LIVE_DEMO_IDS = [
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
+  "love",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -279,6 +281,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     },
   },
   doom: {
+    image: "shell",
+    features: ["framebuffer"],
+  },
+  love: {
     image: "shell",
     features: ["framebuffer"],
   },
@@ -637,6 +643,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     shell: spec.shell ?? "default",
     includeNodeUtility: spec.includeNodeUtility ?? false,
     maxVfsByteLength: spec.maxVfsByteLength ?? 256 * 1024 * 1024,
+    autoCommand: spec.autoCommand,
     init: spec.init && {
       argv: spec.init.argv.slice(),
       env: initEnv(spec.init.env),
