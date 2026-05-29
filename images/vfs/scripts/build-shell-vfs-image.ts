@@ -26,10 +26,12 @@ import {
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
 import {
+  BYTEPATH_COMMAND,
   DOOM_COMMAND,
   DOOM_WAD_SHA256,
   DOOM_WAD_URL,
   LOVE_COMMAND,
+  bytepathGuide,
   loveGuide,
   shellGuide,
 } from "./kandelo-demo-guides";
@@ -79,6 +81,10 @@ async function main() {
       love: {
         presentation: framebufferPresentation(LOVE_COMMAND),
         guide: loveGuide(),
+      },
+      bytepath: {
+        presentation: framebufferPresentation(BYTEPATH_COMMAND),
+        guide: bytepathGuide(),
       },
     },
   });

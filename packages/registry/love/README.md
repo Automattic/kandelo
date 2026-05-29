@@ -5,11 +5,17 @@ It builds a `wasm32posix` executable with `wasm32posix-c++`, opens
 `/dev/fb0`, and renders with a small software backend.
 
 It intentionally does not use Emscripten. The package also bundles
-the local game gallery as `love-examples.zip`; the shell VFS image unpacks it
+the local game gallery and a BYTEPATH port as `love-examples.zip`; the shell VFS image unpacks it
 to `/usr/local/share/love/examples` and launches:
 
 ```sh
 /usr/local/bin/love /usr/local/share/love/examples
+```
+
+BYTEPATH can be launched directly with:
+
+```sh
+/usr/local/bin/love /usr/local/share/love/examples/bytepath
 ```
 
 The upstream LÖVE 11.5 source is still pinned and fetched by the build script
@@ -17,3 +23,9 @@ for the port baseline and bundled libraries such as `lodepng`, but the
 framebuffer backend here replaces the upstream SDL/OpenGL presentation path.
 Lua is provided by the separate `lua` registry package and linked as
 `liblua.a`.
+
+The BYTEPATH staging step pins upstream `a327ex/BYTEPATH` and keeps the MIT
+game code plus permissive Lua dependencies needed for gameplay. It omits the
+bundled Windows runtime, tutorial archive, GPL windfield dependency, and audio
+assets; Kandelo supplies small compatibility shims for the omitted runtime
+pieces.
