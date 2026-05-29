@@ -45,7 +45,15 @@ export { parseDylinkSection, loadSharedLibrary, loadSharedLibrarySync, DynamicLi
 export type { DylinkMetadata, LoadedSharedLibrary, LoadSharedLibraryOptions } from "./dylink";
 export { WASM_PAGE_SIZE, CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 export { ThreadPageAllocator } from "./thread-allocator";
-export type { ThreadAllocation } from "./thread-allocator";
+export type { ThreadAllocation, ThreadPageAllocatorOptions } from "./thread-allocator";
+export {
+  computeProcessMemoryLayout,
+  createProcessMemory,
+  growMemoryToCover,
+  importedMemoryMinimumPages,
+  PROCESS_MMAP_BASE,
+} from "./process-memory";
+export type { ProcessMemoryLayout } from "./process-memory";
 export { WasiShim, WasiExit } from "./wasi-shim";
 export { isWasiModule, wasiModuleImportsMemory, wasiModuleDefinesMemory } from "./wasi-detect";
 export { NodeKernelHost } from "./node-kernel-host";

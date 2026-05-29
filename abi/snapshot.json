@@ -1254,6 +1254,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_set_brk_limit",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_set_child_pid",
       "signature": "(i32) -> ()"
     },

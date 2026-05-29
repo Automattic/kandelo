@@ -318,7 +318,7 @@ Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `cry
 Browser sandbox prevents listening on ports. nginx/PHP-FPM demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.
 
 ### Memory per process
-Each process gets `WebAssembly.Memory(shared: true, initial: maxPages, max: maxPages)`. Shared memory reserves the full virtual address space at construction time, so `maxMemoryPages` should be tuned for multi-process demos (e.g., 4096 pages = 256MB for WordPress with 5+ processes).
+Each process gets `WebAssembly.Memory(shared: true, initial: layout.initialPages, max: maxPages)`. The initial size covers the program's imported minimum memory, a brk window, and the low syscall control channel; it no longer allocates `maxPages` at spawn. `maxMemoryPages` still caps guest brk/mmap growth and should be tuned for workloads that need large address spaces.
 
 ### npm registry access in the browser
 The node demo's `npm install` uses `--registry=http://proxy.local/` so registry traffic can pass through the host fetch bridge instead of requiring the JavaScript runtime to own every TLS edge case. The kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the same path.

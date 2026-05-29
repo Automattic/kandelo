@@ -312,7 +312,7 @@ runBtn.addEventListener("click", async () => {
 const kernel = new BrowserKernel({
   maxWorkers?: number,         // Max concurrent workers (default: 4)
   fsSize?: number,             // MemoryFileSystem size in bytes (default: 16MB)
-  maxMemoryPages?: number,     // Wasm pages per process (default: 16384 = 1GB)
+  maxMemoryPages?: number,     // Max Wasm pages per process (default: 16384 = 1GB)
   env?: string[],              // Environment variables
   onStdout?: (data: Uint8Array) => void,
   onStderr?: (data: Uint8Array) => void,
