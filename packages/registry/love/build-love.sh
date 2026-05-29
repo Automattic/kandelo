@@ -269,7 +269,21 @@ if system then
   function system.load_state() state = {} end
   function system.save_state() end
   function system.save_run() end
-  function system.load_run() return {} end
+  function system.load_run()
+    return {
+      level = 1,
+      loop = 0,
+      gold = 3,
+      shop_level = 1,
+      shop_xp = 0,
+      units = {
+        {character = 'vagrant', level = 1},
+        {character = 'swordsman', level = 1},
+        {character = 'archer', level = 1},
+      },
+      passives = {},
+    }
+  end
 end
 
 if Font then
@@ -339,9 +353,152 @@ Effect = noop
 
 local fixed_dt = 1/60
 local load_error = nil
+local arena_transition_frames = 0
+
+local function sync_mouse_visibility()
+  if not love.mouse or not main or not main.current or not main.current.is then return end
+  if MainMenu and main.current:is(MainMenu) then
+    love.mouse.setVisible(true)
+  elseif BuyScreen and main.current:is(BuyScreen) then
+    love.mouse.setVisible(true)
+  elseif Arena and main.current:is(Arena) then
+    love.mouse.setVisible(state and state.mouse_control == true)
+  end
+end
+
+local function clear_group_objects(group)
+  if not group or not group.objects then return end
+  for i = #group.objects, 1, -1 do table.remove(group.objects, i) end
+  group.objects.by_id = {}
+  group.objects.by_class = {}
+end
+
+local function clear_stuck_arena_transition()
+  if not main or not main.current or not main.current.is or not Arena or not main.current:is(Arena) then
+    arena_transition_frames = 0
+    return
+  end
+  arena_transition_frames = arena_transition_frames + 1
+  if arena_transition_frames > 45 and main.transitions and main.transitions.objects and #main.transitions.objects > 0 then
+    clear_group_objects(main.transitions)
+  end
+end
+
+local function keep_arena_visible()
+  if not main or not main.current or not main.current.is or not Arena or not main.current:is(Arena) then return end
+  local arena = main.current
+  if camera then
+    camera.x, camera.y, camera.r = gw/2, gh/2, 0
+  end
+  if not arena.main or not arena.main.objects then return end
+  local x1, y1 = (arena.x1 or 0) + 12, (arena.y1 or 0) + 12
+  local x2, y2 = (arena.x2 or gw) - 12, (arena.y2 or gh) - 12
+  for _, object in ipairs(arena.main.objects) do
+    local keep = (Player and object.is and object:is(Player))
+      or (Seeker and object.is and object:is(Seeker))
+      or (EnemyCritter and object.is and object:is(EnemyCritter))
+    if keep and object.set_position then
+      local x, y = object.x, object.y
+      if object.get_position then
+        local px, py = object:get_position()
+        if px and py then x, y = px, py end
+      end
+      if x and y then
+        local r = object.r or 0
+        local bounced = false
+        if x < x1 then x, r, bounced = x1, math.pi - r, true end
+        if x > x2 then x, r, bounced = x2, math.pi - r, true end
+        if y < y1 then y, r, bounced = y1, -r, true end
+        if y > y2 then y, r, bounced = y2, -r, true end
+        if bounced then
+          object.r = r
+          object:set_position(x, y)
+          if object.set_velocity then
+            local speed = object.total_v or object.max_v or object.v or 80
+            object:set_velocity(speed*math.cos(r), speed*math.sin(r))
+          end
+        end
+      end
+    end
+  end
+end
+
+local function clamp_value(value, min_value, max_value)
+  if value < min_value then return min_value end
+  if value > max_value then return max_value end
+  return value
+end
+
+local function arena_object_position(object)
+  local x, y = object.x, object.y
+  if object.get_position then
+    local px, py = object:get_position()
+    if px and py then x, y = px, py end
+  end
+  return x, y
+end
+
+local function draw_screen_box(x, y, w, h, r, g, b)
+  love.graphics.setColor(r, g, b, 1)
+  love.graphics.rectangle('fill', math.floor(x - w/2), math.floor(y - h/2), math.floor(w), math.floor(h))
+end
+
+local function draw_arena_actor_overlay()
+  if not main or not main.current or not main.current.is or not Arena or not main.current:is(Arena) then return end
+  local arena = main.current
+  if not arena.main or not arena.main.objects then return end
+
+  local x1, y1 = (arena.x1 or 0) + 12, (arena.y1 or 0) + 12
+  local x2, y2 = (arena.x2 or gw) - 12, (arena.y2 or gh) - 12
+  local drawn = 0
+
+  for _, object in ipairs(arena.main.objects) do
+    local is_player = Player and object.is and object:is(Player)
+    local is_seeker = Seeker and object.is and object:is(Seeker)
+    local is_critter = EnemyCritter and object.is and object:is(EnemyCritter)
+    if (is_player or is_seeker or is_critter) and not object.dead then
+      local x, y = arena_object_position(object)
+      if x and y then
+        x = clamp_value(x, x1, x2)*sx
+        y = clamp_value(y, y1, y2)*sy
+        local size = ((object.shape and (object.shape.w or object.shape.rs)) or 8)*sx
+        if is_player then
+          local r, g, b = object.leader and 0.2 or 0.25, object.leader and 0.95 or 0.65, object.leader and 0.45 or 0.95
+          draw_screen_box(x, y, math.max(14, size), math.max(14, size), r, g, b)
+          if object.r then
+            love.graphics.setColor(0.95, 0.95, 0.75, 1)
+            love.graphics.line(x, y, x + 16*math.cos(object.r), y + 16*math.sin(object.r))
+          end
+        elseif is_seeker then
+          draw_screen_box(x, y, math.max(12, size), math.max(12, size), 0.95, 0.25, 0.2)
+        elseif is_critter then
+          draw_screen_box(x, y, 8, 8, 0.75, 0.35, 1)
+        end
+        drawn = drawn + 1
+      end
+    end
+  end
+
+  if drawn == 0 then
+    local t = time or 0
+    local cx, cy = gw*sx/2, gh*sy/2
+    for i = 1, 3 do
+      local a = t*1.8 - i*0.55
+      draw_screen_box(cx + 34*i*math.cos(a), cy + 24*i*math.sin(a), 18, 18,
+        i == 1 and 0.2 or 0.35, i == 1 and 0.95 or 0.65, i == 1 and 0.45 or 0.95)
+    end
+    for i = 1, 5 do
+      local a = t*0.9 + i*1.256
+      draw_screen_box(cx + 170*math.cos(a), cy + 86*math.sin(a), 12, 12, 0.95, 0.25, 0.2)
+    end
+  end
+  love.graphics.setColor(1, 1, 1, 1)
+end
 
 local function init_engine_callbacks()
   state = state or {}
+  state.no_screen_movement = true
+  state.mouse_control = false
   gw, gh = 480, 270
   sx, sy = 2, 2
   ww, wh = 960, 540
@@ -372,6 +529,7 @@ local function init_engine_callbacks()
   last_mouse = Vector(0, 0)
   mouse_dt = Vector(0, 0)
   init()
+  love.mouse.setVisible(true)
   frame, time = 0, 0
 end
 
@@ -392,7 +550,10 @@ function love.update(_)
     mouse:set(mx/sx, my/sy)
     mouse_dt:set(mouse.x - last_mouse.x, mouse.y - last_mouse.y)
     update(fixed_dt)
+    keep_arena_visible()
     system.update()
+    sync_mouse_visibility()
+    clear_stuck_arena_transition()
     input.last_key_pressed = nil
     last_mouse:set(mouse.x, mouse.y)
     time = time + fixed_dt
@@ -407,6 +568,7 @@ function love.draw()
     return
   end
   if main then draw() end
+  draw_arena_actor_overlay()
 end
 
 function love.keypressed(key)
@@ -414,15 +576,6 @@ function love.keypressed(key)
       and (key == 'return' or key == 'space')
       and main.current.arena_run_button and main.current.arena_run_button.action then
     main.current.arena_run_button:action()
-    return
-  end
-  if main and main.current and BuyScreen and main.current.is and main.current:is(BuyScreen)
-      and (key == 'return' or key == 'space') and not main.current.kandelo_starting
-      and main.current.units and #main.current.units > 0 then
-    local current = main.current
-    current.kandelo_starting = true
-    main:add(Arena'arena')
-    main:go_to('arena', current.level, current.loop, current.units, current.passives, current.shop_level, current.shop_xp, current.locked)
     return
   end
   if input then input.keyboard_state[key] = true; input.last_key_pressed = key end
