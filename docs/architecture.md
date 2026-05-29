@@ -417,6 +417,26 @@ When restoring for use in a browser, pass `maxByteLength` to create a growable `
 const restored = MemoryFileSystem.fromImage(image, { maxByteLength: 1024 * 1024 * 1024 });
 ```
 
+For browser persistence, `OpfsVfsImageStore` can save and load whole VFS images
+from the origin private file system while keeping runtime syscalls on the
+memory-backed filesystem:
+
+```typescript
+import { OpfsVfsImageStore } from "wasm-posix-host/browser";
+
+const store = await OpfsVfsImageStore.open({ requestPersistentStorage: true });
+const fs = await store.load("site-1", { maxByteLength: 1024 * 1024 * 1024 })
+  ?? MemoryFileSystem.fromImage(baseImage, { maxByteLength: 1024 * 1024 * 1024 });
+
+await store.save("site-1", fs, { keepRevisions: 2 });
+```
+
+The OPFS store is a snapshot primitive, not a direct `/` mount and not a journal
+yet. It writes image bytes first, then commits one of two manifest files so a
+corrupt latest manifest can fall back to the previous valid generation. See
+[`docs/plans/2026-05-11-browser-vfs-persistence-opfs-prototype.md`](plans/2026-05-11-browser-vfs-persistence-opfs-prototype.md)
+for the OPFS-only prototype plan and IndexedDB future-work notes.
+
 Most browser demos use this approach. Each demo has a build script that pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs.zst` file (zstd-compressed; `saveImage()` compresses on write). At runtime, the demo fetches the file and `MemoryFileSystem.fromImage` decompresses transparently — restoring the image replaces thousands of individual file writes with a single buffer copy. The empty regions of the SharedFS allocator compress to almost nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download.
 
 There are two consumption patterns for VFS images, depending on whether the demo wants the kernel worker to fully own the filesystem:
