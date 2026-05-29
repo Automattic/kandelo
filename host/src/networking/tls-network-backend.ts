@@ -22,6 +22,8 @@ import {
   type GeneratedCertificate,
 } from "../../../packages/registry/openssl/src/tls/certificates";
 
+const MSG_PEEK = 0x2;
+
 // ------------------------------------------------------------------ types
 
 interface HttpConnectionState {
@@ -106,6 +108,22 @@ function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   return { method, path, headers, body };
 }
 
+function parseAbsoluteHttpTarget(target: string): URL | null {
+  try {
+    const url = new URL(target);
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      return url;
+    }
+  } catch {
+    // Origin-form request target.
+  }
+  return null;
+}
+
+function urlPathAndQuery(url: URL): string {
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 function formatHttpResponse(
   status: number,
   statusText: string,
@@ -115,13 +133,19 @@ function formatHttpResponse(
   const bodyBytes = new Uint8Array(body);
   let headerStr = `HTTP/1.1 ${status} ${statusText}\r\n`;
   headers.forEach((value, key) => {
-    // Skip transfer-encoding since we set content-length
-    if (key.toLowerCase() === "transfer-encoding") return;
+    const lower = key.toLowerCase();
+    // fetch() exposes a decoded body. Do not forward framing or encoding
+    // headers from the upstream response; describe the bytes we actually send.
+    if (
+      lower === "transfer-encoding"
+      || lower === "content-encoding"
+      || lower === "content-length"
+      || lower === "connection"
+      || lower === "keep-alive"
+    ) return;
     headerStr += `${key}: ${value}\r\n`;
   });
-  if (!headers.has("content-length")) {
-    headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
-  }
+  headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
   headerStr += "Connection: close\r\n";
   headerStr += "\r\n";
 
@@ -130,6 +154,37 @@ function formatHttpResponse(
   result.set(headerBytes);
   result.set(bodyBytes, headerBytes.length);
   return result;
+}
+
+function fetchRelayUpstreamUrl(hostname: string, path: string): string | null {
+  if (hostname !== "fetch.local") return null;
+
+  const relayPath = path.startsWith("/") ? path.slice(1) : path;
+  const schemeEnd = relayPath.indexOf("/");
+  if (schemeEnd <= 0) return null;
+
+  const scheme = relayPath.slice(0, schemeEnd);
+  if (scheme !== "http" && scheme !== "https") return null;
+
+  const rest = relayPath.slice(schemeEnd + 1);
+  const authorityEndMatch = /[/?#]/.exec(rest);
+  if (!authorityEndMatch) {
+    return rest.length > 0 ? `${scheme}://${rest}/` : null;
+  }
+
+  const authorityEnd = authorityEndMatch.index;
+  let authority = rest.slice(0, authorityEnd);
+  try {
+    authority = decodeURIComponent(authority);
+  } catch {
+    return null;
+  }
+  if (authority.length === 0) return null;
+
+  const suffix = rest[authorityEnd] === "/"
+    ? rest.slice(authorityEnd)
+    : `/${rest.slice(authorityEnd)}`;
+  return `${scheme}://${authority}${suffix}`;
 }
 
 // ------------------------------------------------------------------ backend
@@ -233,14 +288,14 @@ export class TlsNetworkBackend implements NetworkIO {
     return this.httpSend(conn, data);
   }
 
-  recv(handle: number, maxLen: number, _flags: number): Uint8Array {
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
 
     if (conn.kind === "tls") {
-      return this.tlsRecv(conn, maxLen);
+      return this.tlsRecv(conn, maxLen, flags);
     }
-    return this.httpRecv(conn, maxLen);
+    return this.httpRecv(conn, maxLen, flags);
   }
 
   close(handle: number): void {
@@ -374,14 +429,16 @@ export class TlsNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  private tlsRecv(conn: TlsConnectionState, maxLen: number): Uint8Array {
+  private tlsRecv(conn: TlsConnectionState, maxLen: number, flags: number): Uint8Array {
     if (conn.error) throw conn.error;
 
     // Check if we have encrypted data buffered from the TLS engine
     if (conn.clientDownstreamBuf.length > 0) {
       const n = Math.min(maxLen, conn.clientDownstreamBuf.length);
       const result = conn.clientDownstreamBuf.slice(0, n);
-      conn.clientDownstreamBuf = conn.clientDownstreamBuf.subarray(n);
+      if ((flags & MSG_PEEK) === 0) {
+        conn.clientDownstreamBuf = conn.clientDownstreamBuf.subarray(n);
+      }
       return result;
     }
 
@@ -454,8 +511,6 @@ export class TlsNetworkBackend implements NetworkIO {
         // Write plaintext response to server downstream — TLS engine encrypts
         // it automatically and it appears on clientEnd.downstream.readable.
         await conn.serverDownstreamWriter.write(responseBytes);
-        await conn.serverDownstreamWriter.close();
-        conn.closed = true;
       } catch (err) {
         // Send a 502 Bad Gateway response through TLS
         const errorBody = `Error fetching ${url}: ${err}`;
@@ -467,8 +522,6 @@ export class TlsNetworkBackend implements NetworkIO {
         );
         try {
           await conn.serverDownstreamWriter.write(errorResponse);
-          await conn.serverDownstreamWriter.close();
-          conn.closed = true;
         } catch {
           // Ignore write errors
         }
@@ -498,18 +551,25 @@ export class TlsNetworkBackend implements NetworkIO {
 
     // Complete request — parse and issue fetch
     const { method, path, headers, body } = parseHttpRequest(conn.sendBuf, headerEnd);
+    const absoluteTarget = parseAbsoluteHttpTarget(path);
+    const requestPath = absoluteTarget ? urlPathAndQuery(absoluteTarget) : path;
+    const requestHostname = absoluteTarget ? absoluteTarget.hostname : conn.hostname;
+    const requestScheme = absoluteTarget ? absoluteTarget.protocol.replace(/:$/, "") : (conn.port === 443 ? "https" : "http");
     const hostHeader = headers.get("host");
-    const scheme = conn.port === 443 ? "https" : "http";
     const portSuffix = (conn.port === 80 || conn.port === 443) ? "" : `:${conn.port}`;
     // Use Host header as-is (it already includes :port when non-default),
     // otherwise fall back to conn.hostname + port suffix.
-    const host = hostHeader ? hostHeader : `${conn.hostname}${portSuffix}`;
-    // Sentinel hostnames in dnsAliases route to an upstream URL through host
-    // fetch + CORS proxy, bypassing the in-process TLS engine.
-    const aliasUpstream = this.dnsAliases[conn.hostname];
-    const upstreamUrl = aliasUpstream !== undefined
-      ? `${aliasUpstream}${path}`
-      : `${scheme}://${host}${path}`;
+    const host = absoluteTarget ? absoluteTarget.host : (hostHeader ? hostHeader : `${conn.hostname}${portSuffix}`);
+    // Sentinel hostnames route to an upstream URL through host fetch + CORS
+    // proxy, bypassing the in-process TLS engine. `fetch.local` is a generic
+    // relay: /https/example.com/path -> https://example.com/path.
+    const aliasUpstream = this.dnsAliases[requestHostname];
+    const relayUpstream = fetchRelayUpstreamUrl(requestHostname, requestPath);
+    const upstreamUrl = relayUpstream !== null
+      ? relayUpstream
+      : (aliasUpstream !== undefined
+        ? `${aliasUpstream}${requestPath}`
+        : `${requestScheme}://${host}${requestPath}`);
     const url = this.corsProxyUrl
       ? `${this.corsProxyUrl}${encodeURIComponent(upstreamUrl)}`
       : upstreamUrl;
@@ -566,7 +626,7 @@ export class TlsNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  private httpRecv(conn: HttpConnectionState, maxLen: number): Uint8Array {
+  private httpRecv(conn: HttpConnectionState, maxLen: number, flags: number): Uint8Array {
     if (!conn.fetchDone) {
       throw new EagainError();
     }
@@ -582,7 +642,9 @@ export class TlsNetworkBackend implements NetworkIO {
     if (len === 0) return new Uint8Array(0);
 
     const result = conn.responseBuf.slice(conn.responseOffset, conn.responseOffset + len);
-    conn.responseOffset += len;
+    if ((flags & MSG_PEEK) === 0) {
+      conn.responseOffset += len;
+    }
     return result;
   }
 

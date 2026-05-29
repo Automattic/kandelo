@@ -92,7 +92,7 @@ async function hashCanvas(page: import("@playwright/test").Page): Promise<number
     if (!ctx) return 0;
     const data = ctx.getImageData(0, 0, c.width, c.height).data;
     // djb2 across a strided sample — full O(n) is overkill for a frame
-    // hash and getImageData on a 640×400 canvas is the slow path here.
+    // hash and getImageData on the framebuffer canvas is the slow path here.
     let h = 5381;
     for (let i = 0; i < data.length; i += 521) h = ((h << 5) + h + data[i]) | 0;
     return h;

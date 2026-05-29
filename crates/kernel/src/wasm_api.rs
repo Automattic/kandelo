@@ -2663,18 +2663,30 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         46 => {
             // SYS_MMAP: (addr, len, prot, flags, fd, pgoffset)
             // musl sends page offset (off / 4096) as a6.
-            // Convert to byte offset for kernel_mmap (lo, hi).
             let pgoff = a6 as u32;
             let byte_off = (pgoff as u64) << 12; // * 4096
-            kernel_mmap(
+            let (_gkl, proc) = unsafe { get_process() };
+            let mut host = WasmHostIO;
+            let result = match syscalls::sys_mmap(
+                proc,
+                &mut host,
                 a1 as usize,
                 a2 as usize,
                 a3 as u32,
                 a4 as u32,
                 a5,
-                byte_off as u32,
-                (byte_off >> 32) as i32,
-            ) as i32
+                byte_off as i64,
+            ) {
+                Ok(addr) => {
+                    if !crate::is_centralized_mode() && a3 != 0 {
+                        ensure_memory_covers(addr.saturating_add(a2 as usize));
+                    }
+                    addr as i32
+                }
+                Err(e) => -(e as i32),
+            };
+            deliver_pending_signals(proc, &mut host);
+            result
         }
         47 => kernel_munmap(a1 as usize, a2 as usize), // SYS_MUNMAP
         48 => kernel_brk(a1 as usize) as i32,          // SYS_BRK
@@ -2735,7 +2747,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         114 => kernel_getsockname(a1, a2 as *mut u8, a3 as *mut u32), // SYS_GETSOCKNAME
         115 => kernel_getpeername(a1, a2 as *mut u8, a3 as *mut u32), // SYS_GETPEERNAME
         140 => {
-            // SYS_GETADDRINFO: (name, result_buf)
+            // SYS_GETADDRINFO: (name, 4-byte IPv4 result_buf)
             let p = a1 as *const u8;
             let len = unsafe { cstr_len(p) };
             kernel_getaddrinfo(p, len, a2 as *mut u8)
@@ -9183,7 +9195,7 @@ pub extern "C" fn kernel_getaddrinfo(
     let (_gkl, proc) = unsafe { get_process() };
     let mut host = WasmHostIO;
     let name = unsafe { slice::from_raw_parts(name_ptr, name_len as usize) };
-    let result_buf = unsafe { slice::from_raw_parts_mut(result_ptr, 16) };
+    let result_buf = unsafe { slice::from_raw_parts_mut(result_ptr, 4) };
     match syscalls::sys_getaddrinfo(proc, &mut host, name, result_buf) {
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
