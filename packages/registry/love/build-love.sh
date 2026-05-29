@@ -10,12 +10,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 SRC="$HERE/love-src"
-LUA_SRC="$HERE/lua-src"
 GAME_DEMOS_SRC="$HERE/game-demos"
 BUILD="$HERE/build"
 
 LOVE_COMMIT="6eb8d546736d5915a8b5af30b2cf33456dfdcb1a" # 11.5
-LUA_VERSION="5.1.5"
 
 source "$REPO_ROOT/sdk/activate.sh"
 export WASM_POSIX_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
@@ -70,6 +68,19 @@ LDFLAGS_NATIVE=(
     -Wl,--export=__abi_version
 )
 
+LUA_PREFIX="${WASM_POSIX_DEP_LUA_DIR:-}"
+if [ -z "$LUA_PREFIX" ]; then
+    LUA_PREFIX="$HERE/../lua/lua-install"
+    if [ ! -f "$LUA_PREFIX/lib/liblua.a" ] || [ ! -f "$LUA_PREFIX/include/lua.h" ]; then
+        echo "==> Building Lua dependency..."
+        bash "$HERE/../lua/build-lua.sh"
+    fi
+fi
+if [ ! -f "$LUA_PREFIX/lib/liblua.a" ] || [ ! -f "$LUA_PREFIX/include/lua.h" ]; then
+    echo "ERROR: Lua dependency not found at $LUA_PREFIX" >&2
+    exit 1
+fi
+
 if [ ! -d "$SRC/.git" ]; then
     echo "==> Cloning LÖVE $LOVE_COMMIT..."
     git clone --filter=blob:none https://github.com/love2d/love.git "$SRC"
@@ -79,35 +90,12 @@ if [ "$(cd "$SRC" && git rev-parse HEAD)" != "$LOVE_COMMIT" ]; then
     (cd "$SRC" && git fetch --depth 1 origin "$LOVE_COMMIT" && git checkout "$LOVE_COMMIT")
 fi
 
-if [ ! -f "$LUA_SRC/src/lua.h" ]; then
-    echo "==> Downloading Lua $LUA_VERSION..."
-    rm -rf "$LUA_SRC"
-    tmp="/tmp/lua-$LUA_VERSION.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "https://www.lua.org/ftp/lua-$LUA_VERSION.tar.gz" -o "$tmp"
-    mkdir -p "$LUA_SRC"
-    tar xzf "$tmp" -C "$LUA_SRC" --strip-components=1
-    rm -f "$tmp"
-fi
-
 rm -rf "$BUILD"
-mkdir -p "$BUILD/lua"
-
-echo "==> Compiling Lua $LUA_VERSION..."
-LUA_SOURCES=(
-    lapi.c lauxlib.c lbaselib.c lcode.c ldblib.c ldebug.c ldo.c ldump.c
-    lfunc.c lgc.c linit.c liolib.c llex.c lmathlib.c lmem.c loadlib.c
-    lobject.c lopcodes.c lparser.c lstate.c lstring.c lstrlib.c
-    ltable.c ltablib.c ltm.c lundump.c lvm.c lzio.c
-)
-for src in "${LUA_SOURCES[@]}"; do
-    wasm32posix-cc -O2 -I"$LUA_SRC/src" \
-        -c "$LUA_SRC/src/$src" -o "$BUILD/lua/${src%.c}.o"
-done
+mkdir -p "$BUILD"
 
 echo "==> Compiling framebuffer runtime..."
 "$CXX" "${CXXFLAGS_NATIVE[@]}" -O2 -std=c++17 \
-    -I"$LUA_SRC/src" \
+    -I"$LUA_PREFIX/include" \
     -I"$SRC/src/libraries/lodepng" \
     -c "$HERE/src/lovefb.cpp" -o "$BUILD/lovefb.o"
 "$CXX" "${CXXFLAGS_NATIVE[@]}" -O2 -std=c++17 \
@@ -116,11 +104,12 @@ echo "==> Compiling framebuffer runtime..."
 
 echo "==> Linking love.wasm..."
 "$CXX" "${CXXFLAGS_NATIVE[@]}" -O2 \
-    "$BUILD/lovefb.o" "$BUILD/lodepng.o" "$BUILD"/lua/*.o \
+    "$BUILD/lovefb.o" "$BUILD/lodepng.o" \
     "$GLUE_DIR/channel_syscall.c" \
     "$GLUE_DIR/compiler_rt.c" \
     "$GLUE_DIR/cxxrt.c" \
     "$WASM_POSIX_SYSROOT/lib/crt1.o" \
+    "$LUA_PREFIX/lib/liblua.a" \
     "$WASM_POSIX_SYSROOT/lib/libc++.a" \
     "$WASM_POSIX_SYSROOT/lib/libc++abi.a" \
     "$WASM_POSIX_SYSROOT/lib/libc.a" \
