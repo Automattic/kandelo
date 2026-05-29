@@ -238,6 +238,7 @@ const LIVE_DEMO_IDS = [
   "modeset",
   "love",
   "bytepath",
+  "snkrx",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -330,6 +331,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     features: ["framebuffer"],
   },
   bytepath: {
+    image: "shell",
+    features: ["framebuffer"],
+  },
+  snkrx: {
     image: "shell",
     features: ["framebuffer"],
   },

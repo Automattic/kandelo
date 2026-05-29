@@ -35,6 +35,8 @@ import {
   bytepathGuide,
   loveGuide,
   shellGuide,
+  SNKRX_COMMAND,
+  snkrxGuide,
 } from "./kandelo-demo-guides";
 
 const OUT_FILE = "apps/browser-demos/public/shell.vfs.zst";
@@ -91,6 +93,10 @@ async function main() {
       bytepath: {
         presentation: framebufferPresentation(BYTEPATH_COMMAND),
         guide: bytepathGuide(),
+      },
+      snkrx: {
+        presentation: framebufferPresentation(SNKRX_COMMAND),
+        guide: snkrxGuide(),
       },
     },
   });
