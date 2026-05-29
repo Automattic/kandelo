@@ -35,6 +35,31 @@ fi
 # iterating on patches), `rm -rf packages/registry/fbdoom/fbdoom-src`.
 SENTINEL="$SRC/fbdoom/opl/opl_kernel.c"
 
+# Vendored net sources from chocolate-doom needed by
+# patches/0007-i_net-posix.patch. fbDOOM only kept the .h files; we
+# vendor the .c implementations back so FEATURE_MULTIPLAYER can be
+# enabled for the WebRTC UDP relay (see the multiplayer-doom-webrtc
+# design doc). Both forks are GPLv2 — same license, no compat issue.
+# Skipped on purpose: net_dedicated.{c,h} (headless server we don't
+# ship), net_gui.c (textscreen-based UI fbDOOM doesn't link — patch
+# provides a tiny replacement NET_WaitForLaunch in net_posix.c),
+# net_sdl.c (replaced by patch's net_posix.c).
+CDOOM_NET_FILES=(
+    aes_prng.c aes_prng.h
+    d_loop.h
+    net_client.c net_client.h
+    net_common.c net_common.h
+    net_defs.h
+    net_io.c net_io.h
+    net_loop.c net_loop.h
+    net_packet.c net_packet.h
+    net_petname.c net_petname.h
+    net_query.c net_query.h
+    net_sdl.h
+    net_server.c net_server.h
+    net_structrw.c net_structrw.h
+)
+
 apply_patches() {
     local mode="${1:-strict}"
     echo "==> Applying patches..."
@@ -75,6 +100,11 @@ else
         cp "$CDOOM_SRC/opl/$f" "$SRC/fbdoom/opl/$f"
     done
     for f in mus2mid.c mus2mid.h midifile.c midifile.h; do
+        cp "$CDOOM_SRC/src/$f" "$SRC/fbdoom/$f"
+    done
+
+    echo "==> Vendoring NET sources from chocolate-doom..."
+    for f in "${CDOOM_NET_FILES[@]}"; do
         cp "$CDOOM_SRC/src/$f" "$SRC/fbdoom/$f"
     done
 
