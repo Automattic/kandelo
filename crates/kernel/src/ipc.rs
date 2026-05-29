@@ -816,6 +816,17 @@ impl IpcTable {
         Ok(seg.segsz)
     }
 
+    /// Inherit an existing attachment across fork without rechecking
+    /// permissions. The parent already passed `shmat`; fork only creates
+    /// another process reference to the same segment.
+    pub fn shm_attach_inherited(&mut self, shmid: i32, pid: u32) -> Result<(), Errno> {
+        let seg = self.shm_segments.get_mut(&shmid).ok_or(Errno::EINVAL)?;
+        seg.nattch += 1;
+        seg.lpid = pid as i32;
+        seg.atime = crate::current_time_secs();
+        Ok(())
+    }
+
     /// Read a chunk of shared memory segment data into a buffer.
     /// Returns bytes written.
     pub fn shm_read_chunk(&self, shmid: i32, offset: u32, buf: &mut [u8]) -> Result<u32, Errno> {
@@ -1446,8 +1457,16 @@ mod tests {
         assert_eq!(info.nattch, 1);
         assert_eq!(info.lpid, 42);
 
+        t.shm_attach_inherited(id, 43).unwrap();
+        let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
+        assert_eq!(info.nattch, 2);
+        assert_eq!(info.lpid, 43);
+
         // Detach
         t.shmdt(id, 42).unwrap();
+        let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
+        assert_eq!(info.nattch, 1);
+        t.shmdt(id, 43).unwrap();
         let info = t.shmctl(id, IPC_STAT, 1, 0, 0).unwrap().unwrap();
         assert_eq!(info.nattch, 0);
     }
