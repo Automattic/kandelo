@@ -50,8 +50,16 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/srv",       source: "scratch", mode: 0o755 },
 ];
 
-/** Default growth ceiling for the rootfs image-backed memfs (1 GiB). */
-export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
+/**
+ * Default growth ceiling for image-backed memfs mounts.
+ *
+ * Large development images can encode a higher filesystem ceiling than
+ * their initial serialized size. The WordPress development VFS needs room
+ * for a fresh checkout, `npm install`, and `npm run build`; restoring it
+ * with a smaller SAB max clamps growth and surfaces false ENOSPC during
+ * dependency extraction.
+ */
+export const IMAGE_MEMFS_MAX_BYTES = 6 * 1024 * 1024 * 1024;
 
 /**
  * Default size for a browser scratch memfs SAB (16 MiB).

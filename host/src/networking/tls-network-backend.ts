@@ -115,13 +115,13 @@ function formatHttpResponse(
   const bodyBytes = new Uint8Array(body);
   let headerStr = `HTTP/1.1 ${status} ${statusText}\r\n`;
   headers.forEach((value, key) => {
-    // Skip transfer-encoding since we set content-length
-    if (key.toLowerCase() === "transfer-encoding") return;
-    headerStr += `${key}: ${value}\r\n`;
+    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+      headerStr += `${key}: ${value}\r\n`;
+    }
   });
-  if (!headers.has("content-length")) {
-    headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
-  }
+  // fetch() has already decoded transfer/content encodings, so advertise the
+  // exact byte length being returned to the guest.
+  headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
   headerStr += "Connection: close\r\n";
   headerStr += "\r\n";
 
@@ -131,6 +131,13 @@ function formatHttpResponse(
   result.set(bodyBytes, headerBytes.length);
   return result;
 }
+
+const HOP_BY_HOP_HEADERS = new Set([
+  "transfer-encoding",
+  "content-encoding",
+  "connection",
+  "keep-alive",
+]);
 
 // ------------------------------------------------------------------ backend
 
@@ -147,6 +154,8 @@ export interface TlsNetworkBackendOptions {
 export class TlsNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
   private hostnameMap = new Map<string, string>(); // ip string → hostname
+  private hostnameToIp = new Map<string, Uint8Array>();
+  private nextSyntheticIp = 0;
   private corsProxyUrl: string;
   private dnsAliases: Record<string, string>;
 
@@ -192,6 +201,10 @@ export class TlsNetworkBackend implements NetworkIO {
   // ---- NetworkIO implementation ----
 
   getaddrinfo(hostname: string): Uint8Array {
+    if (isGuaranteedInvalidHostname(hostname)) {
+      throw new Error("ENOTFOUND");
+    }
+
     const ip = this.syntheticIp(hostname);
     const ipStr = this.ipKey(ip);
     this.hostnameMap.set(ipStr, hostname);
@@ -293,6 +306,8 @@ export class TlsNetworkBackend implements NetworkIO {
         }
       } catch {
         // Stream closed or errored — normal during teardown
+      } finally {
+        conn.closed = true;
       }
     })();
 
@@ -455,7 +470,6 @@ export class TlsNetworkBackend implements NetworkIO {
         // it automatically and it appears on clientEnd.downstream.readable.
         await conn.serverDownstreamWriter.write(responseBytes);
         await conn.serverDownstreamWriter.close();
-        conn.closed = true;
       } catch (err) {
         // Send a 502 Bad Gateway response through TLS
         const errorBody = `Error fetching ${url}: ${err}`;
@@ -468,7 +482,6 @@ export class TlsNetworkBackend implements NetworkIO {
         try {
           await conn.serverDownstreamWriter.write(errorResponse);
           await conn.serverDownstreamWriter.close();
-          conn.closed = true;
         } catch {
           // Ignore write errors
         }
@@ -589,14 +602,39 @@ export class TlsNetworkBackend implements NetworkIO {
   // ---- Utilities ----
 
   private syntheticIp(hostname: string): Uint8Array {
-    let hash = 0;
-    for (let i = 0; i < hostname.length; i++) {
-      hash = ((hash << 5) - hash + hostname.charCodeAt(i)) | 0;
-    }
-    return new Uint8Array([10, (hash >> 16) & 0xff, (hash >> 8) & 0xff, hash & 0xff]);
+    // Use documentation-net addresses rather than RFC1918 space so safe-URL
+    // validators don't reject browser-synthetic DNS answers as private network
+    // targets. Allocate, rather than hash, so connect() reverse lookup state is
+    // not corrupted by hostname collisions during large test suites.
+    const existing = this.hostnameToIp.get(hostname);
+    if (existing) return new Uint8Array(existing);
+
+    const ip = allocateDocumentationIp(this.nextSyntheticIp++);
+    this.hostnameToIp.set(hostname, ip);
+    return new Uint8Array(ip);
   }
 
   private ipKey(ip: Uint8Array): string {
     return `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}`;
   }
+}
+
+function isGuaranteedInvalidHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/\.$/, "").toLowerCase();
+  return normalized === "invalid" || normalized.endsWith(".invalid");
+}
+
+const DOCUMENTATION_SUBNETS = [
+  [203, 0, 113],
+  [198, 51, 100],
+  [192, 0, 2],
+] as const;
+
+function allocateDocumentationIp(index: number): Uint8Array {
+  const subnet = DOCUMENTATION_SUBNETS[Math.floor(index / 254)];
+  if (!subnet) {
+    throw new Error("Synthetic DNS address pool exhausted");
+  }
+  const host = (index % 254) + 1;
+  return new Uint8Array([...subnet, host]);
 }

@@ -49,12 +49,17 @@ pub struct ProcessTable {
 }
 
 /// Outcome of `ProcessTable::remove_process`. Bundles the removed
-/// `Process` with side-effect lists the caller must drain — currently
-/// just AF_INET host net handles whose cross-process refcount hit zero
-/// during cleanup. The caller is `kernel_remove_process`, which has
-/// access to the raw `host_net_close` extern; this layer doesn't.
+/// `Process` with side-effect lists the caller must drain. The caller is
+/// `kernel_remove_process`, which has access to the raw host close externs;
+/// this layer intentionally stays host-agnostic.
 pub struct RemoveProcessResult {
     pub process: Process,
+    /// Host file handles whose cross-process refcount reached 0 during
+    /// teardown. The caller must invoke `host_close(h)` on each.
+    pub host_file_closes: Vec<i64>,
+    /// Host directory iteration handles left open by `getdents64`.
+    /// The caller must invoke `host_closedir(h)` on each.
+    pub host_dir_closes: Vec<i64>,
     /// Host net handles whose cross-process refcount reached 0 during
     /// teardown. The caller must invoke `host_net_close(h)` on each —
     /// this kernel-side bookkeeping intentionally doesn't touch the
@@ -273,6 +278,8 @@ impl ProcessTable {
         retain_limbo_leader: bool,
     ) -> Option<RemoveProcessResult> {
         let proc = self.processes.remove(&pid)?;
+        let mut host_file_closes: Vec<i64> = Vec::new();
+        let mut host_dir_closes: Vec<i64> = Vec::new();
         let mut host_net_closes: Vec<i32> = Vec::new();
 
         let pipe_table = unsafe { crate::pipe::global_pipe_table() };
@@ -375,6 +382,28 @@ impl ProcessTable {
             }
         }
 
+        // Clean up ordinary host-backed OFDs that the process still held at
+        // exit. Guest programs are allowed to rely on process teardown to
+        // close fds; without this, package extractors can leak thousands of
+        // SharedFS handles and later hit EMFILE even though their processes
+        // have exited.
+        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
+            if ofd.dir_host_handle >= 0 {
+                host_dir_closes.push(ofd.dir_host_handle);
+            }
+
+            if ofd.host_handle >= 0 {
+                match ofd.file_type {
+                    FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe => {
+                        if crate::ofd::host_handle_close_ref(ofd.host_handle) {
+                            host_file_closes.push(ofd.host_handle);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Drop cross-process refcounts for socket-side resources, once per
         // socket entry. Mirrors the per-socket bump in
         // `bump_inherited_resource_refcounts` so a fork/spawn parent and
@@ -416,6 +445,8 @@ impl ProcessTable {
 
         Some(RemoveProcessResult {
             process: proc,
+            host_file_closes,
+            host_dir_closes,
             host_net_closes,
         })
     }
@@ -690,6 +721,12 @@ impl ProcessTable {
         // any newly-opened fds, queues last-ref host net handles for close).
         if let Err(e) = self.apply_spawn_file_actions(child_pid, file_actions, host) {
             if let Some(removed) = self.remove_process(child_pid) {
+                for file_handle in removed.host_file_closes {
+                    let _ = host.host_close(file_handle);
+                }
+                for dir_handle in removed.host_dir_closes {
+                    let _ = host.host_closedir(dir_handle);
+                }
                 for net_handle in removed.host_net_closes {
                     let _ = host.host_net_close(net_handle);
                 }

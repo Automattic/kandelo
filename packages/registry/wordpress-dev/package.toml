@@ -1,0 +1,50 @@
+kind = "program"
+name = "wordpress-dev"
+version = "0.1.0"
+kernel_abi = 7
+depends_on = [
+    "mariadb@10.5.28",
+    "nginx@1.24.0",
+    "php@8.3.2",
+    "node@0.1.0",
+    "dash@0.5.12",
+    "bash@5.2.37",
+    "coreutils@9.6",
+    "grep@3.11",
+    "sed@4.9",
+    "bc@1.07.1",
+    "file@5.45",
+    "less@668",
+    "m4@1.4.19",
+    "make@4.4.1",
+    "tar@1.35",
+    "curl@8.11.1",
+    "wget@1.25.0",
+    "git@2.47.1",
+    "gzip@1.13",
+    "bzip2@1.0.8",
+    "xz@5.6.2",
+    "zstd@1.5.6",
+    "zip@3.0",
+    "unzip@6.0",
+    "nano@8.0",
+    "lsof@0.1.0",
+    "vim@9.1.0900",
+    "nethack@3.6.7",
+    "dinit@0.19.4",
+]
+
+[source]
+url = "https://github.com/brandonpayton/wasm-posix-kernel"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/wordpress-dev/build-wordpress-dev.sh"
+
+[[outputs]]
+name = "wordpress-dev"
+wasm = "wordpress-dev.vfs.zst"

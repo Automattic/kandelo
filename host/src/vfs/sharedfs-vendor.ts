@@ -6,7 +6,8 @@
  * message passing.
  *
  * Layout (same as the C implementation):
- *   Block 0: Superblock (0..255) + FD table (256..1791)
+ *   Block 0: Superblock
+ *   FD table blocks
  *   Inode bitmap blocks
  *   Block bitmap blocks
  *   Inode table blocks
@@ -19,12 +20,13 @@ export const BLOCK_SIZE = 4096;
 export const INODE_SIZE = 128;
 export const INODES_PER_BLOCK = BLOCK_SIZE / INODE_SIZE; // 32
 export const MAX_NAME = 255;
-export const MAX_FDS = 64;
+export const MAX_FDS = 4096;
 export const MAX_SYMLINK_HOPS = 8;
 export const DIRECT_BLOCKS = 10;
 export const PTRS_PER_BLOCK = BLOCK_SIZE / 4; // 1024
 export const INLINE_SYMLINK_SIZE = DIRECT_BLOCKS * 4; // 40
 export const ROOT_INO = 1;
+// Legacy images stored a 64-entry fd table in block 0 at this offset.
 export const FD_TABLE_OFFSET = 256;
 
 export const MAGIC = 0x53464653; // "SFFS"
@@ -88,6 +90,9 @@ const SB_GENERATION = 56;
 const SB_GLOBAL_LOCK = 60;
 const SB_MAX_SIZE_BLOCKS = 68;
 const SB_GROW_CHUNK_BLOCKS = 72;
+const SB_FD_TABLE_START_BLOCK = 76;
+const SB_FD_TABLE_BLOCKS = 80;
+const SB_FD_TABLE_MAX_FDS = 84;
 
 // Inode field byte offsets (relative to inode start)
 const INO_LOCK_STATE = 0;
@@ -110,6 +115,8 @@ const FD_OFFSET = 8; // uint64
 const FD_FLAGS = 16;
 const FD_IS_DIR = 20;
 const FD_ENTRY_SIZE = 24;
+const FD_TABLE_BLOCKS = Math.ceil((MAX_FDS * FD_ENTRY_SIZE) / BLOCK_SIZE);
+const LEGACY_MAX_FDS = 64;
 
 // Lock bits
 const WRITER_BIT = 0x80000000 | 0; // -2147483648 as int32
@@ -219,7 +226,8 @@ export class SharedFS {
       (totalInodes * INODE_SIZE) / BLOCK_SIZE,
     );
 
-    const inodeBitmapStart = 1;
+    const fdTableStart = 1;
+    const inodeBitmapStart = fdTableStart + FD_TABLE_BLOCKS;
     const blockBitmapStart = inodeBitmapStart + inodeBitmapBlocks;
     const inodeTableStart = blockBitmapStart + blockBitmapBlocks;
     const dataStart = inodeTableStart + inodeTableBlocks;
@@ -246,6 +254,9 @@ export class SharedFS {
     fs.w32(SB_INODE_TABLE_BLOCKS, inodeTableBlocks);
     fs.w32(SB_MAX_SIZE_BLOCKS, maxBlocks);
     fs.w32(SB_GROW_CHUNK_BLOCKS, 256);
+    fs.w32(SB_FD_TABLE_START_BLOCK, fdTableStart);
+    fs.w32(SB_FD_TABLE_BLOCKS, FD_TABLE_BLOCKS);
+    fs.w32(SB_FD_TABLE_MAX_FDS, MAX_FDS);
 
     // Mark metadata blocks as used in block bitmap
     const bbStart = blockBitmapStart * BLOCK_SIZE;
@@ -1130,8 +1141,9 @@ export class SharedFS {
   // ── FD table ─────────────────────────────────────────────────────
 
   private fdAlloc(ino: number, flags: number, isDir: boolean): number {
-    for (let i = 0; i < MAX_FDS; i++) {
-      const base = FD_TABLE_OFFSET + i * FD_ENTRY_SIZE;
+    const { offset, maxFds } = this.fdTableInfo();
+    for (let i = 0; i < maxFds; i++) {
+      const base = offset + i * FD_ENTRY_SIZE;
       const idx = base >> 2;
       const old = Atomics.compareExchange(this.i32, idx, 0, 1);
       if (old === 0) {
@@ -1154,8 +1166,9 @@ export class SharedFS {
     flags: number;
     isDir: boolean;
   } | null {
-    if (fd < 0 || fd >= MAX_FDS) return null;
-    const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    const { offset, maxFds } = this.fdTableInfo();
+    if (fd < 0 || fd >= maxFds) return null;
+    const base = offset + fd * FD_ENTRY_SIZE;
     const inUse = Atomics.load(this.i32, base >> 2);
     if (!inUse) return null;
     return {
@@ -1168,10 +1181,36 @@ export class SharedFS {
   }
 
   private fdFree(fd: number): void {
-    if (fd >= 0 && fd < MAX_FDS) {
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    const { offset, maxFds } = this.fdTableInfo();
+    if (fd >= 0 && fd < maxFds) {
+      const base = offset + fd * FD_ENTRY_SIZE;
       Atomics.store(this.i32, base >> 2, 0);
     }
+  }
+
+  private fdTableInfo(): { offset: number; maxFds: number } {
+    const startBlock = this.r32(SB_FD_TABLE_START_BLOCK);
+    const blockCount = this.r32(SB_FD_TABLE_BLOCKS);
+    const declaredMaxFds = this.r32(SB_FD_TABLE_MAX_FDS);
+    if (startBlock > 0 && blockCount > 0 && declaredMaxFds > 0) {
+      const offset = startBlock * BLOCK_SIZE;
+      const byteLength = blockCount * BLOCK_SIZE;
+      if (offset + byteLength <= this.buffer.byteLength) {
+        return {
+          offset,
+          maxFds: Math.min(
+            declaredMaxFds,
+            Math.floor(byteLength / FD_ENTRY_SIZE),
+          ),
+        };
+      }
+    }
+
+    return { offset: FD_TABLE_OFFSET, maxFds: LEGACY_MAX_FDS };
+  }
+
+  private fdEntryOffset(fd: number): number {
+    return this.fdTableInfo().offset + fd * FD_ENTRY_SIZE;
   }
 
   // ── Build stat result from inode ─────────────────────────────────
@@ -1261,7 +1300,7 @@ export class SharedFS {
 
     // If append, set offset to end
     if (flags & O_APPEND) {
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+      const base = this.fdEntryOffset(fd);
       this.w64(base + FD_OFFSET, this.r64(inoOff + INO_SIZE));
     }
 
@@ -1287,7 +1326,7 @@ export class SharedFS {
         buffer.length,
       );
       // Update offset
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+      const base = this.fdEntryOffset(fd);
       this.w64(base + FD_OFFSET, entry.offset + nread);
       return nread;
     } finally {
@@ -1317,7 +1356,7 @@ export class SharedFS {
         data.length,
       );
       // Update offset
-      const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+      const base = this.fdEntryOffset(fd);
       this.w64(base + FD_OFFSET, offset + nwritten);
       return nwritten;
     } finally {
@@ -1344,7 +1383,7 @@ export class SharedFS {
 
     if (newOffset < 0) throw new SFSError(EINVAL);
 
-    const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
+    const base = this.fdEntryOffset(fd);
     this.w64(base + FD_OFFSET, newOffset);
     return newOffset;
   }
@@ -1825,7 +1864,7 @@ export class SharedFS {
       // Advance offset — update both the SAB (persistent) and the local
       // snapshot so the while loop progresses past deleted entries (entIno=0).
       entry.offset = pos + recLen;
-      const base = FD_TABLE_OFFSET + dd * FD_ENTRY_SIZE;
+      const base = this.fdEntryOffset(dd);
       this.w64(base + FD_OFFSET, pos + recLen);
 
       if (entIno !== 0) {
