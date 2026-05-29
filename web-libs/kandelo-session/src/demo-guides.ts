@@ -10,6 +10,7 @@ import type { DemoPresentation } from "./kernel-host";
 export const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
 export const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
 export const DOOM_WAD_SHA256 = "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
+export const LOVE_COMMAND = "/usr/local/bin/love /usr/local/share/love/examples";
 
 const shellScript = `echo "Hello from a Kandelo guided script"
 uname -a
@@ -41,6 +42,8 @@ export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
       return nginxGuide();
     case "nginx-php":
       return nginxPhpGuide();
+    case "love":
+      return loveGuide();
     default:
       return null;
   }
@@ -62,6 +65,11 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
       return {
         ...genericDemoPresentation("framebuffer"),
         autoCommand: DOOM_COMMAND,
+      };
+    case "love":
+      return {
+        ...genericDemoPresentation("framebuffer"),
+        autoCommand: LOVE_COMMAND,
       };
     default:
       return null;
@@ -184,6 +192,25 @@ export function nginxPhpGuide(): DemoGuideConfig {
       title: "Service check",
       language: "sh",
       initialText: nginxPhpScript,
+    },
+  );
+}
+
+export function loveGuide(): DemoGuideConfig {
+  return scriptGuide(
+    "LOVE game gallery",
+    "The native runtime opens /dev/fb0 and runs bundled Lua game demos.",
+    [
+      actionGroup("Runtime", [
+        action("run-love", "Run", "Start the LOVE game gallery.", "terminal.run", LOVE_COMMAND),
+        action("list-examples", "Games", "List the staged game demo files.", "terminal.run", "find /usr/local/share/love/examples -maxdepth 2 -type f | sort"),
+        action("show-runtime", "Binary", "Show the native runtime path.", "terminal.run", "ls -lh /usr/local/bin/love"),
+      ]),
+    ],
+    {
+      title: "Launch command",
+      language: "sh",
+      initialText: LOVE_COMMAND,
     },
   );
 }

@@ -476,6 +476,19 @@ function buildImportObject(
     }
   }
 
+  // libc++/libc++abi built with wasm exception handling import this tag even
+  // for code paths that do not throw. Match LLVM's C++ exception tag shape.
+  if (moduleImports.some(i => i.module === "env" && i.name === "__cpp_exception" && (i.kind as string) === "tag")) {
+    const Tag = (
+      WebAssembly as typeof WebAssembly & {
+        Tag?: new (descriptor: { parameters: string[] }) => WebAssembly.ExportValue;
+      }
+    ).Tag;
+    if (Tag) {
+      envImports.__cpp_exception = new Tag({ parameters: ["i32"] });
+    }
+  }
+
   // Add dlopen imports if provided
   if (dlopenImports) {
     Object.assign(envImports, dlopenImports);
