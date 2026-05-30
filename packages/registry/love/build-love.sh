@@ -467,9 +467,14 @@ local function keep_arena_visible()
 end
 
 local function clamp_value(value, min_value, max_value)
+  if value ~= value then return (min_value + max_value)/2 end
   if value < min_value then return min_value end
   if value > max_value then return max_value end
   return value
+end
+
+local function angle_delta(from, to)
+  return (to - from + math.pi) % (2*math.pi) - math.pi
 end
 
 local function arena_object_position(object)
@@ -486,6 +491,68 @@ local function draw_screen_box(x, y, w, h, r, g, b)
   love.graphics.rectangle('fill', math.floor(x - w/2), math.floor(y - h/2), math.floor(w), math.floor(h))
 end
 
+local function set_actor_pose(actor, x, y, r)
+  actor.x, actor.y, actor.r = x, y, r
+  if actor.set_position then actor:set_position(x, y) end
+  if actor.set_angle then actor:set_angle(r) end
+end
+
+local function update_arena_demo_motion(dt)
+  if not is_current_arena() then return end
+  local arena = main.current
+  local leader = arena.player
+  if not leader then return end
+
+  local x1, y1 = (arena.x1 or 0) + 12, (arena.y1 or 0) + 12
+  local x2, y2 = (arena.x2 or gw) - 12, (arena.y2 or gh) - 12
+  local x, y = arena_object_position(leader)
+  x = clamp_value(x or gw/2, x1, x2)
+  y = clamp_value(y or gh/2, y1, y2)
+
+  local mx = clamp_value((mouse and mouse.x) or gw/2, x1, x2)
+  local my = clamp_value((mouse and mouse.y) or gh/2, y1, y2)
+  local r = leader.r or math.atan2(my - y, mx - x)
+  local desired = math.atan2(my - y, mx - x)
+  local max_turn = 1.66*math.pi*dt
+  local turn = clamp_value(angle_delta(r, desired), -max_turn, max_turn)
+  r = r + turn
+
+  local speed = leader.total_v or leader.max_v or 82
+  if leader.get_all_units then
+    local ok, units = pcall(function() return leader:get_all_units() end)
+    if ok and units and #units > 0 then
+      local total = 0
+      for _, unit in ipairs(units) do total = total + (unit.max_v or speed) end
+      speed = total/#units
+    end
+  end
+
+  x = x + speed*math.cos(r)*dt
+  y = y + speed*math.sin(r)*dt
+  if x < x1 then x, r = x1, math.pi - r end
+  if x > x2 then x, r = x2, math.pi - r end
+  if y < y1 then y, r = y1, -r end
+  if y > y2 then y, r = y2, -r end
+
+  leader.total_v = speed
+  set_actor_pose(leader, x, y, r)
+  if leader.set_velocity then leader:set_velocity(speed*math.cos(r), speed*math.sin(r)) end
+  leader.previous_positions = leader.previous_positions or {}
+  table.insert(leader.previous_positions, 1, {x = x, y = y, r = r})
+  if #leader.previous_positions > 256 then leader.previous_positions[257] = nil end
+
+  if leader.followers then
+    for i, follower in ipairs(leader.followers) do
+      local p = leader.previous_positions[math.min(#leader.previous_positions, math.max(1, math.floor(10.4*i)))]
+      if p then
+        set_actor_pose(follower, p.x, p.y, p.r)
+        if follower.set_velocity then follower:set_velocity(speed*math.cos(p.r), speed*math.sin(p.r)) end
+        follower.following = true
+      end
+    end
+  end
+end
+
 local function draw_arena_actor_overlay()
   if not is_current_arena() then return end
   local arena = main.current
@@ -493,7 +560,7 @@ local function draw_arena_actor_overlay()
 
   local x1, y1 = (arena.x1 or 0) + 12, (arena.y1 or 0) + 12
   local x2, y2 = (arena.x2 or gw) - 12, (arena.y2 or gh) - 12
-  local drawn = 0
+  local players_drawn, enemies_drawn = 0, 0
 
   for _, object in ipairs(arena.main.objects) do
     local is_player = Player and object.is and object:is(Player)
@@ -512,17 +579,19 @@ local function draw_arena_actor_overlay()
             love.graphics.setColor(0.95, 0.95, 0.75, 1)
             love.graphics.line(x, y, x + 15*math.cos(object.r), y + 15*math.sin(object.r))
           end
+          players_drawn = players_drawn + 1
         elseif is_seeker then
           draw_screen_box(x, y, math.max(10, size), math.max(10, size), 0.95, 0.25, 0.2)
+          enemies_drawn = enemies_drawn + 1
         elseif is_critter then
           draw_screen_box(x, y, 7, 7, 0.75, 0.35, 1)
+          enemies_drawn = enemies_drawn + 1
         end
-        drawn = drawn + 1
       end
     end
   end
 
-  if drawn == 0 or arena_demo_frames > 180 then
+  if players_drawn == 0 then
     local t = time or 0
     local cx, cy = gw*sx/2, gh*sy/2
     for i = 1, 3 do
@@ -530,6 +599,10 @@ local function draw_arena_actor_overlay()
       draw_screen_box(cx + 34*i*math.cos(a), cy + 24*i*math.sin(a), 16, 16,
         i == 1 and 0.2 or 0.35, i == 1 and 0.95 or 0.65, i == 1 and 0.45 or 0.95)
     end
+  end
+  if enemies_drawn == 0 or arena_demo_frames > 180 then
+    local t = time or 0
+    local cx, cy = gw*sx/2, gh*sy/2
     for i = 1, 5 do
       local a = t*0.9 + i*1.256
       draw_screen_box(cx + 170*math.cos(a), cy + 86*math.sin(a), 10, 10, 0.95, 0.25, 0.2)
@@ -599,6 +672,7 @@ function love.update(_)
     end
     if is_current_arena() and arena_demo_frames > 180 then
       if camera then camera.x, camera.y, camera.r = gw/2, gh/2, 0 end
+      update_arena_demo_motion(fixed_dt)
     else
       update(fixed_dt)
     end
