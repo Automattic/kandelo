@@ -1645,7 +1645,7 @@ jobs:
           - suite: vitest
             kernel_only: false
             needs_submodules: false
-            needs_toolchain: false
+            needs_toolchain: true
             needs_workspace: true
           - suite: libc
             kernel_only: true
