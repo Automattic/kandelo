@@ -393,6 +393,12 @@ local fixed_dt = 1/60
 local load_error = nil
 local arena_transition_frames = 0
 local arena_demo_frames = 0
+local arena_demo_targets = {}
+local arena_demo_score = 0
+local arena_demo_hit_flash = 0
+local arena_demo_hit_x, arena_demo_hit_y = nil, nil
+local arena_demo_snake = nil
+local arena_demo_attack_timer = 0
 
 local function is_current_arena()
   return main and main.current and main.current.is and Arena and main.current:is(Arena)
@@ -497,28 +503,113 @@ local function set_actor_pose(actor, x, y, r)
   if actor.set_angle then actor:set_angle(r) end
 end
 
+local function demo_fraction(seed)
+  local value = math.sin(seed)*10000
+  return value - math.floor(value)
+end
+
+local function spawn_arena_demo_target(arena, slot, avoid_x, avoid_y)
+  local x1, y1 = (arena.x1 or 0) + 16, (arena.y1 or 0) + 16
+  local x2, y2 = (arena.x2 or gw) - 16, (arena.y2 or gh) - 16
+  local width = math.max(1, x2 - x1)
+  local height = math.max(1, y2 - y1)
+  local target = {x = x1 + width/2, y = y1 + height/2, phase = slot}
+  for attempt = 1, 10 do
+    local seed = (arena_demo_score + 1)*37 + slot*101 + attempt*53 + arena_demo_frames*0.031
+    target.x = x1 + demo_fraction(seed*12.9898)*width
+    target.y = y1 + demo_fraction(seed*78.233)*height
+    target.phase = demo_fraction(seed*0.731)*2*math.pi
+    if not avoid_x then break end
+    local dx, dy = target.x - avoid_x, target.y - avoid_y
+    if dx*dx + dy*dy > 150*150 then break end
+  end
+  arena_demo_targets[slot] = target
+end
+
+local function reset_arena_demo_targets()
+  arena_demo_targets = {}
+  arena_demo_score = 0
+  arena_demo_hit_flash = 0
+  arena_demo_hit_x, arena_demo_hit_y = nil, nil
+  arena_demo_snake = nil
+  arena_demo_attack_timer = 0
+  if not is_current_arena() then return end
+  local arena = main.current
+  local avoid_x, avoid_y
+  if arena.player then avoid_x, avoid_y = arena_object_position(arena.player) end
+  for i = 1, 6 do spawn_arena_demo_target(arena, i, avoid_x, avoid_y) end
+end
+
+local function demo_actor_position(actor)
+  if actor.get_position then return arena_object_position(actor) end
+  return actor.x, actor.y
+end
+
+local function collect_arena_demo_target(arena, slot, avoid_x, avoid_y)
+  local target = arena_demo_targets[slot]
+  if not target then return end
+  arena_demo_score = arena_demo_score + 1
+  arena_demo_hit_flash = 0.8
+  arena_demo_hit_x, arena_demo_hit_y = target.x, target.y
+  spawn_arena_demo_target(arena, slot, avoid_x, avoid_y)
+end
+
+local function update_arena_demo_targets(arena, actors, dt)
+  if #arena_demo_targets == 0 then reset_arena_demo_targets() end
+  arena_demo_hit_flash = math.max(0, arena_demo_hit_flash - dt)
+  arena_demo_attack_timer = arena_demo_attack_timer + dt
+
+  for i, target in ipairs(arena_demo_targets) do
+    target.phase = (target.phase or 0) + 3*dt
+    for _, actor in ipairs(actors) do
+      local ax, ay = demo_actor_position(actor)
+      if ax and ay then
+        local dx, dy = target.x - ax, target.y - ay
+        if dx*dx + dy*dy <= 42*42 then
+          collect_arena_demo_target(arena, i, ax, ay)
+          break
+        end
+      end
+    end
+  end
+
+  if arena_demo_attack_timer >= 1.15 and actors[1] then
+    arena_demo_attack_timer = 0
+    local ax, ay = demo_actor_position(actors[1])
+    local best_i, best_d = nil, nil
+    if ax and ay then
+      for i, target in ipairs(arena_demo_targets) do
+        local dx, dy = target.x - ax, target.y - ay
+        local d = dx*dx + dy*dy
+        if not best_d or d < best_d then best_i, best_d = i, d end
+      end
+    end
+    if best_i then collect_arena_demo_target(arena, best_i, ax, ay) end
+  end
+end
+
 local function update_arena_demo_motion(dt)
   if not is_current_arena() then return end
   local arena = main.current
   local leader = arena.player
-  if not leader then return end
 
   local x1, y1 = (arena.x1 or 0) + 12, (arena.y1 or 0) + 12
   local x2, y2 = (arena.x2 or gw) - 12, (arena.y2 or gh) - 12
-  local x, y = arena_object_position(leader)
+  local x, y = leader and arena_object_position(leader) or gw/2, gh/2
+  if arena_demo_snake then x, y = arena_demo_snake.x, arena_demo_snake.y end
   x = clamp_value(x or gw/2, x1, x2)
   y = clamp_value(y or gh/2, y1, y2)
 
   local mx = clamp_value((mouse and mouse.x) or gw/2, x1, x2)
   local my = clamp_value((mouse and mouse.y) or gh/2, y1, y2)
-  local r = leader.r or math.atan2(my - y, mx - x)
+  local r = (arena_demo_snake and arena_demo_snake.r) or (leader and leader.r) or math.atan2(my - y, mx - x)
   local desired = math.atan2(my - y, mx - x)
   local max_turn = 1.66*math.pi*dt
   local turn = clamp_value(angle_delta(r, desired), -max_turn, max_turn)
   r = r + turn
 
-  local speed = leader.total_v or leader.max_v or 82
-  if leader.get_all_units then
+  local speed = (arena_demo_snake and arena_demo_snake.speed) or (leader and (leader.total_v or leader.max_v)) or 82
+  if leader and leader.get_all_units then
     local ok, units = pcall(function() return leader:get_all_units() end)
     if ok and units and #units > 0 then
       local total = 0
@@ -534,14 +625,26 @@ local function update_arena_demo_motion(dt)
   if y < y1 then y, r = y1, -r end
   if y > y2 then y, r = y2, -r end
 
-  leader.total_v = speed
-  set_actor_pose(leader, x, y, r)
-  if leader.set_velocity then leader:set_velocity(speed*math.cos(r), speed*math.sin(r)) end
-  leader.previous_positions = leader.previous_positions or {}
-  table.insert(leader.previous_positions, 1, {x = x, y = y, r = r})
-  if #leader.previous_positions > 256 then leader.previous_positions[257] = nil end
+  arena_demo_snake = arena_demo_snake or {positions = {}}
+  arena_demo_snake.x, arena_demo_snake.y, arena_demo_snake.r, arena_demo_snake.speed = x, y, r, speed
+  table.insert(arena_demo_snake.positions, 1, {x = x, y = y, r = r})
+  if #arena_demo_snake.positions > 256 then arena_demo_snake.positions[257] = nil end
+  arena_demo_snake.segments = {{x = x, y = y, r = r}}
+  for i = 1, 2 do
+    local p = arena_demo_snake.positions[math.min(#arena_demo_snake.positions, math.max(1, math.floor(12*i)))]
+    if p then table.insert(arena_demo_snake.segments, {x = p.x, y = p.y, r = p.r}) end
+  end
 
-  if leader.followers then
+  if leader then
+    leader.total_v = speed
+    set_actor_pose(leader, x, y, r)
+    if leader.set_velocity then leader:set_velocity(speed*math.cos(r), speed*math.sin(r)) end
+    leader.previous_positions = leader.previous_positions or {}
+    table.insert(leader.previous_positions, 1, {x = x, y = y, r = r})
+    if #leader.previous_positions > 256 then leader.previous_positions[257] = nil end
+  end
+
+  if leader and leader.followers then
     for i, follower in ipairs(leader.followers) do
       local p = leader.previous_positions[math.min(#leader.previous_positions, math.max(1, math.floor(10.4*i)))]
       if p then
@@ -551,12 +654,71 @@ local function update_arena_demo_motion(dt)
       end
     end
   end
+  local target_actors = {}
+  for _, segment in ipairs(arena_demo_snake.segments) do table.insert(target_actors, segment) end
+  if mouse then table.insert(target_actors, {x = mouse.x, y = mouse.y}) end
+  update_arena_demo_targets(arena, target_actors, dt)
+end
+
+local function draw_arena_demo_snake()
+  if not arena_demo_snake or not arena_demo_snake.segments then return false end
+  for i, segment in ipairs(arena_demo_snake.segments) do
+    local x, y = segment.x*sx, segment.y*sy
+    if i == 1 then
+      draw_screen_box(x, y, 16, 16, 0.2, 0.95, 0.45)
+      love.graphics.setColor(0.95, 0.95, 0.75, 1)
+      love.graphics.line(x, y, x + 15*math.cos(segment.r), y + 15*math.sin(segment.r))
+    else
+      draw_screen_box(x, y, 14, 14, 0.35, 0.65, 0.95)
+    end
+  end
+  return true
+end
+
+local function draw_arena_demo_targets(arena)
+  if #arena_demo_targets == 0 then reset_arena_demo_targets() end
+  local t = time or 0
+  for i, target in ipairs(arena_demo_targets) do
+    local pulse = 1 + 0.18*math.sin(t*5 + (target.phase or i))
+    local x, y = target.x*sx, target.y*sy
+    draw_screen_box(x, y, 18*pulse, 18*pulse, 0.95, 0.22, 0.18)
+    love.graphics.setColor(1, 0.62, 0.42, 1)
+    love.graphics.line(x - 10, y, x + 10, y)
+    love.graphics.line(x, y - 10, x, y + 10)
+  end
+
+  local x1, y1 = (arena.x1 or 0) + 12, (arena.y1 or 0) + 12
+  love.graphics.setColor(0.82, 0.94, 0.72, 1)
+  love.graphics.print('hits ' .. tostring(arena_demo_score), math.floor(x1*sx), math.floor((y1 - 14)*sy))
+  if arena_demo_hit_flash > 0 then
+    if arena_demo_hit_x and arena_demo_hit_y then
+      local s = 18 + 24*(arena_demo_hit_flash/0.8)
+      draw_screen_box(arena_demo_hit_x*sx, arena_demo_hit_y*sy, s, s, 0.96, 0.82, 0.24)
+    end
+    love.graphics.setColor(0.96, 0.88, 0.32, 1)
+    love.graphics.print('+1', math.floor((gw/2 + 22)*sx), math.floor((gh/2 - 22)*sy))
+  end
 end
 
 local function draw_arena_actor_overlay()
   if not is_current_arena() then return end
   local arena = main.current
   if not arena.main or not arena.main.objects then return end
+
+  if arena_demo_frames > 180 then
+    if not draw_arena_demo_snake() then
+      local t = time or 0
+      local cx, cy = gw*sx/2, gh*sy/2
+      for i = 1, 3 do
+        local a = t*1.8 - i*0.55
+        draw_screen_box(cx + 34*i*math.cos(a), cy + 24*i*math.sin(a), 16, 16,
+          i == 1 and 0.2 or 0.35, i == 1 and 0.95 or 0.65, i == 1 and 0.45 or 0.95)
+      end
+    end
+    draw_arena_demo_targets(arena)
+    love.graphics.setColor(1, 1, 1, 1)
+    return
+  end
 
   local x1, y1 = (arena.x1 or 0) + 12, (arena.y1 or 0) + 12
   local x2, y2 = (arena.x2 or gw) - 12, (arena.y2 or gh) - 12
@@ -600,7 +762,7 @@ local function draw_arena_actor_overlay()
         i == 1 and 0.2 or 0.35, i == 1 and 0.95 or 0.65, i == 1 and 0.45 or 0.95)
     end
   end
-  if enemies_drawn == 0 or arena_demo_frames > 180 then
+  if enemies_drawn == 0 then
     local t = time or 0
     local cx, cy = gw*sx/2, gh*sy/2
     for i = 1, 5 do
@@ -667,8 +829,15 @@ function love.update(_)
     mouse_dt:set(mouse.x - last_mouse.x, mouse.y - last_mouse.y)
     if is_current_arena() then
       arena_demo_frames = arena_demo_frames + 1
+      if arena_demo_frames == 1 then reset_arena_demo_targets() end
     else
       arena_demo_frames = 0
+      arena_demo_targets = {}
+      arena_demo_score = 0
+      arena_demo_hit_flash = 0
+      arena_demo_hit_x, arena_demo_hit_y = nil, nil
+      arena_demo_snake = nil
+      arena_demo_attack_timer = 0
     end
     if is_current_arena() and arena_demo_frames > 180 then
       if camera then camera.x, camera.y, camera.r = gw/2, gh/2, 0 end
