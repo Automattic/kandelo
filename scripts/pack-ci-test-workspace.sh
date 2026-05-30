@@ -10,7 +10,7 @@ if [ -z "$out" ]; then
     exit 2
 fi
 
-for required in local-binaries/kernel.wasm host/wasm/rootfs.vfs; do
+for required in local-binaries/kernel.wasm host/wasm/rootfs.vfs examples/gencat.wasm; do
     if [ ! -f "$required" ]; then
         echo "pack-ci-test-workspace: missing required artifact: $required" >&2
         exit 1
@@ -20,6 +20,9 @@ done
 items=()
 for item in binaries local-binaries host/wasm; do
     [ -e "$item" ] && items+=("$item")
+done
+for wasm in examples/*.wasm; do
+    [ -f "$wasm" ] && items+=("$wasm")
 done
 
 mkdir -p "$(dirname "$out")"
