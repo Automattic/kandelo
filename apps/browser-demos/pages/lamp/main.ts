@@ -21,6 +21,7 @@ import { resolveShellLazyArchiveUrl } from "../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
+  patchWordPressMysqliPersistentSource,
   renderWordPressConfig,
   wordpressConfigTemplate,
 } from "../../lib/init/wordpress-runtime-config";
@@ -264,6 +265,12 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
     if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
       patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
     }
+    if (!/^mysqli\.allow_persistent\s*=/m.test(patched)) {
+      patched += `mysqli.allow_persistent=1\n`;
+    }
+    if (!/^mysqli\.max_persistent\s*=/m.test(patched)) {
+      patched += `mysqli.max_persistent=-1\n`;
+    }
     if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
       patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
     }
@@ -278,6 +285,18 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
       `--socket=${MARIADB_SOCKET_PATH}`,
     );
     if (patched !== mariadbService) writeVfsFile(fs, mariadbServicePath, patched);
+  }
+}
+
+function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+  for (const path of [
+    "/var/www/html/wp-includes/class-wpdb.php",
+    "/var/www/html/wp-includes/wp-db.php",
+  ]) {
+    const source = readOptionalVfsText(fs, path);
+    if (source === null) continue;
+    const patched = patchWordPressMysqliPersistentSource(source);
+    if (patched !== source) writeVfsFile(fs, path, patched);
   }
 }
 
@@ -393,6 +412,7 @@ async function start() {
     writeVfsFile(fs, "/etc/nginx/nginx.conf", PATCHED_NGINX_CONF);
     writeVfsFile(fs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
     patchMariaDbUnixSocketConfig(fs);
+    patchWordPressPersistentMysqli(fs);
     writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
     writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
     writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("mariadb", APP_PATH, PROTO));

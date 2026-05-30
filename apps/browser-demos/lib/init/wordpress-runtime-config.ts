@@ -24,6 +24,7 @@ function dbConfig(kind: WordPressDatabaseKind): string {
       "define('DB_USER', 'root');",
       "define('DB_PASSWORD', '');",
       "define('DB_HOST', 'localhost');",
+      "define('KANDELO_MYSQLI_PERSISTENT', true);",
     ].join("\n");
   }
 
@@ -104,4 +105,18 @@ export function renderWordPressConfig(
 
 function phpSingleQuotedContent(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+const MYSQLI_REAL_CONNECT_HOST_ARG = "mysqli_real_connect( $this->dbh, $host, $this->dbuser";
+const MYSQLI_PERSISTENT_HOST_EXPR =
+  "( defined( 'KANDELO_MYSQLI_PERSISTENT' ) && KANDELO_MYSQLI_PERSISTENT && 0 !== strpos( $host, 'p:' ) ) ? 'p:' . $host : $host";
+
+export function patchWordPressMysqliPersistentSource(source: string): string {
+  if (source.includes(MYSQLI_PERSISTENT_HOST_EXPR)) {
+    return source;
+  }
+  return source.replaceAll(
+    MYSQLI_REAL_CONNECT_HOST_ARG,
+    `mysqli_real_connect( $this->dbh, ${MYSQLI_PERSISTENT_HOST_EXPR}, $this->dbuser`,
+  );
 }
