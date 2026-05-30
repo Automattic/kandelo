@@ -670,7 +670,7 @@ export class CentralizedKernelWorker {
     /** Date.now() deadline for finite-timeout poll/ppoll retries, or -1. */
     deadline?: number;
   }>();
-  /** Pending pselect6/select retries — used for signal-driven wakeup and timeout tracking */
+  /** Pending pselect6/select retries — keyed by channelOffset for per-thread tracking */
   private pendingSelectRetries = new Map<number, {
     timer: any;  // setTimeout or setImmediate handle
     channel: ChannelInfo;
@@ -1372,9 +1372,7 @@ export class CentralizedKernelWorker {
     // Clean up pending poll retries
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
-    const selectEntry = this.pendingSelectRetries.get(pid);
-    if (selectEntry?.timer) clearImmediate(selectEntry.timer);
-    this.pendingSelectRetries.delete(pid);
+    this.cleanupPendingSelectRetries(pid);
     // Clean up pending pipe readers/writers
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
@@ -1475,9 +1473,7 @@ export class CentralizedKernelWorker {
     // Clean up pending poll retries
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
-    const selectEntry = this.pendingSelectRetries.get(pid);
-    if (selectEntry?.timer) clearImmediate(selectEntry.timer);
-    this.pendingSelectRetries.delete(pid);
+    this.cleanupPendingSelectRetries(pid);
     // Clean up TCP listeners for this process
     this.cleanupTcpListeners(pid);
     // Clear the killed-but-not-yet-reaped guard for this pid; if the
@@ -1507,9 +1503,7 @@ export class CentralizedKernelWorker {
 
     // Clean up pending blocking retries (the old program's syscalls are dead)
     this.cleanupPendingPollRetries(pid);
-    const selectEntry = this.pendingSelectRetries.get(pid);
-    if (selectEntry?.timer) clearImmediate(selectEntry.timer);
-    this.pendingSelectRetries.delete(pid);
+    this.cleanupPendingSelectRetries(pid);
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
     for (const [ch, timer] of this.socketTimeoutTimers) {
@@ -2863,6 +2857,19 @@ export class CentralizedKernelWorker {
     }
   }
 
+  /** Cancel all pending select/pselect retries for a given pid. */
+  private cleanupPendingSelectRetries(pid: number): void {
+    for (const [key, entry] of this.pendingSelectRetries) {
+      if (entry.channel.pid === pid) {
+        if (entry.timer !== null) {
+          clearTimeout(entry.timer);
+          clearImmediate(entry.timer);
+        }
+        this.pendingSelectRetries.delete(key);
+      }
+    }
+  }
+
   /**
    * Drain kernel wakeup events and process targeted pipe/listener wakeups.
    * Called after each syscall completion. The kernel pushes events from
@@ -3043,8 +3050,8 @@ export class CentralizedKernelWorker {
       this.retrySyscall(entry.channel);
     }
 
-    for (const [pid, entry] of selectEntries) {
-      if (!this.processes.has(pid)) continue;
+    for (const [, entry] of selectEntries) {
+      if (!this.processes.has(entry.channel.pid)) continue;
       // Cancel both setTimeout and setImmediate handles (one will be a no-op)
       clearTimeout(entry.timer);
       clearImmediate(entry.timer);
@@ -3237,12 +3244,12 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // 3) Pselect6 retry timer (keyed by pid).
-    const selEntry = this.pendingSelectRetries.get(target.pid);
+    // 3) Select/pselect retry timer.
+    const selEntry = this.pendingSelectRetries.get(target.channelOffset);
     if (selEntry && selEntry.channel === target) {
       clearTimeout(selEntry.timer);
       clearImmediate(selEntry.timer);
-      this.pendingSelectRetries.delete(target.pid);
+      this.pendingSelectRetries.delete(target.channelOffset);
       this.completeChannelRaw(target, -EINTR_ERRNO, EINTR_ERRNO);
       this.relistenChannel(target);
       return;
@@ -3897,13 +3904,13 @@ export class CentralizedKernelWorker {
       const finite = timeoutMs > 0;
       const timer = finite
         ? setTimeout(() => {
-            this.pendingSelectRetries.delete(channel.pid);
+            this.pendingSelectRetries.delete(channel.channelOffset);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
             }
           }, timeoutMs)
         : (null as any);
-      this.pendingSelectRetries.set(channel.pid, {
+      this.pendingSelectRetries.set(channel.channelOffset, {
         timer,
         channel,
         origArgs,
@@ -3989,7 +3996,7 @@ export class CentralizedKernelWorker {
       }
       const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : -1;
       const retryFn = () => {
-        this.pendingSelectRetries.delete(channel.pid);
+        this.pendingSelectRetries.delete(channel.channelOffset);
         if (!this.processes.has(channel.pid)) return;
         if (deadline > 0 && Date.now() >= deadline) {
           this.completeChannel(channel, SYS_SELECT, origArgs, undefined, 0, 0);
@@ -4000,7 +4007,7 @@ export class CentralizedKernelWorker {
       const finite = timeoutMs > 0;
       const remainingMs = finite ? Math.max(deadline - Date.now(), 1) : 50;
       const timer = setTimeout(retryFn, Math.min(remainingMs, 50));
-      this.pendingSelectRetries.set(channel.pid, {
+      this.pendingSelectRetries.set(channel.channelOffset, {
         timer, channel, origArgs, deadline, needsSignalSafeWake: false,
         syscallNr: SYS_SELECT,
       });
@@ -4145,23 +4152,28 @@ export class CentralizedKernelWorker {
       if (nfds === 0) {
         if (timeoutMs > 0) {
           const timer = setTimeout(() => {
-            this.pendingSelectRetries.delete(channel.pid);
+            this.pendingSelectRetries.delete(channel.channelOffset);
             if (this.processes.has(channel.pid)) {
               this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
             }
           }, timeoutMs);
-          this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline, needsSignalSafeWake });
+          this.pendingSelectRetries.set(channel.channelOffset, {
+            timer, channel, origArgs, deadline, needsSignalSafeWake, syscallNr: SYS_PSELECT6,
+          });
         } else {
           // Infinite timeout with nfds=0: wait for signal delivery.
           // No timer — wakeAllBlockedRetries will trigger the retry.
-          this.pendingSelectRetries.set(channel.pid, { timer: null as any, channel, origArgs, deadline: -1, needsSignalSafeWake });
+          this.pendingSelectRetries.set(channel.channelOffset, {
+            timer: null as any, channel, origArgs, deadline: -1,
+            needsSignalSafeWake, syscallNr: SYS_PSELECT6,
+          });
         }
         return;
       }
 
       // For finite timeout with actual fds, track the deadline
       const retryFn = () => {
-        this.pendingSelectRetries.delete(channel.pid);
+        this.pendingSelectRetries.delete(channel.channelOffset);
         if (!this.processes.has(channel.pid)) return;
         if (deadline > 0 && Date.now() >= deadline) {
           this.completeChannel(channel, SYS_PSELECT6, origArgs, undefined, 0, 0);
@@ -4170,7 +4182,9 @@ export class CentralizedKernelWorker {
         this.handlePselect6(channel, origArgs);
       };
       const timer = setImmediate(retryFn);
-      this.pendingSelectRetries.set(channel.pid, { timer, channel, origArgs, deadline, needsSignalSafeWake });
+      this.pendingSelectRetries.set(channel.channelOffset, {
+        timer, channel, origArgs, deadline, needsSignalSafeWake, syscallNr: SYS_PSELECT6,
+      });
       return;
     }
 
@@ -6646,12 +6660,16 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // 3. Pending pselect6 retry
-    const selectEntry = this.pendingSelectRetries.get(targetPid);
-    if (selectEntry) {
+    // 3. Pending select/pselect6 retries
+    for (const [key, selectEntry] of this.pendingSelectRetries) {
+      if (selectEntry.channel.pid !== targetPid) continue;
+      clearTimeout(selectEntry.timer);
       clearImmediate(selectEntry.timer);
-      this.pendingSelectRetries.delete(targetPid);
-      if (this.processes.has(targetPid)) {
+      this.pendingSelectRetries.delete(key);
+      if (!this.processes.has(targetPid)) continue;
+      if (selectEntry.syscallNr === SYS_SELECT) {
+        this.handleSelect(selectEntry.channel, selectEntry.origArgs);
+      } else {
         this.handlePselect6(selectEntry.channel, selectEntry.origArgs);
       }
     }

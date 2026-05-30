@@ -9,6 +9,7 @@
     "bench": "npx tsx benchmarks/run.ts",
     "bench:browser": "npx tsx benchmarks/run.ts --host browser",
     "bench:compare": "npx tsx benchmarks/compare.ts",
+    "bench:php-mariadb": "npx tsx benchmarks/php-mariadb-transport.ts",
     "pack:host": "npm --prefix host pack",
     "pack:sdk": "npm --prefix sdk pack",
     "pack:packages": "npm run pack:host && npm run pack:sdk"
