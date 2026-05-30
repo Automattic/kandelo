@@ -43,7 +43,7 @@ name: Force rebuild
 #                    sources rather than silently building `main`. Set
 #                    to a specific tag/sha for a one-shot rebuild from
 #                    history.
-#   skip_tests     — when true, publishes without running the 5 test
+#   skip_tests     — when true, publishes without running the test
 #                    suites. Defaults to false (tests must pass before
 #                    publish). workflow_dispatch is maintainer-only,
 #                    so this is treated as deliberate.
@@ -78,7 +78,7 @@ on:
         default: ''
         type: string
       skip_tests:
-        description: 'Publish without running the 5 test suites. Use with care — durable releases normally gate on tests.'
+        description: 'Publish without running the test suites. Use with care — durable releases normally gate on tests.'
         required: false
         default: false
         type: boolean
@@ -99,6 +99,7 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
     outputs:
       build_ref: ${{ steps.resolve.outputs.build_ref }}
@@ -699,11 +700,11 @@ jobs:
             --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             || true
 
-  test-gate:
+  test-gate-prepare:
     needs: [gate, preflight, toolchain-cache, lib-matrix-build, matrix-build]
     # Skip when both matrices are empty (nothing rebuilt) or
     # skip_tests=true. `!cancelled()` so a fail-fast in matrix-build
-    # doesn't silently skip the test gate for sibling packages that
+    # doesn't silently skip test preparation for sibling packages that
     # did succeed.
     if: |
       !cancelled() &&
@@ -792,37 +793,130 @@ jobs:
             bash scripts/build-rootfs.sh
           '
 
-      - name: Run cargo tests (kernel unit tests)
+      - name: Pack prepared test workspace
         run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
-          '
+          bash scripts/pack-ci-test-workspace.sh "$RUNNER_TEMP/test-workspace.tar.zst"
 
-      - name: Run fork-instrument tests
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo test -p fork-instrument --target "$HOST_TARGET"
-          '
+      - name: Upload prepared test workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-workspace
+          path: ${{ runner.temp }}/test-workspace.tar.zst
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Run vitest (host integration tests)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            cd host && npx vitest run
-          '
+  test-suite:
+    name: test-suite (${{ matrix.suite }})
+    needs: [gate, test-gate-prepare]
+    if: |
+      !cancelled() &&
+      needs.test-gate-prepare.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: cargo-kernel
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: false
+          - suite: fork-instrument
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: false
+          - suite: vitest
+            needs_submodules: false
+            needs_toolchain: false
+            needs_workspace: true
+          - suite: libc
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: posix
+            needs_submodules: false
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: sortix
+            needs_submodules: true
+            needs_toolchain: true
+            needs_workspace: true
+    env:
+      SUITE: ${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.build_ref }}
 
-      - name: Run libc-test conformance suite
+      - name: Fetch submodules (musl, libc-test, os-test)
+        if: matrix.needs_submodules == true
         run: |
-          bash scripts/dev-shell.sh bash scripts/run-libc-tests.sh
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --depth 1 libc/musl tests/libc/libc-test tests/sortix/os-test
 
-      - name: Run Open POSIX Test Suite
-        run: |
-          bash scripts/dev-shell.sh bash scripts/run-posix-tests.sh
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
 
-      - name: Run Sortix os-test suite
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Download toolchain sysroots artifact
+        if: matrix.needs_toolchain == true
+        uses: actions/download-artifact@v4
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract toolchain sysroots
+        if: matrix.needs_toolchain == true
         run: |
-          bash scripts/dev-shell.sh bash scripts/run-sortix-tests.sh --all
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Download prepared test workspace
+        if: matrix.needs_workspace == true
+        uses: actions/download-artifact@v4
+        with:
+          name: test-workspace
+          path: ${{ runner.temp }}/test-workspace
+
+      - name: Extract prepared test workspace
+        if: matrix.needs_workspace == true
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
+
+      - name: Run ${{ matrix.suite }} suite
+        run: |
+          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+
+  test-gate:
+    needs: [test-gate-prepare, test-suite]
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.test-gate-prepare.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check split test suites
+        env:
+          PREPARE_RESULT: ${{ needs.test-gate-prepare.result }}
+          TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
+        run: |
+          set -euo pipefail
+          if [ "$PREPARE_RESULT" != "success" ]; then
+            echo "::error::test preparation completed with result: $PREPARE_RESULT"
+            exit 1
+          fi
+          if [ "$TEST_SUITE_RESULT" != "success" ]; then
+            echo "::error::split test suites completed with result: $TEST_SUITE_RESULT"
+            exit 1
+          fi
 
   # publish / generate-index / amend-package-toml /
   # merge-gate-finalize — REMOVED.
