@@ -135,6 +135,10 @@ pub struct SocketInfo {
     /// fork-inherited copies of the listener share a single accept queue.
     /// `None` for AF_UNIX or before listen() is called.
     pub shared_backlog_idx: Option<usize>,
+    /// Host-visible wake token for listener readiness. Assigned by listen()
+    /// and cloned across fork/spawn so every inherited listener fd waits on
+    /// the same accept-readiness event.
+    pub accept_wake_idx: Option<u32>,
     /// Received UDP datagrams (for DGRAM sockets).
     pub dgram_queue: Vec<Datagram>,
     /// Whether recv/send pipe indices refer to the global pipe table
@@ -174,6 +178,7 @@ impl SocketInfo {
             peer_port: 0,
             listen_backlog: Vec::new(),
             shared_backlog_idx: None,
+            accept_wake_idx: None,
             dgram_queue: Vec::new(),
             global_pipes: false,
             oob_byte: None,
@@ -246,6 +251,7 @@ impl Clone for SocketInfo {
             peer_port: self.peer_port,
             listen_backlog: Vec::new(), // consume-once: don't double-accept
             shared_backlog_idx: self.shared_backlog_idx,
+            accept_wake_idx: self.accept_wake_idx,
             dgram_queue: Vec::new(), // consume-once: don't double-deliver
             global_pipes: self.global_pipes,
             oob_byte: None, // consume-once: don't double-deliver

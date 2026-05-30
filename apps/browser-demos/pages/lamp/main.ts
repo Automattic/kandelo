@@ -24,6 +24,7 @@ import {
   renderWordPressConfig,
   wordpressConfigTemplate,
 } from "../../lib/init/wordpress-runtime-config";
+import { MYSQL_BENCHMARK_PHP } from "../../lib/init/mysql-benchmark";
 import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
 import { ensureDirRecursive, writeVfsFile } from "../../../../host/src/vfs/image-helpers";
 import kernelWasmUrl from "@kernel-wasm?url";
@@ -158,6 +159,7 @@ const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
+const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const PHP_FPM_WORKERS = 6;
 const MYSQL_UID = 101;
 const MYSQL_GID = 101;
@@ -251,6 +253,104 @@ function setupTerminalPane(kernel: BrowserKernel): void {
   });
 }
 
+function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/tmp");
+  fs.chmod("/tmp", 0o1777);
+
+  const phpIniPath = "/etc/php.ini";
+  const phpIni = readOptionalVfsText(fs, phpIniPath);
+  if (phpIni !== null) {
+    let patched = phpIni;
+    if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
+      patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
+    }
+    if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
+      patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
+    }
+    if (patched !== phpIni) writeVfsFile(fs, phpIniPath, patched);
+  }
+
+  const mariadbServicePath = "/etc/dinit.d/mariadb";
+  const mariadbService = readOptionalVfsText(fs, mariadbServicePath);
+  if (mariadbService !== null) {
+    const patched = mariadbService.replace(
+      /--socket=(?:\S*)?/g,
+      `--socket=${MARIADB_SOCKET_PATH}`,
+    );
+    if (patched !== mariadbService) writeVfsFile(fs, mariadbServicePath, patched);
+  }
+}
+
+function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null {
+  try {
+    return decoder.decode(new Uint8Array(readVfsFile(fs, path)));
+  } catch (err) {
+    if (isMissingVfsPath(err)) return null;
+    throw err;
+  }
+}
+
+function readVfsFile(fs: MemoryFileSystem, path: string): ArrayBuffer {
+  const st = fs.stat(path);
+  const fd = fs.open(path, 0, 0);
+  try {
+    const out = new Uint8Array(st.size);
+    let off = 0;
+    while (off < out.byteLength) {
+      const n = fs.read(fd, out.subarray(off), null, out.byteLength - off);
+      if (n <= 0) break;
+      off += n;
+    }
+    return out.buffer.slice(out.byteOffset, out.byteOffset + off);
+  } finally {
+    fs.close(fd);
+  }
+}
+
+function isMissingVfsPath(err: unknown): boolean {
+  if (typeof err === "object" && err !== null) {
+    const code = (err as { code?: unknown }).code;
+    if (code === -2 || code === "ENOENT") return true;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  if (/\bENOENT\b/.test(message)) return true;
+  return message.includes("No such file or directory");
+}
+
+function formatBenchStats(stats: any): string {
+  if (!stats || !stats.n) return "n=0";
+  return [
+    `avg ${Number(stats.avg_ms).toFixed(1)} ms`,
+    `p50 ${Number(stats.p50_ms).toFixed(1)} ms`,
+    `p95 ${Number(stats.p95_ms).toFixed(1)} ms`,
+    `max ${Number(stats.max_ms).toFixed(1)} ms`,
+    `n=${stats.n}`,
+  ].join(", ");
+}
+
+async function runPhpMysqlBench(): Promise<void> {
+  appendLog("\n[probe] running PHP mysqli transport benchmark...\n", "info");
+  const t0 = performance.now();
+  const url = `${APP_PREFIX}kandelo-mysql-bench.php?connect_iters=6&query_iters=20&_=${Date.now()}`;
+  const response = await fetch(url, { cache: "no-store" });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${body.slice(0, 200)}`);
+  }
+  const data = JSON.parse(body);
+  appendLog(`[probe] PHP benchmark HTTP: ${(performance.now() - t0).toFixed(0)} ms\n`, "info");
+  appendLog(`[probe] PHP default socket: ${data.default_socket}\n`, "info");
+  for (const [name, result] of Object.entries<any>(data.variants ?? {})) {
+    if (result.error) {
+      appendLog(`[probe] PHP ${name}: ERROR ${result.error}\n`, "stderr");
+      continue;
+    }
+    appendLog(`[probe] PHP ${name} connect: ${formatBenchStats(result.connect)}\n`, "info");
+    appendLog(`[probe] PHP ${name} SELECT after connect: ${formatBenchStats(result.select_after_connect)}\n`, "info");
+    appendLog(`[probe] PHP ${name} SELECT reused: ${formatBenchStats(result.select_reused_connection)}\n`, "info");
+  }
+}
+
 async function start() {
   startBtn.disabled = true;
   log.textContent = "";
@@ -292,12 +392,14 @@ async function start() {
     writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", PATCHED_BOOTSTRAP_SH);
     writeVfsFile(fs, "/etc/nginx/nginx.conf", PATCHED_NGINX_CONF);
     writeVfsFile(fs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+    patchMariaDbUnixSocketConfig(fs);
     writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
     writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
     writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("mariadb", APP_PATH, PROTO));
     for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
       ensureMysqlWritableDir(fs, dir);
     }
+    writeVfsFile(fs, "/var/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
     ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
     writeVfsFile(
       fs,
@@ -358,6 +460,12 @@ async function start() {
           client.close();
         } catch (e: any) {
           appendLog(`[probe] page-side mysql failed: ${e?.message ?? e}\n`, "stderr");
+        }
+
+        try {
+          await runPhpMysqlBench();
+        } catch (e: any) {
+          appendLog(`[probe] PHP mysqli benchmark failed: ${e?.message ?? e}\n`, "stderr");
         }
 
         loadFrame();

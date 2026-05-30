@@ -15,6 +15,7 @@ import {
   wordpressConfigTemplate,
   type WordPressDatabaseKind,
 } from "../../../lib/init/wordpress-runtime-config";
+import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -359,6 +360,7 @@ const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
+const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -862,6 +864,7 @@ async function bootProfile(
   if (profile.id === "wordpress-sqlite") {
     patchWordPressRuntimeConfig(memfs, "sqlite");
   } else if (profile.id === "wordpress-mariadb") {
+    patchMariaDbUnixSocketConfig(memfs);
     patchWordPressRuntimeConfig(memfs, "mariadb");
   }
   memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
@@ -1080,6 +1083,7 @@ function patchWordPressRuntimeConfig(
     for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
       ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
     }
+    writeVfsFile(fs, "/var/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
   }
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
   writeVfsFile(
@@ -1109,6 +1113,34 @@ function stripDinitServiceLogfiles(fs: MemoryFileSystem, serviceNames: string[])
     if (conf === null) continue;
     const patched = conf.replace(/^logfile\s*=.*(?:\r?\n|$)/gm, "");
     if (patched !== conf) writeVfsFile(fs, path, patched);
+  }
+}
+
+function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/tmp");
+  fs.chmod("/tmp", 0o1777);
+
+  const phpIniPath = "/etc/php.ini";
+  const phpIni = readOptionalVfsText(fs, phpIniPath);
+  if (phpIni !== null) {
+    let patched = phpIni;
+    if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
+      patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
+    }
+    if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
+      patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
+    }
+    if (patched !== phpIni) writeVfsFile(fs, phpIniPath, patched);
+  }
+
+  const mariadbServicePath = "/etc/dinit.d/mariadb";
+  const mariadbService = readOptionalVfsText(fs, mariadbServicePath);
+  if (mariadbService !== null) {
+    const patched = mariadbService.replace(
+      /--socket=(?:\S*)?/g,
+      `--socket=${MARIADB_SOCKET_PATH}`,
+    );
+    if (patched !== mariadbService) writeVfsFile(fs, mariadbServicePath, patched);
   }
 }
 

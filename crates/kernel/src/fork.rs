@@ -537,6 +537,10 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                         w.write_u32(0xFFFFFFFF)?;
                     }
                 }
+                // Accept wake token for listening sockets. This must be
+                // inherited so forked listeners register against the same
+                // readiness event as the parent.
+                w.write_u32(sock.accept_wake_idx.unwrap_or(0xFFFFFFFF))?;
                 // Skip dgram_queue for fork (child starts with empty queue)
             }
         }
@@ -938,6 +942,14 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
                     let bp = r.read_bytes(bp_len as usize)?;
                     sock.bind_path = Some(bp.to_vec());
                 }
+            }
+            if r.remaining() >= 4 {
+                let aw_raw = r.read_u32()?;
+                sock.accept_wake_idx = if aw_raw == 0xFFFFFFFF {
+                    None
+                } else {
+                    Some(aw_raw)
+                };
             }
             sockets.insert_at(idx, sock);
         }

@@ -659,6 +659,7 @@ export class CentralizedKernelWorker {
     timer: any;  // setImmediate or setTimeout handle
     channel: ChannelInfo;
     pipeIndices: number[];
+    acceptIndices?: number[];
     /** True if this retry was entered via ppoll with an atomic sigmask swap.
      *  Broad wakes triggered by cross-process pipe events must be deferred
      *  a few ms for these retries so follow-up cross-process signals have
@@ -2672,54 +2673,98 @@ export class CentralizedKernelWorker {
    * Handle EAGAIN retry for blocking syscalls.
    * The process stays blocked while we retry asynchronously.
    */
-  private resolvePollPipeIndices(pid: number, origArgs: number[], syscallNr: number): number[] {
+  private resolvePollReadinessIndices(
+    pid: number,
+    origArgs: number[],
+  ): { pipeIndices: number[]; acceptIndices: number[] } {
     // Prefer kernel_get_fd_pipe_idx which handles both pipes AND sockets.
     // Fall back to kernel_get_socket_recv_pipe for older kernels.
     const getFdPipeIdx = this.kernelInstance!.exports.kernel_get_fd_pipe_idx as
       ((pid: number, fd: number) => number) | undefined;
     const getRecvPipe = getFdPipeIdx ?? (this.kernelInstance!.exports.kernel_get_socket_recv_pipe as
       ((pid: number, fd: number) => number) | undefined);
-    if (!getRecvPipe) return [];
+    const getAcceptWakeIdx = this.kernelInstance!.exports.kernel_get_fd_accept_wake_idx as
+      ((pid: number, fd: number) => number) | undefined;
+    if (!getRecvPipe && !getAcceptWakeIdx) return { pipeIndices: [], acceptIndices: [] };
 
     const fdsPtr = origArgs[0];
     const nfds = origArgs[1];
-    if (fdsPtr === 0 || nfds === 0) return [];
+    if (fdsPtr === 0 || nfds === 0) return { pipeIndices: [], acceptIndices: [] };
 
     // Find the channel for this pid to read process memory
     const channel = this.activeChannels.find(c => c.pid === pid);
-    if (!channel) return [];
+    if (!channel) return { pipeIndices: [], acceptIndices: [] };
 
     const indices: number[] = [];
+    const acceptIndices: number[] = [];
     const processMem = new DataView(channel.memory.buffer);
+    const POLLIN = 0x001;
     // struct pollfd: fd(4) + events(2) + revents(2) = 8 bytes
     for (let i = 0; i < nfds; i++) {
       const fd = processMem.getInt32(fdsPtr + i * 8, true);
       if (fd < 0) continue;
-      const pipeIdx = getRecvPipe(pid, fd);
-      if (pipeIdx >= 0) {
-        indices.push(pipeIdx);
-      }
-    }
-    return indices;
-  }
-
-  private resolveEpollPipeIndices(pid: number): number[] {
-    const getRecvPipe = this.kernelInstance!.exports.kernel_get_socket_recv_pipe as
-      ((pid: number, fd: number) => number) | undefined;
-    if (!getRecvPipe) return [];
-
-    const key = `${pid}:`;
-    const indices: number[] = [];
-    for (const [k, interests] of this.epollInterests) {
-      if (!k.startsWith(key)) continue;
-      for (const interest of interests) {
-        const pipeIdx = getRecvPipe(pid, interest.fd);
+      const events = processMem.getInt16(fdsPtr + i * 8 + 4, true);
+      if (getRecvPipe) {
+        const pipeIdx = getRecvPipe(pid, fd);
         if (pipeIdx >= 0) {
           indices.push(pipeIdx);
         }
       }
+      if (getAcceptWakeIdx && (events & POLLIN) !== 0) {
+        const acceptIdx = getAcceptWakeIdx(pid, fd);
+        if (acceptIdx >= 0) {
+          acceptIndices.push(acceptIdx);
+        }
+      }
     }
-    return indices;
+    return { pipeIndices: indices, acceptIndices };
+  }
+
+  private resolveEpollReadinessIndices(pid: number): { pipeIndices: number[]; acceptIndices: number[] } {
+    const getRecvPipe = this.kernelInstance!.exports.kernel_get_socket_recv_pipe as
+      ((pid: number, fd: number) => number) | undefined;
+    const getAcceptWakeIdx = this.kernelInstance!.exports.kernel_get_fd_accept_wake_idx as
+      ((pid: number, fd: number) => number) | undefined;
+    if (!getRecvPipe && !getAcceptWakeIdx) return { pipeIndices: [], acceptIndices: [] };
+
+    const key = `${pid}:`;
+    const indices: number[] = [];
+    const acceptIndices: number[] = [];
+    const EPOLLIN = 0x001;
+    for (const [k, interests] of this.epollInterests) {
+      if (!k.startsWith(key)) continue;
+      for (const interest of interests) {
+        if (getRecvPipe) {
+          const pipeIdx = getRecvPipe(pid, interest.fd);
+          if (pipeIdx >= 0) {
+            indices.push(pipeIdx);
+          }
+        }
+        if (getAcceptWakeIdx && (interest.events & EPOLLIN) !== 0) {
+          const acceptIdx = getAcceptWakeIdx(pid, interest.fd);
+          if (acceptIdx >= 0) {
+            acceptIndices.push(acceptIdx);
+          }
+        }
+      }
+    }
+    return { pipeIndices: indices, acceptIndices };
+  }
+
+  private wakeBlockedAccept(acceptIdx: number): void {
+    const matches = Array.from(this.pendingPollRetries.entries()).filter(
+      ([, e]) => e.acceptIndices?.includes(acceptIdx),
+    );
+    for (const [key, entry] of matches) {
+      if (this.pendingPollRetries.get(key) !== entry) continue;
+      if (entry.timer !== null) {
+        clearTimeout(entry.timer);
+      }
+      this.pendingPollRetries.delete(key);
+      if (this.processes.has(entry.channel.pid)) {
+        this.retrySyscall(entry.channel);
+      }
+    }
   }
 
   private wakeBlockedPoll(pid: number, pipeIdx: number): void {
@@ -2819,10 +2864,9 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Drain kernel wakeup events and process targeted pipe wakeups.
+   * Drain kernel wakeup events and process targeted pipe/listener wakeups.
    * Called after each syscall completion. The kernel pushes events from
-   * PipeBuffer operations (read/write/close). Each event identifies a pipe
-   * and whether it became readable or writable.
+   * PipeBuffer operations and listener backlog changes.
    */
   private drainAndProcessWakeupEvents(): void {
     const drainFn = this.kernelInstance!.exports.kernel_drain_wakeup_events as
@@ -2839,19 +2883,20 @@ export class CentralizedKernelWorker {
     const kernelMem = new Uint8Array(this.kernelMemory!.buffer);
     const WAKE_READABLE = 1;
     const WAKE_WRITABLE = 2;
+    const WAKE_ACCEPT = 4;
     let needBroadWake = false;
 
     for (let i = 0; i < count; i++) {
       const off = this.scratchOffset + i * BYTES_PER_EVENT;
-      const pipeIdx = kernelMem[off] | (kernelMem[off + 1] << 8) |
+      const wakeIdx = kernelMem[off] | (kernelMem[off + 1] << 8) |
                       (kernelMem[off + 2] << 16) | (kernelMem[off + 3] << 24);
       const wakeType = kernelMem[off + 4];
 
       if (wakeType & WAKE_READABLE) {
         // Pipe became readable — wake pending readers on this pipe
-        const readers = this.pendingPipeReaders.get(pipeIdx);
+        const readers = this.pendingPipeReaders.get(wakeIdx);
         if (readers && readers.length > 0) {
-          this.pendingPipeReaders.delete(pipeIdx);
+          this.pendingPipeReaders.delete(wakeIdx);
           for (const reader of readers) {
             if (this.processes.has(reader.pid)) {
               this.retrySyscall(reader.channel);
@@ -2862,15 +2907,19 @@ export class CentralizedKernelWorker {
 
       if (wakeType & WAKE_WRITABLE) {
         // Pipe became writable — wake pending writers on this pipe
-        const writers = this.pendingPipeWriters.get(pipeIdx);
+        const writers = this.pendingPipeWriters.get(wakeIdx);
         if (writers && writers.length > 0) {
-          this.pendingPipeWriters.delete(pipeIdx);
+          this.pendingPipeWriters.delete(wakeIdx);
           for (const writer of writers) {
             if (this.processes.has(writer.pid)) {
               this.retrySyscall(writer.channel);
             }
           }
         }
+      }
+
+      if (wakeType & WAKE_ACCEPT) {
+        this.wakeBlockedAccept(wakeIdx);
       }
 
       needBroadWake = true;
@@ -3363,8 +3412,9 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      // Resolve which pipe indices the polled fds map to (for event-driven wakeup)
-      const pipeIndices = this.resolvePollPipeIndices(channel.pid, origArgs, syscallNr);
+      // Resolve which pipe/listener readiness tokens the polled fds map to.
+      const { pipeIndices, acceptIndices } =
+        this.resolvePollReadinessIndices(channel.pid, origArgs);
 
       // For finite timeout, track the deadline so we return 0 (timeout) when it
       // expires instead of retrying forever. The nfds=0 case (pure sleep) is
@@ -3382,6 +3432,7 @@ export class CentralizedKernelWorker {
           timer,
           channel,
           pipeIndices,
+          acceptIndices,
           needsSignalSafeWake,
           deadline: Date.now() + timeoutMs,
         });
@@ -3399,10 +3450,8 @@ export class CentralizedKernelWorker {
         }
         this.retrySyscall(channel);
       };
-      // With pipe indices, rely on wakeBlockedPoll for instant wakeup;
-      // use moderate fallback for cases where the targeted wake misses
-      // (e.g., listener socket backlogs which lack pipe indices for
-      // wakeBlockedPoll). Without pipe indices, use short retry.
+      // With pipe/listener readiness tokens, rely on targeted wakeups for
+      // instant retry. The timer is only a safety net.
       // The intended wakeup path is event-driven:
       // drainAndProcessWakeupEvents → scheduleWakeBlockedRetries
       // (setImmediate) retries the poll when any of its watched pipes
@@ -3413,14 +3462,20 @@ export class CentralizedKernelWorker {
       // 5 fallback fires can explain, suggesting setImmediate-based
       // broad wakes occasionally lose against the timer in the
       // browser's MessageChannel polyfill). 10 ms matches the default
-      // for read-like / write-like blocking retries (lines ~3320,
-      // ~3827, ~3953). Listener-socket cases without pipe indices
-      // continue to use 50 ms.
-      const retryMs = pipeIndices.length > 0
+      // for read-like / write-like blocking retries.
+      const hasTargetedWake = pipeIndices.length > 0 || acceptIndices.length > 0;
+      const retryMs = hasTargetedWake
         ? (deadline > 0 ? Math.min(deadline - Date.now(), 10) : 10)
         : (deadline > 0 ? Math.min(deadline - Date.now(), 50) : 50);
       const timer = setTimeout(retryFn, Math.max(retryMs, 1));
-      this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices, needsSignalSafeWake, deadline });
+      this.pendingPollRetries.set(channel.channelOffset, {
+        timer,
+        channel,
+        pipeIndices,
+        acceptIndices,
+        needsSignalSafeWake,
+        deadline,
+      });
       return;
     }
 
@@ -3578,23 +3633,28 @@ export class CentralizedKernelWorker {
     }
 
     // Event-driven wakeup for accept/accept4: register the listening socket's
-    // pipe index so injectConnection → scheduleWakeBlockedRetries wakes the
+    // accept-readiness token so local connect/injected connection wakes the
     // accept immediately instead of waiting for the fallback timer.
     if (syscallNr === SYS_ACCEPT || syscallNr === SYS_ACCEPT4) {
       const fd = origArgs[0];
-      const getFdPipeIdx = this.kernelInstance!.exports.kernel_get_fd_pipe_idx as
+      const getAcceptWakeIdx = this.kernelInstance!.exports.kernel_get_fd_accept_wake_idx as
         ((pid: number, fd: number) => number) | undefined;
-      if (getFdPipeIdx) {
-        const pipeIdx = getFdPipeIdx(channel.pid, fd);
-        if (pipeIdx >= 0) {
-          let readers = this.pendingPipeReaders.get(pipeIdx);
-          if (!readers) {
-            readers = [];
-            this.pendingPipeReaders.set(pipeIdx, readers);
-          }
-          if (!readers.some(r => r.channel === channel)) {
-            readers.push({ channel, pid: channel.pid });
-          }
+      if (getAcceptWakeIdx) {
+        const acceptIdx = getAcceptWakeIdx(channel.pid, fd);
+        if (acceptIdx >= 0) {
+          const retryFn = () => {
+            this.pendingPollRetries.delete(channel.channelOffset);
+            if (this.processes.has(channel.pid)) {
+              this.retrySyscall(channel);
+            }
+          };
+          const timer = setTimeout(retryFn, 10);
+          this.pendingPollRetries.set(channel.channelOffset, {
+            timer,
+            channel,
+            pipeIndices: [],
+            acceptIndices: [acceptIdx],
+          });
           if (PROFILING) {
             const entry = this.profileData!.get(syscallNr);
             if (entry) entry.retries++;
@@ -4404,7 +4464,7 @@ export class CentralizedKernelWorker {
     // Blocking: retry via setTimeout to avoid starving other processes.
     // Pipe-based wakeup (via wakeAllBlockedRetries) provides instant wakeup
     // when data arrives; setTimeout is only a fallback.
-    const pipeIndices = this.resolveEpollPipeIndices(channel.pid);
+    const { pipeIndices, acceptIndices } = this.resolveEpollReadinessIndices(channel.pid);
 
     const retryFn = () => {
       this.pendingPollRetries.delete(channel.channelOffset);
@@ -4413,7 +4473,12 @@ export class CentralizedKernelWorker {
       }
     };
     const timer = setTimeout(retryFn, 10);
-    this.pendingPollRetries.set(channel.channelOffset, { timer, channel, pipeIndices });
+    this.pendingPollRetries.set(channel.channelOffset, {
+      timer,
+      channel,
+      pipeIndices,
+      acceptIndices,
+    });
   }
 
   // ---- Network interface ioctl host-side handlers ----
