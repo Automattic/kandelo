@@ -17,6 +17,8 @@
 #   --allow-stale                 Accepted for back-compat; the resolver
 #                                  source-builds automatically on any
 #                                  verification failure. No-op today.
+#   --pr-staging                  Use the current PR's staging binary index
+#                                  unless WASM_POSIX_BINARY_INDEX_URL is set.
 #
 set -euo pipefail
 
@@ -44,24 +46,96 @@ step()  { echo "${CYAN}${BOLD}=== $* ===${RESET}"; }
 
 # ─── Top-level flag parsing ──────────────────────────────────────────────────
 #
-# Scrub --allow-stale from $@ and turn it into an env var so any
+# Scrub top-level flags from $@ and turn them into env vars so any
 # downstream invocation of fetch-binaries.sh (called directly or
-# nested via build_target) picks it up. Also honor the env var if
-# the user prefers `WASM_POSIX_ALLOW_STALE=1 ./run.sh browser`.
+# nested via build_target) picks them up. Also honor env vars if the
+# user prefers `WASM_POSIX_ALLOW_STALE=1 ./run.sh browser` or
+# `WASM_POSIX_USE_PR_STAGING=1 ./run.sh browser`.
 ALLOW_STALE_ARGS=()
+USE_PR_STAGING=0
 NEW_ARGS=()
 for a in "$@"; do
-    if [ "$a" = "--allow-stale" ]; then
-        ALLOW_STALE_ARGS=(--allow-stale)
-    else
-        NEW_ARGS+=("$a")
-    fi
+    case "$a" in
+        --allow-stale)
+            ALLOW_STALE_ARGS=(--allow-stale)
+            ;;
+        --pr-staging)
+            USE_PR_STAGING=1
+            ;;
+        *)
+            NEW_ARGS+=("$a")
+            ;;
+    esac
 done
 set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
 if [ "${WASM_POSIX_ALLOW_STALE:-0}" = "1" ]; then
     ALLOW_STALE_ARGS=(--allow-stale)
 fi
 export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
+if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
+    USE_PR_STAGING=1
+fi
+export WASM_POSIX_USE_PR_STAGING=$USE_PR_STAGING
+
+pr_staging_manual_override_hint() {
+    local repo_hint=${1:-"<owner>/<repo>"}
+    local pr_hint=${2:-"<PR>"}
+    err "Manual override:"
+    err "  WASM_POSIX_BINARY_INDEX_URL=https://github.com/${repo_hint}/releases/download/pr-${pr_hint}-staging/index.toml ./run.sh fetch --allow-stale"
+}
+
+configure_pr_staging_binary_index() {
+    [ "$USE_PR_STAGING" = "1" ] || return 0
+
+    if [ -n "${WASM_POSIX_BINARY_INDEX_URL:-}" ]; then
+        warn "WASM_POSIX_BINARY_INDEX_URL is already set; leaving it unchanged."
+        return 0
+    fi
+
+    if ! command -v gh >/dev/null 2>&1; then
+        err "PR staging binary index requested, but gh is not on PATH."
+        pr_staging_manual_override_hint
+        exit 2
+    fi
+
+    local pr_number
+    if ! pr_number=$(gh pr view --json number --jq '.number' 2>/dev/null) \
+        || [ -z "$pr_number" ] || [ "$pr_number" = "null" ]; then
+        err "PR staging binary index requested, but this branch is not associated with a GitHub PR."
+        pr_staging_manual_override_hint
+        exit 2
+    fi
+
+    local repo pr_url
+    pr_url=$(gh pr view --json url --jq '.url' 2>/dev/null || true)
+    repo=$(sed -E 's#^https://github.com/([^/]+/[^/]+)/pull/[0-9]+.*$#\1#' <<<"$pr_url")
+    if [ -z "$repo" ] || [ "$repo" = "$pr_url" ]; then
+        repo=$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)
+    fi
+    if [ -z "$repo" ] || [ "$repo" = "null" ]; then
+        err "PR staging binary index requested, but gh could not determine the GitHub repository."
+        pr_staging_manual_override_hint "<owner>/<repo>" "$pr_number"
+        exit 2
+    fi
+
+    local tag="pr-${pr_number}-staging"
+    local assets
+    if ! assets=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name' 2>/dev/null); then
+        err "PR staging release $repo@$tag is not available."
+        pr_staging_manual_override_hint "$repo" "$pr_number"
+        exit 2
+    fi
+    if ! grep -Fxq "index.toml" <<<"$assets"; then
+        err "PR staging release $repo@$tag does not contain index.toml."
+        pr_staging_manual_override_hint "$repo" "$pr_number"
+        exit 2
+    fi
+
+    export WASM_POSIX_BINARY_INDEX_URL="https://github.com/$repo/releases/download/$tag/index.toml"
+    warn "Using PR #$pr_number staging binary index: $WASM_POSIX_BINARY_INDEX_URL"
+}
+
+configure_pr_staging_binary_index
 
 # ─── Artifact checks ─────────────────────────────────────────────────────────
 
@@ -2182,6 +2256,9 @@ cmd_list() {
     echo "  --allow-stale                        Accepted for back-compat. The resolver"
     echo "                                        source-builds automatically on any"
     echo "                                        verification failure. No-op today."
+    echo "  --pr-staging                         Use the current PR's staging binary"
+    echo "                                        index unless WASM_POSIX_BINARY_INDEX_URL"
+    echo "                                        is already set."
     echo ""
     echo "${BOLD}Run examples:${RESET}"
     echo "  ./run.sh run shell                   Interactive shell (dash + coreutils + grep + sed)"

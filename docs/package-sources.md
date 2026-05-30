@@ -126,7 +126,7 @@ permissions:
 
 jobs:
   publish:
-    uses: brandonpayton/kandelo/.github/workflows/reusable-package-source-publish.yml@main
+    uses: Automattic/kandelo/.github/workflows/reusable-package-source-publish.yml@main
     with:
       kandelo-ref: ${{ inputs.kandelo-ref }}
       packages: ${{ inputs.packages }}

@@ -26,7 +26,7 @@ cd "$REPO_ROOT"
 
 HEAD_COMMIT="${MIGRATION_COMMIT:-$(git rev-parse HEAD)}"
 DEFAULT_REPO_URL="https://github.com/brandonpayton/wasm-posix-kernel.git"
-DEFAULT_INDEX_URL='https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml'
+DEFAULT_INDEX_URL='https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml'
 
 python3 - "$REPO_ROOT" "$HEAD_COMMIT" "$DEFAULT_REPO_URL" "$DEFAULT_INDEX_URL" <<'PY'
 import os
