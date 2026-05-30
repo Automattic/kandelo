@@ -48,8 +48,10 @@ ssize_t posix_getdents(int fd, void *buf, size_t bufsize, int flags)
 		errno = -ret;
 		return -1;
 	}
-	if (ret == 0)
+	if (ret == 0) {
+		errno = 0;
 		return 0;
+	}
 
 	unsigned char *out = buf;
 	size_t out_pos = 0;
@@ -94,5 +96,6 @@ ssize_t posix_getdents(int fd, void *buf, size_t bufsize, int flags)
 		return -1;
 	}
 
+	errno = 0;
 	return (ssize_t)out_pos;
 }
