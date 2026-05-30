@@ -76,6 +76,46 @@ require() {
   fi
 }
 
+current_abi_version() {
+  local abi
+  abi="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs | head -n1)"
+  if [ -z "$abi" ]; then
+    echo "index-update.sh: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    exit 2
+  fi
+  printf '%s\n' "$abi"
+}
+
+expected_abi_for_target_tag() {
+  local abi
+  case "$TARGET_TAG" in
+    binaries-abi-v*)
+      abi="${TARGET_TAG#binaries-abi-v}"
+      ;;
+    pr-*-staging)
+      abi="$(current_abi_version)"
+      ;;
+    *)
+      echo "index-update.sh: can't infer ABI for target-tag $TARGET_TAG; \
+        update expected_abi_for_target_tag for this tag shape." >&2
+      exit 2
+      ;;
+  esac
+
+  if ! [[ "$abi" =~ ^[0-9]+$ ]]; then
+    echo "index-update.sh: inferred invalid ABI $abi for target-tag $TARGET_TAG" >&2
+    exit 2
+  fi
+  printf '%s\n' "$abi"
+}
+
+archive_name_abi() {
+  local name="$1"
+  if [[ "$name" =~ (^|-)abi([0-9]+)- ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
+  fi
+}
+
 gh_retry() {
   local attempt=1
   local max_attempts=4
@@ -344,12 +384,23 @@ case "$STATUS" in
     ;;
 esac
 
+EXPECTED_ABI="$(expected_abi_for_target_tag)"
+if [ -n "$ARCHIVE_NAME" ]; then
+  ARCHIVE_ABI="$(archive_name_abi "$ARCHIVE_NAME")"
+  if [ -n "$ARCHIVE_ABI" ] && [ "$ARCHIVE_ABI" != "$EXPECTED_ABI" ]; then
+    echo "index-update.sh: --archive-name $ARCHIVE_NAME declares ABI $ARCHIVE_ABI, \
+but $TARGET_TAG expects ABI $EXPECTED_ABI" >&2
+    exit 2
+  fi
+fi
+
 # 1. Acquire the state-lock for this target tag. Same script that
 #    serialises durable-release publishes; the per-target-tag subject
 #    keeps independent rebuilds (e.g. abi-v8 vs abi-v9) from blocking
 #    each other.
-bash .github/scripts/state-lock.sh acquire "$TARGET_TAG"
-trap 'bash .github/scripts/state-lock.sh release || true' EXIT
+STATE_LOCK_SCRIPT="${STATE_LOCK_SCRIPT:-.github/scripts/state-lock.sh}"
+bash "$STATE_LOCK_SCRIPT" acquire "$TARGET_TAG"
+trap 'bash "$STATE_LOCK_SCRIPT" release || true' EXIT
 
 # 2. Ensure the release exists.
 ensure_release_exists
@@ -366,27 +417,8 @@ if [ -n "$index_info" ]; then
     --dir "$INDEX_DIR" \
     --clobber
 else
-  # Bootstrap: empty ledger with the matching ABI. ABI is encoded in
-  # the target-tag (binaries-abi-v<N>); strip the prefix to recover.
-  case "$TARGET_TAG" in
-    binaries-abi-v*)
-      ABI="${TARGET_TAG#binaries-abi-v}"
-      ;;
-    pr-*-staging)
-      # Staging tags carry the ABI inside their archive filenames, not
-      # the tag name. Read ABI_VERSION from the source tree.
-      ABI=$(grep -E 'pub const ABI_VERSION: u32 = [0-9]+' \
-              crates/shared/src/lib.rs \
-              | sed -E 's/.* = ([0-9]+).*/\1/')
-      ;;
-    *)
-      echo "index-update.sh: can't infer ABI for target-tag $TARGET_TAG; \
-        update the bootstrap clause for this tag shape." >&2
-      exit 2
-      ;;
-  esac
   cat > "$INDEX_PATH" <<EOF
-abi_version = $ABI
+abi_version = $EXPECTED_ABI
 generated_at = "$(date -u +%FT%TZ)"
 generator = "index-update.sh bootstrap"
 EOF
@@ -407,6 +439,7 @@ cargo run --release -p xtask --target "$HOST_TRIPLE" --quiet -- \
     ${ARCHIVE_NAME:+--archive-name "$ARCHIVE_NAME"} \
     ${CACHE_KEY_SHA:+--cache-key-sha "$CACHE_KEY_SHA"} \
     ${ERROR:+--error "$ERROR"} \
+    --expected-abi "$EXPECTED_ABI" \
     --built-at "$(date -u +%FT%TZ)" \
     --built-by "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-local}"
 
