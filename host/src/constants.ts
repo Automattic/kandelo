@@ -1,16 +1,24 @@
+import {
+  PROCESS_MEMORY_DEFAULT_MAX_PAGES,
+  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
+  PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
+  PROCESS_MEMORY_WASM_PAGE_SIZE,
+} from "./generated/abi";
+
 /** WebAssembly page size (64 KiB) */
-export const WASM_PAGE_SIZE = 65536;
+export const WASM_PAGE_SIZE = PROCESS_MEMORY_WASM_PAGE_SIZE;
 
 export { CH_DATA_SIZE, CH_HEADER_SIZE, CH_TOTAL_SIZE } from "./generated/abi";
 
 /** Default max pages for WebAssembly.Memory */
-export const DEFAULT_MAX_PAGES = 16384;
+export const DEFAULT_MAX_PAGES = PROCESS_MEMORY_DEFAULT_MAX_PAGES;
 
 /**
- * Pages allocated per thread: 2 for channel (65,608 bytes spills past one
- * 64 KiB page), 1 gap page, 1 for TLS.
+ * Pages allocated per pthread slot: TLS/control, fork-save/scratch,
+ * syscall channel primary, and syscall channel spill.
  */
-export const PAGES_PER_THREAD = 4;
+export const PAGES_PER_THREAD = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT;
+export const PAGES_PER_THREAD_SLOT = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT;
 
 /**
  * Read an unsigned LEB128 starting at `off`.
@@ -553,7 +561,10 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
  * Used by tests to skip cleanly when cached binaries were built against
  * a different `ABI_VERSION` than the running kernel.
  */
-export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
+function extractI32ConstFunctionExport(
+  programBytes: ArrayBuffer,
+  exportName: string,
+): number | null {
   const src = new Uint8Array(programBytes);
   if (src.length < 8) return null;
 
@@ -584,7 +595,7 @@ export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
         const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readULEB128(src, pos); pos += idxBytes;
-        if (kind === 0 && name === "__abi_version") {
+        if (kind === 0 && name === exportName) {
           abiFuncIndex = idx;
           break;
         }
@@ -713,6 +724,23 @@ export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
   }
 
   return extractFromFunc(abiFuncIndex);
+}
+
+export function extractAbiVersion(programBytes: ArrayBuffer): number | null {
+  return extractI32ConstFunctionExport(programBytes, "__abi_version");
+}
+
+/**
+ * Extract a process-wasm pthread slot declaration.
+ *
+ * The SDK emits this as a constant-return export. A missing export means the
+ * binary predates the declaration and should use the host default.
+ */
+export function extractThreadSlotDeclaration(programBytes: ArrayBuffer): number | null {
+  return extractI32ConstFunctionExport(
+    programBytes,
+    PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
+  );
 }
 
 /**

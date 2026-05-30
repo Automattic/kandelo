@@ -3,6 +3,7 @@ import { zstdCompressSync } from "node:zlib";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ABI_VERSION } from "../src/generated/abi";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { saveImage } from "../../images/vfs/scripts/vfs-image-helpers";
 
@@ -313,17 +314,17 @@ describe("VFS image save/restore", () => {
       const mfs = createMemfs();
       writeFile(mfs, "/data.txt", new TextEncoder().encode("metadata"));
       const image = await mfs.saveImage({
-        metadata: { version: 1, kernelAbi: 12 },
+        metadata: { version: 1, kernelAbi: ABI_VERSION },
       });
       const compressed = new Uint8Array(zstdCompressSync(image));
 
       expect(MemoryFileSystem.readImageMetadata(compressed)).toEqual({
         version: 1,
-        kernelAbi: 12,
+        kernelAbi: ABI_VERSION,
       });
       expect(MemoryFileSystem.fromImage(compressed).getImageMetadata()).toEqual({
         version: 1,
-        kernelAbi: 12,
+        kernelAbi: ABI_VERSION,
       });
     });
 
@@ -339,13 +340,16 @@ describe("VFS image save/restore", () => {
 
     it("validates a declared kernel ABI against the running ABI supplied by the caller", async () => {
       const mfs = createMemfs();
+      const olderAbi = ABI_VERSION - 1;
       const image = await mfs.saveImage({
-        metadata: { version: 1, kernelAbi: 11 },
+        metadata: { version: 1, kernelAbi: olderAbi },
       });
 
-      expect(() => MemoryFileSystem.assertImageKernelAbi(image, 11)).not.toThrow();
-      expect(() => MemoryFileSystem.assertImageKernelAbi(image, 12, "test image"))
-        .toThrow(/test image requires kernel ABI 11.*running kernel is ABI 12/);
+      expect(() => MemoryFileSystem.assertImageKernelAbi(image, olderAbi)).not.toThrow();
+      expect(() => MemoryFileSystem.assertImageKernelAbi(image, ABI_VERSION, "test image"))
+        .toThrow(new RegExp(
+          `test image requires kernel ABI ${olderAbi}.*running kernel is ABI ${ABI_VERSION}`,
+        ));
     });
   });
 

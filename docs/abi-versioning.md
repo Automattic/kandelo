@@ -97,6 +97,10 @@ captures:
 - `host_adapter` — Rust-owned boot manifest metadata consumed by host
   adapters: manifest layout, host adapter protocol version, required
   worker feature bits, and required/optional kernel exports.
+- `process_memory_layout` — Rust-owned process memory layout metadata:
+  Wasm page size, default process memory settings, main control pages,
+  pthread slot page offsets, and the process-wasm thread-slot declaration
+  contract.
 - `custom_sections` — names of wasm custom sections that participate in
   the ABI (currently `wasm-posix-abi` for the per-binary version).
 - `process_expected_globals` — globals every user process instance is
@@ -156,10 +160,11 @@ classifies the diff and accepts only the additive cases listed above.
   `tools/xtask/src/dump_abi.rs` is an ABI-relevant change. (The export
   filter lists in `shared::abi::EXPORT_DENY_*` are themselves in the
   snapshot, so at least those are self-tracking.)
-- **Host-side assumptions not reflected in kernel source.** Wherever
-  the host has hardcoded offsets or sizes, those should migrate to
-  reading constants from `wasm-posix-shared` so the snapshot catches
-  drift.
+- **Host-side assumptions not reflected in Rust-owned ABI metadata.**
+  Process memory layout constants should live in `wasm-posix-shared`,
+  flow through generated TypeScript, and appear in
+  `process_memory_layout`. Host-only constants outside that path are not
+  protected by the ABI check.
 
 ## Rollout of prebuilt binaries
 

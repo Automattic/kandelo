@@ -21,8 +21,7 @@ import kernelWasmUrl from "@kernel-wasm?url";
 import rootfsVfsUrl from "@rootfs-vfs?url";
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
-
-const DEFAULT_MAX_PAGES = 16384;
+import { DEFAULT_MAX_PAGES } from "./constants";
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -35,6 +34,8 @@ export interface BrowserKernelOptions {
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). This caps
    *  guest brk/mmap growth; initial process memory is computed separately. */
   maxMemoryPages?: number;
+  /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
+  defaultThreadSlots?: number;
   /** Additional VFS mount points */
   extraMounts?: Array<{ mountPoint: string; backend: { open: Function } }>;
   /** Environment variables for spawned processes */
@@ -341,6 +342,7 @@ export class BrowserKernel {
         config: {
           maxWorkers: this.options.maxWorkers,
           maxMemoryPages: this.maxPages,
+          defaultThreadSlots: this.options.defaultThreadSlots,
           env: this.options.env,
           enableSyscallLog: this.options.enableSyscallLog,
           syscallLogPtrWidth: this.options.syscallLogPtrWidth,

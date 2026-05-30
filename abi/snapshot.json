@@ -1,5 +1,5 @@
 {
-  "abi_version": 12,
+  "abi_version": 13,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -113,7 +113,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 12,
+      "abi_version": 13,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -2119,6 +2119,69 @@
     "__channel_base",
     "__tls_base"
   ],
+  "process_memory_layout": {
+    "channel_pages": 2,
+    "defaults": {
+      "initial_pages": 17,
+      "max_pages": 16384,
+      "thread_slots": 16
+    },
+    "fork_save_buffer_size": 16384,
+    "legacy": {
+      "fallback_brk_base": 16777216,
+      "mmap_base": 67108864
+    },
+    "main_control": {
+      "pages": [
+        {
+          "name": "fork_save_scratch",
+          "page_offset": 0,
+          "purpose": "main thread fork-save/scratch page"
+        },
+        {
+          "name": "syscall_channel_primary",
+          "page_offset": 1,
+          "purpose": "main thread syscall channel primary page"
+        },
+        {
+          "name": "syscall_channel_spill",
+          "page_offset": 2,
+          "purpose": "main thread syscall channel spill page"
+        }
+      ]
+    },
+    "process_wasm_declarations": {
+      "none": 0,
+      "thread_slot_export": "__wasm_posix_thread_slots",
+      "use_host_default": -1
+    },
+    "thread_slot": {
+      "pages": [
+        {
+          "name": "tls_control",
+          "page_offset": 0,
+          "purpose": "per-pthread TLS/control page"
+        },
+        {
+          "name": "fork_save_scratch",
+          "page_offset": 1,
+          "purpose": "per-pthread fork-save/scratch page"
+        },
+        {
+          "name": "syscall_channel_primary",
+          "page_offset": 2,
+          "purpose": "per-pthread syscall channel primary page"
+        },
+        {
+          "name": "syscall_channel_spill",
+          "page_offset": 3,
+          "purpose": "per-pthread syscall channel spill page"
+        }
+      ],
+      "pages_per_slot": 4
+    },
+    "wasm_page_size": 65536
+  },
   "syscall_arg_descriptors": {
     "1": [
       {

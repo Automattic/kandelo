@@ -4,6 +4,9 @@
 #define WASM_POSIX_ABI_CONSTANTS_H
 
 /* Mirrors wasm_posix_shared::ABI_VERSION. */
-#define WASM_POSIX_ABI_VERSION 12u
+#define WASM_POSIX_ABI_VERSION 13u
+
+/* Default process-wasm pthread slot declaration. */
+#define WASM_POSIX_THREAD_SLOT_DECL_DEFAULT -1
 
 #endif /* WASM_POSIX_ABI_CONSTANTS_H */

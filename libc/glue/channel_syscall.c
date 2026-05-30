@@ -47,6 +47,25 @@ unsigned int __wasm_posix_user_abi_version(void) {
     return WASM_POSIX_ABI_VERSION;
 }
 
+#ifndef WASM_POSIX_THREAD_SLOT_DECL
+#define WASM_POSIX_THREAD_SLOT_DECL WASM_POSIX_THREAD_SLOT_DECL_DEFAULT
+#endif
+
+/*
+ * Exported process-memory declaration.
+ *
+ * The SDK sets WASM_POSIX_THREAD_SLOT_DECL when it can make an explicit
+ * statement about pthread slot reservation. -1 means "use host default",
+ * 0 means "reserve no pthread slots", and positive values request exactly
+ * that many pthread slots in the process control slab.
+ */
+__attribute__((used))
+__attribute__((retain))
+__attribute__((export_name("__wasm_posix_thread_slots")))
+int __wasm_posix_thread_slots(void) {
+    return WASM_POSIX_THREAD_SLOT_DECL;
+}
+
 /* musl's errno is a macro expanding to (*__errno_location()). We only
  * need to set it on error, so we reference the function directly to
  * avoid pulling in the full errno.h header during cross-compilation. */

@@ -1,23 +1,36 @@
 import {
   CH_TOTAL_SIZE,
   DEFAULT_MAX_PAGES,
-  PAGES_PER_THREAD,
+  extractThreadSlotDeclaration,
   WASM_PAGE_SIZE,
 } from "./constants";
+import {
+  PROCESS_MEMORY_DEFAULT_INITIAL_PAGES,
+  PROCESS_MEMORY_DEFAULT_THREAD_SLOTS,
+  PROCESS_MEMORY_FALLBACK_BRK_BASE,
+  PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE,
+  PROCESS_MEMORY_LEGACY_MMAP_BASE,
+  PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE,
+  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
+  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
+  PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
+} from "./generated/abi";
 
 /** Legacy Kernel MemoryManager::MMAP_BASE. Compact hosts override this per process. */
-export const PROCESS_MMAP_BASE = 0x04000000;
+export const PROCESS_MMAP_BASE = PROCESS_MEMORY_LEGACY_MMAP_BASE;
 export const PROCESS_MMAP_BASE_PAGE = PROCESS_MMAP_BASE / WASM_PAGE_SIZE;
 
 /** Kernel MemoryManager::INITIAL_BRK fallback for binaries without __heap_base. */
-export const PROCESS_FALLBACK_BRK_BASE = 0x01000000;
+export const PROCESS_FALLBACK_BRK_BASE = PROCESS_MEMORY_FALLBACK_BRK_BASE;
 
 /** @deprecated brk and mmap are now coordinated by the kernel allocator. */
 export const DEFAULT_BRK_RESERVE_PAGES = 256; // 16 MiB
 
-export const DEFAULT_PROCESS_INITIAL_PAGES = 17;
-export const DEFAULT_PROCESS_THREAD_SLOTS = 16;
-export const FORK_SAVE_BUFFER_SIZE = 16 * 1024;
+export const DEFAULT_PROCESS_INITIAL_PAGES = PROCESS_MEMORY_DEFAULT_INITIAL_PAGES;
+export const DEFAULT_PROCESS_THREAD_SLOTS = PROCESS_MEMORY_DEFAULT_THREAD_SLOTS;
+export const PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT =
+  PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT;
+export const FORK_SAVE_BUFFER_SIZE = PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE;
 export const CHANNEL_PAGES = Math.ceil(CH_TOTAL_SIZE / WASM_PAGE_SIZE);
 
 export interface ProcessMemoryLayout {
@@ -41,7 +54,9 @@ export interface ProcessMemoryLayout {
   brkLimit: number;
   /** Highest mmap address permitted by the process memory maximum. */
   maxAddr: number;
-  /** First thread channel base page in the low control slab. */
+  /** First pthread slot start page in the low control slab. */
+  firstThreadSlotPage: number;
+  /** @deprecated Use firstThreadSlotPage or per-slot channel offsets. */
   firstThreadBasePage: number;
   /** Exclusive page limit for low control slab thread allocations. */
   threadArenaEndPage: number;
@@ -55,6 +70,9 @@ export interface ProcessMemoryLayoutOptions {
   programBytes?: ArrayBuffer;
   heapBase?: bigint | number | null;
   minPages?: number;
+  /** Host default used when the process-wasm declaration is -1 or absent. */
+  defaultThreadSlots?: number;
+  /** Explicit exact pthread slot count; bypasses the process-wasm declaration. */
   threadSlots?: number;
   /** @deprecated brk and mmap are coordinated by the kernel allocator. */
   brkReservePages?: number;
@@ -173,6 +191,29 @@ function heapBaseToNumber(heapBase: bigint | number | null | undefined): number 
   return heapBase;
 }
 
+function validateThreadSlotCount(threadSlotCount: number, label: string): number {
+  if (!Number.isInteger(threadSlotCount) || threadSlotCount < 0) {
+    throw new Error(`invalid ${label}: ${threadSlotCount}`);
+  }
+  return threadSlotCount;
+}
+
+export function resolveProcessThreadSlotCount(
+  programBytes: ArrayBuffer | undefined,
+  hostDefaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS,
+): number {
+  validateThreadSlotCount(hostDefaultThreadSlots, "host default thread slot count");
+
+  const declared = programBytes ? extractThreadSlotDeclaration(programBytes) : null;
+  if (declared === null || declared === PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT) {
+    return hostDefaultThreadSlots;
+  }
+  if (!Number.isInteger(declared) || declared < PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT) {
+    throw new Error(`invalid process thread slot declaration: ${declared}`);
+  }
+  return validateThreadSlotCount(declared, "process thread slot declaration");
+}
+
 export function computeProcessMemoryLayout(
   options: ProcessMemoryLayoutOptions,
 ): ProcessMemoryLayout {
@@ -198,27 +239,27 @@ export function computeProcessMemoryLayout(
   const controlBase = pageAlignUp(firstFreeByte);
   const controlBasePage = controlBase / WASM_PAGE_SIZE;
 
-  const threadSlotCount = options.threadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
-  if (!Number.isInteger(threadSlotCount) || threadSlotCount < 0) {
-    throw new Error(`invalid process thread slot count: ${threadSlotCount}`);
-  }
+  const threadSlotCount = options.threadSlots !== undefined
+    ? validateThreadSlotCount(options.threadSlots, "process thread slot count")
+    : resolveProcessThreadSlotCount(options.programBytes, options.defaultThreadSlots);
 
   // Main thread layout:
-  //   controlBasePage   - main fork save buffer at the end of the page
-  //   channelPage       - main syscall channel header/data
-  //   channelPage+1     - channel spill page
+  //   controlBasePage   - main fork-save/scratch page
+  //   channelPage       - main syscall channel primary page
+  //   channelPage+1     - main syscall channel spill page
   //
-  // Thread slots then use the existing ThreadPageAllocator contract:
-  //   basePage-2        - TLS page
-  //   basePage-1        - per-thread fork save buffer page
-  //   basePage          - thread syscall channel
-  //   basePage+1        - channel spill page
-  const channelPage = controlBasePage + 1;
+  // Pthread slots are addressed with positive offsets from slot start:
+  //   slot+0            - TLS/control page
+  //   slot+1            - per-thread fork-save/scratch page
+  //   slot+2            - syscall channel primary page
+  //   slot+3            - syscall channel spill page
+  const channelPage = controlBasePage + PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE;
   const channelOffset = channelPage * WASM_PAGE_SIZE;
-  const firstThreadBasePage = channelPage + CHANNEL_PAGES + 2;
-  const threadArenaEndPage = threadSlotCount === 0
-    ? channelPage + CHANNEL_PAGES
-    : firstThreadBasePage + (threadSlotCount - 1) * PAGES_PER_THREAD + CHANNEL_PAGES;
+  const firstThreadSlotPage = channelPage + CHANNEL_PAGES;
+  const firstThreadBasePage =
+    firstThreadSlotPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
+  const threadArenaEndPage =
+    firstThreadSlotPage + threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT;
 
   const initialPages = Math.max(
     minPages,
@@ -245,6 +286,7 @@ export function computeProcessMemoryLayout(
     mmapBase: brkBase,
     brkLimit: maxAddr,
     maxAddr,
+    firstThreadSlotPage,
     firstThreadBasePage,
     threadArenaEndPage,
     threadSlotCount,

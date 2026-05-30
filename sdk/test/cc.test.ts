@@ -66,4 +66,10 @@ describe('buildClangArgs', () => {
     expect(args.join(' ')).toContain('channel_syscall.c');
     expect(args.join(' ')).toContain('libc.a');
   });
+
+  it('emits explicit process thread slot declarations into the glue compile', () => {
+    const args = buildClangArgs(['--kandelo-thread-slots=2', 'foo.c', '-o', 'foo.wasm'], toolchain);
+    expect(args).toContain('-DWASM_POSIX_THREAD_SLOT_DECL=2');
+    expect(args).not.toContain('--kandelo-thread-slots=2');
+  });
 });
