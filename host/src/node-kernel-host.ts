@@ -43,6 +43,8 @@ export interface NodeKernelHostOptions {
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
    *  memory is smaller and grows on demand up to this cap. */
   maxPages?: number;
+  /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
+  defaultThreadSlots?: number;
   /** Size of the data buffer for syscall data transfer (default: 65536).
    *  Increase for programs that do large pwrite() calls (e.g. InnoDB). */
   dataBufferSize?: number;
@@ -170,6 +172,7 @@ export class NodeKernelHost {
         config: {
           maxWorkers: this.options.maxWorkers ?? 4,
           maxPages: this.options.maxPages,
+          defaultThreadSlots: this.options.defaultThreadSlots,
           dataBufferSize: this.options.dataBufferSize ?? 65536,
           useSharedMemory: true,
         },

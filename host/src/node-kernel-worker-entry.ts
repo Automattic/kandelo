@@ -41,6 +41,7 @@ import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES } from "./constants";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
+  DEFAULT_PROCESS_THREAD_SLOTS,
   FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "./process-memory";
@@ -69,7 +70,8 @@ const port = parentPort;
 
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: NodeWorkerAdapter;
-let maxPages = DEFAULT_MAX_PAGES;
+let maxPages: number = DEFAULT_MAX_PAGES;
+let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let execPrograms: Record<string, string> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
@@ -241,9 +243,10 @@ function threadAllocatorForLayout(
   ptrWidth: 4 | 8,
 ): ThreadPageAllocator {
   return new ThreadPageAllocator({
-    firstBasePage: layout.firstThreadBasePage,
+    firstSlotStartPage: layout.firstThreadSlotPage,
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
+    reservedSlots: layout.threadSlotCount,
   });
 }
 
@@ -258,6 +261,7 @@ function createFreshProcessMemory(
   const heapBase = extractHeapBase(programBytes);
   const layout = computeProcessMemoryLayout({
     maxPages,
+    defaultThreadSlots,
     ptrWidth,
     programBytes,
     heapBase,
@@ -461,6 +465,7 @@ function cleanupSessionDir(): void {
 
 async function handleInit(msg: InitMessage) {
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
+  defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   execPrograms = msg.execPrograms ?? {};
   workerAdapter = new NodeWorkerAdapter();
 
@@ -477,6 +482,7 @@ async function handleInit(msg: InitMessage) {
       maxWorkers: msg.config.maxWorkers,
       dataBufferSize: msg.config.dataBufferSize ?? 65536,
       useSharedMemory: msg.config.useSharedMemory ?? true,
+      defaultThreadSlots,
       enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG,
     },
     io,
@@ -948,7 +954,18 @@ async function handleClone(
     threadModuleCache.set(pid, threadModule);
   }
 
-  const alloc = processInfo.threadAllocator.allocate(memory);
+  let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
+  try {
+    alloc = processInfo.threadAllocator.allocate(memory);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    post({
+      type: "stderr",
+      pid,
+      data: new TextEncoder().encode(`[kernel-worker] pid=${pid}: ${message}\n`),
+    });
+    throw e;
+  }
   // Register fnPtr/argPtr so that handleFork can route a fork() from
   // this thread back through its entry point (see ForkFromThreadContext
   // in kernel-worker.ts).
@@ -967,6 +984,7 @@ async function handleClone(
     stackPtr,
     tlsPtr,
     ctidPtr,
+    tlsOffset: alloc.tlsOffset,
     tlsAllocAddr: alloc.tlsAllocAddr,
     ptrWidth: processInfo.ptrWidth,
     kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
@@ -974,7 +992,7 @@ async function handleClone(
 
   const threadWorker = workerAdapter.createWorker(threadInitData);
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
-  const threadEntry = { worker: threadWorker, channelOffset: alloc.channelOffset, tid, basePage: alloc.basePage };
+  const threadEntry = { worker: threadWorker, channelOffset: alloc.channelOffset, tid, basePage: alloc.slotStartPage };
   threadWorkers.get(pid)!.push(threadEntry);
 
   const reclaimThread = () => {

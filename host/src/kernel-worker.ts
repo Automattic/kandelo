@@ -57,7 +57,12 @@ import {
   type SyscallArgDesc,
 } from "./generated/abi";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
-import { PROCESS_MMAP_BASE, growMemoryToCover } from "./process-memory";
+import { WASM_PAGE_SIZE } from "./constants";
+import {
+  FORK_SAVE_BUFFER_SIZE,
+  PROCESS_MMAP_BASE,
+  growMemoryToCover,
+} from "./process-memory";
 
 import type { KernelConfig, PlatformIO } from "./types";
 
@@ -86,7 +91,7 @@ const CH_COMPLETE = CHANNEL_STATUS_COMPLETE;
  * the constant in `worker-main.ts` and the onFork handlers in
  * node-kernel-worker-entry.ts / browser-kernel-worker-entry.ts.
  */
-const FORK_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 /** Errno values */
 const EAGAIN = 11;
@@ -1570,7 +1575,7 @@ export class CentralizedKernelWorker {
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: bigint) => number) | undefined;
     if (setMaxAddr) {
-      const tlsPageAddr = channelOffset - 2 * 65536;
+      const tlsPageAddr = channelOffset - 2 * WASM_PAGE_SIZE;
       if (tlsPageAddr >= PROCESS_MMAP_BASE) {
         setMaxAddr(pid, BigInt(tlsPageAddr));
       }
@@ -6942,7 +6947,7 @@ export class CentralizedKernelWorker {
     if (!registration) return null;
     let floor: number | null = null;
     for (const ch of registration.channels) {
-      const tlsPageAddr = ch.channelOffset - 2 * 65536;
+      const tlsPageAddr = ch.channelOffset - 2 * WASM_PAGE_SIZE;
       if (tlsPageAddr >= PROCESS_MMAP_BASE) {
         floor = floor === null ? tlsPageAddr : Math.min(floor, tlsPageAddr);
       }

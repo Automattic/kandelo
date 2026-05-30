@@ -300,12 +300,12 @@ fell back to fork.
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
-2. Host allocates a new channel region and TLS area in the SAME shared memory
+2. Host allocates an explicit pthread control slot in the SAME shared memory
 3. Host spawns a new worker that shares the parent's `WebAssembly.Memory`
 4. Thread worker runs `centralizedThreadWorkerMain`, calls `__wasm_thread_init` to set up TLS
 5. Thread starts executing the given function pointer with the given argument
 
-Threads share memory with the parent (CLONE_VM) but have their own channel and TLS region.
+Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
 
 ## Memory Layout
 
@@ -317,10 +317,14 @@ Address           Region
 0x00110000        Global base (--global-base=1114112)
 __heap_base       First linker-free byte exported by the program
 control_base      Host-owned low control slab
-                  - main fork save buffer
-                  - main syscall channel plus spill page
-                  - fixed pthread slots:
-                    TLS page, fork-buffer page, syscall channel, spill page
+                  - main page 0: fork-save/scratch
+                  - main page 1: syscall channel primary page
+                  - main page 2: syscall channel spill page
+                  - reserved pthread slots:
+                    page 0: TLS/control
+                    page 1: fork-save/scratch
+                    page 2: syscall channel primary page
+                    page 3: syscall channel spill page
 control_end       End of host-owned control slab
 brk_base          Initial brk; brk(0) returns this address
 mmap_base         First automatic mmap address; normally equals brk_base
@@ -331,7 +335,9 @@ MAX_PAGES         End of memory (1GB default)
 
 For current binaries, `control_base` is page-aligned from the larger of the imported-memory minimum and the program's `__heap_base`. The host then reserves a bounded number of pthread slots in that slab and calls `kernel_set_brk_base(pid, control_end)` and `kernel_set_mmap_base(pid, control_end)` before `_start` can run. `__heap_base` is therefore treated as "first byte available to the host layout" rather than the value returned by guest `brk(0)`.
 
-The main channel occupies two Wasm pages plus a 16KB fork save buffer immediately below it. Each pthread slot is four Wasm pages: TLS, per-thread fork-buffer page, syscall channel, and channel spill page. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct slot and returns the slot to that process-local allocator after thread exit.
+The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct slot and returns the slot to that process-local allocator after thread exit.
+
+Processes may export `__wasm_posix_thread_slots` to declare how many pthread slots the host should reserve. A value of `-1` uses the host default, `0` reserves no pthread slots, and a positive value reserves exactly that many slots. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case; the default remains 16. A future runtime control surface under `/sys` or `/proc` can make that default tunable after boot.
 
 `mmap` remains coherent because the kernel has one per-process address-space model for brk and mmap. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. `brk` growth succeeds only when the adjacent range is free; if an mmap region occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED` and `mremap` growth are rejected when they would overlap the reserved prefix or legacy host-control range. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls so returned guest addresses are backed before user code touches them.
 

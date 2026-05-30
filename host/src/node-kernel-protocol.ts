@@ -22,6 +22,8 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxPages?: number;
+    /** Host default pthread slots for process-wasm declarations of -1. */
+    defaultThreadSlots?: number;
     dataBufferSize?: number;
     useSharedMemory?: boolean;
   };
