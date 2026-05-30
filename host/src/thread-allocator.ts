@@ -22,10 +22,10 @@ export interface ThreadPageAllocatorOptions {
 /**
  * Manages pthread channel/TLS allocation within a process WebAssembly.Memory.
  *
- * New process launches use a low control arena below the kernel mmap base.
- * Allocations move upward from the main process channel so the initial memory
- * only needs to include the main channel; clone() grows to the thread control
- * pages on demand.
+ * New process launches reserve a low control slab before the guest-managed
+ * brk/mmap region. Allocations move upward from the main process channel
+ * through fixed per-process slots, so pthread workers share the same SAB
+ * without allocating control pages near the process maximum.
  *
  * Per-thread layout:
  *   basePage-2  - TLS page

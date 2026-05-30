@@ -36,6 +36,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
 export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_set_cwd",
   "kernel_set_max_addr",
+  "kernel_set_mmap_base",
   "kernel_set_process_argv",
 ] as const;
 

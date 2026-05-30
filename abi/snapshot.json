@@ -185,6 +185,7 @@
     "optional_kernel_exports": [
       "kernel_set_cwd",
       "kernel_set_max_addr",
+      "kernel_set_mmap_base",
       "kernel_set_process_argv"
     ],
     "optional_kernel_features": 0,
@@ -1290,6 +1291,11 @@
     {
       "kind": "func",
       "name": "kernel_set_max_addr",
+      "signature": "(i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_mmap_base",
       "signature": "(i32,i64) -> (i32)"
     },
     {

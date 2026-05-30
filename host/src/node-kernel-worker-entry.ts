@@ -253,7 +253,6 @@ function createFreshProcessMemory(
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
-  heapBase: bigint | null;
   threadAllocator: ThreadPageAllocator;
 } {
   const heapBase = extractHeapBase(programBytes);
@@ -268,7 +267,6 @@ function createFreshProcessMemory(
   return {
     memory,
     layout,
-    heapBase,
     threadAllocator: threadAllocatorForLayout(layout, ptrWidth),
   };
 }
@@ -546,7 +544,6 @@ function handleSpawn(msg: SpawnMessage) {
     const {
       memory,
       layout,
-      heapBase,
       threadAllocator,
     } = createFreshProcessMemory(msg.programBytes, ptrWidth);
     const channelOffset = layout.channelOffset;
@@ -554,13 +551,10 @@ function handleSpawn(msg: SpawnMessage) {
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
       ptrWidth,
       argv: msg.argv,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
-      brkLimit: layout.brkLimit,
     });
-
-    if (heapBase !== null) {
-      kernelWorker.setBrkBase(pid, heapBase);
-    }
 
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
@@ -683,7 +677,7 @@ async function handleFork(
     skipKernelCreate: true,
     ptrWidth,
     maxAddr: childLayout.maxAddr,
-    brkLimit: childLayout.brkLimit,
+    mmapBase: childLayout.mmapBase,
   });
 
   const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
@@ -766,7 +760,6 @@ async function handleExec(
   const {
     memory: newMemory,
     layout: newLayout,
-    heapBase,
     threadAllocator: newThreadAllocator,
   } = createFreshProcessMemory(programBytes, newPtrWidth);
   const newChannelOffset = newLayout.channelOffset;
@@ -774,17 +767,14 @@ async function handleExec(
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
     skipKernelCreate: true,
     ptrWidth: newPtrWidth,
+    brkBase: newLayout.brkBase,
+    mmapBase: newLayout.mmapBase,
     maxAddr: newLayout.maxAddr,
-    brkLimit: newLayout.brkLimit,
     // Refresh kernel-side Process.argv so /proc/<pid>/cmdline reflects
     // the post-exec image, not the parent's argv. Mirrors the browser
     // handleExec fix.
     argv: launchArgv,
   });
-
-  if (heapBase !== null) {
-    kernelWorker.setBrkBase(pid, heapBase);
-  }
 
   // Clear thread module cache — new program binary is different
   threadModuleCache.delete(pid);
@@ -890,7 +880,6 @@ async function handlePosixSpawn(
   const {
     memory,
     layout,
-    heapBase,
     threadAllocator,
   } = createFreshProcessMemory(programBytes, ptrWidth);
   const channelOffset = layout.channelOffset;
@@ -900,13 +889,10 @@ async function handlePosixSpawn(
   kernelWorker.registerProcess(childPid, memory, [channelOffset], {
     skipKernelCreate: true,
     ptrWidth,
+    brkBase: layout.brkBase,
+    mmapBase: layout.mmapBase,
     maxAddr: layout.maxAddr,
-    brkLimit: layout.brkLimit,
   });
-
-  if (heapBase !== null) {
-    kernelWorker.setBrkBase(childPid, heapBase);
-  }
 
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",

@@ -44,8 +44,9 @@ function registerProcess(
   entry: ReturnType<typeof createProcessMemory>,
 ): void {
   kw.registerProcess(pid, entry.memory, [entry.channelOffset], {
+    brkBase: entry.layout.brkBase,
+    mmapBase: entry.layout.mmapBase,
     maxAddr: entry.layout.maxAddr,
-    brkLimit: entry.layout.brkLimit,
   });
 }
 
@@ -80,7 +81,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     kw.unregisterProcess(999);
   });
 
-  it("repeated low-layout launches do not leave process registrations behind", async () => {
+  it("repeated compact-layout launches do not leave process registrations behind", async () => {
     const kw = new CentralizedKernelWorker(
       { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
       new NodePlatformIO(),

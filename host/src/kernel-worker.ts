@@ -422,6 +422,10 @@ interface RegisterProcessOptions {
   skipKernelCreate?: boolean;
   argv?: string[];
   ptrWidth?: 4 | 8;
+  /** Initial program break after any host-owned low control pages. */
+  brkBase?: number;
+  /** Lower bound for automatic mmap allocation. */
+  mmapBase?: number;
   /** mmap ceiling in process address space; defaults to legacy channel cap. */
   maxAddr?: number;
   /** brk ceiling below host-owned control pages. */
@@ -959,6 +963,14 @@ export class CentralizedKernelWorker {
       }
     }
 
+    if (options?.brkBase !== undefined) {
+      if (!this.setBrkBase(pid, options.brkBase)) {
+        throw new Error(
+          "Kernel export kernel_set_brk_base is required for compact process memory layout",
+        );
+      }
+    }
+
     // Set process argv in kernel for /proc/<pid>/cmdline
     if (options?.argv && options.argv.length > 0) {
       const setArgv = this.kernelInstance!.exports.kernel_set_process_argv as
@@ -990,10 +1002,18 @@ export class CentralizedKernelWorker {
       }
     }
 
+    if (options?.mmapBase !== undefined) {
+      if (!this.setMmapBase(pid, options.mmapBase)) {
+        throw new Error(
+          "Kernel export kernel_set_mmap_base is required for compact process memory layout",
+        );
+      }
+    }
+
     if (options?.brkLimit !== undefined) {
       if (!this.setBrkLimit(pid, options.brkLimit)) {
         throw new Error(
-          "Kernel export kernel_set_brk_limit is required for low process control layout",
+          "Kernel export kernel_set_brk_limit is required for legacy low-control layout",
         );
       }
     }
@@ -1545,8 +1565,8 @@ export class CentralizedKernelWorker {
     }
 
     // Lower the kernel's mmap ceiling only for legacy high-address thread
-    // control pages. New process memories place thread pages below
-    // PROCESS_MMAP_BASE, where mmap never allocates.
+    // control pages. Compact process memories reserve thread pages before the
+    // process's mmap base when the process is registered.
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: bigint) => number) | undefined;
     if (setMaxAddr) {
@@ -6904,6 +6924,19 @@ export class CentralizedKernelWorker {
     return setBrkLimitFn(pid, BigInt(brkLimit)) >= 0;
   }
 
+  /**
+   * Set the automatic mmap lower bound for a process. Compact process layouts
+   * set this to the first guest-managed byte after the host control prefix.
+   */
+  setMmapBase(pid: number, mmapBase: number): boolean {
+    const setMmapBaseFn = this.kernelInstance!.exports.kernel_set_mmap_base as
+      ((pid: number, mmapBase: bigint) => number) | undefined;
+    if (!setMmapBaseFn) {
+      return false;
+    }
+    return setMmapBaseFn(pid, BigInt(mmapBase)) >= 0;
+  }
+
   private highControlFloorForProcess(pid: number): number | null {
     const registration = this.processes.get(pid);
     if (!registration) return null;
@@ -6918,22 +6951,22 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Set the program's initial brk to its `__heap_base` value. Must be
-   * called between `registerProcess` and the moment the new process worker
-   * issues its first syscall — otherwise the kernel falls back to its
-   * built-in `INITIAL_BRK` constant, which can land inside the program's
-   * stack region for binaries with a large data section (e.g. mariadbd).
+   * Set the program's initial brk. Compact process layouts pass the first
+   * guest-managed byte after the host control slab; legacy callers may pass
+   * the program's `__heap_base` directly. Must run before the new process
+   * worker can issue its first syscall.
    *
    * Accepts `bigint` (preferred — what `extractHeapBase` returns) or
    * `number`. The kernel runs in wasm64 so the export takes a `usize`,
    * which is `bigint` on the JS side.
    */
-  setBrkBase(pid: number, addr: bigint | number): void {
+  setBrkBase(pid: number, addr: bigint | number): boolean {
     const setBrkBaseFn = this.kernelInstance!.exports.kernel_set_brk_base as
       ((pid: number, addr: bigint) => number) | undefined;
-    if (setBrkBaseFn) {
-      setBrkBaseFn(pid, typeof addr === "bigint" ? addr : BigInt(addr));
+    if (!setBrkBaseFn) {
+      return false;
     }
+    return setBrkBaseFn(pid, typeof addr === "bigint" ? addr : BigInt(addr)) >= 0;
   }
 
   /** Get the underlying kernel instance for direct access. */

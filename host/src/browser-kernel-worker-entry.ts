@@ -234,7 +234,6 @@ function createFreshProcessMemory(
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
-  heapBase: bigint | null;
   threadAllocator: ThreadPageAllocator;
 } {
   const heapBase = extractHeapBase(programBytes);
@@ -249,7 +248,6 @@ function createFreshProcessMemory(
   return {
     memory,
     layout,
-    heapBase,
     threadAllocator: threadAllocatorForLayout(layout, ptrWidth),
   };
 }
@@ -563,7 +561,6 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     const {
       memory,
       layout,
-      heapBase,
       threadAllocator,
     } = createFreshProcessMemory(programBytes, ptrWidth, pages);
     const channelOffset = layout.channelOffset;
@@ -571,19 +568,10 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
       ptrWidth,
       argv: msg.argv,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
-      brkLimit: layout.brkLimit,
     });
-
-    // Install the program's `__heap_base` as the initial brk before the
-    // process worker is spawned (matches handleSpawn in
-    // host/src/node-kernel-worker-entry.ts). Without this the kernel's
-    // hardcoded INITIAL_BRK can land inside the program's stack region
-    // for binaries with a large data section (e.g. mariadbd) — see
-    // docs/architecture.md "Heap initialization (brk)".
-    if (heapBase !== null) {
-      kernelWorker.setBrkBase(pid, heapBase);
-    }
 
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
@@ -754,7 +742,7 @@ async function handleFork(
     skipKernelCreate: true,
     ptrWidth,
     maxAddr: childLayout.maxAddr,
-    brkLimit: childLayout.brkLimit,
+    mmapBase: childLayout.mmapBase,
   });
 
   const forkBufAddr = threadFork
@@ -833,7 +821,6 @@ async function handleExec(
   const {
     memory: newMemory,
     layout: newLayout,
-    heapBase: execHeapBase,
     threadAllocator: newThreadAllocator,
   } = createFreshProcessMemory(bytes, ptrWidth);
   const newChannelOffset = newLayout.channelOffset;
@@ -841,21 +828,14 @@ async function handleExec(
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
     skipKernelCreate: true,
     ptrWidth,
+    brkBase: newLayout.brkBase,
+    mmapBase: newLayout.mmapBase,
     maxAddr: newLayout.maxAddr,
-    brkLimit: newLayout.brkLimit,
     // Refresh the kernel's Process.argv so /proc/<pid>/cmdline and
     // host-side enumeration (Kandelo Inspector → Procs) show the new
     // program's argv after exec, not the parent's pre-exec argv.
     argv: launchArgv,
   });
-
-  // Re-install the new program's `__heap_base` post-exec — the kernel
-  // reset the brk in deserialize_exec_state (POSIX-correct), so the new
-  // program would otherwise see the fallback INITIAL_BRK. Mirrors
-  // handleExec in host/src/node-kernel-worker-entry.ts.
-  if (execHeapBase !== null) {
-    kernelWorker.setBrkBase(pid, execHeapBase);
-  }
 
   const execInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -943,7 +923,6 @@ async function handlePosixSpawn(
   const {
     memory: newMemory,
     layout: newLayout,
-    heapBase,
     threadAllocator,
   } = createFreshProcessMemory(programBytes, ptrWidth);
   const newChannelOffset = newLayout.channelOffset;
@@ -952,13 +931,10 @@ async function handlePosixSpawn(
   kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
     skipKernelCreate: true,
     ptrWidth,
+    brkBase: newLayout.brkBase,
+    mmapBase: newLayout.mmapBase,
     maxAddr: newLayout.maxAddr,
-    brkLimit: newLayout.brkLimit,
   });
-
-  if (heapBase !== null) {
-    kernelWorker.setBrkBase(childPid, heapBase);
-  }
 
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",

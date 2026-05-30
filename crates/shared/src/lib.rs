@@ -1030,6 +1030,7 @@ pub mod abi {
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
         "kernel_set_cwd",
         "kernel_set_max_addr",
+        "kernel_set_mmap_base",
         "kernel_set_process_argv",
     ];
 

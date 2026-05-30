@@ -1,44 +1,52 @@
 import {
   CH_TOTAL_SIZE,
   DEFAULT_MAX_PAGES,
+  PAGES_PER_THREAD,
   WASM_PAGE_SIZE,
 } from "./constants";
 
-/** Kernel MemoryManager::MMAP_BASE. Guest mmap allocations start here. */
+/** Legacy Kernel MemoryManager::MMAP_BASE. Compact hosts override this per process. */
 export const PROCESS_MMAP_BASE = 0x04000000;
 export const PROCESS_MMAP_BASE_PAGE = PROCESS_MMAP_BASE / WASM_PAGE_SIZE;
 
 /** Kernel MemoryManager::INITIAL_BRK fallback for binaries without __heap_base. */
 export const PROCESS_FALLBACK_BRK_BASE = 0x01000000;
 
-/**
- * Keep a modest brk window below the host control arena. Larger allocations
- * still use mmap above PROCESS_MMAP_BASE and grow the WebAssembly.Memory on
- * demand.
- */
+/** @deprecated brk and mmap are now coordinated by the kernel allocator. */
 export const DEFAULT_BRK_RESERVE_PAGES = 256; // 16 MiB
 
 export const DEFAULT_PROCESS_INITIAL_PAGES = 17;
+export const DEFAULT_PROCESS_THREAD_SLOTS = 16;
 export const FORK_SAVE_BUFFER_SIZE = 16 * 1024;
 export const CHANNEL_PAGES = Math.ceil(CH_TOTAL_SIZE / WASM_PAGE_SIZE);
 
 export interface ProcessMemoryLayout {
-  /** Initial WebAssembly.Memory pages required for the main channel. */
+  /** Initial WebAssembly.Memory pages required for the low control slab. */
   initialPages: number;
   /** Maximum pages configured for this process. */
   maximumPages: number;
+  /** First byte of host-owned control memory after linker-owned data. */
+  controlBase: number;
+  /** First guest-managed byte after the host-owned control slab. */
+  controlEnd: number;
   /** Main thread syscall channel byte offset. */
   channelOffset: number;
   /** Page containing the main thread syscall channel header. */
   channelPage: number;
-  /** Highest brk address permitted before colliding with host control pages. */
+  /** Initial program break after host-owned control pages. */
+  brkBase: number;
+  /** Lower bound for automatic mmap allocation. */
+  mmapBase: number;
+  /** Highest brk address permitted; legacy compatibility field. */
   brkLimit: number;
   /** Highest mmap address permitted by the process memory maximum. */
   maxAddr: number;
-  /** First thread channel base page in the low control arena. */
+  /** First thread channel base page in the low control slab. */
   firstThreadBasePage: number;
-  /** Exclusive page limit for low control arena thread allocations. */
+  /** Exclusive page limit for low control slab thread allocations. */
   threadArenaEndPage: number;
+  /** Number of pthread control slots reserved in this process memory. */
+  threadSlotCount: number;
 }
 
 export interface ProcessMemoryLayoutOptions {
@@ -47,6 +55,8 @@ export interface ProcessMemoryLayoutOptions {
   programBytes?: ArrayBuffer;
   heapBase?: bigint | number | null;
   minPages?: number;
+  threadSlots?: number;
+  /** @deprecated brk and mmap are coordinated by the kernel allocator. */
   brkReservePages?: number;
 }
 
@@ -181,35 +191,38 @@ export function computeProcessMemoryLayout(
   );
 
   const heapBase = heapBaseToNumber(options.heapBase);
-  const brkBase = Math.max(
+  const firstFreeByte = Math.max(
     heapBase ?? PROCESS_FALLBACK_BRK_BASE,
     minPages * WASM_PAGE_SIZE,
   );
+  const controlBase = pageAlignUp(firstFreeByte);
+  const controlBasePage = controlBase / WASM_PAGE_SIZE;
 
-  const reservePages = options.brkReservePages ?? DEFAULT_BRK_RESERVE_PAGES;
-  const desiredBrkLimit = pageAlignUp(brkBase + reservePages * WASM_PAGE_SIZE);
-
-  const arenaEndPage = Math.min(maximumPages, PROCESS_MMAP_BASE_PAGE);
-  const maxMainChannelPage = arenaEndPage - CHANNEL_PAGES;
-  if (maxMainChannelPage <= 0) {
-    throw new Error(`maxPages=${maximumPages} leaves no room for a syscall channel`);
+  const threadSlotCount = options.threadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
+  if (!Number.isInteger(threadSlotCount) || threadSlotCount < 0) {
+    throw new Error(`invalid process thread slot count: ${threadSlotCount}`);
   }
 
-  const maxBrkLimit = maxMainChannelPage * WASM_PAGE_SIZE - FORK_SAVE_BUFFER_SIZE;
-  if (brkBase > maxBrkLimit) {
-    throw new Error(
-      `program brk base 0x${brkBase.toString(16)} does not fit below process control arena ` +
-        `(max brk 0x${maxBrkLimit.toString(16)})`,
-    );
-  }
-
-  const brkLimitTarget = Math.min(desiredBrkLimit, maxBrkLimit);
-  const channelPage = Math.ceil((brkLimitTarget + FORK_SAVE_BUFFER_SIZE) / WASM_PAGE_SIZE);
+  // Main thread layout:
+  //   controlBasePage   - main fork save buffer at the end of the page
+  //   channelPage       - main syscall channel header/data
+  //   channelPage+1     - channel spill page
+  //
+  // Thread slots then use the existing ThreadPageAllocator contract:
+  //   basePage-2        - TLS page
+  //   basePage-1        - per-thread fork save buffer page
+  //   basePage          - thread syscall channel
+  //   basePage+1        - channel spill page
+  const channelPage = controlBasePage + 1;
   const channelOffset = channelPage * WASM_PAGE_SIZE;
-  const brkLimit = channelOffset - FORK_SAVE_BUFFER_SIZE;
+  const firstThreadBasePage = channelPage + CHANNEL_PAGES + 2;
+  const threadArenaEndPage = threadSlotCount === 0
+    ? channelPage + CHANNEL_PAGES
+    : firstThreadBasePage + (threadSlotCount - 1) * PAGES_PER_THREAD + CHANNEL_PAGES;
+
   const initialPages = Math.max(
     minPages,
-    Math.ceil((channelOffset + CH_TOTAL_SIZE) / WASM_PAGE_SIZE),
+    threadArenaEndPage,
   );
 
   if (initialPages > maximumPages) {
@@ -218,15 +231,23 @@ export function computeProcessMemoryLayout(
     );
   }
 
+  const brkBase = threadArenaEndPage * WASM_PAGE_SIZE;
+  const maxAddr = maximumPages * WASM_PAGE_SIZE;
+
   return {
     initialPages,
     maximumPages,
+    controlBase,
+    controlEnd: brkBase,
     channelOffset,
     channelPage,
-    brkLimit,
-    maxAddr: maximumPages * WASM_PAGE_SIZE,
-    firstThreadBasePage: channelPage + 4,
-    threadArenaEndPage: arenaEndPage,
+    brkBase,
+    mmapBase: brkBase,
+    brkLimit: maxAddr,
+    maxAddr,
+    firstThreadBasePage,
+    threadArenaEndPage,
+    threadSlotCount,
   };
 }
 
