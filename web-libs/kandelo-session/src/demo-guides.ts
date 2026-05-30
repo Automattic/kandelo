@@ -10,6 +10,9 @@ import type { DemoPresentation } from "./kernel-host";
 export const DOOM_COMMAND = "/usr/local/bin/fbdoom -iwad /doom1.wad";
 export const DOOM_WAD_URL = "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad";
 export const DOOM_WAD_SHA256 = "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771";
+export const LOVE_COMMAND = "/usr/local/bin/love /usr/local/share/love/examples";
+export const BYTEPATH_COMMAND = "/usr/local/bin/love /usr/local/share/love/examples/bytepath";
+export const SNKRX_COMMAND = "/usr/local/bin/love /usr/local/share/love/examples/snkrx";
 
 const shellScript = `echo "Hello from a Kandelo guided script"
 uname -a
@@ -60,6 +63,12 @@ export function builtinDemoGuide(profileId: string): DemoGuideConfig | null {
       return nginxGuide();
     case "nginx-php":
       return nginxPhpGuide();
+    case "love":
+      return loveGuide();
+    case "bytepath":
+      return bytepathGuide();
+    case "snkrx":
+      return snkrxGuide();
     default:
       return null;
   }
@@ -81,6 +90,21 @@ export function builtinDemoPresentation(profileId: string): DemoPresentation | n
       return {
         ...genericDemoPresentation("framebuffer"),
         autoCommand: DOOM_COMMAND,
+      };
+    case "love":
+      return {
+        ...genericDemoPresentation("framebuffer"),
+        autoCommand: LOVE_COMMAND,
+      };
+    case "bytepath":
+      return {
+        ...genericDemoPresentation("framebuffer"),
+        autoCommand: BYTEPATH_COMMAND,
+      };
+    case "snkrx":
+      return {
+        ...genericDemoPresentation("framebuffer"),
+        autoCommand: SNKRX_COMMAND,
       };
     default:
       return null;
@@ -202,6 +226,66 @@ export function nginxPhpGuide(): DemoGuideConfig {
       title: "Service check",
       language: "sh",
       initialText: nginxPhpScript,
+    },
+  );
+}
+
+export function loveGuide(): DemoGuideConfig {
+  return scriptGuide(
+    "LOVE game gallery",
+    "The native runtime opens /dev/fb0 and runs bundled Lua game demos.",
+    [
+      actionGroup("Runtime", [
+        action("run-love", "Run", "Start the LOVE game gallery.", "terminal.run", LOVE_COMMAND),
+        action("run-bytepath", "BYTEPATH", "Start the bundled BYTEPATH port.", "terminal.run", BYTEPATH_COMMAND),
+        action("run-snkrx", "SNKRX", "Start the bundled SNKRX port.", "terminal.run", SNKRX_COMMAND),
+        action("list-examples", "Games", "List the staged game demo files.", "terminal.run", "find /usr/local/share/love/examples -maxdepth 2 -type f | sort"),
+        action("show-runtime", "Binary", "Show the native runtime path.", "terminal.run", "ls -lh /usr/local/bin/love"),
+      ]),
+    ],
+    {
+      title: "Launch command",
+      language: "sh",
+      initialText: LOVE_COMMAND,
+    },
+  );
+}
+
+export function bytepathGuide(): DemoGuideConfig {
+  return scriptGuide(
+    "BYTEPATH",
+    "BYTEPATH runs as a standard Lua 5.1 LOVE app on the native framebuffer runtime.",
+    [
+      actionGroup("Runtime", [
+        action("run-bytepath", "Run", "Start BYTEPATH.", "terminal.run", BYTEPATH_COMMAND),
+        action("run-gallery", "Gallery", "Start the smaller LOVE game gallery.", "terminal.run", LOVE_COMMAND),
+        action("show-bytepath", "Files", "List the staged BYTEPATH files.", "terminal.run", "find /usr/local/share/love/examples/bytepath -maxdepth 2 -type f | sort | head -80"),
+      ]),
+    ],
+    {
+      title: "Launch command",
+      language: "sh",
+      initialText: BYTEPATH_COMMAND,
+    },
+  );
+}
+
+export function snkrxGuide(): DemoGuideConfig {
+  return scriptGuide(
+    "SNKRX",
+    "SNKRX runs as a standard Lua 5.1 LOVE app on the native framebuffer runtime.",
+    [
+      actionGroup("Runtime", [
+        action("run-snkrx", "Run", "Start SNKRX.", "terminal.run", SNKRX_COMMAND),
+        action("run-bytepath", "BYTEPATH", "Start BYTEPATH.", "terminal.run", BYTEPATH_COMMAND),
+        action("run-gallery", "Gallery", "Start the smaller LOVE game gallery.", "terminal.run", LOVE_COMMAND),
+        action("show-snkrx", "Files", "List the staged SNKRX files.", "terminal.run", "find /usr/local/share/love/examples/snkrx -maxdepth 2 -type f | sort | head -80"),
+      ]),
+    ],
+    {
+      title: "Launch command",
+      language: "sh",
+      initialText: SNKRX_COMMAND,
     },
   );
 }
