@@ -48,6 +48,8 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxMemoryPages: number;
+    /** Host default pthread slots for process-wasm declarations of -1. */
+    defaultThreadSlots?: number;
     env: string[];
     /** Forwarded to KernelConfig.enableSyscallLog — log every syscall. */
     enableSyscallLog?: boolean;

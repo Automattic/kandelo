@@ -1,7 +1,7 @@
 kind = "program"
 name = "kandelo-sdk"
 version = "0.1.0"
-kernel_abi = 12
+kernel_abi = 13
 depends_on = ["libcxx@21"]
 
 [source]

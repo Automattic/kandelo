@@ -17,6 +17,7 @@ import {
   describeWasmArtifactPolicyFailures,
   extractHeapBase,
   extractAbiVersion,
+  extractThreadSlotDeclaration,
   wasmContainsLegacyAsyncify,
   wasmIsRelocatableObject,
   readWasmCustomSectionNames,
@@ -335,6 +336,28 @@ describe("extractAbiVersion", () => {
       exports: [{ name: "__abi_version", kind: 0, index: 1 }],
     });
     expect(extractAbiVersion(wasm)).toBe(7);
+  });
+});
+
+describe("extractThreadSlotDeclaration", () => {
+  it("returns null when the process-wasm declaration export is absent", () => {
+    const wasm = buildWasm({
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(-1)],
+      exports: [{ name: "__abi_version", kind: 0, index: 0 }],
+    });
+    expect(extractThreadSlotDeclaration(wasm)).toBeNull();
+  });
+
+  it("reads the signed i32 thread slot declaration", () => {
+    for (const value of [-1, 0, 3]) {
+      const wasm = buildWasm({
+        funcTypes: [0],
+        funcBodies: [abiVersionBody(value)],
+        exports: [{ name: "__wasm_posix_thread_slots", kind: 0, index: 0 }],
+      });
+      expect(extractThreadSlotDeclaration(wasm)).toBe(value);
+    }
   });
 });
 
