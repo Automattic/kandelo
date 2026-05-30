@@ -66,7 +66,6 @@ function createFreshProcessMemory(
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
-  heapBase: bigint | null;
   threadAllocator: ThreadPageAllocator;
 } {
   const heapBase = extractHeapBase(programBytes);
@@ -81,7 +80,6 @@ function createFreshProcessMemory(
   return {
     memory,
     layout,
-    heapBase,
     threadAllocator: threadAllocatorForLayout(layout, ptrWidth),
   };
 }
@@ -322,7 +320,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           skipKernelCreate: true,
           ptrWidth: parentPtrWidth,
           maxAddr: childLayout.maxAddr,
-          brkLimit: childLayout.brkLimit,
+          mmapBase: childLayout.mmapBase,
         });
 
         const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
@@ -379,7 +377,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         const {
           memory: newMemory,
           layout: newLayout,
-          heapBase: execHeapBase,
           threadAllocator: newThreadAllocator,
         } = createFreshProcessMemory(newProgramBytes, newPtrWidth);
         const newChannelOffset = newLayout.channelOffset;
@@ -387,10 +384,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
         kernelWorker.registerProcess(execPid, newMemory, [newChannelOffset], {
           skipKernelCreate: true,
           ptrWidth: newPtrWidth,
+          brkBase: newLayout.brkBase,
+          mmapBase: newLayout.mmapBase,
           maxAddr: newLayout.maxAddr,
-          brkLimit: newLayout.brkLimit,
         });
-        if (execHeapBase !== null) kernelWorker.setBrkBase(execPid, execHeapBase);
         processProgramBytes.set(execPid, newProgramBytes);
         processLayouts.set(execPid, newLayout);
         threadAllocators.set(execPid, newThreadAllocator);
@@ -499,17 +496,16 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const {
     memory,
     layout,
-    heapBase: initialHeapBase,
     threadAllocator,
   } = createFreshProcessMemory(programBytes, ptrWidth);
   const channelOffset = layout.channelOffset;
 
   kernelWorker.registerProcess(pid, memory, [channelOffset], {
     ptrWidth,
+    brkBase: layout.brkBase,
+    mmapBase: layout.mmapBase,
     maxAddr: layout.maxAddr,
-    brkLimit: layout.brkLimit,
   });
-  if (initialHeapBase !== null) kernelWorker.setBrkBase(pid, initialHeapBase);
   processProgramBytes.set(pid, programBytes);
   processLayouts.set(pid, layout);
   threadAllocators.set(pid, threadAllocator);

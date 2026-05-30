@@ -1,7 +1,7 @@
 # Unified process memory allocator plan
 
 **Date:** 2026-05-30
-**Status:** Proposed executable goal
+**Status:** Implemented in PR #595 with follow-up linker ABI work deferred
 **Objective:** Move Kandelo process memory to a single coordinated address-space allocator, with host control memory reserved before the guest heap, so processes start small, grow densely, and avoid brk/mmap/control-region collisions without fixed high address floors.
 
 ## Background
@@ -11,11 +11,11 @@ PR #595 fixes the immediate browser-host bug where every guest process allocated
 - Host control pages sit above the initial brk heap, so the kernel needs a `brk_limit` to stop brk before it reaches the control arena.
 - Normal mmap allocation still starts at `0x04000000`, so the first mmap can grow the process memory to about 64 MiB even when the actual mapping is small.
 
-This plan replaces those compromises with an ABI-level layout and a unified kernel allocator.
+This plan replaces those compromises with a compact host-computed layout and unified kernel brk/mmap coordination. A future SDK/linker ABI can make the control slab an explicit exported program contract, but this PR can safely ship the same memory shape for current binaries by treating exported `__heap_base` as the first byte available to the host layout and moving guest `brk(0)` to the end of the host control slab.
 
 ## Target layout
 
-The guest toolchain reserves a host-control slab before `__heap_base`. The host uses exported layout symbols instead of choosing arbitrary low addresses at process launch.
+Implemented layout for current binaries:
 
 ```text
 Process Shared WebAssembly.Memory
@@ -27,7 +27,8 @@ Process Shared WebAssembly.Memory
   - stack / shadow stack
   - TLS templates and other compiler/runtime reservations
 
-__wpk_control_base
+__heap_base
+__wpk_control_base = page_align(max(__heap_base, imported_memory_minimum))
   host-owned control slab
 
   main process slot:
@@ -57,8 +58,8 @@ __wpk_control_base
 
 __wpk_control_end
 
-__heap_base = align(__wpk_control_end)
-  guest dynamic allocation begins here
+brk_base = mmap_base = __wpk_control_end
+  guest dynamic allocation begins here; brk(0) returns this address
 
 managed address space
   one kernel allocator tracks:
@@ -71,13 +72,15 @@ maxMemoryPages * 64KiB
   configured process address-space cap
 ```
 
+Future linker ABI target: reserve the host-control slab before the toolchain's exported `__heap_base` and add explicit exports such as `__wpk_control_base`, `__wpk_control_end`, and thread slot metadata. That would let guest tooling see `__heap_base` as the true guest heap start. The current host-computed layout avoids corrupting existing binaries because it never places host data below the exported `__heap_base`.
+
 All workers for a process still share one `WebAssembly.Memory`. The main worker uses the main process slot. Each pthread worker receives the same memory plus a distinct pthread slot. The host tracks slot ownership per pid; exited pthreads return their slots to that process-local free list after zeroing.
 
 ## Design decisions
 
 ### Host control memory belongs before heap
 
-Host control pages must not be placed below the current `__heap_base` for arbitrary existing binaries because that address range can contain guest static data, stack, shadow stack, TLS templates, or linker-reserved state. The safe version is an SDK/linker ABI rule: reserve the slab first, then export `__heap_base` after the slab.
+Host control pages must not be placed below the current `__heap_base` for arbitrary existing binaries because that address range can contain guest static data, stack, shadow stack, TLS templates, or linker-reserved state. This PR therefore reserves host control pages after `__heap_base` and before guest `brk_base`. The future SDK/linker ABI can reserve the slab first, then export `__heap_base` after the slab.
 
 ### One kernel allocator owns brk and mmap
 

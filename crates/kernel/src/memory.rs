@@ -10,6 +10,15 @@ pub struct MappedRegion {
     pub flags: u32,  // map flags
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryLayoutMetadata {
+    pub initial_brk: usize,
+    pub max_addr: usize,
+    pub brk_limit: usize,
+    pub mmap_base: usize,
+    pub reserved_until: usize,
+}
+
 /// Kernel memory manager for mmap/munmap/brk.
 pub struct MemoryManager {
     /// List of active mappings, kept sorted by address.
@@ -18,8 +27,14 @@ pub struct MemoryManager {
     program_break: usize,
     /// Upper bound for mmap allocation (default 1GB = Wasm max-memory).
     max_addr: usize,
-    /// Upper bound for brk allocation. Defaults to MMAP_BASE and can be
-    /// lowered by the host to reserve in-memory syscall/thread control pages.
+    /// Lower bound for automatic mmap allocation.
+    mmap_base: usize,
+    /// Optional reserved prefix for compact process memories. When non-zero,
+    /// MAP_FIXED/mremap cannot enter addresses below this point.
+    reserved_until: usize,
+    /// Upper bound for brk allocation. Defaults to the process max address and
+    /// can be lowered by legacy hosts to reserve in-memory syscall/thread
+    /// control pages between brk and mmap.
     brk_limit: usize,
     /// RLIMIT_DATA soft limit (updated by setrlimit). u64::MAX = unlimited.
     data_limit: u64,
@@ -49,7 +64,9 @@ impl MemoryManager {
             mappings: Vec::new(),
             program_break: Self::INITIAL_BRK,
             max_addr: Self::DEFAULT_MAX_ADDR,
-            brk_limit: Self::MMAP_BASE,
+            mmap_base: Self::MMAP_BASE,
+            reserved_until: 0,
+            brk_limit: Self::DEFAULT_MAX_ADDR,
             data_limit: u64::MAX,
             initial_brk: Self::INITIAL_BRK,
         }
@@ -84,10 +101,14 @@ impl MemoryManager {
 
         let addr = if hint != 0 && (flags & MAP_FIXED) != 0 {
             // MAP_FIXED: use the exact address, removing any overlapping mappings
-            // Reject if the region extends past max_addr or overlaps host
-            // control pages reserved between brk_limit and MMAP_BASE.
+            // Reject if the region extends past max_addr or overlaps
+            // host-reserved control pages.
             let end = hint.saturating_add(aligned_len);
-            if end > self.max_addr || self.overlaps_host_control(hint, aligned_len) {
+            if end > self.max_addr
+                || self.overlaps_reserved_prefix(hint, aligned_len)
+                || self.overlaps_host_control(hint, aligned_len)
+                || (self.reserved_until != 0 && self.overlaps_brk_heap(hint, aligned_len))
+            {
                 return wasm_posix_shared::mmap::MAP_FAILED;
             }
             self.mappings.retain(|m| {
@@ -97,7 +118,7 @@ impl MemoryManager {
             });
             hint
         } else {
-            // Find first gap in [MMAP_BASE, max_addr) that fits aligned_len.
+            // Find first gap in [mmap_base, max_addr) that fits aligned_len.
             // Mappings are kept sorted by address.
             match self.find_gap(aligned_len) {
                 Some(a) => a,
@@ -120,11 +141,15 @@ impl MemoryManager {
         addr
     }
 
-    /// Find the first gap in [MMAP_BASE, max_addr) that can fit `needed` bytes.
+    /// Find the first gap in [mmap_base, max_addr) that can fit `needed` bytes.
     fn find_gap(&self, needed: usize) -> Option<usize> {
-        let mut cursor = Self::MMAP_BASE;
+        let mut cursor = self.mmap_base.max(self.program_break);
         for m in &self.mappings {
-            if m.addr < Self::MMAP_BASE {
+            if m.addr < cursor {
+                let end = m.addr.saturating_add(m.len);
+                if end > cursor {
+                    cursor = end;
+                }
                 continue;
             }
             if m.addr >= cursor {
@@ -147,11 +172,50 @@ impl MemoryManager {
     }
 
     fn overlaps_host_control(&self, addr: usize, len: usize) -> bool {
+        if self.brk_limit >= self.mmap_base {
+            return false;
+        }
         let end = match addr.checked_add(len) {
             Some(e) => e,
             None => return true,
         };
-        addr < Self::MMAP_BASE && end > self.brk_limit
+        addr < self.mmap_base && end > self.brk_limit
+    }
+
+    fn overlaps_reserved_prefix(&self, addr: usize, len: usize) -> bool {
+        if self.reserved_until == 0 {
+            return false;
+        }
+        let end = match addr.checked_add(len) {
+            Some(e) => e,
+            None => return true,
+        };
+        addr < self.reserved_until && end > addr
+    }
+
+    fn overlaps_mappings(&self, addr: usize, len: usize) -> bool {
+        let end = match addr.checked_add(len) {
+            Some(e) => e,
+            None => return true,
+        };
+        for m in &self.mappings {
+            let m_end = m.addr.saturating_add(m.len);
+            if addr < m_end && end > m.addr {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn overlaps_brk_heap(&self, addr: usize, len: usize) -> bool {
+        if self.program_break <= self.initial_brk {
+            return false;
+        }
+        let end = match addr.checked_add(len) {
+            Some(e) => e,
+            None => return true,
+        };
+        addr < self.program_break && end > self.initial_brk
     }
 
     /// Unmap a region [addr, addr+len). Supports partial unmapping:
@@ -222,6 +286,9 @@ impl MemoryManager {
     pub fn set_brk_base(&mut self, addr: usize) {
         self.initial_brk = addr;
         self.program_break = addr;
+        if self.mmap_base < addr {
+            self.mmap_base = Self::align_page_up(addr);
+        }
     }
 
     /// Set the program break. Returns the new break on success, or the
@@ -231,8 +298,20 @@ impl MemoryManager {
             // Query current break
             return self.program_break;
         }
-        // brk can't grow into mmap or host-reserved control pages.
+        if new_brk < self.initial_brk {
+            return self.program_break;
+        }
+        // brk can't grow out of the process address space, past its
+        // configured compatibility ceiling, or through an mmap allocation.
+        if new_brk > self.max_addr {
+            return self.program_break;
+        }
         if new_brk > self.brk_limit {
+            return self.program_break;
+        }
+        if new_brk > self.program_break
+            && self.overlaps_mappings(self.program_break, new_brk - self.program_break)
+        {
             return self.program_break;
         }
         // Enforce RLIMIT_DATA: data segment growth from initial_brk
@@ -271,6 +350,12 @@ impl MemoryManager {
         if self.overlaps_host_control(addr, len) {
             return false;
         }
+        if self.overlaps_reserved_prefix(addr, len) {
+            return false;
+        }
+        if self.reserved_until != 0 && self.overlaps_brk_heap(addr, len) {
+            return false;
+        }
         for m in &self.mappings {
             let m_end = m.addr.saturating_add(m.len);
             // Check overlap: [addr, end) vs [m.addr, m_end)
@@ -291,11 +376,43 @@ impl MemoryManager {
         }
     }
 
+    /// Set the lower bound for automatic mmap allocation.
+    ///
+    /// Compact process memories place host control pages immediately after the
+    /// linker-owned data and start both brk and mmap after that prefix. Calling
+    /// this opts the process into protecting the prefix below `initial_brk`.
+    pub fn set_mmap_base(&mut self, addr: usize) {
+        self.mmap_base = Self::align_page_up(addr).max(self.initial_brk);
+        self.reserved_until = self.reserved_until.max(self.initial_brk);
+    }
+
     /// Lower the upper bound for brk allocation.
     pub fn set_brk_limit(&mut self, addr: usize) {
         if addr < self.brk_limit {
             self.brk_limit = addr;
         }
+    }
+
+    pub fn layout_metadata(&self) -> MemoryLayoutMetadata {
+        MemoryLayoutMetadata {
+            initial_brk: self.initial_brk,
+            max_addr: self.max_addr,
+            brk_limit: self.brk_limit,
+            mmap_base: self.mmap_base,
+            reserved_until: self.reserved_until,
+        }
+    }
+
+    pub fn set_layout_metadata(&mut self, metadata: MemoryLayoutMetadata) {
+        self.initial_brk = metadata.initial_brk;
+        self.max_addr = metadata.max_addr;
+        self.brk_limit = metadata.brk_limit;
+        self.mmap_base = metadata.mmap_base;
+        self.reserved_until = metadata.reserved_until;
+    }
+
+    fn align_page_up(addr: usize) -> usize {
+        addr.saturating_add(0xFFFF) & !0xFFFF
     }
 
     /// Extend an existing mapping at `addr` from `old_len` to `new_len`.
@@ -455,6 +572,15 @@ mod tests {
     }
 
     #[test]
+    fn test_brk_cannot_shrink_below_initial_break() {
+        let mut mm = MemoryManager::new();
+        let initial = mm.get_brk();
+
+        assert_eq!(mm.set_brk(initial - 1), initial);
+        assert_eq!(mm.get_brk(), initial);
+    }
+
+    #[test]
     fn test_mmap_fixed_respects_host_control_limit() {
         let mut mm = MemoryManager::new();
         let rw = PROT_READ | PROT_WRITE;
@@ -471,6 +597,64 @@ mod tests {
 
         let mmap_region = mm.mmap_anonymous(MemoryManager::MMAP_BASE, 0x10000, rw, fixed_anon);
         assert_eq!(mmap_region, MemoryManager::MMAP_BASE);
+    }
+
+    #[test]
+    fn test_mmap_base_can_start_after_heap() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let brk_base = 0x00200000;
+        mm.set_brk_base(brk_base);
+        mm.set_mmap_base(brk_base);
+
+        let mapped = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(mapped, brk_base);
+    }
+
+    #[test]
+    fn test_brk_growth_rejects_mmap_collision() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let anon = MAP_PRIVATE | MAP_ANONYMOUS;
+        let brk_base = 0x00200000;
+        mm.set_brk_base(brk_base);
+        mm.set_mmap_base(brk_base);
+
+        let mapped = mm.mmap_anonymous(0, 0x10000, rw, anon);
+        assert_eq!(mapped, brk_base);
+        assert_eq!(mm.set_brk(brk_base + 0x10000), brk_base);
+        assert_eq!(mm.get_brk(), brk_base);
+    }
+
+    #[test]
+    fn test_compact_layout_rejects_fixed_mapping_in_reserved_prefix() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let fixed_anon = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+        let brk_base = 0x00200000;
+        mm.set_brk_base(brk_base);
+        mm.set_mmap_base(brk_base);
+
+        let protected = mm.mmap_anonymous(brk_base - 0x10000, 0x10000, rw, fixed_anon);
+        assert_eq!(protected, MAP_FAILED);
+
+        let first_guest_page = mm.mmap_anonymous(brk_base, 0x10000, rw, fixed_anon);
+        assert_eq!(first_guest_page, brk_base);
+    }
+
+    #[test]
+    fn test_compact_layout_rejects_fixed_mapping_in_brk_heap() {
+        let mut mm = MemoryManager::new();
+        let rw = PROT_READ | PROT_WRITE;
+        let fixed_anon = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+        let brk_base = 0x00200000;
+        mm.set_brk_base(brk_base);
+        mm.set_mmap_base(brk_base);
+
+        assert_eq!(mm.set_brk(brk_base + 0x20000), brk_base + 0x20000);
+        let mapped = mm.mmap_anonymous(brk_base + 0x10000, 0x10000, rw, fixed_anon);
+        assert_eq!(mapped, MAP_FAILED);
     }
 
     #[test]
