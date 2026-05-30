@@ -588,7 +588,7 @@ commit      = "<commit at which the recipe was last touched>"
 revision    = 1
 
 [binary]
-index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
 - `{abi}` in `index_url` is substituted with the current
@@ -667,6 +667,11 @@ CI runs `staging-build.yml` on the PR, which:
    its archive + index update to the durable `binaries-abi-v<N>`
    release directly — no bot PR amends anything; the `index.toml`
    ledger on the release IS the consumer-visible state.
+
+After the staging workflow has published `index.toml`, use
+`./run.sh --pr-staging browser` or
+`WASM_POSIX_USE_PR_STAGING=1 ./run.sh browser` to test the PR's
+staging release locally without waiting for the durable ABI release.
 
 ### 6. Register in `run.sh` (optional)
 

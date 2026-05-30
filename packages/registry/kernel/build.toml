@@ -4,4 +4,4 @@ commit      = "8d76b33862c72b1565bbd377ad824ef214f50ab8"
 revision    = 1
 
 [binary]
-index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

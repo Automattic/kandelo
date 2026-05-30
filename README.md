@@ -160,7 +160,7 @@ This builds the kernel from source. Library dependencies (zlib, openssl,
 sqlite, libcxx, etc.) and ported programs (vim, git, php, etc.) are resolved
 on demand by `cargo xtask build-deps resolve <name>`, which prefers
 the per-user cache, then falls back to the published binary release at
-[`binaries-abi-v<ABI_VERSION>`](https://github.com/brandonpayton/wasm-posix-kernel/releases),
+[`binaries-abi-v<ABI_VERSION>`](https://github.com/Automattic/kandelo/releases),
 then to a source build via the per-library `build-<name>.sh`. See
 [docs/package-management.md](docs/package-management.md) for the
 full schema, resolution order, and release-archive contract.
@@ -170,6 +170,12 @@ pre-built artifact at once, run `bash scripts/fetch-binaries.sh` after
 `bash build.sh`. It walks every `packages/registry/<pkg>/package.toml`
 with a `[binary.<arch>]` block and resolves the archives into the
 content-addressed cache plus `binaries/programs/<arch>/` symlinks.
+
+On PR branches, CI publishes temporary binaries to
+`pr-<PR_NUMBER>-staging`. Use `./run.sh --pr-staging browser` or
+`WASM_POSIX_USE_PR_STAGING=1 ./run.sh browser` to consume that staging
+index locally without editing `build.toml`. A manually set
+`WASM_POSIX_BINARY_INDEX_URL` still takes precedence.
 
 If you are editing a package's `package.toml` to iterate locally, the
 resolver detects the cache-key mismatch, logs a warning, and falls

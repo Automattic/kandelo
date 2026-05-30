@@ -61,6 +61,11 @@
 #   -h / --help    Print this header.
 #
 # Env:
+#   WASM_POSIX_BINARY_INDEX_URL
+#                  Overrides every package's build.toml `[binary].index_url`.
+#                  For PR staging, prefer invoking through
+#                  `./run.sh --pr-staging fetch` so run.sh can discover
+#                  and verify the current PR's staging index first.
 #   WASM_POSIX_FETCH_SKIP_PKGS
 #                  Space-separated package names to skip entirely.
 #                  CI uses this for packages temporarily disabled from

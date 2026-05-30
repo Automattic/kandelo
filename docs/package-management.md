@@ -35,7 +35,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Find where an output lands | `cargo xtask build-deps output-path <name> <wasm-basename>` — single source of truth for the layout convention (flat for 1-output packages, nested under `<pkg>/` for ≥2-output packages). |
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern. |
 | Override a published archive locally | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these. |
-| Override an archive in a PR for testing | The matrix-build flow handles this automatically: per-PR builds publish to `pr-<N>-staging` tags (separate state-lock subject from the durable release), and the resolver picks up the staging index via the same `build.toml.index_url` template. For a local override write `packages/registry/<pkg>/package.pr.toml` with `[binary.<arch>]` — the legacy overlay path still injects into the in-memory `DepsManifest`. |
+| Override an archive in a PR for testing | Per-PR builds publish to `pr-<N>-staging` tags. Locally, run `./run.sh --pr-staging <command>` or set `WASM_POSIX_USE_PR_STAGING=1` so `run.sh` exports the matching staging `WASM_POSIX_BINARY_INDEX_URL`. Manual `WASM_POSIX_BINARY_INDEX_URL` values still win. |
 | Republish a stale archive | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`). |
 | Bump a package's revision number | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change. |
 | Understand the release flow | [docs/binary-releases.md](binary-releases.md). |
@@ -143,7 +143,7 @@ commit      = "<commit at last successful build>"
 revision    = 1
 
 [binary]
-index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
 - `script_path` typically equals `package.toml`'s `[build].script_path`;
@@ -746,12 +746,15 @@ The primary remedy is the per-PR staging-tag flow — push your
 branch, let `staging-build.yml` rebuild the touched packages, and
 each matrix entry's `scripts/index-update.sh` invocation publishes
 its archive + index entry to the PR's `pr-<NNN>-staging` release
-atomically. The resolver picks up the staging index automatically
-when `build.toml.index_url` templates `{abi}` against the
-staging-tag's ABI (or you point a local `build.toml` override at
-the staging tag temporarily). That works for any `package.toml`
-or `build.toml` change pushed to a PR with CI write access, and is
-the path code-review and merge both use.
+atomically. To consume those artifacts locally, run
+`./run.sh --pr-staging browser` or set `WASM_POSIX_USE_PR_STAGING=1`.
+`run.sh` detects the PR with `gh`, points
+`WASM_POSIX_BINARY_INDEX_URL` at
+`https://github.com/<owner>/<repo>/releases/download/pr-<NNN>-staging/index.toml`,
+and leaves a manually set `WASM_POSIX_BINARY_INDEX_URL` unchanged.
+That works for any `package.toml` or `build.toml` change pushed to a
+PR with CI write access, and is the path code-review and merge both
+use.
 
 For pre-push iteration on packages whose source build is fast,
 just rely on the resolver's fall-through: edit `package.toml`,
@@ -797,7 +800,7 @@ commit      = "<commit>"
 revision    = 1
 
 [binary]
-index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
 After `xtask archive-stage --package packages/registry/zlib --arch wasm32`,
