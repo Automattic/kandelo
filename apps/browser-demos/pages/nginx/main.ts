@@ -134,7 +134,7 @@ async function start() {
     const { exit } = await kernel.boot({
       kernelWasm: kernelBytes,
       vfsImage,
-      argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+      argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
       env: ["HOME=/root", "TERM=xterm-256color", "USER=root", "LOGNAME=root", "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"],
       cwd: "/root",
       uid: 0,

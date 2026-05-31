@@ -336,6 +336,11 @@ export interface ReadyMessage {
   type: "ready";
 }
 
+export interface InitErrorMessage {
+  type: "init_error";
+  error: string;
+}
+
 export interface ResponseMessage {
   type: "response";
   requestId: number;
@@ -441,6 +446,7 @@ export interface ProcEventMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | InitErrorMessage
   | ResponseMessage
   | ExitMessage
   | StdoutMessage

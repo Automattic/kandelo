@@ -147,9 +147,42 @@ fork_instrumentation_for_rel() {
 
 fork_instrumentation="$(fork_instrumentation_for_rel "$adjusted")"
 
+kernel_required_exports=(
+    __abi_version
+    kernel_alloc_scratch
+    kernel_create_process
+    kernel_get_parent_pid
+    kernel_handle_channel
+    kernel_host_adapter_manifest_len
+    kernel_host_adapter_manifest_ptr
+    kernel_mark_process_signaled
+    kernel_reap_exited_child
+    kernel_remove_process
+    kernel_set_mode
+    kernel_wait4_poll
+)
+
+executable_program_required_exports=(
+    __abi_version
+    _start
+)
+
+is_executable_program_wasm_rel() {
+    case "$adjusted" in
+        programs/wasm32/*.wasm|programs/wasm32/*/*.wasm|programs/wasm64/*.wasm|programs/wasm64/*/*.wasm)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 is_stale_wasm_artifact() {
     wasm_has_legacy_asyncify "$1" ||
         wasm_has_stale_abi "$1" "$current_abi" ||
+        { [ "$adjusted" = "kernel.wasm" ] && wasm_has_missing_exports "$1" "${kernel_required_exports[@]}"; } ||
+        { is_executable_program_wasm_rel && wasm_has_missing_exports "$1" "${executable_program_required_exports[@]}"; } ||
         case "$fork_instrumentation" in
             none)
                 false

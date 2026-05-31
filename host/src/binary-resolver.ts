@@ -17,7 +17,12 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeWasmArtifactPolicyFailures } from "./constants";
-import { ABI_VERSION } from "./generated/abi";
+import {
+  ABI_VERSION,
+  HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
+} from "./generated/abi";
+
+const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS = ["__abi_version", "_start"] as const;
 
 /**
  * Walk up from the importing file to find the repo root. Markers:
@@ -218,6 +223,20 @@ function disablesForkInstrumentation(relPath: string): boolean {
   return programRel !== null && forkInstrumentationDisabledOutputs().has(programRel);
 }
 
+function requiredExportsForRelPath(relPath: string): readonly string[] | undefined {
+  const adjusted = applyDefaultArch(relPath);
+  if (adjusted === "kernel.wasm") {
+    return HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS;
+  }
+
+  const programRel = stripProgramArch(adjusted);
+  if (programRel && programRel.endsWith(".wasm")) {
+    return EXECUTABLE_PROGRAM_REQUIRED_EXPORTS;
+  }
+
+  return undefined;
+}
+
 function hasWasmArtifactPolicyFailures(path: string, relPath: string): boolean {
   if (!path.endsWith(".wasm")) return false;
   try {
@@ -226,6 +245,7 @@ function hasWasmArtifactPolicyFailures(path: string, relPath: string): boolean {
     const forkDisabled = disablesForkInstrumentation(relPath);
     return describeWasmArtifactPolicyFailures(programBytes, {
       expectedAbi: ABI_VERSION,
+      requiredExports: requiredExportsForRelPath(relPath),
       requireForkInstrumentation: forkDisabled ? false : undefined,
       forbidForkInstrumentation: forkDisabled,
     }).length > 0;

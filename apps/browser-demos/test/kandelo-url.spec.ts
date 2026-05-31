@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { ABI_VERSION } from "../../../host/src/generated/abi";
 
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;
@@ -32,7 +33,7 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
     waitUntil: "domcontentloaded",
   });
 
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async (abiVersion) => {
     const {
       descriptorWithVfsImageUrl,
       galleryItemUrl,
@@ -44,7 +45,7 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
       version: 1,
       id: "shell",
       title: "Shell",
-      base: "kandelo:shell@abi11",
+      base: `kandelo:shell@abi${abiVersion}`,
       runtime: {
         arch: "wasm32",
         kernel: "kernel@local",
@@ -64,7 +65,7 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
       id: "site",
       title: "Site",
       summary: "Third-party VFS image",
-      base: "kandelo:shell@abi11",
+      base: `kandelo:shell@abi${abiVersion}`,
       packages: [],
       bootCommand: ["bash", "-l", "-i"],
       vfsImageUrl,
@@ -79,7 +80,7 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
       relativeRefUrl: vfsImageUrlFromDescriptor(withRelativeVfs),
       expectedRelativeRefUrl: new URL("images/site.vfs.zst", window.location.href).href,
     };
-  });
+  }, ABI_VERSION);
 
   const url = new URL(result.href);
   expect(url.searchParams.has("demo")).toBe(false);

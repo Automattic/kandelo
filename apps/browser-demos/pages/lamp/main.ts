@@ -159,6 +159,8 @@ const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
 const PHP_FPM_WORKERS = 6;
+const MYSQL_UID = 101;
+const MYSQL_GID = 101;
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -205,6 +207,12 @@ function loadFrame() {
   next.src = APP_PREFIX;
   frame.replaceWith(next);
   frame = next;
+}
+
+function ensureMysqlWritableDir(fs: MemoryFileSystem, path: string): void {
+  ensureDirRecursive(fs, path);
+  fs.chown(path, MYSQL_UID, MYSQL_GID);
+  fs.chmod(path, 0o775);
 }
 
 function setupTerminalPane(kernel: BrowserKernel): void {
@@ -287,6 +295,9 @@ async function start() {
     writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
     writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
     writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("mariadb", APP_PATH, PROTO));
+    for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
+      ensureMysqlWritableDir(fs, dir);
+    }
     ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
     writeVfsFile(
       fs,
@@ -372,7 +383,7 @@ async function start() {
     const { exit } = await kernel.boot({
       kernelWasm: kernelBytes,
       vfsImage,
-      argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+      argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
       env: [
         "HOME=/root",
         "TERM=xterm-256color",

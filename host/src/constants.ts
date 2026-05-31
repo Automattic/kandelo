@@ -393,6 +393,7 @@ export function describeWasmArtifactPolicyFailures(
   programBytes: ArrayBuffer,
   options: {
     expectedAbi?: number | null;
+    requiredExports?: readonly string[];
     requireForkInstrumentation?: boolean;
     forbidForkInstrumentation?: boolean;
   } = {},
@@ -410,6 +411,13 @@ export function describeWasmArtifactPolicyFailures(
   }
 
   const exports = new Set(readWasmExportNames(programBytes));
+  if (options.requiredExports) {
+    const missing = options.requiredExports.filter((name) => !exports.has(name));
+    if (missing.length > 0) {
+      failures.push(`missing required exports: ${missing.join(", ")}`);
+    }
+  }
+
   const presentWpkExports = WPK_FORK_EXPORTS.filter((name) => exports.has(name));
   if (options.forbidForkInstrumentation && presentWpkExports.length > 0) {
     failures.push("contains wasm-fork-instrument exports");

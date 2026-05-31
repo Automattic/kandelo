@@ -56,6 +56,7 @@ async function main() {
     "--container",
     "-p",
     "/tmp/dinitctl",
+    "nginx",
   ], {
     env: [
       "HOME=/root",

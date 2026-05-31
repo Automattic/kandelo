@@ -4,9 +4,11 @@
  * and per-service config files into the image alongside the demo's
  * binaries and content.
  *
- * The browser demo just fetches the resulting .vfs and boots the kernel
- * with argv `["/sbin/dinit", "--container"]`. dinit is PID 1; it reads
- * `/etc/dinit.d/boot` and pulls in everything that depends on it.
+ * The browser demo fetches the resulting .vfs and boots dinit as PID 1.
+ * In container mode, pass a long-running target service such as `nginx`
+ * (for example `["/sbin/dinit", "--container", "nginx"]`). The generated
+ * `boot` service is only a dependency aggregator; as an initial container
+ * target it can complete immediately and dinit will then stop the tree.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -180,9 +182,11 @@ export interface AddDinitInitOptions {
  *   /etc/dinit.d/<name>      - per-service config file
  *   /var/log, /run           - standard runtime dirs
  *
- * Default boot uses argv = ["/sbin/dinit", "--container"]. With
- * boot=false, demos pass the target service name as a positional
- * argument: ["/sbin/dinit", "--container", "aria-mariadb"].
+ * The default boot service is a dependency aggregator. Browser demos that
+ * use `--container` should pass a long-running leaf service as dinit's
+ * positional target, for example:
+ * ["/sbin/dinit", "--container", "nginx"].
+ * With boot=false, demos must pass the target service name explicitly.
  */
 export function addDinitInit(
   fs: MemoryFileSystem,

@@ -29,6 +29,8 @@ REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 # available to anything `run.sh` shells out to (e.g. `bash run.sh build_X`).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 
@@ -146,6 +148,31 @@ has_resolvable() {
     "$REPO_ROOT/scripts/resolve-binary.sh" "$1" >/dev/null 2>&1
 }
 
+KERNEL_REQUIRED_EXPORTS=(
+    __abi_version
+    kernel_alloc_scratch
+    kernel_create_process
+    kernel_get_parent_pid
+    kernel_handle_channel
+    kernel_host_adapter_manifest_len
+    kernel_host_adapter_manifest_ptr
+    kernel_mark_process_signaled
+    kernel_reap_exited_child
+    kernel_remove_process
+    kernel_set_mode
+    kernel_wait4_poll
+)
+
+has_valid_kernel_file() {
+    local path="$1"
+    local current_abi
+    [ -f "$path" ] || return 1
+    current_abi="$(wasm_current_abi_version "$REPO_ROOT" || true)"
+    ! wasm_has_legacy_asyncify "$path" &&
+        ! wasm_has_stale_abi "$path" "$current_abi" &&
+        ! wasm_has_missing_exports "$path" "${KERNEL_REQUIRED_EXPORTS[@]}"
+}
+
 # pkg_xtask_bin: build xtask once (lazy) and return the binary path so
 # repeated `pkg_has_output` calls don't pay cargo's setup cost on each
 # call (~50ms × 40 has_* lookups in cmd_status = a real delay).
@@ -200,7 +227,7 @@ pkg_has_output() {
     fi
 }
 
-has_kernel()    { has_resolvable kernel.wasm || [ -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" ]; }
+has_kernel()    { has_resolvable kernel.wasm || has_valid_kernel_file "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"; }
 has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
 has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
@@ -293,22 +320,7 @@ has_dlopen()        { [ -f "$REPO_ROOT/examples/dlopen/hello-lib.so" ] && \
 need_kernel() {
     if ! has_kernel; then
         step "Building kernel"
-        cd "$REPO_ROOT"
-        cargo build --release -p kandelo \
-            -Z build-std=core,alloc
-        # Mirror what build.sh does: copy to local-binaries/ (the
-        # canonical override tree the binary-resolver checks). The
-        # host/wasm/ copy is preserved as a legacy fallback for older
-        # consumers that haven't migrated to local-binaries/.
-        mkdir -p local-binaries host/wasm
-        cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm \
-            local-binaries/kernel.wasm
-        cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm \
-            host/wasm/kandelo-kernel.wasm
-        if [ -f target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
-            cp target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm \
-                local-binaries/userspace.wasm
-        fi
+        bash "$REPO_ROOT/packages/registry/kernel/build-kernel.sh"
         info "Kernel built"
     else
         info "Kernel"
@@ -1541,7 +1553,7 @@ BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
 # a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
 # listed: they're toolchain prerequisites for source builds, and any
 # `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
+BROWSER_DEPS=(kernel rootfs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1551,9 +1563,16 @@ build_browser() {
 
 fetch_browser_binaries() {
     local disabled_pkgs
+    local fetch_args=("${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}")
     disabled_pkgs="${BROWSER_DISABLED_DEMO_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
+    if [ ${#fetch_args[@]} -eq 0 ]; then
+        # Browser prep has a source-build fallback for every enabled demo
+        # target below. A single stale release archive should not abort before
+        # build_browser gets a chance to satisfy the missing artifact locally.
+        fetch_args=(--allow-stale)
+    fi
     WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $disabled_pkgs" \
-        "$REPO_ROOT/scripts/fetch-binaries.sh" "${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}"
+        "$REPO_ROOT/scripts/fetch-binaries.sh" "${fetch_args[@]}"
 }
 
 build_all() {

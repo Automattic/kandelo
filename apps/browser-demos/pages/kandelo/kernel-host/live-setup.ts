@@ -68,11 +68,27 @@ import lampVfsUrl from "@binaries/programs/wasm32/lamp.vfs.zst?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
-import fbtestWasmUrl from "@binaries/programs/wasm32/fbtest.wasm?url";
 
 const DEFAULT_SOFTWARE_MANIFEST_URLS = [
-  "https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v11/gallery.json",
+  `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/gallery.json`,
 ];
+
+const OPTIONAL_BINARY_URLS = {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/fbtest.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/fbtest.wasm", {
+    query: "?url", import: "default",
+  }),
+} as Record<string, () => Promise<string>>;
+
+async function optionalBinaryUrl(relPaths: string[], label: string): Promise<string> {
+  for (const relPath of relPaths) {
+    const loader = OPTIONAL_BINARY_URLS[relPath];
+    if (loader) return loader();
+  }
+  throw new Error(`${label} is not built. Run: ./run.sh build programs`);
+}
 
 type GalleryPackageRequirement = {
   name: string;
@@ -105,6 +121,11 @@ type IndexPackageEntry = {
   binary: Record<string, IndexBinaryEntry>;
 };
 
+type SoftwareIndex = {
+  abiVersion?: number;
+  packages: Map<string, IndexPackageEntry>;
+};
+
 type SoftwareBinary = {
   archiveUrl: string;
   artifactPath: string;
@@ -131,6 +152,10 @@ const MARIADB_PORT = 3306;
 const ROOT_UID = 0;
 const ROOT_GID = 0;
 const ROOT_HOME = "/root";
+const PHP_FPM_UID = 65534;
+const PHP_FPM_GID = 65534;
+const MYSQL_UID = 101;
+const MYSQL_GID = 101;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 const DEMO_USER = "user";
@@ -158,6 +183,7 @@ interface LiveProfileSpec {
   image: LiveVfsImage;
   shell?: ShellProfile;
   includeNodeUtility?: boolean;
+  autoCommand?: string;
   memoryPages?: number;
   maxVfsByteLength?: number;
   network?: boolean;
@@ -184,7 +210,7 @@ const VFS_URLS: Record<LiveVfsImage, string> = {
   lamp: lampVfsUrl,
 };
 
-const DINIT_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"];
+const DINIT_NGINX_ARGV = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"];
 
 const LIVE_DEMO_IDS = [
   "shell",
@@ -232,7 +258,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "nginx",
     network: true,
     init: {
-      argv: DINIT_ARGV,
+      argv: DINIT_NGINX_ARGV,
       env: "service",
       programUrl: dinitWasmUrl,
       maxWorkers: 6,
@@ -243,7 +269,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "nginx-php",
     network: true,
     init: {
-      argv: DINIT_ARGV,
+      argv: DINIT_NGINX_ARGV,
       env: "service",
       programUrl: dinitWasmUrl,
       maxWorkers: 12,
@@ -254,7 +280,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "wordpress",
     network: true,
     init: {
-      argv: DINIT_ARGV,
+      argv: DINIT_NGINX_ARGV,
       env: "wordpress",
       programUrl: dinitWasmUrl,
       maxWorkers: 12,
@@ -270,7 +296,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     maxVfsByteLength: 512 * 1024 * 1024,
     network: true,
     init: {
-      argv: DINIT_ARGV,
+      argv: DINIT_NGINX_ARGV,
       env: "wordpress",
       programUrl: dinitWasmUrl,
       maxWorkers: 24,
@@ -637,6 +663,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     shell: spec.shell ?? "default",
     includeNodeUtility: spec.includeNodeUtility ?? false,
     maxVfsByteLength: spec.maxVfsByteLength ?? 256 * 1024 * 1024,
+    autoCommand: spec.autoCommand,
     init: spec.init && {
       argv: spec.init.argv.slice(),
       env: initEnv(spec.init.env),
@@ -962,6 +989,10 @@ async function bootProfile(
     maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
 
     if (profile.framebufferTest) {
+      const fbtestWasmUrl = await optionalBinaryUrl([
+        "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
+        "../../../../../binaries/programs/wasm32/fbtest.wasm",
+      ], "fbtest.wasm");
       void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
     } else if (presentation?.autoCommand) {
       tick("starting configured command from bash...");
@@ -1043,6 +1074,13 @@ function patchWordPressRuntimeConfig(
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
   writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate(kind));
   writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig(kind, APP_PATH, PROTO));
+  if (kind === "sqlite") {
+    ensureOwnedDir(fs, "/var/www/html/wp-content/database", 0o775, PHP_FPM_UID, PHP_FPM_GID);
+  } else if (kind === "mariadb") {
+    for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
+      ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
+    }
+  }
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
   writeVfsFile(
     fs,
@@ -1354,7 +1392,7 @@ function descriptorFor(id: string): BootDescriptor {
     version: 1,
     id: software?.id ?? item.id,
     title: software ? software.id.replace(/^kandelo-software-/, "") : item.title,
-    base: software ? "kandelo:shell@abi11" : item.base,
+    base: software ? `kandelo:shell@abi${ABI_VERSION}` : item.base,
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
@@ -1465,9 +1503,19 @@ async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promis
     ? new URL(manifest.index_url, manifestUrl).href
     : new URL("index.toml", manifestUrl).href;
   const index = parseIndexToml(await fetchTextWithDevProxy(indexUrl));
-  return manifest.entries
-    .filter((entry) => entry.packages.every((pkg) => packageAvailable(index, pkg)))
-    .map((entry) => softwareEntryToGalleryItem(entry, sourceId, index, indexUrl));
+  if (index.abiVersion !== undefined && index.abiVersion !== ABI_VERSION) {
+    console.warn(
+      `Ignoring Kandelo software index ${indexUrl}: ABI ${index.abiVersion}, expected ${ABI_VERSION}`,
+    );
+    return [];
+  }
+  const items: GalleryItem[] = [];
+  for (const entry of manifest.entries) {
+    if (!entry.packages.every((pkg) => packageAvailable(index, pkg))) continue;
+    const item = softwareEntryToGalleryItem(entry, sourceId, index, indexUrl);
+    if (item) items.push(item);
+  }
+  return items;
 }
 
 function softwareManifestUrls(): string[] {
@@ -1503,22 +1551,23 @@ function sourceIdForManifest(manifest: SoftwareGalleryManifest, manifestUrl: str
 function softwareEntryToGalleryItem(
   entry: SoftwareGalleryEntry,
   sourceId: string,
-  index: Map<string, IndexPackageEntry>,
+  index: SoftwareIndex,
   indexUrl: string,
-): GalleryItem {
+): GalleryItem | null {
   const primaryPackage = entry.packages[entry.packages.length - 1];
   const archiveUrl = archiveUrlFor(index, indexUrl, primaryPackage);
+  if (!primaryPackage || !archiveUrl) return null;
   const id = `${sourceId}-${entry.id}`;
-  if (archiveUrl) {
-    SOFTWARE_PROFILES.set(id, softwareProfileForEntry(id, entry, index, indexUrl, archiveUrl));
-  }
+  const profile = softwareProfileForEntry(id, entry, index, indexUrl, archiveUrl);
+  if (!profile) return null;
+  SOFTWARE_PROFILES.set(id, profile);
   return {
     id,
     title: entry.title,
     summary: archiveUrl
       ? `${entry.description} Archive: ${archiveUrl}`
       : entry.description,
-    base: "kandelo:shell@abi11",
+    base: `kandelo:shell@abi${ABI_VERSION}`,
     packages: entry.packages.map(packageKey),
     bootCommand: ["bash", "-l", "-i"],
     accent: accentForSoftwareEntry(entry.id),
@@ -1531,13 +1580,12 @@ function softwareEntryToGalleryItem(
 function softwareProfileForEntry(
   id: string,
   entry: SoftwareGalleryEntry,
-  index: Map<string, IndexPackageEntry>,
+  index: SoftwareIndex,
   indexUrl: string,
   vfsArchiveUrl: string,
-): SoftwareProfile {
+): SoftwareProfile | null {
   const primaryPackage = entry.packages[entry.packages.length - 1];
-  const runtimePackage = entry.packages[0];
-  const runtimeArchiveUrl = archiveUrlFor(index, indexUrl, runtimePackage);
+  if (!primaryPackage) return null;
   const vfsArtifactPath = `artifacts/${primaryPackage.name}.vfs.zst`;
 
   const base: SoftwareProfile = {
@@ -1548,7 +1596,10 @@ function softwareProfileForEntry(
     shellEnv: SHELL_ENV,
   };
 
-  if (entry.id.includes("python") && runtimeArchiveUrl) {
+  if (entry.id.includes("python")) {
+    const runtimePackage = runtimePackageForEntry(entry, ["cpython", "python"]);
+    const runtimeArchiveUrl = archiveUrlFor(index, indexUrl, runtimePackage);
+    if (!runtimeArchiveUrl) return null;
     return {
       ...base,
       binaries: [{
@@ -1567,7 +1618,10 @@ function softwareProfileForEntry(
     };
   }
 
-  if (entry.id.includes("perl") && runtimeArchiveUrl) {
+  if (entry.id.includes("perl")) {
+    const runtimePackage = runtimePackageForEntry(entry, ["perl"]);
+    const runtimeArchiveUrl = archiveUrlFor(index, indexUrl, runtimePackage);
+    if (!runtimeArchiveUrl) return null;
     return {
       ...base,
       binaries: [{
@@ -1581,7 +1635,10 @@ function softwareProfileForEntry(
     };
   }
 
-  if (entry.id.includes("erlang") && runtimeArchiveUrl) {
+  if (entry.id.includes("erlang")) {
+    const runtimePackage = runtimePackageForEntry(entry, ["erlang"]);
+    const runtimeArchiveUrl = archiveUrlFor(index, indexUrl, runtimePackage);
+    if (!runtimeArchiveUrl) return null;
     return {
       ...base,
       binaries: [{
@@ -1631,25 +1688,33 @@ function softwareProfileForEntry(
   return base;
 }
 
+function runtimePackageForEntry(
+  entry: SoftwareGalleryEntry,
+  names: string[],
+): GalleryPackageRequirement | undefined {
+  const wanted = new Set(names);
+  return entry.packages.find((pkg) => wanted.has(pkg.name));
+}
+
 function packageKey(pkg: GalleryPackageRequirement): string {
   return `${pkg.name}@${pkg.version}`;
 }
 
 function packageAvailable(
-  index: Map<string, IndexPackageEntry>,
+  index: SoftwareIndex,
   requirement: GalleryPackageRequirement,
 ): boolean {
-  const entry = index.get(packageKey(requirement));
+  const entry = index.packages.get(packageKey(requirement));
   return entry?.binary.wasm32?.status === "success";
 }
 
 function archiveUrlFor(
-  index: Map<string, IndexPackageEntry>,
+  index: SoftwareIndex,
   indexUrl: string,
   requirement: GalleryPackageRequirement | undefined,
 ): string | undefined {
   if (!requirement) return undefined;
-  const archiveUrl = index.get(packageKey(requirement))?.binary.wasm32?.archive_url;
+  const archiveUrl = index.packages.get(packageKey(requirement))?.binary.wasm32?.archive_url;
   if (!archiveUrl) return undefined;
   return new URL(archiveUrl, indexUrl).href;
 }
@@ -1679,8 +1744,9 @@ function parseTomlValue(value: string): string {
   return trimmed;
 }
 
-function parseIndexToml(text: string): Map<string, IndexPackageEntry> {
+function parseIndexToml(text: string): SoftwareIndex {
   const packages = new Map<string, IndexPackageEntry>();
+  let abiVersion: number | undefined;
   let currentPackage: IndexPackageEntry | undefined;
   let currentBinary: IndexBinaryEntry | undefined;
 
@@ -1702,10 +1768,17 @@ function parseIndexToml(text: string): Map<string, IndexPackageEntry> {
     }
 
     const assignment = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
-    if (!assignment || !currentPackage) continue;
+    if (!assignment) continue;
 
     const [, key, rawValue] = assignment;
     const value = parseTomlValue(rawValue);
+    if (!currentPackage) {
+      if (key === "abi_version") {
+        const parsed = Number.parseInt(value, 10);
+        if (Number.isFinite(parsed)) abiVersion = parsed;
+      }
+      continue;
+    }
     if (currentBinary) {
       currentBinary[key as keyof IndexBinaryEntry] = value;
     } else if (key === "name" || key === "version") {
@@ -1716,7 +1789,7 @@ function parseIndexToml(text: string): Map<string, IndexPackageEntry> {
     }
   }
 
-  return packages;
+  return { abiVersion, packages };
 }
 
 async function fetchTextWithDevProxy(url: string): Promise<string> {

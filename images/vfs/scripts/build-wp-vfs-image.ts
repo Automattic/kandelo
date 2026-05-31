@@ -58,11 +58,33 @@ const SQLITE_DIR = ensureExtract({
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
+const DASH_PATH = resolveBinary("programs/dash.wasm");
+const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "wordpress.vfs.zst");
 const PHP_FPM_WORKERS = 1;
+const PHP_FPM_UID = 65534;
+const PHP_FPM_GID = 65534;
 
 // --- Service configs (reuse logic from init modules) ---
+
+function populateBootstrapShell(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/bin");
+  ensureDirRecursive(fs, "/usr/bin");
+  writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
+  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
+  for (const name of ["cat", "date", "mkdir", "mv"]) {
+    try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
+    try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
+  }
+}
+
+function ensureWritableByPhpFpm(fs: MemoryFileSystem, path: string): void {
+  ensureDirRecursive(fs, path);
+  fs.chown(path, PHP_FPM_UID, PHP_FPM_GID);
+  fs.chmod(path, 0o775);
+}
 
 function populateNginxConfig(fs: MemoryFileSystem): void {
   const dirs = [
@@ -385,6 +407,9 @@ async function main() {
   const sab = new SharedArrayBuffer(128 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
   const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
 
+  console.log("Populating bootstrap shell...");
+  populateBootstrapShell(fs);
+
   console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);
   populatePhpFpmConfig(fs);
@@ -404,7 +429,7 @@ async function main() {
   writeVfsFile(fs, "/var/www/html/wp-config.php", renderWpConfig("/app", "http"));
 
   // WordPress-specific directories
-  ensureDirRecursive(fs, "/var/www/html/wp-content/database");
+  ensureWritableByPhpFpm(fs, "/var/www/html/wp-content/database");
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
 
   // Keep file-mod operations disabled, but let mail route to the local

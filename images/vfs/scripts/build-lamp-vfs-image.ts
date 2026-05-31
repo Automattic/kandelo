@@ -67,6 +67,8 @@ const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
+const MYSQL_UID = 101;
+const MYSQL_GID = 101;
 
 // LAMP-specific data dirs that mariadbd writes to at runtime. The image
 // intentionally bakes only a minimal /bin/sh + sleep environment for the
@@ -74,6 +76,8 @@ const PHP_FPM_WORKERS = 6;
 function populateMariadbDataDirs(fs: MemoryFileSystem): void {
   for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
     ensureDirRecursive(fs, dir);
+    fs.chown(dir, MYSQL_UID, MYSQL_GID);
+    fs.chmod(dir, 0o775);
   }
 }
 
@@ -83,7 +87,7 @@ function populateBootstrapShell(fs: MemoryFileSystem): void {
   writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
   writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
   try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-  for (const name of ["sleep"]) {
+  for (const name of ["cat", "date", "mkdir", "mv", "sleep"]) {
     try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
     try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
   }

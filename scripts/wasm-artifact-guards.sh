@@ -82,6 +82,39 @@ wasm_has_wpk_fork_export() {
     grep -a -q "$name" "$path" 2>/dev/null
 }
 
+wasm_has_export() {
+    wasm_has_wpk_fork_export "$@"
+}
+
+wasm_has_missing_exports() {
+    local path="${1:-}"
+    shift || true
+    local name
+    for name in "$@"; do
+        if ! wasm_has_export "$path" "$name"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+wasm_require_exports() {
+    local path="${1:-}"
+    shift || true
+    local missing=()
+    local name
+    for name in "$@"; do
+        if ! wasm_has_export "$path" "$name"; then
+            missing+=("$name")
+        fi
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "ERROR: refusing wasm artifact missing required exports: $path" >&2
+        printf '       missing: %s\n' "${missing[*]}" >&2
+        return 1
+    fi
+}
+
 wasm_has_complete_fork_instrumentation() {
     local path="${1:-}"
     wasm_has_wpk_fork_export "$path" wpk_fork_unwind_begin &&

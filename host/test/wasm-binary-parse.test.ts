@@ -438,6 +438,32 @@ describe("wasm artifact policy helpers", () => {
     expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: 12 })).toEqual([]);
   });
 
+  it("flags missing required exports", () => {
+    const wasm = buildWasm({
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(12)],
+      exports: [{ name: "__abi_version", kind: 0, index: 0 }],
+    });
+
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 12,
+      requiredExports: ["__abi_version", "kernel_host_adapter_manifest_ptr"],
+    })).toEqual([
+      "missing required exports: kernel_host_adapter_manifest_ptr",
+    ]);
+  });
+
+  it("flags executable wasm missing the ABI and entrypoint exports", () => {
+    const wasm = buildWasm({});
+
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: 12,
+      requiredExports: ["__abi_version", "_start"],
+    })).toEqual([
+      "missing required exports: __abi_version, _start",
+    ]);
+  });
+
   it("does not require fork instrumentation for relocatable wasm objects", () => {
     const wasm = buildWasm({
       customSections: [{ name: "linking" }, { name: "reloc.CODE" }],

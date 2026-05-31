@@ -168,6 +168,11 @@
           ];
 
           shellHook = ''
+            # On Darwin, nix develop can leave user profile and
+            # /opt/homebrew entries ahead of mkShell package bins. Put the
+            # declared Rust toolchain first so source fallbacks that require
+            # nightly flags do not accidentally run a host stable cargo.
+            export PATH="${rustToolchain}/bin:$PATH"
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
             export LLVM_VERSION=21

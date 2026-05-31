@@ -8,7 +8,8 @@ async function gotoOrSkip(page: import("@playwright/test").Page, path: string) {
   }
 }
 
-test("@slow Kandelo Node demo reports npm version without crashing", async ({ page }) => {
+test("@slow Kandelo Node demo installs cowsay with npm", async ({ page }) => {
+  test.setTimeout(240_000);
   const runtimeErrors: string[] = [];
   page.on("console", (msg) => {
     const text = msg.text();
@@ -20,11 +21,19 @@ test("@slow Kandelo Node demo reports npm version without crashing", async ({ pa
 
   await gotoOrSkip(page, "/pages/kandelo/?demo=node");
   await page.waitForSelector("aside.kdemo", { timeout: 120_000 });
-  await page.getByRole("button", { name: "npm" }).click();
+  await page.getByRole("button", { name: "Runtime check" }).click();
 
   await expect
-    .poll(() => page.evaluate(() => document.body.innerText), { timeout: 60_000 })
-    .toContain("10.9.2");
+    .poll(() => page.evaluate(() => document.body.innerText), { timeout: 90_000 })
+    .toContain("worker 7");
+
+  await page.getByRole("button", { name: "Install cowsay" }).click();
+  await expect
+    .poll(() => page.evaluate(() => document.body.innerText), { timeout: 120_000 })
+    .toContain("< Kandelo >");
+  await expect
+    .poll(() => page.evaluate(() => document.body.innerText), { timeout: 30_000 })
+    .toContain("npm install cowsay");
 
   const text = await page.evaluate(() => document.body.innerText);
   expect(text).not.toContain("Segmentation fault");

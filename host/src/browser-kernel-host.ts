@@ -319,14 +319,41 @@ export class BrowserKernel {
       this.pendingRequests.clear();
     };
 
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        this.kernelWorkerHandle.removeEventListener("message", readyHandler);
+        this.kernelWorkerHandle.removeEventListener("error", errorHandler);
+        this.kernelWorkerHandle.removeEventListener("messageerror", messageErrorHandler);
+      };
+      const settleResolve = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      };
       const readyHandler = (e: MessageEvent) => {
         if (e.data?.type === "ready") {
-          this.kernelWorkerHandle.removeEventListener("message", readyHandler);
-          resolve();
+          settleResolve();
+        } else if (e.data?.type === "init_error") {
+          settleReject(new Error(`Kernel worker init failed: ${e.data.error}`));
         }
       };
+      const errorHandler = (e: ErrorEvent) => {
+        settleReject(new Error(`Kernel worker error during init: ${e.message}`));
+      };
+      const messageErrorHandler = () => {
+        settleReject(new Error("Kernel worker failed to deserialize an init message"));
+      };
       this.kernelWorkerHandle.addEventListener("message", readyHandler);
+      this.kernelWorkerHandle.addEventListener("error", errorHandler);
+      this.kernelWorkerHandle.addEventListener("messageerror", messageErrorHandler);
 
       // Slice so the caller's ArrayBuffer isn't detached (allows restart)
       const transferBuf = opts.kernelWasmBytes.slice(0);

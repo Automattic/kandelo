@@ -148,12 +148,16 @@ function populateSystem(fs: MemoryFileSystem): void {
   fs.chmod("/tmp", 0o777);
   fs.chmod("/root", 0o700);
   fs.chown("/home/user", 1000, 1000);
+  fs.chown("/home/.nethack", 1000, 1000);
   fs.chmod("/home/.nethack", 0o777);
 
   // NetHack getlock() calls link(filename, lockname) on an empty marker
-  // file named `perm` in VAR_PLAYGROUND. File must exist or link()
-  // returns ENOENT and nethack exits.
+  // file named `perm` in VAR_PLAYGROUND. With USE_FCNTL it opens the
+  // marker read/write before locking it, so the non-root demo user needs
+  // write access to this pre-created file.
   writeVfsFile(fs, "/home/.nethack/perm", "");
+  fs.chown("/home/.nethack/perm", 1000, 1000);
+  fs.chmod("/home/.nethack/perm", 0o666);
 
   // /etc/services — required for getservbyname/getservbyport calls in
   // nginx/php-fpm/MariaDB. Harmless in Shell-only builds.
@@ -218,9 +222,12 @@ function populateShellOverlay(fs: MemoryFileSystem): void {
   ]) {
     ensureDirRecursive(fs, dir);
   }
+  fs.chown("/home/.nethack", 1000, 1000);
   fs.chmod("/home/.nethack", 0o777);
 
   writeVfsFile(fs, "/home/.nethack/perm", "");
+  fs.chown("/home/.nethack/perm", 1000, 1000);
+  fs.chmod("/home/.nethack/perm", 0o666);
 
   const gitconfig = [
     "[maintenance]",

@@ -1,4 +1,5 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { ABI_VERSION } from "../../host/src/generated/abi";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const output = document.getElementById("output") as HTMLPreElement;
@@ -14,9 +15,9 @@ const thirdPartyGalleryStatus = document.getElementById(
 
 const decoder = new TextDecoder();
 const KANDELO_SOFTWARE_MANIFEST_URL =
-  "https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v11/gallery.json";
+  `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/gallery.json`;
 const DEFAULT_KANDELO_SOFTWARE_INDEX_URL =
-  "https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v11/index.toml";
+  `https://github.com/brandonpayton/kandelo-software/releases/download/binaries-abi-v${ABI_VERSION}/index.toml`;
 
 type GalleryPackageRequirement = {
   name: string;
@@ -45,6 +46,11 @@ type IndexPackageEntry = {
   name?: string;
   version?: string;
   binary: Record<string, IndexBinaryEntry>;
+};
+
+type SoftwareIndex = {
+  abiVersion?: number;
+  packages: Map<string, IndexPackageEntry>;
 };
 
 function appendOutput(text: string, className?: string) {
@@ -84,8 +90,9 @@ function parseTomlValue(value: string): string {
   return trimmed;
 }
 
-function parseIndexToml(text: string): Map<string, IndexPackageEntry> {
+function parseIndexToml(text: string): SoftwareIndex {
   const packages = new Map<string, IndexPackageEntry>();
+  let abiVersion: number | undefined;
   let currentPackage: IndexPackageEntry | undefined;
   let currentBinary: IndexBinaryEntry | undefined;
 
@@ -107,10 +114,17 @@ function parseIndexToml(text: string): Map<string, IndexPackageEntry> {
     }
 
     const assignment = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
-    if (!assignment || !currentPackage) continue;
+    if (!assignment) continue;
 
     const [, key, rawValue] = assignment;
     const value = parseTomlValue(rawValue);
+    if (!currentPackage) {
+      if (key === "abi_version") {
+        const parsed = Number.parseInt(value, 10);
+        if (Number.isFinite(parsed)) abiVersion = parsed;
+      }
+      continue;
+    }
     if (currentBinary) {
       currentBinary[key as keyof IndexBinaryEntry] = value;
     } else if (key === "name" || key === "version") {
@@ -124,7 +138,7 @@ function parseIndexToml(text: string): Map<string, IndexPackageEntry> {
     }
   }
 
-  return packages;
+  return { abiVersion, packages };
 }
 
 async function fetchTextWithDevProxy(url: string): Promise<string> {
@@ -151,20 +165,20 @@ async function fetchTextWithDevProxy(url: string): Promise<string> {
 }
 
 function packageAvailable(
-  index: Map<string, IndexPackageEntry>,
+  index: SoftwareIndex,
   requirement: GalleryPackageRequirement,
 ): boolean {
-  const entry = index.get(packageKey(requirement));
+  const entry = index.packages.get(packageKey(requirement));
   return entry?.binary.wasm32?.status === "success";
 }
 
 function archiveUrlFor(
-  index: Map<string, IndexPackageEntry>,
+  index: SoftwareIndex,
   indexUrl: string,
   requirement: GalleryPackageRequirement | undefined,
 ): string | undefined {
   if (!requirement) return undefined;
-  const archiveUrl = index.get(packageKey(requirement))?.binary.wasm32
+  const archiveUrl = index.packages.get(packageKey(requirement))?.binary.wasm32
     ?.archive_url;
   if (!archiveUrl) return undefined;
   return new URL(archiveUrl, indexUrl).href;
@@ -172,7 +186,7 @@ function archiveUrlFor(
 
 function renderGalleryEntries(
   entries: GalleryEntry[],
-  index: Map<string, IndexPackageEntry>,
+  index: SoftwareIndex,
   indexUrl: string,
 ) {
   thirdPartyGallery.replaceChildren();
@@ -237,6 +251,12 @@ async function loadThirdPartyGallery() {
       ? new URL(manifest.index_url, KANDELO_SOFTWARE_MANIFEST_URL).href
       : DEFAULT_KANDELO_SOFTWARE_INDEX_URL;
     const index = parseIndexToml(await fetchTextWithDevProxy(indexUrl));
+    if (index.abiVersion !== undefined && index.abiVersion !== ABI_VERSION) {
+      thirdPartyGallery.classList.add("hidden");
+      thirdPartyGalleryStatus.textContent =
+        `kandelo-software ABI ${index.abiVersion} is not compatible with Kandelo ABI ${ABI_VERSION}.`;
+      return;
+    }
     const availableEntries = manifest.entries.filter((entry) =>
       entry.packages.every((pkg) => packageAvailable(index, pkg)),
     );
@@ -251,7 +271,7 @@ async function loadThirdPartyGallery() {
     renderGalleryEntries(availableEntries, index, indexUrl);
     thirdPartyGallery.classList.remove("hidden");
     thirdPartyGalleryStatus.textContent =
-      `${availableEntries.length} VFS build${availableEntries.length === 1 ? "" : "s"} available for Kandelo ABI 11.`;
+      `${availableEntries.length} VFS build${availableEntries.length === 1 ? "" : "s"} available for Kandelo ABI ${ABI_VERSION}.`;
   } catch (error) {
     thirdPartyGallery.classList.add("hidden");
     thirdPartyGalleryStatus.textContent =

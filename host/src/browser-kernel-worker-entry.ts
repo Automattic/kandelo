@@ -189,6 +189,13 @@ function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   (globalThis as any).postMessage(msg, transfer ?? []);
 }
 
+function formatError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.stack ? `${err.message}\n${err.stack}` : err.message;
+  }
+  return String(err);
+}
+
 function respond(requestId: number, result: unknown) {
   post({ type: "response", requestId, result });
 }
@@ -1482,7 +1489,13 @@ const sw = globalThis as unknown as {
 sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
   switch (msg.type) {
-    case "init": handleInit(msg); break;
+    case "init":
+      void handleInit(msg).catch((err) => {
+        const error = formatError(err);
+        console.error("[kernel-worker] init failed:", err);
+        post({ type: "init_error", error });
+      });
+      break;
     case "spawn": void handleSpawn(msg); break;
     case "terminate_process": handleTerminateProcess(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;

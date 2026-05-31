@@ -498,8 +498,20 @@ class ListenerSet<T> {
   }
 }
 
-function waitForPtyReadiness(pty: PtyHandle): Promise<void> {
-  return new Promise((resolve) => {
+function ptyBufferEndsWithPrompt(buffer: string): boolean {
+  const plain = buffer
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "\n");
+  return /(?:^|\n)(?:[^\n]*[$#] |> )$/.test(plain);
+}
+
+function waitForPtyReadiness(
+  pty: PtyHandle,
+  opts: { includeHistory?: boolean; timeoutMs?: number } = {},
+): Promise<void> {
+  const includeHistory = opts.includeHistory ?? true;
+  const timeoutMs = opts.timeoutMs ?? 1200;
+  return new Promise((resolve, reject) => {
     let done = false;
     let buffer = "";
     let off = () => {};
@@ -510,12 +522,22 @@ function waitForPtyReadiness(pty: PtyHandle): Promise<void> {
       off();
       resolve();
     };
+    const fail = () => {
+      if (done) return;
+      done = true;
+      off();
+      reject(new Error("timed out waiting for PTY prompt"));
+    };
     const decoder = new TextDecoder();
-    const timer = setTimeout(finish, 1200);
+    let replayingHistory = true;
+    const timer = setTimeout(fail, timeoutMs);
     off = pty.onData((bytes) => {
+      if (!includeHistory && replayingHistory) return;
       buffer += decoder.decode(bytes, { stream: true });
-      if (/\$ $|# $|> $/.test(buffer)) finish();
+      if (ptyBufferEndsWithPrompt(buffer)) finish();
     });
+    replayingHistory = false;
+    if (includeHistory && ptyBufferEndsWithPrompt(buffer)) finish();
   });
 }
 
@@ -636,6 +658,7 @@ export class LiveKernelHost implements KernelHost {
     history: Uint8Array[];
     closed: boolean;
   }>();
+  private ptyCommandQueues = new Map<string, Promise<void>>();
   /**
    * Active PTY shell pids keyed by pid. Used by attachFramebuffer to route
    * input through the PTY master so a framebuffer-bound process forked from
@@ -665,6 +688,7 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability = null;
     this.kernel = kernel;
     this.ptySessions.clear();
+    this.ptyCommandQueues.clear();
     this.shellPids.clear();
     if (kernel.framebuffers) {
       this.offFramebufferAvailability = kernel.framebuffers.onChange(() => {
@@ -681,6 +705,7 @@ export class LiveKernelHost implements KernelHost {
     this.offFramebufferAvailability = null;
     this.kernel = undefined;
     this.ptySessions.clear();
+    this.ptyCommandQueues.clear();
     this.shellPids.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
@@ -718,9 +743,36 @@ export class LiveKernelHost implements KernelHost {
    * real terminal command even when the terminal drawer starts closed.
    */
   async runShellCommand(command: string): Promise<void> {
-    const pty = await this.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
-    await waitForPtyReadiness(pty);
-    pty.write(command.endsWith("\n") ? command : `${command}\n`);
+    const sessionKey = "/dev/pts/0";
+    const previousCommandDone = this.ptyCommandQueues.get(sessionKey) ?? Promise.resolve();
+    let resolveCommandDone!: () => void;
+    let rejectCommandDone!: (err: unknown) => void;
+    const commandDone = new Promise<void>((resolve, reject) => {
+      resolveCommandDone = resolve;
+      rejectCommandDone = reject;
+    });
+    this.ptyCommandQueues.set(sessionKey, commandDone);
+    void commandDone.catch(() => {});
+    void commandDone.finally(() => {
+      if (this.ptyCommandQueues.get(sessionKey) === commandDone) {
+        this.ptyCommandQueues.delete(sessionKey);
+      }
+    }).catch(() => {});
+
+    try {
+      await previousCommandDone.catch(() => {});
+      const pty = await this.attachPty(sessionKey, { cols: 100, rows: 30 });
+      await waitForPtyReadiness(pty, { includeHistory: true, timeoutMs: 1200 }).catch(() => {});
+      const completion = waitForPtyReadiness(pty, {
+        includeHistory: false,
+        timeoutMs: 300_000,
+      });
+      void completion.then(resolveCommandDone, rejectCommandDone);
+      pty.write(command.endsWith("\n") ? command : `${command}\n`);
+    } catch (err) {
+      rejectCommandDone(err);
+      throw err;
+    }
   }
 
   /** Update the status and fan out to subscribers. */

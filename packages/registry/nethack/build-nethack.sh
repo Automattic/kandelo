@@ -140,6 +140,75 @@ EOF
     rm -f "$UNIXCONF_H.bak"
 fi
 
+# --- Patch include/system.h ---
+#
+# NetHack's bundled termcap declarations say `tputs` returns void and
+# accepts an unprototyped output callback. ncurses declares it as
+# `int tputs(const char *, int, int (*)(int))`. Native linkers tolerate the
+# return-type mismatch, but wasm-ld has to emit a signature-mismatch trap for
+# every caller. The first terminal-control sequence then aborts instantly.
+SYSTEM_H="include/system.h"
+if [ -f "$SYSTEM_H" ] && ! grep -q "wasm32posix tputs signature patch" "$SYSTEM_H"; then
+    echo "==> Patching include/system.h (tputs signature)..."
+    awk '
+        $0 == "E void FDECL(tputs, (const char *, int, int (*)()));" {
+            print "E int FDECL(tputs, (const char *, int, int (*)(int)));"
+            next
+        }
+        { print }
+    ' "$SYSTEM_H" > "$SYSTEM_H.new"
+    mv "$SYSTEM_H.new" "$SYSTEM_H"
+    echo "/* wasm32posix tputs signature patch */" >> "$SYSTEM_H"
+fi
+
+# --- Patch win/tty/termcap.c ---
+#
+# NetHack's TERMINFO branch assumes the terminal's cursor-left capability
+# is always exposed as the termcap-style `le` string. ncurses' terminfo
+# compatibility layer can return NULL for that lookup even when the browser
+# xterm endpoint supports destructive cursor-left/backspace. The non-TERMINFO
+# path already falls back to "\b"; apply the same fallback here instead of
+# treating a missing `le` alias as a fatal terminal.
+TERMCAP_C="win/tty/termcap.c"
+if [ -f "$TERMCAP_C" ] && ! grep -q "wasm32posix backspace fallback patch" "$TERMCAP_C"; then
+    echo "==> Patching win/tty/termcap.c (backspace fallback)..."
+    awk '
+        $0 == "    if (!(BC = Tgetstr(\"le\"))) /* both termcap and terminfo use le */" {
+            print "    if (!(BC = Tgetstr(\"le\"))) { /* both termcap and terminfo use le */"
+            print "#ifdef TERMINFO"
+            print "        BC = tbufptr;"
+            print "        tbufptr += 2;"
+            print "        *BC = 010;"
+            print "#else"
+            print "        if (!(BC = Tgetstr(\"bc\"))) { /* termcap also uses bc/bs */"
+            print "#ifndef MINIMAL_TERM"
+            print "            if (!tgetflag(\"bs\"))"
+            print "                error(\"Terminal must backspace.\");"
+            print "#endif"
+            print "            BC = tbufptr;"
+            print "            tbufptr += 2;"
+            print "            *BC = 010;"
+            print "        }"
+            print "#endif"
+            print "    }"
+            skip = 1
+            depth = 0
+            next
+        }
+        skip {
+            if ($0 ~ /^#if/) depth++
+            if ($0 ~ /^#endif/) {
+                depth--
+                if (depth == 0) skip = 0
+            }
+            next
+        }
+        { print }
+    ' "$TERMCAP_C" > "$TERMCAP_C.new"
+    mv "$TERMCAP_C.new" "$TERMCAP_C"
+    echo "/* wasm32posix backspace fallback patch */" >> "$TERMCAP_C"
+fi
+
 # --- Patch include/global.h ---
 #
 # `struct version_info` is written to data files by host-built dgn_comp

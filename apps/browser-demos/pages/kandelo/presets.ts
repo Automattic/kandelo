@@ -1,3 +1,5 @@
+import { ABI_VERSION } from "../../../../host/src/generated/abi";
+
 export interface Preset {
   id: string;
   title: string;
@@ -10,12 +12,14 @@ export interface Preset {
   estimatedUrlBytes: number;
 }
 
+const SHELL_BASE = `kandelo:shell@abi${ABI_VERSION}`;
+
 export const PRESET_LIBRARY: Preset[] = [
   {
     id: "shell",
     title: "Bare shell",
     summary: "Bash, dash, coreutils, and the full utility set from the shell demo.",
-    base: "kandelo:shell@abi8",
+    base: SHELL_BASE,
     packages: [
       "bash@local",
       "dash@local",
@@ -35,7 +39,7 @@ export const PRESET_LIBRARY: Preset[] = [
     id: "node",
     title: "Node.js",
     summary: "SpiderMonkey-backed Node.js compatibility runtime with npm staged as /usr/bin/node.",
-    base: "kandelo:shell@abi12",
+    base: SHELL_BASE,
     packages: ["node@local", "node-vfs@local", "npm@10.9.2", "bash@local", "coreutils@local"],
     accent: "#43853d",
     glyph: "js",
@@ -46,29 +50,29 @@ export const PRESET_LIBRARY: Preset[] = [
     id: "nginx",
     title: "nginx",
     summary: "Static HTTP service supervised by dinit and exposed through the browser bridge.",
-    base: "kandelo:shell@abi8",
+    base: SHELL_BASE,
     packages: ["dinit@local", "nginx@local", "bash@local", "coreutils@local"],
     accent: "#3a8f41",
     glyph: "nx",
-    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
     estimatedUrlBytes: 756,
   },
   {
     id: "nginx-php",
     title: "nginx + PHP",
     summary: "nginx forwarding through FastCGI to PHP-FPM.",
-    base: "kandelo:shell@abi8",
+    base: SHELL_BASE,
     packages: ["dinit@local", "nginx@local", "php-fpm@local", "bash@local", "coreutils@local"],
     accent: "#6b63a6",
     glyph: "php",
-    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
     estimatedUrlBytes: 944,
   },
   {
     id: "wordpress-sqlite",
     title: "WordPress SQLite",
     summary: "WordPress on nginx + PHP-FPM with the SQLite database plugin.",
-    base: "kandelo:shell@abi8",
+    base: SHELL_BASE,
     packages: [
       "dinit@local",
       "nginx@local",
@@ -80,14 +84,14 @@ export const PRESET_LIBRARY: Preset[] = [
     ],
     accent: "#21759b",
     glyph: "wp",
-    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
     estimatedUrlBytes: 1284,
   },
   {
     id: "wordpress-mariadb",
     title: "WordPress MariaDB",
     summary: "WordPress on nginx + PHP-FPM with MariaDB.",
-    base: "kandelo:shell@abi8",
+    base: SHELL_BASE,
     packages: [
       "dinit@local",
       "nginx@local",
@@ -99,14 +103,14 @@ export const PRESET_LIBRARY: Preset[] = [
     ],
     accent: "#5f8f73",
     glyph: "wp+",
-    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+    bootCommand: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
     estimatedUrlBytes: 1442,
   },
   {
     id: "doom",
     title: "fbDOOM",
     summary: "id Software's DOOM rendering directly to /dev/fb0.",
-    base: "kandelo:shell@abi8",
+    base: SHELL_BASE,
     packages: ["fbdoom@local", "doom-shareware@local", "bash@local", "coreutils@local"],
     accent: "#b5301c",
     glyph: "D",

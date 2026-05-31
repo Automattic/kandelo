@@ -339,7 +339,19 @@ upload_archive_asset() {
          --repo "$GITHUB_REPOSITORY" \
          "$ARCHIVE_PATH"
     then
-      return 0
+      if archive_asset_matches "$ARCHIVE_NAME" "$expected_size" "$expected_sha"; then
+        return 0
+      fi
+      echo "index-update.sh: archive upload reported success, but $ARCHIVE_NAME does not match staged bytes; retrying." >&2
+      info="$(release_asset_info "$ARCHIVE_NAME")"
+      if [ -n "$info" ]; then
+        local retry_asset_id retry_asset_size retry_asset_digest
+        read -r retry_asset_id retry_asset_size retry_asset_digest <<< "$info"
+        gh_retry gh api \
+          -X DELETE \
+          "/repos/${GITHUB_REPOSITORY}/releases/assets/${retry_asset_id}" \
+          >/dev/null
+      fi
     fi
 
     if archive_asset_matches "$ARCHIVE_NAME" "$expected_size" "$expected_sha"; then

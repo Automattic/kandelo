@@ -1657,6 +1657,7 @@ const WPK_FORK_EXPORTS: [&str; 5] = [
     "wpk_fork_rewind_end",
     "wpk_fork_state",
 ];
+const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS: [&str; 2] = ["__abi_version", "_start"];
 
 fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
@@ -1725,12 +1726,24 @@ fn wasm_artifact_facts(bytes: &[u8]) -> Result<WasmArtifactFacts, String> {
     Ok(facts)
 }
 
+#[cfg(test)]
 fn wasm_artifact_policy_failures(
     bytes: &[u8],
     fork_instrumentation: ForkInstrumentationPolicy,
 ) -> Vec<String> {
+    wasm_artifact_policy_failures_for(bytes, fork_instrumentation, &[])
+}
+
+fn wasm_artifact_policy_failures_for(
+    bytes: &[u8],
+    fork_instrumentation: ForkInstrumentationPolicy,
+    required_exports: &[&str],
+) -> Vec<String> {
     if !is_wasm_bytes(bytes) {
-        return Vec::new();
+        if required_exports.is_empty() {
+            return Vec::new();
+        }
+        return vec!["is not a wasm binary".to_string()];
     }
 
     let mut failures = Vec::new();
@@ -1748,6 +1761,18 @@ fn wasm_artifact_policy_failures(
 
     if facts.is_relocatable_object {
         return failures;
+    }
+
+    let missing_required_exports = required_exports
+        .iter()
+        .copied()
+        .filter(|name| !facts.exports.contains(*name))
+        .collect::<Vec<_>>();
+    if !missing_required_exports.is_empty() {
+        failures.push(format!(
+            "missing required exports: {}",
+            missing_required_exports.join(", ")
+        ));
     }
 
     let wpk_present: Vec<&str> = WPK_FORK_EXPORTS
@@ -1786,13 +1811,28 @@ fn wasm_artifact_policy_failures(
 fn validate_wasm_artifact_policy(
     path: &Path,
     fork_instrumentation: ForkInstrumentationPolicy,
+    required_exports: &[&str],
 ) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let failures = wasm_artifact_policy_failures(&bytes, fork_instrumentation);
+    let failures =
+        wasm_artifact_policy_failures_for(&bytes, fork_instrumentation, required_exports);
     if failures.is_empty() {
         Ok(())
     } else {
         Err(format!("{}: {}", path.display(), failures.join("; ")))
+    }
+}
+
+fn required_exports_for_program_output(
+    target: &DepsManifest,
+    out: &crate::pkg_manifest::ProgramOutput,
+) -> &'static [&'static str] {
+    if target.name == "kernel" && out.name == "kernel" {
+        wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS
+    } else if out.wasm.ends_with(".wasm") && target.name != "userspace" {
+        &EXECUTABLE_PROGRAM_REQUIRED_EXPORTS
+    } else {
+        &[]
     }
 }
 
@@ -1809,7 +1849,11 @@ fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Result<(), Str
                 out.wasm
             ));
         }
-        validate_wasm_artifact_policy(&path, out.fork_instrumentation)?;
+        validate_wasm_artifact_policy(
+            &path,
+            out.fork_instrumentation,
+            required_exports_for_program_output(target, out),
+        )?;
     }
     Ok(())
 }
@@ -1849,7 +1893,11 @@ fn validate_outputs(target: &DepsManifest, out_dir: &Path) -> Result<(), String>
                         out.wasm
                     ));
                 }
-                validate_wasm_artifact_policy(&p, out.fork_instrumentation)?;
+                validate_wasm_artifact_policy(
+                    &p,
+                    out.fork_instrumentation,
+                    required_exports_for_program_output(target, out),
+                )?;
             }
         }
         // No outputs to validate for source-kind (Chunk C).
@@ -2620,30 +2668,43 @@ libs = ["lib/lib{name}.a"]
         bytes
     }
 
-    fn wasm_exporting_kernel_fork() -> Vec<u8> {
-        let mut bytes = b"\0asm\x01\0\0\0".to_vec();
-        bytes.extend(wasm_section(1, vec![0x01, 0x60, 0x00, 0x01, 0x7f]));
-        bytes.extend(wasm_section(3, vec![0x01, 0x00]));
-
-        let mut exports = vec![0x01];
-        exports.extend(wasm_name("kernel_fork"));
-        exports.push(0x00); // func export
-        exports.push(0x00); // func index
-        bytes.extend(wasm_section(7, exports));
-        bytes.extend(wasm_section(10, vec![0x01, 0x04, 0x00, 0x41, 0x00, 0x0b]));
-        bytes
-    }
-
-    fn wasm_importing_kernel_fork_with_wpk_exports() -> Vec<u8> {
+    fn wasm_importing_kernel_fork_exporting_names(names: &[&str]) -> Vec<u8> {
         let mut bytes = wasm_importing_kernel_fork(&[]);
-        let mut exports = vec![WPK_FORK_EXPORTS.len() as u8];
-        for name in WPK_FORK_EXPORTS {
+        let mut exports = uleb(names.len() as u32);
+        for name in names {
             exports.extend(wasm_name(name));
             exports.push(0x00); // func export
             exports.push(0x00); // imported function index
         }
         bytes.extend(wasm_section(7, exports));
         bytes
+    }
+
+    fn wasm_exporting_names(names: &[&str]) -> Vec<u8> {
+        let mut bytes = b"\0asm\x01\0\0\0".to_vec();
+        bytes.extend(wasm_section(1, vec![0x01, 0x60, 0x00, 0x01, 0x7f]));
+        bytes.extend(wasm_section(3, vec![0x01, 0x00]));
+
+        let mut exports = uleb(names.len() as u32);
+        for name in names {
+            exports.extend(wasm_name(name));
+            exports.push(0x00); // func export
+            exports.push(0x00); // func index
+        }
+        bytes.extend(wasm_section(7, exports));
+        bytes.extend(wasm_section(10, vec![0x01, 0x04, 0x00, 0x41, 0x00, 0x0b]));
+        bytes
+    }
+
+    fn wasm_exporting_kernel_fork() -> Vec<u8> {
+        wasm_exporting_names(&["kernel_fork"])
+    }
+
+    fn wasm_importing_kernel_fork_with_wpk_exports() -> Vec<u8> {
+        let mut names = Vec::new();
+        names.extend(EXECUTABLE_PROGRAM_REQUIRED_EXPORTS);
+        names.extend(WPK_FORK_EXPORTS);
+        wasm_importing_kernel_fork_exporting_names(&names)
     }
 
     #[test]
@@ -5088,7 +5149,7 @@ wasm = "vim.wasm"
             "0.1.0",
             &[],
             // Build script writes the declared wasm.
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/tinyprog.wasm""#,
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && printf '\x00asm\x01\x00\x00\x00\x01\x05\x01\x60\x00\x01\x7f\x03\x02\x01\x00\x07\x1a\x02\x0d__abi_version\x00\x00\x06_start\x00\x00\x0a\x06\x01\x04\x00\x41\x00\x0b' > "$WASM_POSIX_DEP_OUT_DIR/tinyprog.wasm""#,
             &[("tinyprog", "tinyprog.wasm")],
         );
         let reg = Registry { roots: vec![root] };
@@ -5145,6 +5206,32 @@ wasm = "bad.wasm"
     }
 
     #[test]
+    fn program_output_validation_rejects_executable_without_entrypoint_exports() {
+        let out = tempdir("prog-out-entrypoint-policy");
+        fs::write(out.join("bad.wasm"), b"\0asm\x01\0\0\0").unwrap();
+        let m = DepsManifest::parse(
+            r#"kind = "program"
+name = "badentry"
+version = "0.1.0"
+[source]
+url = "https://x.test/badentry.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Test"
+[[outputs]]
+name = "badentry"
+wasm = "bad.wasm"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+        let err = validate_outputs(&m, &out).unwrap_err();
+        assert!(err.contains("missing required exports"), "got: {err}");
+        assert!(err.contains("__abi_version"), "got: {err}");
+        assert!(err.contains("_start"), "got: {err}");
+    }
+
+    #[test]
     fn program_output_validation_rejects_fork_without_wpk_exports() {
         let out = tempdir("prog-out-fork-policy");
         fs::write(out.join("bad.wasm"), wasm_importing_kernel_fork(&[])).unwrap();
@@ -5170,9 +5257,41 @@ wasm = "bad.wasm"
     }
 
     #[test]
-    fn program_output_validation_accepts_kernel_fork_exports() {
+    fn program_output_validation_rejects_kernel_missing_host_adapter_exports() {
         let out = tempdir("prog-out-kernel-export-policy");
         fs::write(out.join("kernel.wasm"), wasm_exporting_kernel_fork()).unwrap();
+        let m = DepsManifest::parse(
+            r#"kind = "program"
+name = "kernel"
+version = "0.1.0"
+[source]
+url = "https://x.test/kernel.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "Test"
+[[outputs]]
+name = "kernel"
+wasm = "kernel.wasm"
+"#,
+            PathBuf::from("/x"),
+        )
+        .unwrap();
+        let err = validate_outputs(&m, &out).unwrap_err();
+        assert!(err.contains("missing required exports"), "got: {err}");
+        assert!(
+            err.contains("kernel_host_adapter_manifest_ptr"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn program_output_validation_accepts_kernel_host_adapter_exports() {
+        let out = tempdir("prog-out-kernel-host-adapter-export-policy");
+        fs::write(
+            out.join("kernel.wasm"),
+            wasm_exporting_names(wasm_posix_shared::abi::HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS),
+        )
+        .unwrap();
         let m = DepsManifest::parse(
             r#"kind = "program"
 name = "kernel"
@@ -5195,7 +5314,11 @@ wasm = "kernel.wasm"
     #[test]
     fn program_output_validation_accepts_disabled_fork_instrumentation_policy() {
         let out = tempdir("prog-out-fork-disabled");
-        fs::write(out.join("js.wasm"), wasm_importing_kernel_fork(&[])).unwrap();
+        fs::write(
+            out.join("js.wasm"),
+            wasm_importing_kernel_fork_exporting_names(&EXECUTABLE_PROGRAM_REQUIRED_EXPORTS),
+        )
+        .unwrap();
         let m = DepsManifest::parse(
             r#"kind = "program"
 name = "spidermonkey"

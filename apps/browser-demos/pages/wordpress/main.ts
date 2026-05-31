@@ -43,6 +43,8 @@ const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
 const PHP_FPM_WORKERS = 1;
+const PHP_FPM_UID = 65534;
+const PHP_FPM_GID = 65534;
 const AUTO_LOAD_FRAME = !new URLSearchParams(window.location.search).has("no-autoload");
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
@@ -102,6 +104,12 @@ function setStatus(text: string, type: "loading" | "running" | "error") {
   statusDiv.style.display = "block";
   statusDiv.textContent = text;
   statusDiv.className = `status ${type}`;
+}
+
+function ensureWritableByPhpFpm(fs: MemoryFileSystem, path: string): void {
+  ensureDirRecursive(fs, path);
+  fs.chown(path, PHP_FPM_UID, PHP_FPM_GID);
+  fs.chmod(path, 0o775);
 }
 
 function loadFrame() {
@@ -224,6 +232,7 @@ async function start() {
     writeVfsFile(memfs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
     writeVfsFile(memfs, "/etc/wp-config-template.php", wordpressConfigTemplate("sqlite"));
     writeVfsFile(memfs, "/var/www/html/wp-config.php", renderWordPressConfig("sqlite", APP_PATH, PROTO));
+    ensureWritableByPhpFpm(memfs, "/var/www/html/wp-content/database");
     ensureDirRecursive(memfs, "/var/www/html/wp-content/mu-plugins");
     writeVfsFile(
       memfs,
@@ -274,7 +283,7 @@ async function start() {
     const { exit } = await kernel.boot({
       kernelWasm: kernelBytes,
       vfsImage,
-      argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
+      argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"],
       env: [
         "HOME=/root",
         "TERM=xterm-256color",
