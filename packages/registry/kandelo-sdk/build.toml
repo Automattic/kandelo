@@ -1,7 +1,7 @@
 script_path = "packages/registry/kandelo-sdk/build-kandelo-sdk.sh"
-repo_url    = "https://github.com/brandonpayton/kandelo.git"
+repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 revision    = 1
 
 [binary]
-index_url = "https://github.com/brandonpayton/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

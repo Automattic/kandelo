@@ -230,7 +230,7 @@ commit      = "<commit at last successful build>"
 revision    = 1
 
 [binary]
-index_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
 - `{abi}` is substituted with the current `ABI_VERSION` at resolve
@@ -258,9 +258,13 @@ Gitignored.
 For CI-driven PR testing, the matrix flow uses a dedicated
 `pr-<NNN>-staging` release tag instead: that tag has its own
 `index.toml` (separate state-lock subject from the durable
-release), and a PR's `build.toml` either points at the staging
-index temporarily or the consumer manually overrides `index_url`
-via the overlay path.
+release). To consume that staging index locally, run through
+`run.sh` with `--pr-staging`, or set `WASM_POSIX_USE_PR_STAGING=1`.
+`run.sh` detects the current PR and repository with `gh`, verifies the
+staging release has `index.toml`, and exports
+`WASM_POSIX_BINARY_INDEX_URL=https://github.com/<owner>/<repo>/releases/download/pr-<NNN>-staging/index.toml`.
+If `WASM_POSIX_BINARY_INDEX_URL` is already set, that manual override
+remains authoritative.
 
 ## Consumer: `scripts/fetch-binaries.sh`
 
