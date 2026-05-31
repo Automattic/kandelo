@@ -1,0 +1,24 @@
+# Per-library manifest for Oniguruma, PHP mbregex's regex engine.
+
+kind = "library"
+
+name = "oniguruma"
+version = "6.9.10"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://github.com/kkos/oniguruma/releases/download/v6.9.10/onig-6.9.10.tar.gz"
+sha256 = "2a5cfc5ae259e4e97f86b68dfffc152cdaffe94e2060b770cb827238d769fc05"
+
+[license]
+spdx = "BSD-2-Clause"
+url = "https://github.com/kkos/oniguruma/blob/v6.9.10/COPYING"
+
+[build]
+script_path = "packages/registry/oniguruma/build-oniguruma.sh"
+
+[outputs]
+libs = ["lib/libonig.a"]
+headers = ["include/oniguruma.h", "include/oniggnu.h"]
+pkgconfig = ["lib/pkgconfig/oniguruma.pc"]

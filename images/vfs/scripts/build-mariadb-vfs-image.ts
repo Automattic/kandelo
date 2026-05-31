@@ -116,7 +116,9 @@ function buildEngineServices(engine: "Aria" | "InnoDB"): DinitService[] {
     ...args, ...innodbArgs,
     "--skip-networking=0", "--port=3306",
     "--bind-address=0.0.0.0", "--socket=",
-    "--max-connections=10", "--thread-handling=no-threads",
+    // Use MariaDB's default thread-per-connection handling so multiple
+    // clients can be connected at the same time.
+    "--max-connections=10",
     `--log-error=/data/${tag}-error.log`,
   ].join(" ");
 

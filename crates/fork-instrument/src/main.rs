@@ -3,7 +3,7 @@
 //! Usage:
 //!
 //! ```text
-//! wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
+//! wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork] [--direct-only]
 //! ```
 //!
 //! Exits non-zero with a human-readable error on any failure (parse,
@@ -43,6 +43,13 @@ struct Cli {
     /// hand-maintained onlylists.
     #[arg(long)]
     discover_only: bool,
+
+    /// Restrict fork-path discovery to direct calls. Use this for large
+    /// runtimes whose fork path is known not to go through function
+    /// pointers; it avoids conservatively instrumenting unrelated
+    /// call_indirect targets with common signatures.
+    #[arg(long)]
+    direct_only: bool,
 }
 
 fn main() -> Result<()> {
@@ -53,6 +60,7 @@ fn main() -> Result<()> {
 
     let opts = Options {
         entry_import: cli.entry,
+        include_indirect_calls: !cli.direct_only,
     };
 
     if cli.discover_only {

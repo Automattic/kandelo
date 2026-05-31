@@ -153,41 +153,51 @@ impl MemoryManager {
         }
         let unmap_end = addr.saturating_add(len);
         let mut found = false;
-        let mut new_mappings: Vec<MappedRegion> = Vec::new();
 
-        for m in self.mappings.drain(..) {
+        let mut i = 0;
+        while i < self.mappings.len() {
+            let m = self.mappings[i].clone();
             let m_end = m.addr.saturating_add(m.len);
 
             // No overlap — keep as is
             if m_end <= addr || m.addr >= unmap_end {
-                new_mappings.push(m);
+                i += 1;
                 continue;
             }
 
             found = true;
+            let keep_left = m.addr < addr;
+            let keep_right = m_end > unmap_end;
 
-            // Left remnant: mapping starts before unmap region
-            if m.addr < addr {
-                new_mappings.push(MappedRegion {
-                    addr: m.addr,
-                    len: addr - m.addr,
-                    prot: m.prot,
-                    flags: m.flags,
-                });
-            }
-
-            // Right remnant: mapping extends past unmap region
-            if m_end > unmap_end {
-                new_mappings.push(MappedRegion {
-                    addr: unmap_end,
-                    len: m_end - unmap_end,
-                    prot: m.prot,
-                    flags: m.flags,
-                });
+            match (keep_left, keep_right) {
+                (true, true) => {
+                    self.mappings[i].len = addr - m.addr;
+                    self.mappings.insert(
+                        i + 1,
+                        MappedRegion {
+                            addr: unmap_end,
+                            len: m_end - unmap_end,
+                            prot: m.prot,
+                            flags: m.flags,
+                        },
+                    );
+                    i += 2;
+                }
+                (true, false) => {
+                    self.mappings[i].len = addr - m.addr;
+                    i += 1;
+                }
+                (false, true) => {
+                    self.mappings[i].addr = unmap_end;
+                    self.mappings[i].len = m_end - unmap_end;
+                    i += 1;
+                }
+                (false, false) => {
+                    self.mappings.remove(i);
+                }
             }
         }
 
-        self.mappings = new_mappings;
         found
     }
 

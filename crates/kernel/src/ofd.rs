@@ -72,6 +72,13 @@ pub enum FileType {
 }
 
 #[derive(Clone)]
+pub struct PendingDirEntry {
+    pub ino: u64,
+    pub d_type: u32,
+    pub name: Vec<u8>,
+}
+
+#[derive(Clone)]
 pub struct OpenFileDesc {
     pub file_type: FileType,
     pub status_flags: u32,
@@ -87,6 +94,9 @@ pub struct OpenFileDesc {
     pub dir_synth_state: u8,
     /// Cumulative entry count across getdents64 calls — used as d_off cookie for seekdir.
     pub dir_entry_offset: i64,
+    /// Host entry read by getdents64 but not yet emitted because the caller's
+    /// buffer filled before the entry could be written.
+    pub dir_pending_entry: Option<PendingDirEntry>,
 }
 
 #[derive(Clone)]
@@ -121,6 +131,7 @@ impl OfdTable {
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_pending_entry: None,
         };
 
         // Search for a free (None) slot to reuse.
@@ -350,6 +361,7 @@ mod tests {
                 dir_host_handle: -1,
                 dir_synth_state: 0,
                 dir_entry_offset: 0,
+                dir_pending_entry: None,
             });
         }
 

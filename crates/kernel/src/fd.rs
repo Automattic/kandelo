@@ -27,8 +27,8 @@ pub struct FdTable {
 }
 
 impl FdTable {
-    /// Default maximum of 1024 file descriptors.
-    const DEFAULT_MAX: usize = 1024;
+    /// Default maximum of 4096 file descriptors.
+    const DEFAULT_MAX: usize = 4096;
 
     pub fn new() -> Self {
         Self::with_max(Self::DEFAULT_MAX)

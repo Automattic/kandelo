@@ -64,6 +64,8 @@ install_local_binary() {
     # checkout before installing artifacts.
     local repo_root
     repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+    local arch="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
     local src_basename
     src_basename="$(basename "$src")"
     local host_target
