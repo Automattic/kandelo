@@ -33,6 +33,9 @@
 #
 # For --status failed, omit --archive-path/--archive-name/--cache-key-sha
 # and pass --error "<text>" instead.
+#
+# To repair only release-level index metadata such as abi_version:
+#   bash scripts/index-update.sh --target-tag pr-595-staging --repair-only
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,6 +51,7 @@ ARCHIVE_PATH=""
 ARCHIVE_NAME=""
 CACHE_KEY_SHA=""
 ERROR=""
+REPAIR_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -61,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --archive-name)  ARCHIVE_NAME="$2"; shift 2 ;;
     --cache-key-sha) CACHE_KEY_SHA="$2"; shift 2 ;;
     --error)         ERROR="$2"; shift 2 ;;
+    --repair-only)   REPAIR_ONLY=1; shift ;;
     *)
       echo "index-update.sh: unknown flag $1" >&2
       exit 2
@@ -354,16 +359,25 @@ upload_archive_asset() {
 }
 
 require target-tag    "$TARGET_TAG"
-require package       "$PACKAGE"
-require version       "$VERSION"
-require revision      "$REVISION"
-require arch          "$ARCH"
-require status        "$STATUS"
+
+if [ "$REPAIR_ONLY" = "1" ]; then
+  STATUS="repair"
+else
+  require package       "$PACKAGE"
+  require version       "$VERSION"
+  require revision      "$REVISION"
+  require arch          "$ARCH"
+  require status        "$STATUS"
+fi
 
 # Lets state-lock.sh distinguish a live same-run matrix owner from a
 # completed same-run job that failed to release the lock after an upload
 # or token error.
-export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-${PACKAGE}, ${ARCH}}"
+if [ "$STATUS" = "repair" ]; then
+  export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-index repair}"
+else
+  export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-${PACKAGE}, ${ARCH}}"
+fi
 
 case "$STATUS" in
   success)
@@ -378,8 +392,10 @@ case "$STATUS" in
   failed)
     require error "$ERROR"
     ;;
+  repair)
+    ;;
   *)
-    echo "index-update.sh: --status must be success or failed, got $STATUS" >&2
+    echo "index-update.sh: --status must be success, failed, or repair, got $STATUS" >&2
     exit 2
     ;;
 esac
@@ -430,11 +446,11 @@ HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo run --release -p xtask --target "$HOST_TRIPLE" --quiet -- \
   index-update \
     --index-path "$INDEX_PATH" \
-    --package "$PACKAGE" \
-    --version "$VERSION" \
-    --revision "$REVISION" \
-    --arch "$ARCH" \
     --status "$STATUS" \
+    ${PACKAGE:+--package "$PACKAGE"} \
+    ${VERSION:+--version "$VERSION"} \
+    ${REVISION:+--revision "$REVISION"} \
+    ${ARCH:+--arch "$ARCH"} \
     ${ARCHIVE_PATH:+--archive-path "$ARCHIVE_PATH"} \
     ${ARCHIVE_NAME:+--archive-name "$ARCHIVE_NAME"} \
     ${CACHE_KEY_SHA:+--cache-key-sha "$CACHE_KEY_SHA"} \
@@ -455,6 +471,10 @@ gh_retry gh release upload "$TARGET_TAG" \
   --clobber \
   "$INDEX_PATH"
 
-echo "index-update.sh: $PACKAGE@$VERSION ($ARCH, status=$STATUS) recorded in $TARGET_TAG/index.toml"
+if [ "$STATUS" = "repair" ]; then
+  echo "index-update.sh: repaired $TARGET_TAG/index.toml for ABI $EXPECTED_ABI"
+else
+  echo "index-update.sh: $PACKAGE@$VERSION ($ARCH, status=$STATUS) recorded in $TARGET_TAG/index.toml"
+fi
 
 # 6. Lock release is via the EXIT trap.

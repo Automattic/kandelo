@@ -178,6 +178,38 @@ run_index_update() {
   printf '%s\n' "$upload_dir/index.toml"
 }
 
+run_index_repair() {
+  local target_tag="$1"
+  local has_index="$2"
+  local seed_index="${3:-}"
+
+  local case_dir upload_dir
+  case_dir="$(mktemp -d "$TMP_ROOT/case.XXXXXX")"
+  upload_dir="$case_dir/uploads"
+  mkdir -p "$upload_dir"
+
+  if ! GH_STUB_HAS_INDEX="$has_index" \
+       GH_STUB_INDEX_SOURCE="$seed_index" \
+       GH_STUB_UPLOAD_DIR="$upload_dir" \
+       GITHUB_REPOSITORY="example/repo" \
+       GITHUB_SHA="0123456789abcdef0123456789abcdef01234567" \
+       GITHUB_RUN_ID="123" \
+       STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
+       PATH="$STUB_BIN:$PATH" \
+       bash "$REPO_ROOT/scripts/index-update.sh" \
+         --target-tag "$target_tag" \
+         --repair-only \
+         >"$case_dir/stdout" \
+         2>"$case_dir/stderr"
+  then
+    cat "$case_dir/stdout" >&2
+    cat "$case_dir/stderr" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$upload_dir/index.toml"
+}
+
 assert_index_abi() {
   local index_path="$1"
   local expected="$2"
@@ -199,6 +231,9 @@ generator = "test"
 EOF
 rewritten_index="$(run_index_update "pr-595-staging" "$CURRENT_ABI" 1 "$stale_index")"
 assert_index_abi "$rewritten_index" "$CURRENT_ABI"
+
+repair_index="$(run_index_repair "pr-595-staging" 1 "$stale_index")"
+assert_index_abi "$repair_index" "$CURRENT_ABI"
 
 durable_index="$(run_index_update "binaries-abi-v42" 42 0)"
 assert_index_abi "$durable_index" 42

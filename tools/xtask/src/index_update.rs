@@ -1,5 +1,6 @@
 //! `xtask index-update` — atomically mutate `index.toml` with the
-//! result of one per-package matrix-build job.
+//! result of one per-package matrix-build job, or repair release-level
+//! index metadata without touching a package entry.
 //!
 //! Called from `scripts/index-update.sh` (Phase 8) inside the
 //! state-lock acquired for the target tag. Reads the current
@@ -21,8 +22,7 @@ use crate::util::hex;
 ///     all required; sha256 is computed from `--archive-path`.
 ///   * `--status failed`: `--error` required; archive-* + cache-key
 ///     ignored. The current archive (if any) is moved to fallback.
-///   * `--status pending|building`: only the entry's status changes;
-///     fallback (if any) is preserved.
+///   * `--status repair`: only the top-level index metadata is repaired.
 pub fn run_index_update(args: &[String]) -> Result<(), String> {
     let parsed = ParsedArgs::from(args)?;
 
@@ -49,14 +49,27 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
         }
     }
 
-    let arch = match parsed.arch.as_str() {
-        "wasm32" => TargetArch::Wasm32,
-        "wasm64" => TargetArch::Wasm64,
-        other => return Err(format!("--arch must be wasm32 or wasm64, got {other:?}")),
+    let arch = match parsed.arch.as_deref() {
+        Some("wasm32") => Some(TargetArch::Wasm32),
+        Some("wasm64") => Some(TargetArch::Wasm64),
+        Some(other) => return Err(format!("--arch must be wasm32 or wasm64, got {other:?}")),
+        None => None,
     };
 
     match parsed.status.as_str() {
         "success" => {
+            let package = parsed
+                .package
+                .as_deref()
+                .ok_or("--status success requires --package")?;
+            let version = parsed
+                .version
+                .as_deref()
+                .ok_or("--status success requires --version")?;
+            let revision = parsed
+                .revision
+                .ok_or("--status success requires --revision")?;
+            let arch = arch.ok_or("--status success requires --arch")?;
             let archive_path = parsed
                 .archive_path
                 .as_ref()
@@ -78,9 +91,9 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
             let archive_sha256 = hex(&digest);
 
             idx.update_entry_success(
-                &parsed.package,
-                &parsed.version,
-                parsed.revision,
+                package,
+                version,
+                revision,
                 arch,
                 archive_name.clone(),
                 archive_sha256,
@@ -90,22 +103,41 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
             );
         }
         "failed" => {
+            let package = parsed
+                .package
+                .as_deref()
+                .ok_or("--status failed requires --package")?;
+            let version = parsed
+                .version
+                .as_deref()
+                .ok_or("--status failed requires --version")?;
+            let revision = parsed
+                .revision
+                .ok_or("--status failed requires --revision")?;
+            let arch = arch.ok_or("--status failed requires --arch")?;
             let error = parsed
                 .error
                 .as_ref()
                 .ok_or("--status failed requires --error")?;
             idx.update_entry_failed(
-                &parsed.package,
-                &parsed.version,
-                parsed.revision,
+                package,
+                version,
+                revision,
                 arch,
                 error.clone(),
                 parsed.built_at.clone(),
                 parsed.built_by.clone(),
             );
         }
+        "repair" => {
+            parsed
+                .expected_abi
+                .ok_or("--status repair requires --expected-abi")?;
+        }
         other => {
-            return Err(format!("--status must be success or failed, got {other:?}"));
+            return Err(format!(
+                "--status must be success, failed, or repair, got {other:?}"
+            ));
         }
     }
 
@@ -119,10 +151,10 @@ pub fn run_index_update(args: &[String]) -> Result<(), String> {
 
 struct ParsedArgs {
     index_path: PathBuf,
-    package: String,
-    version: String,
-    revision: u32,
-    arch: String,
+    package: Option<String>,
+    version: Option<String>,
+    revision: Option<u32>,
+    arch: Option<String>,
     status: String,
     archive_path: Option<PathBuf>,
     archive_name: Option<String>,
@@ -186,10 +218,10 @@ impl ParsedArgs {
 
         Ok(ParsedArgs {
             index_path: index_path.ok_or("missing --index-path")?,
-            package: package.ok_or("missing --package")?,
-            version: version.ok_or("missing --version")?,
-            revision: revision.ok_or("missing --revision")?,
-            arch: arch.ok_or("missing --arch")?,
+            package,
+            version,
+            revision,
+            arch,
             status: status.ok_or("missing --status")?,
             archive_path,
             archive_name,
@@ -411,6 +443,60 @@ cache_key_sha = "oldkey"
         assert_eq!(updated.abi_version, 13);
         assert!(updated.lookup("old", "1.0", TargetArch::Wasm32).is_none());
         assert!(updated.lookup("new", "1.0", TargetArch::Wasm32).is_some());
+        updated.validate_archive_abi_versions().unwrap();
+    }
+
+    #[test]
+    fn index_update_repair_rewrites_stale_index_toml_abi() {
+        use super::*;
+        use crate::index_toml::IndexToml;
+        use crate::pkg_manifest::TargetArch;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "wpk-xtask-idx-update-repair-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let idx_path = tmp.join("index.toml");
+        let stale = r#"
+abi_version = 12
+generated_at = "old"
+generator = "test"
+
+[[packages]]
+name = "bc"
+version = "1.0"
+revision = 1
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "bc-1.0-rev1-abi13-wasm32-deadbeef.tar.zst"
+archive_sha256 = "oldsha"
+cache_key_sha = "oldkey"
+"#;
+        std::fs::write(&idx_path, stale).unwrap();
+
+        run_index_update(&[
+            "--index-path".to_string(),
+            idx_path.to_string_lossy().into_owned(),
+            "--status".to_string(),
+            "repair".to_string(),
+            "--expected-abi".to_string(),
+            "13".to_string(),
+            "--built-at".to_string(),
+            "2026-05-13T00:00:00Z".to_string(),
+            "--built-by".to_string(),
+            "https://example.com/run/1".to_string(),
+        ])
+        .unwrap();
+
+        let updated = IndexToml::parse(&std::fs::read_to_string(&idx_path).unwrap()).unwrap();
+        assert_eq!(updated.abi_version, 13);
+        assert!(updated.lookup("bc", "1.0", TargetArch::Wasm32).is_some());
+        assert_eq!(updated.generated_at, "2026-05-13T00:00:00Z");
         updated.validate_archive_abi_versions().unwrap();
     }
 

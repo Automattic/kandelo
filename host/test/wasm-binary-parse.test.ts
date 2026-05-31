@@ -13,6 +13,7 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ABI_VERSION } from "../src/generated/abi";
 import {
   describeWasmArtifactPolicyFailures,
   extractHeapBase,
@@ -498,7 +499,7 @@ describe.skipIf(!existsSync(builtNodeBinary))("built node.wasm artifact policy",
     const wasm = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 
     expect(describeWasmArtifactPolicyFailures(wasm, {
-      expectedAbi: 12,
+      expectedAbi: ABI_VERSION,
       requireForkInstrumentation: false,
       forbidForkInstrumentation: true,
     })).toEqual([]);
