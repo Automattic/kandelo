@@ -11,7 +11,7 @@ echo "Copying Wasm artifacts into local-binaries/..."
 # rebuilt artifacts shadow whatever scripts/fetch-binaries.sh
 # downloaded. See docs/binary-releases.md.
 mkdir -p local-binaries
-cp target/wasm64-unknown-unknown/release/kandelo.wasm \
+cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm \
    local-binaries/kernel.wasm
 if [ -f target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
     cp target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm \

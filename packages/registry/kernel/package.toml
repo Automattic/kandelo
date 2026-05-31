@@ -18,4 +18,4 @@ script_path = "packages/registry/kernel/build-kernel.sh"
 
 [[outputs]]
 name = "kernel"
-wasm = "kandelo.wasm"
+wasm = "kandelo-kernel.wasm"

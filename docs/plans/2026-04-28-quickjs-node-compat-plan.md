@@ -117,9 +117,9 @@ $ RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" \
 …
 Finished `release` profile [optimized] target(s) in 6.96s
 
-$ stat -f "%z" target/wasm64-unknown-unknown/release/kandelo.wasm
+$ stat -f "%z" target/wasm64-unknown-unknown/release/kandelo_kernel.wasm
 416242                                  # fresh build
-$ stat -f "%z" host/wasm/kandelo.wasm
+$ stat -f "%z" host/wasm/kandelo-kernel.wasm
 441836                                  # committed
 ```
 
@@ -179,7 +179,7 @@ bash scripts/check-abi-version.sh                                      # exit 0
 
 **Handling the 25 KB wasm drift — three checks, in this order:**
 
-The structural snapshot alone is necessary-but-not-sufficient. Three independent verifications must all pass before the new `host/wasm/kandelo.wasm` is committed.
+The structural snapshot alone is necessary-but-not-sufficient. Three independent verifications must all pass before the new `host/wasm/kandelo-kernel.wasm` is committed.
 
 **Check 1 — Structural ABI snapshot.**
 
@@ -197,8 +197,8 @@ The structural snapshot alone is necessary-but-not-sufficient. Three independent
 
 ```bash
 # twiggy preferred (clearer summary); wasm-tools dump as fallback.
-twiggy diff host/wasm/kandelo.wasm \
-            target/wasm64-unknown-unknown/release/kandelo.wasm
+twiggy diff host/wasm/kandelo-kernel.wasm \
+            target/wasm64-unknown-unknown/release/kandelo_kernel.wasm
 ```
 
 Expected shape for "pure codegen" drift: many small per-function deltas spread across `core::*`, `compiler_builtins::*`, allocator/panic helpers, and LTO-coalesced inlining sites. **Acceptable.**
@@ -215,18 +215,18 @@ In any "stop" case, attach the `twiggy diff` output to the PR and decide before 
 
 This is **load-bearing for Phase 0c** and the data point is unrecoverable once 0a lands.
 
-The §0c stack-overflow regression was originally characterised against the *currently-committed* `host/wasm/kandelo.wasm` at HEAD `37814ab5` (`qjs -e '<expr>'` and `node -e '<expr>'` reliably stack-overflow with "Maximum call stack size exceeded"; `qjs --help` and `node --version` both work because they short-circuit before bootstrap). Phase 0a will replace that binary. If the new toolchain's codegen alone changes the §0c symptom on identical kernel source, the entire 106-commit kernel bisect that 0c.3 sets up is the wrong tool — the regression is environmental (toolchain / wasm-opt / asyncify drift), not a kernel commit. Once 0a is reviewed and the new wasm becomes the canonical reference, the "old toolchain × `37814ab5` source" combination is no longer reachable and that diagnosis becomes much harder.
+The §0c stack-overflow regression was originally characterised against the *currently-committed* `host/wasm/kandelo-kernel.wasm` at HEAD `37814ab5` (`qjs -e '<expr>'` and `node -e '<expr>'` reliably stack-overflow with "Maximum call stack size exceeded"; `qjs --help` and `node --version` both work because they short-circuit before bootstrap). Phase 0a will replace that binary. If the new toolchain's codegen alone changes the §0c symptom on identical kernel source, the entire 106-commit kernel bisect that 0c.3 sets up is the wrong tool — the regression is environmental (toolchain / wasm-opt / asyncify drift), not a kernel commit. Once 0a is reviewed and the new wasm becomes the canonical reference, the "old toolchain × `37814ab5` source" combination is no longer reachable and that diagnosis becomes much harder.
 
 Procedure, before staging any wasm change:
 
 1. Save the currently-committed binary aside:
    ```bash
-   cp host/wasm/kandelo.wasm /tmp/kandelo.committed.wasm
+   cp host/wasm/kandelo-kernel.wasm /tmp/kandelo.committed.wasm
    ```
-2. With `host/wasm/kandelo.wasm` = the **committed** binary, run the §0c repro (the same command Phase 0c.1 uses; if 0c hasn't authored the test yet, the manual repro `qjs -e '1+1'` against the existing `packages/registry/quickjs/bin/qjs.wasm` is sufficient for this step). Record: pass / "Maximum call stack size exceeded" / other.
+2. With `host/wasm/kandelo-kernel.wasm` = the **committed** binary, run the §0c repro (the same command Phase 0c.1 uses; if 0c hasn't authored the test yet, the manual repro `qjs -e '1+1'` against the existing `packages/registry/quickjs/bin/qjs.wasm` is sufficient for this step). Record: pass / "Maximum call stack size exceeded" / other.
 3. Replace with the freshly-built binary:
    ```bash
-   cp target/wasm64-unknown-unknown/release/kandelo.wasm host/wasm/
+   cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
    ```
 4. Re-run the same §0c repro. Record: pass / "Maximum call stack size exceeded" / other.
 
@@ -241,14 +241,14 @@ Possible outcomes and what each means for §0c:
 
 **Record both outcomes verbatim in the 0a PR body.** Phase 0c.2 keys off this artifact.
 
-After all three checks pass, commit the rebuilt `host/wasm/kandelo.wasm`. Treat the new bytes as the canonical reference for downstream work.
+After all three checks pass, commit the rebuilt `host/wasm/kandelo-kernel.wasm`. Treat the new bytes as the canonical reference for downstream work.
 
 #### Task 0a.5 — Commit & PR
 
 ```bash
 git checkout -b explore-node-wasm-fix-build-toolchain explore-node-wasm-plan
 git add build.sh run.sh scripts/check-abi-version.sh
-# Plus host/wasm/kandelo.wasm and abi/snapshot.json IF they changed
+# Plus host/wasm/kandelo-kernel.wasm and abi/snapshot.json IF they changed
 # (and all three checks above passed).
 # Plus crates/shared/src/lib.rs IF ABI_VERSION bumped.
 git commit -m "fix(build): restore build under current nightly toolchain"
@@ -496,7 +496,7 @@ RUSTFLAGS="-Zunstable-options -Cpanic=immediate-abort" \
   cargo build --release -p kandelo -Z build-std=core,alloc \
   >/dev/null 2>&1 || exit 125  # 125 = skip (build broken on this commit)
 
-cp target/wasm64-unknown-unknown/release/kandelo.wasm host/wasm/
+cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 
 # Rebuild qjs.wasm (cheap — quickjs-src is already cloned & not modified)
 bash packages/registry/quickjs/build-quickjs.sh >/dev/null 2>&1 || exit 125
@@ -651,7 +651,7 @@ Promotes the failing repro to a permanent regression test
 ```bash
 git submodule update --init --recursive
 bash scripts/build-musl.sh                              # → sysroot/lib/libc.a
-bash build.sh                                           # → host/wasm/kandelo.wasm
+bash build.sh                                           # → host/wasm/kandelo-kernel.wasm
 bash packages/registry/openssl/build-openssl.sh             # → libcrypto.a + libssl.a
 bash packages/registry/zlib/build-zlib.sh                   # → libz.a
 cd sdk && npm install && npm link && cd ..              # wasm32posix-cc on PATH
@@ -716,7 +716,7 @@ Branch: <branch>
 | Step | Output | Size | Status |
 |------|--------|------|--------|
 | musl                | sysroot/lib/libc.a       | 1.4 MB | ✓ |
-| kernel              | host/wasm/kandelo.wasm | <kb> KB | ✓ |
+| kernel              | host/wasm/kandelo-kernel.wasm | <kb> KB | ✓ |
 | OpenSSL             | libcrypto.a + libssl.a   | 5 MB + 1 MB | ✓ |
 | zlib                | libz.a                   | 100 KB | ✓ |
 | qjs.wasm            | bin/qjs.wasm             | <kb> KB | ✓ |

@@ -633,7 +633,7 @@ bash build.sh
 ```
 
 1. `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`
-2. Copies `kandelo.wasm` to `host/wasm/`
+2. Copies `kandelo-kernel.wasm` to `host/wasm/`
 3. Builds user programs from `programs/*.c` via `scripts/build-programs.sh`
 4. Builds TypeScript host via `npm run build` (tsup → ESM + CJS)
 5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`

@@ -377,7 +377,7 @@ import type { WorkerInitMessage } from "../src/worker-protocol";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadWasmBytes(): ArrayBuffer {
-  const wasmPath = join(__dirname, "../wasm/kandelo.wasm");
+  const wasmPath = join(__dirname, "../wasm/kandelo-kernel.wasm");
   const buf = readFileSync(wasmPath);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
@@ -837,7 +837,7 @@ import { NodeWorkerAdapter } from "../src/worker-adapter";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadWasmBytes(): ArrayBuffer {
-  const wasmPath = join(__dirname, "../wasm/kandelo.wasm");
+  const wasmPath = join(__dirname, "../wasm/kandelo-kernel.wasm");
   const buf = readFileSync(wasmPath);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }

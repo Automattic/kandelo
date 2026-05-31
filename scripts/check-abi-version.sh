@@ -27,7 +27,7 @@ HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 # build the kernel first so stale binaries can't defeat the check. If
 # the build fails we bail before running dump-abi, rather than let the
 # generator fail later with a confusing "read wasm" error.
-KERNEL_WASM="target/wasm64-unknown-unknown/release/kandelo.wasm"
+KERNEL_WASM="target/wasm64-unknown-unknown/release/kandelo_kernel.wasm"
 
 build_kernel() {
     echo "abi: building kernel wasm for export-signature snapshot..."

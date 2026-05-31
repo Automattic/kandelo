@@ -8,7 +8,7 @@ Branch: `explore-node-wasm-docs-quickjs-phase0` (stacked on `explore-node-wasm-f
 | Step | Output | Size | Status |
 |------|--------|------|--------|
 | musl    | `sysroot/lib/libc.a`                         | 1.4 MB  | ✓ |
-| kernel  | `host/wasm/kandelo.wasm`           | 416 KB  | ✓ |
+| kernel  | `host/wasm/kandelo-kernel.wasm`           | 416 KB  | ✓ |
 | OpenSSL | `packages/registry/openssl/openssl-install/lib/libcrypto.a` | 4.9 MB  | ✓ |
 | OpenSSL | `packages/registry/openssl/openssl-install/lib/libssl.a`    | 1.2 MB  | ✓ |
 | zlib    | `packages/registry/zlib/zlib-install/lib/libz.a`            | 100 KB  | ✓ |

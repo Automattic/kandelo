@@ -1816,7 +1816,7 @@ Add `#[cfg(target_arch = "wasm32")] pub mod wasm_api;` to `crates/kernel/src/lib
 **Step 3: Verify Wasm build**
 
 Run: `cargo build --release -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort`
-Expected: Builds successfully, producing `target/wasm32-unknown-unknown/release/kandelo.wasm`
+Expected: Builds successfully, producing `target/wasm32-unknown-unknown/release/kandelo_kernel.wasm`
 
 **Step 4: Commit**
 
@@ -2114,7 +2114,7 @@ cargo build --release \
 
 echo "Copying Wasm artifacts..."
 mkdir -p host/wasm
-cp target/wasm32-unknown-unknown/release/kandelo.wasm host/wasm/
+cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 cp target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm host/wasm/
 
 echo "Building TypeScript host..."
@@ -2137,7 +2137,7 @@ import { NodePlatformIO } from "../src/platform/node";
 
 describe("WasmPosixKernel", () => {
   it("should initialize the kernel", async () => {
-    const wasmPath = join(__dirname, "../wasm/kandelo.wasm");
+    const wasmPath = join(__dirname, "../wasm/kandelo-kernel.wasm");
     const wasmBytes = readFileSync(wasmPath);
 
     const kernel = new WasmPosixKernel(

@@ -141,7 +141,7 @@ import { NodeWorkerAdapter } from "../host/src/worker-adapter";
 const CH_TOTAL_SIZE = 40 + 65536;
 const MAX_PAGES = 16384;
 
-const kernelBytes = readFileSync("host/wasm/kandelo.wasm");
+const kernelBytes = readFileSync("host/wasm/kandelo-kernel.wasm");
 const programBytes = readFileSync("program.wasm");
 
 const io = new NodePlatformIO();
@@ -726,7 +726,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 
 **"sysroot not found"**: Run `bash scripts/build-musl.sh` first.
 
-**"kandelo.wasm not found"**: Run `bash build.sh` first.
+**"kandelo-kernel.wasm not found"**: Run `bash build.sh` first.
 
 **Fork fails or the host rejects `asyncify_*` exports**: Rebuild the program
 through `scripts/run-wasm-fork-instrument.sh`. Fork-using programs must export

@@ -235,13 +235,13 @@ Expected: Success
 **Step 10: Copy Wasm binary**
 
 ```bash
-cp target/wasm32-unknown-unknown/release/kandelo.wasm host/wasm/kandelo.wasm
+cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 ```
 
 **Step 11: Commit**
 
 ```bash
-git add crates/kernel/src/process.rs crates/kernel/src/syscalls.rs crates/kernel/src/wasm_api.rs host/wasm/kandelo.wasm
+git add crates/kernel/src/process.rs crates/kernel/src/syscalls.rs crates/kernel/src/wasm_api.rs host/wasm/kandelo-kernel.wasm
 git commit -m "feat: add host_kill import and cross-process signal routing in sys_kill"
 ```
 

@@ -339,13 +339,13 @@ Expected: Build succeeds
 
 Copy the updated wasm to host/wasm/:
 ```bash
-cp target/wasm32-unknown-unknown/release/kandelo.wasm host/wasm/
+cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 ```
 
 **Step 4: Commit**
 
 ```bash
-git add crates/kernel/src/wasm_api.rs host/wasm/kandelo.wasm
+git add crates/kernel/src/wasm_api.rs host/wasm/kandelo-kernel.wasm
 git commit -m "feat: add kernel_get_fork_state and kernel_init_from_fork Wasm exports"
 ```
 

@@ -9,7 +9,7 @@
  * Requires:
  *   1. PHP binary: packages/registry/php/php-src/sapi/cli/php
  *   2. WordPress files: packages/registry/wordpress/wordpress/
- *   3. Kernel wasm: host/wasm/kandelo.wasm
+ *   3. Kernel wasm: host/wasm/kandelo-kernel.wasm
  *   4. Playwright browsers: npx playwright install chromium
  */
 

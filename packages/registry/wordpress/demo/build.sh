@@ -16,7 +16,7 @@ echo "=== Building WordPress for kandelo ==="
 # Step 1: Kernel wasm + musl sysroot + TypeScript host
 echo ""
 echo "--- Step 1/4: Kernel + musl sysroot + host ---"
-if [ ! -f "$REPO_ROOT/host/wasm/kandelo.wasm" ] || \
+if [ ! -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" ] || \
    [ ! -f "$REPO_ROOT/sysroot/lib/libc.a" ]; then
     bash "$REPO_ROOT/build.sh"
 else

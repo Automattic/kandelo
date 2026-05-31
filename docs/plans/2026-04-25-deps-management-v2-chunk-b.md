@@ -956,7 +956,7 @@ url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [[outputs]]
 name = "kernel"
-wasm = "kandelo.wasm"
+wasm = "kandelo-kernel.wasm"
 ```
 
 The placeholder sha256 is documented in B.3 — same rationale.
@@ -973,7 +973,7 @@ filename conventions; adjust `wasm` accordingly.
 
 **Step 1: Write 6 manifests:**
 
-- `packages/registry/kernel/deps.toml` (output `kandelo.wasm`)
+- `packages/registry/kernel/deps.toml` (output `kandelo-kernel.wasm`)
 - `packages/registry/userspace/deps.toml` (output `wasm_posix_userspace.wasm`)
 - `packages/registry/shell/deps.toml` (output `shell.vfs.zst`)
 - `packages/registry/lamp/deps.toml` (output `lamp.vfs.zst`)

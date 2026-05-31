@@ -270,7 +270,7 @@ Subagents report back: did their build script succeed? Size delta before/after?
 
 ### 7.d Rebuild committed wasm artifacts
 
-`git status` at the start of this session showed modified `host/wasm/fork-exec.wasm` and `host/wasm/kandelo.wasm`. These are checked-in binaries used by vitest. After Task 7.a–c, rebuild them:
+`git status` at the start of this session showed modified `host/wasm/fork-exec.wasm` and `host/wasm/kandelo-kernel.wasm`. These are checked-in binaries used by vitest. After Task 7.a–c, rebuild them:
 
 ```
 bash build.sh

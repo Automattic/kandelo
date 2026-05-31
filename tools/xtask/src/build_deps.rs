@@ -6252,8 +6252,8 @@ libs = ["lib/libF3b.a"]
             "kernel",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/kandelo.wasm""#,
-            &[("kernel", "kandelo.wasm")],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm""#,
+            &[("kernel", "kandelo-kernel.wasm")],
         );
         let reg = Registry {
             roots: vec![root.clone()],

@@ -13,7 +13,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 echo "=== nginx + PHP-FPM on kandelo ==="
 
 # Step 1: Kernel wasm + musl sysroot
-if [ ! -f "$REPO_ROOT/host/wasm/kandelo.wasm" ] || \
+if [ ! -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" ] || \
    [ ! -f "$REPO_ROOT/sysroot/lib/libc.a" ]; then
     echo "--- Building kernel + sysroot ---"
     bash "$REPO_ROOT/build.sh"

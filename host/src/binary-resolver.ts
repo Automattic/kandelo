@@ -108,7 +108,7 @@ function packagedBinaryCandidates(relPath: string): string[] {
   const adjusted = applyDefaultArch(relPath);
   const candidates = [join(root, "wasm", adjusted)];
   if (relPath === "kernel.wasm") {
-    candidates.push(join(root, "wasm", "kandelo.wasm"));
+    candidates.push(join(root, "wasm", "kandelo-kernel.wasm"));
   } else if (relPath === "userspace.wasm") {
     candidates.push(join(root, "wasm", "wasm_posix_userspace.wasm"));
   } else if (relPath === "rootfs.vfs") {

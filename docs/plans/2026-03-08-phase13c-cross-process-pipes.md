@@ -380,13 +380,13 @@ Expected: All 302 existing tests pass (existing pipe tests use kernel-internal p
 Rebuild Wasm:
 ```bash
 cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release
-cp target/wasm32-unknown-unknown/release/kandelo.wasm host/wasm/
+cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 ```
 
 **Step 7: Commit**
 
 ```bash
-git add crates/kernel/src/syscalls.rs crates/kernel/src/wasm_api.rs host/wasm/kandelo.wasm
+git add crates/kernel/src/syscalls.rs crates/kernel/src/wasm_api.rs host/wasm/kandelo-kernel.wasm
 git commit -m "feat: add host-delegated pipe support and kernel_convert_pipe_to_host export"
 ```
 

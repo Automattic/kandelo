@@ -200,7 +200,7 @@ pkg_has_output() {
     fi
 }
 
-has_kernel()    { has_resolvable kernel.wasm || [ -f "$REPO_ROOT/host/wasm/kandelo.wasm" ]; }
+has_kernel()    { has_resolvable kernel.wasm || [ -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" ]; }
 has_sysroot()   { [ -f "$REPO_ROOT/sysroot/lib/libc.a" ]; }
 has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
@@ -301,10 +301,10 @@ need_kernel() {
         # host/wasm/ copy is preserved as a legacy fallback for older
         # consumers that haven't migrated to local-binaries/.
         mkdir -p local-binaries host/wasm
-        cp target/wasm64-unknown-unknown/release/kandelo.wasm \
+        cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm \
             local-binaries/kernel.wasm
-        cp target/wasm64-unknown-unknown/release/kandelo.wasm \
-            host/wasm/kandelo.wasm
+        cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm \
+            host/wasm/kandelo-kernel.wasm
         if [ -f target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
             cp target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm \
                 local-binaries/userspace.wasm
@@ -1617,7 +1617,7 @@ clean_target() {
     local target="$1"
     case "$target" in
         kernel)
-            rm -f "$REPO_ROOT/host/wasm/kandelo.wasm" \
+            rm -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" \
                   "$REPO_ROOT/host/wasm/wasm_posix_userspace.wasm"
             rm -rf "$REPO_ROOT/target/wasm64-unknown-unknown/" "$REPO_ROOT/target/wasm32-unknown-unknown/"
             warn "Cleaned kernel" ;;
@@ -1641,9 +1641,10 @@ clean_target() {
             rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
             # Keep kernel wasm files
-            if [ -f "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo.wasm" ]; then
+            if [ -f "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm" ]; then
                 mkdir -p "$REPO_ROOT/host/wasm"
-                cp "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo.wasm" "$REPO_ROOT/host/wasm/"
+                cp "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm" \
+                    "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"
             fi
             warn "Cleaned programs" ;;
         dash)

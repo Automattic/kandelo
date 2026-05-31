@@ -483,7 +483,7 @@ describe("HTTPS via OpenSSL on Node.js (real TCP)", () => {
       join(root, "host/src/networking/tcp-backend.ts")
     );
 
-    const kernelWasm = readFileSync(join(root, "host/wasm/kandelo.wasm"));
+    const kernelWasm = readFileSync(join(root, "host/wasm/kandelo-kernel.wasm"));
     const programWasm = readFileSync(join(__dirname, "https_get.wasm"));
 
     let stdout = "";
@@ -796,7 +796,7 @@ describe("HTTPS via OpenSSL with TLS-intercepting fetch backend", () => {
         const { ProgramRunner } = await import(join(root, "host/src/program-runner.ts"));
         const { NodePlatformIO } = await import(join(root, "host/src/platform/node.ts"));
 
-        const kernelWasm = readFileSync(join(root, "host/wasm/kandelo.wasm"));
+        const kernelWasm = readFileSync(join(root, "host/wasm/kandelo-kernel.wasm"));
         const programWasm = readFileSync(join(__dirname, "https_get.wasm"));
 
         // Generate MITM CA

@@ -97,8 +97,8 @@
         "default": "./dist/vfs/opfs-worker.js"
       }
     },
-    "./wasm": "./wasm/kandelo.wasm",
-    "./kernel.wasm": "./wasm/kandelo.wasm",
+    "./wasm": "./wasm/kandelo-kernel.wasm",
+    "./kernel.wasm": "./wasm/kandelo-kernel.wasm",
     "./rootfs.vfs": "./wasm/rootfs.vfs",
     "./wasm/*": "./wasm/*",
     "./package.json": "./package.json"
