@@ -39,7 +39,7 @@ function dbConfig(kind: WordPressDatabaseKind): string {
 }
 
 function authSeed(kind: WordPressDatabaseKind): string {
-  return kind === "mariadb" ? "wasm-posix-kernel-lamp" : "wasm-posix-kernel-dev";
+  return kind === "mariadb" ? "kandelo-lamp" : "kandelo-dev";
 }
 
 export function wordpressConfigTemplate(kind: WordPressDatabaseKind): string {

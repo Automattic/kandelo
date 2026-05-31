@@ -78,7 +78,7 @@ const INDEX_HTML = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>nginx on wasm-posix-kernel</title>
+  <title>nginx on kandelo</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
     h1 { color: #333; }

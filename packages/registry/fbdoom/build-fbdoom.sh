@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-compile maximevince/fbDOOM for the wasm-posix-kernel using
+# Cross-compile maximevince/fbDOOM for the kandelo using
 # wasm32posix-cc. The fbdev frontend writes BGRA32 pixels into the
 # framebuffer mmap; the canvas renderer (host/src/framebuffer/canvas-renderer.ts)
 # consumes them.

@@ -60,13 +60,13 @@ use crate::source_extract;
 /// else `$HOME/.cache`. Matches the pattern other tools in the repo use.
 pub fn default_cache_root() -> PathBuf {
     if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
-        PathBuf::from(xdg).join("wasm-posix-kernel")
+        PathBuf::from(xdg).join("kandelo")
     } else if let Some(home) = std::env::var_os("HOME") {
-        PathBuf::from(home).join(".cache").join("wasm-posix-kernel")
+        PathBuf::from(home).join(".cache").join("kandelo")
     } else {
         // Fall back to a tempdir-adjacent location. Not ideal but
         // avoids panicking on exotic environments.
-        PathBuf::from("/tmp/wasm-posix-kernel")
+        PathBuf::from("/tmp/kandelo")
     }
 }
 
@@ -6252,8 +6252,8 @@ libs = ["lib/libF3b.a"]
             "kernel",
             "0.1.0",
             &[],
-            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/wasm_posix_kernel.wasm""#,
-            &[("kernel", "wasm_posix_kernel.wasm")],
+            r#"mkdir -p "$WASM_POSIX_DEP_OUT_DIR" && touch "$WASM_POSIX_DEP_OUT_DIR/kandelo.wasm""#,
+            &[("kernel", "kandelo.wasm")],
         );
         let reg = Registry {
             roots: vec![root.clone()],
@@ -6372,7 +6372,7 @@ touch "$WASM_POSIX_DEP_OUT_DIR/beta.wasm""#,
     /// Test-only variant of `cmd_resolve` that takes an explicit
     /// `cache_root` (instead of reading `default_cache_root()`) and
     /// a repo path, so unit tests can drive the resolver from a
-    /// tempdir without touching `~/.cache/wasm-posix-kernel`. Mirrors
+    /// tempdir without touching `~/.cache/kandelo`. Mirrors
     /// the production `cmd_resolve` body so the symlink path stays
     /// honestly exercised.
     fn cmd_resolve_with_test_cache(

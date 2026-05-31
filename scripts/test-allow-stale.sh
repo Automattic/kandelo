@@ -79,7 +79,7 @@ echo "smoke: forced stale manifest for $PKG (revision -> 99)"
 # entirely — leaving `local-binaries/` stale and the assertion below
 # checks a stale-but-present file. We re-wipe between modes 2 and 3 for
 # the same reason. Defined as a function for reuse.
-CACHE_DIR="${WASM_POSIX_CACHE_DIR:-$HOME/.cache/wasm-posix-kernel}/programs"
+CACHE_DIR="${WASM_POSIX_CACHE_DIR:-$HOME/.cache/kandelo}/programs"
 wipe_built_artifacts() {
     rm -f "$EXPECTED"
     if [ -d "$CACHE_DIR" ]; then

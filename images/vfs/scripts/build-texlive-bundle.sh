@@ -234,7 +234,7 @@ files.push({
 });
 
 // Add texmf.cnf
-const cnf = `% Minimal texmf.cnf for wasm-posix-kernel
+const cnf = `% Minimal texmf.cnf for kandelo
 TEXMFDIST = /usr/share/texmf-dist
 TEXMF = {$TEXMFDIST}
 TEXMFCNF = /usr/share/texmf-dist/web2c

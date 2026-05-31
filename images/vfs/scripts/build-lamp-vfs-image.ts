@@ -326,14 +326,14 @@ define('DB_HOST', '127.0.0.1:3306');
 define('DB_CHARSET', 'utf8');
 define('DB_COLLATE', '');
 
-define('AUTH_KEY',         'wasm-posix-kernel-lamp');
-define('SECURE_AUTH_KEY',  'wasm-posix-kernel-lamp');
-define('LOGGED_IN_KEY',    'wasm-posix-kernel-lamp');
-define('NONCE_KEY',        'wasm-posix-kernel-lamp');
-define('AUTH_SALT',        'wasm-posix-kernel-lamp');
-define('SECURE_AUTH_SALT', 'wasm-posix-kernel-lamp');
-define('LOGGED_IN_SALT',   'wasm-posix-kernel-lamp');
-define('NONCE_SALT',       'wasm-posix-kernel-lamp');
+define('AUTH_KEY',         'kandelo-lamp');
+define('SECURE_AUTH_KEY',  'kandelo-lamp');
+define('LOGGED_IN_KEY',    'kandelo-lamp');
+define('NONCE_KEY',        'kandelo-lamp');
+define('AUTH_SALT',        'kandelo-lamp');
+define('SECURE_AUTH_SALT', 'kandelo-lamp');
+define('LOGGED_IN_SALT',   'kandelo-lamp');
+define('NONCE_SALT',       'kandelo-lamp');
 
 $table_prefix = 'wp_';
 

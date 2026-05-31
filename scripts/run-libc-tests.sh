@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build and run libc-test tests against the wasm-posix-kernel.
+# Build and run libc-test tests against the kandelo.
 #
 # Categories: functional, regression, math, math-relaxed
 #

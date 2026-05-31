@@ -17,7 +17,7 @@ const MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
 
 async function main() {
-  const kernelWasm = readFileSync("/Users/brandon/ai-src/wasm-posix-kernel/host/wasm/wasm_posix_kernel.wasm");
+  const kernelWasm = readFileSync("/Users/brandon/ai-src/kandelo/host/wasm/kandelo.wasm");
 
   const memfs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
   const devfs = new DeviceFileSystem();

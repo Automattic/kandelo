@@ -8,9 +8,9 @@
 
 **Tech Stack:** Rust (no_std compatible), wasm32-unknown-unknown target
 
-**Test command:** `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+**Test command:** `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 
-**Build command:** `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release`
+**Build command:** `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release`
 
 ---
 
@@ -196,7 +196,7 @@ And add the from_u32 match arms.
 
 **Step 5: Run tests, verify pass**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: All existing tests + new terminal test pass.
 
 **Step 6: Commit**
@@ -373,7 +373,7 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
 
 **Step 3: Run tests, verify pass**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 
 **Step 4: Commit**
 
@@ -424,7 +424,7 @@ pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len:
 
 **Step 2: Verify Wasm build**
 
-Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release`
+Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release`
 
 **Step 3: Commit**
 

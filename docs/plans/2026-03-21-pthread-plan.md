@@ -309,7 +309,7 @@ $CC --target=wasm32-unknown-unknown --sysroot=sysroot -nostdlib -O2 \
 ## Verification
 
 1. `cd host && npx vitest run` — all tests pass including new pthread integration test
-2. `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` — 539 tests pass (no kernel changes)
+2. `cargo test -p kandelo --target aarch64-apple-darwin --lib` — 539 tests pass (no kernel changes)
 3. `scripts/run-libc-tests.sh` — 0 unexpected failures
 4. `scripts/run-posix-tests.sh` — 0 unexpected failures
 

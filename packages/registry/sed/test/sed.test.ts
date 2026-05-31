@@ -1,5 +1,5 @@
 /**
- * Tests for GNU sed running on the wasm-posix-kernel.
+ * Tests for GNU sed running on the kandelo.
  */
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";

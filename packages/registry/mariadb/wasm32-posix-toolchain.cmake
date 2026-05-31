@@ -1,10 +1,10 @@
-# CMake toolchain file for cross-compiling to wasm32 via wasm-posix-kernel SDK.
+# CMake toolchain file for cross-compiling to wasm32 via kandelo SDK.
 #
 # Usage:
 #   cmake -DCMAKE_TOOLCHAIN_FILE=.../wasm32-posix-toolchain.cmake ...
 #
 # Requires: LLVM 19+ clang with wasm32 support (Homebrew llvm)
-#           wasm-posix-kernel sysroot built via scripts/build-musl.sh
+#           kandelo sysroot built via scripts/build-musl.sh
 
 cmake_minimum_required(VERSION 3.13)
 

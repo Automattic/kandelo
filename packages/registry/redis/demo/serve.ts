@@ -1,5 +1,5 @@
 /**
- * serve.ts — Run redis-server.wasm on the wasm-posix-kernel.
+ * serve.ts — Run redis-server.wasm on the kandelo.
  *
  * Starts Redis 7.2 with 3 background threads (close_file, aof_fsync, lazy_free).
  * The kernel automatically bridges real TCP connections into the

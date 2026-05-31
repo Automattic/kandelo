@@ -2,7 +2,7 @@
 
 Date: 2026-04-28
 Branch: `explore-node-wasm-design`
-Worktree: `emdash/worktrees/kandelo/wasm-posix-kernel/emdash/explore-node-wasm-rwoav/`
+Worktree: `emdash/worktrees/kandelo/kandelo/emdash/explore-node-wasm-rwoav/`
 
 ## §1. Goals & non-goals
 

@@ -141,7 +141,7 @@ import { NodeWorkerAdapter } from "../host/src/worker-adapter";
 const CH_TOTAL_SIZE = 40 + 65536;
 const MAX_PAGES = 16384;
 
-const kernelBytes = readFileSync("host/wasm/wasm_posix_kernel.wasm");
+const kernelBytes = readFileSync("host/wasm/kandelo.wasm");
 const programBytes = readFileSync("program.wasm");
 
 const io = new NodePlatformIO();
@@ -583,7 +583,7 @@ is published. Source-only packages don't need one.
 
 ```toml
 script_path = "packages/registry/myprog/build-myprog.sh"
-repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "<commit at which the recipe was last touched>"
 revision    = 1
 
@@ -726,7 +726,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 
 **"sysroot not found"**: Run `bash scripts/build-musl.sh` first.
 
-**"wasm_posix_kernel.wasm not found"**: Run `bash build.sh` first.
+**"kandelo.wasm not found"**: Run `bash build.sh` first.
 
 **Fork fails or the host rejects `asyncify_*` exports**: Rebuild the program
 through `scripts/run-wasm-fork-instrument.sh`. Fork-using programs must export

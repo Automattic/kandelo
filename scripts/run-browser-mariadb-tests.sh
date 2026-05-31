@@ -19,7 +19,7 @@ VFS_IMAGE="$REPO_ROOT/apps/browser-demos/public/mariadb-test.vfs.zst"
 RUNNER="$REPO_ROOT/scripts/browser-mariadb-test-runner.ts"
 
 # ── Curated tests (from full browser triage of all 1184 tests) ──
-# 185 tests verified to pass in headless Chromium with MariaDB on wasm-posix-kernel.
+# 185 tests verified to pass in headless Chromium with MariaDB on kandelo.
 # Excludes: 230 connect-command tests (deadlock with no-threads), 339 timeouts,
 #           143 self-skipping, 287 other failures.
 CURATED_TESTS=(

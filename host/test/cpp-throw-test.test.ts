@@ -1,5 +1,5 @@
 /**
- * Regression gate for C++ exception unwinding under the wasm-posix-kernel.
+ * Regression gate for C++ exception unwinding under the kandelo.
  *
  * The bundled libcxx package currently builds libc++abi.a with
  * LIBCXXABI_USE_LLVM_UNWINDER=OFF, so `_Unwind_RaiseException` is left as

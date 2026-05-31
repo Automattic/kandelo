@@ -30,7 +30,7 @@ Expected:
 **Step 2: Verify the 5 mandatory suites are green at baseline**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -20
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -20
 ```
 Expected: 539+ tests pass, 0 failures.
 
@@ -174,7 +174,7 @@ fn fork_count_starts_at_zero() {
 **Step 2: Run test to verify it fails**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib fork_count_starts_at_zero
+cargo test -p kandelo --target aarch64-apple-darwin --lib fork_count_starts_at_zero
 ```
 Expected: FAIL with "no method named `fork_count`".
 
@@ -203,14 +203,14 @@ pub(crate) fn increment_fork_count(&mut self) { self.fork_count += 1; }
 **Step 4: Run test to verify it passes**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib fork_count_starts_at_zero
+cargo test -p kandelo --target aarch64-apple-darwin --lib fork_count_starts_at_zero
 ```
 Expected: PASS.
 
 **Step 5: Run full suite to confirm no regressions**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: same pass count as baseline + 1.
 
@@ -256,7 +256,7 @@ If `ProcessTable::create` / `ProcessTable::new` don't exist with those exact sig
 **Step 2: Run to verify it fails**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib fork_count_bumps_on_successful_fork
+cargo test -p kandelo --target aarch64-apple-darwin --lib fork_count_bumps_on_successful_fork
 ```
 Expected: FAIL (counter stays 0).
 
@@ -267,14 +267,14 @@ In `ProcessTable::fork_process`, on the success path (after the child is inserte
 **Step 4: Run test to verify it passes**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib fork_count_bumps_on_successful_fork
+cargo test -p kandelo --target aarch64-apple-darwin --lib fork_count_bumps_on_successful_fork
 ```
 Expected: PASS.
 
 **Step 5: Run full suite**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: full suite still green.
 
@@ -328,7 +328,7 @@ Expected: exit 0 (ABI_VERSION=8 already accommodates this).
 **Step 3: Run cargo tests to confirm clean build**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: still green.
 
@@ -415,12 +415,12 @@ In `crates/kernel/src/lib.rs`, add `pub mod spawn;` next to the other `pub mod` 
 **Step 3: Build to verify**
 
 ```bash
-cargo build -p wasm-posix-kernel --target aarch64-apple-darwin 2>&1 | tail -10
+cargo build -p kandelo --target aarch64-apple-darwin 2>&1 | tail -10
 ```
 Expected: clean build.
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: still green.
 
@@ -472,7 +472,7 @@ fn spawn_child_basic_inherits_cwd_and_returns_pid() {
 **Step 2: Run to verify it fails**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib spawn_child_basic_inherits_cwd_and_returns_pid
+cargo test -p kandelo --target aarch64-apple-darwin --lib spawn_child_basic_inherits_cwd_and_returns_pid
 ```
 Expected: FAIL ("no method `spawn_child`").
 
@@ -541,14 +541,14 @@ You will likely need helpers (`set_argv_snapshot`, `set_envp_snapshot`, `clone_f
 **Step 4: Run test to verify it passes**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib spawn_child_basic_inherits_cwd_and_returns_pid
+cargo test -p kandelo --target aarch64-apple-darwin --lib spawn_child_basic_inherits_cwd_and_returns_pid
 ```
 Expected: PASS.
 
 **Step 5: Full suite**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: green.
 
@@ -630,7 +630,7 @@ fn spawn_child_action_failure_drops_child_returns_errno() {
 **Step 2: Run to verify they fail**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib spawn_child_applies_
+cargo test -p kandelo --target aarch64-apple-darwin --lib spawn_child_applies_
 ```
 Expected: all FAIL.
 
@@ -670,14 +670,14 @@ You will need to factor `open_in_child`, `do_chdir_in_child`, `do_fchdir_in_chil
 **Step 4: Run tests to verify they pass**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib spawn_child_applies_
+cargo test -p kandelo --target aarch64-apple-darwin --lib spawn_child_applies_
 ```
 Expected: PASS.
 
 **Step 5: Full suite**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: green.
 
@@ -731,7 +731,7 @@ fn spawn_child_setsigdef_resets_named_handlers_to_default() { /* analogous */ }
 **Step 2: Run to fail**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib spawn_child_set
+cargo test -p kandelo --target aarch64-apple-darwin --lib spawn_child_set
 ```
 Expected: all FAIL.
 
@@ -765,8 +765,8 @@ Adapt method names to whatever your `Process` exposes. If a needed accessor does
 **Step 4: Run tests + full suite**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib spawn_child_set
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib spawn_child_set
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: green.
 
@@ -878,7 +878,7 @@ Expected: exit 0.
 **Step 5: Full suite**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: green.
 
@@ -1597,7 +1597,7 @@ Per CLAUDE.md, ALL of these must pass before claiming done. Run them in order; i
 **Step 1: Cargo**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -10
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -10
 ```
 Expected: 539+ pass, 0 failures (plus the new spawn unit tests).
 
@@ -1673,7 +1673,7 @@ gh pr create --title "feat(kernel): non-forking SYS_SPAWN; ABI 7->8" --body "$(c
 
 ## Test plan
 
-- [x] `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` — green, includes new spawn unit tests
+- [x] `cargo test -p kandelo --target aarch64-apple-darwin --lib` — green, includes new spawn unit tests
 - [x] `cd host && npx vitest run` — green, includes `centralized-spawn.test.ts` + browser parity
 - [x] `scripts/run-libc-tests.sh` — 0 unexpected FAIL
 - [x] `scripts/run-posix-tests.sh` — 0 FAIL

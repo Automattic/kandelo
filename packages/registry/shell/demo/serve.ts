@@ -1,5 +1,5 @@
 /**
- * serve.ts — Run dash shell on the wasm-posix-kernel.
+ * serve.ts — Run dash shell on the kandelo.
  *
  * Supports three modes:
  *   1. Command: npx tsx packages/registry/shell/demo/serve.ts -c "echo hello"

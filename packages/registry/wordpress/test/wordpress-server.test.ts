@@ -1,6 +1,6 @@
 /**
  * WordPress HTTP server test — verifies that PHP's built-in server can
- * serve HTTP requests on wasm-posix-kernel.
+ * serve HTTP requests on kandelo.
  *
  * Uses the host's `fetchInKernel` API: the request goes straight into the
  * kernel's listening socket via `kernel_inject_connection`, no real TCP

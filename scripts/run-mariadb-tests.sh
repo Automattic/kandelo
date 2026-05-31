@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Run MariaDB mysql-test suite against wasm-posix-kernel.
+# Run MariaDB mysql-test suite against kandelo.
 #
 # Prerequisites:
 #   bash packages/registry/mariadb/build-mariadb.sh   # builds mariadbd + mysqltest
@@ -28,7 +28,7 @@ HARNESS="$REPO_ROOT/packages/registry/mariadb/test/run-tests.ts"
 CURATED_TESTS=()
 
 # ── Expected failures ──────────────────────────────────────
-# Tests known to fail on wasm-posix-kernel (threaded server mode).
+# Tests known to fail on kandelo (threaded server mode).
 # Categories:
 #
 # innodb         — InnoDB storage engine not available (Aria only)

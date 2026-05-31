@@ -782,10 +782,10 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
-            cargo build --release -p wasm-posix-kernel \
+            cargo build --release -p kandelo \
               -Z build-std=core,alloc
             mkdir -p local-binaries
-            cp target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm \
+            cp target/wasm64-unknown-unknown/release/kandelo.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund

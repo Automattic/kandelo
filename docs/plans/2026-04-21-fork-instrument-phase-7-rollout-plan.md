@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust (crates/fork-instrument uses walrus + clap), TypeScript (host runtime), Bash (build scripts), musl/LLVM 21 cross-compilation.
 
-**Worktree:** `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-rollout` — branched off `fierce-wire`. PR targets `main`; rebase when #307 lands.
+**Worktree:** `/Users/brandon/.superset/worktrees/kandelo/phase-7-rollout` — branched off `fierce-wire`. PR targets `main`; rebase when #307 lands.
 
 **Authoritative design:** `docs/plans/2026-04-20-fork-instrumentation-design.md`. This plan implements §4 Phase 7 + §6 doc deliverables.
 
@@ -85,7 +85,7 @@ git commit -m "feat(fork-instrument): unwind_begin self-initializes frames_start
 
 **Step 1: Edit `build.sh`.**
 
-After the existing `cargo build --release -p wasm-posix-kernel …` block, add:
+After the existing `cargo build --release -p kandelo …` block, add:
 
 ```
 echo "Building wasm-fork-instrument host tool…"
@@ -270,7 +270,7 @@ Subagents report back: did their build script succeed? Size delta before/after?
 
 ### 7.d Rebuild committed wasm artifacts
 
-`git status` at the start of this session showed modified `host/wasm/fork-exec.wasm` and `host/wasm/wasm_posix_kernel.wasm`. These are checked-in binaries used by vitest. After Task 7.a–c, rebuild them:
+`git status` at the start of this session showed modified `host/wasm/fork-exec.wasm` and `host/wasm/kandelo.wasm`. These are checked-in binaries used by vitest. After Task 7.a–c, rebuild them:
 
 ```
 bash build.sh
@@ -426,7 +426,7 @@ git commit -m "docs: update fork references for wasm-fork-instrument rollout"
 
 **Files:**
 - Modify: `CLAUDE.md` (repo root)
-- Modify: `/Users/brandon/.claude/projects/-Users-brandon-ai-src-wasm-posix-kernel/memory/MEMORY.md`
+- Modify: `/Users/brandon/.claude/projects/-Users-brandon-ai-src-kandelo/memory/MEMORY.md`
 
 **CLAUDE.md:** No "Asyncify onlylist preferred" paragraph exists in the current `CLAUDE.md` per inventory (the preference lives in `MEMORY.md`'s User Preferences). But `CLAUDE.md` does list `ASYNCIFY_SAVE_SLOTS` as ABI-versioned. Update that line to describe `wpk_fork_*` save slots instead.
 
@@ -478,7 +478,7 @@ Expected: `#10000 DONE` with zero validator failures. Record the exec/s and cove
 
 ```
 # 1. Rust kernel unit tests
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 
 # 2. Host integration tests
 cd host && npx vitest run
@@ -547,7 +547,7 @@ gh pr create \
 bash, dash, git, quickjs, ruby (if applicable), sqlite-testfixture, tcl, vim, nginx, nginx-php.
 
 ## Test plan
-- [x] \`cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib\`
+- [x] \`cargo test -p kandelo --target aarch64-apple-darwin --lib\`
 - [x] \`cd host && npx vitest run\`
 - [x] \`scripts/run-libc-tests.sh\` — 0 unexpected failures
 - [x] \`scripts/run-posix-tests.sh\`
@@ -607,7 +607,7 @@ EOF
 
 ## Next-session debugging playbook (for the 8 remaining sortix regressions)
 
-**Worktree:** `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-rollout` on branch `phase-7-rollout`. 11 commits stacked on `fierce-wire`. DO NOT open the PR until these are fixed — per user instructions.
+**Worktree:** `/Users/brandon/.superset/worktrees/kandelo/phase-7-rollout` on branch `phase-7-rollout`. 11 commits stacked on `fierce-wire`. DO NOT open the PR until these are fixed — per user instructions.
 
 **The 8 failures (all sortix, all fork-semantic):**
 
@@ -646,7 +646,7 @@ EOF
 - Single-test repro:
 
   ```bash
-  cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-rollout
+  cd /Users/brandon/.superset/worktrees/kandelo/phase-7-rollout
   timeout 20 node --experimental-wasm-exnref --import tsx/esm \
     examples/run-example.ts os-test/build/basic/sys_wait/waitpid.wasm
   # expected: exit 0; actual: "child 3 waitpid: ECHILD" + exit 1

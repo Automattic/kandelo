@@ -8,7 +8,7 @@ Branch: `explore-node-wasm-docs-quickjs-phase0` (stacked on `explore-node-wasm-f
 | Step | Output | Size | Status |
 |------|--------|------|--------|
 | musl    | `sysroot/lib/libc.a`                         | 1.4 MB  | ✓ |
-| kernel  | `host/wasm/wasm_posix_kernel.wasm`           | 416 KB  | ✓ |
+| kernel  | `host/wasm/kandelo.wasm`           | 416 KB  | ✓ |
 | OpenSSL | `packages/registry/openssl/openssl-install/lib/libcrypto.a` | 4.9 MB  | ✓ |
 | OpenSSL | `packages/registry/openssl/openssl-install/lib/libssl.a`    | 1.2 MB  | ✓ |
 | zlib    | `packages/registry/zlib/zlib-install/lib/libz.a`            | 100 KB  | ✓ |
@@ -71,7 +71,7 @@ All three branches stacked; only PR #8 is currently open. Phases 0b/0c live as c
 
 | Suite | Result |
 |-------|--------|
-| `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` | 773 / 0 fail |
+| `cargo test -p kandelo --target aarch64-apple-darwin --lib` | 773 / 0 fail |
 | `cd host && npx vitest run`                                          | 297 pass / 0 fail / 90 skip |
 | `scripts/run-libc-tests.sh`                                          | exit 0 (XFAIL + TIME only) |
 | `scripts/run-posix-tests.sh`                                         | exit 0 (SKIP only) |

@@ -207,7 +207,7 @@ mod tests {
 
 **Step 2: Run tests — expect failures**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel -- socket`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo -- socket`
 Expected: compilation errors (module doesn't exist yet)
 
 **Step 3: Implement socket.rs**
@@ -324,7 +324,7 @@ impl SocketTable {
 
 **Step 5: Run tests — expect pass**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel -- socket`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo -- socket`
 Expected: 5 tests pass
 
 **Step 6: Commit**
@@ -480,7 +480,7 @@ Add `FileType::Socket` alongside `FileType::Pipe` in the ESPIPE check.
 
 **Step 5: Run existing tests — all should still pass**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: all 126 existing tests pass (refactor preserves behavior)
 
 **Step 6: Commit**
@@ -744,7 +744,7 @@ if file_type == FileType::Socket && host_handle < 0 {
 
 **Step 6: Run tests — all pass**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: all tests pass (existing + 6 new socket tests)
 
 **Step 7: Commit**
@@ -1012,7 +1012,7 @@ pub fn sys_setsockopt(
 
 **Step 5: Run tests**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: all tests pass
 
 **Step 6: Commit**
@@ -1383,7 +1383,7 @@ pub fn sys_poll(
 
 **Step 3: Run tests**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: all tests pass
 
 **Step 4: Commit**
@@ -1427,7 +1427,7 @@ Follow the same pattern as existing kernel_* exports: get global process, create
 
 **Step 2: Build for wasm32**
 
-Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release`
+Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release`
 Expected: builds cleanly
 
 **Step 3: Commit**
@@ -1557,12 +1557,12 @@ Change Phase 6 line to:
 
 **Step 3: Run full test suite**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: all tests pass
 
 **Step 4: Build Wasm**
 
-Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release`
+Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release`
 Expected: builds cleanly
 
 **Step 5: Commit**

@@ -483,7 +483,7 @@ describe("HTTPS via OpenSSL on Node.js (real TCP)", () => {
       join(root, "host/src/networking/tcp-backend.ts")
     );
 
-    const kernelWasm = readFileSync(join(root, "host/wasm/wasm_posix_kernel.wasm"));
+    const kernelWasm = readFileSync(join(root, "host/wasm/kandelo.wasm"));
     const programWasm = readFileSync(join(__dirname, "https_get.wasm"));
 
     let stdout = "";
@@ -796,7 +796,7 @@ describe("HTTPS via OpenSSL with TLS-intercepting fetch backend", () => {
         const { ProgramRunner } = await import(join(root, "host/src/program-runner.ts"));
         const { NodePlatformIO } = await import(join(root, "host/src/platform/node.ts"));
 
-        const kernelWasm = readFileSync(join(root, "host/wasm/wasm_posix_kernel.wasm"));
+        const kernelWasm = readFileSync(join(root, "host/wasm/kandelo.wasm"));
         const programWasm = readFileSync(join(__dirname, "https_get.wasm"));
 
         // Generate MITM CA
@@ -864,7 +864,7 @@ git commit -m "test: browser HTTPS end-to-end via TLS-intercepting fetch backend
 
 ```bash
 # Kernel unit tests
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 
 # Host integration tests
 cd host && npx vitest run

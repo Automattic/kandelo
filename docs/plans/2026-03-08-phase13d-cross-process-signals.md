@@ -60,7 +60,7 @@ pub extern "C" fn kernel_deliver_signal(sig: u32) -> i32 {
 
 **Step 4: Build Wasm to verify export compiles**
 
-Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release`
+Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release`
 Expected: Success
 
 **Step 5: Commit**
@@ -229,19 +229,19 @@ Expected: All pass
 
 **Step 9: Build Wasm**
 
-Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release`
+Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release`
 Expected: Success
 
 **Step 10: Copy Wasm binary**
 
 ```bash
-cp target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/wasm_posix_kernel.wasm
+cp target/wasm32-unknown-unknown/release/kandelo.wasm host/wasm/kandelo.wasm
 ```
 
 **Step 11: Commit**
 
 ```bash
-git add crates/kernel/src/process.rs crates/kernel/src/syscalls.rs crates/kernel/src/wasm_api.rs host/wasm/wasm_posix_kernel.wasm
+git add crates/kernel/src/process.rs crates/kernel/src/syscalls.rs crates/kernel/src/wasm_api.rs host/wasm/kandelo.wasm
 git commit -m "feat: add host_kill import and cross-process signal routing in sys_kill"
 ```
 

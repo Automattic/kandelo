@@ -14,7 +14,7 @@ depends_on = ["erlang@28.2"]
 # stdlib, erts, compiler, release boot scripts). Source at
 # images/vfs/scripts/build-erlang-vfs-image.ts.
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]

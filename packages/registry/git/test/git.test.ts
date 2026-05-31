@@ -1,5 +1,5 @@
 /**
- * Tests for Git 2.47.1 running on the wasm-posix-kernel.
+ * Tests for Git 2.47.1 running on the kandelo.
  *
  * Git is built with wpk_fork_* instrumentation for fork() support so that
  * subprocesses (git gc --auto, git-remote-http, index-pack) work correctly.
@@ -146,7 +146,7 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
     };
 
     execSync(`git init "${workDir}"`, gitOpts);
-    execSync(`echo "hello from wasm-posix-kernel" > "${workDir}/test.txt"`, gitOpts);
+    execSync(`echo "hello from kandelo" > "${workDir}/test.txt"`, gitOpts);
     execSync(`git -C "${workDir}" add test.txt`, gitOpts);
     execSync(`git -C "${workDir}" commit -m "initial commit"`, gitOpts);
     execSync(`git clone --bare "${workDir}" "${bareRepoDir}"`, gitOpts);
@@ -239,7 +239,7 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
     // Verify the cloned repo has the expected file
     expect(existsSync(join(cloneDir, ".git"))).toBe(true);
     const testFile = readFileSync(join(cloneDir, "test.txt"), "utf-8");
-    expect(testFile.trim()).toBe("hello from wasm-posix-kernel");
+    expect(testFile.trim()).toBe("hello from kandelo");
 
     // Cleanup
     try { rmSync(cloneDir, { recursive: true, force: true }); } catch { /* ignore */ }

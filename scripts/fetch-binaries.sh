@@ -11,7 +11,7 @@
 #         --arch <arch> --binaries-dir <repo>/binaries
 #
 # which (a) fetches+verifies the archive into the resolver's
-# content-addressed cache (~/.cache/wasm-posix-kernel/...), and (b)
+# content-addressed cache (~/.cache/kandelo/...), and (b)
 # places `binaries/programs/<arch>/<output>.wasm` symlinks pointing
 # into the cache. Browser demos hardcode these paths.
 #

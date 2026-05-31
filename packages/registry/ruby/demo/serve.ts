@@ -1,5 +1,5 @@
 /**
- * serve.ts — Run Ruby 3.3.6 in the wasm-posix-kernel.
+ * serve.ts — Run Ruby 3.3.6 in the kandelo.
  *
  * Usage:
  *   bash packages/registry/ruby/build-ruby.sh

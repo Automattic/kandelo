@@ -254,7 +254,7 @@ See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own soft
 
 ```bash
 # Kernel unit tests (700 tests)
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 
 # Host, package, and browser-adjacent integration tests
 cd host && npx vitest run

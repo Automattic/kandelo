@@ -1,5 +1,5 @@
 /**
- * MariaDB mysql-test suite runner for wasm-posix-kernel.
+ * MariaDB mysql-test suite runner for kandelo.
  *
  * Manages the full lifecycle:
  *   1. Bootstrap mariadbd (system tables) if needed

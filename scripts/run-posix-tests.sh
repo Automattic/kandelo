@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build and run Open POSIX Test Suite tests against the wasm-posix-kernel.
+# Build and run Open POSIX Test Suite tests against the kandelo.
 #
 # Tests are sourced from LTP's open_posix_testsuite (conformance/interfaces).
 # Each test is a standalone C program that returns:

@@ -39,11 +39,11 @@ Expected: PR #421 (Phase A-bis) merged. If not, **STOP** — Phase B depends on 
 **Step 2: Create the worktree.**
 
 ```bash
-cd /Users/brandon/ai-src/wasm-posix-kernel
-git worktree add /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-b-1-matrix-ci -b phase-b-1-matrix-ci origin/main
+cd /Users/brandon/ai-src/kandelo
+git worktree add /Users/brandon/.superset/worktrees/kandelo/phase-b-1-matrix-ci -b phase-b-1-matrix-ci origin/main
 ```
 
-**Work from `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-b-1-matrix-ci` for all subsequent tasks.**
+**Work from `/Users/brandon/.superset/worktrees/kandelo/phase-b-1-matrix-ci` for all subsequent tasks.**
 
 **Step 3: Confirm xtask builds clean.**
 
@@ -525,7 +525,7 @@ test-gate:
     - name: Build kernel + test programs
       run: |
         nix develop --accept-flake-config --command bash -c '
-          cargo build --release -p wasm-posix-kernel \
+          cargo build --release -p kandelo \
             -Z build-std=core,alloc \
             -Z build-std-features=panic_immediate_abort
           # etc.
@@ -533,7 +533,7 @@ test-gate:
     - name: Run cargo + vitest
       run: |
         nix develop --accept-flake-config --command bash -c '
-          cargo test -p wasm-posix-kernel --target $(rustc -vV | awk "/^host/ {print \$2}") --lib
+          cargo test -p kandelo --target $(rustc -vV | awk "/^host/ {print \$2}") --lib
           cd host && npx vitest run
         '
     - name: Run libc-test
@@ -707,7 +707,7 @@ The natural break point: after Task 7, the new flow exists end-to-end (preflight
 
 ```bash
 # Local cheap subset (per Phase A's pattern):
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 cargo test -p xtask --target aarch64-apple-darwin
 cd host && npx vitest run; cd ..
 nix develop --accept-flake-config --command bash scripts/check-abi-version.sh
@@ -736,7 +736,7 @@ Reference: docs/plans/2026-05-05-decoupled-package-builds-design.md §5, §6.3, 
 
 ## Test plan
 
-- [x] cargo test -p wasm-posix-kernel — pass
+- [x] cargo test -p kandelo — pass
 - [x] cargo test -p xtask — pass (with new compute-cache-key-sha + build-index tests)
 - [x] vitest — pass
 - [x] check-abi-version.sh — exit 0

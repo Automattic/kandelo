@@ -55,7 +55,7 @@ Non-goals (v1):
 └─────────────────────────────────────────────────────────────┘
 ```
 
-A **software source** is a URL pointing at an `index.toml`. The first-party source is `https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v<N>/index.toml`. The fun-pack lives in a separate repo at its own URL. Third parties publish wherever they like.
+A **software source** is a URL pointing at an `index.toml`. The first-party source is `https://github.com/kandelo/kandelo/releases/download/binaries-abi-v<N>/index.toml`. The fun-pack lives in a separate repo at its own URL. Third parties publish wherever they like.
 
 A consumer's repo holds one `package.toml` per package they depend on. That file is the source of truth: it carries `archive_url`, `archive_sha256`, `kernel_abi`, dependencies, and provenance. The central `binaries.lock` is removed.
 
@@ -87,15 +87,15 @@ url  = "https://mariadb.com/kb/library-license/"
 
 [build]                                 # required for first-party, optional for third-party
 script_path = "packages/registry/mariadb/build-mariadb.sh"            # NEW: repo-relative (was: package-dir-relative `script`)
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"   # NEW: clonable URL
+repo_url    = "https://github.com/kandelo/kandelo.git"   # NEW: clonable URL
 commit      = "8424f4fec"               # NEW: CI fills at publish; absent/empty allowed for never-published
 
 [binary.wasm32]                         # existing — CI-managed
-archive_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v6/mariadb-wasm32-abc123.tar.zst"
+archive_url    = "https://github.com/kandelo/kandelo/releases/download/binaries-abi-v6/mariadb-wasm32-abc123.tar.zst"
 archive_sha256 = "abc123..."
 
 [binary.wasm64]
-archive_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v6/mariadb-wasm64-def456.tar.zst"
+archive_url    = "https://github.com/kandelo/kandelo/releases/download/binaries-abi-v6/mariadb-wasm64-def456.tar.zst"
 archive_sha256 = "def456..."
 ```
 
@@ -156,11 +156,11 @@ Mirrors today's `binaries.lock.pr` pattern, but per-package and per-file:
 ```toml
 # packages/registry/mariadb/package.pr.toml — gitignored
 [binary.wasm32]
-archive_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/pr-372-staging/mariadb-wasm32-newsha.tar.zst"
+archive_url    = "https://github.com/kandelo/kandelo/releases/download/pr-372-staging/mariadb-wasm32-newsha.tar.zst"
 archive_sha256 = "newsha..."
 
 [binary.wasm64]
-archive_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/pr-372-staging/mariadb-wasm64-othersha.tar.zst"
+archive_url    = "https://github.com/kandelo/kandelo/releases/download/pr-372-staging/mariadb-wasm64-othersha.tar.zst"
 archive_sha256 = "othersha..."
 ```
 
@@ -179,7 +179,7 @@ A **source** is an HTTP-fetchable `index.toml`. Adding a source means recording 
 The first-party source for this repo:
 
 ```
-https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v<N>/index.toml
+https://github.com/kandelo/kandelo/releases/download/binaries-abi-v<N>/index.toml
 ```
 
 A third-party source (e.g. the fun-pack):
@@ -341,7 +341,7 @@ Adds the new fields described in §3.1. Pulled out from Phase A because Phase A 
 - **Backfill all 61 first-party `package.toml` files:**
   - The 10 existing `[build].script = "build-<name>.sh"` entries → `[build].script_path = "packages/registry/<name>/build-<name>.sh"`.
   - The 51 packages without a `[build]` block → create one with the same repo-relative path.
-  - Every package gets `[build].repo_url = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"`.
+  - Every package gets `[build].repo_url = "https://github.com/kandelo/kandelo.git"`.
   - `[build].commit` left empty/absent; CI fills on next publish.
 - **CI update** (publish flow): when `force-rebuild.yml` or the per-package matrix uploads an archive, also update the package's `[build].commit` to the building commit (same patch that updates `[binary].archive_url` + `archive_sha256`). Same lifecycle, same pre-merge amend pattern.
 - **Schema docs update**: `abi/manifest.schema.json` (the published-manifest schema) + `docs/package-management.md` (developer-facing).

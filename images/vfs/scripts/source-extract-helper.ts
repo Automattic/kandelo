@@ -20,7 +20,7 @@
  * prefers it — that path is what `bash packages/registry/cpython/build-cpython.sh`
  * leaves on disk, so existing local-build users are unaffected.
  *
- * Cache layout: `~/.cache/wasm-posix-kernel/vfs-build-sources/<name>-<sha8>/`.
+ * Cache layout: `~/.cache/kandelo/vfs-build-sources/<name>-<sha8>/`.
  * The 8-char sha prefix uniquely identifies the upstream tarball — bumping
  * `[source].url` or `sha256` invalidates the cache automatically.
  */
@@ -106,8 +106,8 @@ export function ensureExtract(opts: ExtractOptions): string {
   }
 
   const cacheRoot = process.env.XDG_CACHE_HOME
-    ? join(process.env.XDG_CACHE_HOME, "wasm-posix-kernel")
-    : join(homedir(), ".cache", "wasm-posix-kernel");
+    ? join(process.env.XDG_CACHE_HOME, "kandelo")
+    : join(homedir(), ".cache", "kandelo");
   const extractDir = join(cacheRoot, "vfs-build-sources", `${cacheKey}-${sha256.slice(0, 8)}`);
 
   if (existsSync(extractDir)) {

@@ -1,4 +1,4 @@
-// Regression test for C++ exception unwinding under the wasm-posix-kernel.
+// Regression test for C++ exception unwinding under the kandelo.
 //
 // Runs three sub-tests:
 //   1. throw int caught by typed catch

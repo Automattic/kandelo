@@ -29,13 +29,13 @@ copy_first_existing() {
 }
 
 copy_first_existing \
-    "$HOST_WASM_DIR/wasm_posix_kernel.wasm" \
+    "$HOST_WASM_DIR/kandelo.wasm" \
     "$REPO_ROOT/local-binaries/kernel.wasm" \
     "$REPO_ROOT/binaries/kernel.wasm" \
-    "$REPO_ROOT/target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm" \
-    "$HOST_WASM_DIR/wasm_posix_kernel.wasm"
+    "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo.wasm" \
+    "$HOST_WASM_DIR/kandelo.wasm"
 
-cp "$HOST_WASM_DIR/wasm_posix_kernel.wasm" "$HOST_WASM_DIR/kernel.wasm"
+cp "$HOST_WASM_DIR/kandelo.wasm" "$HOST_WASM_DIR/kernel.wasm"
 
 copy_first_existing \
     "$HOST_WASM_DIR/rootfs.vfs" \

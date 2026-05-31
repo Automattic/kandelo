@@ -721,7 +721,7 @@ git commit -m "feat(fork-instrument): add scripts/run-fork-instrument-fuzz.sh"
 
 **Files:**
 - Modify: `crates/fork-instrument/README.md`
-- Modify: `~/.claude/projects/-Users-brandon-ai-src-wasm-posix-kernel/memory/fork-instrument-project.md`
+- Modify: `~/.claude/projects/-Users-brandon-ai-src-kandelo/memory/fork-instrument-project.md`
 
 **Step 1:** Append a "Fuzzing" section to `crates/fork-instrument/README.md`:
 
@@ -783,7 +783,7 @@ Per CLAUDE.md, run all five suites before claiming PR #307 ready for Phase 7. Si
 
 **Step 1:** Cargo tests.
 
-Run: `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+Run: `cargo test -p kandelo --target aarch64-apple-darwin --lib`
 Expected: 707+ pass, 0 fail.
 
 **Step 2:** fork-instrument unit tests.

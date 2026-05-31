@@ -715,7 +715,7 @@ From CLAUDE.md "Test Verification" — ALL of these must pass before opening the
 
 ```bash
 # 1. Cargo tests
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 # Expected: 539+ pass, 0 fail.
 
 # 2. Vitest

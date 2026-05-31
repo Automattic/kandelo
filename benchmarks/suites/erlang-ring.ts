@@ -2,7 +2,7 @@
  * Suite 1: Erlang Ring
  *
  * Spawns 1000 Erlang processes in a ring, sends a token around 100 times.
- * Uses the BEAM VM running on the wasm-posix-kernel.
+ * Uses the BEAM VM running on the kandelo.
  *
  * Metrics:
  *   total_ms         — Wall-clock time for full ring completion

@@ -53,7 +53,7 @@ user is holding all V2 PRs until V2 is fully done.
   aarch64-apple-darwin` (host triple required per Chunk A — ureq TLS
   deps).
 - Full 5-gate gauntlet green vs Chunk A baseline:
-  1. `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+  1. `cargo test -p kandelo --target aarch64-apple-darwin --lib`
   2. `cd host && npx vitest run`
   3. `scripts/run-libc-tests.sh` (no new FAILs vs A baseline; one
      pre-existing FAIL on `regression/daemon-failure`).
@@ -88,7 +88,7 @@ subagent per task. Per the user's instructions:
 `deps-cache-v2-program-migration`. Confirm with:
 
 ```bash
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/deps-cache-v1
+cd /Users/brandon/.superset/worktrees/kandelo/deps-cache-v1
 git log --oneline -1
 # Expected: 35c462e02 feat: rename V1 curl manifest to libcurl
 git rev-parse --abbrev-ref HEAD
@@ -129,7 +129,7 @@ when writing per-dir deps.toml files.
 Run the 5 gates against the branch's current HEAD (= `35c462e02`):
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib > /tmp/baseline-cargo.txt 2>&1
+cargo test -p kandelo --target aarch64-apple-darwin --lib > /tmp/baseline-cargo.txt 2>&1
 cd host && npx vitest run > /tmp/baseline-vitest.txt 2>&1; cd ..
 bash scripts/run-libc-tests.sh > /tmp/baseline-libc.txt 2>&1
 bash scripts/run-posix-tests.sh > /tmp/baseline-posix.txt 2>&1
@@ -628,7 +628,7 @@ inventoried sha will be filled in by Chunk E when we cut a release.
 Acceptable B-level placeholder:
 ```toml
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 ```
 
@@ -646,12 +646,12 @@ version = "0.1.0"
 revision = 1
 
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [[outputs]]
 name = "exec-caller"
@@ -947,16 +947,16 @@ version = "0.1.0"
 revision = 1
 
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [[outputs]]
 name = "kernel"
-wasm = "wasm_posix_kernel.wasm"
+wasm = "kandelo.wasm"
 ```
 
 The placeholder sha256 is documented in B.3 — same rationale.
@@ -973,7 +973,7 @@ filename conventions; adjust `wasm` accordingly.
 
 **Step 1: Write 6 manifests:**
 
-- `packages/registry/kernel/deps.toml` (output `wasm_posix_kernel.wasm`)
+- `packages/registry/kernel/deps.toml` (output `kandelo.wasm`)
 - `packages/registry/userspace/deps.toml` (output `wasm_posix_userspace.wasm`)
 - `packages/registry/shell/deps.toml` (output `shell.vfs.zst`)
 - `packages/registry/lamp/deps.toml` (output `lamp.vfs.zst`)
@@ -1541,7 +1541,7 @@ manifest-driven versions."
 cargo test -p xtask --target aarch64-apple-darwin > /tmp/chunk-b-xtask.txt 2>&1
 
 # Gate 1: cargo kernel
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib > /tmp/chunk-b-cargo.txt 2>&1
+cargo test -p kandelo --target aarch64-apple-darwin --lib > /tmp/chunk-b-cargo.txt 2>&1
 
 # Gate 2: vitest
 cd host && npx vitest run > /tmp/chunk-b-vitest.txt 2>&1; cd ..
@@ -1625,7 +1625,7 @@ See:
 ## Test plan
 
 - [ ] `cargo test -p xtask --target aarch64-apple-darwin` — green.
-- [ ] `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` — green.
+- [ ] `cargo test -p kandelo --target aarch64-apple-darwin --lib` — green.
 - [ ] `cd host && npx vitest run` — green.
 - [ ] `scripts/run-libc-tests.sh` — no new FAILs vs base
       `35c462e02` (one pre-existing `regression/daemon-failure`).

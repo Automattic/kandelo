@@ -2,7 +2,7 @@
 
 Date: 2026-04-29
 Branch: `package-management-for-pr-workflows`
-Worktree: `.superset/worktrees/wasm-posix-kernel/package-management-for-pr-workflows/`
+Worktree: `.superset/worktrees/kandelo/package-management-for-pr-workflows/`
 
 ## §1. Context & goals
 

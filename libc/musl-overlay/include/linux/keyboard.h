@@ -1,5 +1,5 @@
 /*
- * Minimal <linux/keyboard.h> for wasm-posix-kernel.
+ * Minimal <linux/keyboard.h> for kandelo.
  *
  * Linux's real header carries hundreds of keysym/keycode macros for the
  * kernel's own keymap translation tables. fbDOOM (and similar fbdev

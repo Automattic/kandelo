@@ -127,7 +127,7 @@ subagent per task. Per the user's instructions:
   code-quality reviewer cycle.
 
 Working dir for all subagents:
-`/Users/brandon/.superset/worktrees/wasm-posix-kernel/deps-cache-v1`.
+`/Users/brandon/.superset/worktrees/kandelo/deps-cache-v1`.
 
 Each task ends with: run `cargo test -p xtask --target
 aarch64-apple-darwin` (xtask requires explicit host triple per
@@ -2721,7 +2721,7 @@ introduces. Full V1→V2 doc rewrite is deferred to Chunk F."
 **Step 1: Verify worktree state**
 
 ```bash
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/deps-cache-v1
+cd /Users/brandon/.superset/worktrees/kandelo/deps-cache-v1
 git status -uno --short
 git log --oneline de11c0866..HEAD
 ```
@@ -2734,7 +2734,7 @@ log range.
 
 ```bash
 # Gate 1: cargo kernel
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 
 # Gate 2: xtask
 cargo test -p xtask --target aarch64-apple-darwin
