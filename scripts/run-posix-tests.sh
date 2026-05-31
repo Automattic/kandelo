@@ -16,10 +16,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
-POSIX_TEST="$REPO_ROOT/open-posix-testsuite"
+POSIX_TEST="$REPO_ROOT/tests/posix/open-posix-testsuite"
 IFACE_DIR="$POSIX_TEST/conformance/interfaces"
 BUILD_DIR="$POSIX_TEST/build"
-KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 # ── Expected failures ──────────────────────────────────────
 # Tests that fail due to Wasm limitations or unimplemented features.
@@ -131,6 +130,13 @@ discover_interfaces() {
         count=$(find "$IFACE_DIR/$d" -maxdepth 1 -name "*.c" -type f 2>/dev/null | wc -l | tr -d ' ')
         [ "$count" -gt 0 ] && echo "$d"
     done | sort
+}
+
+verify_test_tree() {
+    if [ ! -d "$IFACE_DIR" ]; then
+        echo "Error: Open POSIX Test Suite interfaces not found at $IFACE_DIR" >&2
+        exit 1
+    fi
 }
 
 # ── Build and run ─────────────────────────────────────────
@@ -271,6 +277,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+verify_test_tree
+
 if $LIST_MODE; then
     echo "Available interfaces:"
     discover_interfaces | while read -r iface; do
@@ -287,11 +295,17 @@ if [ ${#INTERFACES[@]} -eq 0 ]; then
     done < <(discover_interfaces)
 fi
 
+if [ ${#INTERFACES[@]} -eq 0 ]; then
+    echo "Error: no Open POSIX Test Suite interfaces discovered under $IFACE_DIR" >&2
+    exit 1
+fi
+
 # Verify prerequisites
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     echo "Error: sysroot not found. Run scripts/build-musl.sh first." >&2
     exit 1
 fi
+KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
