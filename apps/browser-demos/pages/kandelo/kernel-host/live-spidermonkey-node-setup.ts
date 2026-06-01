@@ -53,11 +53,11 @@ const SHELL_ENV = [
   "npm_config_registry=http://proxy.local/",
   "npm_config_fund=false",
   "npm_config_audit=false",
-  "npm_config_progress=false",
+  "npm_config_progress=true",
   "npm_config_update_notifier=false",
   "NPM_CONFIG_FUND=false",
   "NPM_CONFIG_AUDIT=false",
-  "NPM_CONFIG_PROGRESS=false",
+  "NPM_CONFIG_PROGRESS=true",
   "NPM_CONFIG_UPDATE_NOTIFIER=false",
 ];
 
@@ -210,10 +210,24 @@ Promise.resolve(run(process)).then(
   () => { settled = true; },
   (err) => { failure = err; settled = true; }
 );
+const sleepView = typeof SharedArrayBuffer === 'function' && typeof Atomics === 'object'
+  ? new Int32Array(new SharedArrayBuffer(4))
+  : null;
+function pumpSpiderMonkeyJobs() {
+  if (typeof drainJobQueue === 'function') drainJobQueue();
+  if (typeof __kandeloRunDueTimers === 'function') __kandeloRunDueTimers();
+  if (sleepView && typeof __kandeloNextTimerDelay === 'function') {
+    const delay = __kandeloNextTimerDelay();
+    if (delay > 0) {
+      try { Atomics.wait(sleepView, 0, 0, Math.min(delay, 5)); } catch {}
+    }
+  }
+}
 let spins = 0;
+const started = Date.now();
 while (!settled && typeof drainJobQueue === 'function') {
-  drainJobQueue();
-  if (++spins > 100000) {
+  pumpSpiderMonkeyJobs();
+  if (++spins > 500000 && Date.now() - started > 300000) {
     failure = new Error('npm did not settle after draining the SpiderMonkey job queue');
     settled = true;
   }
@@ -222,7 +236,7 @@ if (failure) {
   console.error(failure && failure.stack ? failure.stack : failure);
   process.exitCode = process.exitCode || 1;
 }
-if (typeof drainJobQueue === 'function') drainJobQueue();
+pumpSpiderMonkeyJobs();
 process.exit(process.exitCode || 0);
 `;
 
