@@ -35,7 +35,7 @@ The host must stay responsible for browser and Node platform primitives: Workers
 1. **Generated TS ABI constants from `crates/shared`/`xtask dump-abi`.**
    - Generate `host/src/generated/abi.ts` with ABI version, channel offsets/sizes, status codes, host-intercepted syscall numbers, syscall numbers already in `shared::Syscall`, and marshalled struct sizes.
    - Use it in `constants.ts`, `kernel-worker.ts`, `kernel.ts`, and the simplest worker-channel writers.
-   - Keep legacy constants that are not yet in `shared::Syscall` local for now.
+   - Keep constants that are not yet in `shared::Syscall` local for now.
 
 2. **Expand shared syscall metadata coverage.**
    - Move currently untracked syscall numbers used by TS (`clone`, `futex`, `epoll`, `mq`, SysV IPC, thread cancel, exit_group, etc.) into Rust/shared metadata.
@@ -74,7 +74,7 @@ The host must stay responsible for browser and Node platform primitives: Workers
 | Browser/Node parity | Host lifecycle changes often break one side only. | Migrate shared files first, then update both worker entries in the same PR for lifecycle changes. |
 | Snapshot churn | Adding snapshot coverage can look like ABI change even when runtime bytes do not change. | Keep first slice generated from existing snapshot/shared data. For new coverage, follow `docs/abi-versioning.md` and classify whether an ABI bump is required. |
 | V8/browser workarounds | Epoll and wake scheduling have browser-specific failure modes. | Do not remove TS workarounds until browser smoke/Playwright evidence exists. |
-| Legacy binaries | Older images depend on stable ABI pins and first-party host adapters. | Keep strict `__abi_version` checks; use additive manifests/bindings without weakening compatibility checks. |
+| Version-pinned binaries | Images can depend on stable ABI pins and first-party host adapters. | Keep strict `__abi_version` checks; use additive manifests/bindings without weakening compatibility checks. |
 
 ## ABI And Versioning Implications
 
@@ -143,3 +143,22 @@ gates, not mechanical moves:
 
 Resume with design docs/tests for one of those contracts before moving more
 logic across the Rust/TS boundary.
+
+## Additional Candidate Work
+
+These items are not approved migration chunks yet. They are follow-up candidates
+to evaluate with focused designs, tests, and host/API-surface tradeoff notes.
+
+| Candidate | Why consider it | Boundary notes |
+|---|---|---|
+| Centralized advisory file-lock ownership with native lock bridge | TS still owns the shared `fcntl`/`flock` table for host-backed files. Rust already owns the syscall semantics, process ownership, close/exit cleanup, and non-host fallback lock table. Moving Kandelo-owned lock state into Rust would shrink duplicated policy and make lock cleanup part of kernel process state. | There is only a centralized kernel target; do not preserve earlier decentralized/research behavior as a compatibility concern. Keep `host_fcntl_lock` or a successor host hook as a Node/native-file interop bridge: for native-backed VFS files, the host should check/acquire/release native OS file locks so Kandelo processes coordinate with native programs before the kernel grants an internal lock. Browser/memfs hosts can implement the hook as no native-lock surface. Design needs a stable VFS file identity contract, not only path hashes. |
+| Nested syscall marshalling descriptors | TS still special-cases nested process-memory layouts such as `readv`/`writev`/`preadv`/`pwritev`, `sendmsg`/`recvmsg`, `fcntl` flock structs, `semctl`, `select`/`pselect`, `ppoll` scalar conversion, and selected `ioctl` payloads. Rust/shared metadata could describe these shapes so future non-JS adapters do not reimplement TS ABI knowledge. | The actual copies must stay in the host adapter because they access process `WebAssembly.Memory`. Prefer generated tables or a reusable Rust host-adapter crate over runtime kernel calls on every syscall. |
+| WASI Preview 1 translation | `host/src/wasi-shim.ts` maps WASI fd/path/poll/socket/errno surfaces onto the POSIX kernel syscall ABI. Non-JS integrations would otherwise need to port this compatibility layer. | Likely belongs in a Rust host-adapter crate rather than the core process-table kernel. The host still supplies module memory access and syscall submission. |
+| Exec/spawn launch planning | TS still reads argv/envp from process memory, resolves relative exec paths, handles `execveat(AT_EMPTY_PATH)`, performs spawn preflight, and Node/browser worker entries handle shebang recursion. Rust could own a launch-plan descriptor so host adapters only resolve/load bytes and instantiate. | Worker creation, module compilation, and byte loading remain host primitives. A design must preserve `posix_spawnp` "file actions exactly once" behavior and `execvpe`/PATH retry semantics. |
+| Mount/read-only VFS policy contract | The mount spec carries `readonly`, but enforcement and mount routing are still host-side. Rust already owns process uid/gid/umask and permission checks from host stat metadata. | Host VFS backends remain platform executors. Rust should own guest-visible mount policy and provide a versioned contract for Node/browser adapters, including read-only enforcement, mount flags, path-to-mount identity, and `/proc/mounts` parity. |
+| File-backed `mmap`/`msync` descriptors | TS populates file-backed mappings after `mmap`, tracks `MAP_SHARED` regions, flushes `msync`, and cleans tracking on `munmap`. Rust owns virtual address allocation and fd state, so it could own mapping descriptors and writeback policy. | Guest-memory copies and host file I/O remain host-side. Kernel should emit enough mapping/writeback commands for adapters to perform the copy without duplicating policy. |
+| Readiness, `select`/`pselect`, and `epoll` descriptors | Rust now emits targeted wakeup metadata, but TS still owns retry queues, timeout policy, signal-safe wake grace, and an epoll interest mirror because of V8/browser evidence. | Timers and `Atomics.waitAsync` remain host-side. More precise descriptors need browser smoke/perf data before removing broad fallbacks or the epoll mirror. |
+| Signal delivery event ABI | Rust owns signal state, but TS still copies delivery records into process channels, wakes blocked peers after `kill`, handles signal-death follow-up, and drains mqueue notification signals. | The host must still wake channels and touch process memory. Rust/shared can define a compact event/command ABI so adapters implement a generic signal delivery loop instead of copying TS-specific control flow. |
+| Futex and cancellation wait descriptors | Futex waits and deferred `pthread_cancel` perturb host wait state (`Atomics.waitAsync`, timers, pipe reader registrations, poll/select retries), but the validation and wake/cancel target descriptions are kernel semantics. | Actual waits stay host-side because futex addresses are in process memory. A Rust-owned descriptor/event contract could reduce adapter-specific cancellation logic if it does not add hot-path round trips. |
+| Virtual network interface `ioctl` metadata | TS currently fabricates `SIOCGIFCONF`, `SIOCGIFHWADDR`, and `SIOCGIFADDR` responses including interface name, loopback address, and virtual MAC layout. | The host still writes process memory. Rust/shared can own virtual interface inventory and struct layout metadata so adapters do not hardcode Linux `ifreq`/`ifconf` details. |
+| Device queue/surface contracts | Rust already owns much of `/dev/fb0`, `/dev/input/mice`, and `/dev/dsp` device semantics and bounded queues. Any remaining TS surface should be evaluated for whether it is presentation-only or kernel policy. | DOM/canvas/Web Audio/input event collection stay host-side. Kernel-owned device queue contracts are useful only where they shrink adapter behavior without moving platform presentation into Rust. |
