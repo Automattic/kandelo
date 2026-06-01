@@ -970,7 +970,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (!entry) return null;
     // Determine d_type from mode
     const mode = entry.stat.mode;
-    let dtype = DIRENT_TYPES.DT_UNKNOWN;
+    let dtype: number = DIRENT_TYPES.DT_UNKNOWN;
     if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFREG) {
       dtype = DIRENT_TYPES.DT_REG;
     } else if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR) {
