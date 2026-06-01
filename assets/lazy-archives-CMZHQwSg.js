@@ -1,0 +1,1 @@
+const t={"vim.zip":"/kandelo/assets/vim-CMSd_Gih.zip","nethack.zip":"/kandelo/assets/nethack-1V6J1t6Z.zip"};function s(s){const i=s.split(/[?#]/,1)[0]??s,a=i.split("/").filter(Boolean).pop()??i,e=t[a];return e||(/^[a-z][a-z0-9+.-]*:/i.test(s)||s.startsWith("/")?s:"/kandelo/"+s)}export{s as r};
