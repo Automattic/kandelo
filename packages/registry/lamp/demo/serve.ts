@@ -1,5 +1,5 @@
 /**
- * serve.ts — Full LAMP stack on wasm-posix-kernel.
+ * serve.ts — Full LAMP stack on kandelo.
  *
  * Runs MariaDB + PHP-FPM + nginx as separate Wasm processes in one kernel:
  *   - MariaDB   (pid 1, threads for signal handler + timer)
@@ -212,7 +212,7 @@ async function main() {
   });
 
   // Ready
-  console.log("=== LAMP stack running on wasm-posix-kernel ===");
+  console.log("=== LAMP stack running on kandelo ===");
   console.log(`  MariaDB:   127.0.0.1:3306`);
   console.log(`  PHP-FPM:   127.0.0.1:9000 (master + 6 workers)`);
   console.log(`  nginx:     http://localhost:${port}/ (master + 2 workers)`);

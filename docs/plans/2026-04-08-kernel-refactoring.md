@@ -189,7 +189,7 @@ new Uint8Array(memory.buffer, tlsAllocAddr, 65536).fill(0);
 
 **After:**
 ```typescript
-import { ThreadPageAllocator } from "wasm-posix-kernel";
+import { ThreadPageAllocator } from "kandelo";
 // or relative: import { ThreadPageAllocator } from "../host/src/thread-allocator";
 
 const threadAllocator = new ThreadPageAllocator(MAX_PAGES);
@@ -221,7 +221,7 @@ Where these constants are defined locally and no longer used (only needed for th
 
 Run:
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 cd host && npx vitest run
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -270,7 +270,7 @@ Test: create queue, send/receive with priority ordering, unlink semantics, O_NON
 
 **Step 3: Run cargo tests**
 
-Run: `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+Run: `cargo test -p kandelo --target aarch64-apple-darwin --lib`
 Expected: new tests pass, all existing tests still pass
 
 **Step 4: Commit**
@@ -315,7 +315,7 @@ In `process_table.rs`, call `mqueue_table.cleanup_process(pid)` to remove notifi
 **Step 4: Run full test suite**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 cd host && npx vitest run
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -361,7 +361,7 @@ Test all IPC operations: create/destroy, permission checks, message type filteri
 
 **Step 3: Run cargo tests**
 
-Run: `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+Run: `cargo test -p kandelo --target aarch64-apple-darwin --lib`
 
 **Step 4: Commit**
 
@@ -412,7 +412,7 @@ Remove the SysV IPC interception block (lines 1486-1493). Add IPC arg marshallin
 **Step 5: Run full test suite**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 cd host && npx vitest run
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -516,7 +516,7 @@ These currently resolve pipe indices from fd numbers via kernel exports. With ke
 **Step 6: Run full test suite**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 cd host && npx vitest run
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -536,7 +536,7 @@ refactor: replace host-side poll wakeup heuristics with kernel-driven readiness 
 Run the full suite after each phase:
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib   # 610+ tests
+cargo test -p kandelo --target aarch64-apple-darwin --lib   # 610+ tests
 cd host && npx vitest run                                              # 227+ tests
 scripts/run-libc-tests.sh                                              # 0 FAIL
 scripts/run-posix-tests.sh                                             # 0 FAIL

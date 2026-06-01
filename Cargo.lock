@@ -731,6 +731,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kandelo"
+version = "0.1.0"
+dependencies = [
+ "wasm-posix-shared",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1638,13 +1645,6 @@ dependencies = [
  "indexmap",
  "wasm-encoder 0.244.0",
  "wasmparser 0.244.0",
-]
-
-[[package]]
-name = "wasm-posix-kernel"
-version = "0.1.0"
-dependencies = [
- "wasm-posix-shared",
 ]
 
 [[package]]

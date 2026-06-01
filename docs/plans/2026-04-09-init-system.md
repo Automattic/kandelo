@@ -1687,7 +1687,7 @@ git commit -m "feat(browser): auto thread module compilation on first clone"
 ### Step 1: Run full test suite
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 cd host && npx vitest run
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh

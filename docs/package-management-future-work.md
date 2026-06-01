@@ -23,7 +23,8 @@ locally to populate `local-binaries/`.
 
 Fix options:
 1. **Add build wrappers** at `packages/registry/{kernel,userspace}/build-*.sh`
-   that delegate to the `cargo build --release -p wasm-posix-{kernel,userspace}`
+   that delegate to `cargo build --release -p kandelo` and
+   `cargo build --release -p wasm-posix-userspace`
    pipeline already in `build.sh`. Manifest output names already match
    the cargo artifact paths. Once added, they ship as regular
    archives. Caveat: kernel.wasm changes with every kernel commit, so

@@ -1,6 +1,6 @@
 //! Parser for `package.toml` — per-library build/cache manifest.
 //!
-//! Each wasm-posix-kernel library declares one of these next to its
+//! Each kandelo library declares one of these next to its
 //! build script (`packages/registry/<name>/package.toml`). The resolver
 //! (`xtask build-deps`) walks these across a registry search path to
 //! build an acyclic dependency graph, compute a deterministic cache
@@ -27,7 +27,7 @@
 //! [build]
 //! # repo-relative path; default = "packages/registry/<name>/build-<name>.sh"
 //! script_path = "packages/registry/zlib/build-zlib.sh"
-//! repo_url    = "https://github.com/Automattic/wasm-posix-kernel"  # optional
+//! repo_url    = "https://github.com/Automattic/kandelo"  # optional
 //! commit      = "deadbeef..."                                      # filled by CI
 //!
 //! [outputs]
@@ -1617,7 +1617,7 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
             "{}\n\
              [build]\n\
              script_path = \"packages/registry/zlib/build-zlib.sh\"\n\
-             repo_url    = \"https://github.com/Automattic/wasm-posix-kernel\"\n\
+             repo_url    = \"https://github.com/Automattic/kandelo\"\n\
              commit      = \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\"\n",
             EXAMPLE_ARCHIVED
         );
@@ -1628,7 +1628,7 @@ cache_key_sha = "111111111111111111111111111111111111111111111111111111111111111
         );
         assert_eq!(
             m.build.repo_url.as_deref(),
-            Some("https://github.com/Automattic/wasm-posix-kernel")
+            Some("https://github.com/Automattic/kandelo")
         );
         assert_eq!(
             m.build.commit.as_deref(),

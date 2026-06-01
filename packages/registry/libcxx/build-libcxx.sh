@@ -23,7 +23,7 @@ set -euo pipefail
 # Prerequisites:
 #   - Homebrew LLVM (brew install llvm) at the version declared in deps.toml
 #   - CMake (brew install cmake)
-#   - wasm-posix-kernel sysroot built (bash build.sh)
+#   - kandelo sysroot built (bash build.sh)
 #
 # Output layout:
 #   $WASM_POSIX_DEP_OUT_DIR/

@@ -6,8 +6,8 @@ import { detectArch } from '../lib/arch.ts';
 
 // PKG_CONFIG_PATH is honored from the caller's environment so build scripts
 // can point pkg-config at dep-cache .pc files (e.g.
-// ~/.cache/wasm-posix-kernel/libs/<name>-<v>-rev<N>-<sha>/lib/pkgconfig).
-// We FILTER it to wasm-posix-kernel paths only — Nix's pkg-config-wrapper
+// ~/.cache/kandelo/libs/<name>-<v>-rev<N>-<sha>/lib/pkgconfig).
+// We FILTER it to kandelo paths only — Nix's pkg-config-wrapper
 // auto-populates PKG_CONFIG_PATH with host buildInputs' .pc dirs (host
 // openssl, libidn2, krb5, etc.), and those would override the wasm32
 // dep flags we set via env vars (OPENSSL_CFLAGS=…). Without filtering,
@@ -35,14 +35,14 @@ export function buildPkgConfigEnv(
   };
 }
 
-/** True if the path is part of the wasm-posix-kernel cache or sysroot.
- * Anything under `wasm-posix-kernel/...` (the dep cache root used by
- * `~/.cache/wasm-posix-kernel/libs/<name>...`) or under `sysroot`/
+/** True if the path is part of the kandelo cache or sysroot.
+ * Anything under `kandelo/...` (the dep cache root used by
+ * `~/.cache/kandelo/libs/<name>...`) or under `sysroot`/
  * `sysroot64` is wasm32/64 targeted; everything else is host-targeted
  * (Nix-store host pc files, /usr/lib/pkgconfig, etc.) and gets dropped. */
 function isWasmPosixPath(p: string): boolean {
   return (
-    p.includes('wasm-posix-kernel/') ||
+    p.includes('kandelo/') ||
     p.includes('/sysroot/') ||
     p.includes('/sysroot64/') ||
     p.endsWith('/sysroot/lib/pkgconfig') ||

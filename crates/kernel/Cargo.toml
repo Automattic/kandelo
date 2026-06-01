@@ -1,9 +1,10 @@
 [package]
-name = "wasm-posix-kernel"
+name = "kandelo"
 version.workspace = true
 edition.workspace = true
 
 [lib]
+name = "kandelo_kernel"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

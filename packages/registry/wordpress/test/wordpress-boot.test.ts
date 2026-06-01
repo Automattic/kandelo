@@ -1,6 +1,6 @@
 /**
  * WordPress boot test — verifies that WordPress can load and run
- * on wasm-posix-kernel via PHP-Wasm with SQLite.
+ * on kandelo via PHP-Wasm with SQLite.
  *
  * Uses PHP script files instead of -r inline code because PHP variable
  * interpolation ($) conflicts with template literal escaping.
@@ -51,7 +51,7 @@ afterAll(() => {
   }
 });
 
-describe.skipIf(!!SKIP_REASON)("WordPress on wasm-posix-kernel", () => {
+describe.skipIf(!!SKIP_REASON)("WordPress on kandelo", () => {
   it("PHP can parse wp-settings.php without syntax errors", async () => {
     const { stdout, exitCode } = await runCentralizedProgram({
       programPath: phpBinaryPath,

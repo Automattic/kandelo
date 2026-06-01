@@ -1,6 +1,6 @@
 # mkrootfs
 
-CLI for building, inspecting, extracting, and augmenting wasm-posix-kernel
+CLI for building, inspecting, extracting, and augmenting kandelo
 VFS rootfs images.
 
 ## Usage

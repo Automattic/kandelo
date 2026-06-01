@@ -64,7 +64,7 @@ const COREUTILS_SYMLINK_NAMES = [
   "md5sum", "seq", "test", "[",
 ];
 
-// 185 tests verified to pass in headless Chromium with MariaDB on wasm-posix-kernel.
+// 185 tests verified to pass in headless Chromium with MariaDB on kandelo.
 const CURATED_TESTS = [
   "1st", "adddate_454", "almost_full", "alter_table_combinations",
   "alter_table_lock", "alter_table_mdev539_maria",

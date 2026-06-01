@@ -377,7 +377,7 @@ import type { WorkerInitMessage } from "../src/worker-protocol";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadWasmBytes(): ArrayBuffer {
-  const wasmPath = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
+  const wasmPath = join(__dirname, "../wasm/kandelo-kernel.wasm");
   const buf = readFileSync(wasmPath);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
@@ -837,7 +837,7 @@ import { NodeWorkerAdapter } from "../src/worker-adapter";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadWasmBytes(): ArrayBuffer {
-  const wasmPath = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
+  const wasmPath = join(__dirname, "../wasm/kandelo-kernel.wasm");
   const buf = readFileSync(wasmPath);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
@@ -961,7 +961,7 @@ Expected: All tests PASS (kernel test + worker-adapter + worker-entry + process-
 
 Also verify Rust tests still pass:
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: 286 tests PASS
 
 **Step 5: Commit**

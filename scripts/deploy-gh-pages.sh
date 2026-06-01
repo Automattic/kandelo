@@ -8,7 +8,7 @@
 # dist/ contents to the gh-pages branch using a temporary worktree.
 set -euo pipefail
 
-REPO_NAME="${1:-wasm-posix-kernel}"
+REPO_NAME="${1:-kandelo}"
 CORS_PROXY="${VITE_CORS_PROXY_URL:-https://wordpress-playground-cors-proxy.net/?}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

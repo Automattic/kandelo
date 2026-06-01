@@ -1,5 +1,5 @@
 /**
- * Tests for bash running on the wasm-posix-kernel.
+ * Tests for bash running on the kandelo.
  *
  * Focuses on bash-specific features (bashisms) that dash does not implement,
  * to guard against bash-in-wasm regressions. POSIX-generic shell coverage

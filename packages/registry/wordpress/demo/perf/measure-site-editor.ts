@@ -3,7 +3,7 @@
  *
  * Adapted from WordPress Playground's
  * packages/playground/cli/perf/measure-site-editor.ts
- * to work with wasm-posix-kernel's WordPress server (WP 6.7.2).
+ * to work with kandelo's WordPress server (WP 6.7.2).
  *
  * Runs a single benchmark pass: launches Chromium, logs in,
  * navigates through the site editor, and returns raw timing

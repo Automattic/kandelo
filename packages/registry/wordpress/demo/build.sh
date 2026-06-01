@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build everything needed to run WordPress on wasm-posix-kernel.
+# Build everything needed to run WordPress on kandelo.
 # Idempotent — skips steps whose outputs already exist.
 #
 # Usage:
@@ -11,12 +11,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
-echo "=== Building WordPress for wasm-posix-kernel ==="
+echo "=== Building WordPress for kandelo ==="
 
 # Step 1: Kernel wasm + musl sysroot + TypeScript host
 echo ""
 echo "--- Step 1/4: Kernel + musl sysroot + host ---"
-if [ ! -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ] || \
+if [ ! -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" ] || \
    [ ! -f "$REPO_ROOT/sysroot/lib/libc.a" ]; then
     bash "$REPO_ROOT/build.sh"
 else

@@ -423,7 +423,7 @@ spdx = "Zlib"
 
 [build]
 script_path = "packages/registry/zlib/build-zlib.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+repo_url    = "https://github.com/kandelo/kandelo.git"
 
 [outputs]
 libs = ["lib/libz.a"]
@@ -478,7 +478,7 @@ headers = []
         // Surrounding fields must survive (formatting + co-tenants).
         assert!(after.contains("script_path = \"packages/registry/zlib/build-zlib.sh\""));
         assert!(after.contains(
-            "repo_url    = \"https://github.com/wasm-posix-kernel/wasm-posix-kernel.git\""
+            "repo_url    = \"https://github.com/kandelo/kandelo.git\""
         ));
         assert!(after.contains("[binary.wasm32]"));
     }
@@ -517,9 +517,9 @@ headers = []
         // placeholder is all-zeros, so we can't use that).
         let stale_sha = "1234567890aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let seeded = String::from(FIXTURE_WITH_BUILD).replace(
-            "repo_url    = \"https://github.com/wasm-posix-kernel/wasm-posix-kernel.git\"",
+            "repo_url    = \"https://github.com/kandelo/kandelo.git\"",
             &format!(
-                "repo_url    = \"https://github.com/wasm-posix-kernel/wasm-posix-kernel.git\"\ncommit      = \"{stale_sha}\"",
+                "repo_url    = \"https://github.com/kandelo/kandelo.git\"\ncommit      = \"{stale_sha}\"",
             ),
         );
         fs::write(&path, &seeded).unwrap();
@@ -602,7 +602,7 @@ spdx = "GPL-2.0-only"
 
 [build]
 script_path = "packages/registry/mariadb/build-mariadb.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+repo_url    = "https://github.com/kandelo/kandelo.git"
 
 [[outputs]]
 name = "mariadbd"
@@ -635,7 +635,7 @@ spdx = "Apache-2.0"
 
 [build]
 script_path = "packages/registry/dinit/build-dinit.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+repo_url    = "https://github.com/kandelo/kandelo.git"
 
 [[outputs]]
 name = "dinit"
@@ -646,9 +646,9 @@ archive_url = "https://example.com/old-dinit.tar.zst"
 archive_sha256 = "3333333333333333333333333333333333333333333333333333333333333333"
 "#;
 
-    const NEW_URL_32: &str = "https://github.com/example/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm32-deadbeef.tar.zst";
+    const NEW_URL_32: &str = "https://github.com/example/kandelo/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm32-deadbeef.tar.zst";
     const NEW_SHA_32: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const NEW_URL_64: &str = "https://github.com/example/wasm-posix-kernel/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm64-cafef00d.tar.zst";
+    const NEW_URL_64: &str = "https://github.com/example/kandelo/releases/download/binaries-abi-v7/mariadb-10.5.28-rev1-abi7-wasm64-cafef00d.tar.zst";
     const NEW_SHA_64: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     #[test]

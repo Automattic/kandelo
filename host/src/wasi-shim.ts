@@ -3,7 +3,7 @@
  *
  * Translates wasi_snapshot_preview1 imports into channel-based syscalls
  * that the existing kernel understands. This allows pre-built WASI binaries
- * to run on the wasm-posix-kernel without recompilation.
+ * to run on the kandelo without recompilation.
  *
  * Only supports WASI modules that import memory (--import-memory).
  *
@@ -1458,7 +1458,7 @@ export class WasiShim {
 
 // `isWasiModule`, `wasiModuleImportsMemory`, and `wasiModuleDefinesMemory`
 // moved to `./wasi-detect.ts`. Re-export them here so existing public
-// imports of `wasm-posix-kernel/host` keep working — but worker-main.ts
+// imports of `kandelo/host` keep working — but worker-main.ts
 // imports them directly from wasi-detect.ts to avoid pulling this file
 // onto the worker bootstrap path.
 export {

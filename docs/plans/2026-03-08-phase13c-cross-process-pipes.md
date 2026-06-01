@@ -374,19 +374,19 @@ pub extern "C" fn kernel_convert_pipe_to_host(ofd_idx: u32, new_host_handle: i64
 
 **Step 6: Run tests**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: All 302 existing tests pass (existing pipe tests use kernel-internal pipes which still work)
 
 Rebuild Wasm:
 ```bash
-cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release
-cp target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
+cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release
+cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 ```
 
 **Step 7: Commit**
 
 ```bash
-git add crates/kernel/src/syscalls.rs crates/kernel/src/wasm_api.rs host/wasm/wasm_posix_kernel.wasm
+git add crates/kernel/src/syscalls.rs crates/kernel/src/wasm_api.rs host/wasm/kandelo-kernel.wasm
 git commit -m "feat: add host-delegated pipe support and kernel_convert_pipe_to_host export"
 ```
 
@@ -775,7 +775,7 @@ Note: A full data transfer test (parent writes to pipe, child reads from pipe) r
 **Step 2: Run all tests**
 
 Run: `cd host && npx vitest run`
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: All tests pass
 
 **Step 3: Commit**

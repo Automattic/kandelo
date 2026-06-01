@@ -1,5 +1,5 @@
 /**
- * MariaDB directory setup for the wasm-posix-kernel browser environment.
+ * MariaDB directory setup for the kandelo browser environment.
  *
  * Creates the data directory structure MariaDB needs for bootstrap and
  * server operation.

@@ -1,5 +1,5 @@
 /**
- * Tests for dash shell running on the wasm-posix-kernel.
+ * Tests for dash shell running on the kandelo.
  */
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";

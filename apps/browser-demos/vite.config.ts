@@ -141,7 +141,7 @@ function rewriteNavLinks(): Plugin {
       if (base === "/") return html;
       // Rewrite href="/..." links to href="${base}..." but skip links that
       // Vite has already prefixed with the base path (e.g. asset preloads)
-      const baseRest = base.slice(1); // "wasm-posix-kernel/"
+      const baseRest = base.slice(1); // "kandelo/"
       const escaped = baseRest.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const re = new RegExp(`href="\\/(?!${escaped})(?!\\/)`, "g");
       return html.replace(re, `href="${base}`);
@@ -173,7 +173,7 @@ function injectGitRevision(): Plugin {
         const match = remoteUrl.match(
           /github\.com[:/](.+?)(?:\.git)?$/
         );
-        const repoPath = match ? match[1] : "brandonpayton/wasm-posix-kernel";
+        const repoPath = match ? match[1] : "brandonpayton/kandelo";
         const fullRev = execSync("git rev-parse HEAD", {
           cwd: repoRoot,
           encoding: "utf-8",
@@ -259,7 +259,7 @@ function attachCorsProxyMiddleware(
         forwardHeaders[name] = value as string | string[];
       }
       if (!forwardHeaders["user-agent"]) {
-        forwardHeaders["user-agent"] = "wasm-posix-kernel-proxy";
+        forwardHeaders["user-agent"] = "kandelo-proxy";
       }
       // The wasm-side fetch can't decompress gzip/br — force identity so
       // the client sees raw JSON/SSE instead of UTF-8 replacement chars.

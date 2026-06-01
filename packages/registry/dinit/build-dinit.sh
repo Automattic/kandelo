@@ -129,7 +129,7 @@ DEFAULT_START_TIMEOUT = 60
 DEFAULT_STOP_TIMEOUT = 10
 
 # dinit features
-# Skip cgroup support (Linux-specific, not in wasm-posix-kernel).
+# Skip cgroup support (Linux-specific, not in kandelo).
 SUPPORT_CGROUPS = 0
 # Skip capability support (Linux-specific).
 SUPPORT_CAPABILITIES = 0

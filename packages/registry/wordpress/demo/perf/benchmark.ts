@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 /**
- * wasm-posix-kernel WordPress — Site Editor Performance Benchmark
+ * kandelo WordPress — Site Editor Performance Benchmark
  *
  * Spawns WordPress behind nginx + PHP-FPM, installs WordPress, then launches
  * headless Chromium to measure site-editor performance.
@@ -47,7 +47,7 @@ async function main() {
   const opts = getOptions();
   const baseUrl = `http://localhost:${opts.port}`;
 
-  console.log("\n=== wasm-posix-kernel WordPress Site Editor Benchmark ===");
+  console.log("\n=== kandelo WordPress Site Editor Benchmark ===");
   console.log(`Platform: ${os.platform()} ${os.arch()}`);
   console.log(`Node: ${process.version}`);
   console.log(`CPUs: ${os.cpus().length}`);
@@ -88,7 +88,7 @@ async function main() {
     console.log("  Done.");
 
     const result: BenchmarkResult = {
-      environment: "wasm-posix-kernel",
+      environment: "kandelo",
       metrics: {
         serverStartup: startupMs,
         wpInstall: installMs,
@@ -127,7 +127,7 @@ function getOptions(): Options {
   if (values.help) {
     console.log(`Usage: npx tsx packages/registry/wordpress/demo/perf/benchmark.ts [options]
 
-Measure WordPress site editor performance on wasm-posix-kernel.
+Measure WordPress site editor performance on kandelo.
 
 Options:
   --rounds=N    Successful rounds required (default: 3, retries up to 2x)

@@ -73,14 +73,14 @@ define('DB_DIR', __DIR__ . '/wp-content/database/');
 define('DB_FILE', 'wordpress.db');
 
 // Auth keys — not security-sensitive for local dev
-define('AUTH_KEY',         'wasm-posix-kernel-dev');
-define('SECURE_AUTH_KEY',  'wasm-posix-kernel-dev');
-define('LOGGED_IN_KEY',    'wasm-posix-kernel-dev');
-define('NONCE_KEY',        'wasm-posix-kernel-dev');
-define('AUTH_SALT',        'wasm-posix-kernel-dev');
-define('SECURE_AUTH_SALT', 'wasm-posix-kernel-dev');
-define('LOGGED_IN_SALT',   'wasm-posix-kernel-dev');
-define('NONCE_SALT',       'wasm-posix-kernel-dev');
+define('AUTH_KEY',         'kandelo-dev');
+define('SECURE_AUTH_KEY',  'kandelo-dev');
+define('LOGGED_IN_KEY',    'kandelo-dev');
+define('NONCE_KEY',        'kandelo-dev');
+define('AUTH_SALT',        'kandelo-dev');
+define('SECURE_AUTH_SALT', 'kandelo-dev');
+define('LOGGED_IN_SALT',   'kandelo-dev');
+define('NONCE_SALT',       'kandelo-dev');
 
 $table_prefix = 'wp_';
 

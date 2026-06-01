@@ -84,7 +84,7 @@ struct ParsedArchive {
 ///   --abi          <u32>     Cross-checked against each archive's
 ///                            `abi<N>` filename slot; mismatch → error.
 ///   --generator    <string>  Free-form provenance line, e.g.
-///                            `"wasm-posix-kernel CI @ <sha>"`.
+///                            `"kandelo CI @ <sha>"`.
 ///   --archives-dir <dir>     Directory holding the `.tar.zst` archives.
 ///   --out          <path>    Where to write `index.toml`.
 ///
@@ -604,7 +604,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
             "--abi".into(),
             "6".into(),
             "--generator".into(),
-            "wasm-posix-kernel CI @ deadbeef".into(),
+            "kandelo CI @ deadbeef".into(),
             "--archives-dir".into(),
             archives.display().to_string(),
             "--out".into(),
@@ -622,7 +622,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
             "got:\n{text}"
         );
         assert!(
-            text.contains("generator = \"wasm-posix-kernel CI @ deadbeef\""),
+            text.contains("generator = \"kandelo CI @ deadbeef\""),
             "got:\n{text}"
         );
         // Both packages present, alphabetical order.
@@ -650,7 +650,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
             "got:\n{text}"
         );
         assert!(
-            text.contains("built_by = \"wasm-posix-kernel CI @ deadbeef\""),
+            text.contains("built_by = \"kandelo CI @ deadbeef\""),
             "got:\n{text}"
         );
         // Round-trip through IndexToml::parse confirms it.
@@ -781,7 +781,7 @@ build_timestamp = "2026-05-05T12:34:56Z"
                 "--abi".into(),
                 "6".into(),
                 "--generator".into(),
-                "wasm-posix-kernel CI @ deadbeef".into(),
+                "kandelo CI @ deadbeef".into(),
                 "--archives-dir".into(),
                 archives.display().to_string(),
                 "--out".into(),

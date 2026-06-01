@@ -202,7 +202,7 @@ Demo pages load programs into `kernel.fs` (MemoryFileSystem) before spawning. Mo
 
 ## Verification
 
-1. **Cargo tests**: `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` (unchanged)
+1. **Cargo tests**: `cargo test -p kandelo --target aarch64-apple-darwin --lib` (unchanged)
 2. **Vitest**: `cd host && npx vitest run` (host tests use Node.js, not browser)
 3. **SDK tests**: `cd sdk && npm test` (unchanged)
 4. **Browser demo testing** (manually verify each):

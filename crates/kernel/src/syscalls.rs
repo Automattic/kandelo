@@ -8621,7 +8621,7 @@ pub fn sys_uname(buf: &mut [u8]) -> Result<(), Errno> {
         b"wasm-posix",        // sysname
         b"localhost",         // nodename
         b"1.0.0",             // release
-        b"wasm-posix-kernel", // version
+        b"kandelo", // version
         b"wasm32",            // machine
         b"",                  // domainname (empty)
     ];

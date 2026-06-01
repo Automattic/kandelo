@@ -1,5 +1,5 @@
 /**
- * Regression test — nginx serving static HTML via wasm-posix-kernel.
+ * Regression test — nginx serving static HTML via kandelo.
  *
  * Starts nginx.wasm in centralized mode with master_process on + 2 workers,
  * sends HTTP requests through the TCP bridge, verifies responses, and tears down.

@@ -3,10 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-OUT="$REPO_ROOT/target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm"
+OUT="$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm"
 
 cd "$REPO_ROOT"
-cargo build --release -p wasm-posix-kernel -Z build-std=core,alloc
+cargo build --release -p kandelo -Z build-std=core,alloc
 
 if [ ! -f "$OUT" ]; then
     echo "build-kernel: expected output not found: $OUT" >&2
@@ -19,6 +19,6 @@ echo "build-kernel: installed local-binaries/kernel.wasm"
 
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-    cp "$OUT" "$WASM_POSIX_DEP_OUT_DIR/wasm_posix_kernel.wasm"
-    echo "build-kernel: installed $WASM_POSIX_DEP_OUT_DIR/wasm_posix_kernel.wasm"
+    cp "$OUT" "$WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm"
+    echo "build-kernel: installed $WASM_POSIX_DEP_OUT_DIR/kandelo-kernel.wasm"
 fi

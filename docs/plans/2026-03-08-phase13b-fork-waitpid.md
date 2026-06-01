@@ -78,7 +78,7 @@ pub fn handlers(&self) -> &[SignalHandler; 64] {
 
 Add tests to the respective test modules verifying iter() returns correct entries and from_raw() reconstructs correctly.
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: All existing tests pass + new tests pass
 
 **Step 5: Commit**
@@ -258,7 +258,7 @@ mod tests {
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel -- fork`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo -- fork`
 Expected: FAIL — module not found
 
 **Step 3: Implement fork.rs**
@@ -283,7 +283,7 @@ Add `pub mod fork;` to `crates/kernel/src/lib.rs`.
 
 **Step 4: Run tests to verify they pass**
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: All tests pass (286 existing + ~8 new fork tests)
 
 **Step 5: Commit**
@@ -334,18 +334,18 @@ pub extern "C" fn kernel_init_from_fork(buf_ptr: *const u8, buf_len: u32, child_
 
 **Step 3: Verify Wasm build**
 
-Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release`
+Run: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release`
 Expected: Build succeeds
 
 Copy the updated wasm to host/wasm/:
 ```bash
-cp target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
+cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 ```
 
 **Step 4: Commit**
 
 ```bash
-git add crates/kernel/src/wasm_api.rs host/wasm/wasm_posix_kernel.wasm
+git add crates/kernel/src/wasm_api.rs host/wasm/kandelo-kernel.wasm
 git commit -m "feat: add kernel_get_fork_state and kernel_init_from_fork Wasm exports"
 ```
 
@@ -900,7 +900,7 @@ Expected: All tests pass (2 existing + 2 new)
 Run: `cd host && npx vitest run`
 Expected: All tests pass
 
-Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+Run: `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 Expected: All Rust tests pass
 
 **Step 4: Commit**

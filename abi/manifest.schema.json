@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/abi/manifest.schema.json",
-  "title": "wasm-posix-kernel binaries release manifest",
+  "$id": "https://github.com/brandonpayton/kandelo/blob/main/abi/manifest.schema.json",
+  "title": "kandelo binaries release manifest",
   "description": "Schema for `manifest.json` files published alongside binaries releases. See docs/binary-releases.md.",
   "type": "object",
   "additionalProperties": false,

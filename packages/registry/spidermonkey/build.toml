@@ -1,5 +1,5 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
-repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "d50f54f16bf242c0897e48b71bb519b386407fa8"
 revision    = 10
 

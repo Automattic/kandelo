@@ -122,14 +122,14 @@ A new repo, probably `<owner>/wasm-posix-fun-pack`, containing:
 - A `flake.nix` (or equivalent) reproducing the toolchain.
 - An `index.toml` published as a release asset alongside each archive.
 
-Critically, the fun-pack repo must NOT vendor the kernel or sysroot. It depends on `wasm-posix-kernel`'s SDK as an external toolchain. The flake pins the SDK version; the CLI's `sources add` picks up the fun-pack's `index.toml` like any other.
+Critically, the fun-pack repo must NOT vendor the kernel or sysroot. It depends on `kandelo`'s SDK as an external toolchain. The flake pins the SDK version; the CLI's `sources add` picks up the fun-pack's `index.toml` like any other.
 
 ### Acceptance criteria
 
 - The fun-pack repo's own `staging-build.yml` runs the per-package matrix and uploads to its own release.
 - An `index.toml` is published per release.
 - A consumer with the fun-pack source registered can `wasm-posix-pkg add fbdoom` and get a working install.
-- Updates to `wasm-posix-kernel`'s ABI don't silently break the fun-pack (the fun-pack's `kernel_abi` field is the floor).
+- Updates to `kandelo`'s ABI don't silently break the fun-pack (the fun-pack's `kernel_abi` field is the floor).
 
 ### Open questions
 

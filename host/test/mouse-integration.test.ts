@@ -30,7 +30,7 @@ import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const mousetestBinary = join(__dirname, "../wasm/mousetest.wasm");
-const kernelBinary = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
+const kernelBinary = join(__dirname, "../wasm/kandelo-kernel.wasm");
 
 const MAX_PAGES = 16384;
 const CH_TOTAL_SIZE = 72 + 65536;

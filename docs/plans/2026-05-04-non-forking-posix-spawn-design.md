@@ -283,7 +283,7 @@ files that exist but aren't executable (EACCES handling matches
 
 ### Five mandatory suites (CLAUDE.md)
 
-1. `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` —
+1. `cargo test -p kandelo --target aarch64-apple-darwin --lib` —
    add unit tests for `ProcessTable::spawn_child`: basic spawn, file-action
    ordering, attr application, ENOENT propagation, fd inherit, fork-counter
    unaffected.

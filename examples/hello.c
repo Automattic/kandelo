@@ -1,5 +1,5 @@
 #include <stdio.h>
 int main(void) {
-    printf("Hello from musl on wasm-posix-kernel!\n");
+    printf("Hello from musl on kandelo!\n");
     return 0;
 }

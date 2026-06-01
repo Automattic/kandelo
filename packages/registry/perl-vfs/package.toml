@@ -19,7 +19,7 @@ depends_on = ["perl@5.40.3"]
 # browser demo. Source at
 # images/vfs/scripts/build-perl-vfs-image.ts.
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]

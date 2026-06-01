@@ -188,7 +188,7 @@ In both `MockHostIO` and `TrackingHostIO` (the test mock structs), add stub impl
 **Verification:**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin
+cargo test -p kandelo --target aarch64-apple-darwin
 ```
 
 All existing tests should pass (stubs return reasonable errors).
@@ -468,7 +468,7 @@ pub extern "C" fn kernel_getaddrinfo(name_ptr: *const u8, name_len: u32, result_
 **Verification:**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin
+cargo test -p kandelo --target aarch64-apple-darwin
 ```
 
 **Commit:** `feat: implement AF_INET connect/send/recv with host delegation`
@@ -1238,7 +1238,7 @@ Add cargo tests verifying the AF_INET connect/send/recv delegation and getaddrin
 **Verification:**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin
+cargo test -p kandelo --target aarch64-apple-darwin
 ```
 
 **Commit:** `test: add kernel-side unit tests for AF_INET socket operations`
@@ -1249,6 +1249,6 @@ cargo test -p wasm-posix-kernel --target aarch64-apple-darwin
 
 After all tasks are complete:
 
-1. `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin` — all tests pass
+1. `cargo test -p kandelo --target aarch64-apple-darwin` — all tests pass
 2. `bash build.sh` — wasm build succeeds
 3. `cd host && npx vitest run` — host tests pass

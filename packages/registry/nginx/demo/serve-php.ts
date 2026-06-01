@@ -1,5 +1,5 @@
 /**
- * serve-php.ts — Run nginx (multi-worker) + php-fpm on wasm-posix-kernel.
+ * serve-php.ts — Run nginx (multi-worker) + php-fpm on kandelo.
  *
  * Starts multiple Wasm processes in the same kernel:
  *   - php-fpm master → forks 6 worker processes

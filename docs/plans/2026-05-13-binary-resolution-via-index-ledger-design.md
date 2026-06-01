@@ -138,7 +138,7 @@ script_path = "packages/registry/mariadb/build-mariadb.sh"
 # Records what THIS project built and where it publishes.
 
 script_path = "packages/registry/mariadb/build-mariadb.sh"   # what this project actually ran
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+repo_url    = "https://github.com/kandelo/kandelo.git"
 commit      = "691b02ef9..."                              # commit at last successful build
 
 # Where this project publishes the binary. Required. No defaults.
@@ -179,7 +179,7 @@ Forms 1 and 2 fetch via index lookup. Form 3 is a one-off — useful for legacy 
 # Repo root. Pure DRY mechanism for build.toml [binary] source = "<name>".
 
 [sources.first-party]
-index_url = "https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+index_url = "https://github.com/kandelo/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 
 [sources.fun-pack]
 index_url = "https://github.com/funpack/funpack/releases/download/binaries-v{abi}/index.toml"
@@ -198,7 +198,7 @@ The single source of truth for binary resolution. Lives at the source's `index_u
 ```toml
 abi_version  = 8
 generated_at = "2026-05-13T..."             # last mutation timestamp
-generator    = "wasm-posix-kernel CI @ 691b02ef9"
+generator    = "kandelo CI @ 691b02ef9"
 
 [[packages]]
 name     = "mariadb"
@@ -294,7 +294,7 @@ load_index(binary):
 
     index_url = substitute(index_url, abi=ABI_VERSION)
 
-    cache_path = ~/.cache/wasm-posix-kernel/index-<sha8(index_url)>.toml
+    cache_path = ~/.cache/kandelo/index-<sha8(index_url)>.toml
     if online:
         try:
             content = http_get(index_url)
@@ -309,7 +309,7 @@ load_index(binary):
     return None    # neither online nor cached
 ```
 
-**Offline behavior:** the resolver caches `index.toml` at `~/.cache/wasm-posix-kernel/index-<sha8(index_url)>.toml` on every successful online fetch. When `WASM_POSIX_OFFLINE=1` is set (or HTTP fetch fails), the cached copy is used. Fresh clones with no cache require one online resolve before offline works — same property the archive cache has today.
+**Offline behavior:** the resolver caches `index.toml` at `~/.cache/kandelo/index-<sha8(index_url)>.toml` on every successful online fetch. When `WASM_POSIX_OFFLINE=1` is set (or HTTP fetch fails), the cached copy is used. Fresh clones with no cache require one online resolve before offline works — same property the archive cache has today.
 
 **Verification:** every archive download is verified two ways:
 
@@ -422,7 +422,7 @@ One PR, end-to-end. The atomicity matters because every component — resolver c
 
 3. **Add `scripts/index-update.sh`** — wrapper around `xtask index-update <args>` (new xtask subcommand) that handles the lock acquisition, download/mutate/upload sequence, and lock release.
 
-4. **Add `.wasm-posix-pkg.toml`** at repo root with one named source: `first-party` pointing at `https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml`.
+4. **Add `.wasm-posix-pkg.toml`** at repo root with one named source: `first-party` pointing at `https://github.com/kandelo/kandelo/releases/download/binaries-abi-v{abi}/index.toml`.
 
 5. **Migrate every `packages/registry/<pkg>/package.toml`:**
    - Strip `revision`, `[binary.<arch>]` blocks, `[build].repo_url`, `[build].commit`.
@@ -454,7 +454,7 @@ Big-bang requires careful end-to-end verification before merge:
 
 - **xtask test suite passes** (`cargo test -p xtask`).
 - **Resolver test suite passes**, including new tests for `build.toml` parsing, `.wasm-posix-pkg.toml`, index lookup, fallback behavior, offline cache.
-- **Clean fetch test on a fresh cache**: `rm -rf ~/.cache/wasm-posix-kernel && bash scripts/fetch-binaries.sh` reports `resolved=63 total=63 skipped=6, 0 failures`. Same target as PR #456's verification.
+- **Clean fetch test on a fresh cache**: `rm -rf ~/.cache/kandelo && bash scripts/fetch-binaries.sh` reports `resolved=63 total=63 skipped=6, 0 failures`. Same target as PR #456's verification.
 - **Browser demo end-to-end**: `./run.sh clean all && bash scripts/build-musl.sh && bash build.sh && ./run.sh browser` succeeds on a clean machine.
 - **CI dry-run on a synthetic package**: trigger a force-rebuild for one small package (e.g., `bc`) on a test branch; confirm the per-matrix-entry upload + index update + lock acquire/release lifecycle works.
 

@@ -225,7 +225,7 @@ pub struct WasmStat {
 ```toml
 # crates/kernel/Cargo.toml
 [package]
-name = "wasm-posix-kernel"
+name = "kandelo"
 version.workspace = true
 edition.workspace = true
 
@@ -298,7 +298,7 @@ targets = ["wasm32-unknown-unknown"]
 
 **Step 7: Verify it compiles**
 
-Run: `cd /Users/brandon/ai-src/wasm-posix-kernel && cargo build --release -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort`
+Run: `cd /Users/brandon/ai-src/kandelo && cargo build --release -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort`
 Expected: Successful build producing `.wasm` files in `target/wasm32-unknown-unknown/release/`
 
 **Step 8: Commit**
@@ -461,7 +461,7 @@ export class WasmPosixKernel {
 
 **Step 7: Install dependencies and verify build**
 
-Run: `cd /Users/brandon/ai-src/wasm-posix-kernel/host && npm install && npm run build`
+Run: `cd /Users/brandon/ai-src/kandelo/host && npm install && npm run build`
 Expected: Successful build producing dist/ with ESM, CJS, and .d.ts files
 
 **Step 8: Commit**
@@ -543,7 +543,7 @@ mod tests {
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cd /Users/brandon/ai-src/wasm-posix-kernel && cargo test -p wasm-posix-kernel --target x86_64-apple-darwin`
+Run: `cd /Users/brandon/ai-src/kandelo && cargo test -p kandelo --target x86_64-apple-darwin`
 Expected: FAIL — `FdTable` and `OpenFileDescRef` not defined
 
 Note: We run kernel tests on the host target, not wasm32, since we need a test runner.
@@ -695,7 +695,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 **Step 5: Run tests to verify they pass**
 
-Run: `cd /Users/brandon/ai-src/wasm-posix-kernel && cargo test -p wasm-posix-kernel --target x86_64-apple-darwin`
+Run: `cd /Users/brandon/ai-src/kandelo && cargo test -p kandelo --target x86_64-apple-darwin`
 Expected: All 6 tests pass
 
 **Step 6: Commit**
@@ -763,7 +763,7 @@ mod tests {
 
 **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p wasm-posix-kernel --target x86_64-apple-darwin`
+Run: `cargo test -p kandelo --target x86_64-apple-darwin`
 Expected: FAIL
 
 **Step 3: Implement OfdTable**
@@ -881,7 +881,7 @@ Add `pub mod ofd;` to `crates/kernel/src/lib.rs`.
 
 **Step 5: Run tests**
 
-Run: `cargo test -p wasm-posix-kernel --target x86_64-apple-darwin`
+Run: `cargo test -p kandelo --target x86_64-apple-darwin`
 Expected: All tests pass
 
 **Step 6: Commit**
@@ -956,7 +956,7 @@ mod tests {
 
 **Step 2: Run tests to verify failure**
 
-Run: `cargo test -p wasm-posix-kernel --target x86_64-apple-darwin`
+Run: `cargo test -p kandelo --target x86_64-apple-darwin`
 Expected: FAIL
 
 **Step 3: Implement PipeBuffer**
@@ -1067,7 +1067,7 @@ Add `pub mod pipe;` to `crates/kernel/src/lib.rs`.
 
 **Step 5: Run tests**
 
-Run: `cargo test -p wasm-posix-kernel --target x86_64-apple-darwin`
+Run: `cargo test -p kandelo --target x86_64-apple-darwin`
 Expected: All tests pass
 
 **Step 6: Commit**
@@ -1596,7 +1596,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 **Step 4: Run tests**
 
-Run: `cargo test -p wasm-posix-kernel --target x86_64-apple-darwin`
+Run: `cargo test -p kandelo --target x86_64-apple-darwin`
 Expected: All tests pass
 
 **Step 5: Commit**
@@ -1816,7 +1816,7 @@ Add `#[cfg(target_arch = "wasm32")] pub mod wasm_api;` to `crates/kernel/src/lib
 **Step 3: Verify Wasm build**
 
 Run: `cargo build --release -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort`
-Expected: Builds successfully, producing `target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm`
+Expected: Builds successfully, producing `target/wasm32-unknown-unknown/release/kandelo_kernel.wasm`
 
 **Step 4: Commit**
 
@@ -2063,7 +2063,7 @@ export type { KernelConfig, PlatformIO, StatResult } from "./types";
 
 **Step 5: Build and verify**
 
-Run: `cd /Users/brandon/ai-src/wasm-posix-kernel/host && npm run build`
+Run: `cd /Users/brandon/ai-src/kandelo/host && npm run build`
 Expected: Build succeeds
 
 **Step 6: Commit**
@@ -2114,7 +2114,7 @@ cargo build --release \
 
 echo "Copying Wasm artifacts..."
 mkdir -p host/wasm
-cp target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
+cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 cp target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm host/wasm/
 
 echo "Building TypeScript host..."
@@ -2137,7 +2137,7 @@ import { NodePlatformIO } from "../src/platform/node";
 
 describe("WasmPosixKernel", () => {
   it("should initialize the kernel", async () => {
-    const wasmPath = join(__dirname, "../wasm/wasm_posix_kernel.wasm");
+    const wasmPath = join(__dirname, "../wasm/kandelo-kernel.wasm");
     const wasmBytes = readFileSync(wasmPath);
 
     const kernel = new WasmPosixKernel(

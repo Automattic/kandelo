@@ -15,7 +15,7 @@
 Before starting, verify the foundation is intact:
 
 ```bash
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-switch-dispatch
+cd /Users/brandon/.superset/worktrees/kandelo/phase-7-switch-dispatch
 cargo test -p fork-instrument --target aarch64-apple-darwin --lib --tests 2>&1 | tail -3
 ```
 Expected: all tests pass (current count ~75).
@@ -510,7 +510,7 @@ Expected: all tests pass, count >= 75 (the 75 baseline + new B1 tests).
 **Step 2: Run kernel lib tests**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -3
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -3
 ```
 Expected: 757/757 pass, 0 failures.
 

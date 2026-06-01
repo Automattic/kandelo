@@ -53,12 +53,12 @@ depends_on = [
 # wrapped (not double-compressed) inside the package-system .tar.zst
 # archive at archive-stage time.
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [build]
 script_path = "packages/registry/shell/build-shell.sh"

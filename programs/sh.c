@@ -1,5 +1,5 @@
 /*
- * sh.c — Minimal POSIX shell for wasm-posix-kernel.
+ * sh.c — Minimal POSIX shell for kandelo.
  *
  * Supports: -c "cmd" mode, stdin mode, pipelines, &&/||, ;,
  * if/elif/else/fi, while/do/done, for/in/do/done, { },

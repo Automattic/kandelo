@@ -21,12 +21,12 @@ depends_on = [
 # Canonical base VFS image. The source is the repository's MANIFEST,
 # images/rootfs/ tree, and images/rootfs/PACKAGES.toml package mapping.
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [build]
 script_path = "packages/registry/rootfs/build-rootfs-package.sh"

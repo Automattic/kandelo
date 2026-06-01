@@ -25,7 +25,7 @@ install_node_deps() {
 case "$suite" in
     cargo-kernel)
         HOST_TARGET="$(host_target)"
-        cargo test -p wasm-posix-kernel --target "$HOST_TARGET" --lib
+        cargo test -p kandelo --target "$HOST_TARGET" --lib
         ;;
     fork-instrument)
         HOST_TARGET="$(host_target)"

@@ -1,5 +1,5 @@
 /**
- * serve-nginx.ts — WordPress behind nginx + PHP-FPM on wasm-posix-kernel.
+ * serve-nginx.ts — WordPress behind nginx + PHP-FPM on kandelo.
  *
  * Boots the same fully virtualized dinit/nginx/PHP-FPM/WordPress VFS image
  * used by the browser demo. dinit starts:

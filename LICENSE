@@ -1,4 +1,4 @@
-wasm-posix-kernel — Licensing
+kandelo — Licensing
 =============================
 
 This project uses a split license model, similar to Linux kernel + musl libc:

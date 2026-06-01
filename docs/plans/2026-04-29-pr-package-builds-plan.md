@@ -17,7 +17,7 @@
 Before starting Task 1, verify state:
 
 ```
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/package-management-for-pr-workflows
+cd /Users/brandon/.superset/worktrees/kandelo/package-management-for-pr-workflows
 git status              # should be on package-management-for-pr-workflows branch
 git log --oneline -3    # tip should be c28092a5d (design doc commit)
 ```
@@ -100,7 +100,7 @@ After `REL_BASE=` is computed, add a parallel staging URL:
 ```bash
 OVERLAY_REL_BASE=""
 if [ -n "$OVERLAY_TAG" ]; then
-    OVERLAY_REL_BASE="https://github.com/brandonpayton/wasm-posix-kernel/releases/download/$OVERLAY_TAG"
+    OVERLAY_REL_BASE="https://github.com/brandonpayton/kandelo/releases/download/$OVERLAY_TAG"
 fi
 ```
 
@@ -607,7 +607,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cache/wasm-posix-kernel
+            ~/.cache/kandelo
             target
           key: pr-staging-${{ hashFiles('Cargo.lock', 'packages/registry/**/deps.toml') }}
 
@@ -1077,8 +1077,8 @@ In the PR's Actions tab, watch `staging-build.yml`. Expect green; sticky comment
 ```
 # Fresh clone in a temp dir to simulate a reviewer with no local state.
 mkdir -p /tmp/pr-review-test && cd /tmp/pr-review-test
-git clone https://github.com/brandonpayton/wasm-posix-kernel.git
-cd wasm-posix-kernel
+git clone https://github.com/brandonpayton/kandelo.git
+cd kandelo
 gh pr checkout <PR-N>
 scripts/fetch-binaries.sh
 ls binaries/                   # expect: kernel.wasm, programs/, libs/

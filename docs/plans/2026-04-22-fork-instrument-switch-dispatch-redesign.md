@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` or `superpowers:subagent-driven-development` to implement this plan task-by-task.
 
-**Goal:** Re-architect `crates/fork-instrument` so that REWINDING in a fork child jumps directly to the post-active-call-site label (asyncify-style switch dispatch) rather than re-executing the function body from the top with side-effects gated. This fixes both classes of bug proven in the 2026-04-22 debug session — non-fork-path direct calls re-firing during rewind (waitpid-class) and shadow-stack drift inside re-executed pre-call bodies (posix_spawn-class) — and closes the 8 sortix fork-semantic regressions tracked at [`memory/fork-instrument-phase7-debug-evidence.md`](../../../.claude/projects/-Users-brandon-ai-src-wasm-posix-kernel/memory/fork-instrument-phase7-debug-evidence.md) without reintroducing the 35 timeouts that the naive "gate every non-fork-path direct call" attempt produced.
+**Goal:** Re-architect `crates/fork-instrument` so that REWINDING in a fork child jumps directly to the post-active-call-site label (asyncify-style switch dispatch) rather than re-executing the function body from the top with side-effects gated. This fixes both classes of bug proven in the 2026-04-22 debug session — non-fork-path direct calls re-firing during rewind (waitpid-class) and shadow-stack drift inside re-executed pre-call bodies (posix_spawn-class) — and closes the 8 sortix fork-semantic regressions tracked at [`memory/fork-instrument-phase7-debug-evidence.md`](../../../.claude/projects/-Users-brandon-ai-src-kandelo/memory/fork-instrument-phase7-debug-evidence.md) without reintroducing the 35 timeouts that the naive "gate every non-fork-path direct call" attempt produced.
 
 **Architecture:** Per-function transform changes shape. Before: preamble → top-to-bottom wrapper block with every fork-path call and every side-effect op individually gated by the state global. After: preamble → nested dispatch blocks containing a single `br_table` keyed on `call_idx_local` that lands execution exactly at the post-active-call-site label; the body between dispatch labels runs *only* on normal flow, never on REWINDING. The host-side ABI (`wpk_fork_unwind_begin`/`wpk_fork_unwind_end`/`wpk_fork_rewind_begin`/`wpk_fork_rewind_end`/`wpk_fork_state`), the save-buffer layout, and the frame layout stay bit-identical — only the per-function transform is rewritten. `crates/fork-instrument/src/call_graph.rs` and `crates/fork-instrument/src/runtime.rs` are kept verbatim; the rewrite is concentrated in `crates/fork-instrument/src/instrument.rs`. Because the instrumented wasm's shape changes, `ABI_VERSION` is bumped 4 → 5 to force a clean rebuild and refuse any stale old-shape binaries that might live in build caches.
 
@@ -11,8 +11,8 @@
 **Worktree:** New worktree `phase-7-switch-dispatch` created off `phase-7-rollout`. Do NOT rebase onto the current fork-instrument shape — this is a full redesign that deserves its own branch history. The 12 Phase-7 commits on `phase-7-rollout` stay intact; merge order is "land this PR → fast-forward or rebase Phase 7 on top."
 
 **Authoritative context:**
-- [`memory/fork-instrument-phase7-debug-evidence.md`](../../../.claude/projects/-Users-brandon-ai-src-wasm-posix-kernel/memory/fork-instrument-phase7-debug-evidence.md) — disasm-level confirmation of the root cause, the 2026-04-22 naive fix attempt, and the two refined-fix proposals (narrower syscall gate vs. switch-dispatch). This plan implements proposal #2.
-- [`memory/fork-instrument-project.md`](../../../.claude/projects/-Users-brandon-ai-src-wasm-posix-kernel/memory/fork-instrument-project.md) — project state and design-decision history.
+- [`memory/fork-instrument-phase7-debug-evidence.md`](../../../.claude/projects/-Users-brandon-ai-src-kandelo/memory/fork-instrument-phase7-debug-evidence.md) — disasm-level confirmation of the root cause, the 2026-04-22 naive fix attempt, and the two refined-fix proposals (narrower syscall gate vs. switch-dispatch). This plan implements proposal #2.
+- [`memory/fork-instrument-project.md`](../../../.claude/projects/-Users-brandon-ai-src-kandelo/memory/fork-instrument-project.md) — project state and design-decision history.
 - [`docs/plans/2026-04-21-fork-instrument-phase-7-rollout-plan.md`](2026-04-21-fork-instrument-phase-7-rollout-plan.md) § "Next-session debugging playbook" — test list + debug entry points.
 - [`docs/plans/2026-04-20-fork-instrumentation-design.md`](2026-04-20-fork-instrumentation-design.md) — the design this plan *replaces* for the per-function transform. The non-transform sections (state machine, exported ABI, save-buffer format, frame format, ref-typed-local handling, call-graph discovery) remain authoritative.
 - [`docs/fork-instrumentation.md`](../fork-instrumentation.md) — current 593-line user-facing reference; rewritten in this same PR.
@@ -222,7 +222,7 @@ Snapshot regeneration: `bash scripts/check-abi-version.sh update`. Commit `abi/s
 
 All of these must hold at PR-open time:
 
-- **The 8 sortix FAILs** tracked at [`memory/fork-instrument-phase7-debug-evidence.md`](../../../.claude/projects/-Users-brandon-ai-src-wasm-posix-kernel/memory/fork-instrument-phase7-debug-evidence.md) → PASS:
+- **The 8 sortix FAILs** tracked at [`memory/fork-instrument-phase7-debug-evidence.md`](../../../.claude/projects/-Users-brandon-ai-src-kandelo/memory/fork-instrument-phase7-debug-evidence.md) → PASS:
   - `basic/signal/killpg`
   - `basic/spawn/posix_spawnattr_setpgroup`
   - `basic/sys_wait/waitpid`
@@ -242,7 +242,7 @@ All of these must hold at PR-open time:
   - `process/fork-setpgid-another-undo-{redo,undo}`
   - `process/waitpid-pgid`, `process/waitpid-pgid-empty-on-setpgid`, `process/waitpid-pgid-empty-on-setpgid-rejoin`, `process/waitpid-pgid-empty-on-setsid`
 - **Full 5-suite regression matrix** (from `CLAUDE.md`):
-  - `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` — all pass.
+  - `cargo test -p kandelo --target aarch64-apple-darwin --lib` — all pass.
   - `cd host && npx vitest run` — all pass.
   - `scripts/run-libc-tests.sh` — 0 unexpected FAILs. `popen`/`daemon-failure` XFAILs are acceptable (pre-existing).
   - `scripts/run-posix-tests.sh` — 0 FAILs. Pre-existing XFAILs acceptable.
@@ -332,7 +332,7 @@ git commit -m "test(fork-instrument): spike fixture for switch-dispatch shape"
 
 **Step 1: Verify you're at `phase-7-rollout` HEAD in the phase-7-rollout worktree.**
 
-Run from `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-rollout`:
+Run from `/Users/brandon/.superset/worktrees/kandelo/phase-7-rollout`:
 
 ```bash
 git rev-parse --abbrev-ref HEAD
@@ -344,12 +344,12 @@ git log -1 --format='%H %s'
 **Step 2: Create worktree.**
 
 ```bash
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-rollout
+cd /Users/brandon/.superset/worktrees/kandelo/phase-7-rollout
 git worktree add \
   -b phase-7-switch-dispatch \
-  /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-switch-dispatch \
+  /Users/brandon/.superset/worktrees/kandelo/phase-7-switch-dispatch \
   phase-7-rollout
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-switch-dispatch
+cd /Users/brandon/.superset/worktrees/kandelo/phase-7-switch-dispatch
 git submodule update --init musl os-test libc-test
 npm install                   # root-level, for tsx/esm
 cd host && npm install && cd ..
@@ -380,7 +380,7 @@ Expected: 74 tests pass (same as `phase-7-rollout` baseline).
 **Step 1: Verify the plan file exists in the new worktree.**
 
 ```bash
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-switch-dispatch
+cd /Users/brandon/.superset/worktrees/kandelo/phase-7-switch-dispatch
 ls -la docs/plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md
 ```
 
@@ -850,7 +850,7 @@ Run all five suites from `CLAUDE.md`. This is the big gate.
 ### 11.1 Cargo unit tests
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 ```
 
 Expected: 539+ tests pass, 0 failures.
@@ -911,7 +911,7 @@ Per the design doc's §5.5 policy: ±3% for fork-heavy suites on both Node and b
 **Step 1: Establish baseline from `phase-7-rollout` worktree.**
 
 ```bash
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-rollout
+cd /Users/brandon/.superset/worktrees/kandelo/phase-7-rollout
 bash build.sh && scripts/build-programs.sh
 npx tsx benchmarks/run.ts --rounds=3 --output=/tmp/bench-before-node.json
 npx tsx benchmarks/run.ts --host=browser --rounds=3 --output=/tmp/bench-before-browser.json
@@ -922,7 +922,7 @@ npx tsx benchmarks/run.ts --host=browser --rounds=3 --output=/tmp/bench-before-b
 **Step 2: Run after (in the new worktree).**
 
 ```bash
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-7-switch-dispatch
+cd /Users/brandon/.superset/worktrees/kandelo/phase-7-switch-dispatch
 npx tsx benchmarks/run.ts --rounds=3 --output=/tmp/bench-after-node.json
 npx tsx benchmarks/run.ts --host=browser --rounds=3 --output=/tmp/bench-after-browser.json
 ```
@@ -1042,7 +1042,7 @@ Switch dispatch sidesteps both problems: no body code runs during REWIND except 
 - Host-side `worker-main.ts` fork loop — unchanged.
 
 ## Test plan
-- [x] `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` — all pass.
+- [x] `cargo test -p kandelo --target aarch64-apple-darwin --lib` — all pass.
 - [x] `cd host && npx vitest run` — all pass.
 - [x] `scripts/run-libc-tests.sh` — 0 unexpected FAILs.
 - [x] `scripts/run-posix-tests.sh` — 0 FAILs.

@@ -739,7 +739,7 @@ test.describe("Git HTTP clone (browser)", () => {
     };
 
     execSync(`git init "${workDir}"`, gitOpts);
-    execSync(`echo "hello from wasm-posix-kernel" > "${workDir}/test.txt"`, gitOpts);
+    execSync(`echo "hello from kandelo" > "${workDir}/test.txt"`, gitOpts);
     execSync(`git -C "${workDir}" add test.txt`, gitOpts);
     execSync(`git -C "${workDir}" commit -m "initial commit"`, gitOpts);
     execSync(`git clone --bare "${workDir}" "${bareRepoDir}"`, gitOpts);

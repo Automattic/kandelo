@@ -162,7 +162,7 @@ archives" for the full producer/consumer round-trip and the
 
 `index.toml` is the **single source of truth** for binary resolution.
 The resolver fetches it (with offline cache fallback at
-`~/.cache/wasm-posix-kernel/indexes/`), looks up
+`~/.cache/kandelo/indexes/`), looks up
 `(name, version, arch)`, and decides which archive to install based
 on the entry's `status`.
 
@@ -171,7 +171,7 @@ Schema (see [design §3.4](plans/2026-05-13-binary-resolution-via-index-ledger-d
 ```toml
 abi_version = 11
 generated_at = "2026-05-13T..."
-generator = "wasm-posix-kernel CI @ <sha>"
+generator = "kandelo CI @ <sha>"
 
 [[packages]]
 name     = "zlib"
@@ -225,7 +225,7 @@ this package's binaries from. Typical shape:
 
 ```toml
 script_path = "packages/registry/zlib/build-zlib.sh"
-repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
 
@@ -293,7 +293,7 @@ For each declared arch in the package's `arches = [...]` (default
      (status=failed/pending/building with fallback set).
    - Direct form: uses the inline `url` + `sha256`.
 3. Fetches the archive into the content-addressed cache at
-   `~/.cache/wasm-posix-kernel/...`.
+   `~/.cache/kandelo/...`.
 4. Verifies `archive_sha256` against the file bytes.
 5. Verifies the embedded `manifest.toml`'s `[compatibility]` block:
    - `target_arch` must match the requested arch.
@@ -312,11 +312,11 @@ path works, missing archives just slow the first run.
 ## Cache eviction
 
 The cache is content-addressed. A different `archive_url` ⇒ a
-different canonical path under `~/.cache/wasm-posix-kernel/`. Old
+different canonical path under `~/.cache/kandelo/`. Old
 entries are never overwritten; they're orphaned. Disk-pressure
 cleanup is the user's responsibility — no automated GC today.
 
-The `index.toml` cache (`~/.cache/wasm-posix-kernel/indexes/`) is
+The `index.toml` cache (`~/.cache/kandelo/indexes/`) is
 keyed on the sha8 of the index URL, so different sources land in
 distinct files. Each successful online fetch overwrites the cached
 copy.

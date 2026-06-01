@@ -38,7 +38,7 @@ function readKernelAbiVersion(): number {
 const ABI_VERSION_EXPECTED = readKernelAbiVersion();
 
 function findCachedBinary(name: string, arch = "wasm32"): string | null {
-  const cacheRoot = join(homedir(), ".cache/wasm-posix-kernel/programs");
+  const cacheRoot = join(homedir(), ".cache/kandelo/programs");
   if (!existsSync(cacheRoot)) return null;
   for (const dir of readdirSync(cacheRoot)) {
     if (!dir.includes(`-${arch}-`)) continue;

@@ -230,13 +230,13 @@ against the real registry.
      install-release \
        --manifest "$STAGING/manifest.json" \
        --archive-base "file://$STAGING" \
-       --cache-root "$ROUNDTRIP_CACHE/wasm-posix-kernel" \
+       --cache-root "$ROUNDTRIP_CACHE/kandelo" \
        --local-binaries-dir "$ROUNDTRIP_LOCALBIN" \
        --abi 1
    ```
 3. Spot-check a few canonical paths exist:
    ```
-   ls "$ROUNDTRIP_CACHE"/wasm-posix-kernel/libs/zlib-* | head
+   ls "$ROUNDTRIP_CACHE"/kandelo/libs/zlib-* | head
    ls "$ROUNDTRIP_LOCALBIN"/programs/dash.wasm
    ```
 4. Resolve test (cache-hit, no rebuild):
@@ -244,7 +244,7 @@ against the real registry.
    XDG_CACHE_HOME="$ROUNDTRIP_CACHE" \
    cargo run -p xtask --target aarch64-apple-darwin --quiet -- \
      build-deps resolve zlib --arch wasm32
-   # expect path under $ROUNDTRIP_CACHE/wasm-posix-kernel/libs/
+   # expect path under $ROUNDTRIP_CACHE/kandelo/libs/
    ```
 
 If any step fails: don't proceed to publish. Diagnose and fix the
@@ -317,7 +317,7 @@ with:
 
 ```toml
 [binary]
-archive_url = "https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v1/<archive_name>"
+archive_url = "https://github.com/brandonpayton/kandelo/releases/download/binaries-abi-v1/<archive_name>"
 archive_sha256 = "<archive_sha256>"
 ```
 
@@ -378,7 +378,7 @@ I recommend option 3 (defer). Rationale:
    STAGING="${STAGING:-/tmp/wpk-release-2026-04-27}"
    REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
    TAG="binaries-abi-v1"
-   BASE="https://github.com/brandonpayton/wasm-posix-kernel/releases/download/$TAG"
+   BASE="https://github.com/brandonpayton/kandelo/releases/download/$TAG"
 
    jq -r '.entries[] | select(.archive_name != null and .arch == "wasm32") |
      [.program, .archive_name, .archive_sha256] | @tsv' \
@@ -515,7 +515,7 @@ No commit — this is a verification step.
 
 1. Run all 6 gates:
    - `cargo test -p xtask --target aarch64-apple-darwin --bin xtask`
-   - `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+   - `cargo test -p kandelo --target aarch64-apple-darwin --lib`
    - `cd host && npx vitest run`
    - `scripts/run-libc-tests.sh`
    - `scripts/run-posix-tests.sh`

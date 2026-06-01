@@ -10,12 +10,12 @@ depends_on = []
 # URL is the project repo and the sha256 is a placeholder (the source
 # is on-disk in the repo, not fetched).
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [build]
 script_path = "packages/registry/lsof/build-lsof.sh"

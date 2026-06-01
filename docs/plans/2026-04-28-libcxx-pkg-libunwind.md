@@ -26,7 +26,7 @@ which is unresolved).
 `origin/package-management` (`75cff1eb5`).
 
 **Worktree:**
-`/Users/brandon/.superset/worktrees/wasm-posix-kernel/libcxx-pkg-libunwind`
+`/Users/brandon/.superset/worktrees/kandelo/libcxx-pkg-libunwind`
 
 ---
 
@@ -78,7 +78,7 @@ and continues the spike.
 
 Before opening the PR all of the following must be green:
 
-1. `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+1. `cargo test -p kandelo --target aarch64-apple-darwin --lib`
    — kernel unit tests, 539+ pass.
 2. `cd host && npx vitest run` — host integration tests, including
    the new `cpp-throw-test` case (test (b) and (c) of the spike, in
@@ -110,7 +110,7 @@ know any later regression is ours, not pre-existing.
 
 Run:
 ```
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/libcxx-pkg-libunwind
+cd /Users/brandon/.superset/worktrees/kandelo/libcxx-pkg-libunwind
 bash build.sh
 ```
 Expected: completes cleanly, `local-binaries/kernel.wasm` written,
@@ -129,7 +129,7 @@ Expected: programs built into `host/wasm/`, `examples/`,
 
 Run:
 ```
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -10
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -10
 ```
 Expected: `test result: ok. NNN passed; 0 failed`.
 
@@ -145,7 +145,7 @@ Expected: all tests pass (PHP tests skip if PHP wasm absent — that's fine).
 
 Run:
 ```
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/libcxx-pkg-libunwind
+cd /Users/brandon/.superset/worktrees/kandelo/libcxx-pkg-libunwind
 scripts/run-libc-tests.sh 2>&1 | tail -5
 scripts/run-posix-tests.sh 2>&1 | tail -5
 ```
@@ -181,7 +181,7 @@ mode and prove the fix works against a concrete signal.
 Create `programs/cpp_throw_test.cpp`:
 
 ```cpp
-// Regression test for C++ exception unwinding under the wasm-posix-kernel.
+// Regression test for C++ exception unwinding under the kandelo.
 // Runs three sub-tests:
 //   1. throw int caught by typed catch
 //   2. throw int caught by catch-all
@@ -471,7 +471,7 @@ git rm scripts/build-libcxx.sh
 cargo xtask build-deps resolve libcxx 2>&1 | tail -10
 ```
 Expected: builds from source, prints cache path
-(`~/.cache/wasm-posix-kernel/libs/libcxx-21-rev1-XXXXXXXX/`).
+(`~/.cache/kandelo/libs/libcxx-21-rev1-XXXXXXXX/`).
 First call takes 5–15 minutes depending on host.
 
 **Step 7: Resolve again — should be a cache hit**
@@ -665,7 +665,7 @@ runs them all and inspects diffs from the pre-change baseline.
 
 Run:
 ```
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -5
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -5
 ```
 Expected: same pass count as Task 0 baseline. 0 failures.
 
@@ -681,7 +681,7 @@ Expected: same as baseline + 1 new test (cpp-throw-test) passing.
 
 Run:
 ```
-cd /Users/brandon/.superset/worktrees/wasm-posix-kernel/libcxx-pkg-libunwind
+cd /Users/brandon/.superset/worktrees/kandelo/libcxx-pkg-libunwind
 scripts/run-libc-tests.sh 2>&1 | tail -5
 ```
 Expected: 0 unexpected FAILs. Same XFAIL count as baseline.
@@ -829,7 +829,7 @@ The 2026-04-28 spike found that `_Unwind_RaiseException` was an unresolved impor
 
 ## Test plan
 
-- [ ] `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` — 0 failures
+- [ ] `cargo test -p kandelo --target aarch64-apple-darwin --lib` — 0 failures
 - [ ] `cd host && npx vitest run` — including new cpp-throw-test
 - [ ] `scripts/run-libc-tests.sh` — 0 unexpected FAIL
 - [ ] `scripts/run-posix-tests.sh` — 0 FAIL
@@ -854,7 +854,7 @@ EOF
 After PR is open (or merged), refresh the project memory.
 
 **Files touched:** memory directory (under
-`/Users/brandon/.claude/projects/-Users-brandon-ai-src-wasm-posix-kernel/memory/`).
+`/Users/brandon/.claude/projects/-Users-brandon-ai-src-kandelo/memory/`).
 
 **Step 1: Update `MEMORY.md` index** — add an entry for the libcxx
 package work, link to a new file

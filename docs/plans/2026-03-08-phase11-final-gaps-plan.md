@@ -6,7 +6,7 @@
 
 **Tech Stack:** Rust (no_std compatible), wasm32-unknown-unknown target
 
-**Test command:** `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+**Test command:** `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 
 ---
 

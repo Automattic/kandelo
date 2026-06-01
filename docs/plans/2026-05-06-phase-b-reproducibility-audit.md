@@ -22,7 +22,7 @@ Within the same Nix dev shell on the same host, with provenance inputs pinned:
 
 ## Methodology
 
-`scripts/reproducibility-audit.sh` runs `xtask stage-release` twice into separate staging dirs, with `--force-rebuild <pkg>` for each pilot package and pinned `--build-timestamp 2026-01-01T00:00:00Z --build-host audit-pilot`. Both runs share the default `~/.cache/wasm-posix-kernel/` so transitive deps come from cache; only the listed pilot packages source-rebuild on each run.
+`scripts/reproducibility-audit.sh` runs `xtask stage-release` twice into separate staging dirs, with `--force-rebuild <pkg>` for each pilot package and pinned `--build-timestamp 2026-01-01T00:00:00Z --build-host audit-pilot`. Both runs share the default `~/.cache/kandelo/` so transitive deps come from cache; only the listed pilot packages source-rebuild on each run.
 
 After both runs complete, the script compares each pilot package's `.tar.zst` byte-for-byte (filenames first — if `cache_key_sha` differs the filenames differ — then `cmp -s` if filenames match).
 
@@ -32,7 +32,7 @@ After both runs complete, the script compares each pilot package's `.tar.zst` by
 2. **`.cargo/config.toml` defaults `target = "wasm64-unknown-unknown"`**, so `cargo run -p xtask` without `--target` tries to build xtask for wasm64 (fails — no std for wasm64). The script passes `--target $(rustc -vV | awk '/^host/ {print $2}')`.
 3. **Wall-clock `current_utc_iso()` baked into `manifest.toml`'s `[compatibility]` block.** Without pinning `--build-timestamp` and `--build-host`, two consecutive runs would produce different manifest content → different archive bytes → spurious FAIL on every package. The script pins both.
 4. **Tag must match the release-tag pattern** (`binaries-abi-v<N>`, `binaries-abi-v<N>-YYYY-MM-DD`, or `pr-<NNN>-staging`). The script uses `pr-99999-staging` to satisfy validation.
-5. **Per-run `--cache-root /tmp/...-runN`** caused stage-release to source-rebuild every transitive dep on each run because the per-run cache was empty. This turned the audit from 30-60 min into a 8-16 hour rebuild of the entire registry. Fix: use the shared `~/.cache/wasm-posix-kernel/`. Per-run isolation matters only for the `--force-rebuild` target packages.
+5. **Per-run `--cache-root /tmp/...-runN`** caused stage-release to source-rebuild every transitive dep on each run because the per-run cache was empty. This turned the audit from 30-60 min into a 8-16 hour rebuild of the entire registry. Fix: use the shared `~/.cache/kandelo/`. Per-run isolation matters only for the `--force-rebuild` target packages.
 
 ## Packages excluded from D3 gating
 

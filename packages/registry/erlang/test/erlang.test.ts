@@ -1,5 +1,5 @@
 /**
- * Tests for Erlang/OTP 28 BEAM VM running on the wasm-posix-kernel.
+ * Tests for Erlang/OTP 28 BEAM VM running on the kandelo.
  *
  * BEAM requires specialized setup (thread pre-compilation, max_addr
  * protection, Erlang-specific boot args) so tests use the serve.ts

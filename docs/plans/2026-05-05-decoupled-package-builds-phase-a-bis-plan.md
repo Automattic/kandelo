@@ -29,7 +29,7 @@ git status                       # clean except for submodule/.superset noise
 git log --oneline -1             # should show the latest origin/main HEAD
 ```
 
-The worktree at `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-a-bis-schema` was created off `origin/main` after PR #416 merged. The branch is `phase-a-bis-schema-additions`. Don't run `git checkout` — it's already on the right branch.
+The worktree at `/Users/brandon/.superset/worktrees/kandelo/phase-a-bis-schema` was created off `origin/main` after PR #416 merged. The branch is `phase-a-bis-schema-additions`. Don't run `git checkout` — it's already on the right branch.
 
 **Step 2: Quick recon (read-only — no commit).**
 
@@ -276,7 +276,7 @@ Becomes:
 ```toml
 [build]
 script_path = "packages/registry/nginx/build-nginx.sh"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+repo_url    = "https://github.com/kandelo/kandelo.git"
 ```
 
 A scripted approach:
@@ -292,7 +292,7 @@ path, pkg, script = sys.argv[1:4]
 text = open(path).read()
 new_block = f'''[build]
 script_path = "packages/registry/{pkg}/{script}"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+repo_url    = "https://github.com/kandelo/kandelo.git"
 '''
 text = re.sub(r'^\[build\]\nscript = "[^"]+"\n', new_block, text, flags=re.MULTILINE)
 open(path, 'w').write(text)
@@ -389,7 +389,7 @@ text = open(path).read()
 new_block = f'''
 [build]
 script_path = "packages/registry/{pkg}/{script}"
-repo_url    = "https://github.com/wasm-posix-kernel/wasm-posix-kernel.git"
+repo_url    = "https://github.com/kandelo/kandelo.git"
 '''
 # Insert after the [license] block. The [license] block ends at a blank
 # line or at the start of the next section; find that boundary.
@@ -451,7 +451,7 @@ previously found via convention is now declared directly:
 
   [build]
   script_path = \"packages/registry/<name>/build-<name>.sh\"
-  repo_url    = \"https://github.com/wasm-posix-kernel/wasm-posix-kernel.git\"
+  repo_url    = \"https://github.com/kandelo/kandelo.git\"
 
 The 6 first-party packages without [build] are intentionally left as-is:
 - examples, kernel, node, sqlite-cli, userspace: no build script;
@@ -535,7 +535,7 @@ Same approach as Phase A's Task 7 (run the cheap host-side suites locally, defer
 **Step 1: cargo unit tests.**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -10
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -10
 ```
 
 Expected: 539+ pass, 0 fail.
@@ -581,7 +581,7 @@ Design reference: `docs/plans/2026-05-05-decoupled-package-builds-design.md` §3
 ## Test plan
 
 Local (host-side fast subset):
-- [x] `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` — pass
+- [x] `cargo test -p kandelo --target aarch64-apple-darwin --lib` — pass
 - [x] `cargo test -p xtask --target aarch64-apple-darwin` — pass
 - [x] `cd host && npx vitest run` — pass
 - [x] `scripts/check-abi-version.sh` — exit 0 (no ABI change expected)

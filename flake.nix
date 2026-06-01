@@ -1,5 +1,5 @@
 {
-  description = "wasm-posix-kernel dev environment";
+  description = "kandelo dev environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -200,7 +200,7 @@
               esac
             fi
             unset __repo_root
-            echo "wasm-posix-kernel dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28, SDK on PATH"
+            echo "kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28, SDK on PATH"
           '';
         };
       });

@@ -32,11 +32,11 @@ Expected: PR #428 in the recent log (the squash-merge of Phase B-1).
 **Step 2: Create the worktree.**
 
 ```bash
-cd /Users/brandon/ai-src/wasm-posix-kernel
-git worktree add /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-b-2-f2-and-abi -b phase-b-2-f2-and-abi origin/main
+cd /Users/brandon/ai-src/kandelo
+git worktree add /Users/brandon/.superset/worktrees/kandelo/phase-b-2-f2-and-abi -b phase-b-2-f2-and-abi origin/main
 ```
 
-**Work from `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-b-2-f2-and-abi` for all subsequent tasks.**
+**Work from `/Users/brandon/.superset/worktrees/kandelo/phase-b-2-f2-and-abi` for all subsequent tasks.**
 
 **Step 3: Confirm xtask builds clean + tests pass.**
 
@@ -583,7 +583,7 @@ Same approach as previous phases (cheap local subset; CI dogfoods the matrix flo
 **Step 1: cargo unit tests.**
 
 ```bash
-bash scripts/dev-shell.sh cargo test -p wasm-posix-kernel --target $(rustc -vV | awk '/^host/ {print $2}') --lib 2>&1 | tail -5
+bash scripts/dev-shell.sh cargo test -p kandelo --target $(rustc -vV | awk '/^host/ {print $2}') --lib 2>&1 | tail -5
 ```
 
 Expected: 773+ pass.
@@ -634,7 +634,7 @@ Reference: \`docs/plans/2026-05-05-decoupled-package-builds-design.md\` §3.1, �
 ## Test plan
 
 Local (host-side fast subset):
-- [x] \`cargo test -p wasm-posix-kernel --lib\` — 773+ pass
+- [x] \`cargo test -p kandelo --lib\` — 773+ pass
 - [x] \`cargo test -p xtask\` — 214 pass (+3 new)
 - [x] \`cd host && npx vitest run\` — pass
 - [x] \`scripts/check-abi-version.sh\` — exit 0

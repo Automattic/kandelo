@@ -166,7 +166,7 @@ Net result: original "Commits 2-4" expand to "Commits 2.1-2.6 + 3 + 4" = 8 sub-c
 The PR cannot merge until all of:
 
 - `cargo test -p fork-instrument` passes — including every D/C/S/K/P/F tool-level fixture.
-- `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` passes.
+- `cargo test -p kandelo --target aarch64-apple-darwin --lib` passes.
 - `cd host && npx vitest run` passes — including `cpp-throw-test.test.ts` rebuilt under modern EH.
 - `scripts/run-libc-tests.sh` 0 unexpected failures.
 - `scripts/run-posix-tests.sh` 0 FAIL.

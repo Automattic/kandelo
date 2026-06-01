@@ -1,5 +1,5 @@
 /**
- * Playwright test — runs PHP CLI in a real Chromium browser via wasm-posix-kernel.
+ * Playwright test — runs PHP CLI in a real Chromium browser via kandelo.
  *
  * This verifies the browser code path: VirtualPlatformIO + MemoryFileSystem +
  * BrowserTimeProvider + SharedArrayBuffer, which differs significantly from the

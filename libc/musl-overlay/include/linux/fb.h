@@ -1,5 +1,5 @@
 /*
- * Minimal <linux/fb.h> for wasm-posix-kernel.
+ * Minimal <linux/fb.h> for kandelo.
  *
  * The real Linux header carries a lot of Linux-specific details
  * (acceleration, vt-switch, etc.) we don't implement and don't expose

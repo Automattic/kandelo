@@ -450,7 +450,7 @@ This step runs the project's full test matrix per `CLAUDE.md`. Phase A is mechan
 **Step 1: cargo unit tests.**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib 2>&1 | tail -20
+cargo test -p kandelo --target aarch64-apple-darwin --lib 2>&1 | tail -20
 ```
 
 Expected: 539+ tests pass, 0 failures.
@@ -516,7 +516,7 @@ Schema additions (`kernel_abi`, `source`, `[provenance]`) are deferred to a foll
 
 ## Test plan
 
-- [ ] `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` — 539+ pass
+- [ ] `cargo test -p kandelo --target aarch64-apple-darwin --lib` — 539+ pass
 - [ ] `cd host && npx vitest run` — all pass
 - [ ] `scripts/run-libc-tests.sh` — 0 unexpected fails
 - [ ] `scripts/run-posix-tests.sh` — 0 FAIL

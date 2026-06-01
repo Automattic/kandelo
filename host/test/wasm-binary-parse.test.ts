@@ -510,7 +510,7 @@ function objdumpHeapBase(path: string): bigint | null {
  * Returns the first match by default-arch (wasm32) preference.
  */
 function findCachedBinary(name: string, arch = "wasm32"): string | null {
-  const cacheRoot = join(homedir(), ".cache/wasm-posix-kernel/programs");
+  const cacheRoot = join(homedir(), ".cache/kandelo/programs");
   if (!existsSync(cacheRoot)) return null;
   for (const dir of readdirSync(cacheRoot)) {
     if (!dir.includes(`-${arch}-`)) continue;
