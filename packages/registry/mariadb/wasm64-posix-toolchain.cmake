@@ -1,11 +1,11 @@
-# CMake toolchain file for cross-compiling to wasm64 via wasm-posix-kernel SDK.
+# CMake toolchain file for cross-compiling to wasm64 via kandelo SDK.
 #
 # Usage:
 #   cmake -DCMAKE_TOOLCHAIN_FILE=.../wasm64-posix-toolchain.cmake ...
 #
 # Produces LP64 binaries where sizeof(long) = sizeof(void*) = 8.
 # Requires: LLVM 21+ clang with wasm64 support (Homebrew llvm)
-#           wasm-posix-kernel sysroot64 built via scripts/build-musl.sh --arch wasm64posix
+#           kandelo sysroot64 built via scripts/build-musl.sh --arch wasm64posix
 
 cmake_minimum_required(VERSION 3.13)
 

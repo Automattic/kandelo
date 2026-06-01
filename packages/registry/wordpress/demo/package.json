@@ -1,5 +1,5 @@
 {
-  "name": "wasm-posix-kernel-wordpress-demo",
+  "name": "kandelo-wordpress-demo",
   "private": true,
   "type": "module",
   "scripts": {

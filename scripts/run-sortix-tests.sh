@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build and run Sortix os-test conformance tests against the wasm-posix-kernel.
+# Build and run Sortix os-test conformance tests against the kandelo.
 #
 # Suites:
 #   include  — Header declaration existence + type correctness (~3741 tests)

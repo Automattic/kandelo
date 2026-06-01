@@ -1,5 +1,5 @@
 /**
- * serve.ts — Run CPython 3.13.3 in the wasm-posix-kernel.
+ * serve.ts — Run CPython 3.13.3 in the kandelo.
  *
  * Usage:
  *   bash packages/registry/cpython/build-cpython.sh

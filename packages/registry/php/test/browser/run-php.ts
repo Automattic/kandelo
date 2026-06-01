@@ -1,5 +1,5 @@
 /**
- * Browser test harness — runs PHP CLI via wasm-posix-kernel using
+ * Browser test harness — runs PHP CLI via kandelo using
  * BrowserKernel + kernel-owned MemoryFileSystem image (the browser code path).
  *
  * Runs multiple PHP invocations and reports results as JSON in #results.

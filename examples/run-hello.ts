@@ -4,7 +4,7 @@
  * Loads the kernel Wasm module, then instantiates hello.wasm (a C program
  * compiled via musl + our syscall glue) and runs it.
  *
- * Expected output: "Hello from musl on wasm-posix-kernel!"
+ * Expected output: "Hello from musl on kandelo!"
  * Expected exit code: 0
  *
  * Usage:

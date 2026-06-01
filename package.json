@@ -1,5 +1,5 @@
 {
-  "name": "wasm-posix-kernel",
+  "name": "kandelo",
   "private": true,
   "type": "module",
   "scripts": {

@@ -6,16 +6,16 @@ depends_on = []
 arches = ["wasm64"]
 
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [build]
 script_path = "packages/registry/kernel/build-kernel.sh"
 
 [[outputs]]
 name = "kernel"
-wasm = "wasm_posix_kernel.wasm"
+wasm = "kandelo-kernel.wasm"

@@ -51,8 +51,8 @@ struct Args {
 ///   --abi          <u32>    Override the ABI version (defaults to
 ///                           `wasm_posix_shared::ABI_VERSION`).
 ///   --cache-root   <dir>    Override the resolver cache root (defaults
-///                           to `XDG_CACHE_HOME/wasm-posix-kernel` or
-///                           `~/.cache/wasm-posix-kernel`). Useful for
+///                           to `XDG_CACHE_HOME/kandelo` or
+///                           `~/.cache/kandelo`). Useful for
 ///                           tests + ephemeral CI runners.
 ///   --registry     <dir>    Override the manifest registry search root
 ///                           (defaults to `WASM_POSIX_DEPS_REGISTRY` or

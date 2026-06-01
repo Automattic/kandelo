@@ -19,7 +19,7 @@ index 0000000..082b14b
 +/*
 + * i_kernel_sound.c — chocolate-doom sound module talking to /dev/dsp.
 + *
-+ * The wasm-posix-kernel exposes an OSS-style /dev/dsp character
++ * The kandelo exposes an OSS-style /dev/dsp character
 + * device (kernel/audio.rs). This module fills the chocolate-doom
 + * `sound_module_t` shape, opens /dev/dsp once at init, mixes 8-bit
 + * mono SFX from WAD lumps into a 16-bit stereo @ 44.1 kHz mixbuffer,
@@ -312,7 +312,7 @@ index 71947d2..d4b4017 100644
 -static sound_module_t *sound_modules[] = 
 +// /dev/dsp-backed sound module — defined in i_kernel_sound.c. We
 +// register it unconditionally (no FEATURE_SOUND gate) because the
-+// wasm-posix kernel always exposes /dev/dsp; if the open fails (no
++// Kandelo always exposes /dev/dsp; if the open fails (no
 +// AudioContext sink wired up host-side) the module's Init returns
 +// false and the dispatcher falls through to silence.
 +extern sound_module_t sound_kernel_module;

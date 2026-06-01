@@ -1,4 +1,4 @@
-// Build a wasm-posix-kernel rootfs VFS image from a source tree + manifest.
+// Build a kandelo rootfs VFS image from a source tree + manifest.
 //
 // Four passes (in order) so parents exist before children, file content is
 // written before per-file mode/owner is applied, and archive members land

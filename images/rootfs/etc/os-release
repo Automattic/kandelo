@@ -1,4 +1,4 @@
-NAME="wasm-posix-kernel"
+NAME="kandelo"
 ID=wasm-posix
-PRETTY_NAME="wasm-posix-kernel"
-HOME_URL="https://github.com/Automattic/wasm-posix-kernel"
+PRETTY_NAME="kandelo"
+HOME_URL="https://github.com/Automattic/kandelo"

@@ -16,7 +16,7 @@ const phpBinaryPath =
   join(__dirname, "../php-src/sapi/cli/php");
 const PHP_AVAILABLE = existsSync(phpBinaryPath);
 
-describe.skipIf(!PHP_AVAILABLE)("PHP CLI on wasm-posix-kernel", () => {
+describe.skipIf(!PHP_AVAILABLE)("PHP CLI on kandelo", () => {
     it("runs 'echo Hello World' via php -r", async () => {
         const { stdout, exitCode } = await runCentralizedProgram({
             programPath: phpBinaryPath,
@@ -61,7 +61,7 @@ describe.skipIf(!PHP_AVAILABLE)("PHP CLI on wasm-posix-kernel", () => {
     }, 60_000);
 });
 
-describe.skipIf(!PHP_AVAILABLE)("PHP extensions on wasm-posix-kernel", () => {
+describe.skipIf(!PHP_AVAILABLE)("PHP extensions on kandelo", () => {
     it("mbstring works", async () => {
         const { stdout, exitCode } = await runCentralizedProgram({
             programPath: phpBinaryPath,
@@ -108,7 +108,7 @@ describe.skipIf(!PHP_AVAILABLE)("PHP extensions on wasm-posix-kernel", () => {
     }, 60_000);
 });
 
-describe.skipIf(!PHP_AVAILABLE)("PHP session + SQLite on wasm-posix-kernel", () => {
+describe.skipIf(!PHP_AVAILABLE)("PHP session + SQLite on kandelo", () => {
     it("session works", async () => {
         const { stdout, exitCode } = await runCentralizedProgram({
             programPath: phpBinaryPath,
@@ -149,7 +149,7 @@ describe.skipIf(!PHP_AVAILABLE)("PHP session + SQLite on wasm-posix-kernel", () 
     }, 60_000);
 });
 
-describe.skipIf(!PHP_AVAILABLE)("PHP fileinfo + exif on wasm-posix-kernel", () => {
+describe.skipIf(!PHP_AVAILABLE)("PHP fileinfo + exif on kandelo", () => {
     it("fileinfo works", async () => {
         const { stdout, exitCode } = await runCentralizedProgram({
             programPath: phpBinaryPath,
@@ -171,7 +171,7 @@ describe.skipIf(!PHP_AVAILABLE)("PHP fileinfo + exif on wasm-posix-kernel", () =
     }, 60_000);
 });
 
-describe.skipIf(!PHP_AVAILABLE)("PHP zlib + openssl on wasm-posix-kernel", () => {
+describe.skipIf(!PHP_AVAILABLE)("PHP zlib + openssl on kandelo", () => {
     it("zlib works", async () => {
         const { stdout, exitCode } = await runCentralizedProgram({
             programPath: phpBinaryPath,
@@ -193,7 +193,7 @@ describe.skipIf(!PHP_AVAILABLE)("PHP zlib + openssl on wasm-posix-kernel", () =>
     }, 60_000);
 });
 
-describe.skipIf(!PHP_AVAILABLE)("PHP XML extensions on wasm-posix-kernel", () => {
+describe.skipIf(!PHP_AVAILABLE)("PHP XML extensions on kandelo", () => {
     it("SimpleXML works", async () => {
         const { stdout, exitCode } = await runCentralizedProgram({
             programPath: phpBinaryPath,

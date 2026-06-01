@@ -12,7 +12,7 @@ inputs = [
   "tools/mkrootfs/src",
   "host/src/vfs",
 ]
-repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
 revision    = 2
 

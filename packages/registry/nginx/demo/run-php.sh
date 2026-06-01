@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build (if needed) and run nginx + PHP-FPM on wasm-posix-kernel.
+# Build (if needed) and run nginx + PHP-FPM on kandelo.
 #
 # Usage:
 #   bash packages/registry/nginx/demo/run-php.sh [port]
@@ -10,10 +10,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
-echo "=== nginx + PHP-FPM on wasm-posix-kernel ==="
+echo "=== nginx + PHP-FPM on kandelo ==="
 
 # Step 1: Kernel wasm + musl sysroot
-if [ ! -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ] || \
+if [ ! -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" ] || \
    [ ! -f "$REPO_ROOT/sysroot/lib/libc.a" ]; then
     echo "--- Building kernel + sysroot ---"
     bash "$REPO_ROOT/build.sh"

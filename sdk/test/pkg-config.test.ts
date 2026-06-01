@@ -12,7 +12,7 @@ describe('buildPkgConfigEnv', () => {
   });
 
   it('honors a caller-provided PKG_CONFIG_PATH for wasm32 cache paths', () => {
-    const cachePath = '/Users/x/.cache/wasm-posix-kernel/libs/zlib-1.3.1-rev1-9acb9405/lib/pkgconfig';
+    const cachePath = '/Users/x/.cache/kandelo/libs/zlib-1.3.1-rev1-9acb9405/lib/pkgconfig';
     const env = buildPkgConfigEnv({ PKG_CONFIG_PATH: cachePath }, SYSROOT);
     expect(env.PKG_CONFIG_PATH).toBe(cachePath);
   });
@@ -28,7 +28,7 @@ describe('buildPkgConfigEnv', () => {
     // krb5, libidn2, etc. Without filtering, libcurl's `pkg-config
     // --libs openssl` returns host openssl flags and wasm-ld dies
     // trying to link `/nix/store/.../openssl-3.6.1/lib/libssl.so` into
-    // a wasm32 conftest. Only paths under `wasm-posix-kernel/` or
+    // a wasm32 conftest. Only paths under `kandelo/` or
     // `sysroot/` survive the filter.
     const hostPaths = [
       '/nix/store/x56h6pvq8gs6qc3ab1f3kjncn6vlspjp-openssl-3.6.1-dev/lib/pkgconfig',
@@ -39,7 +39,7 @@ describe('buildPkgConfigEnv', () => {
   });
 
   it('keeps wasm32 cache paths even when interleaved with host paths', () => {
-    const wasm32 = '/Users/x/.cache/wasm-posix-kernel/libs/openssl-3.3.2-rev1-wasm32-abc/lib/pkgconfig';
+    const wasm32 = '/Users/x/.cache/kandelo/libs/openssl-3.3.2-rev1-wasm32-abc/lib/pkgconfig';
     const hostNix = '/nix/store/abc-openssl-3.6.1-dev/lib/pkgconfig';
     const env = buildPkgConfigEnv(
       { PKG_CONFIG_PATH: `${hostNix}:${wasm32}:${hostNix}` },

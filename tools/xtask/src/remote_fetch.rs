@@ -356,7 +356,7 @@ fn fetch_http_url(url: &str, attempts: usize, backoff: Duration) -> Result<Vec<u
         .timeout_connect(Duration::from_secs(30))
         .timeout_read(Duration::from_secs(60))
         .user_agent(concat!(
-            "wasm-posix-kernel-tools/xtask/",
+            "kandelo-tools/xtask/",
             env!("CARGO_PKG_VERSION")
         ))
         .build();

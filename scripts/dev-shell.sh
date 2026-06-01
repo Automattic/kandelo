@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Canonical entry to the wasm-posix-kernel dev shell.
+# Canonical entry to the kandelo dev shell.
 #
 # Always uses `nix develop --ignore-environment` so only flake.nix's
 # declared `packages` are visible. Builds fail immediately on a

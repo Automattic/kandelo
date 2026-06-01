@@ -1345,7 +1345,7 @@ if !force_rebuild {
         }
         (_, Some(idx_url)) => {
             // Form 1 or 2 — index lookup.
-            let cache_dir = dirs_cache_dir().join("wasm-posix-kernel");
+            let cache_dir = dirs_cache_dir().join("kandelo");
             match fetch_index(&idx_url, &cache_dir) {
                 Ok(index) => {
                     if let Some(entry) = index.lookup(&target.name, &target.version, arch) {
@@ -1752,7 +1752,7 @@ git commit -m "feat(build-index): emit new index.toml schema with status + cache
 # See docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md §3.3.
 
 [sources.first-party]
-index_url = "https://github.com/wasm-posix-kernel/wasm-posix-kernel/releases/download/binaries-abi-v{abi}/index.toml"
+index_url = "https://github.com/kandelo/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
 ```
 
 **Step 2: Commit**
@@ -1801,7 +1801,7 @@ for ptoml in packages/registry/*/package.toml; do
   repo_url=$(awk '/^\[build\]/,/^\[/' "$ptoml" | grep '^repo_url' | sed 's/.*= *"\(.*\)".*/\1/')
 
   # Default repo_url if missing.
-  repo_url="${repo_url:-https://github.com/wasm-posix-kernel/wasm-posix-kernel.git}"
+  repo_url="${repo_url:-https://github.com/kandelo/kandelo.git}"
 
   # Write build.toml.
   cat > "$pkg_dir/build.toml" <<EOF
@@ -1883,12 +1883,12 @@ Run: `bash scripts/compose-initial-index.sh binaries-abi-v8 8`
 
 **Step 2: Verify with curl**
 
-Run: `curl -L https://github.com/brandonpayton/wasm-posix-kernel/releases/download/binaries-abi-v8/index.toml | head -30`
+Run: `curl -L https://github.com/brandonpayton/kandelo/releases/download/binaries-abi-v8/index.toml | head -30`
 Expected: index.toml with the new schema, listing the current 68 archives.
 
 **Step 3: Verify resolver can use it**
 
-Run: `rm -rf ~/.cache/wasm-posix-kernel && bash scripts/fetch-binaries.sh`
+Run: `rm -rf ~/.cache/kandelo && bash scripts/fetch-binaries.sh`
 Expected: `resolved=63 total=63 skipped=6, 0 failures`.
 
 Diagnose any failures before proceeding. The most likely issues:
@@ -2040,7 +2040,7 @@ git commit -m "docs(plans): mark §3.1 of decoupled-package-builds-design as sup
 
 **Step 1: Cargo tests**
 
-Run: `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+Run: `cargo test -p kandelo --target aarch64-apple-darwin --lib`
 Expected: 539+ tests, 0 failures.
 
 **Step 2: Vitest**
@@ -2069,7 +2069,7 @@ If anything fails, diagnose and fix before proceeding.
 
 **Step 1: Wipe cache**
 
-Run: `rm -rf ~/.cache/wasm-posix-kernel`
+Run: `rm -rf ~/.cache/kandelo`
 
 **Step 2: Run fetch-binaries**
 

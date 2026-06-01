@@ -548,7 +548,7 @@
       "size": 10965590,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -577,7 +577,7 @@
       "size": 10965707,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -1003,7 +1003,7 @@
       "kind": "program",
       "license": {
         "spdx": "GPL-2.0-or-later",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+        "url": "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
       },
       "name": "lamp-0.1.0-rev1-abi6-wasm32-9621cfd0.tar.zst",
       "program": "lamp",
@@ -1012,7 +1012,7 @@
       "size": 30005741,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -1032,7 +1032,7 @@
       "kind": "program",
       "license": {
         "spdx": "GPL-2.0-or-later",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+        "url": "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
       },
       "name": "lamp-0.1.0-rev1-abi6-wasm64-33179554.tar.zst",
       "program": "lamp",
@@ -1041,7 +1041,7 @@
       "size": 30696288,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -1293,7 +1293,7 @@
       "kind": "program",
       "license": {
         "spdx": "GPL-2.0-or-later",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+        "url": "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
       },
       "name": "lsof-0.1.0-rev1-abi6-wasm32-611f4166.tar.zst",
       "program": "lsof",
@@ -1302,7 +1302,7 @@
       "size": 25964,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -1322,7 +1322,7 @@
       "kind": "program",
       "license": {
         "spdx": "GPL-2.0-or-later",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+        "url": "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
       },
       "name": "lsof-0.1.0-rev1-abi6-wasm64-63f1a6a5.tar.zst",
       "program": "lsof",
@@ -1331,7 +1331,7 @@
       "size": 25970,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -1525,7 +1525,7 @@
       "kind": "program",
       "license": {
         "spdx": "GPL-2.0-or-later",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+        "url": "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
       },
       "name": "mariadb-vfs-0.1.0-rev1-abi6-wasm32-752762e6.tar.zst",
       "program": "mariadb-vfs",
@@ -1534,7 +1534,7 @@
       "size": 4197013,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -1554,7 +1554,7 @@
       "kind": "program",
       "license": {
         "spdx": "GPL-2.0-or-later",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+        "url": "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
       },
       "name": "mariadb-vfs-0.1.0-rev1-abi6-wasm64-0ed848e7.tar.zst",
       "program": "mariadb-vfs",
@@ -1563,7 +1563,7 @@
       "size": 4851390,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -1940,7 +1940,7 @@
       "size": 2952838,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -1969,7 +1969,7 @@
       "size": 2952830,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -2056,7 +2056,7 @@
       "size": 1865653,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -2085,7 +2085,7 @@
       "size": 1865615,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -2337,7 +2337,7 @@
       "kind": "program",
       "license": {
         "spdx": "GPL-2.0-or-later",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+        "url": "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
       },
       "name": "shell-0.1.0-rev1-abi6-wasm32-8cb32ab2.tar.zst",
       "program": "shell",
@@ -2346,7 +2346,7 @@
       "size": 439524,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },
@@ -2366,7 +2366,7 @@
       "kind": "program",
       "license": {
         "spdx": "GPL-2.0-or-later",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+        "url": "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
       },
       "name": "shell-0.1.0-rev1-abi6-wasm64-1ad6fe2d.tar.zst",
       "program": "shell",
@@ -2375,7 +2375,7 @@
       "size": 439493,
       "source": {
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "url": "https://github.com/brandonpayton/wasm-posix-kernel"
+        "url": "https://github.com/brandonpayton/kandelo"
       },
       "upstream_version": "0.1.0"
     },

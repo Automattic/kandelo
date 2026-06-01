@@ -1,5 +1,5 @@
 /**
- * Tests for GNU coreutils running on the wasm-posix-kernel.
+ * Tests for GNU coreutils running on the kandelo.
  *
  * The single-binary coreutils uses argv[0] to determine which utility to run.
  * We pass the utility name as argv[0] (e.g., ["echo", "hello"]).

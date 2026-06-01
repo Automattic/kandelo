@@ -1,5 +1,5 @@
 /**
- * serve.ts — Run MariaDB 10.5 (mysqld) on the wasm-posix-kernel.
+ * serve.ts — Run MariaDB 10.5 (mysqld) on the kandelo.
  *
  * Starts mysqld in single-thread mode with Aria (default) or InnoDB engine.
  * The kernel's PlatformIO layer provides access to the host filesystem
@@ -116,7 +116,7 @@ async function main() {
         const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n`;
         stdinData = new TextEncoder().encode(bootstrapSql);
     } else {
-        console.log("Starting MariaDB 10.5 on wasm-posix-kernel...");
+        console.log("Starting MariaDB 10.5 on kandelo...");
         console.log(`Data directory: ${dataDir}`);
         console.log("Connect with: mysql -h 127.0.0.1 -P 3306 -u root");
     }

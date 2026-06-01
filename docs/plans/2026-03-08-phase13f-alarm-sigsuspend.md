@@ -32,7 +32,7 @@
 ### Test Commands
 - Rust: `cargo test --target $(rustc -vV | grep host | awk '{print $2}')`
 - TypeScript: `cd host && npx vitest run`
-- Build Wasm: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release && cp target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/`
+- Build Wasm: `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release && cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm`
 
 ### POSIX Semantics
 - **alarm(seconds)**: Schedules SIGALRM delivery after `seconds`. Returns previous remaining seconds. alarm(0) cancels. Not inherited by fork children. Canceled by exec.
@@ -512,7 +512,7 @@ AlarmSetMessage,
 **Step 6: Build Wasm**
 
 ```bash
-cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release && cp target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
+cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release && cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 ```
 
 **Step 7: Write tests**
@@ -690,7 +690,7 @@ if (initData.signalWakeSab) {
 **Step 7: Build Wasm**
 
 ```bash
-cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release && cp target/wasm32-unknown-unknown/release/wasm_posix_kernel.wasm host/wasm/
+cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release && cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm host/wasm/kandelo-kernel.wasm
 ```
 
 **Step 8: Write tests**

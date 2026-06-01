@@ -424,7 +424,7 @@ failures before Phase 6 is considered shippable.
 
 Every phase ends gated on all existing test suites green:
 
-1. `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+1. `cargo test -p kandelo --target aarch64-apple-darwin --lib`
 2. `cd host && npx vitest run`
 3. `scripts/run-libc-tests.sh`
 4. `scripts/run-posix-tests.sh`

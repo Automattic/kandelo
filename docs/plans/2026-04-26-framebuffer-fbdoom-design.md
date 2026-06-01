@@ -2,7 +2,7 @@
 
 Date: 2026-04-26
 Branch: `kernel-processes-writing-to-framebuffer`
-Worktree: `.superset/worktrees/wasm-posix-kernel/kernel-processes-writing-to-framebuffer/`
+Worktree: `.superset/worktrees/kandelo/kernel-processes-writing-to-framebuffer/`
 
 ## §1. Goals & non-goals
 
@@ -354,7 +354,7 @@ No Playwright pixel-comparison: DOOM is non-deterministic (random imp behavior, 
 
 **Full project test gauntlet** per CLAUDE.md (all five suites + ABI snapshot must pass with zero regressions):
 
-1. `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+1. `cargo test -p kandelo --target aarch64-apple-darwin --lib`
 2. `cd host && npx vitest run`
 3. `scripts/run-libc-tests.sh`
 4. `scripts/run-posix-tests.sh`

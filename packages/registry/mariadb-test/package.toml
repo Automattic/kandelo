@@ -28,12 +28,12 @@ depends_on = ["mariadb@10.5.28", "dash@0.5.12", "dinit@0.19.4"]
 # resolver in vite.config.ts falls back to local-binaries/ when no
 # released archive exists.
 [source]
-url = "https://github.com/brandonpayton/wasm-posix-kernel"
+url = "https://github.com/brandonpayton/kandelo"
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 [license]
 spdx = "GPL-2.0-or-later"
-url = "https://github.com/brandonpayton/wasm-posix-kernel/blob/main/COPYING"
+url = "https://github.com/brandonpayton/kandelo/blob/main/COPYING"
 
 [build]
 script_path = "packages/registry/mariadb-test/build-mariadb-test.sh"

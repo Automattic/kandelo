@@ -10,7 +10,7 @@ if [[ -n "${PKG_CONFIG_PATH:-}" ]]; then
   for part in "${parts[@]}"; do
     [[ -n "$part" ]] || continue
     case "$part" in
-      /usr/wasm32posix/*|*/kandelo/*|*/wasm-posix-kernel/*|*/sysroot/lib/pkgconfig|*/sysroot/share/pkgconfig)
+      /usr/wasm32posix/*|*/kandelo/*|*/kandelo/*|*/sysroot/lib/pkgconfig|*/sysroot/share/pkgconfig)
         if [[ -n "$filtered_path" ]]; then
           filtered_path="${filtered_path}:${part}"
         else

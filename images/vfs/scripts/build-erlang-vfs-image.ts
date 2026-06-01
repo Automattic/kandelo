@@ -47,8 +47,8 @@ function resolveOtpInstall(): string {
     process.exit(1);
   }
   const cacheRoot = process.env.XDG_CACHE_HOME
-    ? join(process.env.XDG_CACHE_HOME, "wasm-posix-kernel")
-    : join(homedir(), ".cache", "wasm-posix-kernel");
+    ? join(process.env.XDG_CACHE_HOME, "kandelo")
+    : join(homedir(), ".cache", "kandelo");
   const sha = createHash("sha256").update(readFileSync(tarball)).digest("hex");
   const dest = join(cacheRoot, "vfs-build-sources", `erlang-otp-${sha.slice(0, 8)}`);
   if (!existsSync(dest)) {

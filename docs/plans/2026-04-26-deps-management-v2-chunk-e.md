@@ -46,7 +46,7 @@ schema gains a parallel set of fields per entry — `archive_name`,
 reject stale archives without unpacking.
 
 **Tech Stack:** Rust (xtask — `tar`, `zstd`, `sha2`, `serde_json`,
-`toml`, `wasm_posix_kernel_shared::ABI_VERSION`); bash (release
+`toml`, `kandelo_shared::ABI_VERSION`); bash (release
 scripts); TypeScript + Vitest (round-trip test); GitHub Releases (out
 of scope for the round-trip test, exercised manually by Chunk F's
 `binaries-abi-v<N>` cut).
@@ -212,7 +212,7 @@ the user is holding all V2 PRs until V2 is fully done.
 
 All six gates green on the PR head:
 
-  1. `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`
+  1. `cargo test -p kandelo --target aarch64-apple-darwin --lib`
   2. `cd host && npx vitest run`
   3. `scripts/run-libc-tests.sh`
   4. `scripts/run-posix-tests.sh`
@@ -854,7 +854,7 @@ match a.as_str() {
     "--arch" => arches.push(parse_arch(&it.next().ok_or("--arch requires wasm32|wasm64")?)?),
     _ => …
 }
-let abi = abi.unwrap_or_else(|| wasm_posix_kernel_shared::ABI_VERSION);
+let abi = abi.unwrap_or_else(|| kandelo_shared::ABI_VERSION);
 let registry = if let Some(r) = registry_root {
     Registry { roots: vec![r] }
 } else {
@@ -1657,7 +1657,7 @@ cargo test -p xtask --target aarch64-apple-darwin
 **Step 2: Run all 6 gates**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 cd host && npx vitest run && cd ..
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -1752,7 +1752,7 @@ per-task breakdown.
 ### Test plan
 
 - [x] `cargo test -p xtask --target aarch64-apple-darwin` (new modules covered).
-- [x] `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib`.
+- [x] `cargo test -p kandelo --target aarch64-apple-darwin --lib`.
 - [x] `cd host && npx vitest run` (round-trip test included).
 - [x] `scripts/run-libc-tests.sh` — 1 pre-existing FAIL only.
 - [x] `scripts/run-posix-tests.sh` — 0 FAIL.

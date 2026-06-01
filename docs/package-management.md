@@ -138,7 +138,7 @@ block — those packages don't publish a binary):
 
 ```toml
 script_path = "packages/registry/zlib/build-zlib.sh"   # mirrors package.toml
-repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "<commit at last successful build>"
 revision    = 1
 
@@ -223,7 +223,7 @@ Inspect:
 
 ```bash
 cargo xtask build-deps sha     zlib   # → e33c5e9a4383afdd…
-cargo xtask build-deps path    zlib   # → ~/.cache/wasm-posix-kernel/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a
+cargo xtask build-deps path    zlib   # → ~/.cache/kandelo/libs/zlib-1.3.1-rev1-wasm32-e33c5e9a
 cargo xtask build-deps parse   zlib   # → normalized dump of package.toml
 cargo xtask build-deps resolve zlib   # → build-if-needed, then print the path
 ```
@@ -242,7 +242,7 @@ in turn, it checks:
 3. **Index-based remote fetch** — load `build.toml`, resolve its
    `[binary]` block (typically to an `index_url`), fetch
    `index.toml` from that URL (with offline cache fallback at
-   `~/.cache/wasm-posix-kernel/indexes/`), look up
+   `~/.cache/kandelo/indexes/`), look up
    `(name, version, arch)`. For `status = success` entries fetch
    `archive_url`; for `status = failed/pending/building` with a
    `fallback_archive_url` use the last-green fallback. Verify
@@ -253,8 +253,8 @@ in turn, it checks:
    validate declared outputs, atomically install into the
    canonical cache.
 
-`cache_root` is `$XDG_CACHE_HOME/wasm-posix-kernel` if set, else
-`$HOME/.cache/wasm-posix-kernel`.
+`cache_root` is `$XDG_CACHE_HOME/kandelo` if set, else
+`$HOME/.cache/kandelo`.
 
 ## Build-script contract
 
@@ -655,7 +655,7 @@ The resolver:
 2. Resolves `build.toml`'s `[binary]` block:
    - Indexed form: substitutes `{abi}` in `index_url`, fetches
      `index.toml` (with offline cache fallback at
-     `~/.cache/wasm-posix-kernel/indexes/`), looks up
+     `~/.cache/kandelo/indexes/`), looks up
      `(name, version, arch)`. For `status = success` uses
      `archive_url`; for `status = failed/pending/building` with a
      `fallback_archive_url` uses the last-green fallback.
@@ -795,7 +795,7 @@ And the sibling `packages/registry/zlib/build.toml` (project view):
 
 ```toml
 script_path = "packages/registry/zlib/build-zlib.sh"
-repo_url    = "https://github.com/brandonpayton/wasm-posix-kernel.git"
+repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "<commit>"
 revision    = 1
 

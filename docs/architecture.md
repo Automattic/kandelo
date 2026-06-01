@@ -652,7 +652,7 @@ bash build.sh
 ```
 
 1. `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`
-2. Copies `wasm_posix_kernel.wasm` to `host/wasm/`
+2. Copies `kandelo-kernel.wasm` to `host/wasm/`
 3. Builds user programs from `programs/*.c` via `scripts/build-programs.sh`
 4. Builds TypeScript host via `npm run build` (tsup → ESM + CJS)
 5. Builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
@@ -693,7 +693,7 @@ Binary resolution does not look at either of those files for archive URLs. Inste
 3. `build.toml`'s `[binary]` declares one of:
    - `index_url = "https://.../binaries-abi-v{abi}/index.toml"` — indexed lookup. `{abi}` is substituted with the current `ABI_VERSION` from `crates/shared/src/lib.rs`.
    - `url = "..." sha256 = "..."` — direct archive URL, no index.
-4. Indexed flow fetches `index.toml` (cached at `~/.cache/wasm-posix-kernel/indexes/`) and looks up `(name, version, arch)`:
+4. Indexed flow fetches `index.toml` (cached at `~/.cache/kandelo/indexes/`) and looks up `(name, version, arch)`:
    - `status = "success"` → fetch `archive_url`, verify `archive_sha256`, install.
    - `status = "failed"` / `"pending"` / `"building"` with `fallback_archive_url` set → fetch the last-green archive instead.
    - Anything else → fall through to source build.
@@ -713,7 +713,7 @@ For schema, resolver behavior, and the build-script contract see [docs/package-m
 
 | Suite | Command | What it tests |
 |-------|---------|---------------|
-| Cargo | `cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib` | Kernel unit tests (610+) |
+| Cargo | `cargo test -p kandelo --target aarch64-apple-darwin --lib` | Kernel unit tests (610+) |
 | Vitest | `cd host && npx vitest run` | Host integration tests (227+) — runs real Wasm programs |
 | libc-test | `scripts/run-libc-tests.sh` | musl libc conformance (C standard library) |
 | POSIX | `scripts/run-posix-tests.sh` | Open POSIX Test Suite (POSIX API conformance) |

@@ -1,7 +1,7 @@
 #!/usr/bin/env node --experimental-strip-types
 /**
  * WordPress HTTP Server — serves WordPress via PHP's built-in server
- * running on wasm-posix-kernel with real TCP connections bridged in.
+ * running on kandelo with real TCP connections bridged in.
  *
  * Usage:
  *   node --experimental-strip-types packages/registry/wordpress/demo/serve.ts [port]

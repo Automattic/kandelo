@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build (if needed) and run WordPress on wasm-posix-kernel.
+# Build (if needed) and run WordPress on kandelo.
 # Uses PHP's built-in web server + SQLite for storage.
 #
 # Usage:
@@ -11,10 +11,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
-echo "=== WordPress on wasm-posix-kernel ==="
+echo "=== WordPress on kandelo ==="
 
 # Step 1: Kernel wasm + musl sysroot
-if [ ! -f "$REPO_ROOT/host/wasm/wasm_posix_kernel.wasm" ] || \
+if [ ! -f "$REPO_ROOT/host/wasm/kandelo-kernel.wasm" ] || \
    [ ! -f "$REPO_ROOT/sysroot/lib/libc.a" ]; then
     echo "--- Building kernel + sysroot ---"
     bash "$REPO_ROOT/build.sh"

@@ -19,7 +19,7 @@ WASM_POSIX_PROFILE=1 npx tsx examples/run-example.ts hello
 The profiler accumulates data in memory. Call `dumpProfile()` on the kernel worker instance to print results to stderr:
 
 ```typescript
-import { KernelWorker } from "wasm-posix-kernel/host";
+import { KernelWorker } from "kandelo/host";
 
 const kernel = new KernelWorker(/* ... */);
 // ... run workload ...

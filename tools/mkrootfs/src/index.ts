@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// mkrootfs — build, inspect, extract, and augment wasm-posix-kernel rootfs
+// mkrootfs — build, inspect, extract, and augment kandelo rootfs
 // VFS images.
 //
 // Usage:

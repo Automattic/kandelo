@@ -39,12 +39,12 @@
 **Step 1: Create the worktree.**
 
 ```bash
-cd /Users/brandon/ai-src/wasm-posix-kernel
+cd /Users/brandon/ai-src/kandelo
 git fetch origin main
-git worktree add /Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-c-resolver-cutover -b phase-c-resolver-cutover origin/main
+git worktree add /Users/brandon/.superset/worktrees/kandelo/phase-c-resolver-cutover -b phase-c-resolver-cutover origin/main
 ```
 
-**Work from `/Users/brandon/.superset/worktrees/wasm-posix-kernel/phase-c-resolver-cutover` for all subsequent tasks.**
+**Work from `/Users/brandon/.superset/worktrees/kandelo/phase-c-resolver-cutover` for all subsequent tasks.**
 
 **Step 2: Confirm baseline.**
 
@@ -545,7 +545,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 **Step 1: cargo unit tests.**
 
 ```bash
-bash scripts/dev-shell.sh cargo test -p wasm-posix-kernel --target $(rustc -vV | awk '/^host/ {print $2}') --lib 2>&1 | tail -5
+bash scripts/dev-shell.sh cargo test -p kandelo --target $(rustc -vV | awk '/^host/ {print $2}') --lib 2>&1 | tail -5
 ```
 
 Expected: 773+ pass, 0 fail.
@@ -618,7 +618,7 @@ Reference: docs/plans/2026-05-05-decoupled-package-builds-design.md §3.3, §5.4
 ## Test plan
 
 Local (host-side fast subset):
-- [x] cargo test -p wasm-posix-kernel --lib — 773+ pass
+- [x] cargo test -p kandelo --lib — 773+ pass
 - [x] cargo test -p xtask — 228 pass (+3 new from Task 1; minus deleted-module tests from Task 6)
 - [x] cd host && npx vitest run — pass
 - [x] scripts/check-abi-version.sh — exit 0

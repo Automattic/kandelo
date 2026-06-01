@@ -6,7 +6,7 @@
 
 1. **Cargo tests** (kernel unit tests):
    ```bash
-   cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+   cargo test -p kandelo --target aarch64-apple-darwin --lib
    ```
    Expected: 539+ tests pass, 0 failures.
 

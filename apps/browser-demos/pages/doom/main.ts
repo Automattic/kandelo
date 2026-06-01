@@ -1,6 +1,6 @@
 /**
  * DOOM browser demo — runs an unmodified fbDOOM build inside the
- * wasm-posix-kernel.
+ * kandelo.
  *
  * Pipeline:
  *   1. BrowserKernel boots; lazy-register doom1.wad.

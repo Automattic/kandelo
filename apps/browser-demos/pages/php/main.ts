@@ -77,7 +77,7 @@ echo "\\nTotal: " . $db->querySingle("SELECT COUNT(*) FROM users") . " users\\n"
 `,
   json: `<?php
 $data = [
-    "name" => "wasm-posix-kernel",
+    "name" => "kandelo",
     "language" => "PHP " . PHP_VERSION,
     "platform" => PHP_OS,
     "features" => ["SQLite3", "JSON", "mbstring", "XML", "sessions"],

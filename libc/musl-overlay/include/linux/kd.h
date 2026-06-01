@@ -1,5 +1,5 @@
 /*
- * Minimal <linux/kd.h> for wasm-posix-kernel.
+ * Minimal <linux/kd.h> for kandelo.
  *
  * fbDOOM (and similar Linux-VT software) calls KDGKBTYPE to detect the
  * keyboard type, then KDSKBMODE to switch into raw scancode mode. Our

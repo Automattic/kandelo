@@ -18,7 +18,7 @@ The previous Pre-Phase-1 C++ EH gates are no longer blockers: `docs/posix-status
 
 ## Goals
 
-Build a real Node.js-compatible runtime for `wasm-posix-kernel`:
+Build a real Node.js-compatible runtime for `kandelo`:
 
 1. **Initial demo (Phase 2 gate):** `npm install express && node app.js` running an Express HTTP server, serving requests through the kernel's TCP backend in both Node and browser hosts.
 2. **Long-term north star (Phase 3 gate):** Run [Claude Code](https://claude.com/claude-code) end-to-end inside the kernel — authenticate, make an HTTPS API call to Anthropic, render Ink-based terminal UI through the kernel's PTY.
@@ -62,7 +62,7 @@ Treat the BCA tree and WinterJS patches as a **debugging reference** when someth
                           │
                   channel-syscall ABI
                           │
-                  wasm-posix-kernel
+                  kandelo
 ```
 
 **Key choices:**

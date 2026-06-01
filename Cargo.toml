@@ -15,7 +15,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
-repository = "https://github.com/brandonpayton/wasm-posix-kernel"
+repository = "https://github.com/brandonpayton/kandelo"
 description = "A POSIX-compliant kernel for WebAssembly"
 
 [profile.release]

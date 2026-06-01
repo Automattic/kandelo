@@ -77,7 +77,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let kernel_wasm = kernel_wasm.ok_or_else(|| {
         "missing --kernel-wasm <path>. Build the kernel first \
          (e.g. via scripts/check-abi-version.sh) and pass the path to \
-         target/wasm64-unknown-unknown/release/wasm_posix_kernel.wasm. \
+         target/wasm64-unknown-unknown/release/kandelo_kernel.wasm. \
          Refusing to write a partial snapshot."
             .to_string()
     })?;

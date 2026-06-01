@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build MariaDB 10.5 LTS for wasm-posix-kernel.
+# Build MariaDB 10.5 LTS for kandelo.
 #
 # Usage:
 #   bash build-mariadb.sh           # build for wasm32 (ILP32)

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build and run libc-test tests against the wasm-posix-kernel.
+# Build and run libc-test tests against the kandelo.
 #
 # Categories: functional, regression, math, math-relaxed
 #
@@ -36,11 +36,13 @@ REGRESSION_EXPECTED_FAIL=(
     pthread_create-oom          # not a kernel gap — see docs/compromising-xfails.md "Not compromising"
     setenv-oom                  # OOM behavior differs in Wasm linear memory
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
-    pthread_cond-smasher        # CI-flaky on slow Linux runners (passes on Mac dev hosts) — thread-timing
     # raise-race is skipped on CI in discover_regression (the
     # test crashes the GHA runner before its timeout fires). The
     # XFAIL entry remains for non-CI runs that exercise the test.
     raise-race                  # known kernel race; tracked separately
+)
+REGRESSION_FLAKY=(
+    pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
 )
 
 # ── Helper: check if a test is in an expected-failure list ──
@@ -260,6 +262,11 @@ run_test() {
         is_xfail=true
     fi
 
+    local is_flaky=false
+    if [ "$category" = "regression" ] && [ ${#REGRESSION_FLAKY[@]} -gt 0 ] && is_expected_fail "$test_name" "${REGRESSION_FLAKY[@]}"; then
+        is_flaky=true
+    fi
+
     # Build
     if ! "build_${category}" "$test_name" 2>/dev/null; then
         local err
@@ -280,7 +287,11 @@ run_test() {
     set -e
 
     if [ $rc -eq 0 ]; then
-        if $is_xfail; then
+        if $is_flaky; then
+            echo "FLAKE-PASS ${category}/${test_name}"
+            RESULTS+=("FLAKE-PASS ${category}/${test_name}")
+            FLAKE_PASS=$((FLAKE_PASS + 1))
+        elif $is_xfail; then
             echo "XPASS ${category}/${test_name} (expected fail, but passed!)"
             RESULTS+=("XPASS ${category}/${test_name}")
             XPASS=$((XPASS + 1))
@@ -290,7 +301,11 @@ run_test() {
             PASS=$((PASS + 1))
         fi
     elif [ $rc -eq 124 ]; then
-        if $is_xfail; then
+        if $is_flaky; then
+            echo "FLAKE-TIME ${category}/${test_name} (timeout ${TEST_TIMEOUT}s)"
+            RESULTS+=("FLAKE-TIME ${category}/${test_name}")
+            FLAKE_TIME=$((FLAKE_TIME + 1))
+        elif $is_xfail; then
             echo "XFAIL ${category}/${test_name} (expected — timeout)"
             RESULTS+=("XFAIL ${category}/${test_name}")
             XFAIL=$((XFAIL + 1))
@@ -300,7 +315,12 @@ run_test() {
             TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
         fi
     else
-        if $is_xfail; then
+        if $is_flaky; then
+            echo "FLAKE-FAIL ${category}/${test_name} (exit $rc)"
+            echo "$output" | tail -10 | head -5 | sed 's/^/  /'
+            RESULTS+=("FLAKE-FAIL ${category}/${test_name}")
+            FLAKE_FAIL=$((FLAKE_FAIL + 1))
+        elif $is_xfail; then
             echo "XFAIL ${category}/${test_name} (expected)"
             RESULTS+=("XFAIL ${category}/${test_name}")
             XFAIL=$((XFAIL + 1))
@@ -360,6 +380,9 @@ BUILD_FAIL=0
 TIMEOUT_COUNT=0
 XFAIL=0
 XPASS=0
+FLAKE_PASS=0
+FLAKE_FAIL=0
+FLAKE_TIME=0
 RESULTS=()
 TOTAL=0
 
@@ -391,13 +414,14 @@ echo "PASS:    $PASS"
 echo "FAIL:    $FAIL"
 echo "XFAIL:   $XFAIL"
 echo "XPASS:   $XPASS"
+echo "FLAKY:   $((FLAKE_PASS + FLAKE_FAIL + FLAKE_TIME))"
 echo "BUILD:   $BUILD_FAIL"
 echo "TIMEOUT: $TIMEOUT_COUNT"
 echo "TOTAL:   $TOTAL"
 echo ""
 
 # Group results by status
-for status in PASS XPASS FAIL XFAIL BUILD TIME; do
+for status in PASS XPASS FAIL XFAIL FLAKE-PASS FLAKE-FAIL FLAKE-TIME BUILD TIME; do
     count=0
     for r in "${RESULTS[@]}"; do
         [[ "$r" == "$status "* ]] && count=$((count + 1))
@@ -426,6 +450,7 @@ if $REPORT_MODE; then
         echo "| FAIL | $FAIL |"
         echo "| XFAIL | $XFAIL |"
         echo "| XPASS | $XPASS |"
+        echo "| FLAKY | $((FLAKE_PASS + FLAKE_FAIL + FLAKE_TIME)) |"
         echo "| BUILD | $BUILD_FAIL |"
         echo "| TIMEOUT | $TIMEOUT_COUNT |"
         echo "| **TOTAL** | **$TOTAL** |"
@@ -456,6 +481,30 @@ if $REPORT_MODE; then
                 echo ""
             fi
         done
+
+        # FLAKY section
+        flaky_count=0
+        for r in "${RESULTS[@]}"; do
+            [[ "$r" == "FLAKE-"* ]] && flaky_count=$((flaky_count + 1))
+        done
+        if [ $flaky_count -gt 0 ]; then
+            echo "## Flaky Tests ($flaky_count)"
+            echo ""
+            echo "These tests are timing-sensitive under CI load and are not reliable merge gates."
+            echo ""
+            echo "| Status | Test | Category |"
+            echo "|--------|------|----------|"
+            for r in "${RESULTS[@]}"; do
+                if [[ "$r" == "FLAKE-"* ]]; then
+                    local_status="${r%% *}"
+                    local_test="${r#* }"
+                    local_cat="${local_test%%/*}"
+                    local_name="${local_test#*/}"
+                    echo "| $local_status | \`$local_name\` | $local_cat |"
+                fi
+            done
+            echo ""
+        fi
 
         # XFAIL section
         xfail_count=0

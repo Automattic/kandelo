@@ -5,7 +5,7 @@
  //
  
 -#include "config.h"
-+// wasm-posix-kernel build: no autotools config.h, no SDL. The only
++// kandelo build: no autotools config.h, no SDL. The only
 +// driver shipped is opl_kernel.c, which is a pull-model driver suitable
 +// for the single-threaded /dev/dsp mixing loop in i_kernel_sound.c.
  
@@ -142,7 +142,7 @@
 -extern opl_driver_t opl_win32_driver;
 -#endif
 -extern opl_driver_t opl_sdl_driver;
-+// The wasm-posix-kernel build only ships the kernel pull driver — all
++// The kandelo build only ships the kernel pull driver — all
 +// SDL/Linux/Win32 hardware drivers are stripped (no SDL in the sysroot,
 +// no real OPL chip behind a wasm sandbox).
 +extern opl_driver_t opl_kernel_driver;

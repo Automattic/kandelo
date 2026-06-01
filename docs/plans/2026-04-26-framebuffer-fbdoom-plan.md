@@ -13,7 +13,7 @@
 **Verification gauntlet** (CLAUDE.md): all of the below must pass with zero regressions before any PR is opened, and re-run before the final merge:
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 (cd host && npx vitest run)
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -204,7 +204,7 @@ fn fb0_has_unique_host_handle_sentinel() {
 **Step 2: Run the test, observe failure**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib match_virtual_device_recognizes_fb0
+cargo test -p kandelo --target aarch64-apple-darwin --lib match_virtual_device_recognizes_fb0
 ```
 
 Expected: compile error, `Fb0` variant unknown.
@@ -223,7 +223,7 @@ Also extend `virtual_device_stat` to return `S_IFCHR` with major 29, minor 0 (Li
 **Step 4: Run the tests**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib match_virtual_device_recognizes_fb0 fb0_has_unique_host_handle_sentinel
+cargo test -p kandelo --target aarch64-apple-darwin --lib match_virtual_device_recognizes_fb0 fb0_has_unique_host_handle_sentinel
 ```
 
 Expected: both pass.
@@ -266,7 +266,7 @@ fn fb0_stat_is_chr() {
 **Step 2: Run, observe failure**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib fb0_is_listed_in_dev_dir fb0_stat_is_chr
+cargo test -p kandelo --target aarch64-apple-darwin --lib fb0_is_listed_in_dev_dir fb0_stat_is_chr
 ```
 
 **Step 3: Implement**
@@ -279,7 +279,7 @@ In `devfs.rs`, follow the same pattern as `null` / `zero` / `urandom`:
 **Step 4: Run, expect pass**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib fb0_is_listed_in_dev_dir fb0_stat_is_chr
+cargo test -p kandelo --target aarch64-apple-darwin --lib fb0_is_listed_in_dev_dir fb0_stat_is_chr
 ```
 
 **Step 5: Commit**
@@ -350,8 +350,8 @@ fn unbind_framebuffer(&mut self, pid: i32) {
 **Step 3: Build to confirm trait coherence**
 
 ```bash
-cargo build -p wasm-posix-kernel --target aarch64-apple-darwin
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib --no-run
+cargo build -p kandelo --target aarch64-apple-darwin
+cargo test -p kandelo --target aarch64-apple-darwin --lib --no-run
 ```
 
 Expected: clean compile. Any "trait method not implemented" errors mean a mock impl was missed.
@@ -393,7 +393,7 @@ fn open_dev_fb0_is_single_owner() {
 **Step 2: Run, observe failure**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib open_dev_fb0_is_single_owner
+cargo test -p kandelo --target aarch64-apple-darwin --lib open_dev_fb0_is_single_owner
 ```
 
 **Step 3: Implement**
@@ -444,7 +444,7 @@ Process-exit cleanup (`Process::drop` or `kernel_remove_process`): if `fb_bindin
 **Step 4: Pass**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib open_dev_fb0_is_single_owner
+cargo test -p kandelo --target aarch64-apple-darwin --lib open_dev_fb0_is_single_owner
 ```
 
 **Step 5: Commit**
@@ -534,7 +534,7 @@ fn unknown_fb_ioctl_returns_enotty() {
 **Step 2: Run, observe failures**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib fbio
+cargo test -p kandelo --target aarch64-apple-darwin --lib fbio
 ```
 
 **Step 3: Implement**
@@ -597,7 +597,7 @@ fn handle_fb_ioctl(_proc: &mut Process, request: u32, buf: &mut [u8]) -> Result<
 **Step 4: Pass**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib fbio
+cargo test -p kandelo --target aarch64-apple-darwin --lib fbio
 ```
 
 **Step 5: Commit**
@@ -650,7 +650,7 @@ You'll need to extend `TrackingHostIO` to record `bind_framebuffer` / `unbind_fr
 **Step 2: Run, observe failure**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib mmap_fb0 second_mmap_of_fb0
+cargo test -p kandelo --target aarch64-apple-darwin --lib mmap_fb0 second_mmap_of_fb0
 ```
 
 **Step 3: Implement**
@@ -682,7 +682,7 @@ if !flags_contains_anonymous && fd >= 0 {
 **Step 4: Pass**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib mmap_fb0 second_mmap_of_fb0
+cargo test -p kandelo --target aarch64-apple-darwin --lib mmap_fb0 second_mmap_of_fb0
 ```
 
 **Step 5: Commit**
@@ -811,7 +811,7 @@ git commit -m "kernel(fbdev): bump ABI_VERSION 5→6 for fbdev structs"
 **Step 1: Run all five test suites + ABI**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 (cd host && npx vitest run)
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -1117,7 +1117,7 @@ git commit -m "host(fbdev): integration test — fbtest.c writes pixels through 
 Same as Task A10:
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 (cd host && npx vitest run)
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -1438,7 +1438,7 @@ Per CLAUDE.md "for UI or frontend changes, start the dev server and use the feat
 **Step 1: Re-run the full gauntlet**
 
 ```bash
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 (cd host && npx vitest run)
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh
@@ -1490,7 +1490,7 @@ Then on `main`, run the full gauntlet one more time to confirm the merged state 
 
 ```bash
 git checkout main && git pull
-cargo test -p wasm-posix-kernel --target aarch64-apple-darwin --lib
+cargo test -p kandelo --target aarch64-apple-darwin --lib
 (cd host && npx vitest run)
 scripts/run-libc-tests.sh
 scripts/run-posix-tests.sh

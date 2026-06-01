@@ -8,9 +8,9 @@
 
 **Tech Stack:** Rust (no_std compatible), wasm32-unknown-unknown target
 
-**Test command:** `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p wasm-posix-kernel`
+**Test command:** `cargo test --target $(rustc -vV | grep host | awk '{print $2}') -p kandelo`
 
-**Build command:** `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p wasm-posix-kernel --release`
+**Build command:** `cargo build --target wasm32-unknown-unknown -Z build-std=core,alloc -Z build-std-features=panic_immediate_abort -p kandelo --release`
 
 ---
 
@@ -83,7 +83,7 @@ pub fn sys_uname(buf: &mut [u8]) -> Result<(), Errno> {
         b"wasm-posix",   // sysname
         b"localhost",    // nodename
         b"1.0.0",        // release
-        b"wasm-posix-kernel", // version
+        b"kandelo", // version
         b"wasm32",       // machine
     ];
     for (i, field) in fields.iter().enumerate() {

@@ -101,7 +101,7 @@ function parseArgs(args: string[]) {
 }
 
 function handleVersion() {
-  process.stderr.write(`nginx version: nginx/1.24.0 (wasm-posix-kernel)\n`);
+  process.stderr.write(`nginx version: nginx/1.24.0 (kandelo)\n`);
   process.stderr.write(`configure arguments: ${CONFIGURE_ARGS}\n`);
   process.exit(0);
 }

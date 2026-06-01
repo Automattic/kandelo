@@ -1,5 +1,5 @@
 /**
- * serve.ts — Run Erlang/OTP BEAM VM on the wasm-posix-kernel.
+ * serve.ts — Run Erlang/OTP BEAM VM on the kandelo.
  *
  * Starts the BEAM emulator with single scheduler (+S 1:1) and
  * threading support for dirty schedulers and async threads.
