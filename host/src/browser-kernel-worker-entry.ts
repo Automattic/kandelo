@@ -84,24 +84,30 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { ThreadPageAllocator } from "./thread-allocator";
-import { CH_TOTAL_SIZE } from "./constants";
+import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES } from "./constants";
+import {
+  computeProcessMemoryLayout,
+  createProcessMemory,
+  DEFAULT_PROCESS_THREAD_SLOTS,
+  FORK_SAVE_BUFFER_SIZE,
+  type ProcessMemoryLayout,
+} from "./process-memory";
 import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
 
-const DEFAULT_MAX_PAGES = 16384;
 const PAGE_SIZE = 65536;
-const FORK_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 // State
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
 let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
-let maxPages = DEFAULT_MAX_PAGES;
+let maxPages: number = DEFAULT_MAX_PAGES;
+let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let defaultEnv: string[] = [];
-let threadAllocator: ThreadPageAllocator;
 
 // Process tracking
 interface ProcessInfo {
@@ -111,6 +117,8 @@ interface ProcessInfo {
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
   channelOffset: number;
   ptrWidth: 4 | 8;
+  layout: ProcessMemoryLayout;
+  threadAllocator: ThreadPageAllocator;
 }
 const processes = new Map<number, ProcessInfo>();
 
@@ -122,27 +130,6 @@ const processes = new Map<number, ProcessInfo>();
  * `intentionallyTerminated` set on the Node host (PR #410).
  */
 const intentionallyTerminated = new WeakSet<object>();
-
-/**
- * Create shared memory sized for a wasm32 or wasm64 process. wasm64 modules
- * import memory with `address: 'i64'`; instantiation fails with a LinkError
- * if the shared memory was allocated as i32.
- */
-function createProcessMemory(ptrWidth: 4 | 8, pages: number): WebAssembly.Memory {
-  if (ptrWidth === 8) {
-    return new WebAssembly.Memory({
-      initial: BigInt(pages),
-      maximum: BigInt(pages),
-      shared: true,
-      address: "i64",
-    } as unknown as WebAssembly.MemoryDescriptor);
-  }
-  return new WebAssembly.Memory({
-    initial: pages,
-    maximum: pages,
-    shared: true,
-  });
-}
 
 const MAX_SHEBANG_DEPTH = 4;
 
@@ -208,6 +195,64 @@ function respond(requestId: number, result: unknown) {
 
 function respondError(requestId: number, error: string) {
   post({ type: "response", requestId, result: null, error });
+}
+
+function createSharedProcessMemory(
+  ptrWidth: 4 | 8,
+  initialPages: number,
+  maximumPages: number,
+): WebAssembly.Memory {
+  if (ptrWidth === 8) {
+    return new WebAssembly.Memory({
+      initial: BigInt(initialPages),
+      maximum: BigInt(maximumPages),
+      shared: true,
+      address: "i64",
+    } as unknown as WebAssembly.MemoryDescriptor);
+  }
+  return new WebAssembly.Memory({
+    initial: initialPages,
+    maximum: maximumPages,
+    shared: true,
+  });
+}
+
+function threadAllocatorForLayout(
+  layout: ProcessMemoryLayout,
+  ptrWidth: 4 | 8,
+): ThreadPageAllocator {
+  return new ThreadPageAllocator({
+    firstSlotStartPage: layout.firstThreadSlotPage,
+    maxPageExclusive: layout.threadArenaEndPage,
+    ptrWidth,
+    reservedSlots: layout.threadSlotCount,
+  });
+}
+
+function createFreshProcessMemory(
+  programBytes: ArrayBuffer,
+  ptrWidth: 4 | 8,
+  processMaxPages = maxPages,
+): {
+  memory: WebAssembly.Memory;
+  layout: ProcessMemoryLayout;
+  threadAllocator: ThreadPageAllocator;
+} {
+  const heapBase = extractHeapBase(programBytes);
+  const layout = computeProcessMemoryLayout({
+    maxPages: processMaxPages,
+    defaultThreadSlots,
+    ptrWidth,
+    programBytes,
+    heapBase,
+  });
+  const memory = createProcessMemory(ptrWidth, layout);
+  new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
+  return {
+    memory,
+    layout,
+    threadAllocator: threadAllocatorForLayout(layout, ptrWidth),
+  };
 }
 
 /**
@@ -282,7 +327,7 @@ function resolveLazyUrl(base: string, url: string): string {
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   maxPages = msg.config.maxMemoryPages;
-  threadAllocator = new ThreadPageAllocator(maxPages);
+  defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
 
   // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
@@ -376,6 +421,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       maxWorkers: msg.config.maxWorkers,
       dataBufferSize: PAGE_SIZE,
       useSharedMemory: true,
+      defaultThreadSlots,
       enableSyscallLog: msg.config.enableSyscallLog,
       syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
     },
@@ -517,25 +563,20 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     const pid = msg.pid ?? kernelWorker.allocatePid();
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
-    const memory = createProcessMemory(ptrWidth, pages);
-    const channelOffset = (pages - 2) * PAGE_SIZE;
-    new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
+    const {
+      memory,
+      layout,
+      threadAllocator,
+    } = createFreshProcessMemory(programBytes, ptrWidth, pages);
+    const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
       ptrWidth,
       argv: msg.argv,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
+      maxAddr: layout.maxAddr,
     });
-
-    // Install the program's `__heap_base` as the initial brk before the
-    // process worker is spawned (matches handleSpawn in
-    // host/src/node-kernel-worker-entry.ts). Without this the kernel's
-    // hardcoded INITIAL_BRK can land inside the program's stack region
-    // for binaries with a large data section (e.g. mariadbd) — see
-    // docs/architecture.md "Heap initialization (brk)".
-    const heapBase = extractHeapBase(programBytes);
-    if (heapBase !== null) {
-      kernelWorker.setBrkBase(pid, heapBase);
-    }
 
     if (msg.cwd) {
       kernelWorker.setCwd(pid, msg.cwd);
@@ -571,7 +612,15 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     };
 
     const worker = workerAdapter.createWorker(initData);
-    processes.set(pid, { memory, programBytes, worker, channelOffset, ptrWidth });
+    processes.set(pid, {
+      memory,
+      programBytes,
+      worker,
+      channelOffset,
+      ptrWidth,
+      layout,
+      threadAllocator,
+    });
 
     installProcessWorkerListeners(worker, pid);
 
@@ -683,35 +732,22 @@ async function handleFork(
   const parentBuf = new Uint8Array(parentMemory.buffer);
   const parentPages = Math.ceil(parentBuf.byteLength / PAGE_SIZE);
   const ptrWidth = parentInfo.ptrWidth;
-  // Fork inherits the parent's memory arch. wasm64 children need i64 memory
-  // to match the parent's module imports.
-  const childMemory = ptrWidth === 8
-    ? new WebAssembly.Memory({
-        initial: BigInt(parentPages),
-        maximum: BigInt(maxPages),
-        shared: true,
-        address: "i64",
-      } as unknown as WebAssembly.MemoryDescriptor)
-    : new WebAssembly.Memory({
-        initial: parentPages,
-        maximum: maxPages,
-        shared: true,
-      });
-  if (parentPages < maxPages) {
-    if (ptrWidth === 8) {
-      childMemory.grow(BigInt(maxPages - parentPages) as unknown as number);
-    } else {
-      childMemory.grow(maxPages - parentPages);
-    }
-  }
+  const childLayout = parentInfo.layout;
+  const childMemory = createSharedProcessMemory(
+    ptrWidth,
+    parentPages,
+    childLayout.maximumPages,
+  );
   new Uint8Array(childMemory.buffer).set(parentBuf);
 
-  const childChannelOffset = (maxPages - 2) * PAGE_SIZE;
+  const childChannelOffset = childLayout.channelOffset;
   new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
 
   kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
     skipKernelCreate: true,
     ptrWidth,
+    maxAddr: childLayout.maxAddr,
+    mmapBase: childLayout.mmapBase,
   });
 
   const forkBufAddr = threadFork
@@ -741,6 +777,8 @@ async function handleFork(
     worker: childWorker,
     channelOffset: childChannelOffset,
     ptrWidth,
+    layout: childLayout,
+    threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth),
   });
 
   installProcessWorkerListeners(childWorker, childPid);
@@ -785,27 +823,24 @@ async function handleExec(
   // Create fresh memory sized for the new binary's arch (exec across
   // wasm32↔wasm64 replaces the process image — memory type must match).
   const ptrWidth = detectPtrWidth(bytes);
-  const newMemory = createProcessMemory(ptrWidth, maxPages);
-  const newChannelOffset = (maxPages - 2) * PAGE_SIZE;
-  new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
+  const {
+    memory: newMemory,
+    layout: newLayout,
+    threadAllocator: newThreadAllocator,
+  } = createFreshProcessMemory(bytes, ptrWidth);
+  const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
     skipKernelCreate: true,
     ptrWidth,
+    brkBase: newLayout.brkBase,
+    mmapBase: newLayout.mmapBase,
+    maxAddr: newLayout.maxAddr,
     // Refresh the kernel's Process.argv so /proc/<pid>/cmdline and
     // host-side enumeration (Kandelo Inspector → Procs) show the new
     // program's argv after exec, not the parent's pre-exec argv.
     argv: launchArgv,
   });
-
-  // Re-install the new program's `__heap_base` post-exec — the kernel
-  // reset the brk in deserialize_exec_state (POSIX-correct), so the new
-  // program would otherwise see the fallback INITIAL_BRK. Mirrors
-  // handleExec in host/src/node-kernel-worker-entry.ts.
-  const execHeapBase = extractHeapBase(bytes);
-  if (execHeapBase !== null) {
-    kernelWorker.setBrkBase(pid, execHeapBase);
-  }
 
   const execInitData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -830,6 +865,8 @@ async function handleExec(
     worker: newWorker,
     channelOffset: newChannelOffset,
     ptrWidth,
+    layout: newLayout,
+    threadAllocator: newThreadAllocator,
   });
 
   // Wire post-exec error/exit handling. The handleFork listener (on the
@@ -888,20 +925,21 @@ async function handlePosixSpawn(
   post({ type: "proc_event", kind: "spawn", pid: childPid });
 
   const ptrWidth = detectPtrWidth(programBytes);
-  const newMemory = createProcessMemory(ptrWidth, maxPages);
-  const newChannelOffset = (maxPages - 2) * PAGE_SIZE;
-  new Uint8Array(newMemory.buffer, newChannelOffset, CH_TOTAL_SIZE).fill(0);
+  const {
+    memory: newMemory,
+    layout: newLayout,
+    threadAllocator,
+  } = createFreshProcessMemory(programBytes, ptrWidth);
+  const newChannelOffset = newLayout.channelOffset;
 
   // Kernel already created the child via kernel_spawn_process.
   kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
     skipKernelCreate: true,
     ptrWidth,
+    brkBase: newLayout.brkBase,
+    mmapBase: newLayout.mmapBase,
+    maxAddr: newLayout.maxAddr,
   });
-
-  const heapBase = extractHeapBase(programBytes);
-  if (heapBase !== null) {
-    kernelWorker.setBrkBase(childPid, heapBase);
-  }
 
   const initData: CentralizedWorkerInitMessage = {
     type: "centralized_init",
@@ -926,6 +964,8 @@ async function handlePosixSpawn(
     worker: newWorker,
     channelOffset: newChannelOffset,
     ptrWidth,
+    layout: newLayout,
+    threadAllocator,
   });
 
   return 0;
@@ -956,7 +996,18 @@ async function handleClone(
     threadModuleCache.set(pid, threadModule);
   }
 
-  const alloc = threadAllocator.allocate(memory);
+  let alloc: ReturnType<ThreadPageAllocator["allocate"]>;
+  try {
+    alloc = processInfo.threadAllocator.allocate(memory);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    post({
+      type: "stderr",
+      pid,
+      data: new TextEncoder().encode(`[kernel-worker] pid=${pid}: ${message}\n`),
+    });
+    throw e;
+  }
 
   // Register fnPtr/argPtr so handleFork can route a fork() from this
   // thread back through its entry point. Mirrors handleClone in
@@ -976,17 +1027,18 @@ async function handleClone(
     stackPtr,
     tlsPtr,
     ctidPtr,
+    tlsOffset: alloc.tlsOffset,
     tlsAllocAddr: alloc.tlsAllocAddr,
     ptrWidth: processInfo.ptrWidth,
   };
 
   const threadWorker = workerAdapter.createWorker(threadInitData);
   if (!threadWorkers.has(pid)) threadWorkers.set(pid, []);
-  const threadEntry = { worker: threadWorker, channelOffset: alloc.channelOffset, tid, basePage: alloc.basePage };
+  const threadEntry = { worker: threadWorker, channelOffset: alloc.channelOffset, tid, basePage: alloc.slotStartPage };
   threadWorkers.get(pid)!.push(threadEntry);
 
   const reclaimThread = () => {
-    threadAllocator.free(alloc.basePage);
+    processInfo.threadAllocator.free(alloc.basePage);
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);

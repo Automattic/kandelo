@@ -13,10 +13,12 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ABI_VERSION } from "../src/generated/abi";
 import {
   describeWasmArtifactPolicyFailures,
   extractHeapBase,
   extractAbiVersion,
+  extractThreadSlotDeclaration,
   wasmContainsLegacyAsyncify,
   wasmIsRelocatableObject,
   readWasmCustomSectionNames,
@@ -338,6 +340,28 @@ describe("extractAbiVersion", () => {
   });
 });
 
+describe("extractThreadSlotDeclaration", () => {
+  it("returns null when the process-wasm declaration export is absent", () => {
+    const wasm = buildWasm({
+      funcTypes: [0],
+      funcBodies: [abiVersionBody(-1)],
+      exports: [{ name: "__abi_version", kind: 0, index: 0 }],
+    });
+    expect(extractThreadSlotDeclaration(wasm)).toBeNull();
+  });
+
+  it("reads the signed i32 thread slot declaration", () => {
+    for (const value of [-1, 0, 3]) {
+      const wasm = buildWasm({
+        funcTypes: [0],
+        funcBodies: [abiVersionBody(value)],
+        exports: [{ name: "__wasm_posix_thread_slots", kind: 0, index: 0 }],
+      });
+      expect(extractThreadSlotDeclaration(wasm)).toBe(value);
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Wasm artifact policy helpers
 // ---------------------------------------------------------------------------
@@ -475,7 +499,7 @@ describe.skipIf(!existsSync(builtNodeBinary))("built node.wasm artifact policy",
     const wasm = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 
     expect(describeWasmArtifactPolicyFailures(wasm, {
-      expectedAbi: 12,
+      expectedAbi: ABI_VERSION,
       requireForkInstrumentation: false,
       forbidForkInstrumentation: true,
     })).toEqual([]);

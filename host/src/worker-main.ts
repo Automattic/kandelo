@@ -26,6 +26,7 @@ import {
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
 } from "./generated/abi";
+import { FORK_SAVE_BUFFER_SIZE } from "./process-memory";
 // WASI detection helpers are tiny and live in their own file so we can
 // import them eagerly without dragging in the 1300-line WasiShim class.
 // The shim itself is dynamically imported below, only when a worker
@@ -687,7 +688,7 @@ function buildImportObject(
 }
 
 /** Size of the fork save buffer used by wpk_fork_* instrumentation */
-const FORK_BUF_SIZE = 16384;
+const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 // Slot below forkBufAddr that stores the head pointer of the dlopen
 // archive linked list. Fork's memcpy carries the parent's archive into
@@ -1708,7 +1709,8 @@ export async function centralizedThreadWorkerMain(
   port: MessagePort,
   initData: CentralizedThreadInitMessage,
 ): Promise<void> {
-  const { memory, channelOffset, pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, tlsAllocAddr } = initData;
+  const { memory, channelOffset, pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr } = initData;
+  const tlsOffset = initData.tlsOffset ?? initData.tlsAllocAddr;
   const ptrWidth = initData.ptrWidth ?? 4;
 
   let threadInstance: WebAssembly.Instance | undefined;
@@ -1759,15 +1761,9 @@ export async function centralizedThreadWorkerMain(
     const instance = new WebAssembly.Instance(module, importObject);
     threadInstance = instance;
 
-    // Initialize Wasm TLS for this thread.
-    // IMPORTANT: We place TLS data inside the channel's spill page (after the
-    // 72-byte channel header spill) rather than on the separate TLS page.
-    // This avoids a corruption issue where unidentified wasm code writes to
-    // page-aligned addresses in the thread region, overwriting __channel_base.
-    // The channel spill page has 65464 bytes free after the header; we only need 8.
+    // Initialize Wasm TLS for this thread in the slot's explicit TLS/control page.
     const wasmInitTls = instance.exports.__wasm_init_tls as ((addr: number | bigint) => void) | undefined;
-    const safeTlsAddr = channelOffset + CH_TOTAL_SIZE; // inside channel spill page, 4-byte aligned
-    const tlsBlock = safeTlsAddr;
+    const tlsBlock = tlsOffset;
 
     if (wasmInitTls && tlsBlock > 0) {
       wasmInitTls(ptrWidth === 8 ? BigInt(tlsBlock) : tlsBlock);

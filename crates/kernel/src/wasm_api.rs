@@ -1233,6 +1233,35 @@ pub extern "C" fn kernel_set_max_addr(pid: u32, max_addr: usize) -> i32 {
     }
 }
 
+/// Set the mmap lower bound for a process.
+/// Compact hosts use this to place automatic mmap allocations immediately
+/// after the process's reserved low prefix instead of at the legacy 64MB
+/// boundary. Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_mmap_base(pid: u32, mmap_base: usize) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.set_mmap_base(mmap_base);
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
+/// Set the brk address space upper bound for a process.
+/// Used to prevent brk from overlapping low host control pages.
+/// Returns 0 on success, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_brk_limit(pid: u32, brk_limit: usize) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.set_brk_limit(brk_limit);
+        0
+    } else {
+        -(Errno::ESRCH as i32)
+    }
+}
+
 /// Set the working directory for a process (centralized mode).
 /// Called by host to set the initial cwd before the process starts.
 /// Returns 0 on success, -ESRCH if pid not found.

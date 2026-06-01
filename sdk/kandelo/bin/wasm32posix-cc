@@ -53,7 +53,18 @@ WASM_LD="$(find_tool wasm-ld || true)"
 linking=1
 shared=0
 link_dl=0
+thread_slots_decl=""
+raw_threads_or_dynamic=0
 filtered=()
+
+parse_thread_slots_decl() {
+  local value="$1"
+  [[ "$value" =~ ^-?[0-9]+$ ]] || die "--kandelo-thread-slots must be -1, 0, or a positive integer"
+  if (( value < -1 )); then
+    die "--kandelo-thread-slots must be -1, 0, or a positive integer"
+  fi
+  printf '%s\n' "$value"
+}
 
 while [[ "$#" -gt 0 ]]; do
   arg="$1"
@@ -65,15 +76,30 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     -shared)
       shared=1
+      raw_threads_or_dynamic=1
       ;;
     -ldl)
       link_dl=1
+      raw_threads_or_dynamic=1
       ;;
-    -pthread|-lpthread|-fPIE|-pie|-lrt|-lresolv|-lm|-lcrypt|-lutil|-rdynamic|-Wl,-Bsymbolic)
+    --kandelo-thread-slots|--wasm-posix-thread-slots)
+      [[ "$#" -gt 0 ]] || die "$arg requires -1, 0, or a positive integer"
+      thread_slots_decl="$(parse_thread_slots_decl "$1")"
+      shift
+      ;;
+    --kandelo-thread-slots=*|--wasm-posix-thread-slots=*)
+      thread_slots_decl="$(parse_thread_slots_decl "${arg#*=}")"
+      ;;
+    -pthread|-lpthread|-rdynamic)
+      raw_threads_or_dynamic=1
+      ;;
+    -fPIE|-pie|-lrt|-lresolv|-lm|-lcrypt|-lutil|-Wl,-Bsymbolic)
       ;;
     -Wl,-rpath,*|-Wl,-soname,*|-Wl,--version-script*)
+      raw_threads_or_dynamic=1
       ;;
     -dynamiclib)
+      raw_threads_or_dynamic=1
       echo "wasm32posix-cc: warning: ${arg} is not supported for Wasm targets (ignored)" >&2
       ;;
     *)
@@ -186,6 +212,34 @@ for src in "${source_inputs[@]}"; do
   compiled_objects+=("$obj")
 done
 
+infer_thread_slots_decl() {
+  if [[ -n "$thread_slots_decl" ]]; then
+    printf '%s\n' "$thread_slots_decl"
+    return
+  fi
+  if [[ "$shared" -eq 1 || "$link_dl" -eq 1 || "$raw_threads_or_dynamic" -eq 1 ]]; then
+    printf '%s\n' "-1"
+    return
+  fi
+  if [[ "${#object_inputs[@]}" -gt 0 || "${#source_inputs[@]}" -eq 0 ]]; then
+    printf '%s\n' "-1"
+    return
+  fi
+  local arg src
+  for arg in "${user_link_args[@]}"; do
+    case "$arg" in
+      -l*|-Wl,*|@*) printf '%s\n' "-1"; return ;;
+    esac
+  done
+  for src in "${source_inputs[@]}"; do
+    if grep -Eq 'pthread_create|thrd_create|clone[[:space:]]*\(|std::thread|#include[[:space:]]*<thread>|dlopen|__wasm_dlopen' "$src" 2>/dev/null; then
+      printf '%s\n' "-1"
+      return
+    fi
+  done
+  printf '%s\n' "0"
+}
+
 append_ld_flags() {
   local flag part
   for flag in "$@"; do
@@ -215,10 +269,17 @@ if [[ "$shared" -eq 1 ]]; then
 fi
 
 glue_inputs=(
-  "${GLUE_OBJ_DIR}/channel_syscall.o"
   "${GLUE_OBJ_DIR}/compiler_rt.o"
   "${GLUE_OBJ_DIR}/cxxrt.o"
 )
+channel_syscall_obj="${GLUE_OBJ_DIR}/channel_syscall.o"
+thread_slots_final="$(infer_thread_slots_decl)"
+if [[ "$thread_slots_final" != "-1" ]]; then
+  channel_syscall_obj="/tmp/channel_syscall.$$.$thread_slots_final.o"
+  "$CLANG" "${compile_flags[@]}" "-DWASM_POSIX_THREAD_SLOT_DECL=${thread_slots_final}" \
+    -c "$GLUE_DIR/channel_syscall.c" -o "$channel_syscall_obj"
+fi
+glue_inputs=("$channel_syscall_obj" "${glue_inputs[@]}")
 if [[ "$link_dl" -eq 1 ]]; then
   glue_inputs+=("${GLUE_OBJ_DIR}/dlopen.o")
 fi

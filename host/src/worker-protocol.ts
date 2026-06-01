@@ -76,7 +76,9 @@ export interface CentralizedThreadInitMessage {
   stackPtr: number;
   tlsPtr: number;
   ctidPtr: number;
-  /** Pre-allocated address in shared memory for Wasm TLS initialization */
+  /** Pre-allocated address in shared memory for Wasm TLS initialization. */
+  tlsOffset: number;
+  /** @deprecated Use tlsOffset. */
   tlsAllocAddr: number;
   /** Pointer width: 4 for wasm32, 8 for wasm64. Defaults to 4. */
   ptrWidth?: 4 | 8;

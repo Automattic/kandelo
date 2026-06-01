@@ -125,6 +125,7 @@ export interface ParsedArgs {
   shared: boolean;
   pic: boolean;
   linkDl: boolean;
+  threadSlots: number | null;
   outputFile: string | null;
   sourceFiles: string[];
   objectFiles: string[];
@@ -155,6 +156,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     shared: false,
     pic: false,
     linkDl: false,
+    threadSlots: null,
     outputFile: null,
     sourceFiles: [],
     objectFiles: [],
@@ -172,6 +174,19 @@ export function parseArgs(args: string[]): ParsedArgs {
       result.pic = true;
     } else if (arg === '-ldl') {
       result.linkDl = true;
+    } else if (arg === '--kandelo-thread-slots' || arg === '--wasm-posix-thread-slots') {
+      i++;
+      result.threadSlots = parseThreadSlotDeclaration(args[i], arg);
+    } else if (arg.startsWith('--kandelo-thread-slots=')) {
+      result.threadSlots = parseThreadSlotDeclaration(
+        arg.substring('--kandelo-thread-slots='.length),
+        '--kandelo-thread-slots',
+      );
+    } else if (arg.startsWith('--wasm-posix-thread-slots=')) {
+      result.threadSlots = parseThreadSlotDeclaration(
+        arg.substring('--wasm-posix-thread-slots='.length),
+        '--wasm-posix-thread-slots',
+      );
     } else if (arg === '-E') {
       result.preprocessOnly = true;
     } else if (arg === '-S') {
@@ -209,4 +224,85 @@ export function needsLinking(parsed: ParsedArgs): boolean {
   if (parsed.compileOnly || parsed.preprocessOnly || parsed.assemblyOnly) return false;
   if (parsed.otherArgs.some(arg => arg.startsWith('-Wl,@') || arg.startsWith('@'))) return true;
   return parsed.sourceFiles.length > 0 || parsed.objectFiles.length > 0;
+}
+
+export const THREAD_SLOT_USE_HOST_DEFAULT = -1;
+export const THREAD_SLOT_NONE = 0;
+
+export function threadSlotDeclarationDefine(value: number): string {
+  return `-DWASM_POSIX_THREAD_SLOT_DECL=${value}`;
+}
+
+export function parseThreadSlotDeclaration(value: string | undefined, flag: string): number {
+  if (value === undefined || value.length === 0) {
+    throw new Error(`${flag} requires -1, 0, or a positive integer`);
+  }
+  if (!/^-?\d+$/.test(value)) {
+    throw new Error(`${flag} must be -1, 0, or a positive integer`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < THREAD_SLOT_USE_HOST_DEFAULT) {
+    throw new Error(`${flag} must be -1, 0, or a positive integer`);
+  }
+  return parsed;
+}
+
+export interface ThreadSlotInferenceOptions {
+  readFile?: (path: string) => string | null;
+}
+
+const THREAD_OR_DYNAMIC_PATTERNS = [
+  /pthread_create/,
+  /thrd_create/,
+  /\bclone\s*\(/,
+  /std::thread/,
+  /#include\s*<thread>/,
+  /\bdlopen\b/,
+  /__wasm_dlopen/,
+];
+
+function rawArgsSuggestThreadsOrDynamicLinking(args: string[]): boolean {
+  return args.some((arg) =>
+    arg === '-pthread' ||
+    arg === '-lpthread' ||
+    arg === '-ldl' ||
+    arg === '-shared' ||
+    arg === '-dynamiclib' ||
+    arg === '-rdynamic' ||
+    arg.startsWith('-Wl,-rpath') ||
+    arg.startsWith('-Wl,-soname') ||
+    arg.startsWith('-Wl,--export-dynamic')
+  );
+}
+
+function hasUncertainLinkInput(parsed: ParsedArgs): boolean {
+  if (parsed.objectFiles.length > 0 || parsed.archiveFiles.length > 0) return true;
+  return parsed.otherArgs.some((arg) =>
+    arg === '-fuse-ld=lld' ||
+    arg.startsWith('-l') ||
+    arg.startsWith('-Wl,') ||
+    arg.startsWith('@')
+  );
+}
+
+export function inferThreadSlotDeclaration(
+  parsed: ParsedArgs,
+  rawArgs: string[],
+  options: ThreadSlotInferenceOptions = {},
+): number {
+  if (parsed.threadSlots !== null) return parsed.threadSlots;
+  if (parsed.shared || parsed.linkDl) return THREAD_SLOT_USE_HOST_DEFAULT;
+  if (rawArgsSuggestThreadsOrDynamicLinking(rawArgs)) return THREAD_SLOT_USE_HOST_DEFAULT;
+  if (hasUncertainLinkInput(parsed)) return THREAD_SLOT_USE_HOST_DEFAULT;
+  if (parsed.sourceFiles.length === 0) return THREAD_SLOT_USE_HOST_DEFAULT;
+
+  for (const sourceFile of parsed.sourceFiles) {
+    const text = options.readFile?.(sourceFile);
+    if (text === null || text === undefined) return THREAD_SLOT_USE_HOST_DEFAULT;
+    if (THREAD_OR_DYNAMIC_PATTERNS.some((pattern) => pattern.test(text))) {
+      return THREAD_SLOT_USE_HOST_DEFAULT;
+    }
+  }
+
+  return THREAD_SLOT_NONE;
 }

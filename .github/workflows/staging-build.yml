@@ -105,6 +105,7 @@ jobs:
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
+      repair_index: ${{ steps.compute.outputs.repair_index }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
     steps:
@@ -206,6 +207,14 @@ jobs:
             else
               echo "existing-index: none"
               : > "$existing_index"
+            fi
+            repair_index=0
+            if [ -s "$existing_index" ]; then
+              existing_index_abi=$(sed -nE "s/^abi_version *= *([0-9]+).*$/\\1/p" "$existing_index" | head -n1)
+              if [ "$existing_index_abi" != "$ABI" ]; then
+                repair_index=1
+                echo "preflight: $TARGET_TAG/index.toml declares ABI ${existing_index_abi:-unknown}; expected $ABI"
+              fi
             fi
 
             force_input_paths=(
@@ -359,9 +368,20 @@ jobs:
               done
             done
 
+            library_count=$(echo "$library_matrix" | jq length)
+            program_count=$(echo "$program_matrix" | jq length)
+            repair_index_output=false
+            if [ "$repair_index" = "1" ] && [ "$library_count" -eq 0 ] && [ "$program_count" -eq 0 ]; then
+              repair_index_output=true
+              echo "preflight: no package updates selected; scheduling $TARGET_TAG/index.toml metadata repair"
+            elif [ "$repair_index" = "1" ]; then
+              echo "preflight: package update jobs will repair $TARGET_TAG/index.toml metadata"
+            fi
+
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
-            echo "preflight: library=$(echo "$library_matrix" | jq length) program=$(echo "$program_matrix" | jq length)"
+            echo "repair_index=$repair_index_output" >> "$GITHUB_OUTPUT"
+            echo "preflight: library=$library_count program=$program_count repair-index=$repair_index_output"
             echo "library_matrix:"; echo "$library_matrix" | jq .
             echo "program_matrix:"; echo "$program_matrix" | jq .
           '
@@ -877,6 +897,37 @@ jobs:
             --error "matrix-build failed; see ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             || true
 
+  repair-staging-index:
+    needs: [preflight]
+    if: ${{ needs.preflight.result == 'success' && needs.preflight.outputs.repair_index == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # state-lock git push + gh release create/upload
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Repair staging index metadata
+        run: |
+          bash scripts/dev-shell.sh bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --repair-only
+
   test-gate-prepare:
     # Materializes the union of (matrix-built archives + durable release
     # fallback), builds the fresh kernel/test fixtures once, and uploads
@@ -893,7 +944,7 @@ jobs:
     # legitimately hit all package archives in pr-<N>-staging (because
     # the previous run published them) while still needing to validate
     # the gate itself, especially after workflow/test-gate fixes.
-    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build]
+    needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build, repair-staging-index]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
@@ -901,6 +952,7 @@ jobs:
         (
           needs.change-scope.outputs.package_staging_required == 'true' &&
           needs.preflight.result == 'success' &&
+          (needs.repair-staging-index.result == 'success' || needs.repair-staging-index.result == 'skipped') &&
           (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
           (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
         ) ||

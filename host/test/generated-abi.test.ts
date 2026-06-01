@@ -34,6 +34,24 @@ import {
   HOST_ADAPTER_VERSION,
   HOST_ADAPTER_WORKER_FEATURES,
   HOST_INTERCEPTED_SYSCALLS,
+  PROCESS_MEMORY_DEFAULT_INITIAL_PAGES,
+  PROCESS_MEMORY_DEFAULT_MAX_PAGES,
+  PROCESS_MEMORY_DEFAULT_THREAD_SLOTS,
+  PROCESS_MEMORY_FALLBACK_BRK_BASE,
+  PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE,
+  PROCESS_MEMORY_LEGACY_MMAP_BASE,
+  PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE,
+  PROCESS_MEMORY_MAIN_CHANNEL_SPILL_PAGE,
+  PROCESS_MEMORY_MAIN_FORK_SAVE_PAGE,
+  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
+  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
+  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_SPILL_PAGE,
+  PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
+  PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE,
+  PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE,
+  PROCESS_MEMORY_THREAD_SLOTS_NONE,
+  PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
+  PROCESS_MEMORY_WASM_PAGE_SIZE,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
@@ -165,5 +183,38 @@ describe("generated host ABI bindings", () => {
         ],
       ).toEqual(hostAdapterManifestField(fieldName));
     }
+  });
+
+  it("match Rust-owned process memory layout metadata", () => {
+    const layout = snapshot.process_memory_layout;
+    expect(PROCESS_MEMORY_WASM_PAGE_SIZE).toBe(layout.wasm_page_size);
+    expect(PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE).toBe(layout.fork_save_buffer_size);
+    expect(PROCESS_MEMORY_DEFAULT_INITIAL_PAGES).toBe(layout.defaults.initial_pages);
+    expect(PROCESS_MEMORY_DEFAULT_MAX_PAGES).toBe(layout.defaults.max_pages);
+    expect(PROCESS_MEMORY_DEFAULT_THREAD_SLOTS).toBe(layout.defaults.thread_slots);
+    expect(PROCESS_MEMORY_LEGACY_MMAP_BASE).toBe(layout.legacy.mmap_base);
+    expect(PROCESS_MEMORY_FALLBACK_BRK_BASE).toBe(layout.legacy.fallback_brk_base);
+    expect(PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT)
+      .toBe(layout.process_wasm_declarations.thread_slot_export);
+    expect(PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT)
+      .toBe(layout.process_wasm_declarations.use_host_default);
+    expect(PROCESS_MEMORY_THREAD_SLOTS_NONE).toBe(layout.process_wasm_declarations.none);
+
+    expect(PROCESS_MEMORY_MAIN_FORK_SAVE_PAGE)
+      .toBe(layout.main_control.pages.find((p: { name: string }) => p.name === "fork_save_scratch").page_offset);
+    expect(PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE)
+      .toBe(layout.main_control.pages.find((p: { name: string }) => p.name === "syscall_channel_primary").page_offset);
+    expect(PROCESS_MEMORY_MAIN_CHANNEL_SPILL_PAGE)
+      .toBe(layout.main_control.pages.find((p: { name: string }) => p.name === "syscall_channel_spill").page_offset);
+
+    expect(PROCESS_MEMORY_PAGES_PER_THREAD_SLOT).toBe(layout.thread_slot.pages_per_slot);
+    expect(PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE)
+      .toBe(layout.thread_slot.pages.find((p: { name: string }) => p.name === "tls_control").page_offset);
+    expect(PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE)
+      .toBe(layout.thread_slot.pages.find((p: { name: string }) => p.name === "fork_save_scratch").page_offset);
+    expect(PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE)
+      .toBe(layout.thread_slot.pages.find((p: { name: string }) => p.name === "syscall_channel_primary").page_offset);
+    expect(PROCESS_MEMORY_THREAD_SLOT_CHANNEL_SPILL_PAGE)
+      .toBe(layout.thread_slot.pages.find((p: { name: string }) => p.name === "syscall_channel_spill").page_offset);
   });
 });

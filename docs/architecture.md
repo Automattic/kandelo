@@ -74,6 +74,7 @@ kernel_exec_setup(pid) → result
 kernel_get_cwd(pid, buf, len) → bytes_written
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
+kernel_set_mmap_base(pid, addr) → 0
 kernel_is_fd_nonblock(pid, fd) → bool
 ```
 
@@ -135,7 +136,7 @@ Compiled into every user program. Three main files:
 
 ## Syscall Channel Protocol
 
-Each process has a dedicated channel region in its SharedArrayBuffer memory. The channel is placed at the end of the address space (last 2 pages = 128KB) to avoid collision with heap and mmap regions.
+Each process has a dedicated channel region in its SharedArrayBuffer memory. The channel is placed in a host-reserved control slab immediately before the guest-managed brk/mmap region, not at the maximum memory address. This lets a process start with a small shared `WebAssembly.Memory` while keeping the channel address stable as guest brk/mmap activity grows memory on demand.
 
 ### Channel Layout
 
@@ -299,36 +300,54 @@ fell back to fork.
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
-2. Host allocates a new channel region and TLS area in the SAME shared memory
+2. Host allocates an explicit pthread control slot in the SAME shared memory
 3. Host spawns a new worker that shares the parent's `WebAssembly.Memory`
 4. Thread worker runs `centralizedThreadWorkerMain`, calls `__wasm_thread_init` to set up TLS
 5. Thread starts executing the given function pointer with the given argument
 
-Threads share memory with the parent (CLONE_VM) but have their own channel and TLS region.
+Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
 
 ## Memory Layout
 
-Each process has a WebAssembly linear memory (shared, up to 1GB by default):
+Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus a fixed low control slab, then grows it only after successful guest allocation syscalls.
 
 ```
 Address           Region
 0x00000000        Wasm data segment (globals, static data)
 0x00110000        Global base (--global-base=1114112)
-__heap_base       Heap start (brk grows up)
-0x04000000        MMAP base (64MB) — mmap regions grow up
+__heap_base       First linker-free byte exported by the program
+control_base      Host-owned low control slab
+                  - main page 0: fork-save/scratch
+                  - main page 1: syscall channel primary page
+                  - main page 2: syscall channel spill page
+                  - reserved pthread slots:
+                    page 0: TLS/control
+                    page 1: fork-save/scratch
+                    page 2: syscall channel primary page
+                    page 3: syscall channel spill page
+control_end       End of host-owned control slab
+brk_base          Initial brk; brk(0) returns this address
+mmap_base         First automatic mmap address; normally equals brk_base
+...               Guest-managed brk and mmap address space
 ...
-MAX_PAGES-4       Thread channel + TLS regions (grow down)
-MAX_PAGES-2       Main process channel (last 2 pages)
 MAX_PAGES         End of memory (1GB default)
 ```
 
-The channel occupies the last 2 pages (128KB). Thread channels are allocated counting down from the main channel, with 3 pages per thread (2 for channel + 1 for TLS).
+For current binaries, `control_base` is page-aligned from the larger of the imported-memory minimum and the program's `__heap_base`. The host then reserves a bounded number of pthread slots in that slab and calls `kernel_set_brk_base(pid, control_end)` and `kernel_set_mmap_base(pid, control_end)` before `_start` can run. `__heap_base` is therefore treated as "first byte available to the host layout" rather than the value returned by guest `brk(0)`.
+
+The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct slot and returns the slot to that process-local allocator after thread exit.
+
+Processes may export `__wasm_posix_thread_slots` to declare how many pthread slots the host should reserve. A value of `-1` uses the host default, `0` reserves no pthread slots, and a positive value reserves exactly that many slots. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case; the default remains 16. A future runtime control surface under `/sys` or `/proc` can make that default tunable after boot.
+
+`mmap` remains coherent because the kernel has one per-process address-space model for brk and mmap. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. `brk` growth succeeds only when the adjacent range is free; if an mmap region occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED` and `mremap` growth are rejected when they would overlap the reserved prefix or legacy host-control range. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls so returned guest addresses are backed before user code touches them.
+
+Every spawn or exec computes a fresh layout from the target binary's memory import and `__heap_base`; the layout is process-local and is discarded when the process is unregistered. Fork children copy the parent's current memory length, not the configured maximum, and pthread workers share the owning process memory plus that process's thread allocator. Correctness must not depend on page reloads, context resets, periodic kernel resets, or browser garbage collection reclaiming old shared memories.
 
 ### Heap initialization (brk)
 
-The kernel's `MemoryManager` tracks `program_break` per process. On every `spawn` and `exec`, the host parses `__heap_base` from the new program's exports (`extractHeapBase` in `host/src/constants.ts`) and calls `kernel_set_brk_base(pid, __heap_base)` *before* the new worker can issue its first syscall. The new program's first `brk(0)` then returns its own `__heap_base`, so musl's malloc places the heap above the data and shadow-stack regions.
+The kernel's `MemoryManager` tracks `program_break` per process. On every `spawn` and `exec`, the host parses `__heap_base` from the new program's exports (`extractHeapBase` in `host/src/constants.ts`), computes the low control slab, and calls `kernel_set_brk_base(pid, control_end)` *before* the new worker can issue its first syscall. The new program's first `brk(0)` returns the first guest-managed byte after host control memory, so musl's malloc places the heap above the data, shadow-stack, and host control regions.
 
-The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don't export `__heap_base`. Programs built with our SDK always export it, so the fallback is never used in normal operation. `fork` correctly inherits the parent's brk via the kernel's process-state serialization; `exec` resets it (POSIX-correct) and the host re-installs it from the new program's `__heap_base`.
+The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don't export `__heap_base`. Programs built with our SDK always export it, so the fallback is rarely used in normal operation. `fork` correctly inherits the parent's brk, mmap base, max address, reserved prefix, and mappings via the kernel's process-state serialization; `exec` resets them (POSIX-correct) and the host installs the new program's computed layout.
 
 ## Filesystem
 

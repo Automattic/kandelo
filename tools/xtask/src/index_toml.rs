@@ -116,6 +116,52 @@ impl IndexToml {
             .get(&arch)
     }
 
+    /// Validate that every ABI-bearing archive filename in the
+    /// ledger matches the top-level `abi_version`.
+    pub fn validate_archive_abi_versions(&self) -> Result<(), String> {
+        for pkg in &self.packages {
+            for (arch, entry) in &pkg.binary {
+                for (field, value) in [
+                    ("archive_url", &entry.archive_url),
+                    ("fallback_archive_url", &entry.fallback_archive_url),
+                ] {
+                    let Some(value) = value else {
+                        continue;
+                    };
+                    let Some(found) = archive_filename_abi(value) else {
+                        continue;
+                    };
+                    if found != self.abi_version {
+                        return Err(format!(
+                            "index.toml abi_version {} does not match {field} ABI {found} \
+                             for {}@{} {}: {value}",
+                            self.abi_version,
+                            pkg.name,
+                            pkg.version,
+                            arch.as_str()
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove per-arch entries that reference archive filenames for a
+    /// different ABI than `expected_abi`. Used when a mutable staging
+    /// release is reused across an ABI bump.
+    pub fn prune_archive_abi_mismatches(&mut self, expected_abi: u32) -> usize {
+        let mut removed = 0;
+        for pkg in &mut self.packages {
+            let before = pkg.binary.len();
+            pkg.binary
+                .retain(|_, entry| !entry_declares_different_abi(entry, expected_abi));
+            removed += before - pkg.binary.len();
+        }
+        self.packages.retain(|pkg| !pkg.binary.is_empty());
+        removed
+    }
+
     /// Record a successful build. Overwrites the current archive
     /// fields and clears any prior fallback — once a fresh success
     /// lands, the fallback (which existed only to cover for a
@@ -291,6 +337,32 @@ impl IndexToml {
     }
 }
 
+/// Extract the ABI encoded in an archive filename segment like
+/// `-abi13-`. Returns `None` for names that do not carry that segment.
+pub fn archive_filename_abi(value: &str) -> Option<u32> {
+    let mut search_start = 0;
+    while let Some(pos) = value[search_start..].find("-abi") {
+        let abi_start = search_start + pos + "-abi".len();
+        let tail = &value[abi_start..];
+        let digit_len = tail.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if digit_len > 0 && tail.as_bytes().get(digit_len) == Some(&b'-') {
+            if let Ok(abi) = tail[..digit_len].parse() {
+                return Some(abi);
+            }
+        }
+        search_start = abi_start;
+    }
+    None
+}
+
+fn entry_declares_different_abi(entry: &BinaryEntry, expected_abi: u32) -> bool {
+    [&entry.archive_url, &entry.fallback_archive_url]
+        .into_iter()
+        .flatten()
+        .filter_map(|value| archive_filename_abi(value))
+        .any(|found| found != expected_abi)
+}
+
 /// Compute the on-disk cache path for the index hosted at
 /// `index_url`. We use the first 16 hex chars of sha256(url) so two
 /// indexes with different URLs (e.g. first-party vs a fork's mirror)
@@ -450,6 +522,132 @@ fallback_built_at       = "2026-05-12T00:00:00Z"
             entry.fallback_archive_sha256.as_deref(),
             Some("olddeadbeef")
         );
+    }
+
+    #[test]
+    fn archive_filename_abi_extracts_abi_segment() {
+        use super::*;
+
+        assert_eq!(
+            archive_filename_abi("foo-1.0-rev1-abi13-wasm32-deadbeef.tar.zst"),
+            Some(13)
+        );
+        assert_eq!(
+            archive_filename_abi(
+                "https://example.test/releases/download/pr-1-staging/foo-abi42-wasm64-a.tar.zst"
+            ),
+            Some(42)
+        );
+        assert_eq!(
+            archive_filename_abi("https://example.test/binaries-abi-v13/foo.tar.zst"),
+            None
+        );
+        assert_eq!(archive_filename_abi("foo-no-abi-segment.tar.zst"), None);
+    }
+
+    #[test]
+    fn index_toml_validate_archive_abi_versions_rejects_current_mismatch() {
+        use super::*;
+
+        let idx = IndexToml::parse(
+            r#"
+abi_version = 13
+generated_at = "t"
+generator = "test"
+
+[[packages]]
+name = "foo"
+version = "1.0"
+revision = 1
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "foo-1.0-rev1-abi12-wasm32-deadbeef.tar.zst"
+archive_sha256 = "sha"
+cache_key_sha = "key"
+"#,
+        )
+        .unwrap();
+
+        let err = idx.validate_archive_abi_versions().unwrap_err();
+        assert!(err.contains("abi_version 13"), "got: {err}");
+        assert!(err.contains("ABI 12"), "got: {err}");
+        assert!(err.contains("archive_url"), "got: {err}");
+    }
+
+    #[test]
+    fn index_toml_validate_archive_abi_versions_rejects_fallback_mismatch() {
+        use super::*;
+
+        let idx = IndexToml::parse(
+            r#"
+abi_version = 13
+generated_at = "t"
+generator = "test"
+
+[[packages]]
+name = "foo"
+version = "1.0"
+revision = 1
+
+[packages.binary.wasm32]
+status = "failed"
+error = "build failed"
+last_attempt = "t"
+fallback_archive_url = "foo-1.0-rev1-abi12-wasm32-deadbeef.tar.zst"
+fallback_archive_sha256 = "sha"
+fallback_cache_key_sha = "key"
+"#,
+        )
+        .unwrap();
+
+        let err = idx.validate_archive_abi_versions().unwrap_err();
+        assert!(err.contains("fallback_archive_url"), "got: {err}");
+        assert!(err.contains("ABI 12"), "got: {err}");
+    }
+
+    #[test]
+    fn index_toml_prunes_archive_entries_for_other_abis() {
+        use super::*;
+        use crate::pkg_manifest::TargetArch;
+
+        let mut idx = IndexToml::parse(
+            r#"
+abi_version = 12
+generated_at = "t"
+generator = "test"
+
+[[packages]]
+name = "old"
+version = "1.0"
+revision = 1
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "old-1.0-rev1-abi12-wasm32-deadbeef.tar.zst"
+archive_sha256 = "oldsha"
+cache_key_sha = "oldkey"
+
+[[packages]]
+name = "new"
+version = "1.0"
+revision = 1
+
+[packages.binary.wasm32]
+status = "success"
+archive_url = "new-1.0-rev1-abi13-wasm32-deadbeef.tar.zst"
+archive_sha256 = "newsha"
+cache_key_sha = "newkey"
+"#,
+        )
+        .unwrap();
+
+        idx.abi_version = 13;
+        let removed = idx.prune_archive_abi_mismatches(13);
+        assert_eq!(removed, 1);
+        assert!(idx.lookup("old", "1.0", TargetArch::Wasm32).is_none());
+        assert!(idx.lookup("new", "1.0", TargetArch::Wasm32).is_some());
+        idx.validate_archive_abi_versions().unwrap();
     }
 
     #[test]

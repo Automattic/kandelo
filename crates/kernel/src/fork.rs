@@ -11,6 +11,8 @@
 //! - Rlimits (256 bytes): 16 pairs of u64
 //! - Terminal (56 bytes): flags, control chars, window size
 //! - Program break (4 bytes): current brk value
+//! - Memory layout metadata (20 bytes): initial brk, max addr, brk limit,
+//!   mmap base, reserved prefix
 
 extern crate alloc;
 
@@ -21,7 +23,7 @@ use wasm_posix_shared::fd_flags::FD_CLOEXEC;
 
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
 use crate::lock::LockTable;
-use crate::memory::{MappedRegion, MemoryManager};
+use crate::memory::{MappedRegion, MemoryLayoutMetadata, MemoryManager};
 use crate::ofd::{FileType, OfdTable, OpenFileDesc};
 use crate::process::{Process, ProcessState};
 use crate::signal::{SignalAction, SignalHandler, SignalState};
@@ -30,7 +32,7 @@ use crate::terminal::{NCCS, TerminalState, WinSize};
 
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-const FORK_VERSION: u32 = 7;
+const FORK_VERSION: u32 = 8;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -396,6 +398,12 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
     // ── Program break ──
     w.write_u32(proc.memory.get_brk() as u32)?;
+    let memory_layout = proc.memory.layout_metadata();
+    w.write_u32(memory_layout.initial_brk as u32)?;
+    w.write_u32(memory_layout.max_addr as u32)?;
+    w.write_u32(memory_layout.brk_limit as u32)?;
+    w.write_u32(memory_layout.mmap_base as u32)?;
+    w.write_u32(memory_layout.reserved_until as u32)?;
 
     // ── mmap mappings (v5) ──
     let mappings = proc.memory.mappings();
@@ -734,7 +742,15 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
 
     // ── Program break ──
     let program_break = r.read_u32()?;
+    let memory_layout = MemoryLayoutMetadata {
+        initial_brk: r.read_u32()? as usize,
+        max_addr: r.read_u32()? as usize,
+        brk_limit: r.read_u32()? as usize,
+        mmap_base: r.read_u32()? as usize,
+        reserved_until: r.read_u32()? as usize,
+    };
     let mut memory = MemoryManager::new();
+    memory.set_layout_metadata(memory_layout);
     memory.set_brk(program_break as usize);
 
     // ── mmap mappings (v5) ──
@@ -1634,6 +1650,47 @@ mod tests {
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
 
         assert_eq!(child.memory.get_brk(), 0x02000000);
+    }
+
+    #[test]
+    fn test_fork_inherits_compact_memory_layout() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(1);
+        let brk_base = 0x00200000;
+        proc.memory.set_brk_base(brk_base);
+        proc.memory.set_max_addr(0x00800000);
+        proc.memory.set_mmap_base(brk_base);
+
+        let first = proc.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(first, brk_base);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let mut child = deserialize_fork_state(&buf[..written], 42).unwrap();
+
+        assert_eq!(child.memory.get_brk(), brk_base);
+        assert_eq!(child.memory.set_brk(brk_base + 0x10000), brk_base);
+
+        let protected = child.memory.mmap_anonymous(
+            brk_base - 0x10000,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+        );
+        assert_eq!(protected, MAP_FAILED);
+
+        let next = child.memory.mmap_anonymous(
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+        );
+        assert_eq!(next, brk_base + 0x10000);
     }
 
     #[test]

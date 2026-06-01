@@ -33,6 +33,9 @@
 #
 # For --status failed, omit --archive-path/--archive-name/--cache-key-sha
 # and pass --error "<text>" instead.
+#
+# To repair only release-level index metadata such as abi_version:
+#   bash scripts/index-update.sh --target-tag pr-595-staging --repair-only
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -48,6 +51,7 @@ ARCHIVE_PATH=""
 ARCHIVE_NAME=""
 CACHE_KEY_SHA=""
 ERROR=""
+REPAIR_ONLY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -61,6 +65,7 @@ while [[ $# -gt 0 ]]; do
     --archive-name)  ARCHIVE_NAME="$2"; shift 2 ;;
     --cache-key-sha) CACHE_KEY_SHA="$2"; shift 2 ;;
     --error)         ERROR="$2"; shift 2 ;;
+    --repair-only)   REPAIR_ONLY=1; shift ;;
     *)
       echo "index-update.sh: unknown flag $1" >&2
       exit 2
@@ -73,6 +78,46 @@ require() {
   if [ -z "$value" ]; then
     echo "index-update.sh: --$name is required" >&2
     exit 2
+  fi
+}
+
+current_abi_version() {
+  local abi
+  abi="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs | head -n1)"
+  if [ -z "$abi" ]; then
+    echo "index-update.sh: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    exit 2
+  fi
+  printf '%s\n' "$abi"
+}
+
+expected_abi_for_target_tag() {
+  local abi
+  case "$TARGET_TAG" in
+    binaries-abi-v*)
+      abi="${TARGET_TAG#binaries-abi-v}"
+      ;;
+    pr-*-staging)
+      abi="$(current_abi_version)"
+      ;;
+    *)
+      echo "index-update.sh: can't infer ABI for target-tag $TARGET_TAG; \
+        update expected_abi_for_target_tag for this tag shape." >&2
+      exit 2
+      ;;
+  esac
+
+  if ! [[ "$abi" =~ ^[0-9]+$ ]]; then
+    echo "index-update.sh: inferred invalid ABI $abi for target-tag $TARGET_TAG" >&2
+    exit 2
+  fi
+  printf '%s\n' "$abi"
+}
+
+archive_name_abi() {
+  local name="$1"
+  if [[ "$name" =~ (^|-)abi([0-9]+)- ]]; then
+    printf '%s\n' "${BASH_REMATCH[2]}"
   fi
 }
 
@@ -314,16 +359,25 @@ upload_archive_asset() {
 }
 
 require target-tag    "$TARGET_TAG"
-require package       "$PACKAGE"
-require version       "$VERSION"
-require revision      "$REVISION"
-require arch          "$ARCH"
-require status        "$STATUS"
+
+if [ "$REPAIR_ONLY" = "1" ]; then
+  STATUS="repair"
+else
+  require package       "$PACKAGE"
+  require version       "$VERSION"
+  require revision      "$REVISION"
+  require arch          "$ARCH"
+  require status        "$STATUS"
+fi
 
 # Lets state-lock.sh distinguish a live same-run matrix owner from a
 # completed same-run job that failed to release the lock after an upload
 # or token error.
-export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-${PACKAGE}, ${ARCH}}"
+if [ "$STATUS" = "repair" ]; then
+  export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-index repair}"
+else
+  export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-${PACKAGE}, ${ARCH}}"
+fi
 
 case "$STATUS" in
   success)
@@ -338,18 +392,31 @@ case "$STATUS" in
   failed)
     require error "$ERROR"
     ;;
+  repair)
+    ;;
   *)
-    echo "index-update.sh: --status must be success or failed, got $STATUS" >&2
+    echo "index-update.sh: --status must be success, failed, or repair, got $STATUS" >&2
     exit 2
     ;;
 esac
+
+EXPECTED_ABI="$(expected_abi_for_target_tag)"
+if [ -n "$ARCHIVE_NAME" ]; then
+  ARCHIVE_ABI="$(archive_name_abi "$ARCHIVE_NAME")"
+  if [ -n "$ARCHIVE_ABI" ] && [ "$ARCHIVE_ABI" != "$EXPECTED_ABI" ]; then
+    echo "index-update.sh: --archive-name $ARCHIVE_NAME declares ABI $ARCHIVE_ABI, \
+but $TARGET_TAG expects ABI $EXPECTED_ABI" >&2
+    exit 2
+  fi
+fi
 
 # 1. Acquire the state-lock for this target tag. Same script that
 #    serialises durable-release publishes; the per-target-tag subject
 #    keeps independent rebuilds (e.g. abi-v8 vs abi-v9) from blocking
 #    each other.
-bash .github/scripts/state-lock.sh acquire "$TARGET_TAG"
-trap 'bash .github/scripts/state-lock.sh release || true' EXIT
+STATE_LOCK_SCRIPT="${STATE_LOCK_SCRIPT:-.github/scripts/state-lock.sh}"
+bash "$STATE_LOCK_SCRIPT" acquire "$TARGET_TAG"
+trap 'bash "$STATE_LOCK_SCRIPT" release || true' EXIT
 
 # 2. Ensure the release exists.
 ensure_release_exists
@@ -366,27 +433,8 @@ if [ -n "$index_info" ]; then
     --dir "$INDEX_DIR" \
     --clobber
 else
-  # Bootstrap: empty ledger with the matching ABI. ABI is encoded in
-  # the target-tag (binaries-abi-v<N>); strip the prefix to recover.
-  case "$TARGET_TAG" in
-    binaries-abi-v*)
-      ABI="${TARGET_TAG#binaries-abi-v}"
-      ;;
-    pr-*-staging)
-      # Staging tags carry the ABI inside their archive filenames, not
-      # the tag name. Read ABI_VERSION from the source tree.
-      ABI=$(grep -E 'pub const ABI_VERSION: u32 = [0-9]+' \
-              crates/shared/src/lib.rs \
-              | sed -E 's/.* = ([0-9]+).*/\1/')
-      ;;
-    *)
-      echo "index-update.sh: can't infer ABI for target-tag $TARGET_TAG; \
-        update the bootstrap clause for this tag shape." >&2
-      exit 2
-      ;;
-  esac
   cat > "$INDEX_PATH" <<EOF
-abi_version = $ABI
+abi_version = $EXPECTED_ABI
 generated_at = "$(date -u +%FT%TZ)"
 generator = "index-update.sh bootstrap"
 EOF
@@ -398,15 +446,16 @@ HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo run --release -p xtask --target "$HOST_TRIPLE" --quiet -- \
   index-update \
     --index-path "$INDEX_PATH" \
-    --package "$PACKAGE" \
-    --version "$VERSION" \
-    --revision "$REVISION" \
-    --arch "$ARCH" \
     --status "$STATUS" \
+    ${PACKAGE:+--package "$PACKAGE"} \
+    ${VERSION:+--version "$VERSION"} \
+    ${REVISION:+--revision "$REVISION"} \
+    ${ARCH:+--arch "$ARCH"} \
     ${ARCHIVE_PATH:+--archive-path "$ARCHIVE_PATH"} \
     ${ARCHIVE_NAME:+--archive-name "$ARCHIVE_NAME"} \
     ${CACHE_KEY_SHA:+--cache-key-sha "$CACHE_KEY_SHA"} \
     ${ERROR:+--error "$ERROR"} \
+    --expected-abi "$EXPECTED_ABI" \
     --built-at "$(date -u +%FT%TZ)" \
     --built-by "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID:-local}"
 
@@ -422,6 +471,10 @@ gh_retry gh release upload "$TARGET_TAG" \
   --clobber \
   "$INDEX_PATH"
 
-echo "index-update.sh: $PACKAGE@$VERSION ($ARCH, status=$STATUS) recorded in $TARGET_TAG/index.toml"
+if [ "$STATUS" = "repair" ]; then
+  echo "index-update.sh: repaired $TARGET_TAG/index.toml for ABI $EXPECTED_ABI"
+else
+  echo "index-update.sh: $PACKAGE@$VERSION ($ARCH, status=$STATUS) recorded in $TARGET_TAG/index.toml"
+fi
 
 # 6. Lock release is via the EXIT trap.

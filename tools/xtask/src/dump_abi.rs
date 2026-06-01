@@ -176,8 +176,12 @@ fn render_c_header() -> String {
          /* Mirrors wasm_posix_shared::ABI_VERSION. */\n\
          #define WASM_POSIX_ABI_VERSION {version}u\n\
          \n\
+         /* Default process-wasm pthread slot declaration. */\n\
+         #define WASM_POSIX_THREAD_SLOT_DECL_DEFAULT {thread_slots_default}\n\
+         \n\
          #endif /* WASM_POSIX_ABI_CONSTANTS_H */\n",
-        version = shared::ABI_VERSION
+        version = shared::ABI_VERSION,
+        thread_slots_default = shared::process_memory::THREAD_SLOTS_USE_HOST_DEFAULT,
     )
 }
 
@@ -325,6 +329,79 @@ fn render_ts_module() -> String {
     out.push_str(&format!(
         "export const CH_TOTAL_SIZE = {} as const;\n\n",
         channel::MIN_CHANNEL_SIZE
+    ));
+
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_WASM_PAGE_SIZE = {} as const;\n",
+        shared::process_memory::WASM_PAGE_SIZE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_DEFAULT_MAX_PAGES = {} as const;\n",
+        shared::process_memory::DEFAULT_MAX_PAGES
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_DEFAULT_INITIAL_PAGES = {} as const;\n",
+        shared::process_memory::DEFAULT_INITIAL_PAGES
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_DEFAULT_THREAD_SLOTS = {} as const;\n",
+        shared::process_memory::DEFAULT_THREAD_SLOTS
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT = {} as const;\n",
+        shared::process_memory::THREAD_SLOTS_USE_HOST_DEFAULT
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_THREAD_SLOTS_NONE = {} as const;\n",
+        shared::process_memory::THREAD_SLOTS_NONE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT = {:?} as const;\n",
+        shared::process_memory::THREAD_SLOT_DECL_EXPORT
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_LEGACY_MMAP_BASE = {} as const;\n",
+        shared::process_memory::LEGACY_MMAP_BASE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_FALLBACK_BRK_BASE = {} as const;\n",
+        shared::process_memory::FALLBACK_BRK_BASE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE = {} as const;\n",
+        shared::process_memory::FORK_SAVE_BUFFER_SIZE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_MAIN_FORK_SAVE_PAGE = {} as const;\n",
+        shared::process_memory::MAIN_FORK_SAVE_PAGE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_MAIN_CHANNEL_PRIMARY_PAGE = {} as const;\n",
+        shared::process_memory::MAIN_CHANNEL_PRIMARY_PAGE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_MAIN_CHANNEL_SPILL_PAGE = {} as const;\n",
+        shared::process_memory::MAIN_CHANNEL_SPILL_PAGE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_THREAD_SLOT_TLS_PAGE = {} as const;\n",
+        shared::process_memory::THREAD_SLOT_TLS_PAGE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_THREAD_SLOT_FORK_SAVE_PAGE = {} as const;\n",
+        shared::process_memory::THREAD_SLOT_FORK_SAVE_PAGE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE = {} as const;\n",
+        shared::process_memory::THREAD_SLOT_CHANNEL_PRIMARY_PAGE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_THREAD_SLOT_CHANNEL_SPILL_PAGE = {} as const;\n",
+        shared::process_memory::THREAD_SLOT_CHANNEL_SPILL_PAGE
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_MEMORY_PAGES_PER_THREAD_SLOT = {} as const;\n\n",
+        shared::process_memory::PAGES_PER_THREAD_SLOT
     ));
 
     out.push_str(&format!(
@@ -593,6 +670,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     root.insert("host_adapter".into(), host_adapter());
     root.insert("syscall_arg_descriptors".into(), syscall_arg_descriptors());
     root.insert("channel_status_codes".into(), channel_status_codes());
+    root.insert("process_memory_layout".into(), process_memory_layout());
     root.insert("custom_sections".into(), custom_sections());
     root.insert(
         "process_expected_globals".into(),
@@ -656,6 +734,117 @@ fn channel_buffers() -> Value {
     m.insert("data_offset".into(), json!(DATA_OFFSET));
     m.insert("data_size".into(), json!(DATA_SIZE));
     m.insert("min_channel_size".into(), json!(MIN_CHANNEL_SIZE));
+    Value::Object(m.into_iter().collect())
+}
+
+fn process_memory_layout() -> Value {
+    use shared::process_memory as pm;
+
+    let channel_pages = (shared::channel::MIN_CHANNEL_SIZE + pm::WASM_PAGE_SIZE as usize - 1)
+        / pm::WASM_PAGE_SIZE as usize;
+
+    let page = |name: &str, page_offset: u32, purpose: &str| {
+        let mut m: JsonMap = BTreeMap::new();
+        m.insert("name".into(), json!(name));
+        m.insert("page_offset".into(), json!(page_offset));
+        m.insert("purpose".into(), json!(purpose));
+        Value::Object(m.into_iter().collect())
+    };
+
+    let mut declarations: JsonMap = BTreeMap::new();
+    declarations.insert(
+        "thread_slot_export".into(),
+        json!(pm::THREAD_SLOT_DECL_EXPORT),
+    );
+    declarations.insert(
+        "use_host_default".into(),
+        json!(pm::THREAD_SLOTS_USE_HOST_DEFAULT),
+    );
+    declarations.insert("none".into(), json!(pm::THREAD_SLOTS_NONE));
+
+    let mut defaults: JsonMap = BTreeMap::new();
+    defaults.insert("initial_pages".into(), json!(pm::DEFAULT_INITIAL_PAGES));
+    defaults.insert("max_pages".into(), json!(pm::DEFAULT_MAX_PAGES));
+    defaults.insert("thread_slots".into(), json!(pm::DEFAULT_THREAD_SLOTS));
+
+    let mut legacy: JsonMap = BTreeMap::new();
+    legacy.insert("mmap_base".into(), json!(pm::LEGACY_MMAP_BASE));
+    legacy.insert("fallback_brk_base".into(), json!(pm::FALLBACK_BRK_BASE));
+
+    let mut main_control: JsonMap = BTreeMap::new();
+    main_control.insert(
+        "pages".into(),
+        Value::Array(vec![
+            page(
+                "fork_save_scratch",
+                pm::MAIN_FORK_SAVE_PAGE,
+                "main thread fork-save/scratch page",
+            ),
+            page(
+                "syscall_channel_primary",
+                pm::MAIN_CHANNEL_PRIMARY_PAGE,
+                "main thread syscall channel primary page",
+            ),
+            page(
+                "syscall_channel_spill",
+                pm::MAIN_CHANNEL_SPILL_PAGE,
+                "main thread syscall channel spill page",
+            ),
+        ]),
+    );
+
+    let mut thread_slot: JsonMap = BTreeMap::new();
+    thread_slot.insert("pages_per_slot".into(), json!(pm::PAGES_PER_THREAD_SLOT));
+    thread_slot.insert(
+        "pages".into(),
+        Value::Array(vec![
+            page(
+                "tls_control",
+                pm::THREAD_SLOT_TLS_PAGE,
+                "per-pthread TLS/control page",
+            ),
+            page(
+                "fork_save_scratch",
+                pm::THREAD_SLOT_FORK_SAVE_PAGE,
+                "per-pthread fork-save/scratch page",
+            ),
+            page(
+                "syscall_channel_primary",
+                pm::THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
+                "per-pthread syscall channel primary page",
+            ),
+            page(
+                "syscall_channel_spill",
+                pm::THREAD_SLOT_CHANNEL_SPILL_PAGE,
+                "per-pthread syscall channel spill page",
+            ),
+        ]),
+    );
+
+    let mut m: JsonMap = BTreeMap::new();
+    m.insert("wasm_page_size".into(), json!(pm::WASM_PAGE_SIZE));
+    m.insert("channel_pages".into(), json!(channel_pages));
+    m.insert(
+        "fork_save_buffer_size".into(),
+        json!(pm::FORK_SAVE_BUFFER_SIZE),
+    );
+    m.insert(
+        "main_control".into(),
+        Value::Object(main_control.into_iter().collect()),
+    );
+    m.insert(
+        "thread_slot".into(),
+        Value::Object(thread_slot.into_iter().collect()),
+    );
+    m.insert(
+        "process_wasm_declarations".into(),
+        Value::Object(declarations.into_iter().collect()),
+    );
+    m.insert(
+        "defaults".into(),
+        Value::Object(defaults.into_iter().collect()),
+    );
+    m.insert("legacy".into(), Value::Object(legacy.into_iter().collect()));
     Value::Object(m.into_iter().collect())
 }
 

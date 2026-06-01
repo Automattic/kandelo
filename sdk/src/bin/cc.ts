@@ -1,7 +1,18 @@
 #!/usr/bin/env -S node --experimental-strip-types
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveToolchain, type Toolchain } from '../lib/toolchain.ts';
-import { compileFlags, linkFlags, SHARED_LINK_FLAGS, filterArgs, parseArgs, needsLinking } from '../lib/flags.ts';
+import {
+  compileFlags,
+  filterArgs,
+  inferThreadSlotDeclaration,
+  linkFlags,
+  needsLinking,
+  parseArgs,
+  SHARED_LINK_FLAGS,
+  THREAD_SLOT_USE_HOST_DEFAULT,
+  threadSlotDeclarationDefine,
+} from '../lib/flags.ts';
 import { runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
 import { type WasmArch, detectArch, targetTriple } from '../lib/arch.ts';
@@ -51,6 +62,18 @@ export function buildClangArgs(userArgs: string[], toolchain: Toolchain, arch: W
       args.push(...SHARED_LINK_FLAGS);
     } else {
       // Executable build: link CRT, libc, and syscall glue
+      const threadSlots = inferThreadSlotDeclaration(parsed, userArgs, {
+        readFile: (path) => {
+          try {
+            return readFileSync(path, 'utf8');
+          } catch {
+            return null;
+          }
+        },
+      });
+      if (threadSlots !== THREAD_SLOT_USE_HOST_DEFAULT) {
+        args.push(threadSlotDeclarationDefine(threadSlots));
+      }
       args.push(
         join(toolchain.glueDir, 'channel_syscall.c'),
         join(toolchain.glueDir, 'compiler_rt.c'),

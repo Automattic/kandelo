@@ -19,9 +19,10 @@ pub mod host_abi;
 ///
 /// See `docs/abi-versioning.md` for the full policy.
 ///
-/// 12: fork-instrument switch-dispatch redesign + wpk_fork_* exports
-///     replace legacy fork-continuation exports on top of main's ABI 11.
-pub const ABI_VERSION: u32 = 12;
+/// 13: process memory layout ABI is Rust-declared; per-pthread slots
+///     use explicit TLS/control, fork-save, channel, and spill pages,
+///     with a wasm-declared reserved thread-slot count.
+pub const ABI_VERSION: u32 = 13;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -894,6 +895,74 @@ pub struct WasmStatfs {
     pub _pad: u32,
 }
 
+/// Process memory layout ABI metadata.
+///
+/// Rust owns this declaration so the structural ABI snapshot, generated host
+/// bindings, and JavaScript memory allocator all change together. Any value
+/// change here changes the process/user-program ABI and requires bumping
+/// [`ABI_VERSION`].
+pub mod process_memory {
+    /// WebAssembly linear memory page size in bytes.
+    pub const WASM_PAGE_SIZE: u32 = 65_536;
+
+    /// Host policy default for process maximum memory pages. This is not a
+    /// user-program promise, but generated host bindings expose it next to the
+    /// layout constants so host defaults are centralized.
+    pub const DEFAULT_MAX_PAGES: u32 = 16_384;
+
+    /// Minimum initial page count used when a binary does not import more.
+    pub const DEFAULT_INITIAL_PAGES: u32 = 17;
+
+    /// Host default pthread slot reservation when a program declares
+    /// [`THREAD_SLOTS_USE_HOST_DEFAULT`].
+    pub const DEFAULT_THREAD_SLOTS: u32 = 16;
+
+    /// A process-wasm declaration value meaning "use the host default".
+    pub const THREAD_SLOTS_USE_HOST_DEFAULT: i32 = -1;
+
+    /// A process-wasm declaration value meaning "reserve no pthread slots".
+    pub const THREAD_SLOTS_NONE: i32 = 0;
+
+    /// Export name of the process-wasm constant-return function that declares
+    /// the requested pthread slot reservation.
+    pub const THREAD_SLOT_DECL_EXPORT: &str = "__wasm_posix_thread_slots";
+
+    /// Legacy kernel MemoryManager::MMAP_BASE. Compact hosts override this
+    /// per process but still expose the legacy boundary for compatibility.
+    pub const LEGACY_MMAP_BASE: u32 = 0x0400_0000;
+
+    /// Fallback initial brk when a binary does not export `__heap_base`.
+    pub const FALLBACK_BRK_BASE: u32 = 0x0100_0000;
+
+    /// Size of one fork save buffer in bytes.
+    pub const FORK_SAVE_BUFFER_SIZE: u32 = 16 * 1024;
+
+    /// Main-thread fork-save/scratch page, relative to `controlBasePage`.
+    pub const MAIN_FORK_SAVE_PAGE: u32 = 0;
+
+    /// Main-thread syscall channel primary page, relative to
+    /// `controlBasePage`.
+    pub const MAIN_CHANNEL_PRIMARY_PAGE: u32 = 1;
+
+    /// Main-thread syscall channel spill page, relative to `controlBasePage`.
+    pub const MAIN_CHANNEL_SPILL_PAGE: u32 = 2;
+
+    /// TLS/control page, relative to a pthread slot start page.
+    pub const THREAD_SLOT_TLS_PAGE: u32 = 0;
+
+    /// Fork-save/scratch page, relative to a pthread slot start page.
+    pub const THREAD_SLOT_FORK_SAVE_PAGE: u32 = 1;
+
+    /// Syscall channel primary page, relative to a pthread slot start page.
+    pub const THREAD_SLOT_CHANNEL_PRIMARY_PAGE: u32 = 2;
+
+    /// Syscall channel spill page, relative to a pthread slot start page.
+    pub const THREAD_SLOT_CHANNEL_SPILL_PAGE: u32 = 3;
+
+    /// Pages reserved for one pthread control slot.
+    pub const PAGES_PER_THREAD_SLOT: u32 = 4;
+}
+
 /// ABI-surface constants captured by the structural ABI snapshot.
 ///
 /// Any addition, removal, or value change in this module is, by definition,
@@ -1030,6 +1099,7 @@ pub mod abi {
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
         "kernel_set_cwd",
         "kernel_set_max_addr",
+        "kernel_set_mmap_base",
         "kernel_set_process_argv",
     ];
 

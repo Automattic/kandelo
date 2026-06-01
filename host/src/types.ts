@@ -2,6 +2,8 @@ export interface KernelConfig {
   maxWorkers: number;
   dataBufferSize: number;
   useSharedMemory: boolean;
+  /** Host default pthread slots when process wasm declares -1. */
+  defaultThreadSlots?: number;
   /** Log every syscall with decoded args and return values to stderr */
   enableSyscallLog?: boolean;
   /** Log syscalls only for processes with this ptrWidth (4 or 8). Useful when

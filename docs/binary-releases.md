@@ -207,6 +207,24 @@ fallback_built_at       = "2026-05-12T..."
 | `failed` | Latest build failed; `error` describes why | Use `fallback_*` if present; else fall through to source build |
 | `pending` / `building` | Transient (rebuild queued or in flight) | Use `fallback_*` if present; else source build |
 
+### ABI invariant
+
+Each `index.toml` is single-ABI. Its top-level `abi_version` must
+match every `archive_url` and `fallback_archive_url` filename segment
+of the form `-abi<N>-`. Durable `binaries-abi-v<N>` releases use `N`
+from the tag. Mutable `pr-<NNN>-staging` releases use the in-tree
+`ABI_VERSION` from `crates/shared/src/lib.rs` at publish time.
+
+`scripts/index-update.sh` passes the expected ABI into
+`xtask index-update` on every publish. If a reused PR-staging release
+still has an old `index.toml`, the top-level `abi_version` is
+rewritten before the new entry is applied and old-ABI archive entries
+are pruned. `xtask index-update` validates the final ledger before
+upload, so mixed-ABI indexes are rejected rather than published.
+Consumers also compare `index.toml`'s `abi_version` with the
+resolver's requested ABI; a mismatch logs a warning and falls through
+to source build.
+
 ### Last-green fallback
 
 When a per-package rebuild for `(name, version, arch)` fails, the

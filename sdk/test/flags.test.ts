@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { filterArgs, parseArgs, needsLinking, COMPILE_FLAGS, LINK_FLAGS } from '../src/lib/flags.ts';
+import {
+  COMPILE_FLAGS,
+  filterArgs,
+  inferThreadSlotDeclaration,
+  LINK_FLAGS,
+  needsLinking,
+  parseArgs,
+  THREAD_SLOT_NONE,
+  THREAD_SLOT_USE_HOST_DEFAULT,
+} from '../src/lib/flags.ts';
 
 describe('filterArgs', () => {
   it('passes through normal flags', () => {
@@ -102,6 +111,12 @@ describe('parseArgs', () => {
     expect(parsed.outputFile).toBe('foo.o');
     expect(parsed.compileOnly).toBe(true);
   });
+
+  it('parses explicit thread slot declarations', () => {
+    expect(parseArgs(['--kandelo-thread-slots=3', 'foo.c']).threadSlots).toBe(3);
+    expect(parseArgs(['--wasm-posix-thread-slots', '0', 'foo.c']).threadSlots).toBe(0);
+    expect(parseArgs(['--kandelo-thread-slots=-1', 'foo.c']).threadSlots).toBe(-1);
+  });
 });
 
 describe('needsLinking', () => {
@@ -144,5 +159,33 @@ describe('LINK_FLAGS', () => {
     expect(LINK_FLAGS).toContain('-Wl,--entry=_start');
     expect(LINK_FLAGS).toContain('-Wl,--import-memory');
     expect(LINK_FLAGS).toContain('-Wl,--shared-memory');
+  });
+});
+
+describe('inferThreadSlotDeclaration', () => {
+  it('emits zero only for source-only builds with no thread or dynamic use', () => {
+    const parsed = parseArgs(['main.c', '-o', 'main.wasm']);
+    expect(inferThreadSlotDeclaration(parsed, ['main.c', '-o', 'main.wasm'], {
+      readFile: () => 'int main(void) { return 0; }\n',
+    })).toBe(THREAD_SLOT_NONE);
+  });
+
+  it('uses the host default for uncertain thread or dynamic use', () => {
+    const threaded = parseArgs(['main.c', '-o', 'main.wasm']);
+    expect(inferThreadSlotDeclaration(threaded, ['-pthread', 'main.c'], {
+      readFile: () => 'int main(void) { return 0; }\n',
+    })).toBe(THREAD_SLOT_USE_HOST_DEFAULT);
+
+    expect(inferThreadSlotDeclaration(threaded, ['main.c'], {
+      readFile: () => 'void f(void) { pthread_create(0, 0, 0, 0); }\n',
+    })).toBe(THREAD_SLOT_USE_HOST_DEFAULT);
+
+    expect(inferThreadSlotDeclaration(threaded, ['main.c'], {
+      readFile: () => '#include<thread>\nvoid f(void) { clone (0); }\n',
+    })).toBe(THREAD_SLOT_USE_HOST_DEFAULT);
+
+    const objectOnly = parseArgs(['main.o', '-o', 'main.wasm']);
+    expect(inferThreadSlotDeclaration(objectOnly, ['main.o', '-o', 'main.wasm']))
+      .toBe(THREAD_SLOT_USE_HOST_DEFAULT);
   });
 });

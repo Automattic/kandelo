@@ -1272,6 +1272,17 @@ fn try_index_install(
                     return None;
                 }
             };
+            if index.abi_version != abi_version {
+                eprintln!(
+                    "warning: index for {} from {} declares ABI {}, but resolver ABI is {}; \
+                     falling back to source build",
+                    target.spec(),
+                    index_url,
+                    index.abi_version,
+                    abi_version,
+                );
+                return None;
+            }
             let entry = match index.lookup(&target.name, &target.version, arch) {
                 Some(e) => e,
                 None => {
@@ -4639,6 +4650,75 @@ archive_sha256 = "{archive_sha_hex}"
         // Manifest + artifacts dir stripped during reshape.
         assert!(!path.join("manifest.toml").exists());
         assert!(!path.join("artifacts").exists());
+    }
+
+    #[test]
+    fn index_fetch_falls_through_on_index_toml_abi_mismatch() {
+        let root = tempdir("idx-index-abi-fail-reg");
+        let cache = tempdir("idx-index-abi-fail-cache");
+        let archive_dir = tempdir("idx-index-abi-fail-archive");
+        let index_dir = tempdir("idx-index-abi-fail-index");
+
+        let index_path = index_dir.join("index.toml");
+        let index_url = format!("file://{}", index_path.display());
+        write_lib_with_build_toml(&root, "libIdxTopAbi", &index_url);
+
+        let reg = Registry {
+            roots: vec![root.clone()],
+        };
+        let m = reg.load("libIdxTopAbi").unwrap();
+        let cache_key_hex = hex(&compute_sha(
+            &m,
+            &reg,
+            TEST_ARCH,
+            TEST_ABI,
+            &mut BTreeMap::new(),
+            &mut Vec::new(),
+        )
+        .unwrap());
+
+        let manifest_text =
+            archived_manifest_text("libIdxTopAbi", "wasm32", &[TEST_ABI], &cache_key_hex);
+        let archive_bytes =
+            crate::remote_fetch::build_test_archive(&manifest_text, &[("lib/out.a", b"REMOTE")]);
+        let archive_sha_hex = sha256_hex(&archive_bytes);
+        let archive_path = archive_dir.join("libIdxTopAbi-1.0.0.tar.zst");
+        std::fs::write(&archive_path, &archive_bytes).unwrap();
+        let archive_url = format!("file://{}", archive_path.display());
+
+        let arch_str = TEST_ARCH.as_str();
+        std::fs::write(
+            &index_path,
+            format!(
+                r#"abi_version = {}
+generated_at = "2026-05-13T00:00:00Z"
+generator = "test"
+
+[[packages]]
+name = "libIdxTopAbi"
+version = "1.0.0"
+revision = 1
+
+[packages.binary.{arch_str}]
+status = "success"
+archive_url = "{archive_url}"
+archive_sha256 = "{archive_sha_hex}"
+cache_key_sha = "{cache_key_hex}"
+"#,
+                TEST_ABI + 1
+            ),
+        )
+        .unwrap();
+
+        let path =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+
+        assert!(
+            path.join("via-build").exists(),
+            "top-level index ABI mismatch must fall through to source build"
+        );
+        let lib = std::fs::read(path.join("lib/out.a")).unwrap();
+        assert_ne!(lib, b"REMOTE", "remote bytes must not have been installed");
     }
 
     #[test]
