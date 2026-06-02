@@ -164,7 +164,7 @@ describe("Rust-owned process wait lifecycle", () => {
     new Uint8Array(processMemory.buffer).set([3, 1, 4, 1], addr);
 
     const setCurrentPid = vi.fn();
-    const lookupMapping = vi.fn((_addr: number, outPtr: bigint) => {
+    const lookupMapping = vi.fn((_addr: bigint, outPtr: bigint) => {
       const view = new DataView(kernelMemory.buffer);
       view.setInt32(Number(outPtr), 9, true);
       view.setUint32(Number(outPtr) + 4, 4, true);
@@ -190,13 +190,13 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.handleIpcShmdt(channel, [addr]);
 
     expect(setCurrentPid).toHaveBeenCalledWith(11);
-    expect(lookupMapping).toHaveBeenCalledWith(addr, BigInt(worker.scratchOffset));
+    expect(lookupMapping).toHaveBeenCalledWith(BigInt(addr), BigInt(worker.scratchOffset));
     expect(writeChunk).toHaveBeenCalledTimes(1);
     expect(writeChunk.mock.calls[0][0]).toBe(9);
     expect(writeChunk.mock.calls[0][1]).toBe(0);
     expect(typeof writeChunk.mock.calls[0][2]).toBe("bigint");
     expect(writeChunk.mock.calls[0][3]).toBe(4);
-    expect(detachByAddr).toHaveBeenCalledWith(addr);
+    expect(detachByAddr).toHaveBeenCalledWith(BigInt(addr));
     expect(worker.completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
     expect(worker.relistenChannel).toHaveBeenCalledWith(channel);
   });
