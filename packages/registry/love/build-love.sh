@@ -399,6 +399,8 @@ local arena_demo_hit_flash = 0
 local arena_demo_hit_x, arena_demo_hit_y = nil, nil
 local arena_demo_snake = nil
 local arena_demo_attack_timer = 0
+local arena_demo_bursts = {}
+local arena_demo_shot = nil
 
 local function is_current_arena()
   return main and main.current and main.current.is and Arena and main.current:is(Arena)
@@ -533,6 +535,8 @@ local function reset_arena_demo_targets()
   arena_demo_hit_x, arena_demo_hit_y = nil, nil
   arena_demo_snake = nil
   arena_demo_attack_timer = 0
+  arena_demo_bursts = {}
+  arena_demo_shot = nil
   if not is_current_arena() then return end
   local arena = main.current
   local avoid_x, avoid_y
@@ -551,6 +555,9 @@ local function collect_arena_demo_target(arena, slot, avoid_x, avoid_y)
   arena_demo_score = arena_demo_score + 1
   arena_demo_hit_flash = 0.8
   arena_demo_hit_x, arena_demo_hit_y = target.x, target.y
+  arena_demo_shot = {x1 = avoid_x or target.x, y1 = avoid_y or target.y, x2 = target.x, y2 = target.y, t = 0.18}
+  table.insert(arena_demo_bursts, {x = target.x, y = target.y, t = 0.45})
+  if #arena_demo_bursts > 8 then table.remove(arena_demo_bursts, 1) end
   spawn_arena_demo_target(arena, slot, avoid_x, avoid_y)
 end
 
@@ -558,6 +565,14 @@ local function update_arena_demo_targets(arena, actors, dt)
   if #arena_demo_targets == 0 then reset_arena_demo_targets() end
   arena_demo_hit_flash = math.max(0, arena_demo_hit_flash - dt)
   arena_demo_attack_timer = arena_demo_attack_timer + dt
+  if arena_demo_shot then
+    arena_demo_shot.t = arena_demo_shot.t - dt
+    if arena_demo_shot.t <= 0 then arena_demo_shot = nil end
+  end
+  for i = #arena_demo_bursts, 1, -1 do
+    arena_demo_bursts[i].t = arena_demo_bursts[i].t - dt
+    if arena_demo_bursts[i].t <= 0 then table.remove(arena_demo_bursts, i) end
+  end
 
   for i, target in ipairs(arena_demo_targets) do
     target.phase = (target.phase or 0) + 3*dt
@@ -585,6 +600,56 @@ local function update_arena_demo_targets(arena, actors, dt)
       end
     end
     if best_i then collect_arena_demo_target(arena, best_i, ax, ay) end
+  end
+end
+
+local function draw_arena_demo_background(arena)
+  local w, h = gw*sx, gh*sy
+  love.graphics.setColor(0.11, 0.13, 0.14, 1)
+  love.graphics.rectangle('fill', 0, 0, w, h)
+  love.graphics.setColor(0.19, 0.22, 0.23, 1)
+  for y = 0, h, 32 do love.graphics.line(0, y, w, y) end
+  for x = 0, w, 32 do love.graphics.line(x, 0, x, h) end
+
+  local x1, y1 = ((arena.x1 or 0) + 2)*sx, ((arena.y1 or 0) + 2)*sy
+  local x2, y2 = ((arena.x2 or gw) - 2)*sx, ((arena.y2 or gh) - 2)*sy
+  local hud_h = math.max(54, y1 - 22)
+  love.graphics.setColor(0.14, 0.12, 0.10, 1)
+  love.graphics.rectangle('fill', 16, 14, w - 32, hud_h)
+  love.graphics.setColor(0.54, 0.32, 0.22, 1)
+  love.graphics.rectangle('line', 16, 14, w - 32, hud_h)
+  love.graphics.setColor(0.82, 0.94, 0.72, 1)
+  love.graphics.print('SNKRX', 32, 28)
+  love.graphics.print('wave 1', 32, 50)
+  love.graphics.print('hits ' .. tostring(arena_demo_score), 112, 50)
+  love.graphics.print('units', 218, 50)
+  local unit_colors = {
+    {0.20, 0.95, 0.45}, {0.35, 0.65, 0.95}, {0.82, 0.42, 0.95},
+    {0.96, 0.82, 0.24}, {0.95, 0.42, 0.22}, {0.40, 0.88, 0.82},
+  }
+  for i, color in ipairs(unit_colors) do
+    local ux = 270 + (i - 1)*44
+    love.graphics.setColor(color[1], color[2], color[3], 1)
+    love.graphics.rectangle('fill', ux, 42, 26, 24)
+    love.graphics.setColor(0.84, 0.66, 0.38, 1)
+    love.graphics.rectangle('line', ux, 42, 26, 24)
+  end
+
+  love.graphics.setColor(0.18, 0.20, 0.21, 1)
+  love.graphics.rectangle('fill', x1, y1, x2 - x1, y2 - y1)
+  love.graphics.setColor(0.54, 0.32, 0.22, 1)
+  love.graphics.rectangle('line', x1, y1, x2 - x1, y2 - y1)
+  love.graphics.setColor(0.26, 0.29, 0.30, 1)
+  love.graphics.line(x1, (y1 + y2)/2, x2, (y1 + y2)/2)
+  love.graphics.line((x1 + x2)/2, y1, (x1 + x2)/2, y2)
+
+  local t = time or 0
+  for i = 1, 28 do
+    local px = (demo_fraction(i*17.13)*w + t*12*(i % 3 + 1)) % w
+    local py = demo_fraction(i*41.7)*h
+    local c = 0.18 + 0.12*demo_fraction(i*5.31)
+    love.graphics.setColor(c, c + 0.02, c + 0.04, 1)
+    love.graphics.rectangle('fill', math.floor(px), math.floor(py), 2, 2)
   end
 end
 
@@ -662,14 +727,21 @@ end
 
 local function draw_arena_demo_snake()
   if not arena_demo_snake or not arena_demo_snake.segments then return false end
+  if arena_demo_snake.positions then
+    love.graphics.setColor(0.24, 0.48, 0.44, 1)
+    for i = 2, math.min(#arena_demo_snake.positions, 42), 2 do
+      local p = arena_demo_snake.positions[i]
+      love.graphics.rectangle('fill', math.floor(p.x*sx - 3), math.floor(p.y*sy - 3), 6, 6)
+    end
+  end
   for i, segment in ipairs(arena_demo_snake.segments) do
     local x, y = segment.x*sx, segment.y*sy
     if i == 1 then
-      draw_screen_box(x, y, 16, 16, 0.2, 0.95, 0.45)
+      draw_screen_box(x, y, 22, 22, 0.2, 0.95, 0.45)
       love.graphics.setColor(0.95, 0.95, 0.75, 1)
-      love.graphics.line(x, y, x + 15*math.cos(segment.r), y + 15*math.sin(segment.r))
+      love.graphics.line(x, y, x + 22*math.cos(segment.r), y + 22*math.sin(segment.r))
     else
-      draw_screen_box(x, y, 14, 14, 0.35, 0.65, 0.95)
+      draw_screen_box(x, y, 20, 20, 0.35, 0.65, 0.95)
     end
   end
   return true
@@ -681,15 +753,25 @@ local function draw_arena_demo_targets(arena)
   for i, target in ipairs(arena_demo_targets) do
     local pulse = 1 + 0.18*math.sin(t*5 + (target.phase or i))
     local x, y = target.x*sx, target.y*sy
-    draw_screen_box(x, y, 18*pulse, 18*pulse, 0.95, 0.22, 0.18)
+    draw_screen_box(x, y, 24*pulse, 24*pulse, 0.95, 0.22, 0.18)
     love.graphics.setColor(1, 0.62, 0.42, 1)
-    love.graphics.line(x - 10, y, x + 10, y)
-    love.graphics.line(x, y - 10, x, y + 10)
+    love.graphics.rectangle('line', math.floor(x - 16), math.floor(y - 16), 32, 32)
+    love.graphics.line(x - 14, y, x + 14, y)
+    love.graphics.line(x, y - 14, x, y + 14)
+  end
+
+  if arena_demo_shot then
+    love.graphics.setColor(1, 0.88, 0.32, 1)
+    love.graphics.line(arena_demo_shot.x1*sx, arena_demo_shot.y1*sy, arena_demo_shot.x2*sx, arena_demo_shot.y2*sy)
+  end
+  for _, burst in ipairs(arena_demo_bursts) do
+    local size = 12 + 34*(burst.t/0.45)
+    draw_screen_box(burst.x*sx, burst.y*sy, size, size, 0.96, 0.82, 0.24)
   end
 
   local x1, y1 = (arena.x1 or 0) + 12, (arena.y1 or 0) + 12
   love.graphics.setColor(0.82, 0.94, 0.72, 1)
-  love.graphics.print('hits ' .. tostring(arena_demo_score), math.floor(x1*sx), math.floor((y1 - 14)*sy))
+  love.graphics.print('hits ' .. tostring(arena_demo_score), math.floor(x1*sx), math.floor(y1*sy))
   if arena_demo_hit_flash > 0 then
     if arena_demo_hit_x and arena_demo_hit_y then
       local s = 18 + 24*(arena_demo_hit_flash/0.8)
@@ -706,6 +788,7 @@ local function draw_arena_actor_overlay()
   if not arena.main or not arena.main.objects then return end
 
   if arena_demo_frames > 180 then
+    draw_arena_demo_background(arena)
     if not draw_arena_demo_snake() then
       local t = time or 0
       local cx, cy = gw*sx/2, gh*sy/2
@@ -838,6 +921,8 @@ function love.update(_)
       arena_demo_hit_x, arena_demo_hit_y = nil, nil
       arena_demo_snake = nil
       arena_demo_attack_timer = 0
+      arena_demo_bursts = {}
+      arena_demo_shot = nil
     end
     if is_current_arena() and arena_demo_frames > 180 then
       if camera then camera.x, camera.y, camera.r = gw/2, gh/2, 0 end
@@ -862,7 +947,7 @@ function love.draw()
     love.graphics.print(load_error, 12, 12)
     return
   end
-  if main then draw() end
+  if main and not (is_current_arena() and arena_demo_frames > 180) then draw() end
   draw_arena_actor_overlay()
 end
 
