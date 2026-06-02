@@ -192,6 +192,11 @@ jobs:
       contents: read
     outputs:
       kernel: ${{ steps.scope.outputs.kernel }}
+      package_archive_changed: ${{ steps.scope.outputs.package_archive_changed }}
+      package_publish_flow_changed: ${{ steps.scope.outputs.package_publish_flow_changed }}
+      binary_materialization_changed: ${{ steps.scope.outputs.binary_materialization_changed }}
+      kernel_runtime_changed: ${{ steps.scope.outputs.kernel_runtime_changed }}
+      test_gate_required: ${{ steps.scope.outputs.test_gate_required }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
@@ -792,7 +797,7 @@ jobs:
     needs: [synthesize-merge, gate, change-scope]
     if: |
       needs.change-scope.outputs.package_staging_required == 'true' ||
-      needs.change-scope.outputs.kernel == 'true'
+      needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1366,7 +1371,7 @@ jobs:
         ) ||
         (
           needs.change-scope.outputs.package_staging_required == 'false' &&
-          needs.change-scope.outputs.kernel == 'true'
+          needs.change-scope.outputs.test_gate_required == 'true'
         )
       )
     runs-on: ubuntu-latest
@@ -1377,6 +1382,8 @@ jobs:
       merge_base_sha: ${{ steps.merge_ref.outputs.merge_base_sha }}
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
+      BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
       - uses: actions/checkout@v4
@@ -1483,14 +1490,24 @@ jobs:
             cd host && npm run typecheck
           '
 
+      - name: Test package publish flow
+        if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
+        run: |
+          bash tests/scripts/index-update.sh
+
+      - name: Test binary materialization flow
+        if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
+        run: |
+          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
+
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
         # Package-staging runs resolve against the durable release plus
-        # local file:// overlays for newly built/promoted archives. Kernel-only
-        # runs skip overlays and resolve every package from the existing
-        # durable ABI release; the fresh kernel built below shadows kernel.wasm
-        # via local-binaries/.
+        # local file:// overlays for newly built/promoted archives.
+        # Non-archive validation runs skip overlays and resolve every
+        # package from the existing durable ABI release; the fresh kernel
+        # built below shadows kernel.wasm via local-binaries/.
         run: |
           set -euo pipefail
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
@@ -1740,7 +1757,7 @@ jobs:
       !cancelled() &&
       needs.gate.result == 'success' &&
       needs.change-scope.outputs.package_staging_required == 'false' &&
-      needs.change-scope.outputs.kernel == 'false'
+      needs.change-scope.outputs.test_gate_required == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
@@ -1782,7 +1799,7 @@ jobs:
             "/repos/${{ github.repository }}/statuses/$PR_HEAD_SHA" \
             -f state=success \
             -f context=merge-gate \
-            -f description="No package-affecting changes; package staging skipped."
+            -f description="No package or runtime-affecting changes; package staging skipped."
 
       - name: Enable selected auto-merge on original PR
         id: automerge
@@ -1816,9 +1833,9 @@ jobs:
         continue-on-error: true
         run: |
           if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
-            BODY="prepare-merge: no package-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
+            BODY="prepare-merge: no package or runtime-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
           else
-            BODY="prepare-merge: no package-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
+            BODY="prepare-merge: no package or runtime-affecting changes; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
           fi
           set +e
           for attempt in 1 2 3; do
@@ -1837,22 +1854,23 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the no-op merge-gate-post step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
 
   # ---------------------------------------------------------------------
-  # merge-gate-post-kernel-only — package staging was not required, but
-  # kernel/runtime tests were.
+  # merge-gate-post-runtime-only — package staging was not required, but
+  # runtime/materialization tests were.
   #
-  # Non-ABI kernel/runtime PRs should validate the synthetic merge commit
-  # without building or publishing package archives. Once test-gate passes
-  # against durable binaries plus the freshly built kernel, post the normal
-  # merge-gate context and enable auto-merge.
+  # Non-archive runtime/materialization PRs should validate the synthetic
+  # merge commit without building or publishing package archives. Once
+  # test-gate passes against durable binaries plus the freshly built
+  # kernel/test workspace, post the normal merge-gate context and enable
+  # auto-merge.
   # ---------------------------------------------------------------------
-  merge-gate-post-kernel-only:
+  merge-gate-post-runtime-only:
     needs: [gate, change-scope, test-gate]
     if: |
       !cancelled() &&
       needs.gate.result == 'success' &&
       needs.test-gate.result == 'success' &&
       needs.change-scope.outputs.package_staging_required == 'false' &&
-      needs.change-scope.outputs.kernel == 'true'
+      needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
@@ -1882,7 +1900,7 @@ jobs:
 
           if [ "$CURRENT_BASE" != "$PREPARED_BASE" ]; then
             gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship
-            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`$BASE_REF\` advanced while prepare-merge was running (prepared \`$PREPARED_BASE\`, current \`$CURRENT_BASE\`). Re-apply \`ready-to-ship\` so kernel/runtime tests run against the latest base."
+            gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: \`$BASE_REF\` advanced while prepare-merge was running (prepared \`$PREPARED_BASE\`, current \`$CURRENT_BASE\`). Re-apply \`ready-to-ship\` so runtime/materialization tests run against the latest base."
             exit 1
           fi
 
@@ -1894,7 +1912,7 @@ jobs:
             "/repos/${{ github.repository }}/statuses/$PR_HEAD_SHA" \
             -f state=success \
             -f context=merge-gate \
-            -f description="Kernel test-gate passed; package staging and publishing skipped."
+            -f description="Runtime test-gate passed; package staging and publishing skipped."
 
       - name: Enable selected auto-merge on original PR
         id: automerge
@@ -1928,9 +1946,9 @@ jobs:
         continue-on-error: true
         run: |
           if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
-            BODY="prepare-merge: kernel/runtime tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
+            BODY="prepare-merge: runtime/materialization tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
           else
-            BODY="prepare-merge: kernel/runtime tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
+            BODY="prepare-merge: runtime/materialization tests passed against the synthetic PR merge; package staging and durable package publishing were skipped. \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
           fi
           set +e
           for attempt in 1 2 3; do
@@ -1946,7 +1964,7 @@ jobs:
         if: failure()
         run: |
           gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
-          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the kernel-only merge-gate-post step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
+          gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge failed during the runtime-only merge-gate-post step. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
 
   # ---------------------------------------------------------------------
   # merge-gate-post — single merge-gate poster + auto-merge enabler.

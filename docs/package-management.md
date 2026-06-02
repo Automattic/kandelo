@@ -92,11 +92,27 @@ keys:
   guest packages only if the guest ABI epoch or package build inputs also
   changed.
 
-The PR staging path filter should answer "can this path change a
-published package archive or the staging/publish mechanism?" It should
-not use package staging as a proxy for "tests should run." Kernel-only
-PRs still materialize the durable package release and test it against a
-fresh kernel.
+The PR change-scope detector should classify paths by effect:
+
+- **Package archive**: can change archive bytes or package cache keys;
+  this is the only category that should run the package matrix.
+- **Package publish flow**: can change release/index/source-publish
+  mechanics; run the publish-flow checks without rebuilding every
+  archive.
+- **Binary materialization**: can change fetching, verifying, overlaying,
+  or installing already-published archives; run the materialization
+  checks, materialize durable binaries, and run runtime tests, but do
+  not rebuild archives.
+- **Kernel/runtime**: can change the fresh kernel/runtime/test side of
+  the system; materialize the durable package release and test it
+  against the fresh kernel.
+
+Do not use package staging as a proxy for "tests should run."
+Kernel/runtime, publish-flow, and binary-materialization PRs still run
+their targeted validation without rebuilding package archives. Unknown
+non-doc paths should also run the non-package test gate as a fail-safe,
+but should not trigger the package matrix unless they are package
+archive inputs.
 
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
 

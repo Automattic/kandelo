@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+# Effect-based changed-path classifiers. Each function reads a
+# newline-delimited path list on stdin and prints matching paths.
+
+package_archive_changed_files() {
+  grep -E \
+    -e '^packages/registry/' \
+    -e '^sdk/(activate\.sh|config\.site|package(-lock)?\.json|tsconfig\.json)$' \
+    -e '^sdk/(bin|kandelo|src)/' \
+    -e '^tools/xtask/Cargo\.toml$' \
+    -e '^tools/xtask/src/(archive_stage|archive_stage_cli|build_deps|host_tool_probe|main|pkg_manifest|source_extract|util)\.rs$' \
+    -e '^tools/mkrootfs/(bin|src)/' \
+    -e '^tools/mkrootfs/(package(-lock)?\.json|tsconfig\.json)$' \
+    -e '^crates/fork-instrument/(Cargo\.toml|src/)' \
+    -e '^libc/(glue|musl-overlay)(/|$)' \
+    -e '^libc/musl($|/)' \
+    -e '^images/vfs/' \
+    -e '^examples/lsof\.c$' \
+    -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules|package(-lock)?\.json|host/package(-lock)?\.json|sdk/package(-lock)?\.json|tools/mkrootfs/package(-lock)?\.json)$' \
+    -e '^scripts/(build-fork-instrument-tool|build-musl|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
+    | grep -vE \
+      -e '^packages/registry/[^/]+/(demo|test)(/|$)' \
+    || true
+}
+
+package_publish_flow_changed_files() {
+  grep -E \
+    -e '^tools/xtask/src/(build_index|bundle_program|index_toml|index_update|update_pkg_manifest)\.rs$' \
+    -e '^scripts/(compose-initial-index|index-has-current-entry|index-update|prepare-sdk-package|publish-package-source|sync-package-source)\.sh$' \
+    -e '^tests/scripts/index-update\.sh$' \
+    || true
+}
+
+binary_materialization_changed_files() {
+  grep -E \
+    -e '^tools/xtask/src/(index_toml|remote_fetch|util)\.rs$' \
+    -e '^scripts/(fetch-binaries|install-local-binary|materialize-pr-overlays|resolve-binary)\.sh$' \
+    -e '^tests/package-system/' \
+    || true
+}
+
+kernel_runtime_changed_files() {
+  grep -E \
+    -e '^(crates|libc|tests/libc|tests/posix|tests/sortix|host|programs|abi)/' \
+    -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
+    -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
+    -e '^examples/run-example\.ts$' \
+    || true
+}
+
+ci_control_changed_files() {
+  grep -E \
+    -e '^\.github/workflows/(staging-build|prepare-merge)\.yml$' \
+    -e '^\.github/actions/detect-change-scope/' \
+    || true
+}

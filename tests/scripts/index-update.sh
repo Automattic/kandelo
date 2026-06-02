@@ -19,8 +19,23 @@ shift || true
 
 case "$cmd" in
   api)
-    if [[ "$*" == *index.toml* && "${GH_STUB_HAS_INDEX:-0}" = "1" ]]; then
-      printf '1\t123\tsha256:stub\n'
+    asset_name=""
+    if [[ "$*" =~ select\(\.name[[:space:]]==[[:space:]]\"([^\"]+)\" ]]; then
+      asset_name="${BASH_REMATCH[1]}"
+    fi
+    if [ -n "$asset_name" ]; then
+      asset_path="${GH_STUB_UPLOAD_DIR:-}/$asset_name"
+      if [ -f "$asset_path" ]; then
+        size="$(wc -c < "$asset_path" | tr -d '[:space:]')"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha="$(sha256sum "$asset_path" | awk '{print $1}')"
+        else
+          sha="$(shasum -a 256 "$asset_path" | awk '{print $1}')"
+        fi
+        printf '1\t%s\tsha256:%s\n' "$size" "$sha"
+      elif [ "$asset_name" = "index.toml" ] && [ "${GH_STUB_HAS_INDEX:-0}" = "1" ]; then
+        printf '1\t123\tsha256:stub\n'
+      fi
     fi
     ;;
   release)

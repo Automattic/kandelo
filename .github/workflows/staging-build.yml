@@ -63,6 +63,11 @@ jobs:
       contents: read
     outputs:
       kernel: ${{ steps.scope.outputs.kernel }}
+      package_archive_changed: ${{ steps.scope.outputs.package_archive_changed }}
+      package_publish_flow_changed: ${{ steps.scope.outputs.package_publish_flow_changed }}
+      binary_materialization_changed: ${{ steps.scope.outputs.binary_materialization_changed }}
+      kernel_runtime_changed: ${{ steps.scope.outputs.kernel_runtime_changed }}
+      test_gate_required: ${{ steps.scope.outputs.test_gate_required }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
@@ -347,7 +352,7 @@ jobs:
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
       needs.change-scope.outputs.package_staging_required == 'false' &&
-      needs.change-scope.outputs.kernel == 'false' &&
+      needs.change-scope.outputs.test_gate_required == 'false' &&
       needs.change-scope.outputs.skip_staging_tests != 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -362,7 +367,7 @@ jobs:
             "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
             -f state=success \
             -f context=merge-gate \
-            -f description="No package-affecting changes; package staging skipped." \
+            -f description="No package or runtime-affecting changes; package staging skipped." \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   toolchain-cache:
@@ -372,7 +377,7 @@ jobs:
     if: |
       github.event.pull_request.head.repo.full_name == github.repository &&
       (needs.change-scope.outputs.package_staging_required == 'true' ||
-       needs.change-scope.outputs.kernel == 'true')
+       needs.change-scope.outputs.test_gate_required == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -883,7 +888,7 @@ jobs:
         ) ||
         (
           needs.change-scope.outputs.package_staging_required == 'false' &&
-          needs.change-scope.outputs.kernel == 'true'
+          needs.change-scope.outputs.test_gate_required == 'true'
         )
       )
     runs-on: ubuntu-latest
@@ -892,6 +897,8 @@ jobs:
       contents: read
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
+      BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
@@ -959,14 +966,24 @@ jobs:
             cd host && npm run typecheck
           '
 
+      - name: Test package publish flow
+        if: env.PACKAGE_PUBLISH_FLOW_CHANGED == 'true'
+        run: |
+          bash tests/scripts/index-update.sh
+
+      - name: Test binary materialization flow
+        if: env.BINARY_MATERIALIZATION_CHANGED == 'true'
+        run: |
+          bash scripts/dev-shell.sh npx --prefix host vitest run --root . tests/package-system
+
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
         # Package-staging runs resolve against the PR staging release plus
-        # local file:// overlays for matrix-built archives. Kernel-only runs
-        # skip overlays entirely and resolve every package from the durable
-        # ABI release; the fresh kernel built below shadows kernel.wasm via
-        # local-binaries/.
+        # local file:// overlays for matrix-built archives. Non-archive
+        # validation runs skip overlays and resolve every package from the
+        # durable ABI release; the fresh kernel built below shadows
+        # kernel.wasm via local-binaries/.
         run: |
           set -euo pipefail
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
@@ -1172,18 +1189,18 @@ jobs:
             exit 1
           fi
 
-      - name: Post merge-gate success for kernel-only staging
+      - name: Post merge-gate success for runtime-only staging
         if: |
           env.SKIP_STAGING_TESTS != 'true' &&
           needs.change-scope.outputs.package_staging_required == 'false' &&
-          needs.change-scope.outputs.kernel == 'true'
+          needs.change-scope.outputs.test_gate_required == 'true'
         run: |
           gh api -X POST \
             -H "Accept: application/vnd.github+json" \
             "/repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
             -f state=success \
             -f context=merge-gate \
-            -f description="Kernel tests passed; package staging skipped." \
+            -f description="Runtime/materialization tests passed; package staging skipped." \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
   # publish / generate-index — REMOVED.
