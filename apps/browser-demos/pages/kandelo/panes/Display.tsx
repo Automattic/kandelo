@@ -19,17 +19,16 @@ export const Display: React.FC<FramebufferProps> = (props) => {
 const WebPreviewPane: React.FC<FramebufferProps & {
   preview: NonNullable<ReturnType<typeof useWebPreview>>;
 }> = ({ preview, dragProps, onCollapse, onMaximize, isMax, autoFocus = false }) => {
-  const [reloadKey, setReloadKey] = React.useState(0);
   const [path, setPath] = React.useState("/");
   const [draftPath, setDraftPath] = React.useState("/");
+  const [iframeSrc, setIframeSrc] = React.useState(() => buildPreviewUrl(preview.url, "/"));
   const ready = preview.status === "running";
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
-  const iframeSrc = React.useMemo(() => buildPreviewUrl(preview.url, path), [preview.url, path]);
 
   React.useEffect(() => {
     setPath("/");
     setDraftPath("/");
-    setReloadKey(0);
+    setIframeSrc(buildPreviewUrl(preview.url, "/"));
   }, [preview.url]);
 
   React.useEffect(() => {
@@ -40,12 +39,40 @@ const WebPreviewPane: React.FC<FramebufferProps & {
     return () => window.cancelAnimationFrame(handle);
   }, [autoFocus, iframeSrc, ready]);
 
+  // Keep the iframe's browsing context alive. Internal navigations are synced
+  // in onLoad, while parent-initiated navigations target the existing frame.
+  const navigateFrame = React.useCallback((target: string) => {
+    const frame = iframeRef.current;
+    if (frame?.contentWindow) {
+      try {
+        frame.contentWindow.location.assign(target);
+        return;
+      } catch {
+        // Fall back to updating src for unusual cross-origin or detached cases.
+      }
+    }
+    setIframeSrc(target);
+  }, []);
+
   const navigate = React.useCallback((raw: string) => {
     const next = normalizePreviewPath(raw, preview.url);
     setPath(next);
     setDraftPath(next);
-    setReloadKey((k) => k + 1);
-  }, [preview.url]);
+    navigateFrame(buildPreviewUrl(preview.url, next));
+  }, [navigateFrame, preview.url]);
+
+  const reloadPreview = React.useCallback(() => {
+    const frame = iframeRef.current;
+    if (frame?.contentWindow) {
+      try {
+        frame.contentWindow.location.reload();
+        return;
+      } catch {
+        // Fall through to a best-effort navigation to the synced path.
+      }
+    }
+    navigateFrame(buildPreviewUrl(preview.url, path));
+  }, [navigateFrame, path, preview.url]);
 
   const syncFromFrame = React.useCallback(() => {
     const frame = iframeRef.current;
@@ -75,7 +102,7 @@ const WebPreviewPane: React.FC<FramebufferProps & {
         right={
           <button
             className="kgal-card-btn"
-            onClick={() => setReloadKey((k) => k + 1)}
+            onClick={reloadPreview}
             disabled={!ready}
             title="Reload preview"
             aria-label="Reload preview"
@@ -112,7 +139,6 @@ const WebPreviewPane: React.FC<FramebufferProps & {
             </form>
             <iframe
               ref={iframeRef}
-              key={`${reloadKey}:${iframeSrc}`}
               src={iframeSrc}
               title={preview.label}
               onLoad={() => {
