@@ -121,6 +121,145 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.sendSignalToProcess).not.toHaveBeenCalled();
     expect(worker.wakeWaitingParent).not.toHaveBeenCalled();
   });
+
+  it("thread exit uses Rust-owned ctid metadata for clear-tid wakeup", () => {
+    const memory = createSharedMemory();
+    const ctidPtr = 2048;
+    new DataView(memory.buffer).setInt32(ctidPtr, 123, true);
+
+    const mainChannel = createChannel(10, memory, 0);
+    const threadChannel = createChannel(10, memory, 1024);
+    const kernelThreadExit = vi.fn(() => ctidPtr);
+    const worker = createWorkerHarness({
+      kernel_thread_exit: kernelThreadExit,
+    });
+    worker.processes = new Map([
+      [10, {
+        pid: 10,
+        memory,
+        channels: [mainChannel, threadChannel],
+        ptrWidth: 4,
+      }],
+    ]);
+    worker.activeChannels = [mainChannel, threadChannel];
+    worker.channelTids = new Map([["10:1024", 77]]);
+    worker.threadForkContexts = new Map([["10:1024", { fnPtr: 1, argPtr: 2 }]]);
+    worker.completeChannelRaw = vi.fn();
+
+    worker.handleExit(threadChannel, ABI_SYSCALLS.Exit, [0]);
+
+    expect(kernelThreadExit).toHaveBeenCalledWith(10, 77);
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    expect(worker.processes.get(10).channels).toEqual([mainChannel]);
+    expect(worker.activeChannels).toEqual([mainChannel]);
+    expect(worker.channelTids.has("10:1024")).toBe(false);
+    expect(worker.threadForkContexts.has("10:1024")).toBe(false);
+    expect(worker.completeChannelRaw).toHaveBeenCalledWith(threadChannel, 0, 0);
+  });
+
+  it("shmdt resolves attachment metadata from Rust before syncing bytes", () => {
+    const kernelMemory = createSharedMemory();
+    const processMemory = createSharedMemory();
+    const addr = 4096;
+    new Uint8Array(processMemory.buffer).set([3, 1, 4, 1], addr);
+
+    const setCurrentPid = vi.fn();
+    const lookupMapping = vi.fn((_addr: number, outPtr: bigint) => {
+      const view = new DataView(kernelMemory.buffer);
+      view.setInt32(Number(outPtr), 9, true);
+      view.setUint32(Number(outPtr) + 4, 4, true);
+      return 0;
+    });
+    const writeChunk = vi.fn((_shmid: number, _offset: number, dataPtr: bigint, dataLen: number) => {
+      const bytes = new Uint8Array(kernelMemory.buffer, Number(dataPtr), dataLen);
+      expect(Array.from(bytes)).toEqual([3, 1, 4, 1]);
+      return dataLen;
+    });
+    const detachByAddr = vi.fn(() => 0);
+    const worker = createWorkerHarness({
+      kernel_set_current_pid: setCurrentPid,
+      kernel_ipc_shm_lookup_mapping: lookupMapping,
+      kernel_ipc_shm_write_chunk: writeChunk,
+      kernel_ipc_shmdt_addr: detachByAddr,
+    });
+    worker.kernelMemory = kernelMemory;
+    worker.completeChannelRaw = vi.fn();
+    worker.relistenChannel = vi.fn();
+
+    const channel = createChannel(11, processMemory);
+    worker.handleIpcShmdt(channel, [addr]);
+
+    expect(setCurrentPid).toHaveBeenCalledWith(11);
+    expect(lookupMapping).toHaveBeenCalledWith(addr, BigInt(worker.scratchOffset));
+    expect(writeChunk).toHaveBeenCalledTimes(1);
+    expect(writeChunk.mock.calls[0][0]).toBe(9);
+    expect(writeChunk.mock.calls[0][1]).toBe(0);
+    expect(typeof writeChunk.mock.calls[0][2]).toBe("bigint");
+    expect(writeChunk.mock.calls[0][3]).toBe(4);
+    expect(detachByAddr).toHaveBeenCalledWith(addr);
+    expect(worker.completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
+    expect(worker.relistenChannel).toHaveBeenCalledWith(channel);
+  });
+
+  it("tcp listener target selection uses Rust-owned process policy", () => {
+    const kernelMemory = createSharedMemory();
+    const pickTarget = vi.fn((_port: number, _excludePid: number, outPtr: bigint) => {
+      const view = new DataView(kernelMemory.buffer);
+      view.setUint32(Number(outPtr), 44, true);
+      view.setInt32(Number(outPtr) + 4, 7, true);
+      return 1;
+    });
+    const worker = createWorkerHarness({
+      kernel_pick_tcp_listener_target: pickTarget,
+    });
+    worker.kernelMemory = kernelMemory;
+    worker.processes = new Map([[44, { pid: 44 }]]);
+    worker.tcpListenerTargets = new Map([[8080, [{ pid: 1, fd: 3 }]]]);
+
+    expect(worker.pickListenerTarget(8080)).toEqual({ pid: 44, fd: 7 });
+    expect(pickTarget).toHaveBeenCalledWith(8080, 0, BigInt(worker.scratchOffset));
+  });
+
+  it("host timer cancellation follows Rust-owned cleanup metadata", () => {
+    vi.useFakeTimers();
+    try {
+      const kernelMemory = createSharedMemory();
+      const takeCleanup = vi.fn((_pid: number, outPtr: bigint, _maxTimerIds: number) => {
+        const view = new DataView(kernelMemory.buffer);
+        view.setUint32(Number(outPtr), 1, true);
+        view.setUint32(Number(outPtr) + 4, 2, true);
+        view.setUint32(Number(outPtr) + 8, 4, true);
+        view.setUint32(Number(outPtr) + 12, 8, true);
+        return 2;
+      });
+      const worker = createWorkerHarness({
+        kernel_take_process_timer_cleanup: takeCleanup,
+      });
+      worker.kernelMemory = kernelMemory;
+      worker.alarmTimers = new Map([
+        [11, setTimeout(() => {}, 1000)],
+        [12, setTimeout(() => {}, 1000)],
+      ]);
+      worker.posixTimers = new Map([
+        ["11:4", { timeout: setTimeout(() => {}, 1000) }],
+        ["11:8", { timeout: setTimeout(() => {}, 1000), interval: setInterval(() => {}, 1000) }],
+        ["11:9", { timeout: setTimeout(() => {}, 1000) }],
+        ["12:4", { timeout: setTimeout(() => {}, 1000) }],
+      ]);
+
+      worker.cancelProcessHostTimers(11);
+
+      expect(takeCleanup).toHaveBeenCalledWith(11, BigInt(worker.scratchOffset), expect.any(Number));
+      expect(worker.alarmTimers.has(11)).toBe(false);
+      expect(worker.alarmTimers.has(12)).toBe(true);
+      expect(worker.posixTimers.has("11:4")).toBe(false);
+      expect(worker.posixTimers.has("11:8")).toBe(false);
+      expect(worker.posixTimers.has("11:9")).toBe(true);
+      expect(worker.posixTimers.has("12:4")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function createWorkerHarness(exports: Record<string, unknown>): any {
@@ -139,12 +278,12 @@ function createSharedMemory(): WebAssembly.Memory {
   });
 }
 
-function createChannel(pid: number, memory: WebAssembly.Memory): any {
+function createChannel(pid: number, memory: WebAssembly.Memory, channelOffset = 0): any {
   return {
     pid,
     memory,
-    channelOffset: 0,
-    i32View: new Int32Array(memory.buffer, 0),
+    channelOffset,
+    i32View: new Int32Array(memory.buffer, channelOffset),
     consecutiveSyscalls: 0,
   };
 }

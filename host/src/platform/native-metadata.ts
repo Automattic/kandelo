@@ -1,11 +1,15 @@
 import type { Stats } from "node:fs";
 import type { StatResult } from "../types";
+import { ACCESS_MODES, FILE_MODES } from "../generated/abi";
 
-const MODE_CHANGE_MASK = 0o7777;
 const UID_GID_UNCHANGED = 0xffffffff;
-const X_OK = 0o1;
-const W_OK = 0o2;
-const R_OK = 0o4;
+const MODE_CHANGE_MASK = FILE_MODES.S_MODE_BITS;
+const READABLE_BITS =
+  FILE_MODES.S_IRUSR | FILE_MODES.S_IRGRP | FILE_MODES.S_IROTH;
+const WRITABLE_BITS =
+  FILE_MODES.S_IWUSR | FILE_MODES.S_IWGRP | FILE_MODES.S_IWOTH;
+const EXECUTABLE_BITS =
+  FILE_MODES.S_IXUSR | FILE_MODES.S_IXGRP | FILE_MODES.S_IXOTH;
 
 interface VirtualMetadata {
   mode?: number;
@@ -61,9 +65,15 @@ export class NativeMetadataOverlay {
 
   access(s: Stats, amode: number): void {
     const mode = this.toStatResult(s).mode;
-    if ((amode & R_OK) !== 0 && (mode & 0o444) === 0) throw new Error("EACCES");
-    if ((amode & W_OK) !== 0 && (mode & 0o222) === 0) throw new Error("EACCES");
-    if ((amode & X_OK) !== 0 && (mode & 0o111) === 0) throw new Error("EACCES");
+    if ((amode & ACCESS_MODES.R_OK) !== 0 && (mode & READABLE_BITS) === 0) {
+      throw new Error("EACCES");
+    }
+    if ((amode & ACCESS_MODES.W_OK) !== 0 && (mode & WRITABLE_BITS) === 0) {
+      throw new Error("EACCES");
+    }
+    if ((amode & ACCESS_MODES.X_OK) !== 0 && (mode & EXECUTABLE_BITS) === 0) {
+      throw new Error("EACCES");
+    }
   }
 
   private metadataFor(s: Stats): VirtualMetadata {
