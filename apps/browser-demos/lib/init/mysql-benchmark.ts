@@ -87,9 +87,6 @@ $variants = array(
     'tcp' => array('host' => '127.0.0.1', 'port' => 3306, 'socket' => null),
 );
 if ($includePersistent) {
-    // MariaDB runs with --thread-handling=no-threads in this image. A persistent
-    // connection can keep that single server connection occupied, so keep
-    // persistent variants opt-in and last to avoid poisoning the default probe.
     $variants['tcp_persistent'] = array('host' => 'p:127.0.0.1', 'port' => 3306, 'socket' => null);
     $variants['unix_persistent'] = array('host' => 'p:localhost', 'port' => null, 'socket' => $socket);
 }

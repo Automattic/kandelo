@@ -11,6 +11,7 @@ import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
+  patchWordPressMysqliPersistentSource,
   renderWordPressConfig,
   wordpressConfigTemplate,
   type WordPressDatabaseKind,
@@ -1083,6 +1084,7 @@ function patchWordPressRuntimeConfig(
     for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
       ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
     }
+    patchWordPressPersistentMysqli(fs);
     writeVfsFile(fs, "/var/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
   }
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
@@ -1127,6 +1129,12 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
     if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
       patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
     }
+    if (!/^mysqli\.allow_persistent\s*=/m.test(patched)) {
+      patched += `mysqli.allow_persistent=1\n`;
+    }
+    if (!/^mysqli\.max_persistent\s*=/m.test(patched)) {
+      patched += `mysqli.max_persistent=-1\n`;
+    }
     if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
       patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
     }
@@ -1136,11 +1144,22 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
   const mariadbServicePath = "/etc/dinit.d/mariadb";
   const mariadbService = readOptionalVfsText(fs, mariadbServicePath);
   if (mariadbService !== null) {
-    const patched = mariadbService.replace(
-      /--socket=(?:\S*)?/g,
-      `--socket=${MARIADB_SOCKET_PATH}`,
-    );
+    const patched = mariadbService
+      .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
+      .replace(/\s*--thread-handling=no-threads\b/g, "");
     if (patched !== mariadbService) writeVfsFile(fs, mariadbServicePath, patched);
+  }
+}
+
+function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+  for (const path of [
+    "/var/www/html/wp-includes/class-wpdb.php",
+    "/var/www/html/wp-includes/wp-db.php",
+  ]) {
+    const source = readOptionalVfsText(fs, path);
+    if (source === null) continue;
+    const patched = patchWordPressMysqliPersistentSource(source);
+    if (patched !== source) writeVfsFile(fs, path, patched);
   }
 }
 
