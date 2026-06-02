@@ -8500,8 +8500,9 @@ export class CentralizedKernelWorker {
       transferred += nRead;
     }
 
-    const recordMapping = this.kernelInstance!.exports.kernel_ipc_shm_record_mapping as (addr: number, shmid: number, size: number) => number;
-    const recordResult = recordMapping(addr >>> 0, shmid, size);
+    const recordMapping = this.kernelInstance!.exports.kernel_ipc_shm_record_mapping as
+      (addr: KernelPointer, shmid: number, size: number) => number;
+    const recordResult = recordMapping(this.toKernelPtr(addr >>> 0), shmid, size);
     if (recordResult < 0) {
       const kernelShmdt = this.kernelInstance!.exports.kernel_ipc_shmdt as ((shmid: number) => number) | undefined;
       if (kernelShmdt) kernelShmdt(shmid);
@@ -8523,9 +8524,9 @@ export class CentralizedKernelWorker {
     if (setCurrentPid) setCurrentPid(channel.pid);
 
     const lookupMapping = this.kernelInstance!.exports.kernel_ipc_shm_lookup_mapping as
-      (addr: number, outPtr: KernelPointer) => number;
+      (addr: KernelPointer, outPtr: KernelPointer) => number;
     const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-    const lookupResult = lookupMapping(addr, this.toKernelPtr(this.scratchOffset));
+    const lookupResult = lookupMapping(this.toKernelPtr(addr), this.toKernelPtr(this.scratchOffset));
     if (lookupResult < 0) {
       this.completeChannelRaw(channel, lookupResult, -lookupResult);
       this.relistenChannel(channel);
@@ -8551,8 +8552,8 @@ export class CentralizedKernelWorker {
       transferred += nWritten;
     }
 
-    const kernelShmdtAddr = this.kernelInstance!.exports.kernel_ipc_shmdt_addr as (addr: number) => number;
-    const result = kernelShmdtAddr(addr);
+    const kernelShmdtAddr = this.kernelInstance!.exports.kernel_ipc_shmdt_addr as (addr: KernelPointer) => number;
+    const result = kernelShmdtAddr(this.toKernelPtr(addr));
 
     if (result < 0) {
       this.completeChannelRaw(channel, result, -result);
