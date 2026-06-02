@@ -69,6 +69,9 @@ struct ParsedArchive {
     /// 8-char hex slot from the filename (cache_key_sha prefix). Not
     /// emitted into index.toml — included here so error messages can
     /// reference the specific archive that failed validation.
+    // Keep this modeled so filename parsing validates the full archive
+    // naming schema, even though production code does not read it yet.
+    #[allow(dead_code)]
     short_sha: String,
     /// Bare filename (relative archive_url). Mirror-friendly per the
     /// design doc's URL semantics: a self-contained source directory
