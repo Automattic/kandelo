@@ -80,13 +80,19 @@ function bench_variant(string $name, array $cfg, int $connectIters, int $queryIt
 $connectIters = max(1, min(50, (int) ($_GET['connect_iters'] ?? 8)));
 $queryIters = max(1, min(200, (int) ($_GET['query_iters'] ?? 25)));
 $socket = ini_get('mysqli.default_socket') ?: '/tmp/mysql.sock';
+$includePersistent = filter_var($_GET['include_persistent'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
 $variants = array(
     'unix' => array('host' => 'localhost', 'port' => null, 'socket' => $socket),
     'tcp' => array('host' => '127.0.0.1', 'port' => 3306, 'socket' => null),
-    'unix_persistent' => array('host' => 'p:localhost', 'port' => null, 'socket' => $socket),
-    'tcp_persistent' => array('host' => 'p:127.0.0.1', 'port' => 3306, 'socket' => null),
 );
+if ($includePersistent) {
+    // MariaDB runs with --thread-handling=no-threads in this image. A persistent
+    // connection can keep that single server connection occupied, so keep
+    // persistent variants opt-in and last to avoid poisoning the default probe.
+    $variants['tcp_persistent'] = array('host' => 'p:127.0.0.1', 'port' => 3306, 'socket' => null);
+    $variants['unix_persistent'] = array('host' => 'p:localhost', 'port' => null, 'socket' => $socket);
+}
 
 $started = bench_now_ms();
 $results = array();
@@ -107,6 +113,7 @@ echo json_encode(array(
     'connect_iters' => $connectIters,
     'query_iters' => $queryIters,
     'default_socket' => $socket,
+    'include_persistent' => $includePersistent,
     'elapsed_ms' => bench_now_ms() - $started,
     'variants' => $results,
 ), JSON_PRETTY_PRINT);

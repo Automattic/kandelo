@@ -513,6 +513,47 @@ exit 1
   await assertNoError(page);
 });
 
+test("@slow kandelo wordpress-mariadb: mysqli transport benchmark returns", async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+
+  await gotoOrSkip(page, "/pages/kandelo/?demo=wordpress-mariadb");
+  await page.waitForSelector('iframe[src*="/app/"]', { timeout: 180_000 });
+
+  const result = await page.evaluate(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort("timeout"), 90_000);
+    try {
+      const response = await fetch(
+        `/app/kandelo-mysql-bench.php?connect_iters=1&query_iters=1&ts=${Date.now()}`,
+        { cache: "no-store", signal: controller.signal },
+      );
+      const text = await response.text();
+      return {
+        ok: response.ok,
+        status: response.status,
+        text,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        status: 0,
+        text: err instanceof Error ? err.message : String(err),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
+  expect(result.ok, result.text).toBe(true);
+  const data = JSON.parse(result.text);
+  expect(data.include_persistent).toBe(false);
+  expect(Object.keys(data.variants).sort()).toEqual(["tcp", "unix"]);
+  expect(data.variants.unix.error).toBeUndefined();
+  expect(data.variants.tcp.error).toBeUndefined();
+});
+
 test("@slow wordpress: install, login, and load site editor from menu", async ({
   page,
 }) => {
