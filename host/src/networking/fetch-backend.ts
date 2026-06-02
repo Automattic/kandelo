@@ -6,6 +6,11 @@ export class EagainError extends Error {
   constructor() { super("EAGAIN"); }
 }
 
+const POLLIN = 0x0001;
+const POLLOUT = 0x0004;
+const POLLERR = 0x0008;
+const POLLHUP = 0x0010;
+
 interface ConnectionState {
   hostname: string;
   ip: Uint8Array;
@@ -19,6 +24,7 @@ interface ConnectionState {
 
 export interface FetchBackendOptions {
   corsProxyUrl?: string;
+  hostAliases?: Record<string, string>;
 }
 
 export class FetchNetworkBackend implements NetworkIO {
@@ -85,7 +91,8 @@ export class FetchNetworkBackend implements NetworkIO {
     const portSuffix = (conn.port === 80 || conn.port === 443) ? "" : `:${conn.port}`;
     // Use Host header as-is (it already includes :port when non-default),
     // otherwise fall back to conn.hostname + port suffix.
-    const host = hostHeader ? hostHeader : `${conn.hostname}${portSuffix}`;
+    const requestedHost = hostHeader ? hostHeader : `${conn.hostname}${portSuffix}`;
+    const host = rewriteHostAlias(requestedHost, this.options.hostAliases);
     const url = `${scheme}://${host}${path}`;
 
     // Convert headers map to Headers object (skip Host and Connection)
@@ -175,6 +182,32 @@ export class FetchNetworkBackend implements NetworkIO {
     return result;
   }
 
+  poll(handle: number, events: number): number {
+    const conn = this.connections.get(handle);
+    if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
+    if (conn.fetchError) return POLLERR;
+
+    let revents = 0;
+    if ((events & POLLOUT) !== 0) {
+      revents |= POLLOUT;
+    }
+    if (
+      (events & POLLIN) !== 0 &&
+      conn.responseBuf &&
+      conn.responseOffset < conn.responseBuf.length
+    ) {
+      revents |= POLLIN;
+    }
+    if (
+      conn.fetchDone &&
+      conn.responseBuf &&
+      conn.responseOffset >= conn.responseBuf.length
+    ) {
+      revents |= POLLHUP;
+    }
+    return revents;
+  }
+
   close(handle: number): void {
     this.connections.delete(handle);
   }
@@ -195,6 +228,22 @@ export class FetchNetworkBackend implements NetworkIO {
     this.hostnameMap.set(ipStr, hostname);
     return ip;
   }
+}
+
+function rewriteHostAlias(host: string, aliases: Record<string, string> | undefined): string {
+  if (!aliases) return host;
+  const bracketedIpv6 = host.match(/^\[([^\]]+)\](?::(\d+))?$/);
+  if (bracketedIpv6) {
+    const mapped = aliases[bracketedIpv6[1]];
+    return mapped ? `[${mapped}]${bracketedIpv6[2] ? `:${bracketedIpv6[2]}` : ""}` : host;
+  }
+
+  const colon = host.indexOf(":");
+  const hasSingleColon = colon >= 0 && colon === host.lastIndexOf(":");
+  const name = hasSingleColon ? host.slice(0, colon) : host;
+  const suffix = hasSingleColon ? host.slice(colon) : "";
+  const mapped = aliases[name];
+  return mapped ? `${mapped}${suffix}` : host;
 }
 
 /** Find the position of \r\n\r\n in the buffer. Returns -1 if not found. */

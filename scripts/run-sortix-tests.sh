@@ -25,6 +25,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
@@ -64,6 +65,24 @@ IO_EXPECTED_FAIL=(
 SIGNAL_EXPECTED_FAIL=()
 PROCESS_EXPECTED_FAIL=()
 PATHS_EXPECTED_FAIL=()
+UDP_EXPECTED_FAIL=(
+    # External raw UDP routes need a HostIO/proxy backend. The in-kernel UDP
+    # implementation intentionally supports loopback/virtual datagrams only and
+    # reports unreachable external routes as ENETUNREACH for now.
+    "bind-lan-subnet-broadcast"
+    "bind-lan-subnet-first"
+    "bind-lan-subnet-wrong"
+    "connect-broadcast-getpeername-so-broadcast"
+    "connect-broadcast-getsockname-so-broadcast"
+    "connect-wan-get-so-bindtodevice"
+    "connect-wan-getsockname"
+    "connect-wan-send-reconnect-loopback-send"
+    "connect-wan-unconnect-rebind-any-getsockname"
+    "connect-wan-unconnect-rebind-same-getsockname"
+    "cross-netif-lan-send-loopback-recv"
+    "cross-netif-loopback-send-lan-recv"
+    "shutdown-r-send"
+)
 
 # ── Helper: check if a test matches an expected-failure pattern ──
 
@@ -174,6 +193,55 @@ PARALLEL=${PARALLEL:-$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null 
 RESULT_DIR=$(mktemp -d)
 trap 'rm -rf "$RESULT_DIR"' EXIT
 
+run_with_timeout() {
+    local seconds="$1"
+    shift
+
+    if command -v timeout >/dev/null 2>&1; then
+        command timeout "$seconds" "$@"
+        return
+    fi
+
+    if command -v gtimeout >/dev/null 2>&1; then
+        command gtimeout "$seconds" "$@"
+        return
+    fi
+
+    perl -e '
+        use strict;
+        use warnings;
+        my $seconds = shift @ARGV;
+        my $pid = fork();
+        die "fork failed: $!" unless defined $pid;
+        if ($pid == 0) {
+            setpgrp(0, 0);
+            exec @ARGV;
+            die "exec failed: $!";
+        }
+
+        my $timed_out = 0;
+        local $SIG{ALRM} = sub {
+            $timed_out = 1;
+            kill "TERM", -$pid;
+        };
+
+        alarm($seconds);
+        waitpid($pid, 0);
+        my $status = $?;
+        alarm(0);
+
+        if ($timed_out) {
+            sleep 1;
+            kill "KILL", -$pid;
+            waitpid($pid, 0);
+            exit 124;
+        }
+
+        exit($status >> 8) if (($status & 127) == 0);
+        exit(128 + ($status & 127));
+    ' "$seconds" "$@"
+}
+
 # ── Test discovery ──────────────────────────────────────────
 
 # Discover include tests: tests/sortix/os-test/include/<header>/<symbol>.c
@@ -185,11 +253,31 @@ discover_include() {
     done
 }
 
+discover_runtime_suite() {
+    local suite="$1"
+    for root in "$OS_TEST" "$OS_TEST_LOCAL"; do
+        [ -d "$root/$suite" ] || continue
+        find "$root/$suite" -name "*.c" -type f | while read -r f; do
+            local rel="${f#$root/$suite/}"
+            echo "${rel%.c}"
+        done
+    done | sort -u
+}
+
+runtime_test_src() {
+    local suite="$1"
+    local test_name="$2"
+    local local_src="$OS_TEST_LOCAL/$suite/${test_name}.c"
+    if [ -f "$local_src" ]; then
+        echo "$local_src"
+        return
+    fi
+    echo "$OS_TEST/$suite/${test_name}.c"
+}
+
 # Discover basic tests: tests/sortix/os-test/basic/<header>/<func>.c
 discover_basic() {
-    find "$OS_TEST/basic" -name "*.c" -type f ! -name "basic.h" | sort | while read -r f; do
-        local rel="${f#$OS_TEST/basic/}"
-        local name="${rel%.c}"
+    discover_runtime_suite basic | while read -r name; do
         # On CI, skip flaky tests whose result oscillates between
         # FAIL and XPASS (which the runner flags as a regression
         # marker). Override with ALLOW_FLAKY_SORTIX=1 for local
@@ -203,19 +291,13 @@ discover_basic() {
 
 # Discover limits tests: tests/sortix/os-test/limits/<constant>.c
 discover_limits() {
-    find "$OS_TEST/limits" -name "*.c" -type f ! -name "suite.h" | sort | while read -r f; do
-        local rel="${f#$OS_TEST/limits/}"
-        echo "${rel%.c}"
-    done
+    discover_runtime_suite limits
 }
 
 # Generic discovery for flat suites (malloc, stdio, io, signal, process, paths)
 discover_suite() {
     local suite="$1"
-    find "$OS_TEST/$suite" -name "*.c" -type f | sort | while read -r f; do
-        local rel="${f#$OS_TEST/$suite/}"
-        echo "${rel%.c}"
-    done
+    discover_runtime_suite "$suite"
 }
 
 discover_malloc()  { discover_suite malloc; }
@@ -224,6 +306,7 @@ discover_io()      { discover_suite io; }
 discover_signal()  { discover_suite signal; }
 discover_process() { discover_suite process; }
 discover_paths()   { discover_suite paths; }
+discover_udp()     { discover_suite udp; }
 
 # ── Build helpers ───────────────────────────────────────────
 
@@ -292,9 +375,11 @@ export -f build_include_one
 build_runtime_test() {
     local suite="$1"
     local test_name="$2"
-    local src="$OS_TEST/$suite/${test_name}.c"
+    local src
+    src="$(runtime_test_src "$suite" "$test_name")"
     local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
     mkdir -p "$(dirname "$wasm")"
+    rm -f "$wasm"
 
     local -a cflags=("${CFLAGS_BASE[@]}" -D_GNU_SOURCE -I"$OS_TEST")
     case "$suite/$test_name" in
@@ -327,6 +412,7 @@ build_io()      { build_runtime_test io "$1"; }
 build_signal()  { build_runtime_test signal "$1"; }
 build_process() { build_runtime_test process "$1"; }
 build_paths()   { build_runtime_test paths "$1"; }
+build_udp()     { build_runtime_test udp "$1"; }
 
 # ── Run tests ──────────────────────────────────────────────
 
@@ -343,6 +429,7 @@ get_xfail_list() {
         signal)   echo "${SIGNAL_EXPECTED_FAIL[@]:-}" ;;
         process)  echo "${PROCESS_EXPECTED_FAIL[@]:-}" ;;
         paths)    echo "${PATHS_EXPECTED_FAIL[@]:-}" ;;
+        udp)      echo "${UDP_EXPECTED_FAIL[@]:-}" ;;
         *)        echo "" ;;
     esac
 }
@@ -361,6 +448,7 @@ check_xfail() {
         signal)   xfail_list=("${SIGNAL_EXPECTED_FAIL[@]:-}") ;;
         process)  xfail_list=("${PROCESS_EXPECTED_FAIL[@]:-}") ;;
         paths)    xfail_list=("${PATHS_EXPECTED_FAIL[@]:-}") ;;
+        udp)      xfail_list=("${UDP_EXPECTED_FAIL[@]:-}") ;;
         *)        return 1 ;;
     esac
     [ ${#xfail_list[@]} -gt 0 ] && is_expected_fail "$test_name" "${xfail_list[@]}"
@@ -380,6 +468,7 @@ _export_xfail_for_suite() {
         malloc)   xfail_list=("${MALLOC_EXPECTED_FAIL[@]:-}") ;;
         stdio)    xfail_list=("${STDIO_EXPECTED_FAIL[@]:-}") ;;
         paths)    xfail_list=("${PATHS_EXPECTED_FAIL[@]:-}") ;;
+        udp)      xfail_list=("${UDP_EXPECTED_FAIL[@]:-}") ;;
         *)        xfail_list=() ;;
     esac
     # Serialize as newline-separated string for export
@@ -569,7 +658,7 @@ _run_runtime_test_worker() {
     # stdin redirected to /dev/null: run-example.ts reads process.stdin
     # when not a TTY, which would drain any pipe the caller supplies.
     set +e
-    output=$(cd "$REPO_ROOT" && KERNEL_CWD="${SORTIX_DATA_DIR:-$REPO_ROOT}" timeout "$this_timeout" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
+    output=$(cd "$REPO_ROOT" && KERNEL_CWD="${SORTIX_DATA_DIR:-$REPO_ROOT}" run_with_timeout "$this_timeout" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
     rc=$?
     set -e
 
@@ -591,10 +680,12 @@ exit: $rc"
     # shadow submodule expectations for tests whose upstream expectation is a
     # known Kandelo-specific limitation that has since been fixed here.
     local expect_base="${test_name##*/}"
+    local local_expect_dir="$OS_TEST_LOCAL/${suite}.expect"
     local default_expect_dir="$OS_TEST/${suite}.expect"
     local override_expect_dir="$REPO_ROOT/tests/sortix/os-test-overrides/${suite}.expect"
     local -a expect_dirs=()
     local override_has_expect=false
+    local local_has_expect=false
     if [ -d "$override_expect_dir" ]; then
         for expect_file in "$override_expect_dir/${expect_base}.posix" "$override_expect_dir/${expect_base}.posix."* "$override_expect_dir/${expect_base}."[0-9]* "$override_expect_dir/${expect_base}.unknown."*; do
             if [ -f "$expect_file" ]; then
@@ -605,6 +696,18 @@ exit: $rc"
     fi
     if $override_has_expect; then
         expect_dirs=("$override_expect_dir")
+    elif [ -d "$local_expect_dir" ]; then
+        for expect_file in "$local_expect_dir/${expect_base}.posix" "$local_expect_dir/${expect_base}.posix."* "$local_expect_dir/${expect_base}."[0-9]* "$local_expect_dir/${expect_base}.unknown."*; do
+            if [ -f "$expect_file" ]; then
+                local_has_expect=true
+                break
+            fi
+        done
+        if $local_has_expect; then
+            expect_dirs=("$local_expect_dir")
+        elif [ -d "$default_expect_dir" ]; then
+            expect_dirs=("$default_expect_dir")
+        fi
     elif [ -d "$default_expect_dir" ]; then
         expect_dirs=("$default_expect_dir")
     fi
@@ -676,7 +779,8 @@ run_runtime_test() {
             cp "$wasm" "$data_dir/$test_name"
     fi
     # Link source file for tests like faccessat that check for .c files
-    local src="$OS_TEST/$suite/${test_name}.c"
+    local src
+    src="$(runtime_test_src "$suite" "$test_name")"
     if [ -f "$src" ]; then
         ln -f "$src" "$data_dir/${test_name}.c" 2>/dev/null || \
             cp "$src" "$data_dir/${test_name}.c" 2>/dev/null || true
@@ -815,7 +919,7 @@ run_suite() {
 
         echo "  Building $count tests ($PARALLEL parallel)..."
         # Build in parallel using a wrapper that reconstructs arrays
-        export REPO_ROOT BUILD_DIR OS_TEST SYSROOT GLUE_DIR
+        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT GLUE_DIR
         export CC FORK_INSTRUMENT
         export CFLAGS_BASE_STR="${CFLAGS_BASE[*]}"
         export LINK_FLAGS_STR="${LINK_FLAGS[*]}"
@@ -826,8 +930,13 @@ run_suite() {
             local suite="$1"
             local test_name="$2"
             local src="$OS_TEST/$suite/${test_name}.c"
+            local local_src="$OS_TEST_LOCAL/$suite/${test_name}.c"
+            if [ -f "$local_src" ]; then
+                src="$local_src"
+            fi
             local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
             mkdir -p "$(dirname "$wasm")"
+            rm -f "$wasm"
             # shellcheck disable=SC2206
             local -a cflags=($CFLAGS_BASE_STR -D_GNU_SOURCE -I"$OS_TEST")
             case "$suite/$test_name" in
@@ -876,19 +985,22 @@ run_suite() {
                 cp "$wasm_file" "$SORTIX_DATA_DIR/$name"
         done
         # Link source files for tests like faccessat that check for .c files
-        for src_file in "$OS_TEST/$suite"/**/*.c; do
-            [ -f "$src_file" ] || continue
-            local relpath="${src_file#"$OS_TEST/$suite/"}"
-            local dest="$SORTIX_DATA_DIR/$relpath"
-            [ -f "$dest" ] && continue
-            mkdir -p "$(dirname "$dest")" 2>/dev/null || true
-            ln -f "$src_file" "$dest" 2>/dev/null || true
+        for src_root in "$OS_TEST" "$OS_TEST_LOCAL"; do
+            [ -d "$src_root/$suite" ] || continue
+            while IFS= read -r src_file; do
+                [ -f "$src_file" ] || continue
+                local relpath="${src_file#"$src_root/$suite/"}"
+                local dest="$SORTIX_DATA_DIR/$relpath"
+                [ -f "$dest" ] && continue
+                mkdir -p "$(dirname "$dest")" 2>/dev/null || true
+                ln -f "$src_file" "$dest" 2>/dev/null || true
+            done < <(find "$src_root/$suite" -name "*.c" -type f)
         done
         export SORTIX_DATA_DIR
 
         # Export everything needed by the worker function
-        export REPO_ROOT BUILD_DIR OS_TEST SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
-        export -f _run_runtime_test_worker _check_xfail_serialized
+        export REPO_ROOT BUILD_DIR OS_TEST OS_TEST_LOCAL SYSROOT GLUE_DIR TEST_TIMEOUT XFAIL_TIMEOUT
+        export -f _run_runtime_test_worker _check_xfail_serialized run_with_timeout
 
         # Export serialized XFAIL list for this suite
         _export_xfail_for_suite "$suite"
@@ -917,7 +1029,7 @@ SUITES=()
 SPECIFIC_TESTS=()
 
 DEFAULT_SUITES=(include limits basic malloc stdio)
-ALL_SUITES=(include limits basic malloc stdio io signal process paths)
+ALL_SUITES=(include limits basic malloc stdio io signal process paths udp)
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -932,10 +1044,10 @@ while [ $# -gt 0 ]; do
             fi
             ;;
         --parallel=*) PARALLEL="${1#*=}"; shift ;;
-        include|limits|basic|malloc|stdio|io|signal|process|paths)
+        include|limits|basic|malloc|stdio|io|signal|process|paths|udp)
             SUITES+=("$1"); shift
             # Collect specific tests for this suite
-            while [ $# -gt 0 ] && [[ "$1" != --* ]] && ! [[ "$1" =~ ^(include|limits|basic|malloc|stdio|io|signal|process|paths)$ ]]; do
+            while [ $# -gt 0 ] && [[ "$1" != --* ]] && ! [[ "$1" =~ ^(include|limits|basic|malloc|stdio|io|signal|process|paths|udp)$ ]]; do
                 SPECIFIC_TESTS+=("$1"); shift
             done
             ;;

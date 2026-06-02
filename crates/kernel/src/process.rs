@@ -110,10 +110,33 @@ pub trait HostIO {
         flags: u32,
         buf: &mut [u8],
     ) -> Result<usize, Errno>;
+    fn host_net_poll(&mut self, handle: i32, events: i16) -> Result<i16, Errno> {
+        let _ = handle;
+        Ok(events)
+    }
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     /// Notify the host that an AF_INET socket is now listening, so the host
     /// can open a real TCP server on the given port.
     fn host_net_listen(&mut self, fd: i32, port: u16, addr: &[u8; 4]) -> Result<(), Errno>;
+    fn host_udp_bind(&mut self, handle: i32, addr: &[u8; 4], port: u16) -> Result<(), Errno> {
+        let _ = (handle, addr, port);
+        Ok(())
+    }
+    fn host_udp_unbind(&mut self, handle: i32) -> Result<(), Errno> {
+        let _ = handle;
+        Ok(())
+    }
+    fn host_udp_send(
+        &mut self,
+        src_addr: &[u8; 4],
+        src_port: u16,
+        dst_addr: &[u8; 4],
+        dst_port: u16,
+        data: &[u8],
+    ) -> Result<usize, Errno> {
+        let _ = (src_addr, src_port, dst_addr, dst_port, data);
+        Err(Errno::ENETUNREACH)
+    }
     fn host_getaddrinfo(&mut self, name: &[u8], result: &mut [u8]) -> Result<usize, Errno>;
     fn host_fcntl_lock(
         &mut self,

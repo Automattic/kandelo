@@ -97,6 +97,7 @@ unsafe extern "C" {
     fn host_net_connect_status(handle: i32) -> i32;
     fn host_net_send(handle: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
+    fn host_net_poll(handle: i32, events: u32) -> i32;
     fn host_net_close(handle: i32) -> i32;
     fn host_net_listen(
         fd: i32,
@@ -105,6 +106,29 @@ unsafe extern "C" {
         addr_b: u32,
         addr_c: u32,
         addr_d: u32,
+    ) -> i32;
+    fn host_udp_bind(
+        handle: i32,
+        addr_a: u32,
+        addr_b: u32,
+        addr_c: u32,
+        addr_d: u32,
+        port: u32,
+    ) -> i32;
+    fn host_udp_unbind(handle: i32) -> i32;
+    fn host_udp_send(
+        src_a: u32,
+        src_b: u32,
+        src_c: u32,
+        src_d: u32,
+        src_port: u32,
+        dst_a: u32,
+        dst_b: u32,
+        dst_c: u32,
+        dst_d: u32,
+        dst_port: u32,
+        data_ptr: *const u8,
+        data_len: u32,
     ) -> i32;
     fn host_getaddrinfo(
         name_ptr: *const u8,
@@ -644,6 +668,18 @@ impl HostIO for WasmHostIO {
         }
     }
 
+    fn host_net_poll(&mut self, handle: i32, events: i16) -> Result<i16, Errno> {
+        let result = unsafe { host_net_poll(handle, events as u32) };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as i16)
+        }
+    }
+
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno> {
         let result = unsafe { host_net_close(handle) };
         i32_to_result(result)
@@ -661,6 +697,59 @@ impl HostIO for WasmHostIO {
             )
         };
         i32_to_result(result)
+    }
+
+    fn host_udp_bind(&mut self, handle: i32, addr: &[u8; 4], port: u16) -> Result<(), Errno> {
+        let result = unsafe {
+            host_udp_bind(
+                handle,
+                addr[0] as u32,
+                addr[1] as u32,
+                addr[2] as u32,
+                addr[3] as u32,
+                port as u32,
+            )
+        };
+        i32_to_result(result)
+    }
+
+    fn host_udp_unbind(&mut self, handle: i32) -> Result<(), Errno> {
+        let result = unsafe { host_udp_unbind(handle) };
+        i32_to_result(result)
+    }
+
+    fn host_udp_send(
+        &mut self,
+        src_addr: &[u8; 4],
+        src_port: u16,
+        dst_addr: &[u8; 4],
+        dst_port: u16,
+        data: &[u8],
+    ) -> Result<usize, Errno> {
+        let result = unsafe {
+            host_udp_send(
+                src_addr[0] as u32,
+                src_addr[1] as u32,
+                src_addr[2] as u32,
+                src_addr[3] as u32,
+                src_port as u32,
+                dst_addr[0] as u32,
+                dst_addr[1] as u32,
+                dst_addr[2] as u32,
+                dst_addr[3] as u32,
+                dst_port as u32,
+                data.as_ptr(),
+                data.len() as u32,
+            )
+        };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
+        }
     }
 
     fn host_getaddrinfo(&mut self, name: &[u8], result_buf: &mut [u8]) -> Result<usize, Errno> {
@@ -9481,6 +9570,53 @@ pub extern "C" fn kernel_inject_connection(
     }
 
     recv_pipe_idx as i32
+}
+
+/// Inject a UDP datagram into the kernel's AF_INET SOCK_DGRAM receive path.
+///
+/// The host virtual-network backend calls this after routing a datagram to a
+/// machine. The datagram is delivered only to sockets owned by `pid` whose
+/// bound address/port and connected-peer filter accept the source.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_inject_datagram(
+    pid: u32,
+    dst_addr_a: u32,
+    dst_addr_b: u32,
+    dst_addr_c: u32,
+    dst_addr_d: u32,
+    dst_port: u32,
+    src_addr_a: u32,
+    src_addr_b: u32,
+    src_addr_c: u32,
+    src_addr_d: u32,
+    src_port: u32,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> i32 {
+    let data = unsafe { slice::from_raw_parts(data_ptr, data_len as usize) };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(p) => p,
+        None => return -(Errno::ESRCH as i32),
+    };
+    syscalls::inject_udp_datagram_into(
+        proc,
+        [
+            dst_addr_a as u8,
+            dst_addr_b as u8,
+            dst_addr_c as u8,
+            dst_addr_d as u8,
+        ],
+        dst_port as u16,
+        [
+            src_addr_a as u8,
+            src_addr_b as u8,
+            src_addr_c as u8,
+            src_addr_d as u8,
+        ],
+        src_port as u16,
+        data,
+    )
 }
 
 /// Read data from a pipe buffer into kernel memory.

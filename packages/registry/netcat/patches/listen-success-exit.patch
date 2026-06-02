@@ -1,0 +1,8 @@
+diff --git a/src/netcat.c b/src/netcat.c
+index 8fd6b51..3c19d64 100644
+--- a/src/netcat.c
++++ b/src/netcat.c
+@@ -494,2 +494,3 @@ int main(int argc, char *argv[])
+     if (netcat_mode == NETCAT_LISTEN) {
++      glob_ret = EXIT_SUCCESS;
+      if (opt_exec) {

@@ -417,6 +417,7 @@ export default defineConfig({
         benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
         doom: path.resolve(__dirname, "pages/doom/index.html"),
         kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
+        network: path.resolve(__dirname, "pages/network/index.html"),
         // The perl, python, ruby, erlang, texlive, and redis pages
         // are not part of this static build while their slow builds
         // live in kandelo-software. The root gallery fetches that
@@ -427,6 +428,10 @@ export default defineConfig({
   },
   worker: {
     format: "es",
+    plugins: () => [
+      resolveKernelArtifactsAlias(),
+      resolveBinariesAlias(),
+    ],
   },
   assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst", "**/*.zip"],
 });

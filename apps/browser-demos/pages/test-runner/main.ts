@@ -31,6 +31,7 @@ declare global {
       exitCode: number;
       stdout: string;
       stderr: string;
+      combined: string;
     }>;
     __testCount: number;
   }
@@ -143,13 +144,18 @@ async function init() {
   ) => {
     let stdout = "";
     let stderr = "";
+    let combined = "";
 
     const kernel = new BrowserKernel({
       onStdout: (data: Uint8Array) => {
-        stdout += new TextDecoder().decode(data);
+        const text = new TextDecoder().decode(data);
+        stdout += text;
+        combined += text;
       },
       onStderr: (data: Uint8Array) => {
-        stderr += new TextDecoder().decode(data);
+        const text = new TextDecoder().decode(data);
+        stderr += text;
+        combined += text;
       },
     });
 
@@ -193,7 +199,7 @@ async function init() {
         ),
       ]);
 
-      return { exitCode, stdout, stderr };
+      return { exitCode, stdout, stderr, combined };
     } finally {
       // Clean up to free memory for the next test
       await kernel.destroy();

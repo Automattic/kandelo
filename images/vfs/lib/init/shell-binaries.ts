@@ -60,6 +60,12 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "make", resolverPath: "programs/make.wasm", vfsPath: "/usr/bin/make", symlinks: ["/bin/make"] },
   { id: "tar", resolverPath: "programs/tar.wasm", vfsPath: "/usr/bin/tar", symlinks: ["/bin/tar"] },
   { id: "curl", resolverPath: "programs/curl.wasm", vfsPath: "/usr/bin/curl", symlinks: ["/bin/curl"] },
+  {
+    id: "netcat",
+    resolverPath: "programs/nc.wasm",
+    vfsPath: "/usr/bin/nc",
+    symlinks: ["/bin/nc", "/usr/bin/netcat", "/bin/netcat"],
+  },
   { id: "wget", resolverPath: "programs/wget.wasm", vfsPath: "/usr/bin/wget", symlinks: ["/bin/wget"] },
   { id: "git", resolverPath: "programs/git/git.wasm", vfsPath: "/usr/bin/git", symlinks: ["/bin/git"] },
   {

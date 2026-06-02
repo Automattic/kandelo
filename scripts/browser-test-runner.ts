@@ -25,6 +25,7 @@ interface TestResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  combined?: string;
   error?: string;
   durationMs: number;
 }
@@ -198,6 +199,7 @@ async function runSingleTest(
       exitCode: result.exitCode,
       stdout: result.stdout,
       stderr: result.stderr,
+      combined: result.combined,
       durationMs: Math.round(performance.now() - start),
     };
   } catch (err: any) {

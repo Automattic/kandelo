@@ -31,6 +31,7 @@ depends_on = [
   "less@668",
   "tar@1.35",
   "curl@8.11.1",
+  "netcat@0.7.1",
   "wget@1.25.0",
   "git@2.47.1",
   "gzip@1.13",

@@ -959,6 +959,17 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
                 let mut send_idx_to_free: Option<usize> = None;
                 let mut recv_idx_to_free: Option<usize> = None;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
+                    if sock.domain == crate::socket::SocketDomain::Inet
+                        && sock.sock_type == crate::socket::SocketType::Dgram
+                    {
+                        crate::socket::udp_unregister(proc.pid, sock_idx);
+                        let _ = host.host_udp_unbind(sock_idx as i32);
+                    }
+                    if sock.domain == crate::socket::SocketDomain::Inet
+                        && sock.sock_type == crate::socket::SocketType::Stream
+                    {
+                        crate::socket::tcp_unregister(proc.pid, sock_idx);
+                    }
                     // Connected AF_INET socket: drop one cross-process ref
                     // (fork/spawn share host_net_handle by value). Only the
                     // last close actually tears down the host connection —
@@ -1217,13 +1228,19 @@ pub fn sys_read(
             }
         }
         FileType::Socket => {
-            use crate::socket::SocketDomain;
+            use crate::socket::{SocketDomain, SocketType};
             let sock_idx = (-(host_handle + 1)) as usize;
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-            if sock.shut_rd {
+            let domain = sock.domain;
+            let sock_type = sock.sock_type;
+            let shut_rd = sock.shut_rd;
+            if shut_rd {
                 return Ok(0);
             }
-            match sock.domain {
+            if sock_type == SocketType::Dgram {
+                return sys_recv(proc, host, fd, buf, 0);
+            }
+            match domain {
                 SocketDomain::Inet | SocketDomain::Inet6 => {
                     // Loopback path: use pipe buffers if available
                     if let Some(recv_buf_idx) = sock.recv_buf_idx {
@@ -1696,14 +1713,20 @@ pub fn sys_write(
             }
         }
         FileType::Socket => {
-            use crate::socket::SocketDomain;
+            use crate::socket::{SocketDomain, SocketType};
             let sock_idx = (-(host_handle + 1)) as usize;
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-            if sock.shut_wr {
+            let domain = sock.domain;
+            let sock_type = sock.sock_type;
+            let shut_wr = sock.shut_wr;
+            if shut_wr {
                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                 return Err(Errno::EPIPE);
             }
-            match sock.domain {
+            if sock_type == SocketType::Dgram {
+                return sys_send(proc, host, fd, buf, 0);
+            }
+            match domain {
                 SocketDomain::Inet | SocketDomain::Inet6 => {
                     // Loopback path: use pipe buffers if available
                     if let Some(send_buf_idx) = sock.send_buf_idx {
@@ -5172,6 +5195,328 @@ pub fn sys_socketpair(
     Ok((fd0, fd1))
 }
 
+const UDP_DATAGRAM_QUEUE_LIMIT: usize = 128;
+
+fn sockaddr_family(addr: &[u8]) -> Result<u16, Errno> {
+    if addr.len() < 2 {
+        return Err(Errno::EINVAL);
+    }
+    Ok(u16::from_le_bytes([addr[0], addr[1]]))
+}
+
+fn parse_sockaddr_in(addr: &[u8]) -> Result<([u8; 4], u16), Errno> {
+    use wasm_posix_shared::socket::AF_INET;
+
+    if addr.len() < 8 {
+        return Err(Errno::EINVAL);
+    }
+    if sockaddr_family(addr)? as u32 != AF_INET {
+        return Err(Errno::EAFNOSUPPORT);
+    }
+    Ok((
+        [addr[4], addr[5], addr[6], addr[7]],
+        u16::from_be_bytes([addr[2], addr[3]]),
+    ))
+}
+
+fn write_sockaddr_in(buf: &mut [u8], addr: [u8; 4], port: u16) -> usize {
+    let mut sa = [0u8; 16];
+    sa[0] = 2; // AF_INET, little-endian
+    sa[1] = 0;
+    let port_be = port.to_be_bytes();
+    sa[2] = port_be[0];
+    sa[3] = port_be[1];
+    sa[4] = addr[0];
+    sa[5] = addr[1];
+    sa[6] = addr[2];
+    sa[7] = addr[3];
+    let n = buf.len().min(16);
+    buf[..n].copy_from_slice(&sa[..n]);
+    16
+}
+
+fn is_loopback_addr(addr: [u8; 4]) -> bool {
+    addr[0] == 127
+}
+
+fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
+    addr == [0, 0, 0, 0]
+        || is_loopback_addr(addr)
+        || is_virtual_network_addr(addr)
+        || addr == [255, 255, 255, 255]
+}
+
+fn is_supported_udp_route_addr(addr: [u8; 4]) -> bool {
+    is_loopback_addr(addr) || is_virtual_network_addr(addr)
+}
+
+fn is_virtual_network_addr(addr: [u8; 4]) -> bool {
+    addr[0] == 10 && addr[1] == 88
+}
+
+fn udp_route_local_addr(dst_addr: [u8; 4]) -> [u8; 4] {
+    if is_loopback_addr(dst_addr) {
+        [127, 0, 0, 1]
+    } else {
+        [0, 0, 0, 0]
+    }
+}
+
+fn udp_reuse_addr(sock: &crate::socket::SocketInfo) -> bool {
+    use wasm_posix_shared::socket::{SO_REUSEADDR, SOL_SOCKET};
+
+    sock.get_option(SOL_SOCKET, SO_REUSEADDR).unwrap_or(0) != 0
+}
+
+fn bump_ephemeral_port(proc: &mut Process) {
+    if proc.next_ephemeral_port < 49152 || proc.next_ephemeral_port == u16::MAX {
+        proc.next_ephemeral_port = 49152;
+    } else {
+        proc.next_ephemeral_port += 1;
+    }
+}
+
+fn allocate_udp_ephemeral_port(
+    proc: &mut Process,
+    sock_idx: usize,
+    addr: [u8; 4],
+    reuse_addr: bool,
+) -> Result<u16, Errno> {
+    if proc.next_ephemeral_port < 49152 {
+        proc.next_ephemeral_port = 49152;
+    }
+    let start = proc.next_ephemeral_port;
+    loop {
+        let port = proc.next_ephemeral_port;
+        bump_ephemeral_port(proc);
+        if crate::socket::udp_can_bind(proc.pid, sock_idx, addr, port, reuse_addr) {
+            return Ok(port);
+        }
+        if proc.next_ephemeral_port == start {
+            return Err(Errno::EADDRINUSE);
+        }
+    }
+}
+
+fn udp_bind_socket(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    sock_idx: usize,
+    addr: [u8; 4],
+    port: u16,
+) -> Result<(), Errno> {
+    if !is_supported_udp_bind_addr(addr) {
+        return Err(Errno::EADDRNOTAVAIL);
+    }
+
+    let reuse_addr = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        udp_reuse_addr(sock)
+    };
+    let assigned_port = if port == 0 {
+        allocate_udp_ephemeral_port(proc, sock_idx, addr, reuse_addr)?
+    } else {
+        port
+    };
+    crate::socket::udp_register(proc.pid, sock_idx, addr, assigned_port, reuse_addr)?;
+    if !is_loopback_addr(addr) {
+        if let Err(e) = host.host_udp_bind(sock_idx as i32, &addr, assigned_port) {
+            crate::socket::udp_unregister(proc.pid, sock_idx);
+            return Err(e);
+        }
+    }
+
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    sock.bind_addr = addr;
+    sock.bind_port = assigned_port;
+    if sock.state == crate::socket::SocketState::Unbound {
+        sock.state = crate::socket::SocketState::Bound;
+    }
+    Ok(())
+}
+
+fn udp_ensure_bound(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    sock_idx: usize,
+    addr: [u8; 4],
+) -> Result<(), Errno> {
+    let already_bound = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?.bind_port != 0;
+    if already_bound {
+        return Ok(());
+    }
+    udp_bind_socket(proc, host, sock_idx, addr, 0)
+}
+
+fn udp_socket_accepts_datagram(
+    sock: &crate::socket::SocketInfo,
+    src_addr: [u8; 4],
+    src_port: u16,
+) -> bool {
+    use crate::socket::SocketState;
+
+    if sock.state == SocketState::Connected {
+        return sock.peer_addr == src_addr && sock.peer_port == src_port;
+    }
+    true
+}
+
+fn udp_queue_datagram(sock: &mut crate::socket::SocketInfo, datagram: crate::socket::Datagram) {
+    if sock.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT {
+        sock.dgram_queue.remove(0);
+    }
+    sock.dgram_queue.push(datagram);
+}
+
+fn udp_take_socket_error(proc: &mut Process, sock_idx: usize) -> Result<(), Errno> {
+    let err = proc
+        .sockets
+        .get(sock_idx)
+        .ok_or(Errno::EBADF)?
+        .connect_error;
+    if err == 0 {
+        return Ok(());
+    }
+    if let Some(sock) = proc.sockets.get_mut(sock_idx) {
+        sock.connect_error = 0;
+    }
+    Err(Errno::from_u32(err).unwrap_or(Errno::EIO))
+}
+
+fn udp_purge_unaccepted_datagrams(proc: &mut Process, sock_idx: usize) -> Result<(), Errno> {
+    let (peer_addr, peer_port, connected) = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        (
+            sock.peer_addr,
+            sock.peer_port,
+            sock.state == crate::socket::SocketState::Connected,
+        )
+    };
+    if !connected {
+        return Ok(());
+    }
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    sock.dgram_queue
+        .retain(|d| d.src_addr == peer_addr && d.src_port == peer_port);
+    Ok(())
+}
+
+fn udp_send_datagram(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    sock_idx: usize,
+    buf: &[u8],
+    dst_addr: [u8; 4],
+    dst_port: u16,
+) -> Result<usize, Errno> {
+    use crate::socket::{Datagram, SocketState};
+
+    let (state, shut_wr) = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        (sock.state, sock.shut_wr)
+    };
+    if shut_wr {
+        return Err(Errno::EPIPE);
+    }
+    if state == SocketState::Connected {
+        udp_take_socket_error(proc, sock_idx)?;
+    }
+    let auto_bind_addr = if state == SocketState::Connected {
+        udp_route_local_addr(dst_addr)
+    } else {
+        [0, 0, 0, 0]
+    };
+    udp_ensure_bound(proc, host, sock_idx, auto_bind_addr)?;
+
+    let (src_addr, src_port) = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        (sock.bind_addr, sock.bind_port)
+    };
+    if !is_loopback_addr(dst_addr) {
+        return match host.host_udp_send(&src_addr, src_port, &dst_addr, dst_port, buf) {
+            Ok(n) => Ok(n),
+            Err(Errno::ECONNREFUSED) if state == SocketState::Connected => {
+                if let Some(sock) = proc.sockets.get_mut(sock_idx) {
+                    sock.connect_error = Errno::ECONNREFUSED as u32;
+                }
+                Ok(buf.len())
+            }
+            Err(Errno::ECONNREFUSED) => Ok(buf.len()),
+            Err(e) => Err(e),
+        };
+    }
+    let datagram = Datagram {
+        data: buf.to_vec(),
+        src_addr,
+        src_port,
+    };
+
+    let mut delivered = false;
+    let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
+    for endpoint in endpoints {
+        if endpoint.pid != proc.pid {
+            continue;
+        }
+        let accepts = proc
+            .sockets
+            .get(endpoint.sock_idx)
+            .map(|sock| udp_socket_accepts_datagram(sock, src_addr, src_port))
+            .unwrap_or(false);
+        if !accepts {
+            continue;
+        }
+        if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
+            udp_queue_datagram(target, datagram.clone());
+            delivered = true;
+            break;
+        }
+    }
+
+    if !delivered && state == SocketState::Connected {
+        if let Some(sock) = proc.sockets.get_mut(sock_idx) {
+            sock.connect_error = Errno::ECONNREFUSED as u32;
+        }
+    }
+
+    Ok(buf.len())
+}
+
+pub fn inject_udp_datagram_into(
+    proc: &mut Process,
+    dst_addr: [u8; 4],
+    dst_port: u16,
+    src_addr: [u8; 4],
+    src_port: u16,
+    data: &[u8],
+) -> i32 {
+    use crate::socket::Datagram;
+
+    let datagram = Datagram {
+        data: data.to_vec(),
+        src_addr,
+        src_port,
+    };
+    let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
+    for endpoint in endpoints {
+        if endpoint.pid != proc.pid {
+            continue;
+        }
+        let accepts = proc
+            .sockets
+            .get(endpoint.sock_idx)
+            .map(|sock| udp_socket_accepts_datagram(sock, src_addr, src_port))
+            .unwrap_or(false);
+        if !accepts {
+            continue;
+        }
+        if let Some(target) = proc.sockets.get_mut(endpoint.sock_idx) {
+            udp_queue_datagram(target, datagram);
+            return 0;
+        }
+    }
+    -(Errno::ECONNREFUSED as i32)
+}
+
 /// getsockname -- get local socket address.
 ///
 /// For AF_INET sockets, writes a full 16-byte sockaddr_in:
@@ -5190,22 +5535,7 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
 
     match sock.domain {
-        SocketDomain::Inet => {
-            // sockaddr_in is 16 bytes: family(2) + port(2) + addr(4) + zero(8)
-            let mut sa = [0u8; 16];
-            sa[0] = 2; // AF_INET low byte
-            sa[1] = 0; // AF_INET high byte
-            let port_be = sock.bind_port.to_be_bytes();
-            sa[2] = port_be[0];
-            sa[3] = port_be[1];
-            sa[4] = sock.bind_addr[0];
-            sa[5] = sock.bind_addr[1];
-            sa[6] = sock.bind_addr[2];
-            sa[7] = sock.bind_addr[3];
-            let n = buf.len().min(16);
-            buf[..n].copy_from_slice(&sa[..n]);
-            Ok(16)
-        }
+        SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.bind_addr, sock.bind_port)),
         SocketDomain::Inet6 => {
             if buf.len() >= 2 {
                 buf[0] = 10; // AF_INET6
@@ -5273,21 +5603,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
         }
     }
     match sock.domain {
-        SocketDomain::Inet => {
-            let mut sa = [0u8; 16];
-            sa[0] = 2; // AF_INET low byte
-            sa[1] = 0;
-            let port_be = sock.peer_port.to_be_bytes();
-            sa[2] = port_be[0];
-            sa[3] = port_be[1];
-            sa[4] = sock.peer_addr[0];
-            sa[5] = sock.peer_addr[1];
-            sa[6] = sock.peer_addr[2];
-            sa[7] = sock.peer_addr[3];
-            let n = buf.len().min(16);
-            buf[..n].copy_from_slice(&sa[..n]);
-            Ok(16)
-        }
+        SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.peer_addr, sock.peer_port)),
         SocketDomain::Inet6 => {
             if buf.len() >= 2 {
                 buf[0] = 10; // AF_INET6
@@ -5387,7 +5703,7 @@ pub fn sys_send(
     buf: &[u8],
     flags: u32,
 ) -> Result<usize, Errno> {
-    use crate::socket::{SocketDomain, SocketState};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::{MSG_NOSIGNAL, MSG_OOB};
 
     let entry = proc.fd_table.get(fd)?;
@@ -5397,6 +5713,19 @@ pub fn sys_send(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.sock_type == SocketType::Dgram {
+        if sock.domain == SocketDomain::Inet {
+            if sock.state != SocketState::Connected {
+                return Err(Errno::EDESTADDRREQ);
+            }
+            let dst_addr = sock.peer_addr;
+            let dst_port = sock.peer_port;
+            return udp_send_datagram(proc, host, sock_idx, buf, dst_addr, dst_port);
+        }
+        if sock.domain == SocketDomain::Unix && sock.state == SocketState::Connected {
+            return Ok(buf.len());
+        }
+    }
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
@@ -5455,7 +5784,7 @@ pub fn sys_recv(
     buf: &mut [u8],
     flags: u32,
 ) -> Result<usize, Errno> {
-    use crate::socket::{SocketDomain, SocketState};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::{MSG_DONTWAIT, MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
@@ -5467,6 +5796,10 @@ pub fn sys_recv(
     let status_flags = ofd.status_flags;
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.sock_type == SocketType::Dgram && sock.domain == SocketDomain::Inet {
+        let (n, _) = sys_recvfrom(proc, host, fd, buf, flags, &mut [])?;
+        return Ok(n);
+    }
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
@@ -5748,7 +6081,7 @@ pub fn sys_bind(
     fd: i32,
     addr: &[u8],
 ) -> Result<(), Errno> {
-    use crate::socket::{SocketDomain, SocketState};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -5768,8 +6101,18 @@ pub fn sys_bind(
             if addr.len() < 8 {
                 return Err(Errno::EINVAL);
             }
-            let port = u16::from_be_bytes([addr[2], addr[3]]);
-            let ip = [addr[4], addr[5], addr[6], addr[7]];
+            let (ip, port) = if sock.sock_type == SocketType::Dgram {
+                parse_sockaddr_in(addr)?
+            } else {
+                (
+                    [addr[4], addr[5], addr[6], addr[7]],
+                    u16::from_be_bytes([addr[2], addr[3]]),
+                )
+            };
+
+            if sock.sock_type == SocketType::Dgram {
+                return udp_bind_socket(proc, host, sock_idx, ip, port);
+            }
 
             let assigned_port = if port == 0 {
                 let p = proc.next_ephemeral_port;
@@ -5781,7 +6124,7 @@ pub fn sys_bind(
             } else {
                 port
             };
-
+            crate::socket::tcp_register(proc.pid, sock_idx, ip, assigned_port)?;
             let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
             sock.bind_addr = ip;
             sock.bind_port = assigned_port;
@@ -5903,6 +6246,9 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
 
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.sock_type != SocketType::Stream {
+        return Err(Errno::EOPNOTSUPP);
+    }
     if sock.state != SocketState::Listening {
         return Err(Errno::EINVAL);
     }
@@ -5990,6 +6336,50 @@ pub fn sys_connect(
 
     match sock.domain {
         SocketDomain::Inet | SocketDomain::Inet6 => {
+            if sock.sock_type == SocketType::Dgram && sock.domain == SocketDomain::Inet {
+                let family = sockaddr_family(addr)?;
+                if family == 0 {
+                    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                    sock.peer_addr = [0, 0, 0, 0];
+                    sock.peer_port = 0;
+                    sock.connect_error = 0;
+                    sock.state = if sock.bind_port == 0 {
+                        SocketState::Unbound
+                    } else {
+                        SocketState::Bound
+                    };
+                    return Ok(());
+                }
+
+                let (ip, port) = parse_sockaddr_in(addr)?;
+                if ip == [0, 0, 0, 0] && port == 0 {
+                    return Err(Errno::EADDRNOTAVAIL);
+                }
+                if ip == [255, 255, 255, 255] {
+                    use wasm_posix_shared::socket::{SO_BROADCAST, SOL_SOCKET};
+
+                    let broadcast_enabled =
+                        sock.get_option(SOL_SOCKET, SO_BROADCAST).unwrap_or(0) != 0;
+                    if !broadcast_enabled {
+                        return Err(Errno::EACCES);
+                    }
+                }
+                if !is_supported_udp_route_addr(ip) {
+                    return Err(Errno::ENETUNREACH);
+                }
+
+                udp_ensure_bound(proc, host, sock_idx, udp_route_local_addr(ip))?;
+                {
+                    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                    sock.state = SocketState::Connected;
+                    sock.peer_addr = ip;
+                    sock.peer_port = port;
+                    sock.connect_error = 0;
+                }
+                udp_purge_unaccepted_datagrams(proc, sock_idx)?;
+                return Ok(());
+            }
+
             if sock.state == SocketState::Connected {
                 return Err(Errno::EISCONN);
             }
@@ -6254,7 +6644,7 @@ pub fn sys_sendto(
     _flags: u32,
     addr: &[u8],
 ) -> Result<usize, Errno> {
-    use crate::socket::{Datagram, SocketDomain, SocketState, SocketType};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -6272,57 +6662,19 @@ pub fn sys_sendto(
         return Ok(buf.len());
     }
 
-    // sendto with null/empty addr on a connected socket → delegate to send (POSIX)
-    if addr.is_empty() && sock.state == SocketState::Connected {
-        return sys_send(proc, _host, fd, buf, _flags);
+    if addr.is_empty() {
+        if sock.state == SocketState::Connected {
+            return sys_send(proc, _host, fd, buf, _flags);
+        }
+        return Err(Errno::EDESTADDRREQ);
     }
 
     if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
         return Err(Errno::EOPNOTSUPP);
     }
 
-    // Parse destination sockaddr_in
-    if addr.len() < 8 {
-        return Err(Errno::EINVAL);
-    }
-    let dst_port = u16::from_be_bytes([addr[2], addr[3]]);
-    let dst_ip = [addr[4], addr[5], addr[6], addr[7]];
-
-    // Only support loopback
-    if dst_ip != [127, 0, 0, 1] {
-        return Err(Errno::ENETUNREACH);
-    }
-
-    // Get sender info
-    let src_addr = sock.bind_addr;
-    let src_port = sock.bind_port;
-
-    // Find target DGRAM socket bound to dst_port
-    let mut target_idx = None;
-    let sock_count = proc.sockets.len();
-    for i in 0..sock_count {
-        if let Some(s) = proc.sockets.get(i) {
-            if s.sock_type == SocketType::Dgram
-                && (s.state == SocketState::Bound || s.state == SocketState::Connected)
-                && s.bind_port == dst_port
-            {
-                target_idx = Some(i);
-                break;
-            }
-        }
-    }
-    let target_idx = target_idx.ok_or(Errno::ECONNREFUSED)?;
-
-    let datagram = Datagram {
-        data: buf.to_vec(),
-        src_addr,
-        src_port,
-    };
-
-    let target = proc.sockets.get_mut(target_idx).ok_or(Errno::EBADF)?;
-    target.dgram_queue.push(datagram);
-
-    Ok(buf.len())
+    let (dst_ip, dst_port) = parse_sockaddr_in(addr)?;
+    udp_send_datagram(proc, _host, sock_idx, buf, dst_ip, dst_port)
 }
 
 /// Receive a message from a socket with sender address.
@@ -6336,7 +6688,8 @@ pub fn sys_recvfrom(
     _flags: u32,
     addr_buf: &mut [u8],
 ) -> Result<(usize, usize), Errno> {
-    use crate::socket::{SocketDomain, SocketType};
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+    use wasm_posix_shared::socket::MSG_PEEK;
 
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -6354,12 +6707,32 @@ pub fn sys_recvfrom(
     if sock.domain != SocketDomain::Inet {
         return Err(Errno::EOPNOTSUPP);
     }
+    if sock.shut_rd {
+        return Ok((0, 0));
+    }
 
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-    if sock.dgram_queue.is_empty() {
+    let datagram_idx = sock.dgram_queue.iter().position(|d| {
+        if sock.state == SocketState::Connected {
+            d.src_addr == sock.peer_addr && d.src_port == sock.peer_port
+        } else {
+            true
+        }
+    });
+    if datagram_idx.is_none() {
+        if sock.state == SocketState::Connected && sock.connect_error != 0 {
+            let err = sock.connect_error;
+            sock.connect_error = 0;
+            return Err(Errno::from_u32(err).unwrap_or(Errno::EIO));
+        }
         return Err(Errno::EAGAIN);
     }
-    let datagram = sock.dgram_queue.remove(0);
+    let datagram_idx = datagram_idx.unwrap();
+    let datagram = if _flags & MSG_PEEK != 0 {
+        sock.dgram_queue[datagram_idx].clone()
+    } else {
+        sock.dgram_queue.remove(datagram_idx)
+    };
 
     // Copy data to buffer
     let copy_len = buf.len().min(datagram.data.len());
@@ -6368,19 +6741,7 @@ pub fn sys_recvfrom(
     // Write sender sockaddr_in to addr_buf
     let mut addr_written = 0;
     if !addr_buf.is_empty() {
-        let mut sa = [0u8; 16];
-        sa[0] = 2; // AF_INET
-        sa[1] = 0;
-        let port_be = datagram.src_port.to_be_bytes();
-        sa[2] = port_be[0];
-        sa[3] = port_be[1];
-        sa[4] = datagram.src_addr[0];
-        sa[5] = datagram.src_addr[1];
-        sa[6] = datagram.src_addr[2];
-        sa[7] = datagram.src_addr[3];
-        let n = addr_buf.len().min(16);
-        addr_buf[..n].copy_from_slice(&sa[..n]);
-        addr_written = 16;
+        addr_written = write_sockaddr_in(addr_buf, datagram.src_addr, datagram.src_port);
     }
 
     Ok((copy_len, addr_written))
@@ -6607,10 +6968,19 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
             FileType::Socket => {
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
-                    use crate::socket::SocketState;
-                    // POLLERR: report error if socket has pending error or shut down for writing
-                    if sock.shut_wr && sock.shut_rd {
+                    use crate::socket::{SocketState, SocketType};
+                    let stream_write_shutdown = sock.sock_type != SocketType::Dgram && sock.shut_wr;
+                    // POLLERR: report full shutdown as an error for stream sockets.
+                    // Datagram sockets handle shutdown readiness below: read shutdown
+                    // is EOF-like for poll, while write shutdown suppresses POLLOUT.
+                    if sock.sock_type != SocketType::Dgram && sock.shut_wr && sock.shut_rd {
                         revents |= POLLERR;
+                    }
+                    if sock.sock_type != SocketType::Dgram
+                        && sock.shut_rd
+                        && (pollfd.events & POLLIN != 0)
+                    {
+                        revents |= POLLIN;
                     }
                     // Listening socket: POLLIN if backlog has pending connections
                     // Check both the shared cross-process queue (AF_INET) and the
@@ -6629,10 +6999,28 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                             revents |= POLLIN;
                         }
                     }
-                    // DGRAM socket: POLLIN if datagram queue is non-empty
-                    if !sock.dgram_queue.is_empty() {
-                        if pollfd.events & POLLIN != 0 {
+                    // DGRAM socket readiness is datagram-queue based for reads
+                    // and generally writable unless the write side is shut down.
+                    if sock.sock_type == SocketType::Dgram {
+                        if sock.connect_error != 0 {
+                            revents |= POLLERR;
+                        }
+                        if sock.shut_wr {
+                            revents |= POLLHUP;
+                        }
+                        if pollfd.events & POLLIN != 0 && sock.shut_rd {
                             revents |= POLLIN;
+                        } else if pollfd.events & POLLIN != 0
+                            && sock.dgram_queue.iter().any(|d| {
+                                sock.state != SocketState::Connected
+                                    || (d.src_addr == sock.peer_addr
+                                        && d.src_port == sock.peer_port)
+                            })
+                        {
+                            revents |= POLLIN;
+                        }
+                        if pollfd.events & POLLOUT != 0 && !sock.shut_wr {
+                            revents |= POLLOUT;
                         }
                     }
                     // Check recv buffer for readability
@@ -6678,11 +7066,17 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     {
                         match sock.state {
                             SocketState::Connected => {
-                                if pollfd.events & POLLOUT != 0 {
-                                    revents |= POLLOUT;
-                                }
-                                if pollfd.events & POLLIN != 0 {
-                                    revents |= POLLIN;
+                                let net_handle = sock.host_net_handle.unwrap();
+                                match host.host_net_poll(net_handle, pollfd.events) {
+                                    Ok(host_revents) => {
+                                        revents |= host_revents;
+                                    }
+                                    Err(e) => {
+                                        if let Some(s) = proc.sockets.get_mut(sock_idx) {
+                                            s.connect_error = e as u32;
+                                        }
+                                        revents |= POLLERR;
+                                    }
                                 }
                             }
                             SocketState::Connecting => {
@@ -6692,11 +7086,17 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                                         if let Some(s) = proc.sockets.get_mut(sock_idx) {
                                             s.state = SocketState::Connected;
                                         }
-                                        if pollfd.events & POLLOUT != 0 {
-                                            revents |= POLLOUT;
-                                        }
-                                        if pollfd.events & POLLIN != 0 {
-                                            revents |= POLLIN;
+                                        match host.host_net_poll(net_handle, pollfd.events) {
+                                            Ok(host_revents) => {
+                                                revents |= host_revents;
+                                            }
+                                            Err(e) => {
+                                                if let Some(s) = proc.sockets.get_mut(sock_idx) {
+                                                    s.state = SocketState::Closed;
+                                                    s.connect_error = e as u32;
+                                                }
+                                                revents |= POLLERR;
+                                            }
                                         }
                                     }
                                     Err(Errno::EAGAIN) => {}
@@ -6714,6 +7114,9 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                             }
                             _ => {}
                         }
+                    }
+                    if stream_write_shutdown {
+                        revents &= !POLLOUT;
                     }
                 }
             }
@@ -8631,12 +9034,12 @@ pub fn sys_uname(buf: &mut [u8]) -> Result<(), Errno> {
         *b = 0;
     }
     let fields: [&[u8]; 6] = [
-        b"wasm-posix",        // sysname
-        b"localhost",         // nodename
-        b"1.0.0",             // release
-        b"kandelo", // version
-        b"wasm32",            // machine
-        b"",                  // domainname (empty)
+        b"wasm-posix", // sysname
+        b"localhost",  // nodename
+        b"1.0.0",      // release
+        b"kandelo",    // version
+        b"wasm32",     // machine
+        b"",           // domainname (empty)
     ];
     let num_fields = if buf.len() >= 390 { 6 } else { 5 };
     for (i, field) in fields[..num_fields].iter().enumerate() {
