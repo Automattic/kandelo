@@ -428,6 +428,10 @@ export default defineConfig({
   },
   worker: {
     format: "es",
+    plugins: () => [
+      resolveKernelArtifactsAlias(),
+      resolveBinariesAlias(),
+    ],
   },
   assetsInclude: ["**/*.wasm", "**/*.sql", "**/*.vfs", "**/*.vfs.zst", "**/*.zip"],
 });
