@@ -610,12 +610,12 @@ jobs:
           submodules: libc/musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -921,12 +921,12 @@ jobs:
           submodules: libc/musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -1149,12 +1149,12 @@ jobs:
           submodules: libc/musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -1325,12 +1325,12 @@ jobs:
           submodules: libc/musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -1525,12 +1525,12 @@ jobs:
           submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -1724,13 +1724,13 @@ jobs:
 
       - name: Install Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
