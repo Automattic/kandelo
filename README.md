@@ -32,6 +32,7 @@ Real, unmodified software compiled to WebAssembly:
 | GNU sed | 4.9 | Stream editor |
 | GNU make | 4.4 | Build automation |
 | curl | 8.11 | HTTP client with TLS |
+| GNU Netcat | 0.7.1 | TCP/UDP client and server utility |
 | wget | 1.25 | HTTP file retrieval |
 | gawk | 5.3 | Pattern scanning and processing |
 | GNU findutils | 4.10 | find, xargs |
@@ -84,7 +85,7 @@ See [docs/architecture.md](docs/architecture.md) for the full architecture refer
 | Threads | clone with CLONE_VM\|CLONE_THREAD, per-thread TLS and channels |
 | Signals | kill, sigaction (SA_SIGINFO), sigprocmask, sigsuspend, sigaltstack, alarm, setitimer/getitimer, RT signals, sigqueue, sigtimedwait, signalfd |
 | Memory | mmap (MAP_ANONYMOUS + MAP_PRIVATE file + MAP_SHARED file), munmap, mremap, brk/sbrk, memfd_create |
-| Networking | AF_INET sockets, AF_UNIX sockets, connect, send/recv, sendmsg/recvmsg, SCM_RIGHTS |
+| Networking | AF_INET UDP/TCP sockets, local virtual networking between Kandelo machines, AF_UNIX sockets, bind/listen/accept/connect, send/recv, sendto/recvfrom, sendmsg/recvmsg, SCM_RIGHTS |
 | Directories | opendir/readdir, mkdir, rmdir, rename, symlink, readlink, chmod, chown, statvfs, all *at() variants |
 | Time | clock_gettime, gettimeofday, nanosleep, utimensat, timer_create/settime/gettime/delete |
 | Terminal | Full PTY support (/dev/ptmx + /dev/pts/N), line discipline, canonical/raw mode, 16 terminal ioctls |
@@ -223,7 +224,9 @@ npm install
 npx vite --port 5198
 ```
 
-Open `http://localhost:5198` to try 16 interactive demos — C programs, interactive shell, Python/Perl/Ruby/Node REPLs (including in-browser `npm install`), nginx, MariaDB, Redis, full WordPress, a LAMP stack, TeX Live, and DOOM — all running in the browser.
+Open `http://localhost:5198` to try the browser demos: C programs, an interactive shell, Node.js with in-browser `npm install`, nginx, PHP, MariaDB, WordPress, a LAMP stack, DOOM, and the Kandelo UI gallery. The network lab at `http://localhost:5198/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
+
+Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
 
 Browser demos use pre-built **VFS images** — binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
 
@@ -245,6 +248,7 @@ bash packages/registry/ruby/build-ruby.sh           # Ruby 3.3
 bash packages/registry/spidermonkey/build-spidermonkey.sh # SpiderMonkey JS + Node.js compat
 bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
 bash packages/registry/curl/build-curl.sh           # curl
+bash packages/registry/netcat/build-netcat.sh        # GNU Netcat 0.7.1
 bash packages/registry/make/build-make.sh           # GNU make
 ```
 

@@ -24,9 +24,10 @@ The kernel runs in a dedicated web worker, freeing the main thread for UI render
 ```
 Main Thread (BrowserKernel)              Kernel Worker
 ├── UI / rendering                       ├── CentralizedKernelWorker
-├── Page API (boot, stdin, TCP)          ├── MemoryFileSystem (kernel-owned)
+├── Page API (boot, stdin, network)      ├── MemoryFileSystem (kernel-owned)
 ├── PTY terminal ──pty events──>         ├── Kernel Wasm instance
 ├── HTTP bridge / TCP injection          ├── Syscall dispatch (Atomics.waitAsync)
+├── Local virtual network                ├── POSIX socket routing
 ├── App clients (MySQL, Redis)           ├── Process lifecycle (fork/exec/clone/exit)
 │   └── async pipe ops ────────────────> ├── Process sub-worker creation
 │                                        ├── Connection pump (HTTP↔TCP bridge)
@@ -88,7 +89,9 @@ Browser fetch → Service Worker intercepts
 - Used by MariaDB (5 threads), Redis (3 background threads)
 
 ### Networking
-- TCP via kernel pipe-backed connections
+- POSIX AF_INET TCP and UDP inside the kernel, including local loopback and virtual machine-to-machine networking
+- `LocalVirtualNetwork` attaches multiple browser Kandelo machines to virtual IPv4 addresses in one browser session
+- GNU Netcat (`nc`) and `curl` run against those virtual sockets in the network lab at `/pages/network/`
 - Service worker cookie jar for session persistence (WordPress)
 - nginx serves static files and proxies to PHP-FPM via loopback TCP
 
@@ -144,6 +147,7 @@ Located in `apps/browser-demos/pages/`:
 | lamp | MariaDB + nginx + PHP-FPM + WP | dinit | Full LAMP stack |
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
+| network | dash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
 | doom | fbDOOM | legacy spawn | `/dev/fb0` framebuffer + canvas renderer + keyboard via stdin + mouse via `/dev/input/mice` (pointer-locked) + SFX **and** OPL2-synthesized music via `/dev/dsp` → AudioContext. The shareware `doom1.wad` is **fetched at page load** from a Linux-distro mirror (SHA-256 verified, Cache API cached); no IWAD ships in the package archive. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
@@ -314,8 +318,8 @@ export default {
 ### SharedArrayBuffer restrictions
 Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `crypto.getRandomValues()`. Always copy to a temporary non-shared buffer first.
 
-### No raw server sockets
-Browser sandbox prevents listening on ports. nginx/PHP-FPM demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.
+### No external raw sockets
+Browser sandboxing prevents Kandelo from listening on real network ports or opening raw TCP/UDP sockets to arbitrary external peers. Local loopback sockets and `LocalVirtualNetwork` listeners are virtual sockets inside the browser session, so Kandelo machines can still communicate with each other using POSIX UDP/TCP. Browser-facing HTTP server demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.
 
 ### Memory per process
 Each process gets `WebAssembly.Memory(shared: true, initial: layout.initialPages, max: maxPages)`. The initial size covers the program's imported minimum memory, a brk window, and the low syscall control channel; it no longer allocates `maxPages` at spawn. `maxMemoryPages` still caps guest brk/mmap growth and should be tuned for workloads that need large address spaces.
