@@ -16,6 +16,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SYSROOT="$REPO_ROOT/sysroot"
 GLUE_DIR="$REPO_ROOT/libc/glue"
 OS_TEST="$REPO_ROOT/tests/sortix/os-test"
+OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
@@ -59,6 +60,24 @@ PROCESS_EXPECTED_FAIL=(
     # (fork-exec tests now pass — browser exec support)
 )
 PATHS_EXPECTED_FAIL=()
+UDP_EXPECTED_FAIL=(
+    # External raw UDP routes need a HostIO/proxy backend. The in-kernel UDP
+    # implementation intentionally supports loopback/virtual datagrams only and
+    # reports unreachable external routes as ENETUNREACH for now.
+    "bind-lan-subnet-broadcast"
+    "bind-lan-subnet-first"
+    "bind-lan-subnet-wrong"
+    "connect-broadcast-getpeername-so-broadcast"
+    "connect-broadcast-getsockname-so-broadcast"
+    "connect-wan-get-so-bindtodevice"
+    "connect-wan-getsockname"
+    "connect-wan-send-reconnect-loopback-send"
+    "connect-wan-unconnect-rebind-any-getsockname"
+    "connect-wan-unconnect-rebind-same-getsockname"
+    "cross-netif-lan-send-loopback-recv"
+    "cross-netif-loopback-send-lan-recv"
+    "shutdown-r-send"
+)
 
 # ── Browser-specific expected failures ──────────────────────────────
 # Tests that pass on Node.js but fail in the browser due to platform differences.
@@ -95,6 +114,7 @@ BROWSER_PROCESS_EXPECTED_FAIL=(
 BROWSER_PATHS_EXPECTED_FAIL=(
     # (bin-sh now passes — exec stubs populate /bin/sh)
 )
+BROWSER_UDP_EXPECTED_FAIL=()
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -182,26 +202,39 @@ discover_include() {
     done
 }
 
+discover_runtime_suite() {
+    local suite="$1"
+    for root in "$OS_TEST" "$OS_TEST_LOCAL"; do
+        [ -d "$root/$suite" ] || continue
+        find "$root/$suite" -name "*.c" -type f | while read -r f; do
+            local rel="${f#$root/$suite/}"
+            echo "${rel%.c}"
+        done
+    done | sort -u
+}
+
+runtime_test_src() {
+    local suite="$1"
+    local test_name="$2"
+    local local_src="$OS_TEST_LOCAL/$suite/${test_name}.c"
+    if [ -f "$local_src" ]; then
+        echo "$local_src"
+        return
+    fi
+    echo "$OS_TEST/$suite/${test_name}.c"
+}
+
 discover_basic() {
-    find "$OS_TEST/basic" -name "*.c" -type f ! -name "basic.h" | sort | while read -r f; do
-        local rel="${f#$OS_TEST/basic/}"
-        echo "${rel%.c}"
-    done
+    discover_runtime_suite basic
 }
 
 discover_limits() {
-    find "$OS_TEST/limits" -name "*.c" -type f ! -name "suite.h" | sort | while read -r f; do
-        local rel="${f#$OS_TEST/limits/}"
-        echo "${rel%.c}"
-    done
+    discover_runtime_suite limits
 }
 
 discover_suite() {
     local suite="$1"
-    find "$OS_TEST/$suite" -name "*.c" -type f | sort | while read -r f; do
-        local rel="${f#$OS_TEST/$suite/}"
-        echo "${rel%.c}"
-    done
+    discover_runtime_suite "$suite"
 }
 
 discover_malloc()  { discover_suite malloc; }
@@ -210,6 +243,7 @@ discover_io()      { discover_suite io; }
 discover_signal()  { discover_suite signal; }
 discover_process() { discover_suite process; }
 discover_paths()   { discover_suite paths; }
+discover_udp()     { discover_suite udp; }
 
 # ── Build helpers ──────────────────────────────────────────────
 
@@ -262,9 +296,11 @@ build_include_one() {
 build_runtime_test() {
     local suite="$1"
     local test_name="$2"
-    local src="$OS_TEST/$suite/${test_name}.c"
+    local src
+    src="$(runtime_test_src "$suite" "$test_name")"
     local wasm="$BUILD_DIR/$suite/${test_name}.wasm"
     mkdir -p "$(dirname "$wasm")"
+    rm -f "$wasm"
 
     local -a cflags=("${CFLAGS_BASE[@]}" -D_GNU_SOURCE -I"$OS_TEST")
 
@@ -474,12 +510,13 @@ run_runtime_suite() {
     while IFS= read -r line; do
         [[ "$line" != "{"* ]] && continue
 
-        local exitCode error duration stdout stderr
+        local exitCode error duration stdout stderr combined
         exitCode=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('exitCode',-1))" 2>/dev/null || echo "-1")
         error=$(echo "$line" | python3 -c "import sys,json; e=json.load(sys.stdin).get('error',''); print(e if e else '')" 2>/dev/null || echo "")
         duration=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('durationMs',0))" 2>/dev/null || echo "0")
         stdout=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout',''))" 2>/dev/null || echo "")
         stderr=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stderr',''))" 2>/dev/null || echo "")
+        combined=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('combined',''))" 2>/dev/null || echo "")
 
         if [ $idx -ge ${#test_names[@]} ]; then
             break
@@ -500,8 +537,19 @@ run_runtime_suite() {
         # Check expect files for output comparison
         local test_passed=false
         local has_expect=false
+        local local_expect_dir="$OS_TEST_LOCAL/${suite}.expect"
         local expect_dir="$OS_TEST/${suite}.expect"
-        if [ -d "$expect_dir" ]; then
+        local expect_base="${test_name##*/}"
+        if [ -d "$local_expect_dir" ]; then
+            for expect_file in "$local_expect_dir/${expect_base}.posix" "$local_expect_dir/${expect_base}.posix."* "$local_expect_dir/${expect_base}."[0-9]* "$local_expect_dir/${expect_base}.unknown."*; do
+                if [ -f "$expect_file" ]; then
+                    expect_dir="$local_expect_dir"
+                    has_expect=true
+                    break
+                fi
+            done
+        fi
+        if ! $has_expect && [ -d "$expect_dir" ]; then
             has_expect=true
         fi
 
@@ -528,19 +576,23 @@ run_runtime_suite() {
         else
             # Check output against expect files if available
             if $has_expect; then
-                local expect_base="${test_name##*/}"
                 for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]* "$expect_dir/${expect_base}.unknown."*; do
                     [ -f "$expect_file" ] || continue
                     local expected
                     expected=$(cat "$expect_file")
-                    # Build output like Node.js runner (2>&1): combine stdout+stderr
-                    local full_output="$stdout"
-                    if [ -n "$stderr" ]; then
-                        if [ -n "$full_output" ]; then
-                            full_output="${full_output}
+                    # Build output like Node.js runner (2>&1). Newer browser
+                    # runner pages return an interleaved combined stream;
+                    # keep a stdout+stderr fallback for older pages.
+                    local full_output="$combined"
+                    if [ -z "$full_output" ]; then
+                        full_output="$stdout"
+                        if [ -n "$stderr" ]; then
+                            if [ -n "$full_output" ]; then
+                                full_output="${full_output}
 ${stderr}"
-                        else
-                            full_output="$stderr"
+                            else
+                                full_output="$stderr"
+                            fi
                         fi
                     fi
                     if [ -z "$full_output" ] || [ "$exitCode" -ge 2 ] 2>/dev/null; then
@@ -600,6 +652,7 @@ _get_xfail_list() {
         signal)   _XFAIL_LIST=(${SIGNAL_EXPECTED_FAIL[@]+"${SIGNAL_EXPECTED_FAIL[@]}"} ${BROWSER_SIGNAL_EXPECTED_FAIL[@]+"${BROWSER_SIGNAL_EXPECTED_FAIL[@]}"}) ;;
         process)  _XFAIL_LIST=(${PROCESS_EXPECTED_FAIL[@]+"${PROCESS_EXPECTED_FAIL[@]}"} ${BROWSER_PROCESS_EXPECTED_FAIL[@]+"${BROWSER_PROCESS_EXPECTED_FAIL[@]}"}) ;;
         paths)    _XFAIL_LIST=(${PATHS_EXPECTED_FAIL[@]+"${PATHS_EXPECTED_FAIL[@]}"} ${BROWSER_PATHS_EXPECTED_FAIL[@]+"${BROWSER_PATHS_EXPECTED_FAIL[@]}"}) ;;
+        udp)      _XFAIL_LIST=(${UDP_EXPECTED_FAIL[@]+"${UDP_EXPECTED_FAIL[@]}"} ${BROWSER_UDP_EXPECTED_FAIL[@]+"${BROWSER_UDP_EXPECTED_FAIL[@]}"}) ;;
     esac
 }
 
@@ -608,12 +661,12 @@ _get_xfail_list() {
 ALL_MODE=false
 SUITES=()
 DEFAULT_SUITES=(include limits basic malloc stdio)
-ALL_SUITES=(include limits basic malloc stdio io signal process paths)
+ALL_SUITES=(include limits basic malloc stdio io signal process paths udp)
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --all)    ALL_MODE=true; shift ;;
-        include|limits|basic|malloc|stdio|io|signal|process|paths)
+        include|limits|basic|malloc|stdio|io|signal|process|paths|udp)
             SUITES+=("$1"); shift ;;
         *) echo "Unknown argument: $1"; exit 1 ;;
     esac

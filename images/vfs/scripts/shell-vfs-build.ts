@@ -333,6 +333,9 @@ function populateDemoExtendedSymlinks(fs: MemoryFileSystem): void {
   symlink(fs, "/usr/bin/less", "/bin/less");
   symlink(fs, "/usr/bin/tar", "/bin/tar");
   symlink(fs, "/usr/bin/curl", "/bin/curl");
+  symlink(fs, "/usr/bin/nc", "/bin/nc");
+  symlink(fs, "/usr/bin/nc", "/usr/bin/netcat");
+  symlink(fs, "/usr/bin/nc", "/bin/netcat");
   symlink(fs, "/usr/bin/wget", "/bin/wget");
 
   symlink(fs, "/usr/bin/git", "/bin/git");
@@ -406,6 +409,7 @@ function populateDemoExtendedBinaries(fs: MemoryFileSystem): void {
     { relPath: "programs/less.wasm",                 vfsPath: "/usr/bin/less" },
     { relPath: "programs/tar.wasm",                  vfsPath: "/usr/bin/tar" },
     { relPath: "programs/curl.wasm",                 vfsPath: "/usr/bin/curl" },
+    { relPath: "programs/nc.wasm",                   vfsPath: "/usr/bin/nc" },
     { relPath: "programs/wget.wasm",                 vfsPath: "/usr/bin/wget" },
     { relPath: "programs/git/git.wasm",              vfsPath: "/usr/bin/git" },
     { relPath: "programs/git/git-remote-http.wasm",  vfsPath: "/usr/bin/git-remote-http" },

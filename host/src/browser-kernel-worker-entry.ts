@@ -476,7 +476,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       const pid = kw.currentHandlePid;
       if (pid !== 0) {
         // Register the listener target for pickListenerTarget
-        kw.startTcpListener(pid, _fd, port);
+        kw.startTcpListener(pid, _fd, port, addr);
       }
       post({ type: "listen_tcp", pid, fd: _fd, port });
       return 0;

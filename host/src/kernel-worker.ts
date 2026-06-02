@@ -64,7 +64,7 @@ import {
   growMemoryToCover,
 } from "./process-memory";
 
-import type { KernelConfig, PlatformIO } from "./types";
+import type { KernelConfig, NetworkAddress, PlatformIO, TcpConnectionPeer, UdpDatagram } from "./types";
 
 function concatChunksLocal(chunks: Uint8Array[]): Uint8Array {
   if (chunks.length === 0) return new Uint8Array(0);
@@ -177,11 +177,17 @@ const SYS_WRITE = ABI_SYSCALLS.Write;
 const SYS_READ = ABI_SYSCALLS.Read;
 const SYS_PREAD = ABI_SYSCALLS.Pread;
 const SYS_PWRITE = ABI_SYSCALLS.Pwrite;
+const SYS_SEND = ABI_SYSCALLS.Send;
+const SYS_RECV = ABI_SYSCALLS.Recv;
+const SYS_SENDTO = ABI_SYSCALLS.Sendto;
+const SYS_RECVFROM = ABI_SYSCALLS.Recvfrom;
 const SYS_SENDMSG = ABI_SYSCALLS.Sendmsg;
 const SYS_RECVMSG = ABI_SYSCALLS.Recvmsg;
 const SYS_ACCEPT = ABI_SYSCALLS.Accept;
 const SYS_ACCEPT4 = ABI_SYSCALLS.Accept4;
 const SYS_CONNECT = ABI_SYSCALLS.Connect;
+
+const MSG_DONTWAIT = 0x0040;
 
 /** mmap flags */
 const MAP_SHARED = 0x01;
@@ -245,6 +251,25 @@ const WRITE_LIKE_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Sendmsg,
   ABI_SYSCALLS.Sendfile,
 ]);
+
+function syscallHasMsgDontwait(syscallNr: number, args: number[]): boolean {
+  let flags: number | undefined;
+  switch (syscallNr) {
+    case SYS_SEND:
+    case SYS_RECV:
+    case SYS_SENDTO:
+    case SYS_RECVFROM:
+      flags = args[3];
+      break;
+    case SYS_SENDMSG:
+    case SYS_RECVMSG:
+      flags = args[2];
+      break;
+    default:
+      return false;
+  }
+  return flags !== undefined && (flags & MSG_DONTWAIT) !== 0;
+}
 // Signal delivery area — last 48 bytes of data buffer.
 // Written by kernel_dequeue_signal, read by glue channel_syscall.c.
 const CH_SIG_SI_VALUE = CH_SIG_BASE + 12;  // i32: si_value.sival_int
@@ -638,6 +663,8 @@ export class CentralizedKernelWorker {
    *  workers), incoming connections are distributed among them. */
   private tcpListenerTargets = new Map<number, Array<{pid: number, fd: number}>>();
   private tcpListenerRRIndex = new Map<number, number>();
+  /** UDP virtual-network endpoint bindings: "pid:sockIdx" */
+  private udpBindings = new Set<string>();
   /** Separate scratch buffer for TCP data pumping */
   private tcpScratchOffset = 0;
   /** Node.js net module (loaded dynamically for browser compatibility) */
@@ -806,7 +833,30 @@ export class CentralizedKernelWorker {
         if (pid === 0) return 0;
         // addr is currently informational; reserved for future per-iface filtering.
         void addr;
-        this.startTcpListener(pid, fd, port);
+        this.startTcpListener(pid, fd, port, addr);
+        return 0;
+      },
+      onUdpBind: (handle: number, addr: [number, number, number, number], port: number): number => {
+        const pid = this.currentHandlePid;
+        if (pid === 0 || !this.io.network?.bindUdp) return 0;
+        const key = `${pid}:${handle}`;
+        const result = this.io.network.bindUdp(
+          key,
+          new Uint8Array(addr),
+          port,
+          {
+            receive: (datagram) => this.injectUdpDatagram(pid, datagram),
+          },
+        );
+        if (result === 0) this.udpBindings.add(key);
+        return result === 0 ? 0 : -result;
+      },
+      onUdpUnbind: (handle: number): number => {
+        const pid = this.currentHandlePid;
+        if (pid === 0 || !this.io.network?.unbindUdp) return 0;
+        const key = `${pid}:${handle}`;
+        this.io.network.unbindUdp(key);
+        this.udpBindings.delete(key);
         return 0;
       },
       onPosixTimer: (timerId: number, signo: number, valueMs: number, intervalMs: number): number => {
@@ -1365,7 +1415,8 @@ export class CentralizedKernelWorker {
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
-    // Clean up TCP listeners for this process
+    // Clean up network listeners/endpoints for this process
+    this.cleanupUdpBindings(pid);
     this.cleanupTcpListeners(pid);
 
     // Clean up pending poll retries
@@ -1477,7 +1528,8 @@ export class CentralizedKernelWorker {
     const selectEntry = this.pendingSelectRetries.get(pid);
     if (selectEntry?.timer) clearImmediate(selectEntry.timer);
     this.pendingSelectRetries.delete(pid);
-    // Clean up TCP listeners for this process
+    // Clean up network listeners/endpoints for this process
+    this.cleanupUdpBindings(pid);
     this.cleanupTcpListeners(pid);
     // Clear the killed-but-not-yet-reaped guard for this pid; if the
     // pid is later reused for a fresh fork+register, the new process
@@ -3466,6 +3518,13 @@ export class CentralizedKernelWorker {
     // Non-blocking FD check: if the FD has O_NONBLOCK set, return EAGAIN
     // immediately instead of retrying. This is critical for programs like
     // nginx that use non-blocking I/O and expect EAGAIN returned promptly.
+    // Also honor MSG_DONTWAIT on socket send/recv syscalls; unlike O_NONBLOCK,
+    // it lives only in the syscall arguments and should not enter the retry path.
+    if (syscallHasMsgDontwait(syscallNr, origArgs)) {
+      this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN);
+      return;
+    }
+
     // Covers read/write, accept, accept4, and connect syscalls.
     if (READ_LIKE_SYSCALLS.has(syscallNr) || WRITE_LIKE_SYSCALLS.has(syscallNr)
         || syscallNr === SYS_ACCEPT || syscallNr === SYS_ACCEPT4
@@ -7077,7 +7136,12 @@ export class CentralizedKernelWorker {
    * Start a TCP server for a listening socket, bridging real TCP connections
    * into the kernel's pipe-buffer-backed accept path.
    */
-  private startTcpListener(pid: number, fd: number, port: number): void {
+  private startTcpListener(
+    pid: number,
+    fd: number,
+    port: number,
+    addr: [number, number, number, number] = [0, 0, 0, 0],
+  ): void {
     const key = `${pid}:${fd}`;
     // Avoid duplicate listeners on the same pid:fd
     if (this.tcpListeners.has(key)) return;
@@ -7092,6 +7156,21 @@ export class CentralizedKernelWorker {
     const targets = this.tcpListenerTargets.get(port)!;
     if (!targets.some(t => t.pid === pid && t.fd === fd)) {
       targets.push({ pid, fd });
+    }
+
+    if (this.io.network?.listenTcp) {
+      const result = this.io.network.listenTcp(
+        key,
+        new Uint8Array(addr),
+        port,
+        {
+          accept: (peer, _local, remote) =>
+            this.handleIncomingVirtualTcpConnection(pid, fd, peer, remote),
+        },
+      );
+      if (result !== 0) {
+        console.warn(`virtual TCP listener registration failed on port ${port}: errno ${result}`);
+      }
     }
 
     if (!this.netModule) return; // Not in Node.js environment — no real TCP server
@@ -7592,6 +7671,179 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Handle an incoming virtual-network TCP connection by injecting it into the
+   * kernel's normal AF_INET accept path and pumping bytes between the virtual
+   * stream peer and the accepted socket's global pipe pair.
+   */
+  private handleIncomingVirtualTcpConnection(
+    pid: number,
+    listenerFd: number,
+    peer: TcpConnectionPeer,
+    remote: NetworkAddress,
+  ): number {
+    if (!this.kernelInstance) return 107; // ENOTCONN
+
+    const injectConnection = this.kernelInstance.exports.kernel_inject_connection as
+      (pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number) => number;
+    const recvPipeIdx = injectConnection(
+      pid,
+      listenerFd,
+      remote.addr[0] ?? 0,
+      remote.addr[1] ?? 0,
+      remote.addr[2] ?? 0,
+      remote.addr[3] ?? 0,
+      remote.port,
+    );
+    if (recvPipeIdx < 0) return -recvPipeIdx;
+
+    const sendPipeIdx = recvPipeIdx + 1;
+    const GLOBAL_PIPE_PID = 0;
+    const pipeWrite = this.kernelInstance.exports.kernel_pipe_write as
+      (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
+    const pipeRead = this.kernelInstance.exports.kernel_pipe_read as
+      (pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number) => number;
+    const pipeCloseWrite = this.kernelInstance.exports.kernel_pipe_close_write as
+      (pid: number, pipeIdx: number) => number;
+    const pipeCloseRead = this.kernelInstance.exports.kernel_pipe_close_read as
+      (pid: number, pipeIdx: number) => number;
+    const pipeIsWriteOpen = this.kernelInstance.exports.kernel_pipe_is_write_open as
+      (pid: number, pipeIdx: number) => number;
+
+    let cleaned = false;
+    let pumpPending = false;
+    const scratchOffset = this.tcpScratchOffset;
+
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+      pipeCloseRead(GLOBAL_PIPE_PID, sendPipeIdx);
+      peer.close();
+      this.notifyPipeReadable(recvPipeIdx, pid);
+      this.notifyPipeWritable(sendPipeIdx);
+      this.scheduleWakeBlockedRetries();
+    };
+
+    const drainInbound = () => {
+      for (;;) {
+        let data: Uint8Array;
+        try {
+          data = peer.recv(65536, 0);
+        } catch (e: any) {
+          if (e?.errno === 11) return;
+          cleanup();
+          return;
+        }
+        if (data.length === 0) {
+          pipeCloseWrite(GLOBAL_PIPE_PID, recvPipeIdx);
+          this.notifyPipeReadable(recvPipeIdx, pid);
+          return;
+        }
+        const written = this.writePipeChunked(pipeWrite, GLOBAL_PIPE_PID, recvPipeIdx, data);
+        if (written < data.length) {
+          // The pipe is full. A later pump tick will retry once the guest reads.
+          return;
+        }
+        this.notifyPipeReadable(recvPipeIdx, pid);
+      }
+    };
+
+    const drainOutbound = () => {
+      const mem = this.getKernelMem();
+      for (;;) {
+        const n = pipeRead(GLOBAL_PIPE_PID, sendPipeIdx, BigInt(scratchOffset), 65536);
+        if (n <= 0) break;
+        try {
+          peer.send(mem.slice(scratchOffset, scratchOffset + n), 0);
+        } catch {
+          cleanup();
+          return;
+        }
+        this.notifyPipeWritable(sendPipeIdx);
+      }
+    };
+
+    const pump = () => {
+      pumpPending = false;
+      if (cleaned) {
+        return;
+      }
+      if (!this.processes.has(pid)) {
+        drainOutbound();
+        peer.shutdown(1);
+        cleanup();
+        return;
+      }
+      drainInbound();
+      drainOutbound();
+      if (pipeIsWriteOpen(GLOBAL_PIPE_PID, sendPipeIdx) === 0) {
+        peer.shutdown(1);
+        cleanup();
+        return;
+      }
+      schedulePump(2);
+    };
+
+    const schedulePump = (delayMs = 0) => {
+      if (pumpPending || cleaned) return;
+      pumpPending = true;
+      setTimeout(pump, delayMs);
+    };
+
+    this.scheduleWakeBlockedRetries();
+    schedulePump();
+    return 0;
+  }
+
+  /**
+   * Inject a routed virtual-network UDP datagram into the kernel's normal
+   * SOCK_DGRAM receive queue for the destination process.
+   */
+  private injectUdpDatagram(pid: number, datagram: UdpDatagram): number {
+    if (!this.kernelInstance || !this.processes.has(pid)) return 113; // EHOSTUNREACH
+    if (datagram.data.length > 65536) return 90; // EMSGSIZE
+
+    const injectDatagram = this.kernelInstance.exports.kernel_inject_datagram as
+      ((pid: number,
+        dstA: number, dstB: number, dstC: number, dstD: number, dstPort: number,
+        srcA: number, srcB: number, srcC: number, srcD: number, srcPort: number,
+        dataPtr: bigint, dataLen: number) => number) | undefined;
+    if (!injectDatagram) return 38; // ENOSYS
+
+    const scratchOffset = this.tcpScratchOffset;
+    const mem = this.getKernelMem();
+    mem.set(datagram.data, scratchOffset);
+    const result = injectDatagram(
+      pid,
+      datagram.dstAddr[0] ?? 0,
+      datagram.dstAddr[1] ?? 0,
+      datagram.dstAddr[2] ?? 0,
+      datagram.dstAddr[3] ?? 0,
+      datagram.dstPort,
+      datagram.srcAddr[0] ?? 0,
+      datagram.srcAddr[1] ?? 0,
+      datagram.srcAddr[2] ?? 0,
+      datagram.srcAddr[3] ?? 0,
+      datagram.srcPort,
+      BigInt(scratchOffset),
+      datagram.data.length,
+    );
+    if (result < 0) return -result;
+    this.scheduleWakeBlockedRetries();
+    return 0;
+  }
+
+  private cleanupUdpBindings(pid: number): void {
+    if (!this.io.network?.unbindUdp) return;
+    const prefix = `${pid}:`;
+    for (const key of Array.from(this.udpBindings)) {
+      if (!key.startsWith(prefix)) continue;
+      this.io.network.unbindUdp(key);
+      this.udpBindings.delete(key);
+    }
+  }
+
+  /**
    * Clean up all TCP listeners and connections for a process.
    */
   private cleanupTcpListeners(pid: number): void {
@@ -7608,6 +7860,7 @@ export class CentralizedKernelWorker {
 
     for (const [key, entry] of this.tcpListeners) {
       if (entry.pid === pid) {
+        this.io.network?.closeTcpListener?.(key);
         // Only close the server if no other processes share this port
         const hasOtherTargets = this.tcpListenerTargets.has(entry.port);
         if (!hasOtherTargets) {

@@ -1,0 +1,16 @@
+diff --git a/src/netcat.h b/src/netcat.h
+index 88a2974..3ee95f0 100644
+--- a/src/netcat.h
++++ b/src/netcat.h
+@@ -90,6 +90,10 @@
+    (I've found out only linux supporting this feature so far) */
+ #ifdef HAVE_STRUCT_IN_PKTINFO
+ # if defined(SOL_IP) && defined(IP_PKTINFO)
+-#  define USE_PKTINFO
++/* Kandelo's current POSIX socket layer exposes the constants via libc headers,
++   but does not implement IP_PKTINFO ancillary data. Keep GNU netcat on its
++   portable UDP path until the kernel supports the sockopt and recvmsg control
++   messages. */
++/* #  define USE_PKTINFO */
+ # endif
+ #endif

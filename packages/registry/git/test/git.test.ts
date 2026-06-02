@@ -119,7 +119,7 @@ describe.skipIf(!hasGit)("Git", () => {
  * 1. Creates a bare git repo with one commit on the host filesystem
  * 2. Runs `git update-server-info` to generate dumb-HTTP metadata
  * 3. Serves the repo via a local Node.js HTTP server
- * 4. Wasm git clones from http://localhost:<port>/
+ * 4. Wasm git clones from a host-only test alias
  *
  * The FetchNetworkBackend converts git's raw TCP socket operations into
  * fetch() calls. git-remote-http (fork+exec'd by git) handles the HTTP
@@ -129,6 +129,7 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
   let httpServer: Server;
   let httpPort: number;
   let tmpBase: string;
+  const hostAlias = "kandelo-host.test";
 
   beforeAll(async () => {
     tmpBase = `/tmp/git-http-test-${Date.now()}`;
@@ -189,7 +190,9 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
 
   it("clones a repository via HTTP (dumb protocol)", { timeout: 60_000 }, async () => {
     const io = new NodePlatformIO();
-    (io as any).network = new FetchNetworkBackend();
+    (io as any).network = new FetchNetworkBackend({
+      hostAliases: { [hostAlias]: "127.0.0.1" },
+    });
 
     const cloneDir = `/tmp/git-clone-http-${Date.now()}`;
 
@@ -220,7 +223,7 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
 
     const result = await runCentralizedProgram({
       programPath: gitBinary!,
-      argv: ["git", "clone", `http://localhost:${httpPort}/`, cloneDir],
+      argv: ["git", "clone", `http://${hostAlias}:${httpPort}/`, cloneDir],
       env: cloneEnv,
       io,
       execPrograms,
@@ -245,4 +248,3 @@ describe.skipIf(!hasGit || !hasGitRemoteHttp)("Git HTTP clone", () => {
     try { rmSync(cloneDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 });
-

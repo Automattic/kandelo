@@ -215,18 +215,18 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `socket()` | Partial | AF_UNIX (kernel-internal) and AF_INET (creation only) supported. SOCK_STREAM and SOCK_DGRAM types. SOCK_NONBLOCK and SOCK_CLOEXEC flags handled. |
+| `socket()` | Partial | AF_UNIX and AF_INET supported for SOCK_STREAM and SOCK_DGRAM. SOCK_NONBLOCK and SOCK_CLOEXEC flags handled. AF_INET SOCK_DGRAM is implemented as a kernel-level datagram socket for loopback/virtual routes; external raw UDP is not exposed directly to userspace. |
 | `socketpair()` | Full | AF_UNIX SOCK_STREAM. Bidirectional ring buffers (64KB each). Returns pre-connected pair. |
-| `bind()` | Full | AF_UNIX (kernel-internal paths) and AF_INET (host-delegated TCP). Stores local address for getsockname. |
-| `listen()` | Full | AF_INET: delegates to host_net_listen. AF_UNIX: EOPNOTSUPP. Marks socket as listening. |
-| `accept()` / `accept4()` | Full | AF_INET: delegates to host_net_accept. Returns new connected socket fd. SOCK_NONBLOCK and SOCK_CLOEXEC flags on accept4. |
-| `connect()` | Full | AF_UNIX (kernel-internal bit-bucket for SOCK_DGRAM, or socketpair endpoint). AF_INET: host-delegated TCP connect. |
-| `send()` / `recv()` | Full | Unix domain sockets (kernel ring buffer) and AF_INET (host-delegated). MSG_PEEK, MSG_DONTWAIT, MSG_NOSIGNAL supported. |
-| `sendto()` / `recvfrom()` | Full | Delegates to send/recv for connected sockets. AF_INET address extraction for recvfrom. |
-| `setsockopt()` / `getsockopt()` | Partial | SOL_SOCKET: SO_TYPE, SO_DOMAIN, SO_ERROR, SO_ACCEPTCONN, SO_RCVBUF, SO_SNDBUF readable; SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, SO_RCVTIMEO, SO_SNDTIMEO, SO_BROADCAST accepted/stored. IPPROTO_TCP: TCP_NODELAY stored. |
-| `shutdown()` | Full | SHUT_RD, SHUT_WR, SHUT_RDWR. Properly closes buffer endpoints. |
+| `bind()` | Partial | AF_UNIX paths, AF_INET TCP host-backed bind/listen, and AF_INET UDP in-kernel bind for INADDR_ANY, loopback, and broadcast addresses. The browser local virtual-network backend supports AF_INET TCP/UDP binds between attached Kandelo machines. UDP ephemeral ports, getsockname, bind conflicts, and SO_REUSEADDR conflict cases are covered by Sortix UDP tests. |
+| `listen()` | Partial | AF_INET TCP delegates to the active HostIO networking backend, including Node `net` and the browser local virtual-network backend. Datagram listen rejects as unsupported. AF_UNIX stream listen remains EOPNOTSUPP. |
+| `accept()` / `accept4()` | Partial | AF_INET TCP delegates to the active HostIO networking backend and returns connected sockets. Datagram accept rejects as unsupported. SOCK_NONBLOCK and SOCK_CLOEXEC flags on accept4. |
+| `connect()` | Partial | AF_UNIX SOCK_DGRAM connects to a bit-bucket pattern. AF_INET TCP is host-backed and works over Node external TCP or the browser local virtual-network backend. AF_INET UDP connect stores the peer, auto-binds an ephemeral local port when needed, filters receives to the connected peer, and supports AF_UNSPEC unconnect. UDP loopback and local virtual routes are supported; external raw UDP routes return ENETUNREACH without a HostIO UDP proxy/backend. |
+| `send()` / `recv()` | Partial | Unix domain streams, AF_INET TCP, and connected AF_INET UDP. TCP send/recv works over Node external TCP and the local virtual-network backend. UDP preserves datagram boundaries and supports MSG_PEEK/MSG_DONTWAIT through recvfrom. MSG_NOSIGNAL is honored for stream/broken-pipe paths. |
+| `sendto()` / `recvfrom()` | Partial | AF_INET UDP loopback and local virtual-network send/receive, connected and unconnected sendto, source address reporting, and connected receive filtering are implemented. External raw UDP routes return ENETUNREACH and are narrowly xfailed in the Sortix UDP suite. |
+| `setsockopt()` / `getsockopt()` | Partial | SOL_SOCKET: SO_TYPE, SO_DOMAIN, SO_ERROR, SO_ACCEPTCONN, SO_RCVBUF, SO_SNDBUF readable; SO_REUSEADDR affects UDP bind conflicts; SO_KEEPALIVE, SO_LINGER, SO_RCVTIMEO, SO_SNDTIMEO, SO_BROADCAST accepted/stored. IPPROTO_TCP: TCP_NODELAY stored. |
+| `shutdown()` | Partial | SHUT_RD, SHUT_WR, SHUT_RDWR for stream sockets and UDP readiness/error behavior. UDP write shutdown returns EPIPE on datagram send; read shutdown is EOF-like for recv/poll. |
 | `select()` | Partial | Wrapper around poll(). Converts fd_set bitmasks to pollfd array. Timeout supported via polling loop. |
-| `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. Timeout supported via polling loop with 1ms sleep intervals. Returns EINTR on pending signals. POLLERR for fully shut down sockets. |
+| `poll()` | Partial | Checks readiness for regular files, pipes, and sockets. UDP poll reports queued datagrams, connected-peer filtering, EOF-like read shutdown, write-shutdown hangup, and pending socket errors. Timeout supported via polling loop with 1ms sleep intervals. Returns EINTR on pending signals. |
 | `ppoll()` | Full | Wraps poll() with atomic signal mask swap: save → set → poll → restore. Timespec converted to timeout_ms in glue layer. |
 | `pselect6()` | Full | Wraps select() with atomic signal mask swap. Sigmask extracted from pselect6-style {sigset_t*, size_t} struct in glue layer. |
 | `epoll_create1()` | Full | Creates epoll instance with per-process interest list. EPOLL_CLOEXEC flag supported. |
@@ -357,7 +357,7 @@ All virtual devices return synthetic `stat()` with `S_IFCHR | 0666`, determinist
 | `getrusage()` | Partial | Returns zeroed rusage struct (144 bytes). RUSAGE_SELF and RUSAGE_CHILDREN supported. No actual resource tracking in Wasm. |
 | `pathconf()` | Full | Returns POSIX compile-time constants: _PC_NAME_MAX=255, _PC_PATH_MAX=4096, _PC_PIPE_BUF=4096, _PC_LINK_MAX=14, etc. |
 | `fpathconf()` | Full | Same as pathconf() but validates fd exists first. Returns EBADF for invalid fd. |
-| `getsockname()` | Full | Returns stored local address (AF_UNIX or AF_INET sockaddr). |
+| `getsockname()` | Partial | Returns stored local address for AF_UNIX, AF_INET TCP, and AF_INET UDP. UDP ephemeral ports, loopback/INADDR_ANY binds, and accepted INADDR_ANY connect outcomes are covered by Sortix UDP tests. External-route local address selection remains unsupported without a HostIO networking backend. |
 | `getpeername()` | Full | Returns stored peer address for connected sockets. Returns ENOTCONN for unconnected. |
 
 ---
@@ -391,8 +391,8 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | **RLIMIT_FSIZE partial enforcement** | rlimits | write() and ftruncate() check FSIZE limit (EFBIG + SIGXFSZ). truncate() delegates to ftruncate so also enforced. |
 | **setpgid() self-only** | process | Only supports setting own pgid. Setting another process's pgid returns ESRCH. |
 | ~~**realpath() no symlink resolution**~~ | filesystem | **Resolved.** Now resolves symlinks via iterative lstat/readlink with ELOOP after 40 resolutions. |
-| **Socket options partially no-op** | socket | SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, SO_BROADCAST, SO_RCVTIMEO, SO_SNDTIMEO, TCP_NODELAY accepted and stored but have no effect on data transfer. |
-| **POLLERR partial** | I/O multiplex | poll() reports POLLERR for sockets with both read and write shut down. No POLLERR for other error conditions. |
+| **Socket options partially no-op** | socket | SO_REUSEADDR affects UDP bind conflicts. SO_KEEPALIVE, SO_LINGER, SO_BROADCAST, SO_RCVTIMEO, SO_SNDTIMEO, TCP_NODELAY are accepted/stored but have limited or no effect on data transfer. |
+| **POLLERR partial** | I/O multiplex | poll() reports UDP pending socket errors and stream shutdown/error cases. Some edge cases remain implementation-defined. |
 | **pread/pwrite not multi-process safe** | I/O | Uses save/seek/read/restore pattern — safe in single process but races with shared OFDs across processes. |
 | ~~**brk not inherited on fork**~~ | memory | **Resolved.** Program break serialized/deserialized in fork state. (`exec` reset is intentional per POSIX; host re-installs from new program's `__heap_base`.) |
 | ~~**VMIN/VTIME not interpreted**~~ | terminal | **Partially resolved.** VMIN/VTIME values accessible via TerminalState methods. Full VMIN/VTIME read semantics for raw mode are approximated. |
@@ -407,7 +407,7 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 |-----|-----------|--------|
 | **mprotect() is a no-op** | memory | Returns success but does not enforce. Wasm linear memory has no page-level protection. |
 | **No cross-process MAP_SHARED** | memory | MAP_SHARED works within a single process (file-backed, with msync writeback). Cross-process shared memory would require SharedArrayBuffer coordination. |
-| **UDP sockets** | socket | AF_INET SOCK_DGRAM not yet implemented. TCP (SOCK_STREAM) fully supported via host-delegated networking. |
+| **External raw UDP routes** | socket | AF_INET SOCK_DGRAM has POSIX-style in-kernel loopback/virtual semantics, but browsers cannot expose raw UDP and Node raw UDP is not yet wired behind HostIO. Non-loopback UDP routes currently return ENETUNREACH unless a future host backend/proxy handles them. |
 | **Setuid/setgid enforcement** | process | Single-user Wasm environment; privilege checks simulated only. |
 | **Permission checks** | filesystem | Delegated to host. Kernel does not independently verify file permissions. |
 | **getrusage() zeroed** | sysinfo | No actual resource tracking available in Wasm. Returns zero-filled struct. |
@@ -459,7 +459,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 | File I/O | Native `fs` module for data and creation modes; VFS-only post-creation mode/ownership metadata | OPFS (limited), fetch (read-only), or virtual FS |
 | `fork()` | `worker_threads` — feasible | Web Workers — feasible but different API |
 | `Atomics.wait()` on main thread | Works | Throws — must use workers |
-| Network sockets | `net`/`dgram` modules | WebSocket/WebRTC only (no raw sockets) |
+| Network sockets | TCP via `net` backend plus in-kernel/virtual UDP; raw external UDP not yet wired behind HostIO | Local virtual TCP/UDP works between browser Kandelo machines; external networking still requires WebSocket/WebRTC/proxy backends because browsers expose no raw sockets |
 | Process signals | `process.on('SIGINT', ...)` | Not available |
 | stdin | `process.stdin` | Requires custom input mechanism |
 
@@ -473,7 +473,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 3b. **Phase 3b (Deferred):** Multi-process — fork, exec, waitpid (requires multi-worker architecture)
 4. **Phase 4 (Complete):** Signals — kill, raise, sigaction, sigprocmask. Signal delivery mechanism deferred.
 5. **Phase 5 (Complete):** fcntl locking — F_GETLK, F_SETLK, F_SETLKW with byte-range granularity
-6. **Phase 6 (Complete):** Sockets & I/O multiplexing — socket, socketpair, shutdown, send/recv, getsockopt/setsockopt, poll, epoll. AF_INET TCP via host-delegated networking (bind/listen/accept/connect/send/recv).
+6. **Phase 6 (Complete):** Sockets & I/O multiplexing — socket, socketpair, shutdown, send/recv, getsockopt/setsockopt, poll, epoll. AF_INET TCP via host-backed networking (Node `net` and browser local virtual network). AF_INET UDP is partial: in-kernel loopback/local virtual datagrams are implemented; external raw UDP remains a HostIO/backend task.
 7. **Phase 7 (Complete):** Time, TTY, environment — clock_gettime, nanosleep, isatty, getenv/setenv/unsetenv
 8. **Phase 8 (Complete):** Memory management — mmap (anonymous), munmap, brk, mprotect (stub)
 9. **Phase 9 (Complete):** Polish & gaps — tcgetattr/tcsetattr, ioctl (TIOCGWINSZ/TIOCSWINSZ), signal(), fcntl F_GETOWN/F_SETOWN, MSG_PEEK, O_NONBLOCK pipe enforcement, O_NOFOLLOW, time/gettimeofday/usleep/openat wrappers

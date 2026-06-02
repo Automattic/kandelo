@@ -3,6 +3,11 @@ import type { NetworkIO } from "../types";
 import { lookup } from "dns";
 import { EagainError } from "./fetch-backend";
 
+const POLLIN = 0x0001;
+const POLLOUT = 0x0004;
+const POLLERR = 0x0008;
+const POLLHUP = 0x0010;
+
 /**
  * Map a Node.js network error code to a POSIX errno value.
  * Returns EIO (5) for unknown codes so the kernel surfaces *something* rather
@@ -136,6 +141,25 @@ export class TcpNetworkBackend implements NetworkIO {
     if (conn.closed) return new Uint8Array(0);
 
     throw new EagainError();
+  }
+
+  poll(handle: number, events: number): number {
+    const conn = this.connections.get(handle);
+    if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
+
+    if (conn.error) return POLLERR;
+
+    let revents = 0;
+    if ((events & POLLIN) !== 0 && conn.recvBuf.length > 0) {
+      revents |= POLLIN;
+    }
+    if (conn.closed) {
+      revents |= POLLHUP;
+    }
+    if ((events & POLLOUT) !== 0 && conn.connected && !conn.closed) {
+      revents |= POLLOUT;
+    }
+    return revents;
   }
 
   close(handle: number): void {

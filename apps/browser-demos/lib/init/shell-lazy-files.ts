@@ -26,6 +26,7 @@ import diff3WasmUrl from "@binaries/programs/wasm32/diffutils/diff3.wasm?url";
 import sdiffWasmUrl from "@binaries/programs/wasm32/diffutils/sdiff.wasm?url";
 import tarWasmUrl from "@binaries/programs/wasm32/tar.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
+import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
 import wgetWasmUrl from "@binaries/programs/wasm32/wget.wasm?url";
 import gitWasmUrl from "@binaries/programs/wasm32/git/git.wasm?url";
 import gitRemoteHttpWasmUrl from "@binaries/programs/wasm32/git/git-remote-http.wasm?url";
@@ -87,6 +88,7 @@ const SHELL_LAZY_ASSET_URLS: Record<(typeof SHELL_LAZY_BINARY_SPECS)[number]["id
   make: makeWasmUrl,
   tar: tarWasmUrl,
   curl: curlWasmUrl,
+  netcat: ncWasmUrl,
   wget: wgetWasmUrl,
   git: gitWasmUrl,
   "git-remote-http": gitRemoteHttpWasmUrl,

@@ -96,6 +96,8 @@ export interface KernelCallbacks {
   onWaitpid?: (targetPid: number, options: number) => void;
   onClone?: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number) => number;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
+  onUdpBind?: (handle: number, addr: [number, number, number, number], port: number) => number;
+  onUdpUnbind?: (handle: number) => number;
   onStdout?: (data: Uint8Array) => void;
   onStderr?: (data: Uint8Array) => void;
   /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
@@ -481,6 +483,9 @@ export class WasmPosixKernel {
         host_net_recv: (handle: number, bufPtr: bigint, bufLen: number, flags: number): number => {
           return this.hostNetRecv(handle, Number(bufPtr), bufLen, flags);
         },
+        host_net_poll: (handle: number, events: number): number => {
+          return this.hostNetPoll(handle, events);
+        },
         host_net_connect_status: (handle: number): number => {
           return this.hostNetConnectStatus(handle);
         },
@@ -489,6 +494,23 @@ export class WasmPosixKernel {
         },
         host_net_listen: (fd: number, port: number, addrA: number, addrB: number, addrC: number, addrD: number): number => {
           return this.hostNetListen(fd, port, addrA, addrB, addrC, addrD);
+        },
+        host_udp_bind: (handle: number, addrA: number, addrB: number, addrC: number, addrD: number, port: number): number => {
+          return this.hostUdpBind(handle, addrA, addrB, addrC, addrD, port);
+        },
+        host_udp_unbind: (handle: number): number => {
+          return this.hostUdpUnbind(handle);
+        },
+        host_udp_send: (
+          srcA: number, srcB: number, srcC: number, srcD: number, srcPort: number,
+          dstA: number, dstB: number, dstC: number, dstD: number, dstPort: number,
+          dataPtr: bigint, dataLen: number,
+        ): number => {
+          return this.hostUdpSend(
+            srcA, srcB, srcC, srcD, srcPort,
+            dstA, dstB, dstC, dstD, dstPort,
+            Number(dataPtr), dataLen,
+          );
         },
         host_getaddrinfo: (namePtr: bigint, nameLen: number, resultPtr: bigint, resultLen: number): number => {
           return this.hostGetaddrinfo(Number(namePtr), nameLen, Number(resultPtr), resultLen);
@@ -1938,6 +1960,21 @@ export class WasmPosixKernel {
     }
   }
 
+  private hostNetPoll(handle: number, events: number): number {
+    const POLLIN = 0x0001;
+    const POLLOUT = 0x0004;
+    if (!this.io.network) return -107; // -ENOTCONN
+    try {
+      if (this.io.network.poll) {
+        return this.io.network.poll(handle, events);
+      }
+      return events & (POLLIN | POLLOUT);
+    } catch (e: any) {
+      if (typeof e?.errno === "number") return -Math.abs(e.errno);
+      return -104; // -ECONNRESET
+    }
+  }
+
   private hostNetClose(handle: number): number {
     if (!this.io.network) return 0;
     try {
@@ -1953,6 +1990,58 @@ export class WasmPosixKernel {
       return this.callbacks.onNetListen(fd, port, [addrA, addrB, addrC, addrD]);
     }
     return 0;
+  }
+
+  private hostUdpBind(handle: number, addrA: number, addrB: number, addrC: number, addrD: number, port: number): number {
+    if (!this.callbacks.onUdpBind) return 0;
+    return this.callbacks.onUdpBind(handle, [addrA, addrB, addrC, addrD], port);
+  }
+
+  private hostUdpUnbind(handle: number): number {
+    if (!this.callbacks.onUdpUnbind) return 0;
+    return this.callbacks.onUdpUnbind(handle);
+  }
+
+  private hostUdpSend(
+    srcA: number,
+    srcB: number,
+    srcC: number,
+    srcD: number,
+    srcPort: number,
+    dstA: number,
+    dstB: number,
+    dstC: number,
+    dstD: number,
+    dstPort: number,
+    dataPtr: number,
+    dataLen: number,
+  ): number {
+    if (!this.io.network?.sendDatagram) return -101; // -ENETUNREACH
+    try {
+      const mem = this.getMemoryBuffer();
+      let srcAddr = new Uint8Array([srcA, srcB, srcC, srcD]);
+      if (
+        srcAddr[0] === 0 &&
+        srcAddr[1] === 0 &&
+        srcAddr[2] === 0 &&
+        srcAddr[3] === 0 &&
+        this.io.network.localAddress
+      ) {
+        srcAddr = this.io.network.localAddress.slice();
+      }
+      const data = mem.slice(dataPtr, dataPtr + dataLen);
+      const result = this.io.network.sendDatagram({
+        srcAddr,
+        srcPort,
+        dstAddr: new Uint8Array([dstA, dstB, dstC, dstD]),
+        dstPort,
+        data,
+      });
+      return result === 0 ? dataLen : -result;
+    } catch (e: any) {
+      if (typeof e?.errno === "number") return -Math.abs(e.errno);
+      return -101; // -ENETUNREACH
+    }
   }
 
   private hostGetaddrinfo(namePtr: number, nameLen: number, resultPtr: number, resultLen: number): number {

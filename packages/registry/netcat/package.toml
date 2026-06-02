@@ -1,0 +1,20 @@
+kind = "program"
+name = "netcat"
+version = "0.7.1"
+kernel_abi = 7
+depends_on = []
+
+[source]
+url = "https://downloads.sourceforge.net/project/netcat/netcat/0.7.1/netcat-0.7.1.tar.gz"
+sha256 = "30719c9a4ffbcf15676b8f528233ccc54ee6cba96cb4590975f5fd60c68a066f"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://sourceforge.net/projects/netcat/files/netcat/0.7.1/"
+
+[build]
+script_path = "packages/registry/netcat/build-netcat.sh"
+
+[[outputs]]
+name = "nc"
+wasm = "nc.wasm"

@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
+use wasm_posix_shared::Errno;
 
 // ── host_net_handle cross-process refcount ───────────────────────────────
 //
@@ -91,6 +92,151 @@ pub struct Datagram {
     pub data: Vec<u8>,
     pub src_addr: [u8; 4],
     pub src_port: u16,
+}
+
+/// One AF_INET UDP endpoint bound in the in-kernel virtual network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UdpEndpoint {
+    pub pid: u32,
+    pub sock_idx: usize,
+    pub addr: [u8; 4],
+    pub port: u16,
+    pub reuse_addr: bool,
+}
+
+struct UdpEndpointTable(UnsafeCell<Option<Vec<UdpEndpoint>>>);
+unsafe impl Sync for UdpEndpointTable {}
+
+static UDP_ENDPOINTS: UdpEndpointTable = UdpEndpointTable(UnsafeCell::new(None));
+
+fn udp_endpoints() -> &'static mut Vec<UdpEndpoint> {
+    let opt = unsafe { &mut *UDP_ENDPOINTS.0.get() };
+    opt.get_or_insert_with(Vec::new)
+}
+
+fn udp_addr_conflicts(a: [u8; 4], b: [u8; 4]) -> bool {
+    a == [0, 0, 0, 0] || b == [0, 0, 0, 0] || a == b
+}
+
+fn udp_addr_matches(bound: [u8; 4], dst: [u8; 4]) -> bool {
+    bound == [0, 0, 0, 0] || bound == dst
+}
+
+pub fn udp_can_bind(pid: u32, sock_idx: usize, addr: [u8; 4], port: u16, reuse_addr: bool) -> bool {
+    for endpoint in udp_endpoints().iter() {
+        if endpoint.pid == pid && endpoint.sock_idx == sock_idx {
+            continue;
+        }
+        if endpoint.port == port
+            && udp_addr_conflicts(endpoint.addr, addr)
+            && !(endpoint.reuse_addr && reuse_addr)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn udp_register(
+    pid: u32,
+    sock_idx: usize,
+    addr: [u8; 4],
+    port: u16,
+    reuse_addr: bool,
+) -> Result<(), Errno> {
+    if port == 0 {
+        return Err(Errno::EINVAL);
+    }
+    if !udp_can_bind(pid, sock_idx, addr, port, reuse_addr) {
+        return Err(Errno::EADDRINUSE);
+    }
+    let endpoints = udp_endpoints();
+    endpoints.retain(|endpoint| !(endpoint.pid == pid && endpoint.sock_idx == sock_idx));
+    endpoints.push(UdpEndpoint {
+        pid,
+        sock_idx,
+        addr,
+        port,
+        reuse_addr,
+    });
+    Ok(())
+}
+
+pub fn udp_unregister(pid: u32, sock_idx: usize) {
+    udp_endpoints().retain(|endpoint| !(endpoint.pid == pid && endpoint.sock_idx == sock_idx));
+}
+
+pub fn udp_cleanup_process(pid: u32) {
+    udp_endpoints().retain(|endpoint| endpoint.pid != pid);
+}
+
+pub fn udp_lookup(dst_addr: [u8; 4], dst_port: u16) -> Vec<UdpEndpoint> {
+    udp_endpoints()
+        .iter()
+        .copied()
+        .filter(|endpoint| endpoint.port == dst_port && udp_addr_matches(endpoint.addr, dst_addr))
+        .collect()
+}
+
+/// One AF_INET TCP socket bound in the kernel-visible address table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TcpBinding {
+    pub pid: u32,
+    pub sock_idx: usize,
+    pub addr: [u8; 4],
+    pub port: u16,
+}
+
+struct TcpBindingTable(UnsafeCell<Option<Vec<TcpBinding>>>);
+unsafe impl Sync for TcpBindingTable {}
+
+static TCP_BINDINGS: TcpBindingTable = TcpBindingTable(UnsafeCell::new(None));
+
+fn tcp_bindings() -> &'static mut Vec<TcpBinding> {
+    let opt = unsafe { &mut *TCP_BINDINGS.0.get() };
+    opt.get_or_insert_with(Vec::new)
+}
+
+fn tcp_addr_conflicts(a: [u8; 4], b: [u8; 4]) -> bool {
+    a == [0, 0, 0, 0] || b == [0, 0, 0, 0] || a == b
+}
+
+pub fn tcp_can_bind(pid: u32, sock_idx: usize, addr: [u8; 4], port: u16) -> bool {
+    for binding in tcp_bindings().iter() {
+        if binding.pid == pid && binding.sock_idx == sock_idx {
+            continue;
+        }
+        if binding.port == port && tcp_addr_conflicts(binding.addr, addr) {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn tcp_register(pid: u32, sock_idx: usize, addr: [u8; 4], port: u16) -> Result<(), Errno> {
+    if port == 0 {
+        return Err(Errno::EINVAL);
+    }
+    if !tcp_can_bind(pid, sock_idx, addr, port) {
+        return Err(Errno::EADDRINUSE);
+    }
+    let bindings = tcp_bindings();
+    bindings.retain(|binding| !(binding.pid == pid && binding.sock_idx == sock_idx));
+    bindings.push(TcpBinding {
+        pid,
+        sock_idx,
+        addr,
+        port,
+    });
+    Ok(())
+}
+
+pub fn tcp_unregister(pid: u32, sock_idx: usize) {
+    tcp_bindings().retain(|binding| !(binding.pid == pid && binding.sock_idx == sock_idx));
+}
+
+pub fn tcp_cleanup_process(pid: u32) {
+    tcp_bindings().retain(|binding| binding.pid != pid);
 }
 
 /// Per-socket kernel state.

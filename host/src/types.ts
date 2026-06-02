@@ -98,12 +98,50 @@ export interface PlatformIO {
   network?: NetworkIO;
 }
 
+export interface NetworkAddress {
+  addr: Uint8Array;
+  port: number;
+}
+
+export interface TcpConnectionPeer {
+  send(data: Uint8Array, flags: number): number;
+  recv(maxLen: number, flags: number): Uint8Array;
+  poll?(events: number): number;
+  shutdown(how: number): void;
+  close(): void;
+}
+
+export interface TcpListenTarget {
+  accept(peer: TcpConnectionPeer, local: NetworkAddress, remote: NetworkAddress): number;
+}
+
+export interface UdpDatagram {
+  srcAddr: Uint8Array;
+  srcPort: number;
+  dstAddr: Uint8Array;
+  dstPort: number;
+  data: Uint8Array;
+}
+
+export interface UdpReceiveTarget {
+  receive(datagram: UdpDatagram): number;
+}
+
 export interface NetworkIO {
+  /** IPv4 address owned by this guest network stack, when known. */
+  readonly localAddress?: Uint8Array;
   connect(handle: number, addr: Uint8Array, port: number): void;
   /** 0 = connected, positive errno = failed, -11 = still pending (EAGAIN). */
   connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
   recv(handle: number, maxLen: number, flags: number): Uint8Array;
+  /** Return POSIX poll revents bits for this connection handle. */
+  poll?(handle: number, events: number): number;
   close(handle: number): void;
   getaddrinfo(hostname: string): Uint8Array; // Returns 4-byte IPv4
+  listenTcp?(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number;
+  closeTcpListener?(listenerId: string): void;
+  bindUdp?(endpointId: string, addr: Uint8Array, port: number, target: UdpReceiveTarget): number;
+  unbindUdp?(endpointId: string): void;
+  sendDatagram?(datagram: UdpDatagram): number;
 }
