@@ -11,10 +11,12 @@ import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
   WORDPRESS_CONFIG_INIT_SCRIPT,
   WORDPRESS_URL_MU_PLUGIN,
+  patchWordPressMysqliPersistentSource,
   renderWordPressConfig,
   wordpressConfigTemplate,
   type WordPressDatabaseKind,
 } from "../../../lib/init/wordpress-runtime-config";
+import { MYSQL_BENCHMARK_PHP } from "../../../lib/init/mysql-benchmark";
 import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -359,6 +361,7 @@ const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
+const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -862,6 +865,7 @@ async function bootProfile(
   if (profile.id === "wordpress-sqlite") {
     patchWordPressRuntimeConfig(memfs, "sqlite");
   } else if (profile.id === "wordpress-mariadb") {
+    patchMariaDbUnixSocketConfig(memfs);
     patchWordPressRuntimeConfig(memfs, "mariadb");
   }
   memfs.rewriteLazyArchiveUrls(resolveShellLazyArchiveUrl);
@@ -909,7 +913,7 @@ async function bootProfile(
         if (!isCurrent()) return;
         seenPorts.add(port);
         tick(`service listening on :${port}`);
-        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
       },
     });
     await kernel.init(kernelBytes);
@@ -985,8 +989,7 @@ async function bootProfile(
       );
     }
 
-    host.setStatus("running");
-    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
 
     if (profile.framebufferTest) {
       const fbtestWasmUrl = await optionalBinaryUrl([
@@ -1007,6 +1010,7 @@ async function bootProfile(
     }
 
     tick("ready");
+    host.setStatus("running");
     return kernel;
   } catch (err) {
     if (kernel && !isCurrent()) {
@@ -1080,6 +1084,8 @@ function patchWordPressRuntimeConfig(
     for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
       ensureOwnedDir(fs, dir, 0o775, MYSQL_UID, MYSQL_GID);
     }
+    patchWordPressPersistentMysqli(fs);
+    writeVfsFile(fs, "/var/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
   }
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
   writeVfsFile(
@@ -1109,6 +1115,51 @@ function stripDinitServiceLogfiles(fs: MemoryFileSystem, serviceNames: string[])
     if (conf === null) continue;
     const patched = conf.replace(/^logfile\s*=.*(?:\r?\n|$)/gm, "");
     if (patched !== conf) writeVfsFile(fs, path, patched);
+  }
+}
+
+function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, "/tmp");
+  fs.chmod("/tmp", 0o1777);
+
+  const phpIniPath = "/etc/php.ini";
+  const phpIni = readOptionalVfsText(fs, phpIniPath);
+  if (phpIni !== null) {
+    let patched = phpIni;
+    if (!/^mysqli\.default_socket\s*=/m.test(patched)) {
+      patched += `${patched.endsWith("\n") ? "" : "\n"}mysqli.default_socket=${MARIADB_SOCKET_PATH}\n`;
+    }
+    if (!/^mysqli\.allow_persistent\s*=/m.test(patched)) {
+      patched += `mysqli.allow_persistent=1\n`;
+    }
+    if (!/^mysqli\.max_persistent\s*=/m.test(patched)) {
+      patched += `mysqli.max_persistent=-1\n`;
+    }
+    if (!/^pdo_mysql\.default_socket\s*=/m.test(patched)) {
+      patched += `pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}\n`;
+    }
+    if (patched !== phpIni) writeVfsFile(fs, phpIniPath, patched);
+  }
+
+  const mariadbServicePath = "/etc/dinit.d/mariadb";
+  const mariadbService = readOptionalVfsText(fs, mariadbServicePath);
+  if (mariadbService !== null) {
+    const patched = mariadbService
+      .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
+      .replace(/\s*--thread-handling=no-threads\b/g, "");
+    if (patched !== mariadbService) writeVfsFile(fs, mariadbServicePath, patched);
+  }
+}
+
+function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+  for (const path of [
+    "/var/www/html/wp-includes/class-wpdb.php",
+    "/var/www/html/wp-includes/wp-db.php",
+  ]) {
+    const source = readOptionalVfsText(fs, path);
+    if (source === null) continue;
+    const patched = patchWordPressMysqliPersistentSource(source);
+    if (patched !== source) writeVfsFile(fs, path, patched);
   }
 }
 
@@ -1250,12 +1301,14 @@ function maybeMarkWebReady(
   bridgeSent: boolean,
   readiness: WebReadinessState,
   tick: (msg: string) => void,
+  isCurrent: () => boolean,
 ): void {
   const web = profile.init?.web;
   if (!web) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
   if (!portsReady || !bridgeSent) return;
   if (readiness.ready) {
+    if (!isCurrent()) return;
     host.setWebPreview({
       label: web.label,
       url: APP_PREFIX,
@@ -1274,16 +1327,18 @@ function maybeMarkWebReady(
   });
   void waitForHttpPreview(APP_PREFIX).then(
     () => {
+      if (!isCurrent()) return;
       readiness.ready = true;
+      tick("HTTP preview ready");
       host.setWebPreview({
         label: web.label,
         url: APP_PREFIX,
         status: "running",
         message: "HTTP bridge ready",
       });
-      tick("HTTP preview ready");
     },
     (err) => {
+      if (!isCurrent()) return;
       const message = err instanceof Error ? err.message : String(err);
       host.setWebPreview({
         label: web.label,
@@ -1294,6 +1349,7 @@ function maybeMarkWebReady(
       tick(`HTTP preview readiness failed: ${message}`);
     },
   ).finally(() => {
+    if (!isCurrent()) return;
     readiness.probing = false;
   });
 }

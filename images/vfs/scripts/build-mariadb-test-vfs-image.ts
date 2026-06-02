@@ -167,7 +167,7 @@ function buildServices(): DinitService[] {
     ...args,
     "--skip-networking=0", "--port=3306",
     "--bind-address=0.0.0.0", "--socket=",
-    "--max-connections=10", "--thread-handling=no-threads",
+    "--max-connections=10",
     "--wait-timeout=10", "--net-read-timeout=10",
     "--net-write-timeout=10", "--lock-wait-timeout=10",
     "--log-error=/data/error.log",

@@ -327,7 +327,7 @@ describe("LiveKernelHost: descriptor + gallery lifecycle defaults", () => {
 });
 
 describe("LiveKernelHost: surface availability", () => {
-  it("marks a configured web preview available before the HTTP response is ready", () => {
+  it("marks a configured web preview available only after the HTTP response is ready", () => {
     const host = new LiveKernelHost();
     const seen: boolean[] = [];
     host.subscribeSurfaceAvailability((state) => seen.push(state.web));
@@ -337,6 +337,16 @@ describe("LiveKernelHost: surface availability", () => {
       url: "/app/",
       status: "starting",
       message: "Waiting for HTTP response",
+    });
+
+    expect(host.getSurfaceAvailability().web).toBe(false);
+    expect(seen).toEqual([]);
+
+    host.setWebPreview({
+      label: "WordPress",
+      url: "/app/",
+      status: "running",
+      message: "HTTP bridge ready",
     });
 
     expect(host.getSurfaceAvailability().web).toBe(true);

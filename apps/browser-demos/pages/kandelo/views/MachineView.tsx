@@ -6,7 +6,7 @@
 // demos. Terminal and internals stay available as drawers.
 
 import * as React from "react";
-import { useDemoGuide, usePresentation, useStatus, useSurfaceAvailability } from "../kernel-host/react";
+import { useDemoGuide, usePresentation, useStatus, useSurfaceAvailability, useWebPreview } from "../kernel-host/react";
 import { Inspector } from "../panes/Inspector";
 import { Display } from "../panes/Display";
 import { Shell, type ShellTerminal } from "../panes/Shell";
@@ -34,7 +34,12 @@ export const MachineView: React.FC<MachineViewProps> = ({
 }) => {
   const status = useStatus();
   const presentation = usePresentation();
-  const availability = useSurfaceAvailability();
+  const rawAvailability = useSurfaceAvailability();
+  const webPreview = useWebPreview();
+  const availability = React.useMemo<SurfaceAvailability>(() => ({
+    ...rawAvailability,
+    web: rawAvailability.web && webPreview?.status === "running",
+  }), [rawAvailability, webPreview?.status]);
   const demoGuide = useDemoGuide();
   const rootRef = React.useRef<HTMLDivElement>(null);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
@@ -46,15 +51,19 @@ export const MachineView: React.FC<MachineViewProps> = ({
   const previousAvailability = React.useRef(availability);
 
   const defaultPrimary = React.useMemo<PrimarySurface>(() => {
-    if (status !== "running") return presentation.bootPrimary;
+    if (status !== "running") {
+      return isSurfaceAvailable(presentation.bootPrimary, availability)
+        ? presentation.bootPrimary
+        : "syslog";
+    }
     return resolvePrimary(presentation.runningPrimary, availability, presentation.bootPrimary);
   }, [availability, presentation, status]);
 
   React.useEffect(() => {
-    if (primaryMode === "following-demo" || !isSurfaceAvailable(activePrimary, availability)) {
+    if (status !== "running" || primaryMode === "following-demo" || !isSurfaceAvailable(activePrimary, availability)) {
       setActivePrimary(defaultPrimary);
     }
-  }, [activePrimary, availability, defaultPrimary, primaryMode]);
+  }, [activePrimary, availability, defaultPrimary, primaryMode, status]);
 
   React.useEffect(() => {
     const previous = previousAvailability.current;
@@ -82,6 +91,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
   }, [presentation.runningPrimary, presentation.autoCommand]);
 
   const choosePrimary = (surface: PrimarySurface) => {
+    if (status !== "running" && surface !== "syslog") return;
     if (!isSurfaceAvailable(surface, availability)) return;
     setActivePrimary(surface);
     setPrimaryMode(surface === defaultPrimary ? "following-demo" : "pinned");
@@ -99,9 +109,10 @@ export const MachineView: React.FC<MachineViewProps> = ({
   const canOpenDemo =
     demoSurface !== null &&
     isSurfaceAvailable(demoSurface, availability) &&
-    (status === "running" || demoSurface === "web");
+    status === "running";
   const shouldMountDemoSurface =
     demoSurface !== null &&
+    status === "running" &&
     isSurfaceAvailable(demoSurface, availability);
   const showDemoGuide = demoGuide !== null;
 
@@ -149,7 +160,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
           />
           <SurfaceButton
             active={activePrimary === "terminal"}
-            disabled={!availability.terminal}
+            disabled={status !== "running" || !availability.terminal}
             onClick={() => choosePrimary("terminal")}
             label="Terminal"
           />

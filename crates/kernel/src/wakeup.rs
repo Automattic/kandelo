@@ -1,9 +1,8 @@
 //! Wakeup event buffer for kernel-driven poll/select notification.
 //!
-//! When pipe operations change readiness state (data written, data read,
-//! endpoint closed), events are pushed into a global buffer. The host
-//! drains this buffer after each syscall to wake only the specific
-//! poll/select/reader/writer waiters that are affected.
+//! When pipe operations or listener accept queues change readiness state,
+//! events are pushed into a global buffer. The host drains this buffer after
+//! each syscall to wake only the specific waiters that are affected.
 
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
@@ -14,40 +13,58 @@ pub const WAKE_READABLE: u8 = 1;
 /// Pipe became writable (data was read, or read-end closed).
 pub const WAKE_WRITABLE: u8 = 2;
 
-/// A readiness change event for a pipe.
+/// Listener accept queue received a pending connection.
+pub const WAKE_ACCEPT: u8 = 4;
+
+/// A readiness change event.
 #[derive(Debug, Clone, Copy)]
 pub struct WakeupEvent {
-    pub pipe_idx: u32,
+    pub idx: u32,
     pub wake_type: u8,
 }
 
 struct WakeupBuffer {
     events: UnsafeCell<Vec<WakeupEvent>>,
+    next_accept_idx: UnsafeCell<u32>,
 }
 
 unsafe impl Sync for WakeupBuffer {}
 
 static WAKEUP_BUFFER: WakeupBuffer = WakeupBuffer {
     events: UnsafeCell::new(Vec::new()),
+    next_accept_idx: UnsafeCell::new(1),
 };
+
+/// Allocate a host-visible readiness token for a listening socket.
+pub fn alloc_accept_wake_idx() -> u32 {
+    let next = unsafe { &mut *WAKEUP_BUFFER.next_accept_idx.get() };
+    if *next == 0 {
+        *next = 1;
+    }
+    let idx = *next;
+    *next = if idx >= i32::MAX as u32 { 1 } else { idx + 1 };
+    idx
+}
 
 /// Push a wakeup event into the global buffer.
 /// Only generates events in centralized mode (host drains after each syscall).
-pub fn push(pipe_idx: u32, wake_type: u8) {
+pub fn push(idx: u32, wake_type: u8) {
     if !crate::is_centralized_mode() {
         return;
     }
     let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
-    events.push(WakeupEvent {
-        pipe_idx,
-        wake_type,
-    });
+    events.push(WakeupEvent { idx, wake_type });
+}
+
+/// Push an accept-readiness event for a listening socket.
+pub fn push_accept(accept_idx: u32) {
+    push(accept_idx, WAKE_ACCEPT);
 }
 
 /// Drain all pending wakeup events, writing them to the output buffer.
 /// Returns the number of events written.
 ///
-/// Each event is serialized as: pipe_idx (u32 LE) + wake_type (u8) = 5 bytes.
+/// Each event is serialized as: idx (u32 LE) + wake_type (u8) = 5 bytes.
 pub fn drain(out: &mut [u8], max_events: u32) -> u32 {
     let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
     let count = events.len().min(max_events as usize);
@@ -58,7 +75,7 @@ pub fn drain(out: &mut [u8], max_events: u32) -> u32 {
     for i in 0..count {
         let ev = &events[i];
         let offset = i * bytes_per_event;
-        let idx_bytes = ev.pipe_idx.to_le_bytes();
+        let idx_bytes = ev.idx.to_le_bytes();
         out[offset] = idx_bytes[0];
         out[offset + 1] = idx_bytes[1];
         out[offset + 2] = idx_bytes[2];
@@ -77,6 +94,8 @@ mod tests {
     fn reset() {
         let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
         events.clear();
+        let next = unsafe { &mut *WAKEUP_BUFFER.next_accept_idx.get() };
+        *next = 1;
     }
 
     #[test]
@@ -87,10 +106,11 @@ mod tests {
 
         push(5, WAKE_READABLE);
         push(10, WAKE_WRITABLE);
+        push_accept(12);
 
         let mut buf = [0u8; 20];
         let count = drain(&mut buf, 10);
-        assert_eq!(count, 2);
+        assert_eq!(count, 3);
 
         // Event 0: pipe_idx=5, WAKE_READABLE
         assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 5);
@@ -99,6 +119,10 @@ mod tests {
         // Event 1: pipe_idx=10, WAKE_WRITABLE
         assert_eq!(u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]), 10);
         assert_eq!(buf[9], WAKE_WRITABLE);
+
+        // Event 2: idx=12, WAKE_ACCEPT
+        assert_eq!(u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]), 12);
+        assert_eq!(buf[14], WAKE_ACCEPT);
 
         // Buffer should be empty now
         let count2 = drain(&mut buf, 10);

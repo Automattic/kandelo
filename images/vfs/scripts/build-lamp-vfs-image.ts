@@ -33,10 +33,17 @@ import {
   writeKandeloDemoConfig,
 } from "./kandelo-demo-config";
 import {
+  WORDPRESS_CONFIG_INIT_SCRIPT,
+  patchWordPressMysqliPersistentSource,
+  renderWordPressConfig,
+  wordpressConfigTemplate,
+} from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
+import {
   populateSmtpCaptureConfig,
   smtpCaptureService,
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
+import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -69,6 +76,7 @@ const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 const MYSQL_UID = 101;
 const MYSQL_GID = 101;
+const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 
 // LAMP-specific data dirs that mariadbd writes to at runtime. The image
 // intentionally bakes only a minimal /bin/sh + sleep environment for the
@@ -79,6 +87,8 @@ function populateMariadbDataDirs(fs: MemoryFileSystem): void {
     fs.chown(dir, MYSQL_UID, MYSQL_GID);
     fs.chmod(dir, 0o775);
   }
+  ensureDirRecursive(fs, "/tmp");
+  fs.chmod("/tmp", 0o1777);
 }
 
 function populateBootstrapShell(fs: MemoryFileSystem): void {
@@ -222,6 +232,8 @@ request_slowlog_trace_depth = 0
 
 curl.cainfo=/etc/ssl/certs/ca-certificates.crt
 openssl.cafile=/etc/ssl/certs/ca-certificates.crt
+mysqli.default_socket=${MARIADB_SOCKET_PATH}
+pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}
 
 [opcache]
 opcache.enable=1
@@ -316,61 +328,6 @@ kill -KILL $PID 2>/dev/null
 exit 0
 `;
 
-const WP_CONFIG_INIT_SCRIPT = `# wp-config.php is rendered into the VFS by the host before dinit starts.
-: "\${WP_APP_PATH:=/app}"
-: "\${WP_PROTO:=http}"
-echo "wp-config-init: APP_PATH=$WP_APP_PATH PROTO=$WP_PROTO"
-`;
-
-const WP_CONFIG_TEMPLATE_PHP = `<?php
-define('DB_NAME', 'wordpress');
-define('DB_USER', 'root');
-define('DB_PASSWORD', '');
-define('DB_HOST', '127.0.0.1:3306');
-define('DB_CHARSET', 'utf8');
-define('DB_COLLATE', '');
-
-define('AUTH_KEY',         'kandelo-lamp');
-define('SECURE_AUTH_KEY',  'kandelo-lamp');
-define('LOGGED_IN_KEY',    'kandelo-lamp');
-define('NONCE_KEY',        'kandelo-lamp');
-define('AUTH_SALT',        'kandelo-lamp');
-define('SECURE_AUTH_SALT', 'kandelo-lamp');
-define('LOGGED_IN_SALT',   'kandelo-lamp');
-define('NONCE_SALT',       'kandelo-lamp');
-
-$table_prefix = 'wp_';
-
-define('WP_DEBUG', true);
-define('WP_DEBUG_LOG', true);
-define('WP_DEBUG_DISPLAY', false);
-@ini_set('display_errors', '0');
-
-if (isset($_SERVER['HTTP_HOST'])) {
-    if ('@@PROTO@@' === 'https') { $_SERVER['HTTPS'] = 'on'; }
-    define('WP_HOME', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
-    define('WP_SITEURL', '@@PROTO@@://' . $_SERVER['HTTP_HOST'] . '@@APP_PATH@@');
-}
-
-define('DISABLE_WP_CRON', true);
-
-if ( ! defined( 'ABSPATH' ) ) {
-    define( 'ABSPATH', __DIR__ . '/' );
-}
-
-require_once ABSPATH . 'wp-settings.php';
-`;
-
-function renderWpConfig(appPath: string, proto: string): string {
-  return WP_CONFIG_TEMPLATE_PHP
-    .replaceAll("@@APP_PATH@@", phpSingleQuotedContent(appPath))
-    .replaceAll("@@PROTO@@", phpSingleQuotedContent(proto));
-}
-
-function phpSingleQuotedContent(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
 function buildServices(): DinitService[] {
   return [
     {
@@ -387,8 +344,8 @@ function buildServices(): DinitService[] {
         "--datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria " +
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
         "--sort-buffer-size=262144 --skip-networking=0 --port=3306 " +
-        "--bind-address=0.0.0.0 --socket= --max-connections=10 " +
-        "--thread-handling=no-threads --log-error=/data/error.log " +
+        `--bind-address=0.0.0.0 --socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
+        "--log-error=/data/error.log " +
         // --init-file runs after the daemon is ready — guarantees the
         // wordpress DB exists even if the bootstrap timeout-and-kill
         // truncated the original CREATE DATABASE.
@@ -420,6 +377,41 @@ function buildServices(): DinitService[] {
       restart: false,
     },
   ];
+}
+
+const decoder = new TextDecoder();
+
+function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
+  for (const path of [
+    "/var/www/html/wp-includes/class-wpdb.php",
+    "/var/www/html/wp-includes/wp-db.php",
+  ]) {
+    const source = readOptionalVfsText(fs, path);
+    if (source === null) continue;
+    const patched = patchWordPressMysqliPersistentSource(source);
+    if (patched !== source) writeVfsFile(fs, path, patched);
+  }
+}
+
+function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null {
+  try {
+    const st = fs.stat(path);
+    const fd = fs.open(path, 0, 0);
+    try {
+      const out = new Uint8Array(st.size);
+      let off = 0;
+      while (off < out.byteLength) {
+        const n = fs.read(fd, out.subarray(off), null, out.byteLength - off);
+        if (n <= 0) break;
+        off += n;
+      }
+      return decoder.decode(out.subarray(0, off));
+    } finally {
+      fs.close(fd);
+    }
+  } catch {
+    return null;
+  }
 }
 
 async function main() {
@@ -461,10 +453,11 @@ async function main() {
   // bootstrap timeout-and-kill might truncate the original
   // CREATE DATABASE during system-table replay.
   writeVfsFile(fs, "/etc/mariadb/init.sql", "CREATE DATABASE IF NOT EXISTS wordpress;\n");
-  writeVfsFile(fs, "/etc/wp-config-template.php", WP_CONFIG_TEMPLATE_PHP);
-  writeVfsFile(fs, "/etc/wp-config-init.sh", WP_CONFIG_INIT_SCRIPT);
+  writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
+  writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
   ensureDirRecursive(fs, "/var/www/html");
-  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWpConfig("/app", "http"));
+  writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("mariadb", "/app", "http"));
+  writeVfsFile(fs, "/var/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
 
   // WordPress-specific dirs + mu-plugin
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");
@@ -478,6 +471,7 @@ async function main() {
   const excludeDb = (rel: string) =>
     rel.endsWith(".db") || rel === "wp-config.php" || rel.includes("wp-content/db.php");
   const wpCount = walkAndWrite(fs, WP_DIR, "/var/www/html", { exclude: excludeDb });
+  patchWordPressPersistentMysqli(fs);
   console.log(`  WordPress core: ${wpCount} files`);
 
   // Service tree

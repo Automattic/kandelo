@@ -23,7 +23,8 @@ function dbConfig(kind: WordPressDatabaseKind): string {
       "define('DB_NAME', 'wordpress');",
       "define('DB_USER', 'root');",
       "define('DB_PASSWORD', '');",
-      "define('DB_HOST', '127.0.0.1:3306');",
+      "define('DB_HOST', 'localhost');",
+      "define('KANDELO_MYSQLI_PERSISTENT', true);",
     ].join("\n");
   }
 
@@ -84,6 +85,12 @@ define('WP_SITEURL', $kandelo_site_url);
 define('WP_HTTP_BLOCK_EXTERNAL', true);
 define('DISABLE_WP_CRON', true);
 
+if ( defined( 'WP_INSTALLING' ) && WP_INSTALLING && ! function_exists( 'wp_new_blog_notification' ) ) {
+    function wp_new_blog_notification( $blog_title, $blog_url, $user_id, $password ) {
+        return true;
+    }
+}
+
 if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', __DIR__ . '/' );
 }
@@ -104,4 +111,18 @@ export function renderWordPressConfig(
 
 function phpSingleQuotedContent(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+const MYSQLI_REAL_CONNECT_HOST_ARG = "mysqli_real_connect( $this->dbh, $host, $this->dbuser";
+const MYSQLI_PERSISTENT_HOST_EXPR =
+  "( defined( 'KANDELO_MYSQLI_PERSISTENT' ) && KANDELO_MYSQLI_PERSISTENT && 0 !== strpos( $host, 'p:' ) ) ? 'p:' . $host : $host";
+
+export function patchWordPressMysqliPersistentSource(source: string): string {
+  if (source.includes(MYSQLI_PERSISTENT_HOST_EXPR)) {
+    return source;
+  }
+  return source.replaceAll(
+    MYSQLI_REAL_CONNECT_HOST_ARG,
+    `mysqli_real_connect( $this->dbh, ${MYSQLI_PERSISTENT_HOST_EXPR}, $this->dbuser`,
+  );
 }

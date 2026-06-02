@@ -6209,6 +6209,9 @@ pub fn sys_listen(
         return Err(Errno::EINVAL);
     }
     sock.state = SocketState::Listening;
+    if sock.accept_wake_idx.is_none() {
+        sock.accept_wake_idx = Some(crate::wakeup::alloc_accept_wake_idx());
+    }
 
     // For AF_INET listeners, allocate a shared accept queue that fork
     // children will inherit. This way every process sharing this listener
@@ -6473,6 +6476,7 @@ pub fn sys_connect(
                 // Push to listener's backlog
                 let listener = proc.sockets.get_mut(listener_idx).ok_or(Errno::EBADF)?;
                 listener.listen_backlog.push(accepted_idx);
+                let accept_wake_idx = listener.accept_wake_idx;
 
                 // Connect client socket with cross-connected pipes
                 let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
@@ -6490,6 +6494,10 @@ pub fn sys_connect(
                 // Set peer_idx on accepted socket for OOB data exchange
                 let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
                 accepted.peer_idx = Some(sock_idx);
+
+                if let Some(idx) = accept_wake_idx {
+                    crate::wakeup::push_accept(idx);
+                }
 
                 Ok(())
             } else {
@@ -6585,6 +6593,7 @@ pub fn sys_connect(
                 .get_mut(listener_sock_idx)
                 .ok_or(Errno::EBADF)?;
             listener.listen_backlog.push(accepted_idx);
+            let accept_wake_idx = listener.accept_wake_idx;
 
             // Set up client socket
             let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
@@ -6597,6 +6606,10 @@ pub fn sys_connect(
             // Set peer_idx on accepted socket
             let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
             accepted.peer_idx = Some(sock_idx);
+
+            if let Some(idx) = accept_wake_idx {
+                crate::wakeup::push_accept(idx);
+            }
 
             Ok(())
         }
@@ -15508,6 +15521,49 @@ mod tests {
 
         // Clean up
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_unix_stream_connect_pushes_accept_wakeup() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(9012);
+        let mut host = MockHostIO::new();
+        let path = b"/tmp/wakeup_9012.sock";
+        let resolved = crate::path::resolve_path(path, &proc.cwd);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let server_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        let accept_idx = {
+            let entry = proc.fd_table.get(server_fd).unwrap();
+            let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+            let sock_idx = (-(ofd.host_handle + 1)) as usize;
+            proc.sockets.get(sock_idx).unwrap().accept_wake_idx.unwrap()
+        };
+
+        crate::set_kernel_mode(1);
+        let mut wake_buf = [0u8; 16];
+        crate::wakeup::drain(&mut wake_buf, 8);
+
+        let client_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
+
+        let count = crate::wakeup::drain(&mut wake_buf, 8);
+        crate::set_kernel_mode(0);
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        assert_eq!(count, 1);
+        assert_eq!(
+            u32::from_le_bytes([wake_buf[0], wake_buf[1], wake_buf[2], wake_buf[3]]),
+            accept_idx
+        );
+        assert_eq!(wake_buf[4], crate::wakeup::WAKE_ACCEPT);
     }
 
     #[test]

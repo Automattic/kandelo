@@ -7216,11 +7216,14 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
     // The accepting process (any of the listener's fork-inherited copies)
     // creates its own accepted SocketInfo lazily in sys_accept.
     let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ESRCH)?;
-    let shared_idx = listener_proc
+    let listener_sock = listener_proc
         .sockets
         .get(listener_sock_idx)
-        .and_then(|s| s.shared_backlog_idx)
         .ok_or(Errno::ECONNREFUSED)?;
+    let shared_idx = listener_sock
+        .shared_backlog_idx
+        .ok_or(Errno::ECONNREFUSED)?;
+    let accept_wake_idx = listener_sock.accept_wake_idx;
 
     let pc = crate::socket::PendingConnection {
         peer_addr: client_addr,
@@ -7230,6 +7233,10 @@ fn cross_process_loopback_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> R
     };
     if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) } {
         return Err(Errno::ECONNREFUSED);
+    }
+
+    if let Some(idx) = accept_wake_idx {
+        crate::wakeup::push_accept(idx);
     }
 
     Ok(())
@@ -7302,6 +7309,7 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         .get_mut(listener_sock_idx)
         .ok_or(Errno::EBADF)?;
     listener.listen_backlog.push(accepted_idx);
+    let accept_wake_idx = listener.accept_wake_idx;
 
     // Set up client socket (in current process)
     let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
@@ -7310,6 +7318,10 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
     client.recv_buf_idx = Some(pipe_b_idx);
     client.state = SocketState::Connected;
     client.global_pipes = true;
+
+    if let Some(idx) = accept_wake_idx {
+        crate::wakeup::push_accept(idx);
+    }
 
     Ok(())
 }
@@ -9523,6 +9535,7 @@ pub extern "C" fn kernel_inject_connection(
         // per-process backlog that fork siblings can't see.
         None => return -(Errno::EINVAL as i32),
     };
+    let accept_wake_idx = sock.accept_wake_idx;
 
     // Allocate the recv/send pipes in the GLOBAL pipe table so any process
     // sharing this listener can read/write them after accept(). The host
@@ -9550,6 +9563,10 @@ pub extern "C" fn kernel_inject_connection(
         pipe_table.free_if_closed(recv_pipe_idx);
         pipe_table.free_if_closed(send_pipe_idx);
         return -(Errno::EBADF as i32);
+    }
+
+    if let Some(idx) = accept_wake_idx {
+        crate::wakeup::push_accept(idx);
     }
 
     recv_pipe_idx as i32
@@ -9850,6 +9867,40 @@ pub extern "C" fn kernel_get_fd_pipe_idx(pid: u32, fd: i32) -> i32 {
         }
         _ => -1,
     }
+}
+
+/// Look up the accept-readiness wake token for a listening socket fd.
+/// Returns -1 if the fd is not a listening socket with a wake token.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_fd_accept_wake_idx(pid: u32, fd: i32) -> i32 {
+    use crate::ofd::FileType;
+    use crate::socket::SocketState;
+
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = match table.get(pid) {
+        Some(p) => p,
+        None => return -1,
+    };
+    let entry = match proc.fd_table.get(fd) {
+        Ok(e) => e,
+        Err(_) => return -1,
+    };
+    let ofd = match proc.ofd_table.get(entry.ofd_ref.0) {
+        Some(o) => o,
+        None => return -1,
+    };
+    if ofd.file_type != FileType::Socket {
+        return -1;
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    let sock = match proc.sockets.get(sock_idx) {
+        Some(s) => s,
+        None => return -1,
+    };
+    if sock.state != SocketState::Listening {
+        return -1;
+    }
+    sock.accept_wake_idx.map(|idx| idx as i32).unwrap_or(-1)
 }
 
 /// Check if a file descriptor has O_NONBLOCK set.
@@ -10214,7 +10265,7 @@ pub extern "C" fn kernel_audio_pending() -> u32 {
 
 /// Drain pending wakeup events into the output buffer.
 ///
-/// Each event is 5 bytes: pipe_idx (u32 LE) + wake_type (u8).
+/// Each event is 5 bytes: wake index (u32 LE) + wake_type (u8).
 /// Returns the number of events written.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_drain_wakeup_events(
