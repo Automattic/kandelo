@@ -21,6 +21,7 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
 } from "./generated/abi";
+import { MemoryFileSystem } from "./vfs/memory-fs";
 
 const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS = ["__abi_version", "_start"] as const;
 
@@ -254,11 +255,27 @@ function hasWasmArtifactPolicyFailures(path: string, relPath: string): boolean {
   }
 }
 
+function hasVfsArtifactPolicyFailures(path: string): boolean {
+  if (!path.endsWith(".vfs") && !path.endsWith(".vfs.zst")) return false;
+  try {
+    const metadata = MemoryFileSystem.readImageMetadata(readFileSync(path));
+    const declaredAbi = metadata?.kernelAbi;
+    return declaredAbi !== undefined && declaredAbi !== ABI_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+function hasBinaryArtifactPolicyFailures(path: string, relPath: string): boolean {
+  return hasWasmArtifactPolicyFailures(path, relPath) ||
+    hasVfsArtifactPolicyFailures(path);
+}
+
 function chooseBinaryCandidate(candidates: string[], relPath: string): string | null {
   const existing = candidates.filter((candidate) => existsSync(candidate));
   if (existing.length === 0) return null;
 
-  return existing.find((candidate) => !hasWasmArtifactPolicyFailures(candidate, relPath)) ?? null;
+  return existing.find((candidate) => !hasBinaryArtifactPolicyFailures(candidate, relPath)) ?? null;
 }
 
 export function resolveBinary(relPath: string): string {
