@@ -19,5 +19,6 @@ package_staging_changed_files() {
     -e '^scripts/(build-fork-instrument-tool|build-musl|compose-initial-index|dev-shell|fetch-binaries|index-has-current-entry|index-update|install-local-binary|install-overlay-headers|materialize-pr-overlays|prepare-sdk-package|publish-package-source|resolve-binary|run-wasm-fork-instrument|sync-package-source)\.sh$' \
     | grep -vE \
       -e '^packages/registry/[^/]+/(demo|test)(/|$)' \
+      -e '^tools/xtask/src/(dump_abi|remote_fetch)\.rs$' \
     || true
 }

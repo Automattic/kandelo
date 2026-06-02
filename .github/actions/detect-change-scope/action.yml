@@ -11,9 +11,10 @@ description: |
       docs + staging-cleanup workflow files, benchmarks/results/).
       When true, every test step skips.
 
-    kernel — at least one changed file matches the kernel path set
+    kernel — at least one changed file matches the kernel/test path set
       (kernel sources, glue, musl, sysroot build scripts, conformance
-      submodules, host integration, runner harness). Gates the slow
+      submodules, host integration, runner harness, binary fetch
+      machinery). Gates binary materialization and the slow
       native-and-conformance suites: cargo, libc-test, POSIX, sortix.
       Caller's base ref is the known-good baseline because every
       commit there was gated through prepare-merge with full suites
@@ -145,6 +146,7 @@ runs:
           -e '^(crates|libc|tests/libc|tests/posix|tests/sortix|host|programs|abi)/' \
           -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
           -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
+          -e '^tools/xtask/src/remote_fetch\.rs$' \
           -e '^examples/run-example\.ts$' \
           -e '^\.github/workflows/(staging-build|prepare-merge)\.yml$' \
           -e '^\.github/actions/detect-change-scope/' \

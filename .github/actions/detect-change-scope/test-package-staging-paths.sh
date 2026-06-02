@@ -60,6 +60,8 @@ assert_selected "sdk/bin/wasm32posix-cc" "sdk/bin/wasm32posix-cc"
 assert_not_selected "sdk/test/cc.test.ts" "sdk/test/cc.test.ts"
 
 assert_selected "tools/xtask/src/build_deps.rs" "tools/xtask/src/build_deps.rs"
+assert_not_selected "tools/xtask/src/remote_fetch.rs" "tools/xtask/src/remote_fetch.rs"
+assert_not_selected "tools/xtask/src/dump_abi.rs" "tools/xtask/src/dump_abi.rs"
 assert_not_selected "tools/xtask/README.md" "tools/xtask/README.md"
 assert_selected "tools/mkrootfs/src/builder.ts" "tools/mkrootfs/src/builder.ts"
 assert_not_selected "tools/mkrootfs/test/builder.test.ts" "tools/mkrootfs/test/builder.test.ts"
