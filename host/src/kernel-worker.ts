@@ -809,6 +809,22 @@ export class CentralizedKernelWorker {
         this.startTcpListener(pid, fd, port);
         return 0;
       },
+      onHostSendDgram: (
+        srcPort: number,
+        dstIp: [number, number, number, number],
+        dstPort: number,
+        data: Uint8Array,
+      ): number => {
+        // Default: no relay registered. Node-host kernel-worker-entry
+        // leaves this default in place (no RTCDataChannel; UDP egress
+        // beyond loopback is unreachable). The browser-host worker
+        // entry overrides this via `kw.kernel.callbacks` to forward
+        // the datagram out to the main thread's RelayChannel via a
+        // `host_send_dgram` message. Returning -101 (-ENETUNREACH)
+        // lets `sys_sendto` surface a real errno to the program.
+        void srcPort; void dstIp; void dstPort; void data;
+        return -101;
+      },
       onPosixTimer: (timerId: number, signo: number, valueMs: number, intervalMs: number): number => {
         const pid = this.currentHandlePid;
         if (pid === 0) return 0;

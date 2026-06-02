@@ -96,6 +96,19 @@ export interface KernelCallbacks {
   onWaitpid?: (targetPid: number, options: number) => void;
   onClone?: (fnPtr: number, arg: number, stackPtr: number, tlsPtr: number, ctidPtr: number) => number;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
+  /**
+   * Outbound UDP datagram fan-out (the kernel's `host_send_dgram` import).
+   * Browser hosts forward to the main-thread RelayChannel via postMessage;
+   * Node has no relay and leaves this unset so the import returns
+   * `-ENETUNREACH`. Return 0 to acknowledge the send (UDP is best-effort —
+   * no transmit confirmation), or a negative errno on failure.
+   */
+  onHostSendDgram?: (
+    srcPort: number,
+    dstIp: [number, number, number, number],
+    dstPort: number,
+    data: Uint8Array,
+  ) => number;
   onStdout?: (data: Uint8Array) => void;
   onStderr?: (data: Uint8Array) => void;
   /** Read up to maxLen bytes from stdin. Return a Uint8Array with available data, or empty/null for EOF. */
@@ -489,6 +502,14 @@ export class WasmPosixKernel {
         },
         host_net_listen: (fd: number, port: number, addrA: number, addrB: number, addrC: number, addrD: number): number => {
           return this.hostNetListen(fd, port, addrA, addrB, addrC, addrD);
+        },
+        host_send_dgram: (
+          srcPort: number,
+          dstA: number, dstB: number, dstC: number, dstD: number,
+          dstPort: number,
+          dataPtr: bigint, dataLen: number,
+        ): number => {
+          return this.hostSendDgram(srcPort, dstA, dstB, dstC, dstD, dstPort, Number(dataPtr), dataLen);
         },
         host_getaddrinfo: (namePtr: bigint, nameLen: number, resultPtr: bigint, resultLen: number): number => {
           return this.hostGetaddrinfo(Number(namePtr), nameLen, Number(resultPtr), resultLen);
@@ -1953,6 +1974,22 @@ export class WasmPosixKernel {
       return this.callbacks.onNetListen(fd, port, [addrA, addrB, addrC, addrD]);
     }
     return 0;
+  }
+
+  private hostSendDgram(
+    srcPort: number,
+    dstA: number, dstB: number, dstC: number, dstD: number,
+    dstPort: number,
+    dataPtr: number, dataLen: number,
+  ): number {
+    if (!this.callbacks.onHostSendDgram || !this.memory) return -101; // -ENETUNREACH
+    try {
+      const mem = new Uint8Array(this.memory.buffer);
+      const data = mem.slice(dataPtr, dataPtr + dataLen);
+      return this.callbacks.onHostSendDgram(srcPort, [dstA, dstB, dstC, dstD], dstPort, data);
+    } catch {
+      return -101; // -ENETUNREACH
+    }
   }
 
   private hostGetaddrinfo(namePtr: number, nameLen: number, resultPtr: number, resultLen: number): number {

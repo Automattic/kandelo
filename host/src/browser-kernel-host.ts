@@ -23,6 +23,17 @@ import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 import { DEFAULT_MAX_PAGES } from "./constants";
 
+/**
+ * Outbound UDP datagram forwarded from the kernel-worker's
+ * `host_send_dgram` import. Subscribed via `BrowserKernel.onHostSendDgram`.
+ */
+export interface HostSendDgramEvent {
+  srcPort: number;
+  dstIp: [number, number, number, number];
+  dstPort: number;
+  data: Uint8Array;
+}
+
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
@@ -672,6 +683,46 @@ export class BrowserKernel {
     }) as Promise<number>;
   }
 
+  /**
+   * Inject an inbound UDP datagram into a process's bound DGRAM socket.
+   * Fire-and-forget — UDP is unreliable, so there is no useful return
+   * value to await (a drop here is indistinguishable from a wire-level
+   * loss). The kernel-worker forwards to the `kernel_inject_datagram`
+   * wasm export, which pushes the datagram onto the matching
+   * `SOCK_DGRAM`'s `dgram_queue` and wakes any blocked `recvfrom`.
+   */
+  injectDatagram(
+    pid: number,
+    dstPort: number,
+    srcIp: [number, number, number, number],
+    srcPort: number,
+    data: Uint8Array,
+  ): void {
+    this.sendToKernel({
+      type: "inject_datagram",
+      pid,
+      dstPort,
+      srcIp,
+      srcPort,
+      data,
+    });
+  }
+
+  /**
+   * Subscribe to outbound UDP datagrams forwarded from the kernel-worker
+   * (the kernel's `host_send_dgram` import). The page-side `RelayChannel`
+   * uses this to frame datagrams onto its `RTCDataChannel`. Returns an
+   * unsubscribe function.
+   */
+  onHostSendDgram(handler: (event: HostSendDgramEvent) => void): () => void {
+    this.hostSendDgramListeners.add(handler);
+    return () => {
+      this.hostSendDgramListeners.delete(handler);
+    };
+  }
+
+  private hostSendDgramListeners = new Set<(event: HostSendDgramEvent) => void>();
+
   /** Write data to a kernel pipe. */
   async pipeWrite(pid: number, pipeIdx: number, data: Uint8Array): Promise<number> {
     const requestId = this.nextRequestId++;
@@ -988,6 +1039,18 @@ export class BrowserKernel {
       case "listen_tcp":
         this.options.onListenTcp?.(msg.pid, msg.fd, msg.port);
         break;
+      case "host_send_dgram": {
+        const event: HostSendDgramEvent = {
+          srcPort: msg.srcPort,
+          dstIp: msg.dstIp,
+          dstPort: msg.dstPort,
+          data: msg.data,
+        };
+        for (const h of this.hostSendDgramListeners) {
+          try { h(event); } catch { /* listener errors don't break the loop */ }
+        }
+        break;
+      }
       case "fb_bind":
         this.fbMemoryByPid.set(msg.pid, msg.memory);
         this.framebuffers.bind({

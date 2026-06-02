@@ -132,6 +132,23 @@ export interface InjectConnectionMessage {
   peerPort: number;
 }
 
+/**
+ * Main → kernel-worker UDP datagram injection. Fire-and-forget — no
+ * requestId. The kernel-worker forwards to the `kernel_inject_datagram`
+ * wasm export, which pushes the datagram onto the matching
+ * `SOCK_DGRAM`'s `dgram_queue`. UDP is unreliable by definition; a drop
+ * here is indistinguishable from a wire-level loss, so there is no
+ * useful return value to await.
+ */
+export interface InjectDatagramMessage {
+  type: "inject_datagram";
+  pid: number;
+  dstPort: number;
+  srcIp: [number, number, number, number];
+  srcPort: number;
+  data: Uint8Array;
+}
+
 export interface PipeReadMessage {
   type: "pipe_read";
   requestId: number;
@@ -308,6 +325,7 @@ export type MainToKernelMessage =
   | PtyWriteMessage
   | PtyResizeMessage
   | InjectConnectionMessage
+  | InjectDatagramMessage
   | PipeReadMessage
   | PipeWriteMessage
   | PipeCloseReadMessage
@@ -377,6 +395,21 @@ export interface ListenTcpMessage {
   pid: number;
   fd: number;
   port: number;
+}
+
+/**
+ * Kernel-worker → main forwarding of an outbound UDP datagram emitted via
+ * the kernel's `host_send_dgram` import. The main thread's `RelayChannel`
+ * subscribes via `BrowserKernel.onHostSendDgram(...)` and frames the
+ * datagram onto its `RTCDataChannel`. Fire-and-forget — the channel
+ * itself is unreliable.
+ */
+export interface HostSendDgramMessage {
+  type: "host_send_dgram";
+  srcPort: number;
+  dstIp: [number, number, number, number];
+  dstPort: number;
+  data: Uint8Array;
 }
 
 /**
@@ -453,6 +486,7 @@ export type KernelToMainMessage =
   | StderrMessage
   | PtyOutputMessage
   | ListenTcpMessage
+  | HostSendDgramMessage
   | FbBindMessage
   | FbUnbindMessage
   | FbRebindMemoryMessage

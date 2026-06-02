@@ -835,6 +835,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_inject_datagram",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_inject_mouse_event",
       "signature": "(i32,i32,i32) -> ()"
     },

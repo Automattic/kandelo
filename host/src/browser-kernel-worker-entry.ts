@@ -263,6 +263,29 @@ function createFreshProcessMemory(
 }
 
 /**
+ * Kernel-worker half of the WebRTC UDP relay (design §5.2). Implements
+ * the kernel's `HostIO::send_dgram` indirection by forwarding outbound
+ * datagrams up to the main thread, where the page-side `RelayChannel`
+ * frames them onto an `RTCDataChannel`. Returns `data.length` because
+ * UDP is best-effort — once the message is in the postMessage queue we
+ * report success; a wire-level drop later is indistinguishable from
+ * any other UDP loss.
+ */
+class RelayHostShim {
+  send_dgram(
+    srcPort: number,
+    dstIp: [number, number, number, number],
+    dstPort: number,
+    data: Uint8Array,
+  ): number {
+    // Copy so a later mutation of the kernel's scratch buffer can't
+    // perturb what main-thread sees once the message lands.
+    post({ type: "host_send_dgram", srcPort, dstIp, dstPort, data: new Uint8Array(data) });
+    return data.length;
+  }
+}
+
+/**
  * Copy `/etc/*` files from a freshly-loaded `rootfs.vfs` image into the
  * given memfs. Existing files are NOT overwritten — the demo keeps any
  * /etc files it wrote itself (e.g. `/etc/profile`, `/etc/gitconfig`).
@@ -404,6 +427,16 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   await tlsBackend.init();
   io.network = tlsBackend;
 
+  // RelayHostShim — kernel-worker half of the WebRTC UDP relay
+  // (design §5.2). Forwards outbound datagrams emitted via the kernel's
+  // `host_send_dgram` import out to the main thread, where the
+  // RelayChannel frames them onto an RTCDataChannel. Fire-and-forget:
+  // UDP is unreliable by definition, so a postMessage race during channel
+  // close (or no listener wired yet) is acceptable — drops the packet,
+  // same as a wire-level loss. Instantiated unconditionally because the
+  // shim is idle until called.
+  const relayHostShim = new RelayHostShim();
+
   // Install the MITM CA certificate in the VFS so OpenSSL trusts it.
   const caCertPem = tlsBackend.getCACertPEM();
   try {
@@ -481,6 +514,12 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       post({ type: "listen_tcp", pid, fd: _fd, port });
       return 0;
     },
+    onHostSendDgram: (
+      srcPort: number,
+      dstIp: [number, number, number, number],
+      dstPort: number,
+      data: Uint8Array,
+    ) => relayHostShim.send_dgram(srcPort, dstIp, dstPort, data),
   };
 
   await kernelWorker.init(msg.kernelWasmBytes);
@@ -1244,6 +1283,35 @@ function handleInjectConnection(msg: Extract<MainToKernelMessage, { type: "injec
   respond(msg.requestId, recvPipeIdx);
 }
 
+/**
+ * Fire-and-forget UDP datagram injection from the page-side RelayChannel.
+ * Copies the payload into kernel scratch memory and calls the kernel's
+ * `kernel_inject_datagram` export, which pushes onto the matching bound
+ * DGRAM socket's `dgram_queue`. No response — UDP drops are
+ * indistinguishable from wire-level loss. No wakeup nudge: `sys_recvfrom`
+ * polls (the unconditional-EAGAIN behaviour is a documented follow-up
+ * tracked in the Task-1 commit; DOOM tolerates polling at ~35 Hz).
+ */
+function handleInjectDatagram(msg: Extract<MainToKernelMessage, { type: "inject_datagram" }>) {
+  if (!kernelInstance || !kernelMemory) return;
+  const kw = kernelWorker as any;
+  const scratchOffset: number = kw.scratchOffset || 0;
+  if (scratchOffset === 0) return;
+  if (msg.data.length > PAGE_SIZE) return; // larger than scratch slot — drop
+  const mem = new Uint8Array(kernelMemory.buffer);
+  mem.set(msg.data, scratchOffset);
+  const injectDatagram = kernelInstance.exports.kernel_inject_datagram as (
+    pid: number, dstPort: number,
+    srcA: number, srcB: number, srcC: number, srcD: number,
+    srcPort: number, dataPtr: bigint, dataLen: number,
+  ) => number;
+  injectDatagram(
+    msg.pid, msg.dstPort,
+    msg.srcIp[0], msg.srcIp[1], msg.srcIp[2], msg.srcIp[3],
+    msg.srcPort, BigInt(scratchOffset), msg.data.length,
+  );
+}
+
 function handleWakeBlockedReaders(msg: Extract<MainToKernelMessage, { type: "wake_blocked_readers" }>) {
   const kw = kernelWorker as any;
   const readers = kw.pendingPipeReaders?.get(msg.pipeIdx);
@@ -1504,6 +1572,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "pty_resize": handlePtyResize(msg); break;
     case "register_pty_output": handleRegisterPtyOutput(msg); break;
     case "inject_connection": handleInjectConnection(msg); break;
+    case "inject_datagram": handleInjectDatagram(msg); break;
     case "pipe_read": handlePipeRead(msg); break;
     case "pipe_write": handlePipeWrite(msg); break;
     case "pipe_close_read": handlePipeCloseRead(msg); break;
