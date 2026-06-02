@@ -1,0 +1,1 @@
+function n(n,o,c,e=420){t(n,o,(new TextEncoder).encode(c),e)}function t(n,t,o,c=493){const e=n.open(t,577,c);n.write(e,o,0,o.length),n.close(e)}function o(n,t){try{n.mkdir(t,493)}catch{}}function c(n,t){const c=t.split("/").filter(Boolean);let e="";for(const s of c)e+="/"+s,o(n,e)}function e(n,t,o){try{n.symlink(t,o)}catch{}}export{c as a,n as b,o as e,e as s,t as w};
