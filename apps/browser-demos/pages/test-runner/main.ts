@@ -11,7 +11,7 @@ import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
 import sedWasmUrl from "@binaries/programs/wasm32/sed.wasm?url";
-import genCatWasmUrl from "../../../../examples/gencat.wasm?url";
+import genCatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/gencat.wasm?url";
 
 interface DataFile {
   path: string;

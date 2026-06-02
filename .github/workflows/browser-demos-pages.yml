@@ -1,6 +1,47 @@
 name: Deploy browser demos
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/browser-demos-pages.yml"
+      - ".github/actions/fetch-submodules/**"
+      - ".gitmodules"
+      - "MANIFEST"
+      - "apps/browser-demos/**"
+      - "benchmarks/**"
+      - "examples/**"
+      - "host/package.json"
+      - "host/package-lock.json"
+      - "host/src/**"
+      - "host/tsconfig.json"
+      - "host/tsup.config.ts"
+      - "web-libs/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**"
+      - "flake.lock"
+      - "flake.nix"
+      - "libc/**"
+      - "package.json"
+      - "package-lock.json"
+      - "packages/registry/**/package.toml"
+      - "packages/registry/**/build.toml"
+      - "programs/**"
+      - "rust-toolchain.toml"
+      - "images/rootfs/**"
+      - "images/vfs/**"
+      - "run.sh"
+      - "scripts/build-musl.sh"
+      - "scripts/build-programs.sh"
+      - "scripts/build-rootfs.sh"
+      - "scripts/dev-shell.sh"
+      - "scripts/fetch-binaries.sh"
+      - "scripts/install-overlay-headers.sh"
+      - "scripts/install-local-binary.sh"
+      - "scripts/resolve-binary.sh"
+      - "sdk/**"
+      - "tools/mkrootfs/**"
+      - "tools/xtask/**"
   push:
     branches: [main]
     paths:
@@ -46,7 +87,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   # Exercise GitHub's post-Node-20 action runtime now, before it becomes
@@ -54,7 +95,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -108,6 +149,29 @@ jobs:
           VITE_BASE: /kandelo/
           VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
         run: npm run build
+
+      - name: Upload browser demo dist
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-demos-dist
+          path: apps/browser-demos/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: browser-demos-dist
+          path: apps/browser-demos/dist
 
       - name: Deploy to gh-pages
         uses: peaceiris/actions-gh-pages@v4.1.0
