@@ -406,7 +406,7 @@ const NODE_SHELL_ENV: string[] = [
   "npm_config_registry=http://proxy.local/",
   "npm_config_fund=false",
   "npm_config_audit=false",
-  "npm_config_progress=true",
+  "npm_config_progress=false",
 ];
 
 const SERVICE_ENV: string[] = [

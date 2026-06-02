@@ -22,7 +22,6 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
   walkAndWrite,
-  writeVfsFile,
   saveImage,
   symlink,
 } from "./vfs-image-helpers";
@@ -45,6 +44,8 @@ const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "node-vfs.vf
 
 const NPM_MOUNT = "/usr/local/lib/npm";
 const NODE_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
 
 async function main() {
   if (!existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) {
@@ -79,11 +80,14 @@ async function main() {
   stageSpiderMonkeyNpmRuntime(fs);
 
   // Starter package.json so `npm install --prefix /work` has somewhere to write.
-  writeVfsFile(
-    fs,
+  fs.createFileWithOwner(
     "/work/package.json",
-    JSON.stringify({ name: "demo", version: "0.0.1" }, null, 2) + "\n",
     0o644,
+    DEMO_UID,
+    DEMO_GID,
+    new TextEncoder().encode(
+      JSON.stringify({ name: "demo", version: "0.0.1" }, null, 2) + "\n",
+    ),
   );
   writeKandeloDemoConfig(fs, {
     version: 1,

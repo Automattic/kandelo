@@ -455,11 +455,11 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "npm_config_cache=/tmp/.npm-cache",
         "npm_config_fund=false",
         "npm_config_audit=false",
-        "npm_config_progress=true",
+        "npm_config_progress=false",
         "npm_config_update_notifier=false",
         "NPM_CONFIG_FUND=false",
         "NPM_CONFIG_AUDIT=false",
-        "NPM_CONFIG_PROGRESS=true",
+        "NPM_CONFIG_PROGRESS=false",
         "NPM_CONFIG_UPDATE_NOTIFIER=false",
       ];
       const host = new NodeKernelHost({

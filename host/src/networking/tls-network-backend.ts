@@ -106,6 +106,13 @@ function parseHttpRequest(buf: Uint8Array, headerEnd: number): {
   return { method, path, headers, body };
 }
 
+const HOP_BY_HOP_HEADERS = new Set([
+  "transfer-encoding",
+  "content-encoding",
+  "connection",
+  "keep-alive",
+]);
+
 function formatHttpResponse(
   status: number,
   statusText: string,
@@ -115,14 +122,11 @@ function formatHttpResponse(
   const bodyBytes = new Uint8Array(body);
   let headerStr = `HTTP/1.1 ${status} ${statusText}\r\n`;
   headers.forEach((value, key) => {
-    // Skip transfer-encoding since we set content-length
-    if (key.toLowerCase() === "transfer-encoding") return;
-    headerStr += `${key}: ${value}\r\n`;
+    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase()) && key.toLowerCase() !== "content-length") {
+      headerStr += `${key}: ${value}\r\n`;
+    }
   });
-  if (!headers.has("content-length")) {
-    headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
-  }
-  headerStr += "Connection: close\r\n";
+  headerStr += `Content-Length: ${bodyBytes.length}\r\n`;
   headerStr += "\r\n";
 
   const headerBytes = new TextEncoder().encode(headerStr);
@@ -560,6 +564,14 @@ export class TlsNetworkBackend implements NetworkIO {
         conn.fetchDone = true;
       }
     };
+
+    // Reset connection state before dispatching. npm keeps the proxy.local
+    // registry connection alive across packument and tarball requests; recv()
+    // must wait for the new fetch instead of observing the previous response.
+    conn.fetchDone = false;
+    conn.responseBuf = null;
+    conn.responseOffset = 0;
+    conn.fetchError = null;
 
     doFetch();
     conn.sendBuf = new Uint8Array(0);

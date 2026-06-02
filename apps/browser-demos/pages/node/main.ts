@@ -27,6 +27,7 @@ const DEMO_UID = 1000;
 const DEMO_GID = 1000;
 const DEMO_HOME = "/home/user";
 const NODE_WORKDIR = "/work";
+const SEEDED_NODE_WORKDIR_FILES = [`${NODE_WORKDIR}/package.json`];
 const NODE_ENV = [
   `HOME=${DEMO_HOME}`,
   `PWD=${NODE_WORKDIR}`,
@@ -41,11 +42,11 @@ const NODE_ENV = [
   "npm_config_cache=/tmp/.npm-cache",
   "npm_config_fund=false",
   "npm_config_audit=false",
-  "npm_config_progress=true",
+  "npm_config_progress=false",
   "npm_config_update_notifier=false",
   "NPM_CONFIG_FUND=false",
   "NPM_CONFIG_AUDIT=false",
-  "NPM_CONFIG_PROGRESS=true",
+  "NPM_CONFIG_PROGRESS=false",
   "NPM_CONFIG_UPDATE_NOTIFIER=false",
 ];
 
@@ -57,6 +58,12 @@ function prepareNodeFs(fs: MemoryFileSystem): void {
   fs.chmod(DEMO_HOME, 0o755);
   fs.chown(NODE_WORKDIR, DEMO_UID, DEMO_GID);
   fs.chmod(NODE_WORKDIR, 0o755);
+  for (const path of SEEDED_NODE_WORKDIR_FILES) {
+    try {
+      fs.chown(path, DEMO_UID, DEMO_GID);
+      fs.chmod(path, 0o644);
+    } catch {}
+  }
 }
 
 let kernelBytes: ArrayBuffer | null = null;
@@ -136,7 +143,7 @@ function buildArgv(line: string): string[] | null {
     // (no listener → ECONNREFUSED).
     const extras = hasInstall
       ? ["--prefix", "/work", "--cache", "/tmp/.npm-cache",
-         "--no-fund", "--no-audit", "--progress=true",
+         "--no-fund", "--no-audit", "--progress=false",
          "--registry=http://proxy.local/"]
       : [];
     return ["node", NPM_RUNNER, "npm", ...tokens, ...extras];

@@ -71,8 +71,8 @@ test("standalone Node demo runs npm CLI", async ({ page }) => {
   expect(runtimeErrors).toEqual([]);
 });
 
-test("standalone Node demo starts verbose npm install before exit", async ({ page }) => {
-  test.setTimeout(90_000);
+test("standalone Node demo installs cowsay before exit", async ({ page }) => {
+  test.setTimeout(240_000);
   const runtimeErrors: string[] = [];
   page.on("console", (msg) => {
     const text = msg.text();
@@ -85,29 +85,19 @@ test("standalone Node demo starts verbose npm install before exit", async ({ pag
   await gotoOrSkip(page, "/pages/node/");
   await page.waitForSelector(".xterm-rows", { timeout: 60_000 });
   await page.click("#terminal");
-  await page.keyboard.type("npm install cowsay --verbose");
+  await page.keyboard.type("npm install cowsay && cowsay 'Hello Kandelo'");
   await page.keyboard.press("Enter");
 
-  const handle = await page.waitForFunction(
-    () => {
-      const text = document.querySelector(".xterm-rows")?.textContent || "";
-      if (
-        text.includes("npm verbose argv") &&
-        text.includes('"install" "cowsay"') &&
-        text.includes('"--loglevel" "verbose"')
-      ) {
-        return { kind: "verbose", text };
-      }
-      const exit = text.match(/\[exit [^\]]+\]/)?.[0];
-      if (exit) return { kind: "exit", exit, text };
-      return false;
-    },
-    undefined,
-    { timeout: 60_000 },
-  );
-  const result = await handle.jsonValue() as { kind: string; exit?: string; text: string };
+  await expect
+    .poll(() => page.locator(".xterm-rows").evaluate((el) => el.textContent || ""), {
+      timeout: 180_000,
+    })
+    .toContain("< Hello Kandelo >");
+  await expect
+    .poll(() => page.locator(".xterm-rows").evaluate((el) => el.textContent || ""), {
+      timeout: 30_000,
+    })
+    .toContain("[exit 0");
 
-  expect(result.kind, result.text).toBe("verbose");
-  expect(result.text).toContain("npm info using npm@10.9.2");
   expect(runtimeErrors).toEqual([]);
 });
