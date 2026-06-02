@@ -452,6 +452,7 @@ export class BrowserKernel {
       onStarted?: (pid: number) => void | Promise<void>;
       ptyCols?: number;
       ptyRows?: number;
+      maxMemoryPages?: number;
     },
   ): Promise<number> {
     const pid = this.nextPid++;
@@ -478,7 +479,7 @@ export class BrowserKernel {
       ptyCols: options?.ptyCols,
       ptyRows: options?.ptyRows,
       stdin: options?.stdin,
-      maxPages: this.maxPages,
+      maxPages: options?.maxMemoryPages ?? this.maxPages,
     }, [bytesToSend]);
 
     // Register PTY output callback if pty was requested
@@ -512,7 +513,15 @@ export class BrowserKernel {
   async spawnFromVfs(
     programPath: string,
     argv: string[],
-    options?: { env?: string[]; cwd?: string; uid?: number; gid?: number; pty?: boolean; stdin?: Uint8Array },
+    options?: {
+      env?: string[];
+      cwd?: string;
+      uid?: number;
+      gid?: number;
+      pty?: boolean;
+      stdin?: Uint8Array;
+      maxMemoryPages?: number;
+    },
   ): Promise<{ pid: number; exit: Promise<number> }> {
     const requestId = this.nextRequestId++;
     const pid = await this.request(requestId, {
@@ -526,7 +535,7 @@ export class BrowserKernel {
       gid: options?.gid,
       pty: options?.pty,
       stdin: options?.stdin,
-      maxPages: this.maxPages,
+      maxPages: options?.maxMemoryPages ?? this.maxPages,
     }) as number;
 
     const exit = new Promise<number>((resolve) => {

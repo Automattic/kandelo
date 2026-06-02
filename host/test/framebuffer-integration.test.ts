@@ -136,11 +136,11 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       // Verify the binding was recorded.
       const binding = kernel.framebuffers.get(pid);
       expect(binding).toBeDefined();
-      expect(binding!.w).toBe(640);
-      expect(binding!.h).toBe(400);
-      expect(binding!.stride).toBe(640 * 4);
+      expect(binding!.w).toBe(1280);
+      expect(binding!.h).toBe(960);
+      expect(binding!.stride).toBe(1280 * 4);
       expect(binding!.fmt).toBe("BGRA32");
-      expect(binding!.len).toBe(640 * 400 * 4);
+      expect(binding!.len).toBe(1280 * 960 * 4);
 
       // Read the bound region and check the pattern: pixel(r,c) =
       // 0xFF000000 | (r << 16) | c. Sample at a few coordinates.
@@ -150,7 +150,7 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       const sample = (r: number, c: number) =>
         view.getUint32((r * binding!.w + c) * 4, /*littleEndian*/ true);
 
-      // Pattern: 0xFF000000 | (r << 16) | c. With r up to 399 the high
+      // Pattern: 0xFF000000 | (r << 16) | c. With r up to 959 the high
       // bit of `r << 16` ORs into the alpha byte; the test simply
       // recomputes the formula so it stays self-consistent.
       const expected = (r: number, c: number) =>
@@ -158,7 +158,7 @@ describe.skipIf(!existsSync(fbtestBinary))("framebuffer integration", () => {
       expect(sample(0, 0)).toBe(expected(0, 0));
       expect(sample(10, 20)).toBe(expected(10, 20));
       expect(sample(255, 255)).toBe(expected(255, 255));
-      expect(sample(399, 639)).toBe(expected(399, 639));
+      expect(sample(959, 1279)).toBe(expected(959, 1279));
 
       // Note: unbind on process exit / munmap is exercised by the
       // cargo unit tests (`munmap_of_fb_region_clears_binding_and_unbinds_host`,

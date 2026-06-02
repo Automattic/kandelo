@@ -3,6 +3,8 @@ import type { NetworkIO } from "../types";
 import { lookup } from "dns";
 import { EagainError } from "./fetch-backend";
 
+const MSG_PEEK = 0x2;
+
 /**
  * Map a Node.js network error code to a POSIX errno value.
  * Returns EIO (5) for unknown codes so the kernel surfaces *something* rather
@@ -117,7 +119,7 @@ export class TcpNetworkBackend implements NetworkIO {
     return data.length;
   }
 
-  recv(handle: number, maxLen: number, _flags: number): Uint8Array {
+  recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
     if (conn.error) throw conn.error;
@@ -129,7 +131,9 @@ export class TcpNetworkBackend implements NetworkIO {
         conn.recvBuf.byteOffset,
         len,
       );
-      conn.recvBuf = conn.recvBuf.subarray(len);
+      if ((flags & MSG_PEEK) === 0) {
+        conn.recvBuf = conn.recvBuf.subarray(len);
+      }
       return result;
     }
 
