@@ -10,18 +10,22 @@ Earlier decentralized/research paths are not compatibility targets.
 
 Advisory file locking is currently split across Rust and TypeScript:
 
-- Rust parses `fcntl`/`flock` requests, validates access mode, resolves
+- Rust already supports the advisory-lock syscall surface. It parses
+  `fcntl`/`flock` requests, validates access mode, resolves
   `SEEK_SET`/`SEEK_CUR`/`SEEK_END`, owns process/OFD context, and releases some
   locks during close/exit cleanup.
 - TS owns a `SharedLockTable` for host-backed files, keyed by a path hash, so
   cross-process Kandelo locks are visible to all workers.
 - The kernel calls `host_fcntl_lock` for host-backed files.
 
-That keeps important policy outside the process table and makes future
-non-JS host adapters reimplement the same lock-table semantics. At the same
-time, a host hook remains valuable: Node hosts can mount native files through
-Kandelo's VFS, and those files should eventually coordinate with native OS
-programs using OS-level advisory locks.
+So "TS owns advisory file locking" is shorthand for a narrower issue: Rust owns
+most syscall semantics, but host-backed files still delegate conflict detection
+and shared lock-table storage to TypeScript. That keeps important Kandelo-owned
+policy outside the process table and makes future non-JS host adapters
+reimplement the same lock-table semantics. At the same time, a host hook remains
+valuable: Node hosts can mount native files through Kandelo's VFS, and those
+files should eventually coordinate with native OS programs using OS-level
+advisory locks.
 
 ## Goals
 
