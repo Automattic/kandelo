@@ -1,4 +1,29 @@
 script_path = "packages/registry/kandelo-sdk/build-kandelo-sdk.sh"
+inputs = [
+  "packages/registry/kandelo-sdk/build-kandelo-sdk.sh",
+  "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh",
+  "images/vfs/scripts/build-kandelo-sdk-vfs-image.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "libc/glue",
+  "scripts/install-local-binary.sh",
+  "sdk/activate.sh",
+  "sdk/bin",
+  "sdk/config.site",
+  "sdk/kandelo/bin",
+  "sdk/kandelo/licenses",
+  "sdk/package.json",
+  "sdk/package-lock.json",
+  "sdk/src",
+  "sdk/tsconfig.json",
+  "host/src/constants.ts",
+  "host/src/statfs.ts",
+  "host/src/types.ts",
+  "host/src/vfs/image-helpers.ts",
+  "host/src/vfs/memory-fs.ts",
+  "host/src/vfs/sharedfs-vendor.ts",
+  "host/src/vfs/types.ts",
+  "host/src/vfs/zip.ts",
+]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 revision    = 1

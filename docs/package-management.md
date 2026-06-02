@@ -66,6 +66,38 @@ programs, we need:
 - rebuild-in-progress in one worktree not to corrupt a sibling
   worktree's read of the same cached lib.
 
+## Artifact invalidation model
+
+Use precise artifact concepts when changing CI gates or package cache
+keys:
+
+- **Kernel implementation**: Rust kernel behavior changed, but the
+  guest-visible contract did not. Build and test a fresh `kernel.wasm`
+  against existing package archives; do not rebuild package archives.
+- **Guest ABI epoch**: the binary contract compiled into user programs
+  changed incompatibly. This is `ABI_VERSION` in
+  `crates/shared/src/lib.rs`; a bump intentionally changes every
+  library/program cache key and requires a new `binaries-abi-v<N>`
+  release.
+- **Additive guest ABI surface**: new syscall/export/metadata that keeps
+  old binaries valid. Commit the updated ABI snapshot, but do not force a
+  package rebuild unless a package's own source changed to use the new
+  surface.
+- **Package recipe/build input**: package source, manifest, build script,
+  SDK wrapper, sysroot/glue input, VFS image builder, or package-system
+  publish code changed. Rebuild only packages whose cache keys include
+  that input, plus transitive dependents through `depends_on`.
+- **Host adapter/runtime ABI**: host TypeScript and kernel-wasm boot
+  metadata changed. Rebuild/test the host and kernel together; rebuild
+  guest packages only if the guest ABI epoch or package build inputs also
+  changed.
+
+The PR staging path filter should answer "can this path change a
+published package archive or the staging/publish mechanism?" It should
+not use package staging as a proxy for "tests should run." Kernel-only
+PRs still materialize the durable package release and test it against a
+fresh kernel.
+
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
 
 Every package ships TWO TOML files in `packages/registry/<name>/`:
@@ -203,12 +235,27 @@ same lib, we revisit. Noted as future work; not a near-term priority.
 
 ## Cache-key hashing
 
-The cache-key sha for a library is computed over
+The cache-key sha for a library or program is computed over
 `(name, version, revision, source.url, source.sha256, target_arch,
-abi_version, sorted transitive dep cache-key shas)`, where
-`revision` is read from `build.toml` (overlaid onto the parsed
-`DepsManifest` at load time) and defaults to 1 when `build.toml`
-omits it or is absent.
+abi_version, declared outputs, declared build input digests, global
+toolchain/sysroot input digests, sorted transitive dep cache-key
+shas)`, where `revision` is read from `build.toml` (overlaid onto the
+parsed `DepsManifest` at load time) and defaults to 1 when
+`build.toml` omits it or is absent.
+
+Program packages that use fork instrumentation also hash the
+fork-instrument host tool inputs (`crates/fork-instrument`, the
+workspace Cargo lockfile, and the wrapper/build scripts). Programs
+that declare `fork_instrumentation = "disabled"` do not hash that
+tooling.
+
+The global toolchain/sysroot fingerprint covers the reproducible build
+environment and sysroot recipe: the Nix flake, Rust toolchain file,
+`scripts/dev-shell.sh`, musl build inputs, libc overlay/glue, the musl
+submodule gitlink, and SDK compiler-driver inputs. It is deliberately
+separate from the guest ABI number: a guest ABI bump invalidates
+ABI-bound archives through `abi_version`, while a toolchain or sysroot
+change invalidates them through this fingerprint.
 
 That means:
 

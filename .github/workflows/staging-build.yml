@@ -99,7 +99,6 @@ jobs:
       needs.change-scope.outputs.package_staging_required == 'true'
     runs-on: ubuntu-latest
     permissions:
-      actions: read            # inspect prior runs that produced indexed force-rebuild artifacts
       contents: read           # gh release view (target tag probe)
       statuses: write          # post pending merge-gate status with helpful description
     outputs:
@@ -162,20 +161,6 @@ jobs:
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
 
-            BASE_REF="${{ github.event.pull_request.base.ref }}"
-            git fetch origin "$BASE_REF" --depth=1
-            changed_files=$(git diff --name-only "origin/$BASE_REF"..HEAD || true)
-            force_package_rebuild=0
-            if echo "$changed_files" | grep -E \
-              -e "^crates/fork-instrument/" \
-              -e "^scripts/build-fork-instrument-tool\\.sh$" \
-              -e "^scripts/dev-shell\\.sh$" \
-              -e "^(Cargo\\.(lock|toml)|flake\\.(nix|lock)|rust-toolchain\\.toml)$" \
-              >/dev/null; then
-              force_package_rebuild=1
-              echo "preflight: forcing package matrix because fork-instrument/toolchain inputs changed"
-            fi
-
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
@@ -216,65 +201,6 @@ jobs:
                 echo "preflight: $TARGET_TAG/index.toml declares ABI ${existing_index_abi:-unknown}; expected $ABI"
               fi
             fi
-
-            force_input_paths=(
-              crates/fork-instrument
-              scripts/build-fork-instrument-tool.sh
-              scripts/dev-shell.sh
-              Cargo.lock
-              Cargo.toml
-              flake.lock
-              flake.nix
-              rust-toolchain.toml
-            )
-            declare -A force_run_input_cache=()
-            current_force_head=$(git rev-parse HEAD)
-
-            force_run_inputs_match_current() {
-              local run_id="$1"
-              local cached="${force_run_input_cache[$run_id]:-}"
-              if [ -n "$cached" ]; then
-                [ "$cached" = "1" ]
-                return
-              fi
-
-              local run_json built_head
-              if ! run_json=$(gh api "repos/${{ github.repository }}/actions/runs/$run_id" 2>/dev/null); then
-                force_run_input_cache[$run_id]=0
-                return 1
-              fi
-              built_head=$(printf "%s" "$run_json" | jq -r ".head_sha // empty")
-              if [ -z "$built_head" ]; then
-                force_run_input_cache[$run_id]=0
-                return 1
-              fi
-              if ! git fetch --quiet origin "$built_head"; then
-                force_run_input_cache[$run_id]=0
-                return 1
-              fi
-              if git diff --quiet "$built_head" "$current_force_head" -- "${force_input_paths[@]}"; then
-                force_run_input_cache[$run_id]=1
-                return 0
-              fi
-              force_run_input_cache[$run_id]=0
-              return 1
-            }
-
-            force_index_entry_reusable() {
-              local index="$1" pkg="$2" arch="$3" sha="$4" revision="$5" archive="$6"
-              local built_by run_id
-              [ -n "$archive" ] || return 1
-              scripts/index-has-current-entry.sh "$index" "$pkg" "$arch" "$sha" "$revision" || return 1
-              built_by=$(scripts/index-current-entry-built-by.sh "$index" "$pkg" "$arch" "$sha" "$revision" 2>/dev/null || true)
-              case "$built_by" in
-                */actions/runs/[0-9]*)
-                  run_id="${built_by##*/actions/runs/}"
-                  run_id="${run_id%%/*}"
-                  ;;
-                *) return 1 ;;
-              esac
-              force_run_inputs_match_current "$run_id"
-            }
 
             HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
             library_matrix="[]"
@@ -348,14 +274,8 @@ jobs:
                 existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
                     "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
                 if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
-                  if [ "$force_package_rebuild" != "1" ]; then
-                    echo "preflight: skip $pkg/$arch (sha $short already indexed)"
-                    continue
-                  fi
-                  if force_index_entry_reusable "$existing_index" "$pkg" "$arch" "$sha" "$revision" "$existing_archive"; then
-                    echo "preflight: skip $pkg/$arch (sha $short already indexed by compatible force rebuild)"
-                    continue
-                  fi
+                  echo "preflight: skip $pkg/$arch (sha $short already indexed)"
+                  continue
                 fi
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
                                 --arg ver "$version" --argjson rev "$revision" \
@@ -479,19 +399,24 @@ jobs:
           use-flakehub: false
 
       - name: Compute cache key
-        # Mirrors the key in the legacy `build` job (and prepare-merge)
-        # exactly so all three caches alias. hashFiles() over the inputs
-        # that affect the produced sysroot:
-        #   - scripts/build-musl.sh: the musl build recipe
+        # Mirrors prepare-merge exactly so both workflows share one
+        # sysroot cache. hashFiles() covers the inputs that affect the
+        # produced sysroot:
+        #   - flake/rust-toolchain/dev-shell: the compiler/tool env
+        #   - scripts/build-musl.sh + install-overlay-headers.sh: musl
+        #     build and sysroot header install recipes
         #   - packages/registry/libcxx/**: the libcxx package (build script,
         #     manifest, and any helpers — replaces the deleted
         #     scripts/build-libcxx.sh)
         #   - libc/musl-overlay/**: source patches/overrides applied on top of
         #     the musl submodule
         #   - libc/glue/**: channel_syscall.c + headers compiled into libc.a
+        #   - sdk compiler-driver inputs used by package builds
         id: key
         run: |
-          KEY="musl-sysroot-v4-${{ runner.os }}-${{ hashFiles('scripts/build-musl.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**') }}"
+          set -euo pipefail
+          musl_gitlink="$(git rev-parse HEAD:libc/musl)"
+          KEY="musl-sysroot-v5-${{ runner.os }}-$musl_gitlink-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml', 'scripts/dev-shell.sh', 'scripts/build-musl.sh', 'scripts/install-overlay-headers.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**', 'sdk/activate.sh', 'sdk/bin/**', 'sdk/config.site', 'sdk/package.json', 'sdk/package-lock.json', 'sdk/src/**') }}"
           echo "value=$KEY" >> "$GITHUB_OUTPUT"
           echo "toolchain-cache key: $KEY"
 

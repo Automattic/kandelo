@@ -22,8 +22,9 @@ description: |
     package_staging_required — at least one changed file can affect
       package archive outputs or the package staging/publish machinery.
       Ordinary kernel/runtime changes do not set this flag unless they
-      bump `ABI_VERSION` or update committed ABI artifacts. Browser demo
-      app, CI workflow/action-only, and docs-only changes do not set it.
+      bump `ABI_VERSION`. Additive ABI snapshot updates, package-owned
+      tests/demos, advisory package sets, browser demo app, CI
+      workflow/action-only, and docs-only changes do not set it.
 
   vitest gates on `!docs_only` rather than on `kernel` — its 51 test
   files exercise built packages (dash, bash, nginx, erlang, php,

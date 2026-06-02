@@ -185,8 +185,10 @@ fn expand_tilde(s: &str) -> PathBuf {
 ///   domain `"wasm-posix-pkg\n"`, then
 ///   `name`, `version`, `revision`, `target_arch`, `abi_version`,
 ///   `source.url`, `source.sha256`, declared build input content
-///   digests, then for each dep (sorted by name): `dep.name`,
-///   `dep.version`, hex(dep_sha).
+///   digests, global toolchain/sysroot content digests, optional
+///   fork-instrument tool content digests for program outputs that use
+///   that post-processor, then for each dep (sorted by name):
+///   `dep.name`, `dep.version`, hex(dep_sha).
 ///
 /// Source kind (raw upstream archive, arch- and ABI-agnostic):
 ///   domain `"wasm-posix-pkg-source\n"`, then
@@ -262,6 +264,15 @@ pub fn compute_sha(
     chain.pop();
 
     let build_inputs = build_input_digests(target, registry)?;
+    let global_toolchain_inputs = match target.kind {
+        ManifestKind::Library | ManifestKind::Program => global_package_toolchain_digests()?,
+        ManifestKind::Source => Vec::new(),
+    };
+    let fork_instrument_tool_inputs = if package_uses_fork_instrument_tool(target) {
+        fork_instrument_tool_digests()?
+    } else {
+        Vec::new()
+    };
 
     let mut h = Sha256::new();
     match target.kind {
@@ -351,6 +362,24 @@ pub fn compute_sha(
             h.update(b"\n");
         }
     }
+    if !global_toolchain_inputs.is_empty() {
+        h.update(b"global-toolchain-inputs:\n");
+        for input in &global_toolchain_inputs {
+            h.update(input.label.as_bytes());
+            h.update(b"\n");
+            h.update(input.digest);
+            h.update(b"\n");
+        }
+    }
+    if !fork_instrument_tool_inputs.is_empty() {
+        h.update(b"fork-instrument-tool-inputs:\n");
+        for input in &fork_instrument_tool_inputs {
+            h.update(input.label.as_bytes());
+            h.update(b"\n");
+            h.update(input.digest);
+            h.update(b"\n");
+        }
+    }
     for (dref, dsha) in &dep_shas {
         h.update(dref.name.as_bytes());
         h.update(b"@");
@@ -365,9 +394,137 @@ pub fn compute_sha(
     Ok(out)
 }
 
+#[derive(Clone, Debug)]
 struct BuildInputDigest {
     label: String,
     digest: [u8; 32],
+}
+
+const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
+    "flake.nix",
+    "flake.lock",
+    "rust-toolchain.toml",
+    "scripts/dev-shell.sh",
+    "scripts/build-musl.sh",
+    "scripts/install-overlay-headers.sh",
+    "libc/glue",
+    "libc/musl-overlay",
+    "libc/musl",
+    "sdk/activate.sh",
+    "sdk/bin",
+    "sdk/config.site",
+    "sdk/package.json",
+    "sdk/package-lock.json",
+    "sdk/src",
+];
+
+const FORK_INSTRUMENT_TOOL_INPUTS: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "crates/fork-instrument/Cargo.toml",
+    "crates/fork-instrument/src",
+    "scripts/build-fork-instrument-tool.sh",
+    "scripts/run-wasm-fork-instrument.sh",
+];
+
+static GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS: OnceLock<Result<Vec<BuildInputDigest>, String>> =
+    OnceLock::new();
+static FORK_INSTRUMENT_TOOL_DIGESTS: OnceLock<Result<Vec<BuildInputDigest>, String>> =
+    OnceLock::new();
+
+fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
+    GLOBAL_PACKAGE_TOOLCHAIN_DIGESTS
+        .get_or_init(|| {
+            global_package_build_input_digests_for(&repo_root(), GLOBAL_PACKAGE_TOOLCHAIN_INPUTS)
+        })
+        .clone()
+}
+
+fn fork_instrument_tool_digests() -> Result<Vec<BuildInputDigest>, String> {
+    FORK_INSTRUMENT_TOOL_DIGESTS
+        .get_or_init(|| {
+            global_package_build_input_digests_for(&repo_root(), FORK_INSTRUMENT_TOOL_INPUTS)
+        })
+        .clone()
+}
+
+fn package_uses_fork_instrument_tool(target: &DepsManifest) -> bool {
+    matches!(target.kind, ManifestKind::Program)
+        && target
+            .program_outputs
+            .iter()
+            .any(|out| out.fork_instrumentation != ForkInstrumentationPolicy::Disabled)
+}
+
+fn global_package_build_input_digests_for(
+    root: &Path,
+    inputs: &[&str],
+) -> Result<Vec<BuildInputDigest>, String> {
+    let mut out = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let path = root.join(input);
+        if !path.exists() {
+            return Err(format!(
+                "global package build input {:?} not found at {}",
+                input,
+                path.display()
+            ));
+        }
+        out.push(BuildInputDigest {
+            label: (*input).to_string(),
+            digest: hash_global_package_build_input(root, input, &path)?,
+        });
+    }
+    Ok(out)
+}
+
+fn hash_global_package_build_input(
+    root: &Path,
+    input: &str,
+    path: &Path,
+) -> Result<[u8; 32], String> {
+    if input == "libc/musl" {
+        if let Some(digest) = hash_gitlink_input(root, input)? {
+            return Ok(digest);
+        }
+    }
+    hash_build_input(path)
+}
+
+fn hash_gitlink_input(root: &Path, input: &str) -> Result<Option<[u8; 32]>, String> {
+    let output = match Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("ls-tree")
+        .arg("HEAD")
+        .arg("--")
+        .arg(input)
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(None),
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let Some(line) = stdout.lines().next() else {
+        return Ok(None);
+    };
+    let Some(rest) = line.strip_prefix("160000 commit ") else {
+        return Ok(None);
+    };
+    let Some((object_id, _path)) = rest.split_once('\t') else {
+        return Err(format!("unexpected gitlink entry for {input:?}: {line:?}"));
+    };
+
+    let mut h = Sha256::new();
+    h.update(b"gitlink\0");
+    h.update(input.as_bytes());
+    h.update(b"\0");
+    h.update(object_id.as_bytes());
+    h.update(b"\0");
+    Ok(Some(h.finalize().into()))
 }
 
 fn build_input_digests(
@@ -3042,6 +3199,82 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
             sha_after, sha_after_dir_change,
             "build.toml directory input content changes must change cache_key_sha"
         );
+    }
+
+    #[test]
+    fn global_package_build_input_digests_change_with_content() {
+        let root = tempdir("global-build-inputs");
+        std::fs::write(root.join("toolchain.txt"), "one\n").unwrap();
+
+        let before = global_package_build_input_digests_for(&root, &["toolchain.txt"]).unwrap();
+        std::fs::write(root.join("toolchain.txt"), "two\n").unwrap();
+        let after = global_package_build_input_digests_for(&root, &["toolchain.txt"]).unwrap();
+
+        assert_ne!(
+            before[0].digest, after[0].digest,
+            "global build input content changes must change its digest"
+        );
+    }
+
+    #[test]
+    fn global_package_build_input_digests_reject_missing_input() {
+        let root = tempdir("global-build-input-missing");
+
+        let err =
+            global_package_build_input_digests_for(&root, &["missing-toolchain.txt"]).unwrap_err();
+
+        assert!(err.contains("global package build input"), "got: {err}");
+    }
+
+    #[test]
+    fn fork_instrument_tool_inputs_apply_only_to_programs_that_use_them() {
+        let dir = tempdir("fork-tool-input-applicability");
+        let auto_program = DepsManifest::parse(
+            r#"
+kind = "program"
+name = "auto-prog"
+version = "1.0.0"
+depends_on = []
+
+[source]
+url = "https://example.test/auto-prog.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[[outputs]]
+name = "auto-prog"
+wasm = "auto-prog.wasm"
+"#,
+            dir.clone(),
+        )
+        .unwrap();
+        let disabled_program = DepsManifest::parse(
+            r#"
+kind = "program"
+name = "disabled-prog"
+version = "1.0.0"
+depends_on = []
+
+[source]
+url = "https://example.test/disabled-prog.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[[outputs]]
+name = "disabled-prog"
+wasm = "disabled-prog.wasm"
+fork_instrumentation = "disabled"
+"#,
+            dir,
+        )
+        .unwrap();
+
+        assert!(package_uses_fork_instrument_tool(&auto_program));
+        assert!(!package_uses_fork_instrument_tool(&disabled_program));
     }
 
     #[test]
