@@ -11983,14 +11983,112 @@ mod tests {
         assert_eq!(result, Err(Errno::EBADF));
     }
 
+    fn fd_host_handle(proc: &Process, fd: i32) -> i64 {
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        ofd.host_handle
+    }
+
     #[test]
-    fn test_fcntl_setlkw_local_conflict_reports_would_block() {
+    fn test_fcntl_setlk_and_setlkw_local_conflicts_report_would_block() {
+        for cmd in [F_SETLK, F_SETLKW] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+            let host_handle = fd_host_handle(&proc, write_fd);
+
+            proc.lock_table.set_lock(
+                host_handle,
+                FileLock {
+                    pid: 2,
+                    lock_type: F_WRLCK,
+                    start: 0,
+                    len: 100,
+                },
+            );
+
+            let mut flock = WasmFlock {
+                l_type: F_WRLCK as i16,
+                l_whence: 0,
+                _pad1: 0,
+                l_start: 0,
+                l_len: 100,
+                l_pid: 0,
+                _pad2: 0,
+            };
+            let result = sys_fcntl_lock(&mut proc, write_fd, cmd, &mut flock, &mut host);
+            assert_eq!(result, Err(Errno::EAGAIN), "cmd {}", cmd);
+        }
+    }
+
+    #[test]
+    fn test_fcntl_getlk_local_conflict_reports_blocking_owner() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-        let entry = proc.fd_table.get(write_fd).unwrap();
-        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
-        let host_handle = ofd.host_handle;
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        proc.lock_table.set_lock(
+            host_handle,
+            FileLock {
+                pid: 7,
+                lock_type: F_WRLCK,
+                start: 10,
+                len: 25,
+            },
+        );
+
+        let mut query = WasmFlock {
+            l_type: F_RDLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 20,
+            l_len: 5,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc, write_fd, F_GETLK, &mut query, &mut host).unwrap();
+
+        assert_eq!(query.l_type as u32, F_WRLCK);
+        assert_eq!(query.l_pid, 7);
+        assert_eq!(query.l_start, 10);
+        assert_eq!(query.l_len, 25);
+        assert_eq!(query.l_whence, 0);
+    }
+
+    #[test]
+    fn test_flock_local_conflicts_report_would_block() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        proc.lock_table.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 0,
+            },
+        );
+
+        assert_eq!(
+            sys_flock(&mut proc, write_fd, LOCK_EX, &mut host),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(
+            sys_flock(&mut proc, write_fd, LOCK_EX | LOCK_NB, &mut host),
+            Err(Errno::EAGAIN)
+        );
+    }
+
+    #[test]
+    fn test_fcntl_setlkw_local_conflict_can_succeed_after_unlock() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
 
         proc.lock_table.set_lock(
             host_handle,
@@ -12013,6 +12111,23 @@ mod tests {
         };
         let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
         assert_eq!(result, Err(Errno::EAGAIN));
+
+        proc.lock_table.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_UNLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host).unwrap();
+        assert!(
+            proc.lock_table
+                .get_blocking_lock(host_handle, F_WRLCK, 0, 100, 2)
+                .is_some()
+        );
     }
 
     #[test]
