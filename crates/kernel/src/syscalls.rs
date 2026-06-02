@@ -3035,9 +3035,10 @@ pub fn sys_fcntl_lock(
                 if base_cmd == F_SETLK {
                     return Err(Errno::EAGAIN);
                 }
-                // F_SETLKW: in a single address space (Wasm), the caller owns
-                // all local locks, so a conflict is always a self-deadlock.
-                return Err(Errno::EDEADLK);
+                // F_SETLKW: report "would block" to the caller/host retry
+                // machinery. Deadlock detection requires a wait-for graph; a
+                // conflicting lock from another owner is not itself deadlock.
+                return Err(Errno::EAGAIN);
             }
 
             let lock = FileLock {
@@ -11980,6 +11981,38 @@ mod tests {
         };
         let result = sys_fcntl_lock(&mut proc, fd, F_SETLK, &mut flock, &mut host);
         assert_eq!(result, Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_fcntl_setlkw_local_conflict_reports_would_block() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let entry = proc.fd_table.get(write_fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let host_handle = ofd.host_handle;
+
+        proc.lock_table.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
     }
 
     #[test]

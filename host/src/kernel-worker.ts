@@ -3936,6 +3936,16 @@ export class CentralizedKernelWorker {
       freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FLOCK_SIZE), flockPtr);
     }
 
+    const cmd = origArgs[1];
+    if (
+      retVal === -1 &&
+      errVal === EAGAIN &&
+      (cmd === F_SETLKW || cmd === F_SETLKW64 || cmd === F_OFD_SETLKW)
+    ) {
+      this.handleBlockingRetry(channel, SYS_FCNTL, origArgs);
+      return;
+    }
+
     this.completeChannel(channel, SYS_FCNTL, origArgs, undefined, retVal, errVal);
   }
 

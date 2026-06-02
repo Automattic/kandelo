@@ -91,7 +91,7 @@ Kandelo uses a **centralized architecture**: a single kernel Wasm instance holds
 | `F_SETFL` | Full | Only O_APPEND, O_NONBLOCK modifiable. Access mode bits preserved. |
 | `F_GETLK` | Full | Advisory record locking. Returns blocking lock info or F_UNLCK if no conflict. Locks released on close() and exit() per POSIX. |
 | `F_SETLK` | Full | Non-blocking lock acquisition. Returns EAGAIN on conflict. Read/write access mode validated. Locks released on close() and exit() per POSIX. |
-| `F_SETLKW` | Partial | Blocking lock acquisition. In single-process mode, behaves like F_SETLK (no contention possible). Multi-process blocking not yet implemented. No deadlock detection. |
+| `F_SETLKW` | Partial | Blocking lock acquisition for host-backed files in centralized mode via cooperative retry. In-kernel fallback locks are process-local and report EAGAIN when they would block. No deadlock detection. |
 | `F_GETOWN` | Full | Returns async I/O owner PID from OFD. Default 0. |
 | `F_SETOWN` | Full | Sets async I/O owner PID on OFD. SIGIO delivery deferred to signal delivery phase. |
 
