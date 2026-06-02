@@ -31,6 +31,7 @@ import {
   NODE_LAZY_BINARY_SPEC,
   shellLazyPlaceholderUrl,
 } from "../lib/init/shell-binaries";
+import { stageSpiderMonkeyNpmRuntime } from "../lib/init/spidermonkey-npm-runtime";
 import {
   terminalPresentation,
   writeKandeloDemoConfig,
@@ -63,9 +64,8 @@ async function main() {
   // Node/npm workspace additions.
   ensureDirRecursive(fs, "/usr/local/lib");
   ensureDirRecursive(fs, "/work");
-  // /etc/ssl needs to exist before kernel-worker auto-writes the bundled
-  // CA cert to /etc/ssl/cert.pem on init. Without this, npm install over
-  // HTTPS fails — see kernel-worker-entry.ts handleInit.
+  // /etc/ssl needs to exist before the browser kernel worker auto-writes
+  // the MITM CA cert to /etc/ssl/certs/ca-certificates.crt on init.
   ensureDirRecursive(fs, "/etc/ssl");
   fs.chmod("/work", 0o777);
 
@@ -76,6 +76,7 @@ async function main() {
                    || rel === "docs" || rel.startsWith("docs/"),
   });
   console.log(`  ${written} files written`);
+  stageSpiderMonkeyNpmRuntime(fs);
 
   // Starter package.json so `npm install --prefix /work` has somewhere to write.
   writeVfsFile(
@@ -84,22 +85,6 @@ async function main() {
     JSON.stringify({ name: "demo", version: "0.0.1" }, null, 2) + "\n",
     0o644,
   );
-  writeVfsFile(
-    fs,
-    "/usr/bin/npm",
-    "#!/usr/bin/node\nrequire('/usr/local/lib/npm/bin/npm-cli.js')\n",
-    0o755,
-  );
-  writeVfsFile(
-    fs,
-    "/usr/bin/npx",
-    "#!/usr/bin/node\nrequire('/usr/local/lib/npm/bin/npx-cli.js')\n",
-    0o755,
-  );
-  symlink(fs, "/usr/bin/npm", "/bin/npm");
-  symlink(fs, "/usr/bin/npm", "/usr/local/bin/npm");
-  symlink(fs, "/usr/bin/npx", "/bin/npx");
-  symlink(fs, "/usr/bin/npx", "/usr/local/bin/npx");
   writeKandeloDemoConfig(fs, {
     version: 1,
     profiles: {

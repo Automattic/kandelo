@@ -18,7 +18,7 @@ const presetsEl = document.getElementById("presets") as HTMLSelectElement;
 const clearBtn = document.getElementById("clear") as HTMLButtonElement;
 
 const VFS_IMAGE_URL = nodeVfsUrl;
-const NPM_CLI = "/usr/local/lib/npm/bin/npm-cli.js";
+const NPM_RUNNER = "/usr/local/lib/kandelo/npm-runner.js";
 const PROMPT = "\x1b[32m$\x1b[0m ";
 
 const decoder = new TextDecoder();
@@ -36,6 +36,17 @@ const NODE_ENV = [
   "PATH=/usr/local/bin:/usr/bin:/bin",
   "USER=user",
   "LOGNAME=user",
+  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+  "SSL_CERT_DIR=/etc/ssl/certs",
+  "npm_config_cache=/tmp/.npm-cache",
+  "npm_config_fund=false",
+  "npm_config_audit=false",
+  "npm_config_progress=true",
+  "npm_config_update_notifier=false",
+  "NPM_CONFIG_FUND=false",
+  "NPM_CONFIG_AUDIT=false",
+  "NPM_CONFIG_PROGRESS=true",
+  "NPM_CONFIG_UPDATE_NOTIFIER=false",
 ];
 
 function prepareNodeFs(fs: MemoryFileSystem): void {
@@ -128,7 +139,7 @@ function buildArgv(line: string): string[] | null {
          "--no-fund", "--no-audit", "--progress=true",
          "--registry=http://proxy.local/"]
       : [];
-    return ["node", NPM_CLI, ...tokens, ...extras];
+    return ["node", NPM_RUNNER, "npm", ...tokens, ...extras];
   }
 
   if (trimmed === "node" || trimmed.startsWith("node ")) {
