@@ -909,7 +909,7 @@ async function bootProfile(
         if (!isCurrent()) return;
         seenPorts.add(port);
         tick(`service listening on :${port}`);
-        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
       },
     });
     await kernel.init(kernelBytes);
@@ -985,8 +985,7 @@ async function bootProfile(
       );
     }
 
-    host.setStatus("running");
-    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick);
+    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
 
     if (profile.framebufferTest) {
       const fbtestWasmUrl = await optionalBinaryUrl([
@@ -1007,6 +1006,7 @@ async function bootProfile(
     }
 
     tick("ready");
+    host.setStatus("running");
     return kernel;
   } catch (err) {
     if (kernel && !isCurrent()) {
@@ -1250,12 +1250,14 @@ function maybeMarkWebReady(
   bridgeSent: boolean,
   readiness: WebReadinessState,
   tick: (msg: string) => void,
+  isCurrent: () => boolean,
 ): void {
   const web = profile.init?.web;
   if (!web) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
   if (!portsReady || !bridgeSent) return;
   if (readiness.ready) {
+    if (!isCurrent()) return;
     host.setWebPreview({
       label: web.label,
       url: APP_PREFIX,
@@ -1274,16 +1276,18 @@ function maybeMarkWebReady(
   });
   void waitForHttpPreview(APP_PREFIX).then(
     () => {
+      if (!isCurrent()) return;
       readiness.ready = true;
+      tick("HTTP preview ready");
       host.setWebPreview({
         label: web.label,
         url: APP_PREFIX,
         status: "running",
         message: "HTTP bridge ready",
       });
-      tick("HTTP preview ready");
     },
     (err) => {
+      if (!isCurrent()) return;
       const message = err instanceof Error ? err.message : String(err);
       host.setWebPreview({
         label: web.label,
@@ -1294,6 +1298,7 @@ function maybeMarkWebReady(
       tick(`HTTP preview readiness failed: ${message}`);
     },
   ).finally(() => {
+    if (!isCurrent()) return;
     readiness.probing = false;
   });
 }

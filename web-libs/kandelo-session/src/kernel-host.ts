@@ -841,7 +841,7 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshWebAvailability(): void {
-    this.setSurfaceAvailability({ web: this.webPreview !== null });
+    this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
   }
 
   // ── KernelHost: status ───────────────────────────────────────────────────
