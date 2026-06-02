@@ -535,6 +535,12 @@ impl Default for Build {
 /// See `docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md` §3.2.
 #[derive(Clone, Debug)]
 pub struct BuildToml {
+    /// Required by the build.toml schema for project provenance. Current
+    /// resolver paths still execute the source package.toml build script,
+    /// so this field is parsed/validated but not consumed at runtime.
+    // Keep this field in the parsed build.toml shape while source-build
+    // execution still reads the build path from package.toml.
+    #[allow(dead_code)]
     pub script_path: String,
     /// Repo-relative files or directories that are part of the build
     /// recipe even though they are not represented by package deps,
@@ -542,7 +548,17 @@ pub struct BuildToml {
     /// contents into `compute_sha` so changes to shared build helpers
     /// invalidate package caches automatically.
     pub inputs: Vec<String>,
+    /// Informational provenance for the package-source repo that produced
+    /// the published binary/index state.
+    // Keep provenance fields in the parsed build.toml shape for schema
+    // compatibility and future audit tooling.
+    #[allow(dead_code)]
     pub repo_url: String,
+    /// Informational provenance for the package-source commit that produced
+    /// the published binary/index state.
+    // Keep provenance fields in the parsed build.toml shape for schema
+    // compatibility and future audit tooling.
+    #[allow(dead_code)]
     pub commit: String,
     /// Publish-time revision counter for this package on this project.
     /// Bumped when the recipe changes in a way that should invalidate
