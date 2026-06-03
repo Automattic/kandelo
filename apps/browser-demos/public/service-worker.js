@@ -292,15 +292,31 @@ if (typeof window !== "undefined") {
     }
   });
 
-  // --- CORS proxy URL (injected at build time, empty string in dev) ---
+  // --- CORS proxy URL (injected at build time, main proxy in dev) ---
   var CORS_PROXY_URL = "__CORS_PROXY_URL__";
-  // In dev mode the placeholder is not replaced — treat as unconfigured
+  // In dev mode the placeholder is not replaced — use the main proxy so dev
+  // and production exercise the same CORS proxy backend.
   if (CORS_PROXY_URL.indexOf("__") === 0) {
-    CORS_PROXY_URL =
-      self.location.hostname === "127.0.0.1" ||
-      self.location.hostname === "localhost"
-        ? "/cors-proxy?url="
-        : "";
+    CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
+  }
+
+  function normalizedCorsProxyUrl() {
+    return CORS_PROXY_URL ? new URL(CORS_PROXY_URL, self.location.href).href : "";
+  }
+
+  function isCorsProxyFetchUrl(targetUrl) {
+    var proxyUrl = normalizedCorsProxyUrl();
+    return proxyUrl && targetUrl.startsWith(proxyUrl);
+  }
+
+  function corsProxyFetchUrl(targetUrl) {
+    var proxyUrl = normalizedCorsProxyUrl();
+    if (targetUrl.startsWith(proxyUrl)) {
+      return targetUrl;
+    }
+    return proxyUrl + (
+      proxyUrl.endsWith("?") ? targetUrl : encodeURIComponent(targetUrl)
+    );
   }
 
   /**
@@ -449,9 +465,22 @@ if (typeof window !== "undefined") {
   function fetchCrossOrigin(request) {
     var targetUrl = request.url;
 
+    // The page and worker runtime may already be deliberately fetching the
+    // configured CORS proxy. Do not wrap that request in the same proxy again.
+    if (isCorsProxyFetchUrl(targetUrl)) {
+      return fetch(request).then(function (response) {
+        var headers = corsSafeResponseHeaders(response);
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: headers,
+        });
+      });
+    }
+
     // If we have a CORS proxy, route through it
     if (CORS_PROXY_URL) {
-      var proxyUrl = CORS_PROXY_URL + encodeURIComponent(targetUrl);
+      var proxyUrl = corsProxyFetchUrl(targetUrl);
       return fetch(proxyUrl, { credentials: "omit", mode: "cors" }).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
         return new Response(response.body, {

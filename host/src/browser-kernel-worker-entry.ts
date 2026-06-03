@@ -394,11 +394,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
   // their compiled-in OpenSSL; the backend terminates TLS locally, makes
   // real fetch() requests, and re-encrypts the responses.
-  // In dev mode, use the vite CORS proxy middleware for cross-origin fetches.
-  // In production, the service worker handles CORS proxying transparently.
-  const devCorsProxy = import.meta.env.DEV ? "/cors-proxy?url=" : undefined;
+  // The service worker handles CORS proxying transparently in both dev and
+  // production, keeping the browser networking path identical across modes.
   const tlsBackend = new TlsNetworkBackend({
-    corsProxyUrl: devCorsProxy,
     dnsAliases: msg.config.dnsAliases,
   });
   await tlsBackend.init();

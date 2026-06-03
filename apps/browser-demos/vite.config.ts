@@ -2,13 +2,14 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
-import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { tryResolveBinary } from "../../host/src/binary-resolver";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
+const mainCorsProxyLocalPort = 5401;
 
 const crossOriginIsolationHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -219,141 +220,17 @@ function injectCoiServiceWorker(): Plugin {
   };
 }
 
-function attachCorsProxyMiddleware(
-  middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
-) {
-  middlewares.use("/cors-proxy", async (req, res) => {
-    const url = new URL(req.url!, `http://${req.headers.host}`);
-    const targetUrl = url.searchParams.get("url");
-    if (!targetUrl) {
-      res.writeHead(400, { "Content-Type": "text/plain" });
-      res.end("Missing ?url= parameter");
-      return;
-    }
-    try {
-      const body = await new Promise<Buffer>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        req.on("data", (chunk) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        });
-        req.on("end", () => resolve(Buffer.concat(chunks)));
-        req.on("error", reject);
-      });
-
-      // Use Node.js http/https modules for more reliable proxying.
-      const { default: https } = await import("https");
-      const { default: http } = await import("http");
-
-      // Forward all client headers except hop-by-hop ones, otherwise
-      // upstream POSTs lose `content-type`, auth headers, etc. plus the
-      // request body.
-      const skipReqHeader = new Set([
-        "host", "connection", "keep-alive", "transfer-encoding",
-        "upgrade", "proxy-connection", "te", "trailer", "expect",
-        "origin", "referer",
-      ]);
-      const forwardHeaders: Record<string, string | string[]> = {};
-      for (const [name, value] of Object.entries(req.headers)) {
-        if (value === undefined) continue;
-        if (skipReqHeader.has(name.toLowerCase())) continue;
-        forwardHeaders[name] = value as string | string[];
-      }
-      if (!forwardHeaders["user-agent"]) {
-        forwardHeaders["user-agent"] = "kandelo-proxy";
-      }
-      // The wasm-side fetch can't decompress gzip/br — force identity so
-      // the client sees raw JSON/SSE instead of UTF-8 replacement chars.
-      forwardHeaders["accept-encoding"] = "identity";
-
-      const proxyTo = (currentUrl: string, redirectsLeft: number): Promise<void> =>
-        new Promise((resolve, reject) => {
-          const parsedUrl = new URL(currentUrl);
-          const client = parsedUrl.protocol === "https:" ? https : http;
-          const proxyReq = client.request(currentUrl, {
-            method: req.method || "GET",
-            rejectUnauthorized: false, // Dev/local preview proxy — skip cert verification.
-            headers: forwardHeaders,
-          }, (proxyRes) => {
-            const statusCode = proxyRes.statusCode || 502;
-            const location = Array.isArray(proxyRes.headers.location)
-              ? proxyRes.headers.location[0]
-              : proxyRes.headers.location;
-            if (
-              location &&
-              redirectsLeft > 0 &&
-              [301, 302, 303, 307, 308].includes(statusCode)
-            ) {
-              proxyRes.resume();
-              proxyRes.on("end", () => {
-                resolve(proxyTo(new URL(location, currentUrl).href, redirectsLeft - 1));
-              });
-              return;
-            }
-
-            const skipResHeader = new Set([
-              "connection", "keep-alive", "transfer-encoding",
-              "content-encoding", "content-length",
-            ]);
-            const headers: Record<string, string | string[]> = {
-              "access-control-allow-origin": "*",
-              "cross-origin-resource-policy": "cross-origin",
-            };
-            for (const [k, v] of Object.entries(proxyRes.headers)) {
-              if (v === undefined) continue;
-              if (skipResHeader.has(k.toLowerCase())) continue;
-              headers[k] = v as string | string[];
-            }
-            res.writeHead(statusCode, headers);
-            proxyRes.pipe(res);
-            proxyRes.on("end", resolve);
-          });
-          proxyReq.on("error", reject);
-          if (body.length > 0) {
-            proxyReq.write(body);
-          }
-          proxyReq.end();
-        });
-
-      await proxyTo(targetUrl, 5);
-    } catch (err: any) {
-      console.error("[cors-proxy] Error:", err);
-      res.writeHead(502, { "Content-Type": "text/plain" });
-      res.end(`Proxy error: ${err?.message || err}`);
-    }
-  });
-}
-
-/**
- * Vite plugin: same-origin CORS proxy for local dev and preview.
- * Cross-Origin-Embedder-Policy: require-corp blocks all cross-origin fetches
- * from web workers unless the remote server sends CORP headers (most don't).
- * This middleware proxies external requests through the local server so they
- * appear same-origin.  URL: /cors-proxy?url=<encoded-url>
- */
-function corsProxyPlugin(): Plugin {
-  return {
-    name: "cors-proxy",
-    configureServer(server) {
-      attachCorsProxyMiddleware(server.middlewares);
-    },
-    configurePreviewServer(server) {
-      attachCorsProxyMiddleware(server.middlewares);
-    },
-  };
-}
-
 /**
  * Vite plugin: inject CORS proxy URL into service-worker.js during build.
  * Replaces the __CORS_PROXY_URL__ placeholder with the value from
- * VITE_CORS_PROXY_URL env var. In dev mode this is a no-op (the dev server's
- * cors-proxy middleware handles it instead).
+ * VITE_CORS_PROXY_URL env var, defaulting to the main proxy used in dev.
  */
 function injectCorsProxyUrl(): Plugin {
   let corsProxyUrl = "";
   return {
     name: "inject-cors-proxy-url",
     configResolved() {
-      corsProxyUrl = process.env.VITE_CORS_PROXY_URL ?? DEFAULT_CORS_PROXY_URL;
+      corsProxyUrl = process.env.VITE_CORS_PROXY_URL?.trim() || DEFAULT_CORS_PROXY_URL;
     },
     writeBundle(_, bundle) {
       // service-worker.js is in public/ and gets copied as-is to dist/
@@ -381,16 +258,21 @@ export default defineConfig({
     rewriteNavLinks(),
     injectGitRevision(),
     injectCoiServiceWorker(),
-    corsProxyPlugin(),
     injectCorsProxyUrl(),
   ],
   server: {
+    host: "127.0.0.1",
+    port: mainCorsProxyLocalPort,
+    strictPort: true,
     headers: crossOriginIsolationHeaders,
     fs: {
       allow: [repoRoot],
     },
   },
   preview: {
+    host: "127.0.0.1",
+    port: mainCorsProxyLocalPort,
+    strictPort: true,
     headers: crossOriginIsolationHeaders,
   },
   build: {

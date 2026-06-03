@@ -1206,7 +1206,7 @@ function dirname(path: string): string {
 }
 
 async function loadArchiveArtifact(archiveUrl: string, artifactPath: string): Promise<Uint8Array> {
-  const archiveBytes = await fetchBytesWithDevProxy(archiveUrl);
+  const archiveBytes = await fetchBytesNoStore(archiveUrl);
   const tarBytes = decompressZstd(archiveBytes);
   const artifact = extractTarFile(tarBytes, artifactPath);
   if (!artifact) {
@@ -1272,10 +1272,7 @@ async function stageConfiguredAssets(
 ): Promise<void> {
   for (const asset of assets) {
     tick(`staging ${asset.path}...`);
-    const url = asset.devCorsProxy && import.meta.env.DEV
-      ? `/cors-proxy?url=${encodeURIComponent(asset.url)}`
-      : asset.url;
-    const buffer: ArrayBuffer = await fetch(url).then(failOn(asset.path)).then((r) => r.arrayBuffer());
+    const buffer: ArrayBuffer = await fetch(asset.url).then(failOn(asset.path)).then((r) => r.arrayBuffer());
     const bytes = new Uint8Array(buffer);
     if (asset.sha256) {
       const digest = await sha256Hex(buffer);
@@ -1552,13 +1549,13 @@ async function loadKandeloSoftwareGalleryItems(): Promise<GalleryItem[]> {
 }
 
 async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promise<GalleryItem[]> {
-  const manifestText = await fetchTextWithDevProxy(manifestUrl);
+  const manifestText = await fetchTextNoStore(manifestUrl);
   const manifest = JSON.parse(manifestText) as SoftwareGalleryManifest;
   const sourceId = sourceIdForManifest(manifest, manifestUrl);
   const indexUrl = manifest.index_url
     ? new URL(manifest.index_url, manifestUrl).href
     : new URL("index.toml", manifestUrl).href;
-  const index = parseIndexToml(await fetchTextWithDevProxy(indexUrl));
+  const index = parseIndexToml(await fetchTextNoStore(indexUrl));
   if (index.abiVersion !== undefined && index.abiVersion !== ABI_VERSION) {
     console.warn(
       `Ignoring Kandelo software index ${indexUrl}: ABI ${index.abiVersion}, expected ${ABI_VERSION}`,
@@ -1848,44 +1845,16 @@ function parseIndexToml(text: string): SoftwareIndex {
   return { abiVersion, packages };
 }
 
-async function fetchTextWithDevProxy(url: string): Promise<string> {
-  try {
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return await response.text();
-  } catch (error) {
-    const isDevHost =
-      location.hostname === "localhost" ||
-      location.hostname === "127.0.0.1" ||
-      location.hostname === "[::1]";
-    if (!isDevHost) throw error;
-
-    const response = await fetch(`/cors-proxy?url=${encodeURIComponent(url)}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return await response.text();
-  }
+async function fetchTextNoStore(url: string): Promise<string> {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return await response.text();
 }
 
-async function fetchBytesWithDevProxy(url: string): Promise<Uint8Array> {
-  try {
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return new Uint8Array(await response.arrayBuffer());
-  } catch (error) {
-    const isDevHost =
-      location.hostname === "localhost" ||
-      location.hostname === "127.0.0.1" ||
-      location.hostname === "[::1]";
-    if (!isDevHost) throw error;
-
-    const response = await fetch(`/cors-proxy?url=${encodeURIComponent(url)}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return new Uint8Array(await response.arrayBuffer());
-  }
+async function fetchBytesNoStore(url: string): Promise<Uint8Array> {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 function accentForSoftwareEntry(id: string): string {
