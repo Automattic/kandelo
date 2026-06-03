@@ -16,7 +16,7 @@ None is on a committed schedule — pick up when the use case arrives.
 Today's release excludes the kernel + userspace because their
 manifests at `packages/registry/{kernel,userspace}/` lack build scripts —
 `archive-stage` skips manifests without a build script as composite
-metadata. The browser demos import `binaries/kernel.wasm` and
+metadata. The browser UI imports `binaries/kernel.wasm` and
 `binaries/userspace.wasm` (≈23 sites) at Vite build time; without
 those files Vite errors out unless the user has run `bash build.sh`
 locally to populate `local-binaries/`.
@@ -31,7 +31,7 @@ Fix options:
    the cache_key_sha churns; users who want a stable kernel should
    pin to a specific commit / release tag. The local-binaries/
    override path remains the developer's escape hatch.
-2. **Update demo imports** to use `local-binaries/...` paths and add
+2. **Update browser imports** to use `local-binaries/...` paths and add
    a doc step ("run `bash build.sh` first"). Diverges from the
    priority-1/priority-2 resolver convention; doesn't help users
    without a Rust toolchain.
@@ -43,7 +43,7 @@ without-toolchain workflow becomes a real use case.
 
 The system ships archives as `.tar.zst` uniformly.  That works for the
 resolver path (xtask decompresses to disk on install), but it
-**doesn't work for browser-demo lazy archives**.
+**doesn't work for browser lazy archives**.
 
 Today `host/src/vfs/zip.ts` registers `vim.zip` as a lazy archive in
 `shell.vfs` with mount prefix `/usr/`: the ZIP's central directory is
@@ -53,7 +53,7 @@ The pattern only works for `.zip` because per-entry deflate gives
 random access; `.tar.zst` is a monolithic compressed stream with no
 per-entry seek.
 
-**Today's workaround** (acceptable for now): the browser demo repacks
+**Today's workaround** (acceptable for now): the browser VFS build repacks
 a separate `vim.zip` via `images/vfs/scripts/build-vim-zip.sh`
 that includes vim.wasm + the runtime tree. The release ships
 `vim-9.1.0900-...tar.zst` containing only `vim.wasm`. Two parallel

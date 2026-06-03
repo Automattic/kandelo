@@ -33,7 +33,7 @@ Systems software to port to Kandelo, prioritized by POSIX depth and browser util
 - **Build notes:** Small C codebase (~15k lines), autoconf. Minimal dependencies. Good first target.
 
 ### CPython
-- **Status:** done (PR #133) — CPython 3.13.3 REPL and script runner, browser demo
+- **Status:** done (PR #133) - CPython 3.13.3 REPL and script runner, browser UI image
 - **Priority:** high
 - **POSIX surface:** Threading, fork, signals, mmap, dlopen (extension modules), setjmp/longjmp, select, locale, regex
 - **Browser value:** Python interpreter in the browser. Huge standalone appeal. Pyodide exists on Emscripten but a native POSIX build is a different proposition.

@@ -292,8 +292,8 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "wordpress-mariadb": {
     image: "lamp",
-    // Keep this aligned with pages/lamp: MariaDB's Aria recovery can grow
-    // beyond the 4096-page cap used by lighter PHP demos.
+    // MariaDB's Aria recovery can grow beyond the 4096-page cap used by
+    // lighter PHP presets.
     memoryPages: 16384,
     maxVfsByteLength: 512 * 1024 * 1024,
     network: true,

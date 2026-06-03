@@ -2,7 +2,7 @@
 
 /* Pass-through wrapper so .terminal-panel can be a direct flex child of
  * .main (and therefore claim flex: 1 when expanded). The placeholder
- * #terminal-panel div in each demo's HTML sits between .main and
+ * #terminal-panel div in a lab page's HTML sits between .main and
  * .terminal-panel; display: contents removes it from the box tree. */
 #terminal-panel {
   display: contents;

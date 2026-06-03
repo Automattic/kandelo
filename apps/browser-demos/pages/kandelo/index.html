@@ -3,16 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Kandelo — fold a computer into a URL</title>
-  <!-- Fonts are intentionally system-stack only. Cross-origin font hosts
-       (rsms.me, jsdelivr) get blocked by Cross-Origin-Embedder-Policy:
-       require-corp, which we need set for SharedArrayBuffer. If we want
-       Inter/JetBrains Mono we'll need to self-host with @font-face. -->
-  <link rel="stylesheet" href="./tokens.css">
-  <link rel="stylesheet" href="./styles.css">
+  <title>Kandelo - fold a computer into a URL</title>
+  <script>
+    const target = new URL(
+      window.location.pathname.replace(/\/pages\/kandelo\/?$/, "/"),
+      window.location.origin,
+    );
+    target.search = window.location.search;
+    target.hash = window.location.hash;
+    window.location.replace(target);
+  </script>
 </head>
 <body>
-  <div id="kandelo-root"></div>
-  <script type="module" src="./main.tsx"></script>
+  <a href="../../">Open Kandelo</a>
 </body>
 </html>

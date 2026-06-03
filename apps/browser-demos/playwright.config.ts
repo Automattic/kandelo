@@ -8,6 +8,7 @@ export default defineConfig({
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
   timeout: 120_000,
+  workers: process.env.CI ? 1 : undefined,
   use: {
     baseURL: "http://localhost:5198",
   },

@@ -168,7 +168,7 @@ function isUrlLikeImageRef(value: string | null | undefined): boolean {
 }
 
 function currentHref(): string {
-  return typeof window === "undefined" ? "https://kandelo.local/pages/kandelo/" : window.location.href;
+  return typeof window === "undefined" ? "https://kandelo.local/" : window.location.href;
 }
 
 function currentSearch(): string {

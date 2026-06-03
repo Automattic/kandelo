@@ -68,7 +68,7 @@ The layout is designed so later CI path filters can make conservative, explainab
 |--------------|------------------------|
 | `crates/kernel/**`, `libc/glue/**`, `host/src/kernel*.ts`, `host/src/worker*.ts` | Kernel/host build, host vitest, conformance smoke tests, affected browser checks |
 | `host/src/node-*.ts` | Node host checks and host parity tests |
-| `host/src/browser-*.ts`, `host/src/worker-adapter-browser.ts` | Browser host checks, browser demos/tests, host parity tests |
+| `host/src/browser-*.ts`, `host/src/worker-adapter-browser.ts` | Browser host checks, browser UI/tests, host parity tests |
 | `host/src/vfs/**`, `host/src/networking/**`, `host/src/framebuffer/**` | Shared host/runtime checks plus affected package/browser checks |
 | `packages/registry/<name>/**` | That package build and `packages/registry/<name>/test/**` |
 | `packages/sets/**`, `tools/xtask/**`, `docs/package-management*.md` | Package-system automation checks |

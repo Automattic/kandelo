@@ -212,7 +212,7 @@ wasm32posix-cc examples/hello.c -o hello.wasm
 npx tsx examples/run-example.ts hello
 ```
 
-### 4. Try the browser demos
+### 4. Try Kandelo in the browser
 
 ```bash
 # Build VFS images + start dev server (run.sh handles dependencies)
@@ -224,11 +224,11 @@ npm install
 npx vite --port 5198
 ```
 
-Open `http://localhost:5198` to try the browser demos: C programs, an interactive shell, Node.js with in-browser `npm install`, nginx, PHP, MariaDB, WordPress, a LAMP stack, DOOM, and the Kandelo UI gallery. The network lab at `http://localhost:5198/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
+Open `http://localhost:5198` to use the Kandelo UI. The network lab at `http://localhost:5198/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 
 Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
 
-Browser demos use pre-built **VFS images** — binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
+The browser UI uses pre-built **VFS images** - binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
 
 ## Porting Software
 
@@ -295,7 +295,7 @@ sdk/
   src/bin/           CLI tool wrappers for LLVM cross-compilation
   src/lib/           Toolchain discovery, compiler flags, arg parsing
 apps/
-  browser-demos/     Vite demo/UI app that consumes the browser host runtime
+  browser-demos/     Vite Kandelo UI app that consumes the browser host runtime
 web-libs/
   kandelo-session/   Reusable Kandelo session/UI integration contracts
 packages/
@@ -341,8 +341,8 @@ docs/
 | [Architecture](docs/architecture.md) | Kernel design, syscall flow, multi-process model, memory layout |
 | [Repository Organization](docs/repository-organization.md) | Top-level ownership boundaries and CI-oriented path categories |
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
-| [Porting Guide](docs/porting-guide.md) | How to port software, create Node.js and browser demos |
-| [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |
+| [Porting Guide](docs/porting-guide.md) | How to port software and create package builds |
+| [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, and limitations |
 | [Shareable Computer URLs](docs/plans/2026-05-11-shareable-computer-url-design.md) | Boot descriptor design for sharing computer topology, signed bases/packages, mounts, and overlays |
 | [Package Management](docs/package-management.md) | `packages/registry/<name>/package.toml` schema, resolver, release archives |
 | [Package Sources](docs/package-sources.md) | Reusable workflows and scripts for third-party Kandelo package repositories |

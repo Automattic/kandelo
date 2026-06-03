@@ -17,5 +17,5 @@
       "@host/*": ["../../host/src/*"]
     }
   },
-  "include": ["lib", "pages", "main.ts"]
+  "include": ["lib", "pages"]
 }

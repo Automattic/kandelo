@@ -18,7 +18,7 @@ export const PRESET_LIBRARY: Preset[] = [
   {
     id: "shell",
     title: "Bare shell",
-    summary: "Bash, dash, coreutils, and the full utility set from the shell demo.",
+    summary: "Bash, dash, coreutils, and the full utility set from the shell image.",
     base: SHELL_BASE,
     packages: [
       "bash@local",

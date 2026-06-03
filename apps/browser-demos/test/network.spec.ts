@@ -5,7 +5,9 @@ const appUrl = (path: string): string => {
   return baseUrl ? new URL(path, baseUrl).href : path;
 };
 
-test("@slow Kandelo network lab runs UDP, TCP, and curl across local machines", async ({ page }) => {
+test("Kandelo network lab runs UDP, TCP, and curl across local machines", async ({ page }) => {
+  test.setTimeout(180_000);
+
   const runtimeErrors: string[] = [];
   page.on("console", (msg) => {
     if (msg.type() === "error") runtimeErrors.push(`${msg.type()}: ${msg.text()}`);

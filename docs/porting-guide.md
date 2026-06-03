@@ -1,13 +1,13 @@
 # Porting Guide
 
-This guide covers how to port C/C++ software to Kandelo, create Node.js runners, and build browser demos.
+This guide covers how to port C/C++ software to Kandelo, create Node.js runners, and prepare browser-facing package images.
 
 ## Overview
 
 The general workflow is:
 
 1. Cross-compile the software using the SDK (see [SDK Guide](sdk-guide.md))
-2. Create a runner script (Node.js or browser) that loads the kernel and program
+2. Create a runner script or package image that loads the kernel and program
 3. Handle any platform-specific needs (filesystem setup, fork/exec support, networking)
 
 ## Porting C Software
@@ -66,7 +66,7 @@ npx tsx examples/run-example.ts /path/to/program.wasm [args]
 
 ## Shipping runtime files: the lazy-archive pattern
 
-Many ported programs depend on a tree of read-only runtime files at execution time — vim's syntax and indent scripts, NetHack's `nhdat`, Python's stdlib, ncurses terminfo, and so on. **Use the lazy-archive pattern to deliver them.** It is the canonical approach for the browser shell demo and any other browser page that needs on-demand runtime files.
+Many ported programs depend on a tree of read-only runtime files at execution time - vim's syntax and indent scripts, NetHack's `nhdat`, Python's stdlib, ncurses terminfo, and so on. **Use the lazy-archive pattern to deliver them.** It is the canonical approach for Kandelo browser UI images and retained browser labs that need on-demand runtime files.
 
 Two alternatives exist and should be avoided unless you have a specific reason:
 
@@ -108,7 +108,7 @@ function populateVimArchive(fs: MemoryFileSystem): number {
 }
 ```
 
-The call creates `/usr/bin/vim` and `/usr/share/vim/vim91/...` as stubs inside the shell VFS. The demo's `main.ts` does **not** need a matching `registerLazyFiles` entry for the binary — the stub from the archive is enough.
+The call creates `/usr/bin/vim` and `/usr/share/vim/vim91/...` as stubs inside the shell VFS. The Kandelo UI does **not** need a matching `registerLazyFiles` entry for the binary - the stub from the archive is enough.
 
 ### When you also want `/bin/<program>` symlinks
 
@@ -122,7 +122,7 @@ Vim:
 - `packages/registry/vim/bundle-runtime.sh` — minimal runtime tree.
 - `images/vfs/scripts/build-vim-zip.sh` — stage + zip.
 - `images/vfs/scripts/build-shell-vfs-image.ts` — `populateVimArchive()`.
-- `apps/browser-demos/pages/shell/main.ts` — `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)`.
+- `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts` - rewrites lazy archive URLs when loading image-backed gallery entries.
 
 Follow the same layout for new ports; reviewers will expect it.
 
@@ -215,13 +215,13 @@ kernelWorker.unregisterProcess(pid)
 kernelWorker.deactivateProcess(pid)
 ```
 
-## Creating Browser Demos
+## Browser UI Integration
 
-Browser demos use `BrowserKernel` from `host/src/browser-kernel-host.ts`, which handles the browser kernel worker, process lifecycle, and filesystem in a browser-friendly API. Demo pages live under `apps/browser-demos/`, but the host runtime itself is maintained under `host/src/` beside the Node.js host.
+The browser UI uses `BrowserKernel` from `host/src/browser-kernel-host.ts`, which handles the browser kernel worker, process lifecycle, and filesystem in a browser-friendly API. The product UI lives under `apps/browser-demos/pages/kandelo/`, retained browser labs live under `apps/browser-demos/pages/`, and the host runtime itself is maintained under `host/src/` beside the Node.js host.
 
-### Project setup
+### Lab page setup
 
-Browser demos live in `apps/browser-demos/pages/<name>/`. Each page has:
+Standalone browser lab pages, such as the Network lab, live in `apps/browser-demos/pages/<name>/`. Each page has:
 
 ```
 pages/<name>/
@@ -242,9 +242,9 @@ build: {
 },
 ```
 
-Add a nav link in each `index.html` (or use the existing nav bar pattern).
+Do not add standalone package demos here by default. New browser-facing software should normally be exposed through a Kandelo UI gallery preset or software manifest.
 
-### Minimal browser demo
+### Minimal browser lab
 
 **index.html**:
 ```html
@@ -447,7 +447,7 @@ The service worker (`public/service-worker.js`) handles:
 - Routing requests matching `appPrefix` to the kernel via MessagePort
 - Cookie jar for session persistence (WordPress)
 
-### Thread support in browser demos
+### Thread support in browser UI and labs
 
 For programs that create threads (MariaDB, Redis), pre-compile the thread module on the main thread to get optimized code:
 
@@ -465,7 +465,7 @@ const kernel = new BrowserKernel({
 });
 ```
 
-### Interactive terminal demos
+### Interactive terminal surfaces
 
 For shell or REPL demos, use `PtyTerminal` with xterm.js:
 
@@ -483,27 +483,27 @@ terminal.mount(document.getElementById("terminal"));
 const exitCode = await kernel.spawn(programBytes, ["sh"], { pty: true });
 ```
 
-## Demo Patterns
+## Browser UI Patterns
 
 ### Pattern: Simple program runner
 
-Fetch wasm, spawn, display output. See `apps/browser-demos/main.ts`.
+Fetch wasm, spawn, display output. For the Kandelo UI, wire this through a gallery preset and `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`.
 
 ### Pattern: Server with HTTP bridge
 
-nginx, PHP-FPM, WordPress. Service worker intercepts requests, connection pump bridges to kernel. See `apps/browser-demos/pages/nginx/main.ts`.
+nginx, PHP-FPM, WordPress. Service worker intercepts requests, connection pump bridges to kernel. See `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`.
 
 ### Pattern: Database with wire protocol client
 
-MariaDB, Redis. Kernel spawns server process, main-thread client connects via pipe operations. See `apps/browser-demos/pages/redis/main.ts`, `lib/redis-client.ts`, `lib/mysql-client.ts`.
+MariaDB, Redis. Kernel spawns server process, main-thread client connects via pipe operations. See `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`, `apps/browser-demos/lib/redis-client.ts`, and `apps/browser-demos/lib/mysql-client.ts`.
 
 ### Pattern: Interactive shell/REPL
 
-PTY allocation, xterm.js terminal, incremental stdin. See `apps/browser-demos/pages/shell/main.ts`, `apps/browser-demos/pages/python/main.ts`.
+PTY allocation, xterm.js terminal, incremental stdin. See `apps/browser-demos/pages/kandelo/panes/Shell.tsx` and `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`.
 
 ### Pattern: Full stack (LAMP)
 
-Multiple processes (MariaDB + nginx + PHP-FPM + WordPress), database bootstrap, filesystem pre-population, HTTP bridge. See `apps/browser-demos/pages/lamp/main.ts`.
+Multiple processes (MariaDB + nginx + PHP-FPM + WordPress), database bootstrap, filesystem pre-population, HTTP bridge. See `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`.
 
 ## Adding a new package to the registry
 

@@ -1,6 +1,6 @@
 # Browser Support
 
-> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**. See [`CLAUDE.md`](../CLAUDE.md#two-hosts-browser-and-nodejs--dual-host-parity-is-load-bearing) for the hard requirements. PR #388 (brk-base) and PR #410 (worker exit message) both shipped one-sided fixes that left the browser demo broken for users; those are the failure modes this rule exists to prevent.
+> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**. See [`CLAUDE.md`](../CLAUDE.md#two-hosts-browser-and-nodejs--dual-host-parity-is-load-bearing) for the hard requirements. PR #388 (brk-base) and PR #410 (worker exit message) both shipped one-sided fixes that left browser behavior broken for users; those are the failure modes this rule exists to prevent.
 
 ## Overview
 
@@ -289,7 +289,7 @@ Each build script requires the corresponding software to be compiled first (e.g.
 1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
 2. Create `images/vfs/scripts/build-<name>-vfs-image.sh` — shell wrapper that runs the TypeScript script
 3. If the image is consumed by Kandelo, write `/etc/kandelo/demo.json` via `writeKandeloDemoConfig()`
-4. Update the demo's `main.ts` to fetch the `.vfs.zst` file and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
+4. If the image is consumed by the Kandelo UI, expose it through a gallery manifest, preset, or direct `vfs` URL so the UI can fetch the `.vfs.zst` image and use `MemoryFileSystem.fromImage()` (which auto-decompresses)
 5. Add a build target in `run.sh`
 
 The shared helpers in `vfs-image-helpers.ts` provide:

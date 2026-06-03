@@ -403,23 +403,10 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
-        nginx: path.resolve(__dirname, "pages/nginx/index.html"),
-        php: path.resolve(__dirname, "pages/php/index.html"),
-        "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
-        mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
-        wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
-        lamp: path.resolve(__dirname, "pages/lamp/index.html"),
-        shell: path.resolve(__dirname, "pages/shell/index.html"),
-        node: path.resolve(__dirname, "pages/node/index.html"),
-        "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
-        "git-test": path.resolve(__dirname, "pages/git-test/index.html"),
-        "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
-        benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
-        doom: path.resolve(__dirname, "pages/doom/index.html"),
         kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
         network: path.resolve(__dirname, "pages/network/index.html"),
-        // The perl, python, ruby, erlang, texlive, and redis pages
-        // are not part of this static build while their slow builds
+        // The perl, python, ruby, erlang, texlive, and redis package entries
+        // are not bundled into this static build while their slow builds
         // live in kandelo-software. The root gallery fetches that
         // repo's gallery.json and index.toml at runtime to expose
         // available third-party VFS builds without adding page inputs.

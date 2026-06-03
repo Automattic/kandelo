@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy browser demos to GitHub Pages.
+# Deploy the Kandelo browser UI to GitHub Pages.
 #
 # Usage:
 #   bash scripts/deploy-gh-pages.sh [repo-name]
@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BROWSER_DIR="$ROOT_DIR/apps/browser-demos"
 
-echo "=== Building browser demos for /${REPO_NAME}/ ==="
+echo "=== Building Kandelo browser UI for /${REPO_NAME}/ ==="
 echo "    CORS proxy: ${CORS_PROXY}"
 
 cd "$BROWSER_DIR"
@@ -71,7 +71,7 @@ cd "$WORKTREE_DIR"
 git rm -rf . 2>/dev/null || true
 cp -r "$DEPLOY_DIR/." .
 git add -A
-git commit -m "Deploy browser demos to GitHub Pages"
+git commit -m "Deploy Kandelo browser UI to GitHub Pages"
 
 echo ""
 echo "=== gh-pages branch updated ==="
