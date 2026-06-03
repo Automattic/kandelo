@@ -1,6 +1,7 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { ABI_VERSION } from "../../host/src/generated/abi";
 import kernelWasmUrl from "@kernel-wasm?url";
+import { corsProxyFetchUrl } from "./lib/cors-proxy";
 
 const output = document.getElementById("output") as HTMLPreElement;
 const programSelect = document.getElementById("program") as HTMLSelectElement;
@@ -155,7 +156,7 @@ async function fetchTextWithDevProxy(url: string): Promise<string> {
       location.hostname === "[::1]";
     if (!isDevHost) throw error;
 
-    const proxied = `/cors-proxy?url=${encodeURIComponent(url)}`;
+    const proxied = corsProxyFetchUrl(url);
     const response = await fetch(proxied, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);

@@ -5,10 +5,11 @@ import { execSync } from "child_process";
 import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { tryResolveBinary } from "../../host/src/binary-resolver";
+import { resolveCorsProxyUrl } from "./lib/cors-proxy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
-const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
+const mainCorsProxyLocalPort = 5401;
 
 const crossOriginIsolationHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -345,15 +346,15 @@ function corsProxyPlugin(): Plugin {
 /**
  * Vite plugin: inject CORS proxy URL into service-worker.js during build.
  * Replaces the __CORS_PROXY_URL__ placeholder with the value from
- * VITE_CORS_PROXY_URL env var. In dev mode this is a no-op (the dev server's
- * cors-proxy middleware handles it instead).
+ * VITE_CORS_PROXY_URL env var, defaulting to the main CORS proxy used by
+ * production.
  */
 function injectCorsProxyUrl(): Plugin {
   let corsProxyUrl = "";
   return {
     name: "inject-cors-proxy-url",
     configResolved() {
-      corsProxyUrl = process.env.VITE_CORS_PROXY_URL ?? DEFAULT_CORS_PROXY_URL;
+      corsProxyUrl = resolveCorsProxyUrl(process.env.VITE_CORS_PROXY_URL);
     },
     writeBundle(_, bundle) {
       // service-worker.js is in public/ and gets copied as-is to dist/
@@ -385,12 +386,18 @@ export default defineConfig({
     injectCorsProxyUrl(),
   ],
   server: {
+    host: "127.0.0.1",
+    port: mainCorsProxyLocalPort,
+    strictPort: true,
     headers: crossOriginIsolationHeaders,
     fs: {
       allow: [repoRoot],
     },
   },
   preview: {
+    host: "127.0.0.1",
+    port: mainCorsProxyLocalPort,
+    strictPort: true,
     headers: crossOriginIsolationHeaders,
   },
   build: {

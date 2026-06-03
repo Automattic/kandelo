@@ -6,6 +6,7 @@ import {
   initServiceWorkerBridge,
 } from "../../../lib/init/service-worker-bridge";
 import { HttpBridgeHost } from "../../../lib/http-bridge";
+import { corsProxyFetchUrl } from "../../../lib/cors-proxy";
 import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
@@ -1273,7 +1274,7 @@ async function stageConfiguredAssets(
   for (const asset of assets) {
     tick(`staging ${asset.path}...`);
     const url = asset.devCorsProxy && import.meta.env.DEV
-      ? `/cors-proxy?url=${encodeURIComponent(asset.url)}`
+      ? corsProxyFetchUrl(asset.url)
       : asset.url;
     const buffer: ArrayBuffer = await fetch(url).then(failOn(asset.path)).then((r) => r.arrayBuffer());
     const bytes = new Uint8Array(buffer);
@@ -1860,7 +1861,7 @@ async function fetchTextWithDevProxy(url: string): Promise<string> {
       location.hostname === "[::1]";
     if (!isDevHost) throw error;
 
-    const response = await fetch(`/cors-proxy?url=${encodeURIComponent(url)}`, {
+    const response = await fetch(corsProxyFetchUrl(url), {
       cache: "no-store",
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
@@ -1880,7 +1881,7 @@ async function fetchBytesWithDevProxy(url: string): Promise<Uint8Array> {
       location.hostname === "[::1]";
     if (!isDevHost) throw error;
 
-    const response = await fetch(`/cors-proxy?url=${encodeURIComponent(url)}`, {
+    const response = await fetch(corsProxyFetchUrl(url), {
       cache: "no-store",
     });
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);

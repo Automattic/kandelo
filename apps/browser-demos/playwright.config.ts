@@ -3,17 +3,18 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const port = 5401;
 
 export default defineConfig({
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
   timeout: 120_000,
   use: {
-    baseURL: "http://localhost:5198",
+    baseURL: `http://127.0.0.1:${port}`,
   },
   webServer: {
-    command: `npx vite --config ${join(__dirname, "vite.config.ts")} --port 5198`,
-    port: 5198,
+    command: `npx vite --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,
+    port,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },

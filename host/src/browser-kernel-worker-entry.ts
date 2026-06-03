@@ -97,8 +97,14 @@ import type {
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
 
+const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
 const PAGE_SIZE = 65536;
 const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
+
+function devCorsProxyUrl(): string {
+  const envUrl = import.meta.env.VITE_CORS_PROXY_URL as string | undefined;
+  return envUrl?.trim() || DEFAULT_CORS_PROXY_URL;
+}
 
 // State
 let kernelWorker: CentralizedKernelWorker;
@@ -394,9 +400,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Create TLS-MITM network backend. Programs do real TLS handshakes via
   // their compiled-in OpenSSL; the backend terminates TLS locally, makes
   // real fetch() requests, and re-encrypts the responses.
-  // In dev mode, use the vite CORS proxy middleware for cross-origin fetches.
-  // In production, the service worker handles CORS proxying transparently.
-  const devCorsProxy = import.meta.env.DEV ? "/cors-proxy?url=" : undefined;
+  // In dev mode, use the main CORS proxy directly so local runs exercise the
+  // same proxy backend as production. In production, the service worker handles
+  // CORS proxying transparently.
+  const devCorsProxy = import.meta.env.DEV ? devCorsProxyUrl() : undefined;
   const tlsBackend = new TlsNetworkBackend({
     corsProxyUrl: devCorsProxy,
     dnsAliases: msg.config.dnsAliases,
