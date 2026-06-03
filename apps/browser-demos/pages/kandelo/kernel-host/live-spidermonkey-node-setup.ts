@@ -291,13 +291,12 @@ async function boot(host: LiveKernelHost, descriptor: BootDescriptor): Promise<v
       env: SHELL_ENV,
       cwd: "/work",
     });
-    host.setStatus("running");
-
     tick("running SpiderMonkey Node smoke...");
-    void host.runShellCommand(SM_NODE_COMMAND).catch((err) => {
+    await host.runShellCommand(SM_NODE_COMMAND).catch((err) => {
       tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     tick("ready");
+    host.setStatus("running");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     host.pushDmesg({ t: (t += 50), level: "err", facility: "kandelo", msg: message });
