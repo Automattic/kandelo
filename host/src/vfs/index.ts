@@ -5,6 +5,13 @@ export type { LazyFileEntry, VfsImageMetadata, VfsImageOptions } from "./memory-
 export { loadVfsImage } from "./load-image";
 export { DeviceFileSystem } from "./device-fs";
 export { OpfsFileSystem } from "./opfs";
+export { OpfsVfsImageStore } from "./opfs-image-store";
+export type {
+  OpfsVfsImageLoadOptions,
+  OpfsVfsImageManifest,
+  OpfsVfsImageSaveOptions,
+  OpfsVfsImageStoreOptions,
+} from "./opfs-image-store";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
 export type { FileSystemBackend, TimeProvider, MountConfig, DirEntry } from "./types";
