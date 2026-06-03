@@ -77,7 +77,6 @@ interface RunOptions {
   argv: string[];
   stdin?: string;
   timeoutMs?: number;
-  reportExitStatus?: boolean;
 }
 
 interface RunResult {
@@ -298,9 +297,7 @@ async function runProgram(
   try {
     const exitCode = await exitPromise;
     clearTimeout(timer);
-    if (options.reportExitStatus !== false) {
-      machine(options.machine, exitCode === 0 ? "passed" : `failed ${exitCode}`);
-    }
+    machine(options.machine, exitCode === 0 ? "passed" : `failed ${exitCode}`);
     return { exitCode, stdout, stderr };
   } finally {
     clearTimeout(timer);
@@ -332,7 +329,6 @@ async function runUdp(network: LocalVirtualNetwork, artifacts: ArtifactSet): Pro
     programBytes: artifacts.nc,
     argv: serverArgv,
     stdin: "",
-    reportExitStatus: false,
   });
   await wait(100);
   const client = runProgram(network, artifacts, {
@@ -344,13 +340,13 @@ async function runUdp(network: LocalVirtualNetwork, artifacts: ArtifactSet): Pro
     stdin: "hello from beta over udp\n",
   });
   const [serverResult, clientResult] = await Promise.all([server, client]);
-  const received = serverResult.stdout.includes("hello from beta over udp");
-  const ok = clientResult.exitCode === 0 && received;
-  machine("alpha", ok ? "passed" : `failed ${serverResult.exitCode}`);
+  const ok = serverResult.exitCode === 0 &&
+    clientResult.exitCode === 0 &&
+    serverResult.stdout.includes("hello from beta over udp");
   step("udp", ok ? "passed" : "failed");
   result("udp", "UDP datagram", ok, ok
     ? "alpha received beta's datagram through POSIX recv/read on a UDP socket."
-    : `server=${serverResult.exitCode}, client=${clientResult.exitCode}, received=${received}`);
+    : `server=${serverResult.exitCode}, client=${clientResult.exitCode}`);
   return ok;
 }
 
@@ -368,7 +364,6 @@ async function runTcp(network: LocalVirtualNetwork, artifacts: ArtifactSet): Pro
     programBytes: artifacts.nc,
     argv: serverArgv,
     stdin: "",
-    reportExitStatus: false,
   });
   await wait(100);
   const client = runProgram(network, artifacts, {
@@ -380,13 +375,13 @@ async function runTcp(network: LocalVirtualNetwork, artifacts: ArtifactSet): Pro
     stdin: "hello from beta over tcp\n",
   });
   const [serverResult, clientResult] = await Promise.all([server, client]);
-  const received = serverResult.stdout.includes("hello from beta over tcp");
-  const ok = clientResult.exitCode === 0 && received;
-  machine("alpha", ok ? "passed" : `failed ${serverResult.exitCode}`);
+  const ok = serverResult.exitCode === 0 &&
+    clientResult.exitCode === 0 &&
+    serverResult.stdout.includes("hello from beta over tcp");
   step("tcp", ok ? "passed" : "failed");
   result("tcp", "TCP stream", ok, ok
     ? "alpha accepted beta's TCP connection and received stream data."
-    : `server=${serverResult.exitCode}, client=${clientResult.exitCode}, received=${received}`);
+    : `server=${serverResult.exitCode}, client=${clientResult.exitCode}`);
   return ok;
 }
 
@@ -415,7 +410,6 @@ async function runCurl(network: LocalVirtualNetwork, artifacts: ArtifactSet): Pr
     argv: serverArgv,
     stdin: response,
     timeoutMs: 20_000,
-    reportExitStatus: false,
   });
   await wait(100);
   const client = runProgram(network, artifacts, {
@@ -427,14 +421,13 @@ async function runCurl(network: LocalVirtualNetwork, artifacts: ArtifactSet): Pr
     timeoutMs: 20_000,
   });
   const [serverResult, clientResult] = await Promise.all([server, client]);
-  const sawRequest = serverResult.stdout.includes("GET / HTTP/1.1");
-  const fetchedBody = clientResult.stdout.includes(body);
-  const ok = clientResult.exitCode === 0 && sawRequest && fetchedBody;
-  machine("alpha", ok ? "passed" : `failed ${serverResult.exitCode}`);
+  const ok = serverResult.exitCode === 0 &&
+    clientResult.exitCode === 0 &&
+    clientResult.stdout.includes(body);
   step("curl", ok ? "passed" : "failed");
   result("curl", "curl over TCP", ok, ok
     ? "gamma fetched alpha's HTTP response through curl over the virtual TCP backend."
-    : `server=${serverResult.exitCode}, curl=${clientResult.exitCode}, request=${sawRequest}, body=${fetchedBody}`);
+    : `server=${serverResult.exitCode}, curl=${clientResult.exitCode}`);
   return ok;
 }
 
