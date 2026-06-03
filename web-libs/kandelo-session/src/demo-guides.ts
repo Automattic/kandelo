@@ -140,7 +140,7 @@ export function nodeGuide(): DemoGuideConfig {
         action("install-cowsay", "Install cowsay", "Install cowsay with npm and run its package bin.", "terminal.run", nodeCowsayScript),
       ]),
       actionGroup("REPL", [
-        action("enter-repl", "Open REPL", "Start an interactive Node-compatible REPL.", "terminal.run", "node"),
+        action("enter-repl", "Open REPL", "Start an interactive Node-compatible REPL.", "terminal.write", "node\n"),
         action("repl-expression", "Send expr", "Send an expression to the current terminal.", "terminal.write", "process.version\n"),
       ]),
     ],

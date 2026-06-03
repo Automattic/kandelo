@@ -137,8 +137,8 @@ const SPIDERMONKEY_NODE_GUIDE: DemoGuideConfig = {
           id: "enter-repl",
           label: "Open REPL",
           description: "Start an interactive Node-compatible REPL.",
-          kind: "terminal.run",
-          payload: "node",
+          kind: "terminal.write",
+          payload: "node\n",
         },
         {
           id: "repl-expression",
