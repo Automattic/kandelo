@@ -156,7 +156,20 @@ The "Boot pattern" column reflects how the demo enters the kernel:
 - **dinit + spawn** — dinit boots the supervised services; the page spawns transient binaries (e.g. mysqltest) via `kernel.spawn()`.
 - **legacy spawn** — main thread restores a `MemoryFileSystem`, page calls `kernel.spawn(programBytes, argv)` for each binary.
 
-Run demos: `cd apps/browser-demos && npx vite --port 5198`
+Run the browser app: `cd apps/browser-demos && npm run dev`, then open
+`http://127.0.0.1:5401/`.
+
+Cross-origin browser fetches are routed through `public/service-worker.js`,
+which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
+with `VITE_CORS_PROXY_URL` when testing another proxy:
+
+```bash
+cd apps/browser-demos
+VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
+```
+
+Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
+prefixes receive percent-encoded targets.
 
 ## VFS Images
 

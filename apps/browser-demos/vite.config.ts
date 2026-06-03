@@ -2,7 +2,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { tryResolveBinary } from "../../host/src/binary-resolver";
 
@@ -16,6 +16,19 @@ const crossOriginIsolationHeaders = {
   "Cross-Origin-Embedder-Policy": "require-corp",
   "Service-Worker-Allowed": "/",
 };
+
+function resolveCorsProxyUrl(): string {
+  return process.env.VITE_CORS_PROXY_URL?.trim() || DEFAULT_CORS_PROXY_URL;
+}
+
+function serviceWorkerPathForBase(base: string): string {
+  const normalized = base.startsWith("/") ? base : `/${base}`;
+  return `${normalized.endsWith("/") ? normalized : `${normalized}/`}service-worker.js`;
+}
+
+function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): string {
+  return content.replace('"__CORS_PROXY_URL__"', JSON.stringify(corsProxyUrl));
+}
 
 /**
  * Vite plugin: resolve `@kernel-wasm` and `@rootfs-vfs` lazily.
@@ -221,23 +234,61 @@ function injectCoiServiceWorker(): Plugin {
 }
 
 /**
- * Vite plugin: inject CORS proxy URL into service-worker.js during build.
- * Replaces the __CORS_PROXY_URL__ placeholder with the value from
- * VITE_CORS_PROXY_URL env var, defaulting to the main proxy used in dev.
+ * Vite plugin: inject the service worker CORS proxy URL in dev, preview,
+ * and build. VITE_CORS_PROXY_URL can point at an alternate proxy; by default
+ * we use the main WordPress Playground proxy in every mode.
  */
 function injectCorsProxyUrl(): Plugin {
   let corsProxyUrl = "";
+  let base = "/";
+  const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
+
+  function serviceWorkerSource(): string {
+    return injectCorsProxyUrlPlaceholder(
+      fs.readFileSync(sourceSwPath, "utf-8"),
+      corsProxyUrl,
+    );
+  }
+
+  function attachMiddleware(
+    middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+  ): void {
+    const serviceWorkerPath = serviceWorkerPathForBase(base);
+    middlewares.use((req, res, next) => {
+      if (!req.url) {
+        next();
+        return;
+      }
+      const pathname = new URL(req.url, "http://localhost").pathname;
+      if (pathname !== serviceWorkerPath) {
+        next();
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.end(serviceWorkerSource());
+    });
+  }
+
   return {
     name: "inject-cors-proxy-url",
-    configResolved() {
-      corsProxyUrl = process.env.VITE_CORS_PROXY_URL?.trim() || DEFAULT_CORS_PROXY_URL;
+    configResolved(config) {
+      base = config.base;
+      corsProxyUrl = resolveCorsProxyUrl();
     },
-    writeBundle(_, bundle) {
+    configureServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+    writeBundle() {
       // service-worker.js is in public/ and gets copied as-is to dist/
       const swPath = path.resolve(__dirname, "dist", "service-worker.js");
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
-        content = content.replace("__CORS_PROXY_URL__", corsProxyUrl);
+        content = injectCorsProxyUrlPlaceholder(content, corsProxyUrl);
         fs.writeFileSync(swPath, content);
       }
     },

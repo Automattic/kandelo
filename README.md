@@ -221,10 +221,27 @@ npx tsx examples/run-example.ts hello
 # Or manually:
 cd apps/browser-demos
 npm install
-npx vite --port 5198
+npm run dev
 ```
 
-Open `http://localhost:5198` to use the Kandelo UI. The network lab at `http://localhost:5198/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
+Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
+
+The browser app routes cross-origin fetches through the service worker and
+defaults to the main WordPress Playground CORS proxy:
+`https://wordpress-playground-cors-proxy.net/?`. To test an alternate proxy in
+dev, preview, or production builds, set `VITE_CORS_PROXY_URL` before starting or
+building the browser app:
+
+```bash
+cd apps/browser-demos
+VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
+```
+
+Proxy prefixes ending in a bare `?` receive the raw target URL. Other prefix
+forms, such as `https://your-proxy.example/cors?url=`, receive a
+percent-encoded target URL. If you change the proxy while a service worker is
+already active, reload the page; clearing site data may be needed if the browser
+keeps an older service worker around.
 
 Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
 
