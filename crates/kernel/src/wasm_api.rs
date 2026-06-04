@@ -1351,6 +1351,35 @@ pub extern "C" fn kernel_set_brk_limit(pid: u32, brk_limit: usize) -> i32 {
     }
 }
 
+/// Reserve a host-owned dynamic control range in a process address space.
+/// Returns the byte address on success, or MAP_FAILED if the pid is missing
+/// or no suitably sized gap exists. The returned range is not a guest mmap
+/// mapping and cannot be released by munmap.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reserve_host_region(pid: u32, len: usize) -> usize {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.reserve_host_region(len)
+    } else {
+        wasm_posix_shared::mmap::MAP_FAILED
+    }
+}
+
+/// Reserve a host-owned dynamic control range at an exact address.
+/// Used by fork-from-pthread children to retain only the calling thread's
+/// copied TLS/fork-save/channel slot. Returns the byte address on success,
+/// or MAP_FAILED if the pid is missing or the range collides with guest
+/// brk/mmap state.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_reserve_host_region_at(pid: u32, addr: usize, len: usize) -> usize {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        proc.memory.reserve_host_region_at(addr, len)
+    } else {
+        wasm_posix_shared::mmap::MAP_FAILED
+    }
+}
+
 /// Set the working directory for a process (centralized mode).
 /// Called by host to set the initial cwd before the process starts.
 /// Returns 0 on success, -ESRCH if pid not found.

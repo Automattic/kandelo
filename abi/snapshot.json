@@ -183,6 +183,8 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_reserve_host_region",
+      "kernel_reserve_host_region_at",
       "kernel_set_cwd",
       "kernel_set_max_addr",
       "kernel_set_mmap_base",
@@ -1205,6 +1207,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_reserve_host_region",
+      "signature": "(i32,i64) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_reserve_host_region_at",
+      "signature": "(i32,i64,i64) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_reset_signal_mask",
       "signature": "(i32) -> (i32)"
     },
@@ -2134,7 +2146,7 @@
     "defaults": {
       "initial_pages": 17,
       "max_pages": 16384,
-      "thread_slots": 16
+      "thread_slots": 1024
     },
     "fork_save_buffer_size": 16384,
     "legacy": {

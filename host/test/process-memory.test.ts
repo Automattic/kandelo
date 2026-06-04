@@ -95,21 +95,20 @@ describe("process memory layout", () => {
     expect(layout.firstThreadSlotPage).toBe(layout.channelPage + CHANNEL_PAGES);
     expect(layout.firstThreadBasePage).toBe(layout.firstThreadSlotPage + 2);
     expect(layout.threadSlotCount).toBe(DEFAULT_PROCESS_THREAD_SLOTS);
-    expect(layout.threadArenaEndPage).toBe(
-      layout.firstThreadSlotPage + DEFAULT_PROCESS_THREAD_SLOTS * PAGES_PER_THREAD,
-    );
+    expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage);
     expect(layout.controlEnd).toBe(layout.threadArenaEndPage * WASM_PAGE_SIZE);
     expect(layout.brkBase).toBe(layout.controlEnd);
     expect(layout.mmapBase).toBe(layout.brkBase);
     expect(layout.brkLimit).toBe(layout.maxAddr);
   });
 
-  it("fails fast when maxPages cannot fit the fixed control slab", () => {
+  it("fails fast when maxPages cannot fit an explicitly preallocated thread slab", () => {
     expect(() => computeProcessMemoryLayout({
       ptrWidth: 4,
       heapBase: 0x00120000,
       minPages: 18,
       maxPages: 84,
+      preallocateThreadSlots: true,
     })).toThrow(/initial pages/);
   });
 
@@ -120,6 +119,7 @@ describe("process memory layout", () => {
       minPages: 18,
       maxPages: 256,
       threadSlots: 2,
+      preallocateThreadSlots: true,
     });
 
     expect(layout.initialPages).toBeLessThanOrEqual(256);
@@ -129,7 +129,7 @@ describe("process memory layout", () => {
     expect(layout.maxAddr).toBe(256 * WASM_PAGE_SIZE);
   });
 
-  it("can reserve no pthread slots for single-threaded declarations", () => {
+  it("can allow no pthread slots for single-threaded declarations", () => {
     const layout = computeProcessMemoryLayout({
       ptrWidth: 4,
       heapBase: 0x00120000,
@@ -143,7 +143,7 @@ describe("process memory layout", () => {
     expect(layout.controlEnd).toBe((layout.channelPage + CHANNEL_PAGES) * WASM_PAGE_SIZE);
   });
 
-  it("honors wasm-declared pthread slot reservation", () => {
+  it("honors wasm-declared pthread slot limit", () => {
     for (const [decl, expected] of [
       [PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT, 5],
       [0, 0],
@@ -159,9 +159,7 @@ describe("process memory layout", () => {
       });
 
       expect(layout.threadSlotCount).toBe(expected);
-      expect(layout.threadArenaEndPage).toBe(
-        layout.firstThreadSlotPage + expected * PAGES_PER_THREAD,
-      );
+      expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage);
     }
   });
 });

@@ -53,6 +53,8 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
+  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
+  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   SYSCALL_ARGS,
   type SyscallArgDesc,
 } from "./generated/abi";
@@ -480,11 +482,16 @@ type WaitPollResult =
  *   *thread's* channel — i.e. `thread_channelOffset - FORK_BUF_SIZE`.
  *   In the child's memory copy this offset holds the saved frames and globals
  *   the parent thread wrote during its wpk_fork unwind.
+ * - `slotStart`/`slotLen`: the dynamic pthread control reservation that
+ *   contains the caller's TLS, fork-save buffer, and channel. Fork children
+ *   retain this one slot and discard all other parent pthread reservations.
  */
 export interface ForkFromThreadContext {
   fnPtr: number;
   argPtr: number;
   forkBufAddr: number;
+  slotStart: number;
+  slotLen: number;
 }
 
 export interface ResolvedSpawnProgram {
@@ -5562,13 +5569,30 @@ export class CentralizedKernelWorker {
     // correctly.
     const threadKey = `${parentPid}:${channel.channelOffset}`;
     const threadCtx = this.threadForkContexts.get(threadKey);
+    const callerSlotStart =
+      channel.channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
+    const callerSlotLen = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
     const threadFork: ForkFromThreadContext | undefined = threadCtx
       ? {
           fnPtr: threadCtx.fnPtr,
           argPtr: threadCtx.argPtr,
           forkBufAddr: channel.channelOffset - FORK_BUF_SIZE,
+          slotStart: callerSlotStart,
+          slotLen: callerSlotLen,
         }
       : undefined;
+
+    if (threadFork) {
+      try {
+        this.reserveHostRegionAt(childPid, threadFork.slotStart, threadFork.slotLen);
+      } catch (err) {
+        this.removeFromKernelProcessTable(childPid);
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[kernel-worker] fork child slot reservation failed: ${message}`);
+        this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, 12);
+        return;
+      }
+    }
 
     // Call the async fork handler to spawn child Worker
     this.callbacks.onFork(parentPid, childPid, channel.memory, threadFork).then((childChannelOffsets) => {
@@ -7091,6 +7115,45 @@ export class CentralizedKernelWorker {
       return false;
     }
     return setMmapBaseFn(pid, this.toKernelPtr(mmapBase)) >= 0;
+  }
+
+  reserveHostRegion(pid: number, len: number): number {
+    const reserveHostRegionFn = this.kernelInstance!.exports.kernel_reserve_host_region as
+      ((pid: number, len: KernelPointer) => KernelPointer) | undefined;
+    if (!reserveHostRegionFn) {
+      throw new Error(
+        "Kernel export kernel_reserve_host_region is required for dynamic pthread control slots",
+      );
+    }
+    const addr = reserveHostRegionFn(pid, this.toKernelPtr(len));
+    const n = typeof addr === "bigint" ? Number(addr) : addr;
+    if (!Number.isSafeInteger(n) || n < 0 || (n >>> 0) === 0xffffffff) {
+      throw new Error(`failed to reserve ${len} bytes of pthread control memory for pid=${pid}`);
+    }
+    return n;
+  }
+
+  reserveHostRegionAt(pid: number, addr: number, len: number): number {
+    const reserveHostRegionAtFn = this.kernelInstance!.exports.kernel_reserve_host_region_at as
+      ((pid: number, addr: KernelPointer, len: KernelPointer) => KernelPointer) | undefined;
+    if (!reserveHostRegionAtFn) {
+      throw new Error(
+        "Kernel export kernel_reserve_host_region_at is required for fork-from-pthread control slots",
+      );
+    }
+    const reserved = reserveHostRegionAtFn(
+      pid,
+      this.toKernelPtr(addr),
+      this.toKernelPtr(len),
+    );
+    const n = typeof reserved === "bigint" ? Number(reserved) : reserved;
+    if (!Number.isSafeInteger(n) || n < 0 || (n >>> 0) === 0xffffffff || n !== addr) {
+      throw new Error(
+        `failed to reserve pthread control memory at 0x${addr.toString(16)} ` +
+          `for pid=${pid}`,
+      );
+    }
+    return n;
   }
 
   private highControlFloorForProcess(pid: number): number | null {
