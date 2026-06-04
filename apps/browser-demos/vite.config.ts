@@ -9,7 +9,7 @@ import { tryResolveBinary } from "../../host/src/binary-resolver";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
-const mainCorsProxyLocalPort = 5401;
+const preferredLocalPort = 5401;
 
 const crossOriginIsolationHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -17,8 +17,12 @@ const crossOriginIsolationHeaders = {
   "Service-Worker-Allowed": "/",
 };
 
-function resolveCorsProxyUrl(): string {
-  return process.env.VITE_CORS_PROXY_URL?.trim() || DEFAULT_CORS_PROXY_URL;
+function configuredCorsProxyUrl(): string | undefined {
+  return process.env.VITE_CORS_PROXY_URL?.trim() || undefined;
+}
+
+function buildCorsProxyUrl(): string {
+  return configuredCorsProxyUrl() || DEFAULT_CORS_PROXY_URL;
 }
 
 function serviceWorkerPathForBase(base: string): string {
@@ -29,6 +33,10 @@ function serviceWorkerPathForBase(base: string): string {
 function devCorsProxyPathForBase(base: string): string {
   const normalized = base.startsWith("/") ? base : `/${base}`;
   return `${normalized.endsWith("/") ? normalized : `${normalized}/`}__kandelo_cors_proxy`;
+}
+
+function devCorsProxyFetchUrlForBase(base: string): string {
+  return `${devCorsProxyPathForBase(base)}?url=`;
 }
 
 function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): string {
@@ -239,19 +247,21 @@ function injectCoiServiceWorker(): Plugin {
 }
 
 /**
- * Vite plugin: inject the service worker CORS proxy URL in dev, preview,
- * and build. VITE_CORS_PROXY_URL can point at an alternate proxy; by default
- * we use the main WordPress Playground proxy in every mode.
+ * Vite plugin: inject the service worker CORS proxy URL. Local dev/preview
+ * uses the Vite same-origin proxy by default so the service worker can read
+ * the response from whichever port Vite selected. Production builds use the
+ * configured external proxy unless VITE_CORS_PROXY_URL overrides it.
  */
 function injectCorsProxyUrl(): Plugin {
-  let corsProxyUrl = "";
+  let servedCorsProxyUrl = "";
+  let outputCorsProxyUrl = "";
   let base = "/";
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
   function serviceWorkerSource(): string {
     return injectCorsProxyUrlPlaceholder(
       fs.readFileSync(sourceSwPath, "utf-8"),
-      corsProxyUrl,
+      servedCorsProxyUrl,
     );
   }
 
@@ -280,7 +290,8 @@ function injectCorsProxyUrl(): Plugin {
     name: "inject-cors-proxy-url",
     configResolved(config) {
       base = config.base;
-      corsProxyUrl = resolveCorsProxyUrl();
+      servedCorsProxyUrl = configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base);
+      outputCorsProxyUrl = buildCorsProxyUrl();
     },
     configureServer(server) {
       attachMiddleware(server.middlewares);
@@ -293,7 +304,7 @@ function injectCorsProxyUrl(): Plugin {
       const swPath = path.resolve(__dirname, "dist", "service-worker.js");
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
-        content = injectCorsProxyUrlPlaceholder(content, corsProxyUrl);
+        content = injectCorsProxyUrlPlaceholder(content, outputCorsProxyUrl);
         fs.writeFileSync(swPath, content);
       }
     },
@@ -403,8 +414,7 @@ export default defineConfig({
   ],
   server: {
     host: "127.0.0.1",
-    port: mainCorsProxyLocalPort,
-    strictPort: true,
+    port: preferredLocalPort,
     headers: crossOriginIsolationHeaders,
     fs: {
       allow: [repoRoot],
@@ -412,8 +422,7 @@ export default defineConfig({
   },
   preview: {
     host: "127.0.0.1",
-    port: mainCorsProxyLocalPort,
-    strictPort: true,
+    port: preferredLocalPort,
     headers: crossOriginIsolationHeaders,
   },
   build: {
