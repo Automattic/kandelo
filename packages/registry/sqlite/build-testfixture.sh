@@ -20,6 +20,13 @@ SQLITE_SRC="$SCRIPT_DIR/sqlite-src"
 SQLITE_FULL="$SCRIPT_DIR/sqlite-full-src"
 ZLIB_INSTALL="$SCRIPT_DIR/../zlib/zlib-install"
 BUILD_DIR="$SCRIPT_DIR/testfixture-build"
+SQLITE_VERSION="${SQLITE_VERSION:-3.49.1}"
+
+sqlite_packed_version() {
+    local major minor patch
+    IFS=. read -r major minor patch _ <<<"$SQLITE_VERSION"
+    printf "%d%02d%02d00" "$major" "$minor" "${patch:-0}"
+}
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -38,11 +45,23 @@ if [ ! -f "$SQLITE_SRC/sqlite3.c" ]; then
 fi
 
 if [ ! -d "$SQLITE_FULL/src" ]; then
-    echo "ERROR: Full SQLite source not found at $SQLITE_FULL" >&2
-    echo "Download with:" >&2
-    echo "  curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL https://www.sqlite.org/2025/sqlite-src-3490100.zip -o /tmp/sqlite-full.zip" >&2
-    echo "  unzip -q /tmp/sqlite-full.zip -d /tmp && mv /tmp/sqlite-src-3490100 $SQLITE_FULL" >&2
-    exit 1
+    SQLITE_PACKED="$(sqlite_packed_version)"
+    SQLITE_FULL_SOURCE_URL="${SQLITE_FULL_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-src-${SQLITE_PACKED}.zip}"
+    echo "==> Downloading full SQLite source for upstream tests..."
+    TMP_ZIP="/tmp/sqlite-full-${SQLITE_PACKED}.zip"
+    TMP_DIR="/tmp/sqlite-full-${SQLITE_PACKED}"
+    rm -rf "$TMP_DIR"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL \
+        "$SQLITE_FULL_SOURCE_URL" -o "$TMP_ZIP"
+    unzip -q "$TMP_ZIP" -d "$TMP_DIR"
+    inner="$(find "$TMP_DIR" -mindepth 1 -maxdepth 1 -type d -name 'sqlite-src-*' | head -1)"
+    if [ -z "$inner" ]; then
+        echo "ERROR: could not find sqlite-src-* directory in $TMP_ZIP" >&2
+        exit 1
+    fi
+    rm -rf "$SQLITE_FULL"
+    mv "$inner" "$SQLITE_FULL"
+    rm -rf "$TMP_DIR" "$TMP_ZIP"
 fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
@@ -73,10 +92,12 @@ CFLAGS=(
     -DSQLITE_TEST=1
     -DSQLITE_CRASH_TEST=1
     -DSQLITE_CORE
-    -DSQLITE_THREADSAFE=0
+    -DSQLITE_THREADSAFE=1
     -DSQLITE_NO_SYNC=1
+    -DSQLITE_ENABLE_SETLK_TIMEOUT=2
+    -DHAVE_PREAD=1
+    -DHAVE_PWRITE=1
     -DSQLITE_OMIT_LOAD_EXTENSION
-    -DSQLITE_OMIT_WAL
     -DSQLITE_ENABLE_FTS3
     -DSQLITE_ENABLE_FTS3_PARENTHESIS
     -DSQLITE_ENABLE_FTS4
@@ -91,7 +112,6 @@ CFLAGS=(
     -DSQLITE_ENABLE_MATH_FUNCTIONS
     -DSQLITE_ENABLE_COLUMN_METADATA
     -DSQLITE_ENABLE_STAT4
-    -DSQLITE_ENABLE_UPDATE_DELETE_LIMIT
     -DSQLITE_ENABLE_DESERIALIZE
     -DSQLITE_CKSUMVFS_STATIC
     -DSQLITE_STATIC_RANDOMJSON
@@ -113,7 +133,7 @@ CFLAGS=(
     -I"$ZLIB_INSTALL/include"
 )
 
-# TESTSRC — test C files (excluding test_syscall.c and test_thread.c)
+# TESTSRC — test C files (excluding test_thread.c)
 TESTSRC_FILES=(
     "$SQLITE_FULL/src/test1.c"
     "$SQLITE_FULL/src/test2.c"
@@ -149,7 +169,7 @@ TESTSRC_FILES=(
     "$SQLITE_FULL/src/test_rtree.c"
     "$SQLITE_FULL/src/test_schema.c"
     "$SQLITE_FULL/src/test_superlock.c"
-    # test_syscall.c — excluded, overrides VFS syscalls
+    "$SQLITE_FULL/src/test_syscall.c"
     "$SQLITE_FULL/src/test_tclsh.c"
     "$SQLITE_FULL/src/test_tclvar.c"
     # test_thread.c — excluded, requires pthreads
