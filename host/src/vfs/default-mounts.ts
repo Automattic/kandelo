@@ -12,7 +12,11 @@
  */
 
 import type { MountConfig } from "./types";
+import { OPEN_FLAGS } from "../generated/abi";
 import { MemoryFileSystem } from "./memory-fs";
+
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 export interface MountSpec {
   /** Absolute VFS mount point (e.g., "/etc"). No trailing slash except "/". */
@@ -94,7 +98,7 @@ function readTextFile(fs: MemoryFileSystem, path: string): string | null {
 
 function writeTextFile(fs: MemoryFileSystem, path: string, text: string): void {
   const bytes = new TextEncoder().encode(text);
-  const fd = fs.open(path, 0o1101, 0o644); // O_WRONLY | O_CREAT | O_TRUNC
+  const fd = fs.open(path, O_WRONLY_CREAT_TRUNC, 0o644);
   try {
     if (bytes.byteLength > 0) fs.write(fd, bytes, null, bytes.byteLength);
   } finally {

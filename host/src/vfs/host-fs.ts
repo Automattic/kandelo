@@ -11,6 +11,7 @@ import type { StatResult, StatfsResult } from "../types";
 import { NativeMetadataOverlay } from "../platform/native-metadata";
 import type { FileSystemBackend, DirEntry } from "./types";
 import { DEFAULT_STATFS_BLOCK_SIZE, DEFAULT_STATFS_NAMELEN } from "../statfs";
+import { OPEN_FLAGS } from "../generated/abi";
 
 /**
  * Translate Linux/POSIX open flags (as used by musl libc) to the
@@ -18,35 +19,23 @@ import { DEFAULT_STATFS_BLOCK_SIZE, DEFAULT_STATFS_NAMELEN } from "../statfs";
  * The numeric values differ between Linux and macOS/BSD.
  */
 export function translateOpenFlags(linuxFlags: number): number {
-  // Linux flag constants (octal)
-  const L_O_WRONLY = 0o1;
-  const L_O_RDWR = 0o2;
-  const L_O_CREAT = 0o100;
-  const L_O_EXCL = 0o200;
-  const L_O_NOCTTY = 0o400;
-  const L_O_TRUNC = 0o1000;
-  const L_O_APPEND = 0o2000;
-  const L_O_NONBLOCK = 0o4000;
-  const L_O_DIRECTORY = 0o200000;
-  const L_O_NOFOLLOW = 0o400000;
-
   let native = 0;
 
   // Access mode (bottom 2 bits)
-  if (linuxFlags & L_O_RDWR) native |= fs.constants.O_RDWR;
-  else if (linuxFlags & L_O_WRONLY) native |= fs.constants.O_WRONLY;
+  if (linuxFlags & OPEN_FLAGS.O_RDWR) native |= fs.constants.O_RDWR;
+  else if (linuxFlags & OPEN_FLAGS.O_WRONLY) native |= fs.constants.O_WRONLY;
   // else O_RDONLY = 0
 
-  if (linuxFlags & L_O_CREAT) native |= fs.constants.O_CREAT;
-  if (linuxFlags & L_O_EXCL) native |= fs.constants.O_EXCL;
-  if (linuxFlags & L_O_TRUNC) native |= fs.constants.O_TRUNC;
-  if (linuxFlags & L_O_APPEND) native |= fs.constants.O_APPEND;
-  if (linuxFlags & L_O_NONBLOCK) native |= fs.constants.O_NONBLOCK;
-  if ((linuxFlags & L_O_DIRECTORY) && fs.constants.O_DIRECTORY)
+  if (linuxFlags & OPEN_FLAGS.O_CREAT) native |= fs.constants.O_CREAT;
+  if (linuxFlags & OPEN_FLAGS.O_EXCL) native |= fs.constants.O_EXCL;
+  if (linuxFlags & OPEN_FLAGS.O_TRUNC) native |= fs.constants.O_TRUNC;
+  if (linuxFlags & OPEN_FLAGS.O_APPEND) native |= fs.constants.O_APPEND;
+  if (linuxFlags & OPEN_FLAGS.O_NONBLOCK) native |= fs.constants.O_NONBLOCK;
+  if ((linuxFlags & OPEN_FLAGS.O_DIRECTORY) && fs.constants.O_DIRECTORY)
     native |= fs.constants.O_DIRECTORY;
-  if ((linuxFlags & L_O_NOFOLLOW) && fs.constants.O_NOFOLLOW)
+  if ((linuxFlags & OPEN_FLAGS.O_NOFOLLOW) && fs.constants.O_NOFOLLOW)
     native |= fs.constants.O_NOFOLLOW;
-  if ((linuxFlags & L_O_NOCTTY) && fs.constants.O_NOCTTY)
+  if ((linuxFlags & OPEN_FLAGS.O_NOCTTY) && fs.constants.O_NOCTTY)
     native |= fs.constants.O_NOCTTY;
   // O_LARGEFILE and O_CLOEXEC have no Node.js equivalent; ignored.
 
@@ -125,7 +114,7 @@ export class HostFileSystem implements FileSystemBackend {
 
   open(path: string, flags: number, mode: number): number {
     const nativePath = this.safePath(path);
-    const created = (flags & 0o100) !== 0 && !fs.existsSync(nativePath);
+    const created = (flags & OPEN_FLAGS.O_CREAT) !== 0 && !fs.existsSync(nativePath);
     const fd = fs.openSync(nativePath, translateOpenFlags(flags), mode);
     if (created) this.metadata.chmod(fs.fstatSync(fd), mode);
     this.fdPositions.set(fd, 0);

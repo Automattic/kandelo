@@ -1,12 +1,16 @@
 import { decompress as zstdDecompress } from "fzstd";
 import type { StatResult, StatfsResult } from "../types";
 import { SFFS_SUPER_MAGIC } from "../statfs";
+import { DIRENT_TYPES, FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 import type { FileSystemBackend, DirEntry } from "./types";
 import {
   SharedFS,
   type StatResult as SfsStatResult,
 } from "./sharedfs-vendor";
 import type { ZipEntry } from "./zip";
+
+const O_WRONLY_CREAT_TRUNC =
+  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 
 /** Serializable lazy file entry for transfer between instances. */
 export interface LazyFileEntry {
@@ -271,7 +275,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       try { this.fs.mkdir(current, 0o755); } catch { /* exists */ }
     }
     // Create empty stub file
-    const fd = this.fs.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
+    const fd = this.fs.open(path, O_WRONLY_CREAT_TRUNC, mode);
     this.fs.close(fd);
     // Get inode
     const st = this.fs.stat(path);
@@ -362,7 +366,7 @@ export class MemoryFileSystem implements FileSystemBackend {
         const target = symlinkTargets.get(ze.fileName)!;
         this.fs.symlink(target, vfsPath);
       } else {
-        const fd = this.fs.open(vfsPath, 0o1101, ze.mode); // O_WRONLY | O_CREAT | O_TRUNC
+        const fd = this.fs.open(vfsPath, O_WRONLY_CREAT_TRUNC, ze.mode);
         this.fs.close(fd);
       }
 
@@ -454,7 +458,7 @@ export class MemoryFileSystem implements FileSystemBackend {
           throw new Error(`Failed to fetch lazy file ${entry.path}: HTTP ${resp.status}`);
         }
         const data = new Uint8Array(await resp.arrayBuffer());
-        const fd = this.fs.open(entry.path, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
+        const fd = this.fs.open(entry.path, O_WRONLY_CREAT_TRUNC, 0o755);
         this.fs.write(fd, data);
         this.fs.close(fd);
         this.lazyFiles.delete(st.ino);
@@ -498,7 +502,7 @@ export class MemoryFileSystem implements FileSystemBackend {
       const ze = zipLookup.get(zipFileName);
       if (!ze) continue;
       const content = extractZipEntry(zipData, ze);
-      const fd = this.fs.open(vfsPath, 0o1101, 0o755); // O_WRONLY | O_CREAT | O_TRUNC
+      const fd = this.fs.open(vfsPath, O_WRONLY_CREAT_TRUNC, 0o755);
       if (content.length > 0) this.fs.write(fd, content);
       this.fs.close(fd);
     }
@@ -930,7 +934,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     gid: number,
     content: Uint8Array,
   ): void {
-    const fd = this.open(path, 0o1101, mode); // O_WRONLY | O_CREAT | O_TRUNC
+    const fd = this.open(path, O_WRONLY_CREAT_TRUNC, mode);
     if (content.length > 0) this.write(fd, content, null, content.length);
     this.close(fd);
     this.chown(path, uid, gid);
@@ -966,10 +970,14 @@ export class MemoryFileSystem implements FileSystemBackend {
     if (!entry) return null;
     // Determine d_type from mode
     const mode = entry.stat.mode;
-    let dtype = 0; // DT_UNKNOWN
-    if ((mode & 0xf000) === 0x8000) dtype = 8; // DT_REG
-    else if ((mode & 0xf000) === 0x4000) dtype = 4; // DT_DIR
-    else if ((mode & 0xf000) === 0xa000) dtype = 10; // DT_LNK
+    let dtype: number = DIRENT_TYPES.DT_UNKNOWN;
+    if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFREG) {
+      dtype = DIRENT_TYPES.DT_REG;
+    } else if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR) {
+      dtype = DIRENT_TYPES.DT_DIR;
+    } else if ((mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFLNK) {
+      dtype = DIRENT_TYPES.DT_LNK;
+    }
     return { name: entry.name, type: dtype, ino: entry.stat.ino };
   }
 

@@ -2,6 +2,33 @@
 
 pub mod host_abi;
 
+pub mod process_snapshot {
+    pub const COUNT_OFFSET: usize = 0;
+    pub const COUNT_SIZE: usize = 4;
+
+    pub const RECORD_PID_OFFSET: usize = 0;
+    pub const RECORD_PPID_OFFSET: usize = 4;
+    pub const RECORD_UID_OFFSET: usize = 8;
+    pub const RECORD_GID_OFFSET: usize = 12;
+    pub const RECORD_VSIZE_BYTES_OFFSET: usize = 16;
+    pub const RECORD_STATE_OFFSET: usize = 24;
+    pub const RECORD_COMM_LEN_OFFSET: usize = 28;
+    pub const RECORD_CMDLINE_LEN_OFFSET: usize = 32;
+    pub const RECORD_FIXED_SIZE: usize = 36;
+}
+
+pub mod wakeup_event {
+    pub const IDX_OFFSET: usize = 0;
+    pub const IDX_SIZE: usize = 4;
+    pub const TYPE_OFFSET: usize = 4;
+    pub const TYPE_SIZE: usize = 1;
+    pub const RECORD_SIZE: usize = 5;
+
+    pub const TYPE_READABLE: u8 = 1;
+    pub const TYPE_WRITABLE: u8 = 2;
+    pub const TYPE_ACCEPT: u8 = 4;
+}
+
 /// Kernel ABI version.
 ///
 /// This number is baked into every compiled user program (wasm custom section
@@ -475,6 +502,7 @@ pub mod flags {
     pub const O_ACCMODE: u32 = 3;
     pub const O_CREAT: u32 = 0o100;
     pub const O_EXCL: u32 = 0o200;
+    pub const O_NOCTTY: u32 = 0o400;
     pub const O_TRUNC: u32 = 0o1000;
     pub const O_APPEND: u32 = 0o2000;
     pub const O_NONBLOCK: u32 = 0o4000;
@@ -486,6 +514,7 @@ pub mod flags {
     pub const AT_FDCWD: i32 = -100;
     pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
     pub const AT_REMOVEDIR: u32 = 0x200;
+    pub const AT_EMPTY_PATH: u32 = 0x1000;
 }
 
 /// File descriptor flags (FD_*).
@@ -600,6 +629,14 @@ pub mod poll {
     pub const POLLNVAL: i16 = 0x0020;
 }
 
+/// Epoll event constants.
+pub mod epoll {
+    pub const EPOLLIN: u32 = 0x0001;
+    pub const EPOLLOUT: u32 = 0x0004;
+    pub const EPOLLERR: u32 = 0x0008;
+    pub const EPOLLHUP: u32 = 0x0010;
+}
+
 /// Seek whence constants.
 pub mod seek {
     pub const SEEK_SET: u32 = 0;
@@ -639,6 +676,11 @@ pub mod mode {
     pub const S_IFCHR: u32 = 0o020000;
     pub const S_IFIFO: u32 = 0o010000;
 
+    // Special permission bits
+    pub const S_ISUID: u32 = 0o4000;
+    pub const S_ISGID: u32 = 0o2000;
+    pub const S_ISVTX: u32 = 0o1000;
+
     // Owner permissions
     pub const S_IRWXU: u32 = 0o700;
     pub const S_IRUSR: u32 = 0o400;
@@ -656,6 +698,8 @@ pub mod mode {
     pub const S_IROTH: u32 = 0o004;
     pub const S_IWOTH: u32 = 0o002;
     pub const S_IXOTH: u32 = 0o001;
+
+    pub const S_MODE_BITS: u32 = S_ISUID | S_ISGID | S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO;
 }
 
 /// Shared-memory channel layout offsets and sizes.
