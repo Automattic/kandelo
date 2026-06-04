@@ -4,20 +4,18 @@
   <script src="/kandelo/service-worker.js"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Kandelo — fold a computer into a URL</title>
-  <!-- Fonts are intentionally system-stack only. Cross-origin font hosts
-       (rsms.me, jsdelivr) get blocked by Cross-Origin-Embedder-Policy:
-       require-corp, which we need set for SharedArrayBuffer. If we want
-       Inter/JetBrains Mono we'll need to self-host with @font-face. -->
-  <script type="module" crossorigin src="/kandelo/assets/kandelo-C0LV13BI.js"></script>
-  <link rel="modulepreload" crossorigin href="/kandelo/assets/modulepreload-polyfill-YP0FEG5d.js">
-  <link rel="modulepreload" crossorigin href="/kandelo/assets/preload-helper-F9_d1F--.js">
-  <link rel="modulepreload" crossorigin href="/kandelo/assets/browser-controls-ByROJCQ2.js">
-  <link rel="modulepreload" crossorigin href="/kandelo/assets/xterm-B9d0xqMB.js">
-  <link rel="stylesheet" crossorigin href="/kandelo/assets/xterm-6GBZ9nXN.css">
-  <link rel="stylesheet" crossorigin href="/kandelo/assets/kandelo-B0RTnWy8.css">
+  <title>Kandelo - fold a computer into a URL</title>
+  <script>
+    const target = new URL(
+      window.location.pathname.replace(/\/pages\/kandelo\/?$/, "/"),
+      window.location.origin,
+    );
+    target.search = window.location.search;
+    target.hash = window.location.hash;
+    window.location.replace(target);
+  </script>
 </head>
 <body>
-  <div id="kandelo-root"></div>
+  <a href="../../">Open Kandelo</a>
 </body>
 </html>
