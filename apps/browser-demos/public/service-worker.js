@@ -462,6 +462,22 @@ if (typeof window !== "undefined") {
     return headers;
   }
 
+  function isNullBodyStatus(status) {
+    return status === 204 || status === 205 || status === 304;
+  }
+
+  function responseBodyForStatus(status, body) {
+    return isNullBodyStatus(status) ? null : body;
+  }
+
+  function responseWithHeaders(response, headers) {
+    return new Response(responseBodyForStatus(response.status, response.body), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: headers,
+    });
+  }
+
   function fetchCrossOrigin(request) {
     var targetUrl = request.url;
 
@@ -470,11 +486,7 @@ if (typeof window !== "undefined") {
     if (isCorsProxyFetchUrl(targetUrl)) {
       return fetch(request).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: headers,
-        });
+        return responseWithHeaders(response, headers);
       });
     }
 
@@ -483,11 +495,7 @@ if (typeof window !== "undefined") {
       var proxyUrl = corsProxyFetchUrl(targetUrl);
       return fetch(proxyUrl, { credentials: "omit", mode: "cors" }).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: headers,
-        });
+        return responseWithHeaders(response, headers);
       });
     }
 
@@ -497,11 +505,7 @@ if (typeof window !== "undefined") {
         return response;
       }
       var headers = corsSafeResponseHeaders(response);
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headers,
-      });
+      return responseWithHeaders(response, headers);
     });
   }
 
@@ -547,11 +551,7 @@ if (typeof window !== "undefined") {
         headers.delete("Content-Encoding");
         headers.delete("Content-Length");
       }
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headers,
-      });
+      return responseWithHeaders(response, headers);
     });
   }
 
@@ -747,7 +747,7 @@ if (typeof window !== "undefined") {
           }
         }
 
-        return new Response(body, {
+        return new Response(responseBodyForStatus(bridgeResp.status, body), {
           status: bridgeResp.status,
           headers: respHeaders,
         });
