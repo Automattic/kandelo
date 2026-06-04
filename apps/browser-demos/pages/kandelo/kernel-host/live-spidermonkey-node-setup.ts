@@ -69,18 +69,6 @@ const SPIDERMONKEY_NODE_PRESENTATION: DemoPresentation = {
   internalsAccess: "drawer",
 };
 
-const SM_NODE_BASIC_RUNTIME_COMMAND = [
-  "node -e \"",
-  "const assert=require('node:assert');",
-  "const path=require('path');",
-  "const b=Buffer.from('Kandelo');",
-  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
-  "console.log('SpiderMonkey Node', process.version, process.arch);",
-  "console.log(b.toString('hex'));",
-  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "\"",
-].join(" ");
-
 const SM_NODE_WORKER_RUNTIME_COMMAND = [
   "node -e \"",
   "const assert=require('node:assert');",
@@ -114,13 +102,6 @@ const SM_NODE_WORKER_DEMO_COMMAND = [
   "\"",
 ].join(" ");
 
-const SM_NODE_BASIC_DEMO_COMMAND = [
-  "node -e \"",
-  "console.log('node', process.version, process.arch);",
-  "console.log('intl', new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "\"",
-].join(" ");
-
 const SM_NODE_COWSAY_DEMO_COMMAND = [
   "rm -rf node_modules package-lock.json /tmp/.npm-cache",
   "printf '%s\\n' '{\"name\":\"demo\",\"version\":\"0.0.1\"}' > package.json",
@@ -135,16 +116,11 @@ function isWebKitLikeBrowser(): boolean {
 }
 
 function spiderMonkeyNodeRuntimeCommand(): string {
-  return isWebKitLikeBrowser()
-    ? SM_NODE_BASIC_DEMO_COMMAND
-    : SM_NODE_WORKER_DEMO_COMMAND;
+  return SM_NODE_WORKER_DEMO_COMMAND;
 }
 
 function spiderMonkeyNodeSmokeCommand(): string {
-  const runtime = isWebKitLikeBrowser()
-    ? SM_NODE_BASIC_RUNTIME_COMMAND
-    : SM_NODE_WORKER_RUNTIME_COMMAND;
-  return `${runtime} ; npm --version`;
+  return `${SM_NODE_WORKER_RUNTIME_COMMAND} ; npm --version`;
 }
 
 function spiderMonkeyNodeGuide(): DemoGuideConfig {
@@ -159,9 +135,7 @@ function spiderMonkeyNodeGuide(): DemoGuideConfig {
           {
             id: "runtime-check",
             label: "Runtime check",
-            description: isWebKitLikeBrowser()
-              ? "Exercise process metadata and Intl formatting."
-              : "Exercise process metadata, Intl formatting, and a shared-memory worker.",
+            description: "Exercise process metadata, Intl formatting, and a shared-memory worker.",
             kind: "terminal.run",
             payload: runtimeCommand,
           },

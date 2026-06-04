@@ -226,12 +226,6 @@ const LIVE_DEMO_IDS = [
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
 
-function isWebKitLikeBrowser(): boolean {
-  const ua = navigator.userAgent;
-  return /AppleWebKit/i.test(ua)
-    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
-}
-
 const NODE_WORKER_AUTO_COMMAND = [
   "node -e \"",
   "const assert=require('node:assert');",
@@ -252,11 +246,10 @@ const NODE_WORKER_AUTO_COMMAND = [
   "&& npm --version",
 ].join(" ");
 
-function nodeAutoCommand(): string | undefined {
-  return isWebKitLikeBrowser() ? undefined : NODE_WORKER_AUTO_COMMAND;
-}
-
 async function settleAfterKernelDestroy(): Promise<void> {
+  const ua = navigator.userAgent;
+  const isWebKitLikeBrowser = /AppleWebKit/i.test(ua)
+    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
   if (!isWebKitLikeBrowser()) return;
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
@@ -273,7 +266,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     memoryPages: 4096,
     network: true,
     features: ["js-workers"],
-    autoCommand: nodeAutoCommand(),
+    autoCommand: NODE_WORKER_AUTO_COMMAND,
   },
   nginx: {
     image: "nginx",
