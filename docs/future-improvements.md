@@ -96,12 +96,12 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 
 ## Host runtime
 
-### Runtime tuning for default pthread slot reservation
+### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes
 that declare `__wasm_posix_thread_slots = -1` use that boot-time default.
 The next step is a runtime control surface, likely under `/sys` or `/proc`,
-so an integration can tune the host default without rebuilding the SDK output
-or recreating the worker.
+so an integration can tune the host default pthread concurrency limit without
+rebuilding the SDK output or recreating the worker.
 
 **Files:** `host/src/browser-kernel-worker-entry.ts`,
 `host/src/node-kernel-worker-entry.ts`, `host/src/process-memory.ts`

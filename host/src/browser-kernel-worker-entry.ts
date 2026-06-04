@@ -84,7 +84,7 @@ import type {
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { ThreadPageAllocator } from "./thread-allocator";
-import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES } from "./constants";
+import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -246,16 +246,20 @@ function createSharedProcessMemory(
 function threadAllocatorForLayout(
   layout: ProcessMemoryLayout,
   ptrWidth: 4 | 8,
+  pid: number,
 ): ThreadPageAllocator {
   return new ThreadPageAllocator({
     firstSlotStartPage: layout.firstThreadSlotPage,
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
     reservedSlots: layout.threadSlotCount,
+    reserveSlotStartPage: () =>
+      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * PAGE_SIZE) / PAGE_SIZE,
   });
 }
 
 function createFreshProcessMemory(
+  pid: number,
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
   processMaxPages = maxPages,
@@ -277,7 +281,7 @@ function createFreshProcessMemory(
   return {
     memory,
     layout,
-    threadAllocator: threadAllocatorForLayout(layout, ptrWidth),
+    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
   };
 }
 
@@ -591,7 +595,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       memory,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(programBytes, ptrWidth, pages);
+    } = createFreshProcessMemory(pid, programBytes, ptrWidth, pages);
     const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
@@ -804,7 +808,7 @@ async function handleFork(
     channelOffset: childChannelOffset,
     ptrWidth,
     layout: childLayout,
-    threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth),
+    threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
   });
 
   installProcessWorkerListeners(childWorker, childPid);
@@ -853,7 +857,7 @@ async function handleExec(
     memory: newMemory,
     layout: newLayout,
     threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(bytes, ptrWidth);
+  } = createFreshProcessMemory(pid, bytes, ptrWidth);
   const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
@@ -956,7 +960,7 @@ async function handlePosixSpawn(
     memory: newMemory,
     layout: newLayout,
     threadAllocator,
-  } = createFreshProcessMemory(programBytes, ptrWidth);
+  } = createFreshProcessMemory(childPid, programBytes, ptrWidth);
   const newChannelOffset = newLayout.channelOffset;
 
   // Kernel already created the child via kernel_spawn_process.

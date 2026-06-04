@@ -177,13 +177,15 @@ When linking an executable (not compile-only), the SDK adds:
 - `sysroot/lib/crt1.o` — C runtime startup
 - `sysroot/lib/libc.a` — musl libc
 
-### Pthread slot reservation
+### Pthread slot limit
 
-Executable builds also declare the process's pthread slot reservation through the exported `__wasm_posix_thread_slots` function:
+Executable builds also declare the process's pthread concurrency limit through the exported `__wasm_posix_thread_slots` function:
 
-- `--kandelo-thread-slots=N` or `--wasm-posix-thread-slots=N` emits an explicit declaration. `N` may be `-1` to use the host default, `0` to reserve no pthread slots, or a positive exact slot count.
+- `--kandelo-thread-slots=N` or `--wasm-posix-thread-slots=N` emits an explicit declaration. `N` may be `-1` to use the host default, `0` to allow no pthreads, or a positive exact concurrent pthread count.
 - If the flag is omitted, the SDK emits `0` only when it can conservatively prove the link has no thread creation, dynamic libraries, `dlopen`, or uncertain runtime pthread use.
-- Otherwise the SDK emits `-1`, so the host reserves its configured default. The default is 16 unless the kernel worker is created with `defaultThreadSlots`.
+- Otherwise the SDK emits `-1`, so the host uses its configured default. The default is 64 unless the kernel worker is created with `defaultThreadSlots`.
+
+The count is a resource limit, not a static memory slab reservation. The host dynamically reserves each four-page pthread control slot when `pthread_create()` succeeds and reuses exited slots within the same process.
 
 ### Flags silently ignored
 
