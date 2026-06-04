@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-OUT="$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm"
-USERS_OUT="$REPO_ROOT/target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm"
+OUT="$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"
+USERS_OUT="$REPO_ROOT/target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm"
 source "$REPO_ROOT/scripts/wasm-artifact-guards.sh"
 
 cd "$REPO_ROOT"

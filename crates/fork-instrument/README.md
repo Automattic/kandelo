@@ -34,7 +34,7 @@ patterns are documented in `docs/fork-instrumentation.md`.
 
 ## Build
 
-The repo default Cargo target is `wasm64-unknown-unknown`, which is correct
+The repo default Cargo target is `wasm32-unknown-unknown`, which is correct
 for the kernel but wrong for this host-side CLI. Build it for the host
 triple:
 

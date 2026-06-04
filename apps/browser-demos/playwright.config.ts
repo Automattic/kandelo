@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const port = 5401;
+const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
 
 export default defineConfig({
   testDir: join(__dirname, "test"),
@@ -31,7 +31,7 @@ export default defineConfig({
     },
     {
       name: "webkit",
-      testMatch: "coi.spec.ts",
+      testMatch: ["coi.spec.ts", "kandelo-webkit-smoke.spec.ts"],
       use: { browserName: "webkit" },
     },
   ],
