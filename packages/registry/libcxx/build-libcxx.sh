@@ -65,13 +65,19 @@ LLVM_AR="$LLVM_PREFIX/bin/llvm-ar"
 LLVM_RANLIB="$LLVM_PREFIX/bin/llvm-ranlib"
 LLVM_NM="$LLVM_PREFIX/bin/llvm-nm"
 
-# Verify host LLVM is at the declared major version.
+# Verify host LLVM is at the declared major version. Headers are now
+# sourced hermetically from the vendored source build (see the install
+# step below), so a mismatch no longer mixes header versions; it only
+# means the just-built library is compiled by a different-major clang
+# than the vendored source it links against, which can still cause
+# codegen/ABI skew. Keep this a warning so Homebrew-LLVM-only boxes can
+# still build the pinned source.
 if [ -x "$LLVM_CLANG" ]; then
     HOST_LLVM_VERSION="$("$LLVM_CLANG" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
     HOST_LLVM_MAJOR="${HOST_LLVM_VERSION%%.*}"
     if [ "$HOST_LLVM_MAJOR" != "$LLVM_MAJOR" ]; then
-        echo "WARNING: host LLVM major ($HOST_LLVM_MAJOR) does not match deps.toml version ($LLVM_MAJOR)." >&2
-        echo "         Build may still work but headers come from host LLVM." >&2
+        echo "WARNING: host clang major ($HOST_LLVM_MAJOR) does not match deps.toml version ($LLVM_MAJOR)." >&2
+        echo "         The pinned LLVM ${LLVM_MAJOR} source will be compiled by clang ${HOST_LLVM_MAJOR}; codegen/ABI skew is possible." >&2
     fi
 else
     echo "ERROR: host clang not found at $LLVM_CLANG. Install with: brew install llvm" >&2
@@ -205,38 +211,71 @@ fi
 cp "$LIBCXX_A" "$INSTALL_DIR/lib/libc++.a"
 cp "$LIBCXXABI_A" "$INSTALL_DIR/lib/libc++abi.a"
 
-# Copy libc++ headers from host LLVM. We continue to source headers from
-# the host LLVM at build time (matching version with the binary we just
-# produced); migrating headers into an upstream tarball is a future
-# cleanup tracked in the design doc.
+# Install libc++ headers from the build tree, NOT from the host LLVM.
+# The CMake runtimes build stages a complete, version-matched header set
+# under $BUILD_DIR/include/c++/v1: the bulk headers from the vendored
+# LLVM ${LLVM_MAJOR} source, plus the build-generated __config_site,
+# __assertion_handler, module.modulemap, and the libc++abi headers
+# (cxxabi.h, __cxxabi_config.h). Sourcing from here makes the artifact
+# hermetic: headers, lib/, and __config_site all come from the single
+# vendored source we just compiled, so the produced header set cannot
+# drift from the produced library.
 #
-# Header path differs by distribution:
-#   - Homebrew LLVM:  $LLVM_PREFIX/include/c++/v1/
-#   - Nix LLVM:       $LLVM_PREFIX/share/libc++/v1/
-# Try both in order; first one with __config (or iostream) wins.
-LLVM_CXX_HEADERS=""
-for cand in "$LLVM_PREFIX/include/c++/v1" "$LLVM_PREFIX/share/libc++/v1"; do
-    if [ -f "$cand/__config" ] || [ -f "$cand/iostream" ]; then
-        LLVM_CXX_HEADERS="$cand"
-        break
-    fi
-done
-if [ -z "$LLVM_CXX_HEADERS" ]; then
-    echo "ERROR: libc++ headers not found under $LLVM_PREFIX (tried include/c++/v1 and share/libc++/v1)" >&2
+# The previous approach copied headers from the host $LLVM_PREFIX while
+# generating __config_site from the vendored source. When the host LLVM
+# drifted ahead of the vendored version (e.g. a Homebrew LLVM 22 leaking
+# into a non-pure `nix develop` shell), a newer host header
+# (__configuration/hardening.h, added in LLVM 22) demanded config macros
+# (_LIBCPP_ASSERTION_SEMANTIC_DEFAULT) that the older vendored
+# __config_site never emits, breaking every downstream C++ build with a
+# cryptic "_LIBCPP_ASSERTION_SEMANTIC_DEFAULT is not defined" error.
+STAGED_HEADERS="$BUILD_DIR/include/c++/v1"
+if [ ! -f "$STAGED_HEADERS/__config_site" ] || [ ! -f "$STAGED_HEADERS/vector" ]; then
+    echo "ERROR: staged header tree incomplete at $STAGED_HEADERS" >&2
+    echo "       (expected __config_site + vector from the cxx-headers build target)" >&2
     exit 1
 fi
-# cp -L dereferences symlinks (Nix's symlinkJoin tree contains read-only
-# symlinks; later writes to __config_site fail with EACCES otherwise).
-cp -RL "$LLVM_CXX_HEADERS/." "$INSTALL_DIR/include/c++/v1/"
+# cp -RL dereferences any symlinks CMake staged into the source tree, so
+# the installed copy stays self-contained after $BUILD_DIR is removed.
+cp -RL "$STAGED_HEADERS/." "$INSTALL_DIR/include/c++/v1/"
 chmod -R u+w "$INSTALL_DIR/include/c++/v1/"
+# The .in template is a build input, not a consumer header.
+rm -f "$INSTALL_DIR/include/c++/v1/__config_site.in"
 
-# Override __config_site with the build-generated copy so the headers
-# match the just-built libc++.a (musl libc + pthread thread API +
-# serial PSTL backend, never libdispatch).
-GENERATED_CONFIG_SITE="$BUILD_DIR/include/c++/v1/__config_site"
-if [ -f "$GENERATED_CONFIG_SITE" ]; then
-    cp "$GENERATED_CONFIG_SITE" "$INSTALL_DIR/include/c++/v1/__config_site"
+# Guard against header/__config_site version mixing: compile a
+# representative consumer translation unit against the freshly installed
+# header set with the same wasm target. <vector>/<string>/<stdexcept>
+# pull in __config, __config_site, the hardening config, the assertion
+# handler, and the libc++abi headers, so any inconsistency (a header
+# demanding a config macro the __config_site does not define, a missing
+# generated header) fails HERE, loudly, at package-build time instead of
+# surfacing later in a downstream C++ build. Do not remove: this is the
+# check that makes shipping a mixed-version header set impossible.
+echo "==> Verifying installed libc++ headers are self-consistent..."
+SMOKE_SRC="$BUILD_DIR/.libcxx-smoke.cpp"
+SMOKE_LOG="$BUILD_DIR/.libcxx-smoke.log"
+cat > "$SMOKE_SRC" <<'EOF'
+#include <vector>
+#include <string>
+#include <stdexcept>
+int main() {
+    std::vector<int> v;
+    v.push_back(1);
+    std::string s = "ok";
+    if (v.empty()) throw std::runtime_error(s);
+    return static_cast<int>(v.size() + s.size());
+}
+EOF
+# shellcheck disable=SC2086 # WASM_C_FLAGS is an intentional word list.
+if ! "$LLVM_CLANG" ${WASM_C_FLAGS} \
+        -nostdinc++ -isystem "$INSTALL_DIR/include/c++/v1" \
+        -c "$SMOKE_SRC" -o "$BUILD_DIR/.libcxx-smoke.o" 2>"$SMOKE_LOG"; then
+    echo "ERROR: installed libc++ headers failed a smoke compile." >&2
+    echo "       Headers and __config_site are inconsistent (version mix?)." >&2
+    sed 's/^/    /' "$SMOKE_LOG" >&2
+    exit 1
 fi
+echo "==> Header smoke compile passed."
 
 echo "==> Done!"
 echo "  libc++.a:    $(wc -c < "$INSTALL_DIR/lib/libc++.a" | tr -d ' ') bytes"
