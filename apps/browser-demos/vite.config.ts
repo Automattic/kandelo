@@ -26,6 +26,11 @@ function serviceWorkerPathForBase(base: string): string {
   return `${normalized.endsWith("/") ? normalized : `${normalized}/`}service-worker.js`;
 }
 
+function devCorsProxyPathForBase(base: string): string {
+  const normalized = base.startsWith("/") ? base : `/${base}`;
+  return `${normalized.endsWith("/") ? normalized : `${normalized}/`}__kandelo_cors_proxy`;
+}
+
 function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): string {
   return content.replace('"__CORS_PROXY_URL__"', JSON.stringify(corsProxyUrl));
 }
@@ -295,6 +300,90 @@ function injectCorsProxyUrl(): Plugin {
   };
 }
 
+function devCorsProxyMiddleware(): Plugin {
+  let base = "/";
+
+  function attachMiddleware(
+    middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+  ): void {
+    const proxyPath = devCorsProxyPathForBase(base);
+    middlewares.use(async (req, res, next) => {
+      if (!req.url) {
+        next();
+        return;
+      }
+      const requestUrl = new URL(req.url, "http://localhost");
+      if (requestUrl.pathname !== proxyPath) {
+        next();
+        return;
+      }
+      if (req.method !== "GET") {
+        res.statusCode = 405;
+        res.end("Method Not Allowed");
+        return;
+      }
+
+      const target = requestUrl.searchParams.get("url");
+      if (!target) {
+        res.statusCode = 400;
+        res.end("Missing url");
+        return;
+      }
+
+      let targetUrl: URL;
+      try {
+        targetUrl = new URL(target);
+      } catch {
+        res.statusCode = 400;
+        res.end("Invalid url");
+        return;
+      }
+      if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
+        res.statusCode = 400;
+        res.end("Unsupported url");
+        return;
+      }
+
+      try {
+        const upstream = await fetch(targetUrl.href, { redirect: "follow" });
+        const bytes = Buffer.from(await upstream.arrayBuffer());
+        res.statusCode = upstream.status;
+        res.statusMessage = upstream.statusText;
+        for (const name of [
+          "accept-ranges",
+          "cache-control",
+          "content-type",
+          "etag",
+          "expires",
+          "last-modified",
+        ]) {
+          const value = upstream.headers.get(name);
+          if (value) res.setHeader(name, value);
+        }
+        res.setHeader("Content-Length", String(bytes.byteLength));
+        res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+        res.end(bytes);
+      } catch (err) {
+        res.statusCode = 502;
+        res.end(err instanceof Error ? err.message : String(err));
+      }
+    });
+  }
+
+  return {
+    name: "dev-cors-proxy-middleware",
+    configResolved(config) {
+      base = config.base;
+    },
+    configureServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+  };
+}
+
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
   resolve: {
@@ -310,6 +399,7 @@ export default defineConfig({
     injectGitRevision(),
     injectCoiServiceWorker(),
     injectCorsProxyUrl(),
+    devCorsProxyMiddleware(),
   ],
   server: {
     host: "127.0.0.1",

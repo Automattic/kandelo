@@ -23,6 +23,19 @@ async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
 }
 
+async function waitForTerminalContent(
+  page: Page,
+  expected: string | RegExp,
+  timeout = 120_000,
+) {
+  const assertion = expect.poll(() => terminalText(page), { timeout });
+  if (typeof expected === "string") {
+    await assertion.toContain(expected);
+  } else {
+    await assertion.toMatch(expected);
+  }
+}
+
 async function runTerminalCommand(
   page: Page,
   command: string,
@@ -32,12 +45,7 @@ async function runTerminalCommand(
   await page.locator(".kshell-host").first().click();
   await page.keyboard.insertText(command);
   await page.keyboard.press("Enter");
-  const assertion = expect.poll(() => terminalText(page), { timeout });
-  if (typeof expected === "string") {
-    await assertion.toContain(expected);
-  } else {
-    await assertion.toMatch(expected);
-  }
+  await waitForTerminalContent(page, expected, timeout);
 }
 
 function webFrame(page: Page, title: string): FrameLocator {
@@ -147,6 +155,11 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   await gotoOrSkip(page, "/?demo=node");
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  await waitForTerminalContent(
+    page,
+    /SpiderMonkey Node[\s\S]*worker\s+42[\s\S]*10\.9\.2[\s\S]*spidermonkey-node\$ ?/,
+    180_000,
+  );
 
   await runTerminalCommand(
     page,

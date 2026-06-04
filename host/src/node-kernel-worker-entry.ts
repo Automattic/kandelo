@@ -934,11 +934,24 @@ async function handlePosixSpawn(
     threadAllocator,
   });
 
-  newWorker.on("error", (err: Error) => {
-    console.error(`[spawn] worker error for pid ${childPid}:`, err.message);
-    kernelWorker.unregisterProcess(childPid);
-    processes.delete(childPid);
+  newWorker.on("error", (err: Error) => failProcess(childPid, `spawn worker error: ${err.message ?? err}`));
+  newWorker.on("message", (m: unknown) => {
+    const wmsg = m as WorkerToHostMessage;
+    if (wmsg.type === "error") failProcess(childPid, wmsg.message);
   });
+
+  newWorker.on("message", (raw: unknown) => {
+    const m = raw as { type: string; pid?: number; message?: string; status?: number };
+    if (m.type === "error" && m.pid === childPid) {
+      const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
+      post({ type: "stderr", pid: childPid, data: errBytes });
+      void finalizeProcessWorker(childPid, newWorker, -1);
+    } else if (m.type === "exit" && m.pid === childPid) {
+      void finalizeProcessWorker(childPid, newWorker, m.status ?? 0);
+    }
+  });
+
+  installCrashSafetyNet(newWorker, childPid);
 
   return 0;
 }

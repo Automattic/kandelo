@@ -360,6 +360,7 @@ const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
 const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
@@ -1273,7 +1274,9 @@ async function stageConfiguredAssets(
 ): Promise<void> {
   for (const asset of assets) {
     tick(`staging ${asset.path}...`);
-    const buffer: ArrayBuffer = await fetch(asset.url).then(failOn(asset.path)).then((r) => r.arrayBuffer());
+    const buffer: ArrayBuffer = await fetch(demoAssetFetchUrl(asset))
+      .then(failOn(asset.path))
+      .then((r) => r.arrayBuffer());
     const bytes = new Uint8Array(buffer);
     if (asset.sha256) {
       const digest = await sha256Hex(buffer);
@@ -1283,6 +1286,13 @@ async function stageConfiguredAssets(
     }
     writeVfsBinary(fs, asset.path, bytes, asset.mode ?? 0o644);
   }
+}
+
+function demoAssetFetchUrl(asset: DemoAssetConfig): string {
+  if (!asset.devCorsProxy || !import.meta.env.DEV) return asset.url;
+  const proxyUrl = new URL(DEV_CORS_PROXY_PATH, window.location.href);
+  proxyUrl.searchParams.set("url", asset.url);
+  return proxyUrl.href;
 }
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {

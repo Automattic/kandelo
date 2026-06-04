@@ -633,6 +633,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       argv: msg.argv,
       cwd: msg.cwd,
       ptrWidth,
+      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     };
 
     const worker = workerAdapter.createWorker(initData);
@@ -790,6 +791,7 @@ async function handleFork(
     forkChildThreadFnPtr: threadFork?.fnPtr,
     forkChildThreadArgPtr: threadFork?.argPtr,
     ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
   const childWorker = workerAdapter.createWorker(childInitData);
@@ -876,6 +878,7 @@ async function handleExec(
     argv: launchArgv,
     env: envp,
     ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
   const newWorker = workerAdapter.createWorker(execInitData);
@@ -975,12 +978,10 @@ async function handlePosixSpawn(
     argv,
     env: envp,
     ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
   const newWorker = workerAdapter.createWorker(initData);
-  newWorker.on("error", (err: Error) => {
-    console.error(`[kernel-worker] spawn worker error pid=${childPid}:`, err.message);
-  });
 
   processes.set(childPid, {
     memory: newMemory,
@@ -991,6 +992,8 @@ async function handlePosixSpawn(
     layout: newLayout,
     threadAllocator,
   });
+
+  installProcessWorkerListeners(newWorker, childPid);
 
   return 0;
 }
@@ -1054,6 +1057,7 @@ async function handleClone(
     tlsOffset: alloc.tlsOffset,
     tlsAllocAddr: alloc.tlsAllocAddr,
     ptrWidth: processInfo.ptrWidth,
+    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
   };
 
   const threadWorker = workerAdapter.createWorker(threadInitData);
