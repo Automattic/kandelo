@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../src/binary-resolver";
+import { detectPtrWidth } from "../src/constants";
 
 /**
  * Coverage for the ABI version surface:
@@ -18,18 +19,29 @@ import { resolveBinary } from "../src/binary-resolver";
 describe("ABI version marker", () => {
   const kernelWasm = readFileSync(resolveBinary("kernel.wasm"));
 
+  function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+
   async function instantiateKernelOnly(
     bytes: Uint8Array,
   ): Promise<WebAssembly.Instance> {
+    const ptrWidth = detectPtrWidth(toArrayBuffer(bytes));
     // Match host/src/kernel.ts. The kernel wasm grows when we add
     // synthetic data (e.g. /etc/ssl/cert.pem); 24 pages keeps headroom
     // without re-tuning per change.
-    const memory = new WebAssembly.Memory({
-      initial: 24n,
-      maximum: 16384n,
-      shared: true,
-      address: "i64",
-    } as unknown as WebAssembly.MemoryDescriptor);
+    const memory = ptrWidth === 8
+      ? new WebAssembly.Memory({
+          initial: 24n,
+          maximum: 16384n,
+          shared: true,
+          address: "i64",
+        } as unknown as WebAssembly.MemoryDescriptor)
+      : new WebAssembly.Memory({
+          initial: 24,
+          maximum: 16384,
+          shared: true,
+        });
     const module = await WebAssembly.compile(bytes as BufferSource);
     // The kernel imports many host functions. We only need to inspect
     // the exports, so provide minimal stubs for every import.

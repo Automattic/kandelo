@@ -65,6 +65,7 @@ import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
 } from "./kernel-worker";
+import type { KernelPointer } from "./kernel";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
 import { VirtualPlatformIO } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
@@ -1195,12 +1196,12 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
 function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>) {
   if (!kernelInstance) { respond(msg.requestId, null); return; }
   const pipeRead = kernelInstance.exports.kernel_pipe_read as (
-    pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
+    pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
   const chunks: Uint8Array[] = [];
   for (;;) {
-    const n = pipeRead(msg.pid, msg.pipeIdx, BigInt(scratchOffset), PAGE_SIZE);
+    const n = pipeRead(msg.pid, msg.pipeIdx, kernelWorker.toKernelPtr(scratchOffset), PAGE_SIZE);
     if (n <= 0) break;
     const mem = new Uint8Array(kernelMemory!.buffer);
     chunks.push(mem.slice(scratchOffset, scratchOffset + n));
@@ -1219,7 +1220,7 @@ function handlePipeRead(msg: Extract<MainToKernelMessage, { type: "pipe_read" }>
 function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" }>) {
   if (!kernelInstance) { respond(msg.requestId, -1); return; }
   const pipeWrite = kernelInstance.exports.kernel_pipe_write as (
-    pid: number, pipeIdx: number, bufPtr: bigint, bufLen: number,
+    pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number,
   ) => number;
   const scratchOffset = (kernelWorker as any).tcpScratchOffset || (kernelWorker as any).scratchOffset;
   let written = 0;
@@ -1228,7 +1229,7 @@ function handlePipeWrite(msg: Extract<MainToKernelMessage, { type: "pipe_write" 
     const chunk = Math.min(data.length - written, PAGE_SIZE);
     let mem = new Uint8Array(kernelMemory!.buffer);
     mem.set(data.subarray(written, written + chunk), scratchOffset);
-    const n = pipeWrite(msg.pid, msg.pipeIdx, BigInt(scratchOffset), chunk);
+    const n = pipeWrite(msg.pid, msg.pipeIdx, kernelWorker.toKernelPtr(scratchOffset), chunk);
     if (n <= 0) break;
     written += n;
   }

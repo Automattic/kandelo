@@ -22,7 +22,7 @@ pub mod host_abi;
 /// 13: process memory layout ABI is Rust-declared; per-pthread slots
 ///     use explicit TLS/control, fork-save, channel, and spill pages,
 ///     with a wasm-declared reserved thread-slot count.
-pub const ABI_VERSION: u32 = 13;
+pub const ABI_VERSION: u32 = 14;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

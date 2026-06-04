@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "Building Rust Wasm kernel (wasm64)..."
+echo "Building Rust Wasm kernel (wasm32)..."
 cargo build --release -p kandelo \
   -Z build-std=core,alloc
 
@@ -11,10 +11,10 @@ echo "Copying Wasm artifacts into local-binaries/..."
 # rebuilt artifacts shadow whatever scripts/fetch-binaries.sh
 # downloaded. See docs/binary-releases.md.
 mkdir -p local-binaries
-cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm \
+cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
    local-binaries/kernel.wasm
-if [ -f target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
-    cp target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm \
+if [ -f target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm ]; then
+    cp target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm \
        local-binaries/userspace.wasm
 fi
 
