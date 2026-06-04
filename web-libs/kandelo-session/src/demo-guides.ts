@@ -19,7 +19,14 @@ printf "files in /tmp before: "; ls /tmp | wc -l
 echo "written by the demo guide" > /tmp/kandelo-guide.txt
 cat /tmp/kandelo-guide.txt`;
 
-const nodeRuntimeScript = [
+const nodeBasicRuntimeScript = [
+  "node -e \"",
+  "console.log('node', process.version, process.arch);",
+  "console.log('intl', new Intl.NumberFormat('de-DE').format(1234567.89));",
+  "\"",
+].join(" ");
+
+const nodeWorkerRuntimeScript = [
   "node -e \"",
   "const {Worker}=require('worker_threads');",
   "console.log('node', process.version, process.arch);",
@@ -33,15 +40,23 @@ const nodeRuntimeScript = [
   "\"",
 ].join(" ");
 
+function isWebKitLikeBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  return /AppleWebKit/i.test(ua)
+    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
+}
+
+function nodeRuntimeScript(): string {
+  return isWebKitLikeBrowser() ? nodeBasicRuntimeScript : nodeWorkerRuntimeScript;
+}
+
 const nodeCowsayScript = [
   "rm -rf node_modules package-lock.json /tmp/.npm-cache",
   "printf '%s\\n' '{\"name\":\"demo\",\"version\":\"0.0.1\"}' > package.json",
   "npm install cowsay",
   "./node_modules/.bin/cowsay Kandelo",
 ].join(" && ");
-
-const nodeScript = `${nodeRuntimeScript}
-${nodeCowsayScript}`;
 
 const nginxScript = `curl -i http://127.0.0.1:8080/ | head -40
 echo "--- nginx processes ---"
@@ -132,12 +147,16 @@ export function shellGuide(): DemoGuideConfig {
 }
 
 export function nodeGuide(): DemoGuideConfig {
+  const runtimeScript = nodeRuntimeScript();
+  const runtimeDescription = isWebKitLikeBrowser()
+    ? "Exercise process metadata and Intl formatting."
+    : "Exercise process metadata, Intl formatting, and a shared-memory worker.";
   return scriptGuide(
     "SpiderMonkey Node.js demo",
     "Run Node-compatible commands against the SpiderMonkey-backed runtime, including npm packages, Intl, and worker_threads shared memory.",
     [
       actionGroup("Commands", [
-        action("runtime-check", "Runtime check", "Exercise process metadata, Intl formatting, and a shared-memory worker.", "terminal.run", nodeRuntimeScript),
+        action("runtime-check", "Runtime check", runtimeDescription, "terminal.run", runtimeScript),
         action("install-cowsay", "Install cowsay", "Install cowsay with npm and run its package bin.", "terminal.run", nodeCowsayScript),
       ]),
       actionGroup("REPL", [
@@ -148,7 +167,8 @@ export function nodeGuide(): DemoGuideConfig {
     {
       title: "SpiderMonkey Node script",
       language: "sh",
-      initialText: nodeScript,
+      initialText: `${runtimeScript}
+${nodeCowsayScript}`,
     },
     {
       title: "Companion HTML",

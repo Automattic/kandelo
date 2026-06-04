@@ -18,6 +18,12 @@ const demo = qs.get("demo");
 const bootQuery = readKandeloBootQuery(location.search);
 const fbDemo = qs.get("fb"); // "test" | null
 
+function isWebKitLikeBrowser(): boolean {
+  const ua = navigator.userAgent;
+  return /AppleWebKit/i.test(ua)
+    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
+}
+
 const mount = (host: KernelHost) => {
   ReactDOM.createRoot(container).render(
     <React.StrictMode>
@@ -30,7 +36,9 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
-    const host = demo === "node" || demo === "spidermonkey-node" || demo === "spidermonkey"
+    const useSpiderMonkeyNodeHost = !isWebKitLikeBrowser()
+      && (demo === "node" || demo === "spidermonkey-node" || demo === "spidermonkey");
+    const host = useSpiderMonkeyNodeHost
       ? await import("./kernel-host/live-spidermonkey-node-setup")
         .then(({ createLiveSpiderMonkeyNodeHost }) => createLiveSpiderMonkeyNodeHost(demo))
       : await import("./kernel-host/live-setup")
