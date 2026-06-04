@@ -19,6 +19,7 @@ import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { STRUCT_SIZE_WASM_DIRENT, STRUCT_SIZE_WASM_STAT } from "./generated/abi";
+import { createMemory64 } from "./wasm-memory";
 
 /**
  * Map filesystem error codes to negative errno values.
@@ -284,17 +285,12 @@ export class WasmPosixKernel {
    * @param wasmBytes - The compiled kernel Wasm binary
    */
   async init(wasmBytes: BufferSource): Promise<void> {
-    const memory = new WebAssembly.Memory({
-      // 24 pages = 1.5 MiB of initial address space. Must be ≥ the kernel
-      // wasm's declared minimum, which the linker derives from the data
-      // section. The Mozilla CA bundle (~220 KiB at /etc/ssl/cert.pem)
-      // pushes the kernel's minimum to 20 pages; 24 leaves headroom for
-      // future static data without re-tuning this every time.
-      initial: 24n,
-      maximum: 16384n,
-      shared: true,
-      address: "i64",
-    } as unknown as WebAssembly.MemoryDescriptor);
+    // 24 pages = 1.5 MiB of initial address space. Must be >= the kernel
+    // wasm's declared minimum, which the linker derives from the data
+    // section. The Mozilla CA bundle (~220 KiB at /etc/ssl/cert.pem)
+    // pushes the kernel's minimum to 20 pages; 24 leaves headroom for
+    // future static data without re-tuning this every time.
+    const memory = createMemory64(24, 16384, true);
     this.memory = memory;
     const importObject = this.buildImportObject(memory);
     const module = await WebAssembly.compile(wasmBytes as BufferSource);

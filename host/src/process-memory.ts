@@ -15,6 +15,7 @@ import {
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
 } from "./generated/abi";
+import { createMemoryForPtrWidth, growMemoryForPtrWidth } from "./wasm-memory";
 
 /** Legacy Kernel MemoryManager::MMAP_BASE. Compact hosts override this per process. */
 export const PROCESS_MMAP_BASE = PROCESS_MEMORY_LEGACY_MMAP_BASE;
@@ -297,19 +298,12 @@ export function createProcessMemory(
   ptrWidth: 4 | 8,
   layout: ProcessMemoryLayout,
 ): WebAssembly.Memory {
-  if (ptrWidth === 8) {
-    return new WebAssembly.Memory({
-      initial: BigInt(layout.initialPages) as any,
-      maximum: BigInt(layout.maximumPages) as any,
-      shared: true,
-      address: "i64",
-    } as any);
-  }
-  return new WebAssembly.Memory({
-    initial: layout.initialPages,
-    maximum: layout.maximumPages,
-    shared: true,
-  });
+  return createMemoryForPtrWidth(
+    ptrWidth,
+    layout.initialPages,
+    layout.maximumPages,
+    true,
+  );
 }
 
 export function growMemoryToCover(
@@ -321,9 +315,5 @@ export function growMemoryToCover(
   const currentPages = Math.ceil(memory.buffer.byteLength / WASM_PAGE_SIZE);
   const delta = requiredPages - currentPages;
   if (delta <= 0) return;
-  if (ptrWidth === 8) {
-    memory.grow(BigInt(delta) as any);
-  } else {
-    memory.grow(delta);
-  }
+  growMemoryForPtrWidth(memory, delta, ptrWidth);
 }

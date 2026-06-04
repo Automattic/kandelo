@@ -1,6 +1,7 @@
 import { CentralizedKernelWorker } from "@host/kernel-worker";
 import { BrowserWorkerAdapter } from "@host/worker-adapter-browser";
 import { detectPtrWidth, extractHeapBase } from "@host/constants";
+import { createMemoryForPtrWidth, growMemoryForPtrWidth } from "@host/wasm-memory";
 import { LocalVirtualNetwork } from "@host/networking/virtual-network";
 import { DeviceFileSystem } from "@host/vfs/device-fs";
 import { MemoryFileSystem } from "@host/vfs/memory-fs";
@@ -133,29 +134,13 @@ async function loadArtifacts(): Promise<ArtifactSet> {
 }
 
 function createProcessMemory(ptrWidth: 4 | 8, initialPages = 17): WebAssembly.Memory {
-  if (ptrWidth === 8) {
-    return new WebAssembly.Memory({
-      initial: BigInt(initialPages) as unknown as number,
-      maximum: BigInt(MAX_PAGES) as unknown as number,
-      shared: true,
-      address: "i64",
-    } as WebAssembly.MemoryDescriptor);
-  }
-  return new WebAssembly.Memory({
-    initial: initialPages,
-    maximum: MAX_PAGES,
-    shared: true,
-  });
+  return createMemoryForPtrWidth(ptrWidth, initialPages, MAX_PAGES, true);
 }
 
 function growToMax(memory: WebAssembly.Memory, ptrWidth: 4 | 8, currentPages: number): void {
   const pages = MAX_PAGES - currentPages;
   if (pages <= 0) return;
-  if (ptrWidth === 8) {
-    memory.grow(BigInt(pages) as unknown as number);
-  } else {
-    memory.grow(pages);
-  }
+  growMemoryForPtrWidth(memory, pages, ptrWidth);
 }
 
 function createMachineIO(

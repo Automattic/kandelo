@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../src/binary-resolver";
+import { createMemory64 } from "../src/wasm-memory";
 
 /**
  * Coverage for the ABI version surface:
@@ -24,12 +25,7 @@ describe("ABI version marker", () => {
     // Match host/src/kernel.ts. The kernel wasm grows when we add
     // synthetic data (e.g. /etc/ssl/cert.pem); 24 pages keeps headroom
     // without re-tuning per change.
-    const memory = new WebAssembly.Memory({
-      initial: 24n,
-      maximum: 16384n,
-      shared: true,
-      address: "i64",
-    } as unknown as WebAssembly.MemoryDescriptor);
+    const memory = createMemory64(24, 16384, true);
     const module = await WebAssembly.compile(bytes as BufferSource);
     // The kernel imports many host functions. We only need to inspect
     // the exports, so provide minimal stubs for every import.

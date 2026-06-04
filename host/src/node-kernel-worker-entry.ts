@@ -45,6 +45,7 @@ import {
   FORK_SAVE_BUFFER_SIZE,
   type ProcessMemoryLayout,
 } from "./process-memory";
+import { createMemoryForPtrWidth } from "./wasm-memory";
 import type { PlatformIO } from "./types";
 import type {
   CentralizedWorkerInitMessage,
@@ -233,19 +234,7 @@ function createSharedProcessMemory(
   initialPages: number,
   maximumPages: number,
 ): WebAssembly.Memory {
-  if (ptrWidth === 8) {
-    return new WebAssembly.Memory({
-      initial: BigInt(initialPages) as any,
-      maximum: BigInt(maximumPages) as any,
-      shared: true,
-      address: "i64",
-    } as any);
-  }
-  return new WebAssembly.Memory({
-    initial: initialPages,
-    maximum: maximumPages,
-    shared: true,
-  });
+  return createMemoryForPtrWidth(ptrWidth, initialPages, maximumPages, true);
 }
 
 function threadAllocatorForLayout(
