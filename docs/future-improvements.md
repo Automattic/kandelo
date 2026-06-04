@@ -106,6 +106,16 @@ or recreating the worker.
 **Files:** `host/src/browser-kernel-worker-entry.ts`,
 `host/src/node-kernel-worker-entry.ts`, `host/src/process-memory.ts`
 
+### Move pthread control channels to a separate Wasm control memory
+WebAssembly multi-memory can eventually split guest process memory from
+host/kernel communication memory. That would let pthread syscall channels,
+spill buffers, and fork-save scratch storage grow in a separate per-process
+control memory instead of being statically reserved in the guest process memory
+prefix. Safari/iOS Safari support is not sufficient for this to be the only
+browser ABI yet, so this remains future work with a single-memory fallback.
+
+**Plan:** `docs/plans/2026-06-04-pthread-control-memory-multimemory-plan.md`
+
 ### Use a tracked dlopen memory arena instead of one mmap per side module
 `host/src/worker-main.ts` currently allocates each dlopen side module's
 linear-memory data with a synchronous anonymous `mmap` through the syscall
