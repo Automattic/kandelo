@@ -138,21 +138,6 @@ export class ThreadPageAllocator {
       this.ptrWidth,
     );
 
-    // Check if TLS page already has data (diagnostic: detect address space overlap)
-    const preCheck = new DataView(memory.buffer);
-    let nonZeroCount = 0;
-    for (let i = 0; i < 64; i += 4) {
-      if (preCheck.getUint32(tlsOffset + i, true) !== 0) nonZeroCount++;
-    }
-    if (nonZeroCount > 0) {
-      const vals: string[] = [];
-      for (let i = 0; i < 64; i += 4) {
-        vals.push(`0x${preCheck.getUint32(tlsOffset + i, true).toString(16).padStart(8, '0')}`);
-      }
-      console.error(`[thread-alloc] WARNING: TLS page 0x${tlsOffset.toString(16)} has ${nonZeroCount}/16 non-zero dwords BEFORE zeroing!`);
-      console.error(`[thread-alloc]   data: ${vals.join(' ')}`);
-    }
-
     // Zero channel, TLS, and the per-thread fork save buffer.
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
     new Uint8Array(memory.buffer, tlsOffset, WASM_PAGE_SIZE).fill(0);

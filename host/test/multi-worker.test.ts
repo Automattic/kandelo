@@ -2,7 +2,7 @@
 //
 // Tests CentralizedKernelWorker process management: register/unregister,
 // setNextChildPid, and fork flow.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
@@ -12,7 +12,7 @@ import {
   createProcessMemory as createLayoutMemory,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
-import { CH_TOTAL_SIZE, WASM_PAGE_SIZE } from "../src/constants";
+import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 
@@ -51,6 +51,49 @@ function registerProcess(
 }
 
 describe("CentralizedKernelWorker Process Management", () => {
+  it("does not lower compact process max_addr when adding dynamic pthread channels", () => {
+    const setMaxAddr = vi.fn(() => 0);
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      initialized: true,
+      hostReaped: new Set(),
+      processes: new Map(),
+      activeChannels: [],
+      channelTids: new Map(),
+      threadForkContexts: new Map(),
+      usePolling: true,
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
+      kernelInstance: {
+        exports: {
+          kernel_create_process: vi.fn(() => 0),
+          kernel_set_brk_base: vi.fn(() => 0),
+          kernel_set_mmap_base: vi.fn(() => 0),
+          kernel_set_max_addr: setMaxAddr,
+        },
+      },
+    }) as CentralizedKernelWorker;
+    const highThreadChannelOffset = 0x04000000 + 2 * WASM_PAGE_SIZE;
+    const memory = new WebAssembly.Memory({
+      initial: highThreadChannelOffset / WASM_PAGE_SIZE + 1,
+      maximum: DEFAULT_MAX_PAGES,
+      shared: true,
+    });
+    const maxAddr = 0x20000000;
+
+    kw.registerProcess(321, memory, [4 * WASM_PAGE_SIZE], {
+      brkBase: 4 * WASM_PAGE_SIZE,
+      mmapBase: 4 * WASM_PAGE_SIZE,
+      maxAddr,
+    });
+    kw.addChannel(321, highThreadChannelOffset, 7);
+
+    expect(setMaxAddr).toHaveBeenCalledTimes(1);
+    expect(setMaxAddr).toHaveBeenCalledWith(321, maxAddr);
+  });
+
   it("should register and unregister processes", async () => {
     const kw = new CentralizedKernelWorker(
       { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },

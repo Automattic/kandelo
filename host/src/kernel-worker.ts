@@ -448,6 +448,12 @@ interface ProcessRegistration {
   channels: ChannelInfo[];
   /** Pointer width: 4 for wasm32, 8 for wasm64. */
   ptrWidth: 4 | 8;
+  /**
+   * True when the host registered a compact/dynamic process layout with an
+   * explicit address-space ceiling. Legacy high-address thread channels lower
+   * max_addr as channels are added; dynamic pthread control slots must not.
+   */
+  explicitMaxAddr: boolean;
 }
 
 interface RegisterProcessOptions {
@@ -1090,7 +1096,13 @@ export class CentralizedKernelWorker {
       consecutiveSyscalls: 0,
     }));
 
-    const registration: ProcessRegistration = { pid, memory, channels, ptrWidth: options?.ptrWidth ?? 4 };
+    const registration: ProcessRegistration = {
+      pid,
+      memory,
+      channels,
+      ptrWidth: options?.ptrWidth ?? 4,
+      explicitMaxAddr: options?.maxAddr !== undefined,
+    };
     this.processes.set(pid, registration);
     this.activeChannels.push(...channels);
 
@@ -1629,7 +1641,7 @@ export class CentralizedKernelWorker {
     // process's mmap base when the process is registered.
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: KernelPointer) => number) | undefined;
-    if (setMaxAddr) {
+    if (setMaxAddr && !registration.explicitMaxAddr) {
       const tlsPageAddr = channelOffset - 2 * WASM_PAGE_SIZE;
       if (tlsPageAddr >= PROCESS_MMAP_BASE) {
         setMaxAddr(pid, this.toKernelPtr(tlsPageAddr));
@@ -7159,6 +7171,7 @@ export class CentralizedKernelWorker {
   private highControlFloorForProcess(pid: number): number | null {
     const registration = this.processes.get(pid);
     if (!registration) return null;
+    if (registration.explicitMaxAddr) return null;
     let floor: number | null = null;
     for (const ch of registration.channels) {
       const tlsPageAddr = ch.channelOffset - 2 * WASM_PAGE_SIZE;
