@@ -2,7 +2,7 @@
 
 > **For Claude (future-self):** Pick up at Task 3 (the implementation). Tasks 1–2 are already done and committed-in-context: the reproduction test exists at `crates/fork-instrument/tests/large_dispatcher.rs` and the root cause is fully identified. Read the **Findings already established** section first; do not re-derive.
 
-**Goal:** Fix kandelo issue [#631](https://github.com/Automattic/kandelo/issues/631). Replace `populate_dispatch_structure`'s linear N-deep nesting with a recursive bucketed dispatch whose worst-case nesting depth is `O(M · log_M(N))` for `N` fork-path call sites and bucket size `M`. Eliminates the V8 "Maximum call stack size exceeded" failure on dispatcher-shaped LLVM helpers (e.g. PHP-FPM ~1015 indirect call sites in one function) and removes the need for the downstream `MAX_FORK_PATH_CALL_SITES` workaround in [WordPress/wordpress-playground#3635](https://github.com/WordPress/wordpress-playground/pull/3635) entirely.
+**Goal:** Fix kandelo issue [#631](https://github.com/Automattic/kandelo/issues/631). Replace `populate_dispatch_structure`'s linear N-deep nesting with a recursive bucketed dispatch whose worst-case nesting depth is `O(M · log_M(N))` for `N` fork-path call sites and bucket size `M`. Bounds the dispatcher shape that was reported to trigger V8 `Maximum call stack size exceeded` failures on PHP-FPM-style LLVM helpers (~1015 indirect call sites in one function), and removes the need for the downstream `MAX_FORK_PATH_CALL_SITES` workaround in [WordPress/wordpress-playground#3635](https://github.com/WordPress/wordpress-playground/pull/3635) entirely.
 
 **Branch:** `fix-issue-631-fork-instrument-skip` (already created from `upstream/main` in worktree at `/Users/mho/emdash/worktrees/wasm-posix-kernel/fix-fork-instrumentation/`). The original `fix-fork-instrumentation` branch was a misnamed fbdoom worktree — do NOT use it.
 
@@ -58,7 +58,7 @@ The nesting is load-bearing: `br_table` with N targets requires those N labels t
 
 Linear scaling confirmed: depth = N + 3 (the +3 is `$unwind_save`, `$dispatch_normal`, and the preamble `IfElse` consequent).
 
-Production PHP-FPM has ~1015 call sites in its largest dispatcher → depth ~1018, exceeding V8's wasm-decoder control-flow limit (~1024) and well past the Liftoff compiler's recursion budget.
+Production PHP-FPM reportedly has ~1015 call sites in its largest dispatcher → depth ~1018 in the old shape. That is deep enough to hit implementation-dependent engine/resource limits in the downstream browser integration, even though the exact V8 threshold is not a WebAssembly semantic limit.
 
 ### 3. Why the asyncify-style "gate every call site with an if" approach is rejected
 
@@ -93,7 +93,7 @@ Worst-case depth: `M · ⌈log_M(N)⌉`. For `M=32`:
 - `N=1,000,000` → depth ≈ 128 (four levels).
 - `N=1,000,000,000` → depth ≈ 192 (six levels).
 
-All comfortably under V8's wasm-decoder limit (~1024) for arbitrary N.
+All are bounded independently of `N`, avoiding the linear-depth shape that triggered the downstream workaround.
 
 ### IR shape at each tree node
 

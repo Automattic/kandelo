@@ -1,5 +1,5 @@
-//! Regression tests for issue #631 — large dispatchers blow V8's
-//! control-flow nesting limit.
+//! Regression tests for issue #631 — large dispatchers produce
+//! pathologically deep structured-control nesting.
 //!
 //! Background. `instrument_one_function_switch` rewrites a fork-path
 //! function's body as:
@@ -24,8 +24,9 @@
 //! The nesting depth grows with the number of fork-path call sites in
 //! the function. On a real `php-fpm` binary one dispatcher-shaped helper
 //! has ~1015 fork-path-relevant `call_indirect` sites; after
-//! instrumentation the resulting ~1000 nested blocks exceed V8's wasm
-//! decoder limit (`Maximum call stack size exceeded`).
+//! instrumentation the resulting ~1000 nested blocks were reported to
+//! fail in the downstream browser/PHP-FPM integration with
+//! `Maximum call stack size exceeded`.
 //!
 //! The downstream WordPress Playground integration worked around this
 //! by dropping such large fork-path entries with a `MAX_FORK_PATH_CALL_SITES`
@@ -227,10 +228,10 @@ fn collect_br_if_targets(local: &LocalFunction) -> Vec<InstrSeqId> {
     out
 }
 
-/// Bound the instrumented dispatcher's nesting depth to a value V8 can
-/// reliably compile. The real failure threshold is V8's wasm-decoder
-/// control-flow limit (currently ~1024) but the per-byte and Liftoff
-/// compilation limits are tighter on production builds.
+/// Project-level structural ceiling for the old single-leaf cases.
+/// The exact engine failure threshold is implementation-dependent; this
+/// test pins the shape that downstream work had to avoid with a skip
+/// heuristic.
 const SAFE_MAX_DEPTH: usize = 64;
 
 /// Two-level / three-level bucketed dispatch ceiling. With
@@ -257,7 +258,7 @@ fn validate(bytes: &[u8]) {
 
 /// Reproduction: instrumenting a direct-call dispatcher with N
 /// fork-path calls produces a body whose nesting depth is at least N.
-/// V8 rejects the result on production binaries.
+/// Downstream production binaries reported engine/resource failures.
 #[test]
 fn direct_dispatcher_nesting_depth_scales_with_call_count() {
     for &n in &[8usize, 16, 32, 64, 100] {
@@ -268,12 +269,11 @@ fn direct_dispatcher_nesting_depth_scales_with_call_count() {
         assert!(
             depth <= SAFE_MAX_DEPTH,
             "issue #631: dispatcher with {n} fork-path calls produced an \
-             instrumented body of depth {depth}, exceeding the safe V8 \
-             ceiling of {SAFE_MAX_DEPTH}. Each additional fork-path call \
-             site adds another POST_K block; production binaries with \
-             ~1000 such call sites exceed V8's wasm decoder control-flow \
-             limit and crash with `RangeError: Maximum call stack size \
-             exceeded`."
+             instrumented body of depth {depth}, exceeding the project \
+             structural ceiling of {SAFE_MAX_DEPTH}. Each additional \
+             fork-path call site adds another POST_K block; downstream \
+             production binaries with ~1000 such call sites reported \
+             `RangeError: Maximum call stack size exceeded`."
         );
     }
 }
@@ -301,7 +301,8 @@ fn indirect_dispatcher_nesting_depth_scales_with_call_count() {
             depth <= SAFE_MAX_DEPTH,
             "issue #631 (indirect): dispatcher with {n} fork-path \
              call_indirect sites produced an instrumented body of depth \
-             {depth}, exceeding the safe V8 ceiling of {SAFE_MAX_DEPTH}. \
+             {depth}, exceeding the project structural ceiling of \
+             {SAFE_MAX_DEPTH}. \
              This is the wordpress-playground reproduction shape — \
              `MAX_FORK_PATH_CALL_SITES` was added downstream as a workaround."
         );

@@ -1702,9 +1702,8 @@ fn call_arg_types(module: &Module, cs: &CallSiteInfo) -> Vec<ValType> {
 
 /// Leaf size for the recursive bucketed dispatch. Each leaf handles at
 /// most this many fork-path call sites; deeper levels recurse with the
-/// same bucket size. With `BUCKET_SIZE = 32`, depth stays under V8's
-/// wasm-decoder control-flow limit even for production binaries with
-/// thousands of fork-path calls per dispatcher (see
+/// same bucket size. With `BUCKET_SIZE = 32`, depth stays bounded for
+/// production binaries with thousands of fork-path calls per dispatcher (see
 /// `docs/plans/2026-06-05-fork-instrument-recursive-bucketing-plan.md`).
 pub const BUCKET_SIZE: usize = 32;
 
