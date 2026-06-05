@@ -201,7 +201,8 @@ export async function runBrowserBenchmarks(
     });
 
     // Navigate to benchmark page
-    await page.goto(`http://localhost:${port}/pages/benchmark/`, {
+    const profileQuery = process.env.BENCHMARK_PROFILE === "1" ? "?profile=1" : "";
+    await page.goto(`http://localhost:${port}/pages/benchmark/${profileQuery}`, {
       waitUntil: "networkidle",
       timeout: 30_000,
     });
