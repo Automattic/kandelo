@@ -51,6 +51,22 @@ describe("symlink and lstat", () => {
     expect(st.mode & S_IFMT).toBe(S_IFLNK);
   });
 
+  it("unlink removes a dangling symlink itself", () => {
+    const mfs = createMemfs();
+
+    const fd = mfs.open("/target.txt", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    mfs.close(fd);
+    mfs.symlink("target.txt", "/link.txt");
+
+    mfs.unlink("/target.txt");
+    expect(mfs.lstat("/link.txt").mode & S_IFMT).toBe(S_IFLNK);
+
+    // POSIX unlink(2) unlinks the directory entry named by path. When path is
+    // a symlink, it removes the link inode and does not follow the target.
+    mfs.unlink("/link.txt");
+    expect(() => mfs.lstat("/link.txt")).toThrow();
+  });
+
   it("readlink returns the symlink target", () => {
     const mfs = createMemfs();
     mfs.symlink("/some/path", "/mylink");
