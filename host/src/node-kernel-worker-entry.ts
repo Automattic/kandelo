@@ -36,6 +36,7 @@ import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
+import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import { detectPtrWidth, extractHeapBase } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
@@ -144,11 +145,7 @@ interface ThreadWorkerInfo {
   termination?: Promise<void>;
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
-const threadTerminators = new Map<string, () => Promise<void>>();
-
-function threadKey(pid: number, channelOffset: number): string {
-  return `${pid}:${channelOffset}`;
-}
+const threadExits = new ThreadExitCoordinator();
 
 async function terminateTrackedWorker(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
@@ -163,7 +160,7 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
   threadWorkers.delete(pid);
   for (const t of threads) {
     await (t.termination ?? terminateTrackedWorker(t.worker));
-    threadTerminators.delete(threadKey(pid, t.channelOffset));
+    threadExits.release(pid, t.channelOffset);
   }
 }
 
@@ -1039,7 +1036,7 @@ async function handleClone(
     if (reclaimed) return;
     reclaimed = true;
     processInfo.threadAllocator.free(alloc.basePage);
-    threadTerminators.delete(threadKey(pid, alloc.channelOffset));
+    threadExits.release(pid, alloc.channelOffset);
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);
@@ -1052,7 +1049,7 @@ async function handleClone(
     }
     return threadEntry.termination;
   };
-  threadTerminators.set(threadKey(pid, alloc.channelOffset), terminateThreadEntry);
+  threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
   const failThread = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
@@ -1075,10 +1072,7 @@ async function handleClone(
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {
-  const terminateThreadEntry = threadTerminators.get(threadKey(pid, channelOffset));
-  if (!terminateThreadEntry) return false;
-  void terminateThreadEntry();
-  return true;
+  return threadExits.requestExit(pid, channelOffset);
 }
 
 function handleExit(pid: number, exitStatus: number): void {
