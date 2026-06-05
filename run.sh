@@ -1661,9 +1661,9 @@ clean_target() {
             rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
             # Keep kernel wasm files
-            if [ -f "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm" ]; then
+            if [ -f "$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm" ]; then
                 mkdir -p "$REPO_ROOT/host/wasm"
-                cp "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm" \
+                cp "$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm" \
                     "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"
             fi
             warn "Cleaned programs" ;;

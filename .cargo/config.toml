@@ -1,14 +1,11 @@
 [build]
-target = "wasm64-unknown-unknown"
+target = "wasm32-unknown-unknown"
 
 # Kernel globals assume single-threaded access; serialize cargo tests.
 [env]
 RUST_TEST_THREADS = "1"
 
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+atomics,+bulk-memory,+mutable-globals"]
-
-[target.wasm64-unknown-unknown]
 rustflags = [
   "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
   # Current nightly turned `panic_immediate_abort` from a build-std-feature
@@ -22,6 +19,17 @@ rustflags = [
   # stopped auto-injecting it when --shared-memory is set, so without it the
   # kernel allocates a private internal memory and the host's
   # SharedArrayBuffer is unreachable (channel handshake silently no-ops).
+  "-C", "link-arg=--import-memory",
+  "-C", "link-arg=--export-memory",
+  "-C", "link-arg=--shared-memory",
+  "-C", "link-arg=--max-memory=1073741824",
+]
+
+[target.wasm64-unknown-unknown]
+rustflags = [
+  "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+  "-Zunstable-options",
+  "-C", "panic=immediate-abort",
   "-C", "link-arg=--import-memory",
   "-C", "link-arg=--export-memory",
   "-C", "link-arg=--shared-memory",

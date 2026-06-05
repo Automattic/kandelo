@@ -61,6 +61,11 @@ describe("CentralizedKernelWorker Process Management", () => {
       channelTids: new Map(),
       threadForkContexts: new Map(),
       usePolling: true,
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
       kernelInstance: {
         exports: {
           kernel_create_process: vi.fn(() => 0),
@@ -86,7 +91,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     kw.addChannel(321, highThreadChannelOffset, 7);
 
     expect(setMaxAddr).toHaveBeenCalledTimes(1);
-    expect(setMaxAddr).toHaveBeenCalledWith(321, BigInt(maxAddr));
+    expect(setMaxAddr).toHaveBeenCalledWith(321, maxAddr);
   });
 
   it("should register and unregister processes", async () => {
