@@ -1723,6 +1723,170 @@ fn call_arg_types(module: &Module, cs: &CallSiteInfo) -> Vec<ValType> {
 // Dispatch-structure emission
 // ----------------------------------------------------------------------
 
+/// Leaf size for the recursive bucketed dispatch. Each leaf handles at
+/// most this many fork-path call sites; deeper levels recurse with the
+/// same bucket size. With `BUCKET_SIZE = 32`, depth stays under V8's
+/// wasm-decoder control-flow limit even for production binaries with
+/// thousands of fork-path calls per dispatcher (see
+/// `docs/plans/2026-06-05-fork-instrument-recursive-bucketing-plan.md`).
+pub const BUCKET_SIZE: usize = 32;
+
+/// Static partition of `[0, n_calls)` into buckets handled by the
+/// recursive dispatch. Built before any IR emission so the topology
+/// (depths, span constants, child counts) is known up front and the
+/// emit step can recurse without surprises.
+///
+/// Invariants:
+/// - `Leaf { start, end }` covers `end - start` consecutive call sites,
+///   with `1 <= end - start <= BUCKET_SIZE`. The leaf inherits the
+///   single-leaf emission shape from `emit_leaf_dispatch`.
+/// - `Internal { children, span_per_child }` partitions a contiguous
+///   call-site range into `children.len()` consecutive sub-ranges, each
+///   of length `span_per_child` except possibly the last (which may be
+///   smaller). `span_per_child` is a power of `BUCKET_SIZE` baked into
+///   the dispatch wat as an i32 divisor at emit time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchTree {
+    Leaf {
+        start: usize,
+        end: usize,
+    },
+    Internal {
+        children: Vec<DispatchTree>,
+        span_per_child: usize,
+    },
+}
+
+impl DispatchTree {
+    /// Maximum walker depth this subtree contributes, measured the same
+    /// way as `tests/large_dispatcher.rs::max_nesting_depth`: every
+    /// `Block`/`Loop`/`IfElse`/`TryTable` walked into adds one level.
+    ///
+    /// For a leaf placed at the function root (its outermost block is
+    /// the function-level `$unwind_save`), this yields the absolute
+    /// walker depth at the deepest IfElse consequent inside the
+    /// dispatch. For a subtree nested inside an internal node's
+    /// `$child_K` slot, the same value still bounds the subtree's
+    /// internal depth — the surrounding `$child_K` blocks of the
+    /// parent are accounted for in the parent's own `max_depth`.
+    ///
+    /// Recurrence:
+    /// - Leaf with `n` calls: `n + 3` (one block per `$POST_K`, plus
+    ///   `$unwind_save`, `$dispatch_normal`, and the REWIND IfElse
+    ///   consequent).
+    /// - Internal with `B` children: the deepest path runs either
+    ///   through the dispatch IfElse (`$node_exit` → `$child_*` chain
+    ///   → `$node_dispatch` → IfElse, depth `B + 3`) or through a
+    ///   child. Child K sits at `$child_K` which is opened at walker
+    ///   depth `B - K + 1` from `$node_exit`; the child's own
+    ///   emission shares that block as its outermost, contributing
+    ///   `max_depth(C_K) - 1` further levels on top. So child K's
+    ///   contribution is `B - K + max_depth(C_K)`. Because
+    ///   `$child_0` sits at the deepest slot (depth `B + 1`), child 0
+    ///   typically dominates for balanced subtrees; the max formula
+    ///   stays safe for any partition.
+    ///
+    /// Used by `tests/dispatch_tree.rs` to verify the
+    /// `O(M · log_M(N))` depth invariant.
+    pub fn max_depth(&self) -> usize {
+        match self {
+            DispatchTree::Leaf { start, end } => (end - start) + 3,
+            DispatchTree::Internal { children, .. } => {
+                let b = children.len();
+                let deepest_child_path = children
+                    .iter()
+                    .enumerate()
+                    .map(|(k, c)| (b - k) + c.max_depth())
+                    .max()
+                    .expect("Internal node must have at least one child");
+                deepest_child_path.max(b + 3)
+            }
+        }
+    }
+
+    /// First call-site index covered by this subtree.
+    pub fn start(&self) -> usize {
+        match self {
+            DispatchTree::Leaf { start, .. } => *start,
+            DispatchTree::Internal { children, .. } => {
+                children.first().expect("non-empty Internal").start()
+            }
+        }
+    }
+
+    /// One past the last call-site index covered by this subtree.
+    pub fn end(&self) -> usize {
+        match self {
+            DispatchTree::Leaf { end, .. } => *end,
+            DispatchTree::Internal { children, .. } => {
+                children.last().expect("non-empty Internal").end()
+            }
+        }
+    }
+}
+
+/// Partition `[0, n_calls)` into a balanced dispatch tree with leaf
+/// bucket size `bucket_size`.
+///
+/// - `n_calls == 0` → returns the degenerate empty leaf `Leaf { 0, 0 }`.
+///   The caller (`populate_dispatch_structure`) handles the zero-call
+///   case directly and never asks for the tree, but the constructor
+///   stays total to keep property tests simple.
+/// - `n_calls <= bucket_size` → a single `Leaf { 0, n_calls }`. **No
+///   diff from the pre-bucketing single-leaf code path**: existing
+///   binaries (almost all real cases) emit the exact same IR.
+/// - Otherwise → an `Internal` whose `span_per_child` is the largest
+///   power of `bucket_size` that is strictly less than `n_calls`, with
+///   children built recursively over each sub-range.
+pub fn build_dispatch_tree(n_calls: usize, bucket_size: usize) -> DispatchTree {
+    assert!(bucket_size >= 2, "bucket_size must be >= 2");
+
+    if n_calls <= bucket_size {
+        return DispatchTree::Leaf {
+            start: 0,
+            end: n_calls,
+        };
+    }
+    build_dispatch_tree_range(0, n_calls, bucket_size)
+}
+
+/// Recursive workhorse for `build_dispatch_tree`. Partitions
+/// `[start, end)` with `start < end` into a tree node, choosing the
+/// largest power-of-`bucket_size` span that still yields at least two
+/// children.
+fn build_dispatch_tree_range(start: usize, end: usize, bucket_size: usize) -> DispatchTree {
+    debug_assert!(start < end);
+    let n = end - start;
+    if n <= bucket_size {
+        return DispatchTree::Leaf { start, end };
+    }
+
+    // Find the largest power of `bucket_size` that is < n. This is the
+    // span of each child except possibly the last. For n in (M, M^2],
+    // span = M; for n in (M^2, M^3], span = M^2; etc.
+    let mut span: usize = bucket_size;
+    while span
+        .checked_mul(bucket_size)
+        .map(|next| next < n)
+        .unwrap_or(false)
+    {
+        span *= bucket_size;
+    }
+
+    let mut children = Vec::new();
+    let mut cursor = start;
+    while cursor < end {
+        let child_end = (cursor + span).min(end);
+        children.push(build_dispatch_tree_range(cursor, child_end, bucket_size));
+        cursor = child_end;
+    }
+
+    DispatchTree::Internal {
+        children,
+        span_per_child: span,
+    }
+}
+
 fn populate_dispatch_normal(
     local: &mut LocalFunction,
     dispatch_normal: InstrSeqId,
