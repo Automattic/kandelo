@@ -6077,16 +6077,30 @@ export class CentralizedKernelWorker {
     const tlsPtr = origArgs[3];
     const ctidPtr = origArgs[4];
 
+    // Register the clear-TID pointer before starting the host Worker. A very
+    // short-lived pthread can reach SYS_EXIT before onClone resolves.
+    if (ctidPtr !== 0) {
+      this.threadCtidPtrs.set(`${channel.pid}:${tid}`, ctidPtr);
+    }
+
     this.callbacks.onClone(
       channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
     ).then((assignedTid) => {
-      if (!this.processes.has(channel.pid)) return;
-      // Store ctidPtr for CLONE_CHILD_CLEARTID on thread exit
-      if (ctidPtr !== 0) {
+      if (!this.processes.has(channel.pid)) {
+        if (ctidPtr !== 0) {
+          this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
+        }
+        return;
+      }
+      if (assignedTid !== tid && ctidPtr !== 0) {
+        this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
         this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
       }
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
     }).catch((err) => {
+      if (ctidPtr !== 0) {
+        this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
+      }
       console.error(`[kernel-worker] onClone failed: ${err}`);
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 12); // ENOMEM
     });
