@@ -81,10 +81,11 @@ const SM_NODE_WORKER_RUNTIME_COMMAND = [
   "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
   "const sab=new SharedArrayBuffer(8);",
   "const view=new Int32Array(sab);",
-  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
   "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
   "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
   "console.log('worker', Atomics.load(view,0));",
+  "worker.terminate();",
   "\"",
 ].join(" ");
 
@@ -95,10 +96,11 @@ const SM_NODE_WORKER_DEMO_COMMAND = [
   "console.log('intl', new Intl.NumberFormat('de-DE').format(1234567.89));",
   "const sab=new SharedArrayBuffer(8);",
   "const view=new Int32Array(sab);",
-  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
   "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
   "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
   "console.log('worker', Atomics.load(view,0));",
+  "worker.terminate();",
   "\"",
 ].join(" ");
 
@@ -120,7 +122,7 @@ function spiderMonkeyNodeRuntimeCommand(): string {
 }
 
 function spiderMonkeyNodeSmokeCommand(): string {
-  return `${SM_NODE_WORKER_RUNTIME_COMMAND} ; npm --version`;
+  return `${SM_NODE_WORKER_RUNTIME_COMMAND} && npm --version`;
 }
 
 function spiderMonkeyNodeGuide(): DemoGuideConfig {

@@ -156,16 +156,18 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForTerminalContent(
     page,
-    /spidermonkey-node\$ ?/,
+    /SpiderMonkey Node[\s\S]*worker\s+42[\s\S]*10\.9\.2[\s\S]*spidermonkey-node\$ ?/,
     180_000,
   );
+  expect(await terminalText(page)).not.toContain("Segmentation fault");
 
   await runTerminalCommand(
     page,
-    "if node -e \"process.stdout.write(String(6 * 7))\" >/tmp/kandelo-node.out; then export PS1=\"KANDELO_\"\"NODE_OK:$(cat /tmp/kandelo-node.out) $ \"; else export PS1=\"KANDELO_\"\"NODE_FAIL:$? $ \"; fi",
+    "node -e \"console.log('KANDELO_NODE_OK:' + (6 * 7))\"",
     "KANDELO_NODE_OK:42",
     180_000,
   );
+  expect(await terminalText(page)).not.toContain("Segmentation fault");
 });
 
 test("Kandelo nginx demo serves its web preview", async ({ page }) => {
