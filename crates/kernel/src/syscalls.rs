@@ -6175,6 +6175,26 @@ fn parse_sockaddr_in(addr: &[u8]) -> Result<([u8; 4], u16), Errno> {
     ))
 }
 
+fn parse_sockaddr_in6(addr: &[u8]) -> Result<([u8; 16], u16), Errno> {
+    use wasm_posix_shared::socket::AF_INET6;
+
+    // struct sockaddr_in6:
+    //   sa_family_t sin6_family (2, little-endian on wasm32)
+    //   in_port_t   sin6_port   (2, network byte order)
+    //   uint32_t    sin6_flowinfo
+    //   struct in6_addr sin6_addr
+    //   uint32_t    sin6_scope_id
+    if addr.len() < 28 {
+        return Err(Errno::EINVAL);
+    }
+    if sockaddr_family(addr)? as u32 != AF_INET6 {
+        return Err(Errno::EAFNOSUPPORT);
+    }
+    let mut ip = [0u8; 16];
+    ip.copy_from_slice(&addr[8..24]);
+    Ok((ip, u16::from_be_bytes([addr[2], addr[3]])))
+}
+
 fn write_sockaddr_in(buf: &mut [u8], addr: [u8; 4], port: u16) -> usize {
     let mut sa = [0u8; 16];
     sa[0] = 2; // AF_INET, little-endian
@@ -6191,8 +6211,31 @@ fn write_sockaddr_in(buf: &mut [u8], addr: [u8; 4], port: u16) -> usize {
     16
 }
 
+fn write_sockaddr_in6(buf: &mut [u8], addr: [u8; 16], port: u16) -> usize {
+    let mut sa = [0u8; 28];
+    sa[0] = 10; // AF_INET6, little-endian
+    sa[1] = 0;
+    let port_be = port.to_be_bytes();
+    sa[2] = port_be[0];
+    sa[3] = port_be[1];
+    // flowinfo remains zero
+    sa[8..24].copy_from_slice(&addr);
+    // scope_id remains zero
+    let n = buf.len().min(28);
+    buf[..n].copy_from_slice(&sa[..n]);
+    28
+}
+
 fn is_loopback_addr(addr: [u8; 4]) -> bool {
     addr[0] == 127
+}
+
+fn is_loopback_addr6(addr: [u8; 16]) -> bool {
+    addr == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+}
+
+fn is_unspecified_addr6(addr: [u8; 16]) -> bool {
+    addr == [0; 16]
 }
 
 fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
@@ -6203,11 +6246,22 @@ fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
 }
 
 fn is_supported_udp_route_addr(addr: [u8; 4]) -> bool {
-    is_loopback_addr(addr) || is_virtual_network_addr(addr)
+    addr == [0, 0, 0, 0] || is_loopback_addr(addr) || is_virtual_network_addr(addr)
 }
 
 fn is_virtual_network_addr(addr: [u8; 4]) -> bool {
     addr[0] == 10 && addr[1] == 88
+}
+
+fn udp_canonical_dst_addr(dst_addr: [u8; 4]) -> [u8; 4] {
+    // Linux treats UDP connect/sendto to INADDR_ANY as a route to local
+    // loopback (getpeername() reports 127.0.0.1). Preserve that generic
+    // socket behavior instead of reporting ENETUNREACH.
+    if dst_addr == [0, 0, 0, 0] {
+        [127, 0, 0, 1]
+    } else {
+        dst_addr
+    }
 }
 
 fn udp_route_local_addr(dst_addr: [u8; 4]) -> [u8; 4] {
@@ -6367,6 +6421,7 @@ fn udp_send_datagram(
 ) -> Result<usize, Errno> {
     use crate::socket::{Datagram, SocketState};
 
+    let dst_addr = udp_canonical_dst_addr(dst_addr);
     let (state, shut_wr) = {
         let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
         (sock.state, sock.shut_wr)
@@ -6492,17 +6547,14 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
 
     match sock.domain {
         SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.bind_addr, sock.bind_port)),
-        SocketDomain::Inet6 => {
-            if buf.len() >= 2 {
-                buf[0] = 10; // AF_INET6
-                buf[1] = 0;
-            }
-            Ok(2)
-        }
+        SocketDomain::Inet6 => Ok(write_sockaddr_in6(buf, sock.bind_addr6, sock.bind_port)),
         SocketDomain::Unix => {
             if let Some(ref path) = sock.bind_path {
-                // sockaddr_un: family(2) + path (null-terminated)
-                let total_len = 2 + path.len() + 1; // +1 for null terminator
+                // sockaddr_un: family(2) + path. Filesystem paths are
+                // null-terminated; Linux abstract namespace paths start with
+                // NUL and use the addrlen as their length (no terminator).
+                let abstract_unix = path.first().copied() == Some(0);
+                let total_len = 2 + path.len() + if abstract_unix { 0 } else { 1 };
                 let n = buf.len().min(total_len);
                 if n >= 1 {
                     buf[0] = 1;
@@ -6514,8 +6566,8 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                 if path_copy > 0 {
                     buf[2..2 + path_copy].copy_from_slice(&path[..path_copy]);
                 }
-                // Null terminate if room
-                if n > 2 + path_copy {
+                // Null terminate filesystem paths if room.
+                if !abstract_unix && n > 2 + path_copy {
                     buf[2 + path_copy] = 0;
                 }
                 Ok(total_len)
@@ -6560,13 +6612,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
     }
     match sock.domain {
         SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.peer_addr, sock.peer_port)),
-        SocketDomain::Inet6 => {
-            if buf.len() >= 2 {
-                buf[0] = 10; // AF_INET6
-                buf[1] = 0;
-            }
-            Ok(2)
-        }
+        SocketDomain::Inet6 => Ok(write_sockaddr_in6(buf, sock.peer_addr6, sock.peer_port)),
         SocketDomain::Unix => {
             if buf.len() >= 2 {
                 buf[0] = 1; // AF_UNIX
@@ -7079,6 +7125,32 @@ pub fn sys_bind(
             sock.state = SocketState::Bound;
             Ok(())
         }
+        SocketDomain::Inet6 => {
+            let (ip, port) = parse_sockaddr_in6(addr)?;
+            if !(is_loopback_addr6(ip) || is_unspecified_addr6(ip)) {
+                return Err(Errno::EADDRNOTAVAIL);
+            }
+
+            let assigned_port = if port == 0 {
+                let p = proc.next_ephemeral_port;
+                proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+                if proc.next_ephemeral_port == 0 {
+                    proc.next_ephemeral_port = 49152;
+                }
+                p
+            } else {
+                port
+            };
+
+            // Kandelo currently implements AF_INET6 as in-kernel loopback.
+            // Do not register it in the IPv4 TCP binding table: IPv6 ::1 and
+            // IPv4 127.0.0.1 can legally bind the same port independently.
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            sock.bind_addr6 = ip;
+            sock.bind_port = assigned_port;
+            sock.state = SocketState::Bound;
+            Ok(())
+        }
         SocketDomain::Unix => {
             // sockaddr_un: family(2) + sun_path (null-terminated, up to 108 bytes)
             if addr.len() < 3 {
@@ -7086,15 +7158,28 @@ pub fn sys_bind(
             }
             // Extract path: starts at offset 2, null-terminated
             let path_bytes = &addr[2..];
-            let path_end = path_bytes
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(path_bytes.len());
-            if path_end == 0 {
-                return Err(Errno::EINVAL);
-            }
-            let sun_path = &path_bytes[..path_end];
-            let resolved = crate::path::resolve_path(sun_path, &proc.cwd);
+            let (resolved, abstract_unix) = if path_bytes.first().copied() == Some(0) {
+                if path_bytes.len() < 2 {
+                    return Err(Errno::EINVAL);
+                }
+                // Linux abstract namespace sockets are identified by the raw
+                // bytes after sun_family, including the leading NUL. No
+                // filesystem inode is created and embedded/trailing NUL bytes
+                // are part of the address.
+                (path_bytes.to_vec(), true)
+            } else {
+                let path_end = path_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(path_bytes.len());
+                if path_end == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                (
+                    crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd),
+                    false,
+                )
+            };
 
             // POSIX: bind() must create a filesystem inode at sun_path so
             // chmod/stat/ls find a node there. Do that first via host O_CREAT|
@@ -7104,31 +7189,34 @@ pub fn sys_bind(
             // here after the package-management rebase dropped it; the same
             // code lives at the merge base but didn't survive into the
             // rebased branch.)
-            use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
-            check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
-            // Linux pathname sockets start with every permission bit enabled,
-            // filtered through the creating process's umask. The backing VFS
-            // inode owns these bits so later chmod/stat operations observe one
-            // authoritative value.
-            let socket_mode = 0o777 & !proc.umask;
-            let h = match host.host_open(
-                &resolved,
-                O_CREAT | O_EXCL | O_WRONLY,
-                socket_mode,
-            ) {
-                Ok(h) => h,
-                Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
-                Err(e) => return Err(e),
-            };
-            host.host_chown(&resolved, proc.euid, proc.egid)?;
-            let _ = host.host_close(h);
+            if !abstract_unix {
+                use wasm_posix_shared::flags::{O_CREAT, O_EXCL, O_WRONLY};
+                check_open_permissions(proc, host, &resolved, O_CREAT | O_EXCL | O_WRONLY)?;
+                // Linux pathname sockets start with every permission bit enabled,
+                // filtered through the creating process's umask. Abstract sockets
+                // have no backing VFS inode at all.
+                let socket_mode = 0o777 & !proc.umask;
+                let h = match host.host_open(
+                    &resolved,
+                    O_CREAT | O_EXCL | O_WRONLY,
+                    socket_mode,
+                ) {
+                    Ok(h) => h,
+                    Err(Errno::EEXIST) => return Err(Errno::EADDRINUSE),
+                    Err(e) => return Err(e),
+                };
+                host.host_chown(&resolved, proc.euid, proc.egid)?;
+                let _ = host.host_close(h);
+            }
 
             // Register in global Unix socket registry. If a stale entry exists
             // (host had no inode but registry did — shouldn't happen normally)
             // unwind the host inode so we don't leak.
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
             if !registry.register(resolved.clone(), proc.pid, sock_idx) {
-                let _ = host.host_unlink(&resolved);
+                if !abstract_unix {
+                    let _ = host.host_unlink(&resolved);
+                }
                 return Err(Errno::EADDRINUSE);
             }
 
@@ -7137,7 +7225,6 @@ pub fn sys_bind(
             sock.state = SocketState::Bound;
             Ok(())
         }
-        SocketDomain::Inet6 => Err(Errno::EADDRNOTAVAIL),
     }
 }
 
@@ -7200,6 +7287,11 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
     if ofd.file_type != FileType::Socket {
         return Err(Errno::ENOTSOCK);
     }
+    // Kandelo's POSIX socket ABI follows platforms where an accepted socket
+    // preserves the listening socket's nonblocking status. Keep the accepted
+    // OFD status flags in sync with that contract so stream metadata and
+    // read/write behavior agree.
+    let accepted_status_flags = O_RDWR | (ofd.status_flags & O_NONBLOCK);
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
 
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -7231,7 +7323,7 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
             let host_handle = -((accepted_sock_idx as i64) + 1);
             let ofd_idx = proc.ofd_table.create(
                 FileType::Socket,
-                O_RDWR,
+                accepted_status_flags,
                 host_handle,
                 b"/dev/socket".to_vec(),
             );
@@ -7255,7 +7347,7 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
     let host_handle = -((accepted_sock_idx as i64) + 1);
     let ofd_idx = proc.ofd_table.create(
         FileType::Socket,
-        O_RDWR,
+        accepted_status_flags,
         host_handle,
         b"/dev/socket".to_vec(),
     );
@@ -7308,8 +7400,9 @@ pub fn sys_connect(
                     return Ok(());
                 }
 
-                let (ip, port) = parse_sockaddr_in(addr)?;
-                if ip == [0, 0, 0, 0] && port == 0 {
+                let (raw_ip, port) = parse_sockaddr_in(addr)?;
+                let ip = udp_canonical_dst_addr(raw_ip);
+                if raw_ip == [0, 0, 0, 0] && port == 0 {
                     return Err(Errno::EADDRNOTAVAIL);
                 }
                 if ip == [255, 255, 255, 255] {
@@ -7340,6 +7433,92 @@ pub fn sys_connect(
             if sock.state == SocketState::Connected {
                 return Err(Errno::EISCONN);
             }
+
+            if sock.domain == SocketDomain::Inet6 {
+                if sock.sock_type != SocketType::Stream {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                let (ip6, port) = parse_sockaddr_in6(addr)?;
+                if !(is_loopback_addr6(ip6) || is_unspecified_addr6(ip6)) {
+                    return Err(Errno::EADDRNOTAVAIL);
+                }
+
+                // AF_INET6 support is currently local-loopback. That is enough
+                // to model standard bind/listen/getsockname behavior and makes
+                // unsupported remote IPv6 fail deterministically instead of
+                // being mis-parsed as IPv4.
+                let mut listener_idx = None;
+                let sock_count = proc.sockets.len();
+                for i in 0..sock_count {
+                    if let Some(s) = proc.sockets.get(i) {
+                        if s.domain == SocketDomain::Inet6
+                            && s.state == SocketState::Listening
+                            && s.bind_port == port
+                            && s.sock_type == SocketType::Stream
+                            && (is_unspecified_addr6(s.bind_addr6) || s.bind_addr6 == ip6)
+                        {
+                            listener_idx = Some(i);
+                            break;
+                        }
+                    }
+                }
+                let listener_idx = listener_idx.ok_or(Errno::ECONNREFUSED)?;
+
+                let (pipe_a_idx, pipe_b_idx) =
+                    proc.alloc_pipe_pair(PipeBuffer::new(65536), PipeBuffer::new(65536));
+
+                let client_sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+                let client_addr6 = if is_unspecified_addr6(client_sock.bind_addr6) {
+                    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+                } else {
+                    client_sock.bind_addr6
+                };
+                let mut client_port = client_sock.bind_port;
+                if client_port == 0 {
+                    client_port = proc.next_ephemeral_port;
+                    proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+                    if proc.next_ephemeral_port == 0 {
+                        proc.next_ephemeral_port = 49152;
+                    }
+                }
+
+                let listener = proc.sockets.get(listener_idx).ok_or(Errno::EBADF)?;
+                let mut accepted_sock = SocketInfo::new(SocketDomain::Inet6, SocketType::Stream, 0);
+                accepted_sock.state = SocketState::Connected;
+                accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+                accepted_sock.send_buf_idx = Some(pipe_b_idx);
+                accepted_sock.bind_addr6 = listener.bind_addr6;
+                accepted_sock.bind_port = listener.bind_port;
+                accepted_sock.peer_addr6 = client_addr6;
+                accepted_sock.peer_port = client_port;
+                let accepted_idx = proc.sockets.alloc(accepted_sock);
+
+                let listener = proc.sockets.get_mut(listener_idx).ok_or(Errno::EBADF)?;
+                listener.listen_backlog.push(accepted_idx);
+                let accept_wake_idx = listener.accept_wake_idx;
+
+                let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                client.send_buf_idx = Some(pipe_a_idx);
+                client.recv_buf_idx = Some(pipe_b_idx);
+                client.state = SocketState::Connected;
+                client.peer_addr6 = ip6;
+                client.peer_port = port;
+                client.peer_idx = Some(accepted_idx);
+                if client.bind_port == 0 {
+                    client.bind_port = client_port;
+                    client.bind_addr6 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+                }
+
+                let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
+                accepted.peer_idx = Some(sock_idx);
+
+                if let Some(idx) = accept_wake_idx {
+                    crate::wakeup::push_accept(idx);
+                }
+
+                return Ok(());
+            }
+
             // Parse sockaddr_in: family(2) + port(2 big-endian) + addr(4)
             if addr.len() < 8 {
                 return Err(Errno::EINVAL);
@@ -7506,14 +7685,21 @@ pub fn sys_connect(
                 return Err(Errno::EINVAL);
             }
             let path_bytes = &addr[2..];
-            let path_end = path_bytes
-                .iter()
-                .position(|&b| b == 0)
-                .unwrap_or(path_bytes.len());
-            if path_end == 0 {
-                return Err(Errno::EINVAL);
-            }
-            let resolved = crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd);
+            let resolved = if path_bytes.first().copied() == Some(0) {
+                if path_bytes.len() < 2 {
+                    return Err(Errno::EINVAL);
+                }
+                path_bytes.to_vec()
+            } else {
+                let path_end = path_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(path_bytes.len());
+                if path_end == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+            };
 
             // Look up the path in the global Unix socket registry
             let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
@@ -16914,6 +17100,63 @@ mod tests {
     }
 
     #[test]
+    fn test_abstract_unix_socket_bind_is_not_filesystem_backed() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.pid = 9023;
+        let fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 1; // AF_UNIX
+        addr[2] = 0; // Linux abstract namespace marker
+        addr[3..8].copy_from_slice(b"abs01");
+        let addrlen = 8;
+
+        sys_bind(&mut proc, &mut host, fd, &addr[..addrlen]).unwrap();
+        assert_eq!(
+            host.next_handle, 100,
+            "abstract AF_UNIX bind must not create a host filesystem inode",
+        );
+
+        let mut name = [0u8; 32];
+        let n = sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(n, addrlen);
+        assert_eq!(&name[..addrlen], &addr[..addrlen]);
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9023);
+    }
+
+    #[test]
+    fn test_abstract_unix_socket_same_process_connect() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.pid = 9024;
+        let server_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 1; // AF_UNIX
+        addr[2] = 0; // abstract namespace
+        addr[3..9].copy_from_slice(b"abs002");
+        let addrlen = 9;
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, 1, 1, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+
+        assert_eq!(
+            sys_write(&mut proc, &mut host, client_fd, b"abstract").unwrap(),
+            8,
+        );
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, accepted_fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"abstract");
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9024);
+    }
+
+    #[test]
     fn test_clock_getres_per_process_cpu_clock() {
         let proc = Process::new(1);
         // clock_getcpuclockid(pid) encodes as (-pid-1)*8 + 2
@@ -17755,6 +17998,41 @@ mod tests {
     }
 
     #[test]
+    fn test_accept_preserves_listener_nonblock_status() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::fcntl_cmd::F_SETFL;
+        use wasm_posix_shared::socket::*;
+
+        let server_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_fcntl(&mut proc, server_fd, F_SETFL, O_NONBLOCK).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2;
+        addr[2] = 0x23;
+        addr[3] = 0x8d; // port 9101
+        sys_bind(&mut proc, &mut host, server_fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, server_fd, 5).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let mut connect_addr = [0u8; 16];
+        connect_addr[0] = 2;
+        connect_addr[2] = 0x23;
+        connect_addr[3] = 0x8d;
+        connect_addr[4] = 127;
+        connect_addr[7] = 1;
+        sys_connect(&mut proc, &mut host, client_fd, &connect_addr).unwrap();
+
+        let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
+        let entry = proc.fd_table.get(accepted_fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        assert_ne!(
+            ofd.status_flags & O_NONBLOCK,
+            0,
+            "accepted socket should preserve listener nonblocking status",
+        );
+    }
+
+    #[test]
     fn test_udp_loopback() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -17799,6 +18077,59 @@ mod tests {
         assert_eq!(&buf[..data_len], b"hello UDP");
         assert_eq!(addr_len, 16);
         assert_eq!(from_addr[0], 2); // AF_INET
+    }
+
+    #[test]
+    fn test_udp_connect_to_inaddr_any_routes_to_loopback() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut addr = [0u8; 16];
+        addr[0] = 2; // AF_INET
+        addr[3] = 80; // port 80, network byte order
+
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let sock_idx = (-(ofd.host_handle + 1)) as usize;
+        let sock = proc.sockets.get(sock_idx).unwrap();
+        assert_eq!(sock.peer_addr, [127, 0, 0, 1]);
+        assert_eq!(sock.bind_addr, [127, 0, 0, 1]);
+    }
+
+    #[test]
+    fn test_inet6_loopback_bind_getsockname_and_connect_refused() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        let mut addr = [0u8; 28];
+        addr[0] = 10; // AF_INET6
+        addr[2] = 0x05;
+        addr[3] = 0x39; // port 1337
+        addr[23] = 1; // ::1
+
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, fd, 5).unwrap();
+
+        let mut name = [0u8; 28];
+        let n = sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(n, 28);
+        assert_eq!(&name[..28], &addr);
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+        let mut refused = [0u8; 28];
+        refused[0] = 10;
+        refused[3] = 1; // ::1:1, no listener
+        refused[23] = 1;
+        assert_eq!(
+            sys_connect(&mut proc, &mut host, client_fd, &refused).unwrap_err(),
+            Errno::ECONNREFUSED,
+        );
     }
 
     // ── Threading tests ──────────────────────────────────────────────
