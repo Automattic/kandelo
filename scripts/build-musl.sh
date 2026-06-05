@@ -142,6 +142,36 @@ elif new_proto not in text:
 path.write_text(text)
 PY
 
+python3 - "$MUSL_DIR/src/thread/__syscall_cp.c" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+
+replacements = {
+    """static long sccp(syscall_arg_t nr,
+                 syscall_arg_t u, syscall_arg_t v, syscall_arg_t w,
+                 syscall_arg_t x, syscall_arg_t y, syscall_arg_t z)""":
+    """static long sccp(SYSCALL_CP_ARG_T nr,
+                 SYSCALL_CP_ARG_T u, SYSCALL_CP_ARG_T v, SYSCALL_CP_ARG_T w,
+                 SYSCALL_CP_ARG_T x, SYSCALL_CP_ARG_T y, SYSCALL_CP_ARG_T z)""",
+    """long (__syscall_cp)(syscall_arg_t nr,
+                    syscall_arg_t u, syscall_arg_t v, syscall_arg_t w,
+                    syscall_arg_t x, syscall_arg_t y, syscall_arg_t z)""":
+    """long (__syscall_cp)(SYSCALL_CP_ARG_T nr,
+                    SYSCALL_CP_ARG_T u, SYSCALL_CP_ARG_T v, SYSCALL_CP_ARG_T w,
+                    SYSCALL_CP_ARG_T x, SYSCALL_CP_ARG_T y, SYSCALL_CP_ARG_T z)""",
+}
+for old, new in replacements.items():
+    if old in text:
+        text = text.replace(old, new, 1)
+    elif new not in text:
+        raise SystemExit(f"build-musl: could not patch __syscall_cp.c pattern: {old.splitlines()[0]}")
+
+path.write_text(text)
+PY
+
 # Copy CRT overlay (e.g., Wasm-specific crt1.c with proper main signature)
 if [ -d "$OVERLAY_DIR/crt" ]; then
     cp -r "$OVERLAY_DIR/crt/"* "$MUSL_DIR/crt/"
