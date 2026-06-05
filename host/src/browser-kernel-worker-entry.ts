@@ -122,6 +122,9 @@ interface ProcessInfo {
   threadAllocator: ThreadPageAllocator;
 }
 const processes = new Map<number, ProcessInfo>();
+const processTeardowns = new Map<number, Promise<void>>();
+const threadedProcessPids = new Set<number>();
+const THREADED_WORKER_TERMINATION_SETTLE_MS = 100;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -180,11 +183,23 @@ interface ThreadWorkerInfo {
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForProcessTeardowns(): Promise<void> {
+  while (processTeardowns.size > 0) {
+    await Promise.allSettled([...processTeardowns.values()]);
+  }
+}
+
 async function terminateTrackedWorker(
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
+  settleMs = 0,
 ): Promise<void> {
   intentionallyTerminated.add(worker as object);
   await worker.terminate().catch(() => {});
+  if (settleMs > 0) await delay(settleMs);
 }
 
 async function terminateThreadWorkers(pid: number): Promise<void> {
@@ -567,6 +582,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
 async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
   try {
+    await waitForProcessTeardowns();
+
     let programBytes: ArrayBuffer;
     if (msg.programBytes) {
       programBytes = msg.programBytes;
@@ -747,6 +764,8 @@ async function handleFork(
   parentMemory: WebAssembly.Memory,
   threadFork?: ForkFromThreadContext,
 ): Promise<number[]> {
+  await waitForProcessTeardowns();
+
   const parentInfo = processes.get(parentPid);
   if (!parentInfo) throw new Error(`Unknown parent pid ${parentPid}`);
 
@@ -950,6 +969,8 @@ async function handlePosixSpawn(
   argv: string[],
   envp: string[],
 ): Promise<number> {
+  await waitForProcessTeardowns();
+
   post({ type: "proc_event", kind: "spawn", pid: childPid });
 
   const ptrWidth = detectPtrWidth(programBytes);
@@ -1011,6 +1032,7 @@ async function handleClone(
 ): Promise<number> {
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
+  threadedProcessPids.add(pid);
 
   // Auto-compile thread module if not already cached.
   // The cache is per-PID so each process's module is compiled once and reused
@@ -1116,45 +1138,56 @@ async function handleClone(
 }
 
 function handleExit(pid: number, exitStatus: number): void {
+  void finishProcessExit(pid, exitStatus);
+}
+
+async function finishProcessExit(pid: number, exitStatus: number): Promise<void> {
+  if (processTeardowns.has(pid)) return;
+
   const info = processes.get(pid);
+  const settleMs = threadedProcessPids.has(pid)
+    ? THREADED_WORKER_TERMINATION_SETTLE_MS
+    : 0;
+  threadedProcessPids.delete(pid);
 
-  // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
-  // case the worker died without sending SYS_EXIT_GROUP (uncaught
-  // wasm trap → onerror, worker-main `{type:"error"}` → finalize(-1),
-  // externally terminated Worker → "exit" event). Without this, a
-  // concurrent waitpid in the parent blocks until destroy because
-  // the kernel never marked the child as a zombie. Idempotent via
-  // `hostReaped`: when the kernel already processed a clean
-  // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
-  // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
-  try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
-  // Check if this is a "top-level" process or a fork child
-  // For now, always deactivate — the main thread tracks exit promises
-  kernelWorker.deactivateProcess(pid);
+  const teardown = (async () => {
+    // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
+    // case the worker died without sending SYS_EXIT_GROUP (uncaught
+    // wasm trap -> onerror, worker-main `{type:"error"}` -> finalize(-1),
+    // externally terminated Worker -> "exit" event). Without this, a
+    // concurrent waitpid in the parent blocks until destroy because
+    // the kernel never marked the child as a zombie. Idempotent via
+    // `hostReaped`: when the kernel already processed a clean
+    // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
+    // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
+    try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
+    // Check if this is a "top-level" process or a fork child
+    // For now, always deactivate — the main thread tracks exit promises
+    kernelWorker.deactivateProcess(pid);
 
-  // Terminate any surviving thread workers for this process; the main
-  // process worker exiting means their shared state (memory, fd table,
-  // signal mask) is gone. Mirrors handleExit in Node-side
-  // node-kernel-worker-entry.ts; without this, threads of an exited
-  // process leak Web Workers indefinitely.
-  const threads = threadWorkers.get(pid);
-  if (threads) {
-    for (const t of threads) {
-      void (t.termination ?? terminateTrackedWorker(t.worker));
+    processes.delete(pid);
+    threadModuleCache.delete(pid);
+    ptyByPid.delete(pid);
+
+    // Terminate any surviving thread workers for this process; the main
+    // process worker exiting means their shared state (memory, fd table,
+    // signal mask) is gone. Browser `Worker.terminate()` is fire-and-forget,
+    // so threaded process exits get a short settle window before another
+    // process worker can be launched.
+    await terminateThreadWorkers(pid);
+    if (info?.worker) {
+      await terminateTrackedWorker(info.worker, settleMs);
     }
-    threadWorkers.delete(pid);
-  }
+  })();
+  processTeardowns.set(pid, teardown);
 
-  if (info?.worker) {
-    void terminateTrackedWorker(info.worker);
-  }
-
-  processes.delete(pid);
-  threadModuleCache.delete(pid);
-  ptyByPid.delete(pid);
-
-  // Notify main thread
   post({ type: "exit", pid, status: exitStatus });
+
+  try {
+    await teardown;
+  } finally {
+    processTeardowns.delete(pid);
+  }
 }
 
 // ── Terminate ──
@@ -1187,6 +1220,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
 
   processes.delete(pid);
   threadModuleCache.delete(pid);
+  threadedProcessPids.delete(pid);
   ptyByPid.delete(pid);
   respond(msg.requestId, true);
 }
@@ -1331,7 +1365,9 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   processes.clear();
   threadModuleCache.clear();
   threadWorkers.clear();
+  threadedProcessPids.clear();
   ptyByPid.clear();
+  await waitForProcessTeardowns();
   respond(msg.requestId, true);
 }
 
