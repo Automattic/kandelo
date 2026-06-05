@@ -588,6 +588,7 @@ build_wp_vfs() {
         info "WP VFS image"
         return
     fi
+    build_shell_vfs
     # Source needed only if we have to build the VFS from scratch.
     build_wordpress
     build_msmtpd
@@ -829,6 +830,7 @@ build_node_vfs() {
         info "Node VFS image"
         return
     fi
+    build_shell_vfs
     build_node
     step "Building Node VFS image"
     bash "$REPO_ROOT/packages/registry/node-vfs/build-node-vfs.sh"
@@ -912,6 +914,7 @@ build_lamp_vfs() {
         info "LAMP VFS image"
         return
     fi
+    build_shell_vfs
     build_wordpress
     build_msmtpd
     step "Building LAMP VFS image"
@@ -926,6 +929,7 @@ build_nginx_vfs() {
     build_dinit
     build_nginx
     if ! has_nginx_vfs; then
+        build_shell_vfs
         step "Building nginx VFS image"
         bash "$REPO_ROOT/images/vfs/scripts/build-nginx-vfs-image.sh"
         info "nginx VFS image built"
@@ -951,6 +955,7 @@ build_nginx_php_vfs() {
     build_nginx
     build_php_fpm
     if ! has_nginx_php_vfs; then
+        build_shell_vfs
         step "Building nginx + PHP-FPM VFS image"
         bash "$REPO_ROOT/images/vfs/scripts/build-nginx-php-vfs-image.sh"
         info "nginx + PHP-FPM VFS image built"

@@ -1,6 +1,7 @@
 /**
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
- * browser demo. dinit (PID 1) brings up the full stack:
+ * browser demo. The image starts from shell.vfs.zst, then dinit (PID 1)
+ * brings up the full stack:
  *
  *   mariadb-bootstrap (scripted) — wraps `mariadbd --bootstrap < SQL`
  *                                  with a sleep+kill timeout because
@@ -16,7 +17,7 @@
  */
 import { readFileSync, lstatSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
   writeVfsFile,
@@ -44,6 +45,7 @@ import {
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
+import { loadShellBaseFileSystem } from "./shell-vfs-build";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -69,18 +71,17 @@ const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/my
 const NGINX_PATH = resolveBinary("programs/nginx.wasm");
 const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
 const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
-const DASH_PATH = resolveBinary("programs/dash.wasm");
-const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm");
 const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 const MYSQL_UID = 101;
 const MYSQL_GID = 101;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+const LAMP_IMAGE_MAX_BYTES = 512 * 1024 * 1024;
 
 // LAMP-specific data dirs that mariadbd writes to at runtime. The image
-// intentionally bakes only a minimal /bin/sh + sleep environment for the
-// bootstrap script, not the full shell demo toolset.
+// starts from the full shell demo VFS, so the bootstrap script gets the same
+// /bin/sh and utility layout users see in the interactive terminal.
 function populateMariadbDataDirs(fs: MemoryFileSystem): void {
   for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/test"]) {
     ensureDirRecursive(fs, dir);
@@ -89,18 +90,6 @@ function populateMariadbDataDirs(fs: MemoryFileSystem): void {
   }
   ensureDirRecursive(fs, "/tmp");
   fs.chmod("/tmp", 0o1777);
-}
-
-function populateBootstrapShell(fs: MemoryFileSystem): void {
-  ensureDirRecursive(fs, "/bin");
-  ensureDirRecursive(fs, "/usr/bin");
-  writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
-  writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
-  try { fs.symlink("/bin/dash", "/bin/sh"); } catch { /* exists */ }
-  for (const name of ["cat", "date", "mkdir", "mv", "sleep"]) {
-    try { fs.symlink("/bin/coreutils", `/bin/${name}`); } catch { /* exists */ }
-    try { fs.symlink("/bin/coreutils", `/usr/bin/${name}`); } catch { /* exists */ }
-  }
 }
 
 function populateMariadb(fs: MemoryFileSystem): void {
@@ -421,15 +410,8 @@ async function main() {
     process.exit(1);
   }
 
-  // 256 MiB initial — WordPress core + SQLite plugin (~80 MiB) + MariaDB
-  // binary (~14 MiB) + bootstrap SQL (~1 MiB) plus headroom. Worker entry
-  // makes the SAB growable to 1 GiB so InnoDB's allocations and table
-  // data can expand at runtime.
-  const sab = new SharedArrayBuffer(256 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 512 * 1024 * 1024);
-
-  console.log("Populating bootstrap shell...");
-  populateBootstrapShell(fs);
+  console.log("Loading shell base image...");
+  const fs = loadShellBaseFileSystem(LAMP_IMAGE_MAX_BYTES);
   populateMariadbDataDirs(fs);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");

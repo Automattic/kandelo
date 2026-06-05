@@ -1,7 +1,7 @@
 /**
- * Build a fully-bootable VFS image for the nginx + PHP-FPM demo.
- * dinit (PID 1) brings up php-fpm on :9000 then nginx on :8080
- * (depends-on chain ensures php-fpm is up first).
+ * Build a fully-bootable VFS image for the nginx + PHP-FPM demo. The image
+ * starts from shell.vfs.zst, then dinit (PID 1) brings up php-fpm on :9000
+ * and nginx on :8080 (depends-on chain ensures php-fpm is up first).
  *
  * Produces: apps/browser-demos/public/nginx-php.vfs
  *
@@ -9,9 +9,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
-  ensureDir,
   ensureDirRecursive,
   writeVfsFile,
   writeVfsBinary,
@@ -20,6 +18,7 @@ import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { saveImage } from "./vfs-image-helpers";
 import { addDinitInit } from "./dinit-image-helpers";
 import { prewarmOpcache } from "./opcache-prewarm";
+import { loadShellBaseFileSystem } from "./shell-vfs-build";
 import {
   webPresentation,
   writeKandeloDemoConfig,
@@ -28,6 +27,7 @@ import { nginxPhpGuide } from "./kandelo-demo-guides";
 
 const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php.vfs.zst");
 const PHP_FPM_WORKERS = 6;
+const NGINX_PHP_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
 
 const NGINX_CONF = `user root;
 daemon off;
@@ -212,14 +212,12 @@ async function main() {
   const PHP_FPM_WASM = resolveBinary("programs/php/php-fpm.wasm");
   const OPCACHE_SO = resolveBinary("programs/php/opcache.so");
 
-  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
-
-  for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var"]) {
-    ensureDir(fs, dir);
-  }
+  console.log("Loading shell base image...");
+  const fs = loadShellBaseFileSystem(NGINX_PHP_IMAGE_MAX_BYTES);
   fs.chmod("/tmp", 0o777);
   ensureDirRecursive(fs, "/usr/sbin");
+  ensureDirRecursive(fs, "/run");
+  ensureDirRecursive(fs, "/var");
   ensureDirRecursive(fs, "/var/www/html");
   ensureDirRecursive(fs, "/etc/nginx");
   ensureDirRecursive(fs, "/tmp/nginx_client_temp");
