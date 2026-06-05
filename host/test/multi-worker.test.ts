@@ -13,7 +13,12 @@ import {
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
-import { ABI_SYSCALLS } from "../src/generated/abi";
+import {
+  ABI_SYSCALLS,
+  CH_DATA,
+  CH_ERRNO,
+  CH_RETURN,
+} from "../src/generated/abi";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 
@@ -137,6 +142,75 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
     expect((kw as any).abandonChannel).not.toHaveBeenCalled();
     expect(channel.handling).toBe(false);
+  });
+
+  it("registers pthread clear-TID before the host clone callback can complete", async () => {
+    const pid = 125;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const tid = 79;
+    const stackPtr = 0x00800000;
+    const tlsPtr = 0x00900000;
+    const ctidPtr = 0x00040000;
+    const memory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const processView = new DataView(memory.buffer, mainChannelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+
+    const kernelMemory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+    });
+    const kernelView = new DataView(kernelMemory.buffer);
+    const threadCtidPtrs = new Map<string, number>();
+    let resolveClone!: (value: number) => void;
+    const onClone = vi.fn(() => {
+      expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(ctidPtr);
+      return new Promise<number>((resolve) => {
+        resolveClone = resolve;
+      });
+    });
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone },
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes: new Map([
+        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
+      ]),
+      threadCtidPtrs,
+      completeChannel: vi.fn(),
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    (kw as any).handleClone(
+      { pid, channelOffset: mainChannelOffset, memory },
+      [0, stackPtr, 0, tlsPtr, ctidPtr, 0],
+    );
+
+    expect(onClone).toHaveBeenCalledTimes(1);
+    expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(ctidPtr);
+    resolveClone(tid);
+    await Promise.resolve();
+    expect((kw as any).completeChannel).toHaveBeenCalled();
   });
 
   it("does not lower compact process max_addr when adding dynamic pthread channels", () => {
