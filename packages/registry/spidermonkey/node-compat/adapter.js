@@ -281,6 +281,11 @@
                 try { setSharedObject(null); } catch {}
             }
         }
+        function joinShellWorkers() {
+            if (typeof joinWorkerThreads === 'function') {
+                try { joinWorkerThreads(); } catch {}
+            }
+        }
         class Worker extends EventEmitter {
             constructor(filenameOrSource, options) {
                 super();
@@ -336,6 +341,7 @@
             }
             terminate() {
                 clearSharedWorkerData();
+                joinShellWorkers();
                 this.emit('exit', 0);
                 return Promise.resolve(0);
             }

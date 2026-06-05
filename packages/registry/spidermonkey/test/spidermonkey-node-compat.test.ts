@@ -824,11 +824,12 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "if (Atomics.load(view, 1) !== 1) throw new Error('worker did not finish')",
         "console.log(Atomics.load(view, 0))",
         "worker.terminate()",
+        "console.log('after-terminate')",
       ].join("\n"),
       LONG_TIMEOUT,
     );
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe("42");
+    expect(stdoutLines(result.stdout)).toEqual(["42", "after-terminate"]);
   }, LONG_TEST_TIMEOUT);
 });
