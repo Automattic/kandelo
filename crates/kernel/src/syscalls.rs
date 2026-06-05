@@ -6459,7 +6459,9 @@ fn udp_send_datagram(
     let datagram = Datagram {
         data: buf.to_vec(),
         src_addr,
+        src_addr6: [0; 16],
         src_port,
+        src_sock_idx: Some(sock_idx),
     };
 
     let mut delivered = false;
@@ -6492,6 +6494,221 @@ fn udp_send_datagram(
     Ok(buf.len())
 }
 
+fn unix_dgram_send_to_sock(
+    proc: &mut Process,
+    src_sock_idx: usize,
+    dst_sock_idx: usize,
+    buf: &[u8],
+) -> Result<usize, Errno> {
+    use crate::socket::Datagram;
+
+    let shut_wr = proc
+        .sockets
+        .get(src_sock_idx)
+        .ok_or(Errno::EBADF)?
+        .shut_wr;
+    if shut_wr {
+        return Err(Errno::EPIPE);
+    }
+
+    let datagram = Datagram {
+        data: buf.to_vec(),
+        src_addr: [0; 4],
+        src_addr6: [0; 16],
+        src_port: 0,
+        src_sock_idx: Some(src_sock_idx),
+    };
+    let target = proc.sockets.get_mut(dst_sock_idx).ok_or(Errno::ECONNREFUSED)?;
+    udp_queue_datagram(target, datagram);
+    Ok(buf.len())
+}
+
+fn udp6_local_bind_conflicts(
+    proc: &Process,
+    sock_idx: usize,
+    addr: [u8; 16],
+    port: u16,
+    reuse_addr: bool,
+) -> bool {
+    use crate::socket::{SocketDomain, SocketType};
+
+    for idx in 0..proc.sockets.len() {
+        let Some(sock) = proc.sockets.get(idx) else {
+            continue;
+        };
+        if idx != sock_idx
+            && sock.domain == SocketDomain::Inet6
+            && sock.sock_type == SocketType::Dgram
+            && sock.bind_port == port
+            && (is_unspecified_addr6(sock.bind_addr6)
+                || is_unspecified_addr6(addr)
+                || sock.bind_addr6 == addr)
+            && !(sock.get_option(
+                wasm_posix_shared::socket::SOL_SOCKET,
+                wasm_posix_shared::socket::SO_REUSEADDR,
+            ) != Some(0)
+                && reuse_addr)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn udp6_bind_socket(
+    proc: &mut Process,
+    sock_idx: usize,
+    addr: [u8; 16],
+    port: u16,
+) -> Result<(), Errno> {
+    use crate::socket::SocketState;
+
+    if !(is_loopback_addr6(addr) || is_unspecified_addr6(addr)) {
+        return Err(Errno::EADDRNOTAVAIL);
+    }
+
+    let assigned_port = if port == 0 {
+        let p = proc.next_ephemeral_port;
+        proc.next_ephemeral_port = proc.next_ephemeral_port.wrapping_add(1);
+        if proc.next_ephemeral_port == 0 {
+            proc.next_ephemeral_port = 49152;
+        }
+        p
+    } else {
+        port
+    };
+
+    let reuse_addr = proc
+        .sockets
+        .get(sock_idx)
+        .and_then(|sock| {
+            sock.get_option(
+                wasm_posix_shared::socket::SOL_SOCKET,
+                wasm_posix_shared::socket::SO_REUSEADDR,
+            )
+        })
+        .unwrap_or(0)
+        != 0;
+    if udp6_local_bind_conflicts(proc, sock_idx, addr, assigned_port, reuse_addr) {
+        return Err(Errno::EADDRINUSE);
+    }
+
+    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+    sock.bind_addr6 = addr;
+    sock.bind_port = assigned_port;
+    if sock.state == SocketState::Unbound {
+        sock.state = SocketState::Bound;
+    }
+    Ok(())
+}
+
+fn udp6_ensure_bound(
+    proc: &mut Process,
+    sock_idx: usize,
+    addr: [u8; 16],
+) -> Result<(), Errno> {
+    let already_bound = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?.bind_port != 0;
+    if already_bound {
+        return Ok(());
+    }
+    udp6_bind_socket(proc, sock_idx, addr, 0)
+}
+
+fn udp6_socket_accepts_datagram(
+    sock: &crate::socket::SocketInfo,
+    src_addr: [u8; 16],
+    src_port: u16,
+) -> bool {
+    use crate::socket::SocketState;
+
+    if sock.state == SocketState::Connected {
+        return sock.peer_addr6 == src_addr && sock.peer_port == src_port;
+    }
+    true
+}
+
+fn udp6_send_datagram(
+    proc: &mut Process,
+    sock_idx: usize,
+    buf: &[u8],
+    dst_addr: [u8; 16],
+    dst_port: u16,
+) -> Result<usize, Errno> {
+    use crate::socket::{Datagram, SocketDomain, SocketState, SocketType};
+
+    let dst_addr = if is_unspecified_addr6(dst_addr) {
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+    } else {
+        dst_addr
+    };
+    if !is_loopback_addr6(dst_addr) {
+        return Err(Errno::ENETUNREACH);
+    }
+
+    let (state, shut_wr) = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        (sock.state, sock.shut_wr)
+    };
+    if shut_wr {
+        return Err(Errno::EPIPE);
+    }
+    if state == SocketState::Connected {
+        udp_take_socket_error(proc, sock_idx)?;
+    }
+
+    let loopback = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    let auto_bind_addr = if state == SocketState::Connected {
+        loopback
+    } else {
+        [0; 16]
+    };
+    udp6_ensure_bound(proc, sock_idx, auto_bind_addr)?;
+
+    let (src_addr, src_port) = {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        (sock.bind_addr6, sock.bind_port)
+    };
+    let datagram = Datagram {
+        data: buf.to_vec(),
+        src_addr: [0; 4],
+        src_addr6: src_addr,
+        src_port,
+        src_sock_idx: Some(sock_idx),
+    };
+
+    let mut delivered = false;
+    let sock_count = proc.sockets.len();
+    for idx in 0..sock_count {
+        let accepts = proc
+            .sockets
+            .get(idx)
+            .map(|sock| {
+                sock.domain == SocketDomain::Inet6
+                    && sock.sock_type == SocketType::Dgram
+                    && sock.bind_port == dst_port
+                    && (is_unspecified_addr6(sock.bind_addr6) || sock.bind_addr6 == dst_addr)
+                    && udp6_socket_accepts_datagram(sock, src_addr, src_port)
+            })
+            .unwrap_or(false);
+        if !accepts {
+            continue;
+        }
+        if let Some(target) = proc.sockets.get_mut(idx) {
+            udp_queue_datagram(target, datagram.clone());
+            delivered = true;
+            break;
+        }
+    }
+
+    if !delivered && state == SocketState::Connected {
+        if let Some(sock) = proc.sockets.get_mut(sock_idx) {
+            sock.connect_error = Errno::ECONNREFUSED as u32;
+        }
+    }
+
+    Ok(buf.len())
+}
+
 pub fn inject_udp_datagram_into(
     proc: &mut Process,
     dst_addr: [u8; 4],
@@ -6505,7 +6722,9 @@ pub fn inject_udp_datagram_into(
     let datagram = Datagram {
         data: data.to_vec(),
         src_addr,
+        src_addr6: [0; 16],
         src_port,
+        src_sock_idx: None,
     };
     let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
     for endpoint in endpoints {
@@ -6703,16 +6922,31 @@ pub fn sys_send(
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
     if sock.sock_type == SocketType::Dgram {
-        if sock.domain == SocketDomain::Inet {
-            if sock.state != SocketState::Connected {
-                return Err(Errno::EDESTADDRREQ);
+        match sock.domain {
+            SocketDomain::Inet => {
+                if sock.state != SocketState::Connected {
+                    return Err(Errno::EDESTADDRREQ);
+                }
+                let dst_addr = sock.peer_addr;
+                let dst_port = sock.peer_port;
+                return udp_send_datagram(proc, host, sock_idx, buf, dst_addr, dst_port);
             }
-            let dst_addr = sock.peer_addr;
-            let dst_port = sock.peer_port;
-            return udp_send_datagram(proc, host, sock_idx, buf, dst_addr, dst_port);
-        }
-        if sock.domain == SocketDomain::Unix && sock.state == SocketState::Connected {
-            return Ok(buf.len());
+            SocketDomain::Inet6 => {
+                if sock.state != SocketState::Connected {
+                    return Err(Errno::EDESTADDRREQ);
+                }
+                let dst_addr = sock.peer_addr6;
+                let dst_port = sock.peer_port;
+                return udp6_send_datagram(proc, sock_idx, buf, dst_addr, dst_port);
+            }
+            SocketDomain::Unix if sock.state == SocketState::Connected => {
+                let peer_idx = sock.peer_idx;
+                if let Some(peer_idx) = peer_idx {
+                    return unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf);
+                }
+                return Ok(buf.len());
+            }
+            SocketDomain::Unix => {}
         }
     }
     if sock.state != SocketState::Connected {
@@ -6800,7 +7034,12 @@ pub fn sys_recv(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-    if sock.sock_type == SocketType::Dgram && sock.domain == SocketDomain::Inet {
+    if sock.sock_type == SocketType::Dgram
+        && matches!(
+            sock.domain,
+            SocketDomain::Inet | SocketDomain::Inet6 | SocketDomain::Unix
+        )
+    {
         let (n, _) = sys_recvfrom(proc, host, fd, buf, flags, &mut [])?;
         return Ok(n);
     }
@@ -7127,6 +7366,9 @@ pub fn sys_bind(
         }
         SocketDomain::Inet6 => {
             let (ip, port) = parse_sockaddr_in6(addr)?;
+            if sock.sock_type == SocketType::Dgram {
+                return udp6_bind_socket(proc, sock_idx, ip, port);
+            }
             if !(is_loopback_addr6(ip) || is_unspecified_addr6(ip)) {
                 return Err(Errno::EADDRNOTAVAIL);
             }
@@ -7435,6 +7677,30 @@ pub fn sys_connect(
             }
 
             if sock.domain == SocketDomain::Inet6 {
+                if sock.sock_type == SocketType::Dgram {
+                    let (raw_ip6, port) = parse_sockaddr_in6(addr)?;
+                    if is_unspecified_addr6(raw_ip6) && port == 0 {
+                        return Err(Errno::EADDRNOTAVAIL);
+                    }
+                    let ip6 = if is_unspecified_addr6(raw_ip6) {
+                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+                    } else {
+                        raw_ip6
+                    };
+                    if !is_loopback_addr6(ip6) {
+                        return Err(Errno::ENETUNREACH);
+                    }
+                    udp6_ensure_bound(
+                        proc,
+                        sock_idx,
+                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                    )?;
+                    let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                    sock.peer_addr6 = ip6;
+                    sock.peer_port = port;
+                    sock.state = SocketState::Connected;
+                    return Ok(());
+                }
                 if sock.sock_type != SocketType::Stream {
                     return Err(Errno::EOPNOTSUPP);
                 }
@@ -7671,8 +7937,34 @@ pub fn sys_connect(
         SocketDomain::Unix => {
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
             if sock.sock_type == SocketType::Dgram {
-                // SOCK_DGRAM connect on AF_UNIX succeeds as a bit-bucket (syslog pattern)
+                let peer_idx = if addr.len() >= 3 {
+                    let path_bytes = &addr[2..];
+                    let resolved = if path_bytes.first().copied() == Some(0) {
+                        if path_bytes.len() < 2 {
+                            return Err(Errno::EINVAL);
+                        }
+                        path_bytes.to_vec()
+                    } else {
+                        let path_end = path_bytes
+                            .iter()
+                            .position(|&b| b == 0)
+                            .unwrap_or(path_bytes.len());
+                        if path_end == 0 {
+                            return Err(Errno::EINVAL);
+                        }
+                        crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+                    };
+                    let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+                    registry.lookup(&resolved).map(|entry| entry.sock_idx)
+                } else {
+                    None
+                };
+
+                // Preserve the existing syslog-friendly behavior for absent
+                // datagram peers (connected sends become a bit bucket), but
+                // deliver to registered AF_UNIX datagram sockets when present.
                 let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                sock.peer_idx = peer_idx;
                 sock.state = SocketState::Connected;
                 return Ok(());
             }
@@ -7800,14 +8092,6 @@ pub fn sys_sendto(
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
 
-    // AF_UNIX DGRAM connected sockets: bit-bucket (syslog pattern via send→sendto)
-    if sock.domain == SocketDomain::Unix
-        && sock.sock_type == SocketType::Dgram
-        && sock.state == SocketState::Connected
-    {
-        return Ok(buf.len());
-    }
-
     if addr.is_empty() {
         if sock.state == SocketState::Connected {
             return sys_send(proc, _host, fd, buf, _flags);
@@ -7815,12 +8099,47 @@ pub fn sys_sendto(
         return Err(Errno::EDESTADDRREQ);
     }
 
-    if sock.domain != SocketDomain::Inet || sock.sock_type != SocketType::Dgram {
+    if sock.sock_type != SocketType::Dgram {
         return Err(Errno::EOPNOTSUPP);
     }
 
-    let (dst_ip, dst_port) = parse_sockaddr_in(addr)?;
-    udp_send_datagram(proc, _host, sock_idx, buf, dst_ip, dst_port)
+    match sock.domain {
+        SocketDomain::Inet => {
+            let (dst_ip, dst_port) = parse_sockaddr_in(addr)?;
+            udp_send_datagram(proc, _host, sock_idx, buf, dst_ip, dst_port)
+        }
+        SocketDomain::Inet6 => {
+            let (dst_ip, dst_port) = parse_sockaddr_in6(addr)?;
+            udp6_send_datagram(proc, sock_idx, buf, dst_ip, dst_port)
+        }
+        SocketDomain::Unix => {
+            if addr.len() < 3 {
+                return Err(Errno::EINVAL);
+            }
+            let path_bytes = &addr[2..];
+            let resolved = if path_bytes.first().copied() == Some(0) {
+                if path_bytes.len() < 2 {
+                    return Err(Errno::EINVAL);
+                }
+                path_bytes.to_vec()
+            } else {
+                let path_end = path_bytes
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(path_bytes.len());
+                if path_end == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+            };
+            let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+            let peer_idx = registry
+                .lookup(&resolved)
+                .map(|entry| entry.sock_idx)
+                .ok_or(Errno::ECONNREFUSED)?;
+            unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf)
+        }
+    }
 }
 
 /// Receive a message from a socket with sender address.
@@ -7850,7 +8169,10 @@ pub fn sys_recvfrom(
         let n = sys_recv(proc, _host, fd, buf, _flags)?;
         return Ok((n, 0));
     }
-    if sock.domain != SocketDomain::Inet {
+    if !matches!(
+        sock.domain,
+        SocketDomain::Inet | SocketDomain::Inet6 | SocketDomain::Unix
+    ) {
         return Err(Errno::EOPNOTSUPP);
     }
     if sock.shut_rd {
@@ -7859,10 +8181,15 @@ pub fn sys_recvfrom(
 
     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
     let datagram_idx = sock.dgram_queue.iter().position(|d| {
-        if sock.state == SocketState::Connected {
-            d.src_addr == sock.peer_addr && d.src_port == sock.peer_port
-        } else {
-            true
+        if sock.state != SocketState::Connected {
+            return true;
+        }
+        match sock.domain {
+            SocketDomain::Inet => d.src_addr == sock.peer_addr && d.src_port == sock.peer_port,
+            SocketDomain::Inet6 => {
+                d.src_addr6 == sock.peer_addr6 && d.src_port == sock.peer_port
+            }
+            SocketDomain::Unix => sock.peer_idx.map_or(true, |peer| d.src_sock_idx == Some(peer)),
         }
     });
     if datagram_idx.is_none() {
@@ -7884,10 +8211,22 @@ pub fn sys_recvfrom(
     let copy_len = buf.len().min(datagram.data.len());
     buf[..copy_len].copy_from_slice(&datagram.data[..copy_len]);
 
-    // Write sender sockaddr_in to addr_buf
+    // Write sender sockaddr to addr_buf
     let mut addr_written = 0;
     if !addr_buf.is_empty() {
-        addr_written = write_sockaddr_in(addr_buf, datagram.src_addr, datagram.src_port);
+        addr_written = match sock.domain {
+            SocketDomain::Inet => write_sockaddr_in(addr_buf, datagram.src_addr, datagram.src_port),
+            SocketDomain::Inet6 => {
+                write_sockaddr_in6(addr_buf, datagram.src_addr6, datagram.src_port)
+            }
+            SocketDomain::Unix => {
+                if addr_buf.len() >= 2 {
+                    addr_buf[0] = 1;
+                    addr_buf[1] = 0;
+                }
+                2
+            }
+        };
     }
 
     Ok((copy_len, addr_written))
@@ -18098,6 +18437,59 @@ mod tests {
         let sock = proc.sockets.get(sock_idx).unwrap();
         assert_eq!(sock.peer_addr, [127, 0, 0, 1]);
         assert_eq!(sock.bind_addr, [127, 0, 0, 1]);
+    }
+
+    #[test]
+    fn test_inet6_udp_loopback_datagram_delivery() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        let server_fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        let mut server_addr = [0u8; 28];
+        server_addr[0] = 10; // AF_INET6
+        server_addr[2] = 0x56;
+        server_addr[3] = 0xce; // port 22222
+        server_addr[23] = 1; // ::1
+        sys_bind(&mut proc, &mut host, server_fd, &server_addr).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &server_addr).unwrap();
+        assert_eq!(sys_write(&mut proc, &mut host, client_fd, b"udp6").unwrap(), 4);
+
+        let mut buf = [0u8; 8];
+        let n = sys_read(&mut proc, &mut host, server_fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"udp6");
+    }
+
+    #[test]
+    fn test_unix_dgram_loopback_datagram_delivery() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+
+        proc.pid = 9025;
+        let server_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        let mut addr = [0u8; 64];
+        addr[0] = 1; // AF_UNIX
+        let path = b"/tmp/udg-loop.sock";
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+        sys_bind(&mut proc, &mut host, server_fd, &addr[..addrlen]).unwrap();
+
+        let client_fd = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client_fd, &addr[..addrlen]).unwrap();
+        assert_eq!(
+            sys_write(&mut proc, &mut host, client_fd, b"unix-dgram").unwrap(),
+            10,
+        );
+
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, server_fd, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"unix-dgram");
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.cleanup_process(9025);
     }
 
     #[test]
