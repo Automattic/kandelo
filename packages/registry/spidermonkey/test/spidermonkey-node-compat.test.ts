@@ -830,6 +830,6 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    expect(stdoutLines(result.stdout)).toEqual(["42", "after-terminate"]);
+    expect(result.stdout.trim().split("\n")).toEqual(["42", "after-terminate"]);
   }, LONG_TEST_TIMEOUT);
 });
