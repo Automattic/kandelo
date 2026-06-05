@@ -1776,10 +1776,11 @@ fn populate_dispatch_normal(
     );
 }
 
-/// Populate the nested `$POST_K` blocks and the "post-call tail" that
-/// follows each one. The structure is built innermost-outward so that
-/// each outer block can reference its inner-block id via
-/// `Instr::Block { seq: inner }`.
+/// Populate the dispatch structure inside `unwind_save`. Today this is
+/// always a single leaf — every fork-path call site contributes one
+/// `$POST_K` block nested directly under `$unwind_save`. Task 6 of the
+/// recursive-bucketing plan will replace this single call with a tree
+/// walk that emits internal nodes wrapping `emit_leaf_dispatch`.
 #[allow(clippy::too_many_arguments)]
 fn populate_dispatch_structure(
     local: &mut LocalFunction,
@@ -1809,6 +1810,59 @@ fn populate_dispatch_structure(
         push_instr(s, Instr::Return(Return {}));
         return;
     }
+
+    emit_leaf_dispatch(
+        local,
+        unwind_save,
+        dispatch_normal,
+        post_seqs,
+        chunks,
+        call_sites,
+        arg_spills,
+        carryover_spills,
+        catch_handlers,
+        state_global,
+        call_idx_local,
+        catch_region_id_local,
+        exnref_slot_local,
+    );
+}
+
+/// Emit the per-call-site nested `$POST_K` chain for a single leaf of
+/// the dispatch tree. The leaf's outermost block is `exit_seq`; the
+/// chain is built innermost-outward, with `Block(post_seqs[K-1])`
+/// instructions opening each nested layer.
+///
+/// On NORMAL execution the body falls through every chunk + call in
+/// order. On REWIND the leaf's enclosing `$dispatch_normal` issues a
+/// `br_table` that skips straight to the resumed call's post-call
+/// sequence. Per-call `BrIf`s in `emit_post_call_via_local` escape via
+/// `exit_seq` whenever the kernel signals UNWIND.
+///
+/// This function is the factored body of the original
+/// `populate_dispatch_structure`. Task 6 of the recursive-bucketing
+/// plan will reuse it as the leaf primitive of a multi-level tree.
+#[allow(clippy::too_many_arguments)]
+fn emit_leaf_dispatch(
+    local: &mut LocalFunction,
+    exit_seq: InstrSeqId,
+    dispatch_normal: Option<InstrSeqId>,
+    post_seqs: &[InstrSeqId],
+    chunks: &[Vec<(Instr, InstrLocId)>],
+    call_sites: &[CallSiteInfo],
+    arg_spills: &[Vec<LocalId>],
+    carryover_spills: &[Vec<LocalId>],
+    catch_handlers: &[CatchHandlerInfo],
+    state_global: GlobalId,
+    call_idx_local: LocalId,
+    catch_region_id_local: LocalId,
+    exnref_slot_local: LocalId,
+) {
+    let n_calls = call_sites.len();
+    debug_assert!(
+        n_calls > 0,
+        "emit_leaf_dispatch must not be called with zero call sites"
+    );
 
     // $POST_0 body: [Block($dispatch_normal), chunk 0, spill 0].
     {
@@ -1845,7 +1899,7 @@ fn populate_dispatch_structure(
             call_idx_local,
             catch_region_id_local,
             exnref_slot_local,
-            unwind_save,
+            exit_seq,
         );
         {
             let s = &mut local.block_mut(post_seqs[k]).instrs;
@@ -1856,15 +1910,15 @@ fn populate_dispatch_structure(
         }
     }
 
-    // $unwind_save body:
+    // exit_seq body:
     //   [Block($POST_{n-1}), <post-call sequence for n-1>, chunk n, return]
     {
-        let s = &mut local.block_mut(unwind_save).instrs;
+        let s = &mut local.block_mut(exit_seq).instrs;
         push_instr(s, Instr::Block(Block { seq: post_seqs[n_calls - 1] }));
     }
     emit_post_call_via_local(
         local,
-        unwind_save,
+        exit_seq,
         &call_sites[n_calls - 1],
         n_calls - 1,
         &arg_spills[n_calls - 1],
@@ -1874,10 +1928,10 @@ fn populate_dispatch_structure(
         call_idx_local,
         catch_region_id_local,
         exnref_slot_local,
-        unwind_save,
+        exit_seq,
     );
     {
-        let s = &mut local.block_mut(unwind_save).instrs;
+        let s = &mut local.block_mut(exit_seq).instrs;
         for (instr, loc) in &chunks[n_calls] {
             s.push((instr.clone(), *loc));
         }
