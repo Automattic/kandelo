@@ -6,6 +6,46 @@ export class EagainError extends Error {
   constructor() { super("EAGAIN"); }
 }
 
+function nameNotFoundError(hostname: string): Error & { errno: number } {
+  return Object.assign(new Error(`ENOENT: ${hostname}`), { errno: 2 });
+}
+
+/**
+ * Browser networking uses synthetic addresses for DNS names because the host
+ * fetch API performs the real lookup later. Numeric IPv4 names are different:
+ * getaddrinfo must treat them as address literals, and malformed numeric
+ * literals must fail instead of being reinterpreted as DNS names.
+ */
+export function parseNumericIpv4Hostname(hostname: string): Uint8Array | null {
+  if (!/^\d+(?:\.\d+)+$/.test(hostname)) return null;
+
+  const parts = hostname.split(".");
+  if (parts.length > 4) throw nameNotFoundError(hostname);
+
+  const widths = parts.length === 2
+    ? [8n, 24n]
+    : parts.length === 3
+      ? [8n, 8n, 16n]
+      : [8n, 8n, 8n, 8n];
+
+  let packed = 0n;
+  for (let i = 0; i < parts.length; i++) {
+    const value = BigInt(parts[i]);
+    const width = widths[i];
+    if (value > ((1n << width) - 1n)) {
+      throw nameNotFoundError(hostname);
+    }
+    packed = (packed << width) | value;
+  }
+
+  return new Uint8Array([
+    Number((packed >> 24n) & 0xffn),
+    Number((packed >> 16n) & 0xffn),
+    Number((packed >> 8n) & 0xffn),
+    Number(packed & 0xffn),
+  ]);
+}
+
 const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
 const POLLERR = 0x0008;
@@ -227,6 +267,9 @@ export class FetchNetworkBackend implements NetworkIO {
   }
 
   getaddrinfo(hostname: string): Uint8Array {
+    const literalIp = parseNumericIpv4Hostname(hostname);
+    if (literalIp) return literalIp;
+
     // In the browser, return a synthetic IP.
     // The actual connection uses the Host header, not this IP.
     // Use a deterministic hash to generate a fake IP in the 10.x.x.x range.
