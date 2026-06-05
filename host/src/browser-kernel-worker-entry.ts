@@ -123,8 +123,11 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<number, Promise<void>>();
+// Includes standalone thread-worker teardown promises that may outlive the
+// process map entry they came from.
+const workerTeardowns = new Set<Promise<void>>();
 const threadedProcessPids = new Set<number>();
-const THREADED_WORKER_TERMINATION_SETTLE_MS = 100;
+const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -188,8 +191,11 @@ function delay(ms: number): Promise<void> {
 }
 
 async function waitForProcessTeardowns(): Promise<void> {
-  while (processTeardowns.size > 0) {
-    await Promise.allSettled([...processTeardowns.values()]);
+  while (processTeardowns.size > 0 || workerTeardowns.size > 0) {
+    await Promise.allSettled([
+      ...processTeardowns.values(),
+      ...workerTeardowns,
+    ]);
   }
 }
 
@@ -198,8 +204,13 @@ async function terminateTrackedWorker(
   settleMs = 0,
 ): Promise<void> {
   intentionallyTerminated.add(worker as object);
-  await worker.terminate().catch(() => {});
-  if (settleMs > 0) await delay(settleMs);
+  const teardown = (async () => {
+    await worker.terminate().catch(() => {});
+    if (settleMs > 0) await delay(settleMs);
+  })();
+  workerTeardowns.add(teardown);
+  void teardown.finally(() => workerTeardowns.delete(teardown));
+  await teardown;
 }
 
 async function terminateThreadWorkers(pid: number): Promise<void> {
@@ -207,7 +218,10 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
   if (!threads) return;
   threadWorkers.delete(pid);
   for (const t of threads) {
-    await (t.termination ?? terminateTrackedWorker(t.worker));
+    await (
+      t.termination ??
+      terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
+    );
   }
 }
 const ptyByPid = new Map<number, number>();
@@ -1106,7 +1120,10 @@ async function handleClone(
   };
   const terminateThreadEntry = (): Promise<void> => {
     if (!threadEntry.termination) {
-      threadEntry.termination = terminateTrackedWorker(threadWorker).finally(reclaimThread);
+      threadEntry.termination = terminateTrackedWorker(
+        threadWorker,
+        THREADED_WORKER_TERMINATION_SETTLE_MS,
+      ).finally(reclaimThread);
     }
     return threadEntry.termination;
   };
@@ -1199,7 +1216,10 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   const threads = threadWorkers.get(pid);
   if (threads) {
     for (const t of threads) {
-      await (t.termination ?? terminateTrackedWorker(t.worker));
+      await (
+        t.termination ??
+        terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
+      );
       try {
         kernelWorker.notifyThreadExit(pid, t.tid);
         kernelWorker.removeChannel(pid, t.channelOffset);
@@ -1359,7 +1379,10 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   }
   for (const threads of threadWorkers.values()) {
     for (const t of threads) {
-      await (t.termination ?? terminateTrackedWorker(t.worker));
+      await (
+        t.termination ??
+        terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
+      );
     }
   }
   processes.clear();

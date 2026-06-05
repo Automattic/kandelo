@@ -43,7 +43,12 @@ async function runTerminalCommand(
   timeout = 120_000,
 ) {
   await page.locator(".kshell-host").first().click();
+  const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
+  if (await terminalInput.count()) {
+    await terminalInput.focus();
+  }
   await page.keyboard.insertText(command);
+  await page.waitForTimeout(250);
   await page.keyboard.press("Enter");
   await waitForTerminalContent(page, expected, timeout);
 }
