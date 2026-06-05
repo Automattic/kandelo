@@ -266,10 +266,14 @@ pub struct SocketInfo {
     pub options: Vec<(u32, u32, u32)>,
     /// Bound IPv4 address (for AF_INET sockets).
     pub bind_addr: [u8; 4],
+    /// Bound IPv6 address (for AF_INET6 sockets).
+    pub bind_addr6: [u8; 16],
     /// Bound port (for AF_INET sockets).
     pub bind_port: u16,
     /// Peer IPv4 address (for connected AF_INET sockets).
     pub peer_addr: [u8; 4],
+    /// Peer IPv6 address (for connected AF_INET6 sockets).
+    pub peer_addr6: [u8; 16],
     /// Peer port (for connected AF_INET sockets).
     pub peer_port: u16,
     /// Pending connection socket indices (for listening sockets).
@@ -319,8 +323,10 @@ impl SocketInfo {
             host_net_handle: None,
             options: Vec::new(),
             bind_addr: [0; 4],
+            bind_addr6: [0; 16],
             bind_port: 0,
             peer_addr: [0; 4],
+            peer_addr6: [0; 16],
             peer_port: 0,
             listen_backlog: Vec::new(),
             shared_backlog_idx: None,
@@ -392,8 +398,10 @@ impl Clone for SocketInfo {
             host_net_handle: self.host_net_handle,
             options: self.options.clone(),
             bind_addr: self.bind_addr,
+            bind_addr6: self.bind_addr6,
             bind_port: self.bind_port,
             peer_addr: self.peer_addr,
+            peer_addr6: self.peer_addr6,
             peer_port: self.peer_port,
             listen_backlog: Vec::new(), // consume-once: don't double-accept
             shared_backlog_idx: self.shared_backlog_idx,
