@@ -1409,7 +1409,9 @@ mod tests {
         udp.dgram_queue.push(Datagram {
             data: b"hello".to_vec(),
             src_addr: [127, 0, 0, 1],
+            src_addr6: [0; 16],
             src_port: 12345,
+            src_sock_idx: None,
         });
         let mut tcp = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         tcp.oob_byte = Some(0xAB);
