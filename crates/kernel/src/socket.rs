@@ -91,7 +91,9 @@ pub enum SocketState {
 pub struct Datagram {
     pub data: Vec<u8>,
     pub src_addr: [u8; 4],
+    pub src_addr6: [u8; 16],
     pub src_port: u16,
+    pub src_sock_idx: Option<usize>,
 }
 
 /// One AF_INET UDP endpoint bound in the in-kernel virtual network.
