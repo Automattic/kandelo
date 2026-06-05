@@ -30,7 +30,8 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
-    const host = demo === "node" || demo === "spidermonkey-node" || demo === "spidermonkey"
+    const useSpiderMonkeyNodeHost = demo === "node" || demo === "spidermonkey-node" || demo === "spidermonkey";
+    const host = useSpiderMonkeyNodeHost
       ? await import("./kernel-host/live-spidermonkey-node-setup")
         .then(({ createLiveSpiderMonkeyNodeHost }) => createLiveSpiderMonkeyNodeHost(demo))
       : await import("./kernel-host/live-setup")

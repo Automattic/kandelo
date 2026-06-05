@@ -19,6 +19,18 @@ import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { STRUCT_SIZE_WASM_DIRENT, STRUCT_SIZE_WASM_STAT } from "./generated/abi";
+import { detectPtrWidth } from "./constants";
+
+export type KernelPointer = number | bigint;
+
+function bufferSourceToArrayBuffer(source: BufferSource): ArrayBuffer {
+  const view = source instanceof ArrayBuffer
+    ? new Uint8Array(source)
+    : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(view);
+  return copy.buffer;
+}
 
 /**
  * Map filesystem error codes to negative errno values.
@@ -110,6 +122,7 @@ export class WasmPosixKernel {
   private callbacks: KernelCallbacks;
   private instance: WebAssembly.Instance | null = null;
   private memory: WebAssembly.Memory | null = null;
+  private kernelPtrWidth: 4 | 8 = 4;
   private sharedPipes = new Map<number, { pipe: SharedPipeBuffer; end: "read" | "write" }>();
   private signalWakeSab: SharedArrayBuffer | null = null;
   private sharedLockTable: SharedLockTable | null = null;
@@ -146,6 +159,39 @@ export class WasmPosixKernel {
     this.config = config;
     this.io = io;
     this.callbacks = callbacks ?? {};
+  }
+
+  getKernelPtrWidth(): 4 | 8 {
+    return this.kernelPtrWidth;
+  }
+
+  toKernelPtr(value: number | bigint): KernelPointer {
+    const numberValue = typeof value === "bigint" ? Number(value) : value;
+    if (!Number.isSafeInteger(numberValue) || numberValue < 0) {
+      throw new Error(`invalid kernel pointer ${String(value)}`);
+    }
+    return this.kernelPtrWidth === 8 ? BigInt(numberValue) : numberValue;
+  }
+
+  private createKernelMemory(): WebAssembly.Memory {
+    if (this.kernelPtrWidth === 8) {
+      return new WebAssembly.Memory({
+        initial: 24n,
+        maximum: 16384n,
+        shared: true,
+        address: "i64",
+      } as unknown as WebAssembly.MemoryDescriptor);
+    }
+    return new WebAssembly.Memory({
+      // 24 pages = 1.5 MiB of initial address space. Must be >= the kernel
+      // wasm's declared minimum, which the linker derives from the data
+      // section. The Mozilla CA bundle (~220 KiB at /etc/ssl/cert.pem)
+      // pushes the kernel's minimum to 20 pages; 24 leaves headroom for
+      // future static data without re-tuning this every time.
+      initial: 24,
+      maximum: 16384,
+      shared: true,
+    });
   }
 
   /**
@@ -201,17 +247,15 @@ export class WasmPosixKernel {
    */
   drainAudio(out: Uint8Array): number {
     const exports = this.instance?.exports as Record<string, unknown> | undefined;
-    // Pointer is wasm64 i64 in this build — same shape as
-    // `kernel_drain_wakeup_events`. Always pass a BigInt offset.
     const drain = exports?.kernel_drain_audio as
-      | ((ptr: bigint, len: number) => number)
+      | ((ptr: KernelPointer, len: number) => number)
       | undefined;
     if (!drain || !this.memory || !this.ensureAudioScratch()) return 0;
     // Cap the request at our scratch size. Typical drain rates
     // (~22 ms of stereo S16 @ 44.1 kHz = ~7.7 KiB per call) are well
     // under the cap; callers needing more invoke drainAudio in a loop.
     const want = Math.min(out.byteLength, WasmPosixKernel.AUDIO_SCRATCH_SIZE);
-    const n = drain(BigInt(this.audioScratchOffset), want);
+    const n = drain(this.toKernelPtr(this.audioScratchOffset), want);
     if (n > 0) {
       const src = new Uint8Array(this.memory.buffer, this.audioScratchOffset, n);
       out.set(src.subarray(0, n));
@@ -284,17 +328,8 @@ export class WasmPosixKernel {
    * @param wasmBytes - The compiled kernel Wasm binary
    */
   async init(wasmBytes: BufferSource): Promise<void> {
-    const memory = new WebAssembly.Memory({
-      // 24 pages = 1.5 MiB of initial address space. Must be ≥ the kernel
-      // wasm's declared minimum, which the linker derives from the data
-      // section. The Mozilla CA bundle (~220 KiB at /etc/ssl/cert.pem)
-      // pushes the kernel's minimum to 20 pages; 24 leaves headroom for
-      // future static data without re-tuning this every time.
-      initial: 24n,
-      maximum: 16384n,
-      shared: true,
-      address: "i64",
-    } as unknown as WebAssembly.MemoryDescriptor);
+    this.kernelPtrWidth = detectPtrWidth(bufferSourceToArrayBuffer(wasmBytes));
+    const memory = this.createKernelMemory();
     this.memory = memory;
     const importObject = this.buildImportObject(memory);
     const module = await WebAssembly.compile(wasmBytes as BufferSource);
@@ -306,6 +341,7 @@ export class WasmPosixKernel {
    * creating a new one. Used by thread workers that share the parent's memory.
    */
   async initWithMemory(wasmBytes: BufferSource, memory: WebAssembly.Memory): Promise<void> {
+    this.kernelPtrWidth = detectPtrWidth(bufferSourceToArrayBuffer(wasmBytes));
     this.memory = memory;
     const importObject = this.buildImportObject(memory);
     const module = await WebAssembly.compile(wasmBytes as BufferSource);

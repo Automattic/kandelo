@@ -32,7 +32,7 @@ copy_first_existing \
     "$HOST_WASM_DIR/kandelo-kernel.wasm" \
     "$REPO_ROOT/local-binaries/kernel.wasm" \
     "$REPO_ROOT/binaries/kernel.wasm" \
-    "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm" \
+    "$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm" \
     "$HOST_WASM_DIR/kandelo-kernel.wasm"
 
 cp "$HOST_WASM_DIR/kandelo-kernel.wasm" "$HOST_WASM_DIR/kernel.wasm"
@@ -47,7 +47,7 @@ if copy_first_existing \
     "$HOST_WASM_DIR/wasm_posix_userspace.wasm" \
     "$REPO_ROOT/local-binaries/userspace.wasm" \
     "$REPO_ROOT/binaries/userspace.wasm" \
-    "$REPO_ROOT/target/wasm64-unknown-unknown/release/wasm_posix_userspace.wasm" \
+    "$REPO_ROOT/target/wasm32-unknown-unknown/release/wasm_posix_userspace.wasm" \
     "$HOST_WASM_DIR/wasm_posix_userspace.wasm"; then
     cp "$HOST_WASM_DIR/wasm_posix_userspace.wasm" "$HOST_WASM_DIR/userspace.wasm"
 else
