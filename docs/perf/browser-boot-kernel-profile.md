@@ -7,6 +7,13 @@ Date: 2026-06-05
 Browser measurements were taken with the existing Playwright browser benchmark harness:
 
 ```sh
+# Baseline, from the PR parent commit ffc653a.
+git checkout ffc653af7014481a99f59e5cb3e25650254dcc74
+cd host && npm run build && cd ..
+LD_LIBRARY_PATH=$HOME/.local/pw-libs \
+  npx tsx benchmarks/run.ts --host=browser --suite=wordpress --rounds=5
+
+# Final PR branch.
 LD_LIBRARY_PATH=$HOME/.local/pw-libs \
   npx tsx benchmarks/run.ts --host=browser --suite=wordpress --rounds=3
 
@@ -29,12 +36,22 @@ only WordPress and MariaDB browser suites were used for the numbers below.
 
 ### WordPress + PHP-FPM + nginx
 
-Baseline browser boot on `main` with the benchmark's fixed readiness sleeps:
+Baseline browser boot on the PR parent commit (`ffc653a`) with the benchmark's fixed readiness sleeps:
 
-| metric | value |
-| --- | ---: |
-| `boot_ms` | 9001.31 ms |
-| `http_first_response_ms` | 5330.20 ms |
+| round | `boot_ms` | `http_first_response_ms` |
+| ---: | ---: | ---: |
+| 1 | 8808.62 ms | 4192.10 ms |
+| 2 | 9058.42 ms | 4396.22 ms |
+| 3 | 9432.43 ms | 4511.26 ms |
+| 4 | 9224.36 ms | 4606.01 ms |
+| 5 | 9291.41 ms | 5264.18 ms |
+| median | 9224.36 ms | 4511.26 ms |
+| mean | 9163.05 ms | 4593.95 ms |
+| stddev | 239.46 ms | 405.21 ms |
+
+An earlier one-round baseline measured `boot_ms=9001.31` and
+`http_first_response_ms=5330.20`; the five-sample run above confirms that the
+initial boot measurement was representative, not a low outlier.
 
 A profile run showed that Rust kernel syscall handling was not the dominant boot cost. During the
 8.2s profiled boot window, top kernel-side syscall costs were only a few milliseconds each. The
@@ -75,10 +92,12 @@ Final 3-round browser benchmark:
 | 3 | 4154.88 ms | 6532.62 ms |
 | median | 2967.54 ms | 6532.62 ms |
 
-Boot improvement versus the 9001.31ms baseline:
+Boot improvement versus the five-sample baseline median of 9224.36ms:
 
-- `boot_ms`: **67.0% faster**.
-- `boot_ms + http_first_response_ms`: 33.7% faster using the baseline first-response run above, though first-response time is noisy and dominated by PHP/SQLite user-space work rather than kernel syscall handling.
+- `boot_ms`: **67.8% faster**.
+- `boot_ms + http_first_response_ms`: 30.8% faster using median boot and
+  median first-response values. First-response time remains noisy and is
+  dominated by PHP/SQLite user-space work rather than kernel syscall handling.
 
 A final profile run with the accepted changes showed WordPress boot at 2165.81ms. The previous idle
 PHP-FPM `accept` retry storm was gone; kernel-side boot syscall handling remained in the low
