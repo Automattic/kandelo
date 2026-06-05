@@ -114,6 +114,12 @@ describe("FetchNetworkBackend", () => {
       expect(() => backend.getaddrinfo("9999.9999.9999.9999")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
     });
+
+    it("rejects syntactically invalid DNS names", () => {
+      const backend = new FetchNetworkBackend();
+      expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
+    });
   });
 
   describe("connect", () => {
@@ -193,6 +199,12 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
       const backend = new TlsNetworkBackend();
       expect(() => backend.getaddrinfo("9999.9999.9999.9999")).toThrow("ENOENT");
       expect(() => backend.getaddrinfo("1.2.3.256")).toThrow("ENOENT");
+    });
+
+    it("rejects syntactically invalid DNS names", () => {
+      const backend = new TlsNetworkBackend();
+      expect(() => backend.getaddrinfo(".toto.toto.toto")).toThrow("ENOENT");
+      expect(() => backend.getaddrinfo(`www.${"x".repeat(100)}.com`)).toThrow("ENOENT");
     });
   });
 

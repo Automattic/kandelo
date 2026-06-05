@@ -46,6 +46,22 @@ export function parseNumericIpv4Hostname(hostname: string): Uint8Array | null {
   ]);
 }
 
+export function validateSyntheticDnsHostname(hostname: string): void {
+  // The browser backends synthesize addresses for DNS names and let fetch()
+  // perform the real network lookup later. Do not synthesize addresses for
+  // names that a POSIX resolver would reject before DNS, such as empty labels
+  // or labels longer than the DNS 63-octet limit.
+  const absoluteName = hostname.endsWith(".") ? hostname.slice(0, -1) : hostname;
+  if (absoluteName.length === 0 || absoluteName.length > 253) {
+    throw nameNotFoundError(hostname);
+  }
+  for (const label of absoluteName.split(".")) {
+    if (label.length === 0 || label.length > 63) {
+      throw nameNotFoundError(hostname);
+    }
+  }
+}
+
 const POLLIN = 0x0001;
 const POLLOUT = 0x0004;
 const POLLERR = 0x0008;
@@ -269,6 +285,7 @@ export class FetchNetworkBackend implements NetworkIO {
   getaddrinfo(hostname: string): Uint8Array {
     const literalIp = parseNumericIpv4Hostname(hostname);
     if (literalIp) return literalIp;
+    validateSyntheticDnsHostname(hostname);
 
     // In the browser, return a synthetic IP.
     // The actual connection uses the Host header, not this IP.
