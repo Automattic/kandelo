@@ -1,0 +1,130 @@
+name: Build package archive
+description: |
+  Resolve one package matrix entry, build its archive, and upload the
+  archive artifact for downstream test/publish steps.
+
+inputs:
+  package:
+    description: Package name under packages/registry.
+    required: true
+  arch:
+    description: Target package architecture.
+    required: true
+  build-host:
+    description: Stable build host/provenance string embedded in manifest.toml.
+    required: true
+  materialize-library-overlays:
+    description: Whether to download library-wave artifacts and write package.pr.toml overlays.
+    required: false
+    default: "false"
+  github-token:
+    description: Token with actions:read permission, required when materialize-library-overlays is true.
+    required: false
+    default: ""
+
+outputs:
+  archive-path:
+    description: Path to the produced .tar.zst archive.
+    value: ${{ steps.archive.outputs.archive-path }}
+  archive-name:
+    description: Basename of the produced .tar.zst archive.
+    value: ${{ steps.archive.outputs.archive-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute commit-bound build provenance
+      id: provenance
+      shell: bash
+      env:
+        BUILD_HOST: ${{ inputs.build-host }}
+      run: |
+        set -euo pipefail
+        ts=$(git log -1 --format=%aI HEAD)
+        echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
+        echo "build-host=$BUILD_HOST" >> "$GITHUB_OUTPUT"
+        echo "provenance: build-timestamp=$ts" >&2
+
+    - name: Fetch musl submodule
+      uses: ./.github/actions/fetch-submodules
+      with:
+        submodules: libc/musl
+
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v22
+      with:
+        github-token: ""
+
+    - name: Cache Nix store + flake eval
+      uses: DeterminateSystems/magic-nix-cache-action@v13
+      with:
+        use-gha-cache: false
+        use-flakehub: false
+
+    - name: Download toolchain sysroots artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: toolchain-sysroots
+        path: ${{ runner.temp }}/toolchain
+
+    - name: Extract toolchain sysroots
+      shell: bash
+      run: tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+    - name: Install host npm deps
+      shell: bash
+      run: |
+        bash scripts/dev-shell.sh bash -c '
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+        '
+
+    - name: Download library archives from lib-matrix-build
+      if: ${{ inputs.materialize-library-overlays == 'true' }}
+      uses: ./.github/actions/download-run-artifacts
+      with:
+        github-token: ${{ inputs.github-token }}
+        pattern: '*-wasm*'
+        path: ${{ runner.temp }}/lib-archives
+
+    - name: Materialize library overlays
+      if: ${{ inputs.materialize-library-overlays == 'true' }}
+      shell: bash
+      run: bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
+
+    - name: Resolve target package's transitive deps
+      shell: bash
+      run: |
+        bash scripts/dev-shell.sh bash -c '
+          HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+          cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+            build-deps --arch "${{ inputs.arch }}" --binaries-dir "$(pwd)/binaries" \
+              resolve "${{ inputs.package }}"
+        '
+
+    - name: Build package archive
+      id: archive
+      shell: bash
+      run: |
+        bash scripts/dev-shell.sh bash -c '
+          HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
+          cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+            archive-stage \
+              --package "packages/registry/${{ inputs.package }}" \
+              --arch "${{ inputs.arch }}" \
+              --out "$RUNNER_TEMP/staged" \
+              --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
+              --build-host "${{ steps.provenance.outputs.build-host }}"
+        '
+        archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
+        archive_name=$(basename "$archive_path")
+        echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
+        echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
+
+    - name: Upload archive as workflow artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.package }}-${{ inputs.arch }}
+        path: ${{ runner.temp }}/staged/*.tar.zst
+        retention-days: 7
+        if-no-files-found: error

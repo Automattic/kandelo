@@ -17,6 +17,7 @@ package_archive_changed_files() {
     -e '^libc/musl($|/)' \
     -e '^images/vfs/' \
     -e '^examples/lsof\.c$' \
+    -e '^\.github/actions/(package-archive-build|package-toolchain|fetch-submodules|download-run-artifacts)/' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules|package(-lock)?\.json|host/package(-lock)?\.json|sdk/package(-lock)?\.json|tools/mkrootfs/package(-lock)?\.json)$' \
     -e '^scripts/(build-fork-instrument-tool|build-musl|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
     | grep -vE \
