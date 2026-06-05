@@ -7105,8 +7105,7 @@ pub extern "C" fn kernel_accept4(
                                         addrlen_buf.copy_from_slice(&2u32.to_le_bytes());
                                     }
                                 }
-                                _ => {
-                                    // Existing AF_INET logic
+                                crate::socket::SocketDomain::Inet => {
                                     let mut sa = [0u8; 16];
                                     sa[0] = 2; // AF_INET
                                     let port_be = sock.peer_port.to_be_bytes();
@@ -7121,6 +7120,19 @@ pub extern "C" fn kernel_accept4(
                                         unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
                                     addr_buf.copy_from_slice(&sa[..n]);
                                     addrlen_buf.copy_from_slice(&16u32.to_le_bytes());
+                                }
+                                crate::socket::SocketDomain::Inet6 => {
+                                    let mut sa = [0u8; 28];
+                                    sa[0] = 10; // AF_INET6
+                                    let port_be = sock.peer_port.to_be_bytes();
+                                    sa[2] = port_be[0];
+                                    sa[3] = port_be[1];
+                                    sa[8..24].copy_from_slice(&sock.peer_addr6);
+                                    let n = max_len.min(28);
+                                    let addr_buf =
+                                        unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
+                                    addr_buf.copy_from_slice(&sa[..n]);
+                                    addrlen_buf.copy_from_slice(&28u32.to_le_bytes());
                                 }
                             }
                         }
@@ -7326,14 +7338,21 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         return Err(Errno::EINVAL);
     }
     let path_bytes = &addr[2..];
-    let path_end = path_bytes
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(path_bytes.len());
-    if path_end == 0 {
-        return Err(Errno::ECONNREFUSED);
-    }
-    let resolved = crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd);
+    let resolved = if path_bytes.first().copied() == Some(0) {
+        if path_bytes.len() < 2 {
+            return Err(Errno::ECONNREFUSED);
+        }
+        path_bytes.to_vec()
+    } else {
+        let path_end = path_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(path_bytes.len());
+        if path_end == 0 {
+            return Err(Errno::ECONNREFUSED);
+        }
+        crate::path::resolve_path(&path_bytes[..path_end], &proc.cwd)
+    };
 
     // Look up in global registry
     let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
