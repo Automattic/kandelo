@@ -40,7 +40,7 @@
 //! should produce a bounded-depth body regardless of call-site count.
 
 use fork_instrument::{Options, instrument};
-use walrus::ir::{self, Instr};
+use walrus::ir::{self, Instr, InstrSeqId};
 use walrus::{FunctionKind, LocalFunction, Module};
 
 /// Generate a WAT module containing a single `$dispatcher` function with
@@ -183,6 +183,48 @@ fn dispatcher_call_count(bytes: &[u8]) -> usize {
     }
     walk(local, local.entry_block(), &mut count);
     count
+}
+
+/// `instrument_one_function_switch` shapes the entry block as
+/// `[preamble-if/else, Block($unwind_save), postamble…]`, so the only
+/// `Block(_)` at entry level is `$unwind_save` itself.
+fn dispatcher_unwind_save(local: &LocalFunction) -> InstrSeqId {
+    let blocks: Vec<InstrSeqId> = local
+        .block(local.entry_block())
+        .instrs
+        .iter()
+        .filter_map(|(i, _)| match i {
+            Instr::Block(ir::Block { seq }) => Some(*seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(blocks.len(), 1, "expected one top-level Block in entry");
+    blocks[0]
+}
+
+fn collect_br_if_targets(local: &LocalFunction) -> Vec<InstrSeqId> {
+    fn walk(local: &LocalFunction, seq: InstrSeqId, out: &mut Vec<InstrSeqId>) {
+        for (instr, _) in &local.block(seq).instrs {
+            if let Instr::BrIf(ir::BrIf { block }) = instr {
+                out.push(*block);
+            }
+            let children: Vec<InstrSeqId> = match instr {
+                Instr::Block(ir::Block { seq }) | Instr::Loop(ir::Loop { seq }) => vec![*seq],
+                Instr::IfElse(ir::IfElse {
+                    consequent,
+                    alternative,
+                }) => vec![*consequent, *alternative],
+                Instr::TryTable(ir::TryTable { seq, .. }) => vec![*seq],
+                _ => Vec::new(),
+            };
+            for child in children {
+                walk(local, child, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(local, local.entry_block(), &mut out);
+    out
 }
 
 /// Bound the instrumented dispatcher's nesting depth to a value V8 can
@@ -332,5 +374,50 @@ fn bucketed_depth_indirect_dispatcher_passes_v8_limit() {
              depth at O(BUCKET_SIZE · log_BUCKET_SIZE(N)); this depth \
              indicates the linear N-deep shape is still being emitted."
         );
+    }
+}
+
+/// Every per-call UNWIND `br_if` must target the function-level
+/// `$unwind_save`. A regression re-pointing them at a leaf-local
+/// `$child_K` / `$dispatch_normal` would still validate as wasm but
+/// scramble the fork frame on the next REWIND. The dispatcher
+/// fixtures emit no other `BrIf`s, so "every BrIf → $unwind_save"
+/// pins the invariant without pattern-matching the surrounding
+/// `(global.get state, const UNWINDING, i32.eq)` sequence.
+///
+/// N=33 straddles `BUCKET_SIZE=32` to force one full leaf + one
+/// singleton leaf — exercises both first-leaf and last-leaf paths.
+#[test]
+fn leaf_unwind_br_if_targets_function_level_unwind_save() {
+    for &n in &[33usize, 64, 100, 1024, 1025] {
+        for (label, wat) in [
+            ("direct", wat_direct_dispatcher(n)),
+            ("indirect", wat_indirect_dispatcher(n)),
+        ] {
+            let instrumented = instrument_wat(&wat);
+            let module = Module::from_buffer(&instrumented).expect("parse instrumented");
+            let func = module
+                .funcs
+                .iter()
+                .find(|f| f.name.as_deref() == Some("dispatcher"))
+                .expect("dispatcher missing");
+            let FunctionKind::Local(local) = &func.kind else {
+                panic!("dispatcher should be local");
+            };
+
+            let unwind_save = dispatcher_unwind_save(local);
+            let targets = collect_br_if_targets(local);
+
+            assert!(
+                !targets.is_empty(),
+                "{label} N={n}: dispatcher has no BrIf",
+            );
+            for (idx, target) in targets.iter().enumerate() {
+                assert_eq!(
+                    *target, unwind_save,
+                    "{label} N={n}: BrIf #{idx} targets {target:?}, expected $unwind_save ({unwind_save:?})",
+                );
+            }
+        }
     }
 }
