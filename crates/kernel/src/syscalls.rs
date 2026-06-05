@@ -1672,10 +1672,23 @@ fn parent_path(path: &[u8]) -> Vec<u8> {
     if path == b"/" {
         return alloc::vec![b'/'];
     }
+    let mut end = path.len();
+    while end > 1 && path[end - 1] == b'/' {
+        end -= 1;
+    }
+    let path = &path[..end];
     match path.iter().rposition(|&b| b == b'/') {
         Some(0) | None => alloc::vec![b'/'],
         Some(pos) => path[..pos].to_vec(),
     }
+}
+
+fn trim_trailing_slashes(path: &[u8]) -> &[u8] {
+    let mut end = path.len();
+    while end > 1 && path[end - 1] == b'/' {
+        end -= 1;
+    }
+    &path[..end]
 }
 
 fn check_search_dir(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
@@ -1687,6 +1700,13 @@ fn check_search_dir(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
 }
 
 fn check_search_path(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
+    let trimmed = trim_trailing_slashes(path);
+    if trimmed.len() != path.len() {
+        return check_search_dir_chain(proc, host, trimmed);
+    }
     let parent = parent_path(path);
     check_search_dir_chain(proc, host, &parent)
 }
@@ -1707,6 +1727,9 @@ fn check_search_dir_chain(proc: &Process, host: &mut dyn HostIO, dir: &[u8]) -> 
 }
 
 fn check_parent_writable(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
     let parent = parent_path(path);
     check_search_dir_chain(proc, host, &parent)?;
     let st = host.host_stat(&parent)?;
@@ -1714,6 +1737,9 @@ fn check_parent_writable(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> 
 }
 
 fn check_sticky_child(proc: &Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
+    if path.is_empty() {
+        return Err(Errno::ENOENT);
+    }
     let parent = parent_path(path);
     let parent_st = host.host_stat(&parent)?;
     if parent_st.st_mode & S_ISVTX == 0 || proc.euid == 0 {
@@ -4318,20 +4344,21 @@ pub fn sys_access(
 /// Validates that the path exists and is a directory via host_stat.
 pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = crate::path::resolve_path(path, &proc.cwd);
+    let canonical = || crate::path::canonicalize_existing_path(&resolved);
     // Check virtual filesystems first (procfs, devfs), then fall through to host
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         let st = crate::procfs::procfs_stat(&entry, 0, true);
         if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
             return Err(Errno::ENOTDIR);
         }
-        proc.cwd = resolved;
+        proc.cwd = canonical();
         return Ok(());
     }
     if let Some(st) = crate::devfs::match_devfs_stat(&resolved, proc.euid, proc.egid) {
         if st.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFDIR {
             return Err(Errno::ENOTDIR);
         }
-        proc.cwd = resolved;
+        proc.cwd = canonical();
         return Ok(());
     }
     // Validate the path exists and is a directory
@@ -4342,7 +4369,7 @@ pub fn sys_chdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resu
         return Err(Errno::ENOTDIR);
     }
     check_access(proc, &stat, X_OK)?;
-    proc.cwd = resolved;
+    proc.cwd = canonical();
     Ok(())
 }
 
@@ -4353,7 +4380,7 @@ pub fn sys_fchdir(proc: &mut Process, fd: i32) -> Result<(), Errno> {
     if ofd.file_type != FileType::Directory {
         return Err(Errno::ENOTDIR);
     }
-    proc.cwd = ofd.path.clone();
+    proc.cwd = crate::path::canonicalize_existing_path(&ofd.path);
     Ok(())
 }
 
@@ -10951,6 +10978,33 @@ mod tests {
     /// that call sys_bind/sys_connect for AF_UNIX must hold this lock.
     static UNIX_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[test]
+    fn test_parent_path_ignores_trailing_slash() {
+        assert_eq!(parent_path(b"/tmp/newdir/"), b"/tmp");
+        assert_eq!(parent_path(b"/tmp/newdir///"), b"/tmp");
+        assert_eq!(parent_path(b"/tmp"), b"/");
+        assert_eq!(parent_path(b"/"), b"/");
+    }
+
+    #[test]
+    fn test_stat_trailing_slash_requires_directory() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(
+            sys_stat(&mut proc, &mut host, b"/tmp/file/").unwrap_err(),
+            Errno::ENOTDIR,
+        );
+    }
+
+    #[test]
+    fn test_empty_path_is_enoent() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(sys_stat(&mut proc, &mut host, b"").unwrap_err(), Errno::ENOENT);
+    }
+
     fn test_path_is_dir(path: &[u8]) -> bool {
         path.ends_with(b"/")
             || path.ends_with(b"dir")
@@ -12109,6 +12163,21 @@ mod tests {
         let mut buf = [0u8; 256];
         let n = sys_getcwd(&proc, &mut buf).unwrap();
         assert_eq!(&buf[..n], b"/tmp/subdir\0");
+    }
+
+    #[test]
+    fn test_chdir_canonicalizes_dotdot_in_cwd() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        sys_chdir(&mut proc, &mut host, b"/tmp").unwrap();
+        sys_chdir(&mut proc, &mut host, b"subdir").unwrap();
+        host.set_dir_with_owner(b"/tmp/subdir/..", 0, 0, 0o755);
+
+        sys_chdir(&mut proc, &mut host, b"..").unwrap();
+
+        let mut buf = [0u8; 256];
+        let n = sys_getcwd(&proc, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/tmp\0");
     }
 
     #[test]
