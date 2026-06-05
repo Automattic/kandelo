@@ -255,6 +255,45 @@ fn max_depth_single_leaf_matches_pre_bucketing_observed_depth() {
     }
 }
 
+/// Mirror what `populate_internal_dispatch` + `populate_dispatch_normal`
+/// emit at runtime: at each `Internal`, br_table by
+/// `(call_idx - range_start) / span_per_child`; at a `Leaf`, fall
+/// through to `$POST_{call_idx - start}`. `None` means the wasm
+/// br_table default fires (control would escape to `$unwind_save`).
+fn simulate_decode(tree: &DispatchTree, call_idx: usize) -> Option<(usize, usize)> {
+    match tree {
+        DispatchTree::Leaf { start, end } => {
+            (*start <= call_idx && call_idx < *end).then_some((*start, *end))
+        }
+        DispatchTree::Internal {
+            children,
+            span_per_child,
+        } => {
+            let child_idx = (call_idx - tree.start()) / span_per_child;
+            children.get(child_idx).and_then(|c| simulate_decode(c, call_idx))
+        }
+    }
+}
+
+#[test]
+fn decode_every_k_lands_in_correct_leaf() {
+    for &n in &[33usize, 64, 100, 200, 1024, 1025, 2_000, 5_000] {
+        let tree = build_dispatch_tree(n, BUCKET_SIZE);
+        for k in 0..n {
+            let (start, end) = simulate_decode(&tree, k)
+                .unwrap_or_else(|| panic!("N={n}: K={k} → None"));
+            assert!(
+                start <= k && k < end,
+                "N={n}: K={k} landed in [{start}, {end})",
+            );
+        }
+        assert!(
+            simulate_decode(&tree, n).is_none(),
+            "N={n}: K=N must fall through to default",
+        );
+    }
+}
+
 #[test]
 fn max_depth_property_holds_for_power_of_bucket_size_progression() {
     // Walk through the natural progression N = M^k. The depth must
