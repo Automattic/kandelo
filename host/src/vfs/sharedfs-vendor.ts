@@ -1452,7 +1452,20 @@ export class SharedFS {
       this.inodeWriteLock(childIno);
       const linkCount = this.r32(childOff + INO_LINK_COUNT);
       if (linkCount <= 1) {
-        this.inodeTruncate(childIno, 0);
+        const size = this.r64(childOff + INO_SIZE);
+        if ((mode & S_IFMT) === S_IFLNK && size <= INLINE_SYMLINK_SIZE) {
+          // Short symlink targets live in the inode direct-pointer area. Unlink
+          // removes the symlink inode itself, not the inline target bytes as
+          // block pointers.
+          this.u8.fill(
+            0,
+            childOff + INO_DIRECT,
+            childOff + INO_DIRECT + INLINE_SYMLINK_SIZE,
+          );
+          this.w64(childOff + INO_SIZE, 0);
+        } else {
+          this.inodeTruncate(childIno, 0);
+        }
         this.w32(childOff + INO_LINK_COUNT, 0);
         this.inodeWriteUnlock(childIno);
         this.inodeFree(childIno);
