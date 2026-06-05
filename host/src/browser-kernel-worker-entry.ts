@@ -185,6 +185,11 @@ interface ThreadWorkerInfo {
   termination?: Promise<void>;
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
+const threadTerminators = new Map<string, () => Promise<void>>();
+
+function threadKey(pid: number, channelOffset: number): string {
+  return `${pid}:${channelOffset}`;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -222,6 +227,7 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
       t.termination ??
       terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
     );
+    threadTerminators.delete(threadKey(pid, t.channelOffset));
   }
 }
 const ptyByPid = new Map<number, number>();
@@ -503,6 +509,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       onSpawn: handlePosixSpawn,
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
+      onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
     },
   );
@@ -1116,6 +1123,7 @@ async function handleClone(
     if (reclaimed) return;
     reclaimed = true;
     processInfo.threadAllocator.free(alloc.basePage);
+    threadTerminators.delete(threadKey(pid, alloc.channelOffset));
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);
@@ -1131,6 +1139,7 @@ async function handleClone(
     }
     return threadEntry.termination;
   };
+  threadTerminators.set(threadKey(pid, alloc.channelOffset), terminateThreadEntry);
 
   const failThread = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
@@ -1156,6 +1165,13 @@ async function handleClone(
   });
 
   return tid;
+}
+
+function handleThreadExit(pid: number, channelOffset: number): boolean {
+  const terminateThreadEntry = threadTerminators.get(threadKey(pid, channelOffset));
+  if (!terminateThreadEntry) return false;
+  void terminateThreadEntry();
+  return true;
 }
 
 function handleExit(pid: number, exitStatus: number): void {

@@ -584,6 +584,14 @@ export interface CentralizedKernelCallbacks {
   onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number>;
 
   /**
+   * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
+   * performed the Linux CLONE_CHILD_CLEARTID wake. Return true when the host
+   * will terminate the backing Worker, so the syscall channel should not be
+   * completed back into guest code.
+   */
+  onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
+
+  /**
    * Called when a process exits.
    */
   onExit?: (pid: number, exitStatus: number) => void;
@@ -2737,6 +2745,12 @@ export class CentralizedKernelWorker {
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
+  }
+
+  private abandonChannel(channel: ChannelInfo): void {
+    channel.handling = false;
+    this.clearSocketTimeout(channel);
+    this.pendingCancels.delete(channel.channelOffset);
   }
 
   /**
@@ -6082,7 +6096,9 @@ export class CentralizedKernelWorker {
    * Handle SYS_EXIT/SYS_EXIT_GROUP: notify the kernel and clean up.
    *
    * For SYS_EXIT from a non-main channel (thread exit): notify kernel,
-   * remove channel, complete channel to unblock thread worker.
+   * remove channel, and let the host terminate the backing Worker. If an
+   * older host entry has no thread-exit callback, fall back to completing the
+   * channel for compatibility.
    * For SYS_EXIT from main channel or SYS_EXIT_GROUP: current behavior.
    */
   private handleExit(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
@@ -6122,8 +6138,14 @@ export class CentralizedKernelWorker {
         this.notifyThreadExit(channel.pid, tid);
       }
       this.removeChannel(channel.pid, channel.channelOffset);
-      // Complete channel to unblock the thread worker so it can exit cleanly
-      this.completeChannelRaw(channel, 0, 0);
+      const hostWillTerminateThread = tid > 0 &&
+        this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset) === true;
+      if (hostWillTerminateThread) {
+        this.abandonChannel(channel);
+      } else {
+        // Back-compatibility for embedders that have not wired onThreadExit.
+        this.completeChannelRaw(channel, 0, 0);
+      }
       return;
     }
 
