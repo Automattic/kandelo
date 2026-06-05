@@ -13,6 +13,7 @@ import {
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
+import { ABI_SYSCALLS } from "../src/generated/abi";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 
@@ -51,6 +52,93 @@ function registerProcess(
 }
 
 describe("CentralizedKernelWorker Process Management", () => {
+  it("lets the host terminate pthread workers without waking SYS_EXIT back into guest code", () => {
+    const pid = 123;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
+    const tid = 77;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channel = {
+      pid,
+      channelOffset: threadChannelOffset,
+      memory,
+      handling: true,
+    };
+    const onThreadExit = vi.fn(() => true);
+    const completeChannelRaw = vi.fn();
+    const abandonChannel = vi.fn((ch: typeof channel) => {
+      ch.handling = false;
+    });
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onThreadExit },
+      processes: new Map([
+        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
+      ]),
+      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
+      threadForkContexts: new Map([
+        [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
+      ]),
+      threadCtidPtrs: new Map(),
+      notifyThreadExit: vi.fn(),
+      removeChannel: vi.fn(),
+      completeChannelRaw,
+      abandonChannel,
+    });
+
+    (kw as any).handleExit(channel, ABI_SYSCALLS.Exit, [0]);
+
+    expect(onThreadExit).toHaveBeenCalledWith(pid, tid, threadChannelOffset);
+    expect(abandonChannel).toHaveBeenCalledWith(channel);
+    expect(completeChannelRaw).not.toHaveBeenCalled();
+    expect(channel.handling).toBe(false);
+  });
+
+  it("keeps completing pthread SYS_EXIT channels when no host terminator is installed", () => {
+    const pid = 124;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
+    const tid = 78;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channel = {
+      pid,
+      channelOffset: threadChannelOffset,
+      memory,
+      handling: true,
+    };
+    const completeChannelRaw = vi.fn((ch: typeof channel) => {
+      ch.handling = false;
+    });
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: {},
+      processes: new Map([
+        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
+      ]),
+      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
+      threadForkContexts: new Map(),
+      threadCtidPtrs: new Map(),
+      notifyThreadExit: vi.fn(),
+      removeChannel: vi.fn(),
+      completeChannelRaw,
+      abandonChannel: vi.fn(),
+    });
+
+    (kw as any).handleExit(channel, ABI_SYSCALLS.Exit, [0]);
+
+    expect(completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
+    expect((kw as any).abandonChannel).not.toHaveBeenCalled();
+    expect(channel.handling).toBe(false);
+  });
+
   it("does not lower compact process max_addr when adding dynamic pthread channels", () => {
     const setMaxAddr = vi.fn(() => 0);
     const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
