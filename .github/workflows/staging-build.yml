@@ -293,6 +293,50 @@ jobs:
               done
             done
 
+            program_matrix=$(PROGRAM_MATRIX="$program_matrix" python3 <<PY
+          import json
+          import os
+          import pathlib
+          import sys
+          import tomllib
+
+          entries = json.loads(os.environ["PROGRAM_MATRIX"])
+          by_key = {
+              (entry["package"], entry["arch"]): entry
+              for entry in entries
+          }
+          deps_by_key = {}
+          for key, entry in by_key.items():
+              package, arch = key
+              manifest_path = pathlib.Path("packages/registry") / package / "package.toml"
+              manifest = tomllib.loads(manifest_path.read_text())
+              deps = []
+              for spec in manifest.get("depends_on", []):
+                  dep_package = spec.split("@", 1)[0]
+                  dep_key = (dep_package, arch)
+                  if dep_key in by_key:
+                      deps.append(dep_key)
+              deps_by_key[key] = deps
+
+          remaining = set(by_key)
+          ordered = []
+          while remaining:
+              ready = sorted(
+                  key for key in remaining
+                  if all(dep not in remaining for dep in deps_by_key[key])
+              )
+              if not ready:
+                  cycle = ", ".join(f"{package}/{arch}" for package, arch in sorted(remaining))
+                  print(f"program dependency cycle in staging matrix: {cycle}", file=sys.stderr)
+                  sys.exit(1)
+              for key in ready:
+                  ordered.append(by_key[key])
+                  remaining.remove(key)
+
+          print(json.dumps(ordered, separators=(",", ":")))
+          PY
+          )
+
             library_count=$(echo "$library_matrix" | jq length)
             program_count=$(echo "$program_matrix" | jq length)
             repair_index_output=false
@@ -733,6 +777,80 @@ jobs:
         # once in lib-matrix-build above.
         run: |
           bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
+
+      - name: Wait for changed program dependencies
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROGRAM_MATRIX: ${{ needs.preflight.outputs.program_matrix }}
+          TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+          MATRIX_PACKAGE: ${{ matrix.package }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          deps_file="$RUNNER_TEMP/changed-program-deps.txt"
+          PROGRAM_MATRIX="$PROGRAM_MATRIX" MATRIX_PACKAGE="$MATRIX_PACKAGE" MATRIX_ARCH="$MATRIX_ARCH" python3 <<PY > "$deps_file"
+          import json
+          import os
+          import pathlib
+          import tomllib
+
+          entries = json.loads(os.environ["PROGRAM_MATRIX"])
+          current_package = os.environ["MATRIX_PACKAGE"]
+          current_arch = os.environ["MATRIX_ARCH"]
+          by_key = {
+              (entry["package"], entry["arch"]): entry
+              for entry in entries
+          }
+          manifest_path = pathlib.Path("packages/registry") / current_package / "package.toml"
+          manifest = tomllib.loads(manifest_path.read_text())
+          for spec in manifest.get("depends_on", []):
+              dep_package = spec.split("@", 1)[0]
+              dep = by_key.get((dep_package, current_arch))
+              if dep is not None:
+                  print("|".join([
+                      dep["package"],
+                      dep["arch"],
+                      dep["sha"],
+                      str(dep["revision"]),
+                  ]))
+          PY
+          if [ ! -s "$deps_file" ]; then
+            echo "No changed program dependencies for $MATRIX_PACKAGE/$MATRIX_ARCH."
+            exit 0
+          fi
+
+          index_dir="$RUNNER_TEMP/staging-dependency-index"
+          mkdir -p "$index_dir"
+          deadline=$((SECONDS + 7200))
+          while true; do
+            rm -f "$index_dir/index.toml"
+            if gh release download "$TARGET_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern index.toml \
+                --dir "$index_dir" \
+                --clobber >/dev/null 2>&1; then
+              missing=0
+              while IFS="|" read -r pkg arch sha revision; do
+                if scripts/index-has-current-entry.sh "$index_dir/index.toml" "$pkg" "$arch" "$sha" "$revision"; then
+                  echo "Changed program dependency is ready: $pkg/$arch"
+                else
+                  echo "Waiting for changed program dependency: $pkg/$arch"
+                  missing=1
+                fi
+              done < "$deps_file"
+              if [ "$missing" = "0" ]; then
+                exit 0
+              fi
+            else
+              echo "Waiting for $TARGET_TAG/index.toml to become available."
+            fi
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::timed out waiting for changed program dependencies for $MATRIX_PACKAGE/$MATRIX_ARCH"
+              exit 1
+            fi
+            sleep 30
+          done
 
       - name: Resolve target package's transitive deps
         # Target-only prerequisite resolve: invoke the resolver on
