@@ -795,6 +795,61 @@ jobs:
             echo "program_matrix:"; echo "$program_matrix" | jq .
           '
 
+      - name: Create durable index snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_TAG: ${{ steps.compute.outputs.target_tag }}
+          ABI: ${{ steps.compute.outputs.abi }}
+        run: |
+          set -euo pipefail
+          snapshot_dir="$RUNNER_TEMP/durable-index-snapshot"
+          mkdir -p "$snapshot_dir"
+          snapshot_index="$snapshot_dir/index.toml"
+          index_dir=$(mktemp -d)
+          existing_index="$index_dir/index.toml"
+          if gh release download "$TARGET_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern index.toml \
+              --dir "$index_dir" \
+              --clobber >/dev/null 2>&1; then
+            echo "durable-index-snapshot: downloaded $TARGET_TAG/index.toml"
+          else
+            echo "durable-index-snapshot: no $TARGET_TAG/index.toml; creating empty ABI $ABI snapshot"
+            cat > "$existing_index" <<EOF
+          abi_version = $ABI
+          generated_at = "$(date -u +%FT%TZ)"
+          generator = "prepare-merge preflight empty durable snapshot"
+          EOF
+          fi
+          release_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TARGET_TAG}/"
+          python3 - "$existing_index" "$snapshot_index" "$release_base" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          src = Path(sys.argv[1])
+          dst = Path(sys.argv[2])
+          base = sys.argv[3]
+          scheme_re = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+          url_re = re.compile(r"^(\s*(?:archive_url|fallback_archive_url)\s*=\s*\")([^\"]+)(\".*)$")
+          out = []
+          for line in src.read_text().splitlines():
+              match = url_re.match(line)
+              if match and not scheme_re.match(match.group(2)):
+                  line = f"{match.group(1)}{base}{match.group(2)}{match.group(3)}"
+              out.append(line)
+          dst.write_text("\n".join(out) + "\n")
+          PY
+          echo "durable-index-snapshot: wrote $snapshot_index"
+
+      - name: Upload durable index snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: durable-index-snapshot
+          path: ${{ runner.temp }}/durable-index-snapshot/index.toml
+          retention-days: 1
+          if-no-files-found: error
+
   toolchain-cache:
     needs: [synthesize-merge, gate, change-scope]
     if: |
@@ -1032,7 +1087,7 @@ jobs:
       actions: read      # gh run download library artifacts
       contents: write    # state-lock git push + gh release create/upload
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      WASM_POSIX_BINARY_INDEX_URL: file://${{ runner.temp }}/durable-index-snapshot/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -1107,6 +1162,12 @@ jobs:
       - name: Extract toolchain sysroots
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Download durable index snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: durable-index-snapshot
+          path: ${{ runner.temp }}/durable-index-snapshot
 
       - name: Install host npm deps (build prereq)
         run: |
@@ -1218,9 +1279,10 @@ jobs:
       needs.preflight.outputs.program_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
+      actions: read      # download durable index + same-run dependency artifacts
       contents: write    # state-lock git push + gh release create/upload
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      WASM_POSIX_BINARY_INDEX_URL: file://${{ runner.temp }}/durable-index-snapshot/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -1296,6 +1358,12 @@ jobs:
       - name: Extract toolchain sysroots
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Download durable index snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: durable-index-snapshot
+          path: ${{ runner.temp }}/durable-index-snapshot
 
       - name: Install host npm deps (build prereq)
         run: |
@@ -1499,6 +1567,13 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
+      - name: Download durable index snapshot
+        if: ${{ needs.change-scope.outputs.package_staging_required == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: durable-index-snapshot
+          path: ${{ runner.temp }}/durable-index-snapshot
+
       - name: Download package artifacts
         if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && (needs.preflight.outputs.promote_matrix != '[]' || needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
         uses: ./.github/actions/download-run-artifacts
@@ -1534,15 +1609,16 @@ jobs:
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
-        # Package-staging runs resolve against the durable release plus
-        # local file:// overlays for newly built/promoted archives.
+        # Package-staging runs resolve against the preflight durable
+        # index snapshot plus local file:// overlays for newly
+        # built/promoted archives.
         # Non-archive validation runs skip overlays and resolve every
         # package from the existing durable ABI release; the fresh kernel
         # built below shadows kernel.wasm via local-binaries/.
         run: |
           set -euo pipefail
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
-            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
+            export WASM_POSIX_BINARY_INDEX_URL="file://$RUNNER_TEMP/durable-index-snapshot/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
           else
