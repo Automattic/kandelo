@@ -4500,6 +4500,23 @@ function _runCommonJsMain(filename) {
     process.exit(process.exitCode || 0);
 }
 
+const _nodeEvalCleanupHooks = {
+    drainJobQueue: typeof drainJobQueue === 'function' ? drainJobQueue : null,
+    clearKeptObjects: typeof clearKeptObjects === 'function' ? clearKeptObjects : null,
+    gc: typeof gc === 'function' ? gc : null,
+};
+
+function _cleanupAfterNodeEval() {
+    if (_nodeEvalCleanupHooks.drainJobQueue) _nodeEvalCleanupHooks.drainJobQueue();
+    if (_nodeEvalCleanupHooks.clearKeptObjects) {
+        try { _nodeEvalCleanupHooks.clearKeptObjects(); } catch {}
+    }
+    if (_nodeEvalCleanupHooks.gc) {
+        try { _nodeEvalCleanupHooks.gc(); } catch {}
+    }
+    if (_nodeEvalCleanupHooks.drainJobQueue) _nodeEvalCleanupHooks.drainJobQueue();
+}
+
 function _runNodeEval(code) {
     const filename = '[eval]';
     const dirname = process.cwd();
@@ -4514,15 +4531,19 @@ function _runNodeEval(code) {
         paths: Module._nodeModulePaths(dirname),
         require: evalRequire,
     };
-    const wrappedFn = _nodeNative.evalScriptAsFunction(
+    let wrappedFn = _nodeNative.evalScriptAsFunction(
         '(function (exports, require, module, __filename, __dirname) {\n' +
             code +
             '\n})',
         filename,
     );
-    wrappedFn.call(globalThis, mod.exports, evalRequire, mod, filename, '.');
-    mod.loaded = true;
-    if (typeof drainJobQueue === 'function') drainJobQueue();
+    try {
+        wrappedFn.call(globalThis, mod.exports, evalRequire, mod, filename, '.');
+        mod.loaded = true;
+    } finally {
+        wrappedFn = null;
+        _cleanupAfterNodeEval();
+    }
     return mod.exports;
 }
 
