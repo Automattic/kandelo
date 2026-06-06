@@ -1,0 +1,32 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -4754,7 +4754,13 @@
+   AutoLockWorkerThreads alwt;
+   if (!workerThreads.append(std::move(thread))) {
+     ReportOutOfMemory(cx);
++#if defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
++    // Keep wasm worker cleanup nonblocking for the same reason as
++    // KillWorkerThreads above.
++    thread->detach();
++#else
+     thread->join();
++#endif
+     return false;
+   }
+ 
+@@ -4931,7 +4937,15 @@
+       thread = std::move(workerThreads.back());
+       workerThreads.popBack();
+     }
++#if defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
++    // Kandelo's browser wasm-pthread host can fault when SpiderMonkey joins
++    // evalInWorker threads during shell teardown. The shell process is
++    // exiting and no JavaScript API can join these threads, so detach them and
++    // let the host's process/worker teardown reclaim the remaining resources.
++    thread->detach();
++#else
+     thread->join();
++#endif
+   }
+ 
+   workerThreads.clearAndFree();
