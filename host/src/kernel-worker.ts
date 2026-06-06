@@ -459,6 +459,7 @@ interface ProcessRegistration {
 interface RegisterProcessOptions {
   skipKernelCreate?: boolean;
   argv?: string[];
+  env?: string[];
   ptrWidth?: 4 | 8;
   /** Initial program break after any host-owned low control pages. */
   brkBase?: number;
@@ -1107,6 +1108,15 @@ export class CentralizedKernelWorker {
         kernelMem.set(encoded, scratchOffset);
         setArgv(pid, this.toKernelPtr(scratchOffset), encoded.length);
       }
+    }
+
+    // Mirror the process's initial exec environment into the kernel-side
+    // Process.environ store. The musl overlay keeps setenv()/unsetenv() in
+    // sync with this store, and fork children rebuild their CRT environment
+    // from it. Replacing instead of merging is required for execve(), whose
+    // envp argument fully replaces the caller's environment.
+    if (options?.env) {
+      this.replaceProcessEnvironment(pid, options.env);
     }
 
     // Cap mmap address space. New hosts pass the process memory maximum here
@@ -1835,6 +1845,96 @@ export class CentralizedKernelWorker {
     const copy = new Uint8Array(capped);
     copy.set(mem.subarray(ptr, ptr + capped));
     return new TextDecoder("utf-8", { fatal: false }).decode(copy);
+  }
+
+  private writeKernelScratchString(value: string, offset: number): { ptr: number; len: number } {
+    const encoded = new TextEncoder().encode(value);
+    const ptr = this.scratchOffset + offset;
+    const kernelMem = this.getKernelMem();
+    if (offset + encoded.length + 1 > CH_DATA_SIZE) {
+      throw new Error(`kernel scratch string too large (${encoded.length} bytes)`);
+    }
+    kernelMem.set(encoded, ptr);
+    kernelMem[ptr + encoded.length] = 0;
+    return { ptr, len: encoded.length };
+  }
+
+  private unsetProcessEnv(pid: number, name: string): void {
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
+      ((pid: number) => void) | undefined;
+    const unsetEnv = this.kernelInstance!.exports.kernel_unsetenv as
+      ((namePtr: bigint, nameLen: number) => number) | undefined;
+    if (!setCurrentPid || !unsetEnv) return;
+
+    const nameBuf = this.writeKernelScratchString(name, 0);
+    setCurrentPid(pid);
+    unsetEnv(BigInt(nameBuf.ptr), nameBuf.len);
+  }
+
+  private setProcessEnv(pid: number, entry: string): void {
+    const eq = entry.indexOf("=");
+    if (eq <= 0) return;
+
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
+      ((pid: number) => void) | undefined;
+    const setEnv = this.kernelInstance!.exports.kernel_setenv as
+      ((namePtr: bigint, nameLen: number, valuePtr: bigint, valueLen: number, overwrite: number) => number) | undefined;
+    if (!setCurrentPid || !setEnv) return;
+
+    const name = entry.slice(0, eq);
+    const value = entry.slice(eq + 1);
+    const nameBuf = this.writeKernelScratchString(name, 0);
+    const valueBuf = this.writeKernelScratchString(value, nameBuf.len + 1);
+    setCurrentPid(pid);
+    setEnv(BigInt(nameBuf.ptr), nameBuf.len, BigInt(valueBuf.ptr), valueBuf.len, 1);
+  }
+
+  private replaceProcessEnvironment(pid: number, env: string[]): void {
+    for (const entry of this.snapshotProcessEnv(pid)) {
+      const eq = entry.indexOf("=");
+      if (eq > 0) this.unsetProcessEnv(pid, entry.slice(0, eq));
+    }
+    for (const entry of env) {
+      this.setProcessEnv(pid, entry);
+    }
+  }
+
+  private snapshotCurrentProcessStrings(
+    pid: number,
+    countExport: "kernel_get_argc" | "kernel_environ_count",
+    readExport: "kernel_argv_read" | "kernel_environ_get",
+  ): string[] {
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
+      ((pid: number) => void) | undefined;
+    const countFn = this.kernelInstance!.exports[countExport] as
+      (() => number) | undefined;
+    const readFn = this.kernelInstance!.exports[readExport] as
+      ((index: number, bufPtr: bigint, bufLen: number) => number) | undefined;
+    if (!setCurrentPid || !countFn || !readFn) return [];
+
+    setCurrentPid(pid);
+    const count = countFn();
+    const out: string[] = [];
+    const maxLen = Math.min(CH_DATA_SIZE, 65536);
+    const ptr = this.scratchOffset + CH_DATA;
+    const kernelMem = this.getKernelMem();
+    const decoder = new TextDecoder();
+    for (let i = 0; i < count; i++) {
+      const len = readFn(i, BigInt(ptr), maxLen);
+      if (len <= 0 || len > maxLen) continue;
+      const copy = new Uint8Array(len);
+      copy.set(kernelMem.subarray(ptr, ptr + len));
+      out.push(decoder.decode(copy));
+    }
+    return out;
+  }
+
+  snapshotProcessArgv(pid: number): string[] {
+    return this.snapshotCurrentProcessStrings(pid, "kernel_get_argc", "kernel_argv_read");
+  }
+
+  snapshotProcessEnv(pid: number): string[] {
+    return this.snapshotCurrentProcessStrings(pid, "kernel_environ_count", "kernel_environ_get");
   }
 
   /** Format a syscall for logging, decoding path/string args from process memory */
