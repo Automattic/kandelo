@@ -4270,6 +4270,14 @@ pub fn sys_chmod(
     host.host_chmod(&resolved, mode)
 }
 
+fn chown_target_ids(st: &WasmStat, uid: u32, gid: u32) -> (u32, u32) {
+    const CHOWN_ID_UNCHANGED: u32 = u32::MAX;
+    (
+        if uid == CHOWN_ID_UNCHANGED { st.st_uid } else { uid },
+        if gid == CHOWN_ID_UNCHANGED { st.st_gid } else { gid },
+    )
+}
+
 pub fn sys_chown(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -4278,10 +4286,15 @@ pub fn sys_chown(
     gid: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_path(path, &proc.cwd);
+    check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    let (uid, gid) = chown_target_ids(&st, uid, gid);
+    if uid == st.st_uid && gid == st.st_gid {
+        return Ok(());
+    }
     if proc.euid != 0 {
         return Err(Errno::EPERM);
     }
-    check_search_path(proc, host, &resolved)?;
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -10005,6 +10018,11 @@ pub fn sys_fchown(
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => {
+            let st = host.host_fstat(ofd.host_handle)?;
+            let (uid, gid) = chown_target_ids(&st, uid, gid);
+            if uid == st.st_uid && gid == st.st_gid {
+                return Ok(());
+            }
             if proc.euid != 0 {
                 return Err(Errno::EPERM);
             }
@@ -10197,10 +10215,15 @@ pub fn sys_fchownat(
     _flags: u32,
 ) -> Result<(), Errno> {
     let resolved = resolve_at_path(proc, dirfd, path)?;
+    check_search_path(proc, host, &resolved)?;
+    let st = host.host_stat(&resolved)?;
+    let (uid, gid) = chown_target_ids(&st, uid, gid);
+    if uid == st.st_uid && gid == st.st_gid {
+        return Ok(());
+    }
     if proc.euid != 0 {
         return Err(Errno::EPERM);
     }
-    check_search_path(proc, host, &resolved)?;
     host.host_chown(&resolved, uid, gid)
 }
 
@@ -12002,6 +12025,22 @@ mod tests {
         let st = sys_stat(&mut proc, &mut host, b"/foo").unwrap();
         assert_eq!(st.st_uid, 1000, "sys_chown uid did not reach host VFS");
         assert_eq!(st.st_gid, 2000, "sys_chown gid did not reach host VFS");
+    }
+
+    /// POSIX chown-family calls use `(uid_t)-1` / `(gid_t)-1` as "leave
+    /// unchanged" sentinels. If both requested IDs resolve to the current
+    /// owner/group, the operation is a no-op and must not be delegated to a
+    /// host chown implementation that may reject UINT_MAX as a real uid/gid.
+    #[test]
+    fn test_sys_chown_unchanged_ids_are_noop() {
+        let mut proc = Process::new(1);
+        proc.euid = 1000;
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/owned", 1000, 1000, 0o644, b"hi");
+        sys_chown(&mut proc, &mut host, b"/owned", u32::MAX, u32::MAX).unwrap();
+        let st = sys_stat(&mut proc, &mut host, b"/owned").unwrap();
+        assert_eq!(st.st_uid, 1000);
+        assert_eq!(st.st_gid, 1000);
     }
 
     /// sys_fchown must propagate uid/gid into the host VFS via the open file
