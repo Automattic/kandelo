@@ -287,57 +287,48 @@
                     source = loaded;
                 }
 
-                let workerDataExpression = 'undefined';
-                if (Object.prototype.hasOwnProperty.call(options, 'workerData')) {
-                    const data = options.workerData;
-                    if (data instanceof SharedArrayBuffer ||
-                        (typeof WebAssembly === 'object' && WebAssembly.Memory && data instanceof WebAssembly.Memory)) {
-                        if (typeof setSharedObject !== 'function') {
-                            throw new Error('SpiderMonkey shared worker mailbox is unavailable');
-                        }
-                        setSharedObject(data);
-                        workerDataExpression = 'getSharedObject()';
-                    } else {
-                        workerDataExpression = JSON.stringify(data);
-                    }
-                } else if (typeof setSharedObject === 'function') {
-                    setSharedObject(null);
-                }
-
-                const prelude = [
-                    'var workerData = ' + workerDataExpression + ';',
-                    'var parentPort = null;',
-                    'var require = function(name) {',
-                    '  if (name === "worker_threads" || name === "node:worker_threads") {',
-                    '    return { isMainThread: false, parentPort: parentPort, workerData: workerData };',
-                    '  }',
-                    '  throw new Error("Cannot find module " + name);',
-                    '};',
-                    'var module = { exports: {} };',
-                    'var exports = module.exports;',
-                ].join('\n');
-
-                if (typeof evalInWorker !== 'function') {
-                    throw new Error('SpiderMonkey evalInWorker is unavailable');
-                }
-                evalInWorker(prelude + '\n' + source + '\n');
                 const defer = typeof queueMicrotask === 'function'
                     ? queueMicrotask
                     : (fn) => Promise.resolve().then(fn);
+                const workerData = Object.prototype.hasOwnProperty.call(options, 'workerData')
+                    ? options.workerData
+                    : undefined;
+                const parentPort = null;
+                const workerRequire = function(name) {
+                    if (name === 'worker_threads' || name === 'node:worker_threads') {
+                        return { isMainThread: false, parentPort, workerData };
+                    }
+                    throw new Error('Cannot find module ' + name);
+                };
+                const module = { exports: {} };
+                const exports = module.exports;
+                let exitCode = 0;
+
+                try {
+                    // The browser wasm host currently faults when SpiderMonkey
+                    // shell evalInWorker threads are cleaned up after SAB-backed
+                    // worker_threads use. Keep this Node-compat Worker shim
+                    // synchronous until that host/thread lifecycle is fixed.
+                    Function('workerData', 'parentPort', 'require', 'module', 'exports', source + '\n')(
+                        workerData,
+                        parentPort,
+                        workerRequire,
+                        module,
+                        exports,
+                    );
+                } catch (error) {
+                    exitCode = 1;
+                    defer(() => this.emit('error', error));
+                }
+                this._exitCode = exitCode;
                 defer(() => this.emit('online'));
             }
             postMessage() {
                 throw new Error('Worker.postMessage is not implemented in the SpiderMonkey shell adapter');
             }
             terminate() {
-                // Do not clear SpiderMonkey's shared-object mailbox here.
-                // Browser wasm-pthread teardown has crashed after both
-                // setSharedObject(null) and synchronous evalInWorker thread
-                // joins on a SAB-backed worker. The next Worker construction
-                // overwrites the mailbox before evalInWorker(), and workers
-                // without workerData clear it in the constructor before use.
-                this.emit('exit', 0);
-                return Promise.resolve(0);
+                this.emit('exit', this._exitCode || 0);
+                return Promise.resolve(this._exitCode || 0);
             }
             ref() { return this; }
             unref() { return this; }

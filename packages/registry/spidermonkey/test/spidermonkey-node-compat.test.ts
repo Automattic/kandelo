@@ -351,12 +351,14 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     );
   }, DEFAULT_TEST_TIMEOUT);
 
-  it("does not synchronously join or clear shell workers during terminate", async () => {
+  it("runs Worker eval code without shell worker threads", async () => {
     const sharedValues: unknown[] = [];
     let evalCount = 0;
     let joinCount = 0;
+    let exitCode: number | undefined;
     const context = vm.createContext({
       ArrayBuffer,
+      Atomics,
       Date,
       Error,
       Int32Array,
@@ -396,15 +398,24 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
 
     const { Worker } = createWorkerThreads(EventEmitter);
     const sab = new SharedArrayBuffer(8);
-    const worker = new Worker("", { eval: true, workerData: sab });
+    const view = new Int32Array(sab);
+    const worker = new Worker(
+      "const view = new Int32Array(workerData); Atomics.store(view, 0, 42);",
+      { eval: true, workerData: sab },
+    );
+    worker.on("exit", (code: number) => {
+      exitCode = code;
+    });
 
-    expect(evalCount).toBe(1);
-    expect(sharedValues).toEqual([sab]);
+    expect(evalCount).toBe(0);
+    expect(sharedValues).toEqual([]);
+    expect(Atomics.load(view, 0)).toBe(42);
 
     await worker.terminate();
 
     expect(joinCount).toBe(0);
-    expect(sharedValues).toEqual([sab]);
+    expect(exitCode).toBe(0);
+    expect(sharedValues).toEqual([]);
   });
 
   it("evaluates Node-style -e scripts with process and console globals", async () => {
@@ -884,7 +895,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     }
   }, DEFAULT_TEST_TIMEOUT);
 
-  it("runs SpiderMonkey shell workers from worker_threads with shared memory enabled by Node mode", async () => {
+  it("runs the Worker compatibility shim with shared memory enabled by Node mode", async () => {
     const result = await runNode(
       [
         "const { Worker } = require('worker_threads')",
