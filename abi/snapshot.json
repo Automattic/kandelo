@@ -3730,6 +3730,15 @@
         }
       }
     ],
+    "299": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "size": {
+          "type": "cstring"
+        }
+      }
+    ],
     "3": [
       {
         "argIndex": 1,
@@ -5140,6 +5149,10 @@
     {
       "name": "Pwritev",
       "number": 296
+    },
+    {
+      "name": "Lchown",
+      "number": 299
     },
     {
       "name": "Fallocate",
