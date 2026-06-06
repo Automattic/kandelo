@@ -281,6 +281,11 @@
                 try { setSharedObject(null); } catch {}
             }
         }
+        function joinShellWorkers() {
+            if (typeof joinWorkerThreads === 'function') {
+                try { joinWorkerThreads(); } catch {}
+            }
+        }
         class Worker extends EventEmitter {
             constructor(filenameOrSource, options) {
                 super();
@@ -335,10 +340,12 @@
                 throw new Error('Worker.postMessage is not implemented in the SpiderMonkey shell adapter');
             }
             terminate() {
+                // Keep the shared worker mailbox live until SpiderMonkey has
+                // reaped the evalInWorker pthread. Clearing it first can race
+                // Linux/Chromium worker teardown and surface as a SIGSEGV in
+                // the guest process.
+                joinShellWorkers();
                 clearSharedWorkerData();
-                // The SpiderMonkey shell reaps evalInWorker threads during
-                // shell teardown. Joining them synchronously here can race
-                // wasm pthread teardown under browser hosts.
                 this.emit('exit', 0);
                 return Promise.resolve(0);
             }
