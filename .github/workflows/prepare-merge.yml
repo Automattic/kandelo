@@ -1086,8 +1086,6 @@ jobs:
     permissions:
       actions: read      # gh run download library artifacts
       contents: write    # state-lock git push + gh release create/upload
-    env:
-      WASM_POSIX_BINARY_INDEX_URL: file://${{ runner.temp }}/durable-index-snapshot/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -1168,6 +1166,10 @@ jobs:
         with:
           name: durable-index-snapshot
           path: ${{ runner.temp }}/durable-index-snapshot
+
+      - name: Use durable index snapshot
+        run: |
+          echo "WASM_POSIX_BINARY_INDEX_URL=file://$RUNNER_TEMP/durable-index-snapshot/index.toml" >> "$GITHUB_ENV"
 
       - name: Install host npm deps (build prereq)
         run: |
@@ -1281,8 +1283,6 @@ jobs:
     permissions:
       actions: read      # download durable index + same-run dependency artifacts
       contents: write    # state-lock git push + gh release create/upload
-    env:
-      WASM_POSIX_BINARY_INDEX_URL: file://${{ runner.temp }}/durable-index-snapshot/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -1364,6 +1364,10 @@ jobs:
         with:
           name: durable-index-snapshot
           path: ${{ runner.temp }}/durable-index-snapshot
+
+      - name: Use durable index snapshot
+        run: |
+          echo "WASM_POSIX_BINARY_INDEX_URL=file://$RUNNER_TEMP/durable-index-snapshot/index.toml" >> "$GITHUB_ENV"
 
       - name: Install host npm deps (build prereq)
         run: |
