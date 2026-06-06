@@ -169,36 +169,6 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
     expect(result.stdout.trim()).toBe("42");
   }, DEFAULT_TEST_TIMEOUT);
 
-  it("joins completed shell workers before process teardown", async () => {
-    const result = await runJs([
-      "var sab = new SharedArrayBuffer(8)",
-      "var view = new Int32Array(sab)",
-      "setSharedObject(sab)",
-      "evalInWorker(`var view = new Int32Array(getSharedObject()); Atomics.store(view, 0, 42); Atomics.store(view, 1, 1); Atomics.notify(view, 1);`)",
-      "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
-      "if (Atomics.load(view, 1) !== 1) throw new Error('worker wait failed')",
-      "joinWorkerThreads()",
-      "print(Atomics.load(view, 0))",
-      "print('after-first-join')",
-      "Atomics.store(view, 0, 0)",
-      "Atomics.store(view, 1, 0)",
-      "evalInWorker(`var view = new Int32Array(getSharedObject()); Atomics.store(view, 0, 7); Atomics.store(view, 1, 1); Atomics.notify(view, 1);`)",
-      "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
-      "if (Atomics.load(view, 1) !== 1) throw new Error('second worker wait failed')",
-      "joinWorkerThreads()",
-      "print(Atomics.load(view, 0))",
-      "print('after-second-join')",
-    ].join(";"), { shellArgs: ["--shared-memory=on"] });
-
-    expect(result.exitCode).toBe(0);
-    expect(stdoutLines(result.stdout)).toEqual([
-      "42",
-      "after-first-join",
-      "7",
-      "after-second-join",
-    ]);
-  }, DEFAULT_TEST_TIMEOUT);
-
   it("supports Atomics wait timeout and not-equal results", async () => {
     const result = await runJs([
       "var sab = new SharedArrayBuffer(4)",

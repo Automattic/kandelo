@@ -276,11 +276,6 @@
                 this.port2 = new MessagePort();
             }
         }
-        function joinShellWorkers() {
-            if (typeof joinWorkerThreads === 'function') {
-                try { joinWorkerThreads(); } catch {}
-            }
-        }
         class Worker extends EventEmitter {
             constructor(filenameOrSource, options) {
                 super();
@@ -336,12 +331,11 @@
             }
             terminate() {
                 // Do not clear SpiderMonkey's shared-object mailbox here.
-                // Browser wasm-pthread teardown has crashed after
-                // setSharedObject(null) on a SAB-backed worker. The next
-                // Worker construction overwrites the mailbox before
-                // evalInWorker(), and workers without workerData clear it in
-                // the constructor before use.
-                joinShellWorkers();
+                // Browser wasm-pthread teardown has crashed after both
+                // setSharedObject(null) and synchronous evalInWorker thread
+                // joins on a SAB-backed worker. The next Worker construction
+                // overwrites the mailbox before evalInWorker(), and workers
+                // without workerData clear it in the constructor before use.
                 this.emit('exit', 0);
                 return Promise.resolve(0);
             }

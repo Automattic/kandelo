@@ -10,9 +10,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
@@ -20,6 +22,10 @@ import { runCentralizedProgram } from "../../../../host/test/centralized-test-he
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageBuild = join(__dirname, "../bin/node.wasm");
+const adapterSource = readFileSync(
+  join(__dirname, "../node-compat/adapter.js"),
+  "utf8",
+);
 const nodeWasm =
   tryResolveBinary("programs/spidermonkey-node.wasm") ??
   (existsSync(packageBuild) ? packageBuild : null);
@@ -328,6 +334,15 @@ async function withCiProgress<T>(label: string, promise: Promise<T>): Promise<T>
   }
 }
 
+type WorkerThreadsFactory = (
+  eventEmitter: typeof EventEmitter,
+) => {
+  Worker: new (
+    source: string,
+    options?: { eval?: boolean; workerData?: unknown },
+  ) => { terminate(): Promise<number> };
+};
+
 describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
   beforeAll(async () => {
     nodeModule = await withCiProgress(
@@ -335,6 +350,62 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
       WebAssembly.compile(loadWasm(nodeWasm!)),
     );
   }, DEFAULT_TEST_TIMEOUT);
+
+  it("does not synchronously join or clear shell workers during terminate", async () => {
+    const sharedValues: unknown[] = [];
+    let evalCount = 0;
+    let joinCount = 0;
+    const context = vm.createContext({
+      ArrayBuffer,
+      Date,
+      Error,
+      Int32Array,
+      JSON,
+      Map,
+      Number,
+      Object,
+      Promise,
+      SharedArrayBuffer,
+      String,
+      Symbol,
+      TextDecoder,
+      TextEncoder,
+      Uint8Array,
+      WebAssembly,
+      console,
+      os: { file: {} },
+      evalInWorker() {
+        evalCount++;
+      },
+      getSharedObject() {
+        return sharedValues[sharedValues.length - 1];
+      },
+      joinWorkerThreads() {
+        joinCount++;
+      },
+      setSharedObject(value: unknown) {
+        sharedValues.push(value);
+      },
+    });
+
+    vm.runInContext(`${adapterSource}\n})();`, context);
+    const createWorkerThreads = (context as unknown as {
+      __kandeloCreateWorkerThreads: WorkerThreadsFactory;
+    }).__kandeloCreateWorkerThreads;
+    expect(typeof createWorkerThreads).toBe("function");
+
+    const { Worker } = createWorkerThreads(EventEmitter);
+    const sab = new SharedArrayBuffer(8);
+    const worker = new Worker("", { eval: true, workerData: sab });
+
+    expect(evalCount).toBe(1);
+    expect(sharedValues).toEqual([sab]);
+
+    await worker.terminate();
+
+    expect(joinCount).toBe(0);
+    expect(sharedValues).toEqual([sab]);
+  });
 
   it("evaluates Node-style -e scripts with process and console globals", async () => {
     const result = await runNode(
