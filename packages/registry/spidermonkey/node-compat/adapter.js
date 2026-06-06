@@ -276,11 +276,6 @@
                 this.port2 = new MessagePort();
             }
         }
-        function clearSharedWorkerData() {
-            if (typeof setSharedObject === 'function') {
-                try { setSharedObject(null); } catch {}
-            }
-        }
         function joinShellWorkers() {
             if (typeof joinWorkerThreads === 'function') {
                 try { joinWorkerThreads(); } catch {}
@@ -340,12 +335,13 @@
                 throw new Error('Worker.postMessage is not implemented in the SpiderMonkey shell adapter');
             }
             terminate() {
-                // Keep the shared worker mailbox live until SpiderMonkey has
-                // reaped the evalInWorker pthread. Clearing it first can race
-                // Linux/Chromium worker teardown and surface as a SIGSEGV in
-                // the guest process.
+                // Do not clear SpiderMonkey's shared-object mailbox here.
+                // Browser wasm-pthread teardown has crashed after
+                // setSharedObject(null) on a SAB-backed worker. The next
+                // Worker construction overwrites the mailbox before
+                // evalInWorker(), and workers without workerData clear it in
+                // the constructor before use.
                 joinShellWorkers();
-                clearSharedWorkerData();
                 this.emit('exit', 0);
                 return Promise.resolve(0);
             }

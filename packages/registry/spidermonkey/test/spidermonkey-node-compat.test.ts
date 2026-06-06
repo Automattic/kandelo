@@ -832,4 +832,33 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim().split("\n")).toEqual(["42", "after-terminate"]);
   }, LONG_TEST_TIMEOUT);
+
+  it("replaces SpiderMonkey shell workerData between terminated workers", async () => {
+    const result = await runNode(
+      [
+        "const { Worker } = require('worker_threads')",
+        "async function run(value) {",
+        "  const sab = new SharedArrayBuffer(8)",
+        "  const view = new Int32Array(sab)",
+        "  Atomics.store(view, 0, value)",
+        "  const worker = new Worker(\"const view = new Int32Array(workerData); Atomics.store(view, 0, Atomics.load(view, 0)); Atomics.store(view, 1, 1); Atomics.notify(view, 1);\", { eval: true, workerData: sab })",
+        "  if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
+        "  if (Atomics.load(view, 1) !== 1) throw new Error('worker did not finish')",
+        "  await worker.terminate()",
+        "  return Atomics.load(view, 0)",
+        "}",
+        "(async () => {",
+        "  const first = await run(42)",
+        "  if (first !== 42) throw new Error('first workerData leaked')",
+        "  const second = await run(7)",
+        "  if (second !== 7) throw new Error('second workerData leaked')",
+        "  console.log('ok')",
+        "})()",
+      ].join("\n"),
+      LONG_TIMEOUT,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, LONG_TEST_TIMEOUT);
 });
