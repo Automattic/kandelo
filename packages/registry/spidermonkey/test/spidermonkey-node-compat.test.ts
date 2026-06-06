@@ -340,7 +340,7 @@ type WorkerThreadsFactory = (
   Worker: new (
     source: string,
     options?: { eval?: boolean; workerData?: unknown },
-  ) => { terminate(): Promise<number> };
+  ) => { terminate(): number | Promise<number> };
 };
 
 describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
@@ -411,9 +411,10 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(sharedValues).toEqual([]);
     expect(Atomics.load(view, 0)).toBe(42);
 
-    await worker.terminate();
+    const termination = worker.terminate();
 
     expect(joinCount).toBe(0);
+    expect(termination).toBe(0);
     expect(exitCode).toBe(0);
     expect(sharedValues).toEqual([]);
   });

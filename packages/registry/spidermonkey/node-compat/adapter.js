@@ -287,9 +287,6 @@
                     source = loaded;
                 }
 
-                const defer = typeof queueMicrotask === 'function'
-                    ? queueMicrotask
-                    : (fn) => Promise.resolve().then(fn);
                 const workerData = Object.prototype.hasOwnProperty.call(options, 'workerData')
                     ? options.workerData
                     : undefined;
@@ -305,10 +302,11 @@
                 let exitCode = 0;
 
                 try {
-                    // The browser wasm host currently faults when SpiderMonkey
-                    // shell evalInWorker threads are cleaned up after SAB-backed
-                    // worker_threads use. Keep this Node-compat Worker shim
-                    // synchronous until that host/thread lifecycle is fixed.
+                    // The browser wasm host currently faults when the
+                    // SAB-backed worker_threads shim leaves SpiderMonkey jobs
+                    // or worker state to clean up at process exit. Keep this
+                    // Node-compat Worker shim synchronous and leave no pending
+                    // jobs until that host/thread lifecycle is fixed.
                     Function('workerData', 'parentPort', 'require', 'module', 'exports', source + '\n')(
                         workerData,
                         parentPort,
@@ -318,17 +316,17 @@
                     );
                 } catch (error) {
                     exitCode = 1;
-                    defer(() => this.emit('error', error));
+                    throw error;
                 }
                 this._exitCode = exitCode;
-                defer(() => this.emit('online'));
             }
             postMessage() {
                 throw new Error('Worker.postMessage is not implemented in the SpiderMonkey shell adapter');
             }
             terminate() {
-                this.emit('exit', this._exitCode || 0);
-                return Promise.resolve(this._exitCode || 0);
+                const exitCode = this._exitCode || 0;
+                this.emit('exit', exitCode);
+                return exitCode;
             }
             ref() { return this; }
             unref() { return this; }
