@@ -226,6 +226,35 @@ const LIVE_DEMO_IDS = [
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
 
+const NODE_WORKER_AUTO_COMMAND = [
+  "node -e \"",
+  "const assert=require('node:assert');",
+  "const path=require('path');",
+  "const {Worker}=require('worker_threads');",
+  "const b=Buffer.from('Kandelo');",
+  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
+  "console.log('SpiderMonkey Node', process.version, process.arch);",
+  "console.log(b.toString('hex'));",
+  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
+  "const sab=new SharedArrayBuffer(8);",
+  "const view=new Int32Array(sab);",
+  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
+  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
+  "console.log('worker', Atomics.load(view,0));",
+  "\"",
+  "&& npm --version",
+].join(" ");
+
+async function settleAfterKernelDestroy(): Promise<void> {
+  const ua = navigator.userAgent;
+  const isWebKitLikeBrowser = /AppleWebKit/i.test(ua)
+    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
+  if (!isWebKitLikeBrowser()) return;
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
+}
+
 const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   shell: {
     image: "shell",
@@ -237,24 +266,7 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     memoryPages: 4096,
     network: true,
     features: ["js-workers"],
-    autoCommand: [
-      "node -e \"",
-      "const assert=require('node:assert');",
-      "const path=require('path');",
-      "const {Worker}=require('worker_threads');",
-      "const b=Buffer.from('Kandelo');",
-      "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
-      "console.log('SpiderMonkey Node', process.version, process.arch);",
-      "console.log(b.toString('hex'));",
-      "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
-      "const sab=new SharedArrayBuffer(4);",
-      "const view=new Int32Array(sab);",
-      "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.notify(view,0);',{eval:true,workerData:sab});",
-      "Atomics.wait(view,0,0,5000);",
-      "console.log('worker', Atomics.load(view,0));",
-      "\"",
-      "&& npm --version",
-    ].join(" "),
+    autoCommand: NODE_WORKER_AUTO_COMMAND,
   },
   nginx: {
     image: "nginx",
@@ -292,8 +304,8 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
   },
   "wordpress-mariadb": {
     image: "lamp",
-    // Keep this aligned with pages/lamp: MariaDB's Aria recovery can grow
-    // beyond the 4096-page cap used by lighter PHP demos.
+    // MariaDB's Aria recovery can grow beyond the 4096-page cap used by
+    // lighter PHP presets.
     memoryPages: 16384,
     maxVfsByteLength: 512 * 1024 * 1024,
     network: true,
@@ -359,6 +371,7 @@ const APP_PREFIX = import.meta.env.BASE_URL + "app/";
 const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
+const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
 const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
@@ -517,6 +530,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     currentKernel = null;
     if (previousKernel) {
       await previousKernel.destroy().catch(() => {});
+      await settleAfterKernelDestroy();
     }
     h.detachKernel();
 
@@ -1206,7 +1220,7 @@ function dirname(path: string): string {
 }
 
 async function loadArchiveArtifact(archiveUrl: string, artifactPath: string): Promise<Uint8Array> {
-  const archiveBytes = await fetchBytesWithDevProxy(archiveUrl);
+  const archiveBytes = await fetchBytesNoStore(archiveUrl);
   const tarBytes = decompressZstd(archiveBytes);
   const artifact = extractTarFile(tarBytes, artifactPath);
   if (!artifact) {
@@ -1272,10 +1286,9 @@ async function stageConfiguredAssets(
 ): Promise<void> {
   for (const asset of assets) {
     tick(`staging ${asset.path}...`);
-    const url = asset.devCorsProxy && import.meta.env.DEV
-      ? `/cors-proxy?url=${encodeURIComponent(asset.url)}`
-      : asset.url;
-    const buffer: ArrayBuffer = await fetch(url).then(failOn(asset.path)).then((r) => r.arrayBuffer());
+    const buffer: ArrayBuffer = await fetch(demoAssetFetchUrl(asset))
+      .then(failOn(asset.path))
+      .then((r) => r.arrayBuffer());
     const bytes = new Uint8Array(buffer);
     if (asset.sha256) {
       const digest = await sha256Hex(buffer);
@@ -1285,6 +1298,13 @@ async function stageConfiguredAssets(
     }
     writeVfsBinary(fs, asset.path, bytes, asset.mode ?? 0o644);
   }
+}
+
+function demoAssetFetchUrl(asset: DemoAssetConfig): string {
+  if (!asset.devCorsProxy || !import.meta.env.DEV) return asset.url;
+  const proxyUrl = new URL(DEV_CORS_PROXY_PATH, window.location.href);
+  proxyUrl.searchParams.set("url", asset.url);
+  return proxyUrl.href;
 }
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
@@ -1552,13 +1572,13 @@ async function loadKandeloSoftwareGalleryItems(): Promise<GalleryItem[]> {
 }
 
 async function loadSoftwareGalleryItemsFromManifest(manifestUrl: string): Promise<GalleryItem[]> {
-  const manifestText = await fetchTextWithDevProxy(manifestUrl);
+  const manifestText = await fetchTextNoStore(manifestUrl);
   const manifest = JSON.parse(manifestText) as SoftwareGalleryManifest;
   const sourceId = sourceIdForManifest(manifest, manifestUrl);
   const indexUrl = manifest.index_url
     ? new URL(manifest.index_url, manifestUrl).href
     : new URL("index.toml", manifestUrl).href;
-  const index = parseIndexToml(await fetchTextWithDevProxy(indexUrl));
+  const index = parseIndexToml(await fetchTextNoStore(indexUrl));
   if (index.abiVersion !== undefined && index.abiVersion !== ABI_VERSION) {
     console.warn(
       `Ignoring Kandelo software index ${indexUrl}: ABI ${index.abiVersion}, expected ${ABI_VERSION}`,
@@ -1848,44 +1868,16 @@ function parseIndexToml(text: string): SoftwareIndex {
   return { abiVersion, packages };
 }
 
-async function fetchTextWithDevProxy(url: string): Promise<string> {
-  try {
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return await response.text();
-  } catch (error) {
-    const isDevHost =
-      location.hostname === "localhost" ||
-      location.hostname === "127.0.0.1" ||
-      location.hostname === "[::1]";
-    if (!isDevHost) throw error;
-
-    const response = await fetch(`/cors-proxy?url=${encodeURIComponent(url)}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return await response.text();
-  }
+async function fetchTextNoStore(url: string): Promise<string> {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return await response.text();
 }
 
-async function fetchBytesWithDevProxy(url: string): Promise<Uint8Array> {
-  try {
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return new Uint8Array(await response.arrayBuffer());
-  } catch (error) {
-    const isDevHost =
-      location.hostname === "localhost" ||
-      location.hostname === "127.0.0.1" ||
-      location.hostname === "[::1]";
-    if (!isDevHost) throw error;
-
-    const response = await fetch(`/cors-proxy?url=${encodeURIComponent(url)}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return new Uint8Array(await response.arrayBuffer());
-  }
+async function fetchBytesNoStore(url: string): Promise<Uint8Array> {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 function accentForSoftwareEntry(id: string): string {

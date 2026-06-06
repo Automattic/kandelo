@@ -1,7 +1,7 @@
 /**
- * Browser demo init utilities — barrel export.
+ * Browser UI/lab init utilities - barrel export.
  *
- * Helpers shared across demos for VFS image construction and worker-side
+ * Helpers shared across browser surfaces for VFS image construction and worker-side
  * setup. The legacy SystemInit orchestrator was removed once all demos
  * migrated to dinit-as-PID-1 (see scripts/dinit-image-helpers.ts).
  */

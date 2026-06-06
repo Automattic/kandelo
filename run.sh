@@ -8,7 +8,7 @@
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh fetch                Fetch binaries pinned by per-package package.toml
 #   ./run.sh run <example> [args] Run a Node.js example
-#   ./run.sh prepare-browser      Fetch/build browser demo assets
+#   ./run.sh prepare-browser      Fetch/build browser UI assets
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
 #   ./run.sh test [suite...]      Run test suites
@@ -1536,23 +1536,24 @@ build_target() {
     esac
 }
 
-# Packages backing demos that are currently absent from
-# apps/browser-demos/pages/ and disabled in vite.config.ts. `./run.sh browser`
-# must not fetch them: a stale or missing archive would otherwise fall
-# through to slow local source builds for pages the dev server cannot serve.
-BROWSER_DISABLED_DEMO_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-vfs texlive redis)
+# Packages backing gallery entries that are supplied by kandelo-software
+# rather than local app inputs. `./run.sh browser` must not fetch them: a stale
+# or missing archive would otherwise fall through to slow local source builds
+# for entries the local app does not bundle.
+BROWSER_EXTERNAL_GALLERY_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erlang-vfs texlive redis)
 
 # Browser preparation intentionally does not fetch the `node` alias package or
 # the SpiderMonkey JS shell package directly. `spidermonkey-node` carries the
-# browser UI's Node-compatible runtime; `build_node` installs that same runtime
-# at `programs/node.wasm` for the Node demo.
+# browser UI's Node-compatible runtime; `build_node` installs that same
+# runtime at `programs/node.wasm` for the Kandelo Node preset.
 BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
 
-# All targets needed for enabled browser demos. Each entry's `has_X` short-
-# circuits when its release binary is in `binaries/`, so this loop is
-# a no-op on a fully-fetched checkout. sysroot/sysroot64 are NOT
-# listed: they're toolchain prerequisites for source builds, and any
-# `build_X` whose prebuilt is missing calls `need_sysroot` lazily.
+# All targets needed for the Kandelo browser UI and retained browser labs.
+# Each entry's `has_X` short-circuits when its release binary is in
+# `binaries/`, so this loop is a no-op on a fully-fetched checkout.
+# sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
+# builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
+# lazily.
 BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs)
 
 build_browser() {
@@ -1564,7 +1565,7 @@ build_browser() {
 fetch_browser_binaries() {
     local disabled_pkgs
     local fetch_args=("${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}")
-    disabled_pkgs="${BROWSER_DISABLED_DEMO_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
+    disabled_pkgs="${BROWSER_EXTERNAL_GALLERY_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
     if [ ${#fetch_args[@]} -eq 0 ]; then
         # Browser prep has a source-build fallback for every enabled demo
         # target below. A single stale release archive should not abort before
@@ -1660,9 +1661,9 @@ clean_target() {
             rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
             # Keep kernel wasm files
-            if [ -f "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm" ]; then
+            if [ -f "$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm" ]; then
                 mkdir -p "$REPO_ROOT/host/wasm"
-                cp "$REPO_ROOT/target/wasm64-unknown-unknown/release/kandelo_kernel.wasm" \
+                cp "$REPO_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm" \
                     "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"
             fi
             warn "Cleaned programs" ;;
@@ -2068,13 +2069,13 @@ cmd_fetch() {
 }
 
 cmd_prepare_browser() {
-    # Fetch the per-package binaries for enabled browser demos first.
+    # Fetch the per-package binaries for the browser UI and retained labs first.
     # The resolver-aware has_X
     # guards below then treat fetched binaries as "already built", so
     # build_browser's per-target loop is a no-op for anything that's
     # already published. Only genuinely missing artifacts (local-only
     # programs, stale VFS images) trigger a build.
-    step "Fetching binaries for enabled browser demos"
+    step "Fetching binaries for Kandelo browser UI"
     fetch_browser_binaries
 
     build_browser
@@ -2292,7 +2293,7 @@ cmd_list() {
     echo "  ./run.sh run dlopen                  dlopen shared library demo"
     echo ""
     echo "${BOLD}Browser:${RESET}"
-    echo "  ./run.sh prepare-browser             Fetch/build browser demo assets"
+    echo "  ./run.sh prepare-browser             Fetch/build browser UI assets"
     echo "  ./run.sh browser                     Start Vite dev server for browser demos"
     echo ""
     echo "${BOLD}Test suites:${RESET}"

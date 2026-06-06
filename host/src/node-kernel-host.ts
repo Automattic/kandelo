@@ -112,6 +112,7 @@ export class NodeKernelHost {
   private worker!: NodeThreadWorker;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private exitResolvers = new Map<number, (status: number) => void>();
+  private unclaimedExitStatuses = new Map<number, number>();
   private _nextRequestId = 1;
   private options: NodeKernelHostOptions;
 
@@ -199,7 +200,12 @@ export class NodeKernelHost {
       type: "spawn",
       requestId,
       programBytes,
-      programModule: options?.programModule,
+      // Avoid forwarding externally compiled WebAssembly.Module objects through
+      // the main thread -> kernel worker -> process worker chain. Reusing that
+      // two-hop clone with SpiderMonkey's shared-memory worker runtime can leave
+      // later process workers stuck before exit. The option remains an API hint;
+      // Node's dedicated kernel worker compiles/caches fork and pthread modules
+      // internally where it can pass them across a single worker boundary.
       argv,
       env: options?.env,
       cwd: options?.cwd,
@@ -212,9 +218,15 @@ export class NodeKernelHost {
       maxAddr: options?.maxAddr,
     }) as number;
 
-    const exitPromise = new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
-    });
+    const unclaimedExitStatus = this.unclaimedExitStatuses.get(pid);
+    if (unclaimedExitStatus !== undefined) {
+      this.unclaimedExitStatuses.delete(pid);
+    }
+    const exitPromise = unclaimedExitStatus !== undefined
+      ? Promise.resolve(unclaimedExitStatus)
+      : new Promise<number>((resolve) => {
+          this.exitResolvers.set(pid, resolve);
+        });
 
     this.options.onProcessEvent?.({ kind: "spawn", pid });
 
@@ -438,6 +450,13 @@ export class NodeKernelHost {
         if (resolver) {
           this.exitResolvers.delete(msg.pid);
           resolver(msg.status);
+        } else {
+          this.unclaimedExitStatuses.set(msg.pid, msg.status);
+          while (this.unclaimedExitStatuses.size > 256) {
+            const oldest = this.unclaimedExitStatuses.keys().next().value;
+            if (oldest === undefined) break;
+            this.unclaimedExitStatuses.delete(oldest);
+          }
         }
         this.options.onProcessEvent?.({ kind: "exit", pid: msg.pid, exitStatus: msg.status });
         break;

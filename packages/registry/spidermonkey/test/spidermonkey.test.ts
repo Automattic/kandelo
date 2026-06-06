@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
@@ -25,7 +25,6 @@ const LONG_TIMEOUT = process.env.CI ? 180_000 : 30_000;
 const LONG_TEST_TIMEOUT = LONG_TIMEOUT + 60_000;
 const CI_PROGRESS_INTERVAL = 15_000;
 const WORKER_TEARDOWN_ITERATIONS = process.env.CI ? 2 : 4;
-let jsModule: WebAssembly.Module | undefined;
 
 function loadWasm(path: string): ArrayBuffer {
   const buf = readFileSync(path);
@@ -38,11 +37,13 @@ async function runJs(
 ) {
   const label =
     options.label ?? expect.getState().currentTestName ?? "js shell program";
+  // Keep this suite on the byte-launch path. Holding a caller-compiled
+  // js.wasm module in Vitest while repeatedly exercising shell workers
+  // reproduces process-exit hangs that the browser/runtime path does not hit.
   return withCiProgress(
     label,
     runCentralizedProgram({
       programPath: jsWasm!,
-      programModule: jsModule,
       argv: ["js", ...(options.shellArgs ?? []), "-e", source],
       timeout: options.timeout ?? DEFAULT_TIMEOUT,
     }),
@@ -94,13 +95,6 @@ async function withCiProgress<T>(label: string, promise: Promise<T>): Promise<T>
 }
 
 describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
-  beforeAll(async () => {
-    jsModule = await withCiProgress(
-      "precompile js.wasm",
-      WebAssembly.compile(loadWasm(jsWasm!)),
-    );
-  }, DEFAULT_TEST_TIMEOUT);
-
   it("evaluates a simple expression", async () => {
     const result = await runJs("print(1 + 1)");
 
@@ -173,6 +167,36 @@ describe.skipIf(!jsWasm)("SpiderMonkey js shell", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("42");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("joins completed shell workers before process teardown", async () => {
+    const result = await runJs([
+      "var sab = new SharedArrayBuffer(8)",
+      "var view = new Int32Array(sab)",
+      "setSharedObject(sab)",
+      "evalInWorker(`var view = new Int32Array(getSharedObject()); Atomics.store(view, 0, 42); Atomics.store(view, 1, 1); Atomics.notify(view, 1);`)",
+      "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
+      "if (Atomics.load(view, 1) !== 1) throw new Error('worker wait failed')",
+      "joinWorkerThreads()",
+      "print(Atomics.load(view, 0))",
+      "print('after-first-join')",
+      "Atomics.store(view, 0, 0)",
+      "Atomics.store(view, 1, 0)",
+      "evalInWorker(`var view = new Int32Array(getSharedObject()); Atomics.store(view, 0, 7); Atomics.store(view, 1, 1); Atomics.notify(view, 1);`)",
+      "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
+      "if (Atomics.load(view, 1) !== 1) throw new Error('second worker wait failed')",
+      "joinWorkerThreads()",
+      "print(Atomics.load(view, 0))",
+      "print('after-second-join')",
+    ].join(";"), { shellArgs: ["--shared-memory=on"] });
+
+    expect(result.exitCode).toBe(0);
+    expect(stdoutLines(result.stdout)).toEqual([
+      "42",
+      "after-first-join",
+      "7",
+      "after-second-join",
+    ]);
   }, DEFAULT_TEST_TIMEOUT);
 
   it("supports Atomics wait timeout and not-equal results", async () => {

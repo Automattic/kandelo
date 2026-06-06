@@ -7,7 +7,7 @@ const appUrl = (path: string): string => {
 };
 
 test("Kandelo gallery launch updates the browser URL with a VFS image", async ({ page }) => {
-  await page.goto(appUrl("/pages/kandelo/?demo=shell"), {
+  await page.goto(appUrl("/?demo=shell"), {
     waitUntil: "domcontentloaded",
   });
 
@@ -29,7 +29,7 @@ test("Kandelo gallery launch updates the browser URL with a VFS image", async ({
 });
 
 test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) => {
-  await page.goto(appUrl("/pages/kandelo/?demo=shell"), {
+  await page.goto(appUrl("/?demo=shell"), {
     waitUntil: "domcontentloaded",
   });
 
@@ -72,7 +72,7 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
       accent: "#2f6f73",
       glyph: "st",
       estimatedUrlBytes: 120,
-    }, "https://kandelo.dev/pages/kandelo/?demo=shell");
+    }, "https://kandelo.dev/?demo=shell");
     return {
       href,
       parsed: readKandeloBootQuery("?demo=site&vfs=https%3A%2F%2Fcdn.example.invalid%2Fsite.vfs.zst"),
@@ -93,7 +93,7 @@ test("Kandelo URL helper preserves a selected VFS image URL", async ({ page }) =
 });
 
 test("Kandelo service worker app probe does not capture the shell page client", async ({ page }) => {
-  await page.goto(appUrl("/pages/kandelo/?demo=shell"), {
+  await page.goto(appUrl("/?demo=shell"), {
     waitUntil: "domcontentloaded",
   });
 
@@ -103,12 +103,12 @@ test("Kandelo service worker app probe does not capture the shell page client", 
     await response.text();
   });
 
-  await page.goto(appUrl("/pages/kandelo/?vfs=https%3A%2F%2Fcdn.example.invalid%2Fshell.vfs.zst"), {
+  await page.goto(appUrl("/?vfs=https%3A%2F%2Fcdn.example.invalid%2Fshell.vfs.zst"), {
     waitUntil: "domcontentloaded",
   });
 
   const url = new URL(page.url());
-  expect(url.pathname).toBe("/pages/kandelo/");
+  expect(url.pathname).toBe("/");
   expect(url.searchParams.get("vfs")).toBe("https://cdn.example.invalid/shell.vfs.zst");
 });
 

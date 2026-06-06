@@ -101,15 +101,15 @@ See [docs/posix-status.md](docs/posix-status.md) for the full syscall-by-syscall
 
 - **Rust nightly** (for `build-std` and atomics) — pinned via `rust-toolchain.toml`
 - **LLVM 21+** with `clang` and `wasm-ld` (macOS: `brew install llvm`)
-- **Node.js** 22+
+- **Node.js** 24+
 
 Or use the Nix flake (see [Using Nix](#using-nix) below) and skip per-tool installs.
 
 ## Using Nix
 
 A `flake.nix` provides a reproducible dev shell with the pinned Rust nightly,
-LLVM 21, Node 22, Erlang 28, and the autotools/cmake/binaryen/wabt stack the
-build scripts need. With [Nix](https://nixos.org/download.html) installed
+LLVM 21, Node 24, minimal Erlang 28, and the autotools/cmake/binaryen/wabt
+stack the build scripts need. With [Nix](https://nixos.org/download.html) installed
 (flakes enabled — Determinate Systems Nix has them on by default):
 
 ```bash
@@ -212,7 +212,7 @@ wasm32posix-cc examples/hello.c -o hello.wasm
 npx tsx examples/run-example.ts hello
 ```
 
-### 4. Try the browser demos
+### 4. Try Kandelo in the browser
 
 ```bash
 # Build VFS images + start dev server (run.sh handles dependencies)
@@ -221,14 +221,31 @@ npx tsx examples/run-example.ts hello
 # Or manually:
 cd apps/browser-demos
 npm install
-npx vite --port 5198
+npm run dev
 ```
 
-Open `http://localhost:5198` to try the browser demos: C programs, an interactive shell, Node.js with in-browser `npm install`, nginx, PHP, MariaDB, WordPress, a LAMP stack, DOOM, and the Kandelo UI gallery. The network lab at `http://localhost:5198/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
+Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
+
+The browser app routes cross-origin fetches through the service worker and
+defaults to the main WordPress Playground CORS proxy:
+`https://wordpress-playground-cors-proxy.net/?`. To test an alternate proxy in
+dev, preview, or production builds, set `VITE_CORS_PROXY_URL` before starting or
+building the browser app:
+
+```bash
+cd apps/browser-demos
+VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
+```
+
+Proxy prefixes ending in a bare `?` receive the raw target URL. Other prefix
+forms, such as `https://your-proxy.example/cors?url=`, receive a
+percent-encoded target URL. If you change the proxy while a service worker is
+already active, reload the page; clearing site data may be needed if the browser
+keeps an older service worker around.
 
 Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
 
-Browser demos use pre-built **VFS images** — binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
+The browser UI uses pre-built **VFS images** - binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
 
 ## Porting Software
 
@@ -295,7 +312,7 @@ sdk/
   src/bin/           CLI tool wrappers for LLVM cross-compilation
   src/lib/           Toolchain discovery, compiler flags, arg parsing
 apps/
-  browser-demos/     Vite demo/UI app that consumes the browser host runtime
+  browser-demos/     Vite Kandelo UI app that consumes the browser host runtime
 web-libs/
   kandelo-session/   Reusable Kandelo session/UI integration contracts
 packages/
@@ -341,8 +358,8 @@ docs/
 | [Architecture](docs/architecture.md) | Kernel design, syscall flow, multi-process model, memory layout |
 | [Repository Organization](docs/repository-organization.md) | Top-level ownership boundaries and CI-oriented path categories |
 | [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
-| [Porting Guide](docs/porting-guide.md) | How to port software, create Node.js and browser demos |
-| [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, demo list, limitations |
+| [Porting Guide](docs/porting-guide.md) | How to port software and create package builds |
+| [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, and limitations |
 | [Shareable Computer URLs](docs/plans/2026-05-11-shareable-computer-url-design.md) | Boot descriptor design for sharing computer topology, signed bases/packages, mounts, and overlays |
 | [Package Management](docs/package-management.md) | `packages/registry/<name>/package.toml` schema, resolver, release archives |
 | [Package Sources](docs/package-sources.md) | Reusable workflows and scripts for third-party Kandelo package repositories |

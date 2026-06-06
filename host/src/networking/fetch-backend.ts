@@ -27,6 +27,17 @@ export interface FetchBackendOptions {
   hostAliases?: Record<string, string>;
 }
 
+function corsProxyFetchUrl(corsProxyUrl: string, targetUrl: string): string {
+  const trimmedProxyUrl = corsProxyUrl.trim();
+  if (targetUrl.startsWith(trimmedProxyUrl)) {
+    return targetUrl;
+  }
+  const proxiedTarget = trimmedProxyUrl.endsWith("?")
+    ? targetUrl
+    : encodeURIComponent(targetUrl);
+  return `${trimmedProxyUrl}${proxiedTarget}`;
+}
+
 export class FetchNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
   private hostnameMap = new Map<string, string>(); // ip string → hostname
@@ -125,11 +136,14 @@ export class FetchNetworkBackend implements NetworkIO {
         } catch (e) {
           // Try CORS proxy if configured
           if (this.options.corsProxyUrl) {
-            response = await fetch(`${this.options.corsProxyUrl}${url}`, {
-              method,
-              headers: fetchHeaders,
-              body: fetchBody,
-            });
+            response = await fetch(
+              corsProxyFetchUrl(this.options.corsProxyUrl, url),
+              {
+                method,
+                headers: fetchHeaders,
+                body: fetchBody,
+              },
+            );
           } else {
             throw e;
           }

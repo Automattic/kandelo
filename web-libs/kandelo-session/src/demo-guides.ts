@@ -24,10 +24,11 @@ const nodeRuntimeScript = [
   "const {Worker}=require('worker_threads');",
   "console.log('node', process.version, process.arch);",
   "console.log('intl', new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "const sab=new SharedArrayBuffer(4);",
+  "const sab=new SharedArrayBuffer(8);",
   "const view=new Int32Array(sab);",
-  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.notify(view,0);',{eval:true,workerData:sab});",
-  "Atomics.wait(view,0,0,5000);",
+  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
+  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
   "console.log('worker', Atomics.load(view,0));",
   "\"",
 ].join(" ");
@@ -38,9 +39,6 @@ const nodeCowsayScript = [
   "npm install cowsay",
   "./node_modules/.bin/cowsay Kandelo",
 ].join(" && ");
-
-const nodeScript = `${nodeRuntimeScript}
-${nodeCowsayScript}`;
 
 const nginxScript = `curl -i http://127.0.0.1:8080/ | head -40
 echo "--- nginx processes ---"
@@ -140,14 +138,15 @@ export function nodeGuide(): DemoGuideConfig {
         action("install-cowsay", "Install cowsay", "Install cowsay with npm and run its package bin.", "terminal.run", nodeCowsayScript),
       ]),
       actionGroup("REPL", [
-        action("enter-repl", "Open REPL", "Start an interactive Node-compatible REPL.", "terminal.run", "node"),
+        action("enter-repl", "Open REPL", "Start an interactive Node-compatible REPL.", "terminal.write", "node\n"),
         action("repl-expression", "Send expr", "Send an expression to the current terminal.", "terminal.write", "process.version\n"),
       ]),
     ],
     {
       title: "SpiderMonkey Node script",
       language: "sh",
-      initialText: nodeScript,
+      initialText: `${nodeRuntimeScript}
+${nodeCowsayScript}`,
     },
     {
       title: "Companion HTML",

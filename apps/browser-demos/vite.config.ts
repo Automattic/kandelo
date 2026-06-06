@@ -9,12 +9,39 @@ import { tryResolveBinary } from "../../host/src/binary-resolver";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
+const preferredLocalPort = 5401;
 
 const crossOriginIsolationHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
   "Service-Worker-Allowed": "/",
 };
+
+function configuredCorsProxyUrl(): string | undefined {
+  return process.env.VITE_CORS_PROXY_URL?.trim() || undefined;
+}
+
+function buildCorsProxyUrl(): string {
+  return configuredCorsProxyUrl() || DEFAULT_CORS_PROXY_URL;
+}
+
+function serviceWorkerPathForBase(base: string): string {
+  const normalized = base.startsWith("/") ? base : `/${base}`;
+  return `${normalized.endsWith("/") ? normalized : `${normalized}/`}service-worker.js`;
+}
+
+function devCorsProxyPathForBase(base: string): string {
+  const normalized = base.startsWith("/") ? base : `/${base}`;
+  return `${normalized.endsWith("/") ? normalized : `${normalized}/`}__kandelo_cors_proxy`;
+}
+
+function devCorsProxyFetchUrlForBase(base: string): string {
+  return `${devCorsProxyPathForBase(base)}?url=`;
+}
+
+function injectCorsProxyUrlPlaceholder(content: string, corsProxyUrl: string): string {
+  return content.replace('"__CORS_PROXY_URL__"', JSON.stringify(corsProxyUrl));
+}
 
 /**
  * Vite plugin: resolve `@kernel-wasm` and `@rootfs-vfs` lazily.
@@ -219,150 +246,151 @@ function injectCoiServiceWorker(): Plugin {
   };
 }
 
-function attachCorsProxyMiddleware(
-  middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
-) {
-  middlewares.use("/cors-proxy", async (req, res) => {
-    const url = new URL(req.url!, `http://${req.headers.host}`);
-    const targetUrl = url.searchParams.get("url");
-    if (!targetUrl) {
-      res.writeHead(400, { "Content-Type": "text/plain" });
-      res.end("Missing ?url= parameter");
-      return;
-    }
-    try {
-      const body = await new Promise<Buffer>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        req.on("data", (chunk) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        });
-        req.on("end", () => resolve(Buffer.concat(chunks)));
-        req.on("error", reject);
-      });
-
-      // Use Node.js http/https modules for more reliable proxying.
-      const { default: https } = await import("https");
-      const { default: http } = await import("http");
-
-      // Forward all client headers except hop-by-hop ones, otherwise
-      // upstream POSTs lose `content-type`, auth headers, etc. plus the
-      // request body.
-      const skipReqHeader = new Set([
-        "host", "connection", "keep-alive", "transfer-encoding",
-        "upgrade", "proxy-connection", "te", "trailer", "expect",
-        "origin", "referer",
-      ]);
-      const forwardHeaders: Record<string, string | string[]> = {};
-      for (const [name, value] of Object.entries(req.headers)) {
-        if (value === undefined) continue;
-        if (skipReqHeader.has(name.toLowerCase())) continue;
-        forwardHeaders[name] = value as string | string[];
-      }
-      if (!forwardHeaders["user-agent"]) {
-        forwardHeaders["user-agent"] = "kandelo-proxy";
-      }
-      // The wasm-side fetch can't decompress gzip/br — force identity so
-      // the client sees raw JSON/SSE instead of UTF-8 replacement chars.
-      forwardHeaders["accept-encoding"] = "identity";
-
-      const proxyTo = (currentUrl: string, redirectsLeft: number): Promise<void> =>
-        new Promise((resolve, reject) => {
-          const parsedUrl = new URL(currentUrl);
-          const client = parsedUrl.protocol === "https:" ? https : http;
-          const proxyReq = client.request(currentUrl, {
-            method: req.method || "GET",
-            rejectUnauthorized: false, // Dev/local preview proxy — skip cert verification.
-            headers: forwardHeaders,
-          }, (proxyRes) => {
-            const statusCode = proxyRes.statusCode || 502;
-            const location = Array.isArray(proxyRes.headers.location)
-              ? proxyRes.headers.location[0]
-              : proxyRes.headers.location;
-            if (
-              location &&
-              redirectsLeft > 0 &&
-              [301, 302, 303, 307, 308].includes(statusCode)
-            ) {
-              proxyRes.resume();
-              proxyRes.on("end", () => {
-                resolve(proxyTo(new URL(location, currentUrl).href, redirectsLeft - 1));
-              });
-              return;
-            }
-
-            const skipResHeader = new Set([
-              "connection", "keep-alive", "transfer-encoding",
-              "content-encoding", "content-length",
-            ]);
-            const headers: Record<string, string | string[]> = {
-              "access-control-allow-origin": "*",
-              "cross-origin-resource-policy": "cross-origin",
-            };
-            for (const [k, v] of Object.entries(proxyRes.headers)) {
-              if (v === undefined) continue;
-              if (skipResHeader.has(k.toLowerCase())) continue;
-              headers[k] = v as string | string[];
-            }
-            res.writeHead(statusCode, headers);
-            proxyRes.pipe(res);
-            proxyRes.on("end", resolve);
-          });
-          proxyReq.on("error", reject);
-          if (body.length > 0) {
-            proxyReq.write(body);
-          }
-          proxyReq.end();
-        });
-
-      await proxyTo(targetUrl, 5);
-    } catch (err: any) {
-      console.error("[cors-proxy] Error:", err);
-      res.writeHead(502, { "Content-Type": "text/plain" });
-      res.end(`Proxy error: ${err?.message || err}`);
-    }
-  });
-}
-
 /**
- * Vite plugin: same-origin CORS proxy for local dev and preview.
- * Cross-Origin-Embedder-Policy: require-corp blocks all cross-origin fetches
- * from web workers unless the remote server sends CORP headers (most don't).
- * This middleware proxies external requests through the local server so they
- * appear same-origin.  URL: /cors-proxy?url=<encoded-url>
- */
-function corsProxyPlugin(): Plugin {
-  return {
-    name: "cors-proxy",
-    configureServer(server) {
-      attachCorsProxyMiddleware(server.middlewares);
-    },
-    configurePreviewServer(server) {
-      attachCorsProxyMiddleware(server.middlewares);
-    },
-  };
-}
-
-/**
- * Vite plugin: inject CORS proxy URL into service-worker.js during build.
- * Replaces the __CORS_PROXY_URL__ placeholder with the value from
- * VITE_CORS_PROXY_URL env var. In dev mode this is a no-op (the dev server's
- * cors-proxy middleware handles it instead).
+ * Vite plugin: inject the service worker CORS proxy URL. Local dev/preview
+ * uses the Vite same-origin proxy by default so the service worker can read
+ * the response from whichever port Vite selected. Production builds use the
+ * configured external proxy unless VITE_CORS_PROXY_URL overrides it.
  */
 function injectCorsProxyUrl(): Plugin {
-  let corsProxyUrl = "";
+  let servedCorsProxyUrl = "";
+  let outputCorsProxyUrl = "";
+  let base = "/";
+  const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
+
+  function serviceWorkerSource(): string {
+    return injectCorsProxyUrlPlaceholder(
+      fs.readFileSync(sourceSwPath, "utf-8"),
+      servedCorsProxyUrl,
+    );
+  }
+
+  function attachMiddleware(
+    middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+  ): void {
+    const serviceWorkerPath = serviceWorkerPathForBase(base);
+    middlewares.use((req, res, next) => {
+      if (!req.url) {
+        next();
+        return;
+      }
+      const pathname = new URL(req.url, "http://localhost").pathname;
+      if (pathname !== serviceWorkerPath) {
+        next();
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.end(serviceWorkerSource());
+    });
+  }
+
   return {
     name: "inject-cors-proxy-url",
-    configResolved() {
-      corsProxyUrl = process.env.VITE_CORS_PROXY_URL ?? DEFAULT_CORS_PROXY_URL;
+    configResolved(config) {
+      base = config.base;
+      servedCorsProxyUrl = configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base);
+      outputCorsProxyUrl = buildCorsProxyUrl();
     },
-    writeBundle(_, bundle) {
+    configureServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+    writeBundle() {
       // service-worker.js is in public/ and gets copied as-is to dist/
       const swPath = path.resolve(__dirname, "dist", "service-worker.js");
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
-        content = content.replace("__CORS_PROXY_URL__", corsProxyUrl);
+        content = injectCorsProxyUrlPlaceholder(content, outputCorsProxyUrl);
         fs.writeFileSync(swPath, content);
       }
+    },
+  };
+}
+
+function devCorsProxyMiddleware(): Plugin {
+  let base = "/";
+
+  function attachMiddleware(
+    middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+  ): void {
+    const proxyPath = devCorsProxyPathForBase(base);
+    middlewares.use(async (req, res, next) => {
+      if (!req.url) {
+        next();
+        return;
+      }
+      const requestUrl = new URL(req.url, "http://localhost");
+      if (requestUrl.pathname !== proxyPath) {
+        next();
+        return;
+      }
+      if (req.method !== "GET") {
+        res.statusCode = 405;
+        res.end("Method Not Allowed");
+        return;
+      }
+
+      const target = requestUrl.searchParams.get("url");
+      if (!target) {
+        res.statusCode = 400;
+        res.end("Missing url");
+        return;
+      }
+
+      let targetUrl: URL;
+      try {
+        targetUrl = new URL(target);
+      } catch {
+        res.statusCode = 400;
+        res.end("Invalid url");
+        return;
+      }
+      if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
+        res.statusCode = 400;
+        res.end("Unsupported url");
+        return;
+      }
+
+      try {
+        const upstream = await fetch(targetUrl.href, { redirect: "follow" });
+        const bytes = Buffer.from(await upstream.arrayBuffer());
+        res.statusCode = upstream.status;
+        res.statusMessage = upstream.statusText;
+        for (const name of [
+          "accept-ranges",
+          "cache-control",
+          "content-type",
+          "etag",
+          "expires",
+          "last-modified",
+        ]) {
+          const value = upstream.headers.get(name);
+          if (value) res.setHeader(name, value);
+        }
+        res.setHeader("Content-Length", String(bytes.byteLength));
+        res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+        res.end(bytes);
+      } catch (err) {
+        res.statusCode = 502;
+        res.end(err instanceof Error ? err.message : String(err));
+      }
+    });
+  }
+
+  return {
+    name: "dev-cors-proxy-middleware",
+    configResolved(config) {
+      base = config.base;
+    },
+    configureServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      attachMiddleware(server.middlewares);
     },
   };
 }
@@ -381,16 +409,20 @@ export default defineConfig({
     rewriteNavLinks(),
     injectGitRevision(),
     injectCoiServiceWorker(),
-    corsProxyPlugin(),
     injectCorsProxyUrl(),
+    devCorsProxyMiddleware(),
   ],
   server: {
+    host: "127.0.0.1",
+    port: preferredLocalPort,
     headers: crossOriginIsolationHeaders,
     fs: {
       allow: [repoRoot],
     },
   },
   preview: {
+    host: "127.0.0.1",
+    port: preferredLocalPort,
     headers: crossOriginIsolationHeaders,
   },
   build: {
@@ -403,23 +435,10 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, "index.html"),
-        nginx: path.resolve(__dirname, "pages/nginx/index.html"),
-        php: path.resolve(__dirname, "pages/php/index.html"),
-        "nginx-php": path.resolve(__dirname, "pages/nginx-php/index.html"),
-        mariadb: path.resolve(__dirname, "pages/mariadb/index.html"),
-        wordpress: path.resolve(__dirname, "pages/wordpress/index.html"),
-        lamp: path.resolve(__dirname, "pages/lamp/index.html"),
-        shell: path.resolve(__dirname, "pages/shell/index.html"),
-        node: path.resolve(__dirname, "pages/node/index.html"),
-        "test-runner": path.resolve(__dirname, "pages/test-runner/index.html"),
-        "git-test": path.resolve(__dirname, "pages/git-test/index.html"),
-        "mariadb-test": path.resolve(__dirname, "pages/mariadb-test/index.html"),
-        benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
-        doom: path.resolve(__dirname, "pages/doom/index.html"),
         kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
         network: path.resolve(__dirname, "pages/network/index.html"),
-        // The perl, python, ruby, erlang, texlive, and redis pages
-        // are not part of this static build while their slow builds
+        // The perl, python, ruby, erlang, texlive, and redis package entries
+        // are not bundled into this static build while their slow builds
         // live in kandelo-software. The root gallery fetches that
         // repo's gallery.json and index.toml at runtime to expose
         // available third-party VFS builds without adding page inputs.

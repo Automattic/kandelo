@@ -437,7 +437,7 @@ When restoring for use in a browser, pass `maxByteLength` to create a growable `
 const restored = MemoryFileSystem.fromImage(image, { maxByteLength: 1024 * 1024 * 1024 });
 ```
 
-Most browser demos use this approach. Each demo has a build script that pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs.zst` file (zstd-compressed; `saveImage()` compresses on write). At runtime, the demo fetches the file and `MemoryFileSystem.fromImage` decompresses transparently — restoring the image replaces thousands of individual file writes with a single buffer copy. The empty regions of the SharedFS allocator compress to almost nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download.
+Kandelo browser UI presets use this approach. Each image builder pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs.zst` file (zstd-compressed; `saveImage()` compresses on write). At runtime, the UI fetches the file and `MemoryFileSystem.fromImage` decompresses transparently - restoring the image replaces thousands of individual file writes with a single buffer copy. The empty regions of the SharedFS allocator compress to almost nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1-3 MB download.
 
 There are two consumption patterns for VFS images, depending on whether the demo wants the kernel worker to fully own the filesystem:
 

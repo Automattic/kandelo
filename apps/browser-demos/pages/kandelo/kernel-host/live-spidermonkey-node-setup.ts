@@ -34,9 +34,10 @@ import spiderMonkeyNodeWasmUrl from "@binaries/programs/wasm32/spidermonkey-node
 
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const COI_RELOAD_SESSION_KEY = "kandelo:sm-node-coi-reload-attempted";
-// npm's full dependency resolver can exceed 256 MB on large packuments.
-// Keep this demo on the BrowserKernel default instead of the lighter shell cap.
-const SPIDERMONKEY_NODE_MEMORY_PAGES = 16384;
+// WebKit is sensitive to large shared Wasm memory maxima. Match the generic
+// Node profile's 256 MiB cap instead of reserving the 1 GiB BrowserKernel
+// default for every bash/node/worker process in this demo.
+const SPIDERMONKEY_NODE_MEMORY_PAGES = 4096;
 
 const SHELL_ENV = [
   "HOME=/work",
@@ -68,7 +69,7 @@ const SPIDERMONKEY_NODE_PRESENTATION: DemoPresentation = {
   internalsAccess: "drawer",
 };
 
-const SM_NODE_COMMAND = [
+const SM_NODE_WORKER_RUNTIME_COMMAND = [
   "node -e \"",
   "const assert=require('node:assert');",
   "const path=require('path');",
@@ -78,25 +79,28 @@ const SM_NODE_COMMAND = [
   "console.log('SpiderMonkey Node', process.version, process.arch);",
   "console.log(b.toString('hex'));",
   "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "const sab=new SharedArrayBuffer(4);",
+  "const sab=new SharedArrayBuffer(8);",
   "const view=new Int32Array(sab);",
-  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.notify(view,0);',{eval:true,workerData:sab});",
-  "Atomics.wait(view,0,0,5000);",
+  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
+  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
   "console.log('worker', Atomics.load(view,0));",
+  "worker.terminate();",
   "\"",
-  "; npm --version",
 ].join(" ");
 
-const SM_NODE_RUNTIME_DEMO_COMMAND = [
+const SM_NODE_WORKER_DEMO_COMMAND = [
   "node -e \"",
   "const {Worker}=require('worker_threads');",
   "console.log('node', process.version, process.arch);",
   "console.log('intl', new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "const sab=new SharedArrayBuffer(4);",
+  "const sab=new SharedArrayBuffer(8);",
   "const view=new Int32Array(sab);",
-  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.notify(view,0);',{eval:true,workerData:sab});",
-  "Atomics.wait(view,0,0,5000);",
+  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,7); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
+  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
   "console.log('worker', Atomics.load(view,0));",
+  "worker.terminate();",
   "\"",
 ].join(" ");
 
@@ -107,57 +111,73 @@ const SM_NODE_COWSAY_DEMO_COMMAND = [
   "./node_modules/.bin/cowsay Kandelo",
 ].join(" && ");
 
-const SPIDERMONKEY_NODE_GUIDE: DemoGuideConfig = {
-  title: "SpiderMonkey Node.js demo",
-  summary: "Run Node-compatible commands against the SpiderMonkey-backed runtime, including npm packages, Intl, and worker_threads shared memory.",
-  groups: [
-    {
-      title: "Commands",
-      actions: [
-        {
-          id: "runtime-check",
-          label: "Runtime check",
-          description: "Exercise process metadata, Intl formatting, and a shared-memory worker.",
-          kind: "terminal.run",
-          payload: SM_NODE_RUNTIME_DEMO_COMMAND,
-        },
-        {
-          id: "install-cowsay",
-          label: "Install cowsay",
-          description: "Install cowsay with npm and run its package bin.",
-          kind: "terminal.run",
-          payload: SM_NODE_COWSAY_DEMO_COMMAND,
-        },
-      ],
+function isWebKitLikeBrowser(): boolean {
+  const ua = navigator.userAgent;
+  return /AppleWebKit/i.test(ua)
+    && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
+}
+
+function spiderMonkeyNodeRuntimeCommand(): string {
+  return SM_NODE_WORKER_DEMO_COMMAND;
+}
+
+function spiderMonkeyNodeSmokeCommand(): string {
+  return `${SM_NODE_WORKER_RUNTIME_COMMAND} && npm --version`;
+}
+
+function spiderMonkeyNodeGuide(): DemoGuideConfig {
+  const runtimeCommand = spiderMonkeyNodeRuntimeCommand();
+  return {
+    title: "SpiderMonkey Node.js demo",
+    summary: "Run Node-compatible commands against the SpiderMonkey-backed runtime, including npm packages, Intl, and worker_threads shared memory.",
+    groups: [
+      {
+        title: "Commands",
+        actions: [
+          {
+            id: "runtime-check",
+            label: "Runtime check",
+            description: "Exercise process metadata, Intl formatting, and a shared-memory worker.",
+            kind: "terminal.run",
+            payload: runtimeCommand,
+          },
+          {
+            id: "install-cowsay",
+            label: "Install cowsay",
+            description: "Install cowsay with npm and run its package bin.",
+            kind: "terminal.run",
+            payload: SM_NODE_COWSAY_DEMO_COMMAND,
+          },
+        ],
+      },
+      {
+        title: "REPL",
+        actions: [
+          {
+            id: "enter-repl",
+            label: "Open REPL",
+            description: "Start an interactive Node-compatible REPL.",
+            kind: "terminal.write",
+            payload: "node\n",
+          },
+          {
+            id: "repl-expression",
+            label: "Send expr",
+            description: "Send an expression to the current terminal.",
+            kind: "terminal.write",
+            payload: "process.versions\n",
+          },
+        ],
+      },
+    ],
+    script: {
+      title: "SpiderMonkey Node script",
+      language: "sh",
+      initialText: `${runtimeCommand}\n${SM_NODE_COWSAY_DEMO_COMMAND}`,
     },
-    {
-      title: "REPL",
-      actions: [
-        {
-          id: "enter-repl",
-          label: "Open REPL",
-          description: "Start an interactive Node-compatible REPL.",
-          kind: "terminal.run",
-          payload: "node",
-        },
-        {
-          id: "repl-expression",
-          label: "Send expr",
-          description: "Send an expression to the current terminal.",
-          kind: "terminal.write",
-          payload: "process.versions\n",
-        },
-      ],
-    },
-  ],
-  script: {
-    title: "SpiderMonkey Node script",
-    language: "sh",
-    initialText: `${SM_NODE_RUNTIME_DEMO_COMMAND}\n${SM_NODE_COWSAY_DEMO_COMMAND}`,
-  },
-  companion: {
-    title: "Companion HTML",
-    srcDoc: `<!doctype html>
+    companion: {
+      title: "Companion HTML",
+      srcDoc: `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -193,16 +213,27 @@ const SPIDERMONKEY_NODE_GUIDE: DemoGuideConfig = {
   </script>
 </body>
 </html>`,
-  },
-};
+    },
+  };
+}
+
+async function settleAfterKernelDestroy(): Promise<void> {
+  if (!isWebKitLikeBrowser()) return;
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
+}
 
 type SpiderMonkeyNodeDemoId = "node" | "spidermonkey-node";
+
+class BootSuperseded extends Error {}
 
 export async function createLiveSpiderMonkeyNodeHost(
   requestedDemo?: string | null,
 ): Promise<LiveKernelHost> {
   const initialDemo = normalizeSpiderMonkeyNodeDemoId(requestedDemo) ?? "node";
   const descriptor = descriptorForSpiderMonkeyNode(initialDemo);
+  let currentKernel: BrowserKernel | null = null;
+  let bootSeq = 0;
   const host = new LiveKernelHost({
     status: "booting",
     descriptor,
@@ -210,32 +241,80 @@ export async function createLiveSpiderMonkeyNodeHost(
     applyBootDescriptor: async (desc) => {
       const nextDemo = normalizeSpiderMonkeyNodeDemoId(desc.id);
       if (!nextDemo) {
+        bootSeq += 1;
+        const previousKernel = currentKernel;
+        currentKernel = null;
+        host.detachKernel();
+        if (previousKernel) {
+          await previousKernel.destroy().catch(() => {});
+        }
+        await settleAfterKernelDestroy();
         const url = new URL(window.location.href);
         url.searchParams.set("demo", desc.id);
         window.location.href = url.href;
         return;
       }
-      await boot(host, descriptorForSpiderMonkeyNode(nextDemo));
+      await startBoot(host, descriptorForSpiderMonkeyNode(nextDemo));
     },
   });
 
-  void boot(host, descriptor);
+  void startBoot(host, descriptor);
   return host;
+
+  async function startBoot(h: LiveKernelHost, nextDescriptor: BootDescriptor): Promise<void> {
+    const seq = ++bootSeq;
+    const previousKernel = currentKernel;
+    currentKernel = null;
+    if (previousKernel) {
+      await previousKernel.destroy().catch(() => {});
+    }
+    h.detachKernel();
+
+    try {
+      const kernel = await boot(h, nextDescriptor, () => seq === bootSeq);
+      if (seq !== bootSeq) {
+        await kernel.destroy().catch(() => {});
+        return;
+      }
+      currentKernel = kernel;
+    } catch (err) {
+      if (err instanceof BootSuperseded || seq !== bootSeq) return;
+      currentKernel = null;
+      h.detachKernel();
+      const message = err instanceof Error ? err.message : String(err);
+      h.pushDmesg({ t: 50, level: "err", facility: "kandelo", msg: message });
+      h.setStatus("error");
+    }
+  }
 }
 
-async function boot(host: LiveKernelHost, descriptor: BootDescriptor): Promise<void> {
+async function boot(
+  host: LiveKernelHost,
+  descriptor: BootDescriptor,
+  isCurrent: () => boolean,
+): Promise<BrowserKernel> {
+  const assertCurrent = () => {
+    if (!isCurrent()) throw new BootSuperseded();
+  };
+
+  assertCurrent();
   host.clearDmesg();
   host.setDescriptor(descriptor);
+  host.setWebPreview(null);
+  host.setDemoGuide(null);
   host.setStatus("booting");
 
   let t = 0;
   const tick = (msg: string) => {
+    if (!isCurrent()) return;
     host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
   };
+  let kernel: BrowserKernel | null = null;
 
   try {
     tick("preparing service worker...");
     await ensureServiceWorkerReady(SW_URL);
+    assertCurrent();
     if (!window.crossOriginIsolated) {
       if (sessionStorage.getItem(COI_RELOAD_SESSION_KEY) === "1") {
         throw new Error("cross-origin isolation was not enabled after service worker activation");
@@ -243,9 +322,10 @@ async function boot(host: LiveKernelHost, descriptor: BootDescriptor): Promise<v
       sessionStorage.setItem(COI_RELOAD_SESSION_KEY, "1");
       tick("service worker active; reloading to enable cross-origin isolation...");
       window.location.reload();
-      return;
+      throw new BootSuperseded();
     }
     sessionStorage.removeItem(COI_RELOAD_SESSION_KEY);
+    assertCurrent();
 
     tick("loading SpiderMonkey Node profile...");
     const [
@@ -263,6 +343,7 @@ async function boot(host: LiveKernelHost, descriptor: BootDescriptor): Promise<v
       loadBytes(coreutilsWasmUrl, "coreutils.wasm"),
       loadBytes(spiderMonkeyNodeWasmUrl, "spidermonkey-node.wasm"),
     ]);
+    assertCurrent();
 
     tick("instantiating kernel...");
     const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
@@ -271,37 +352,43 @@ async function boot(host: LiveKernelHost, descriptor: BootDescriptor): Promise<v
     rewriteShellLazyFileUrls(memfs);
     rewriteNodeLazyFileUrl(memfs);
     stageRuntime(memfs, bashBytes, dashBytes, coreutilsBytes, nodeBytes);
+    assertCurrent();
 
-    const kernel = new BrowserKernel({
+    kernel = new BrowserKernel({
       memfs,
       maxWorkers: 4,
       maxMemoryPages: SPIDERMONKEY_NODE_MEMORY_PAGES,
       onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
       onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
-      onProcessEvent: (event) => host.emitProcessEvent(event),
+      onProcessEvent: (event) => {
+        if (isCurrent()) host.emitProcessEvent(event);
+      },
     });
     await kernel.init(kernelBytes);
+    assertCurrent();
 
     host.attachKernel(kernel);
     host.setPresentation(SPIDERMONKEY_NODE_PRESENTATION);
-    host.setDemoGuide(SPIDERMONKEY_NODE_GUIDE);
+    host.setDemoGuide(spiderMonkeyNodeGuide());
     host.setDefaultShell({
       programBytes: bashBytes,
       argv: ["bash", "-l", "-i"],
       env: SHELL_ENV,
       cwd: "/work",
     });
-    host.setStatus("running");
-
     tick("running SpiderMonkey Node smoke...");
-    void host.runShellCommand(SM_NODE_COMMAND).catch((err) => {
+    await host.runShellCommand(spiderMonkeyNodeSmokeCommand()).catch((err) => {
       tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
     });
+    assertCurrent();
     tick("ready");
+    host.setStatus("running");
+    return kernel;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    host.pushDmesg({ t: (t += 50), level: "err", facility: "kandelo", msg: message });
-    host.setStatus("error");
+    if (kernel && !isCurrent()) {
+      await kernel.destroy().catch(() => {});
+    }
+    throw err;
   }
 }
 

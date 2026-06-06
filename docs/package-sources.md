@@ -17,8 +17,8 @@ the main Kandelo CI. Examples include language runtimes, large VFS
 images, and demos that should appear in the Kandelo gallery only when
 their release artifacts are available.
 
-Do not create a package source for small core packages that the base
-browser demos or tests require. Those belong in `packages/registry/`.
+Do not create a package source for small core packages that the browser
+UI or tests require. Those belong in `packages/registry/`.
 
 ## Repository Layout
 
@@ -288,12 +288,12 @@ panel is shown.
 
 The arguments may also be `https://` URLs.
 
-The browser demo uses `kandelo-software` by default. For local testing
+The browser UI uses `kandelo-software` by default. For local testing
 of another package source, pass one or more manifest URLs with the
 `softwareManifest` query parameter:
 
 ```text
-/pages/kandelo/?softwareManifest=https://example.com/releases/download/binaries-abi-v11/gallery.json
+/?softwareManifest=https://example.com/releases/download/binaries-abi-v11/gallery.json
 ```
 
 For a local build, `VITE_KANDELO_SOFTWARE_MANIFEST_URLS` may contain a
@@ -304,7 +304,7 @@ also accepts a `vfs` query parameter whose value is an `http` or `https`
 URL to a `.vfs` or `.vfs.zst` image:
 
 ```text
-/pages/kandelo/?vfs=https://example.com/images/site.vfs.zst
+/?vfs=https://example.com/images/site.vfs.zst
 ```
 
 Gallery launches update this `vfs` parameter and reload the Kandelo app

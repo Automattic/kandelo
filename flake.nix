@@ -56,7 +56,10 @@
             # memory64 on, matching the host Macs the team develops
             # on (homebrew node 24/25).
             pkgs.nodejs_24
-            pkgs.erlang_28
+            # Host Erlang for the OTP cross-build bootstrap. Use the
+            # minimal interpreter set so CI does not pull in wxWidgets,
+            # WebKitGTK, and Xorg just to run `erl`/`erlc`.
+            pkgs.beam_minimal.interpreters.erlang_28
             pkgs.cmake
             pkgs.autoconf
             pkgs.automake
@@ -205,7 +208,7 @@
               esac
             fi
             unset __repo_root
-            echo "kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28, SDK on PATH"
+            echo "kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH"
           '';
         };
       });

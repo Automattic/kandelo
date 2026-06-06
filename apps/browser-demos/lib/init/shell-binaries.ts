@@ -2,8 +2,8 @@
  * Shell binary population — writes dash, registers lazy utility binaries,
  * creates standard directory structure and symlinks.
  *
- * Extracted from pages/shell/main.ts for reuse by any demo that needs a
- * working shell environment.
+ * Shared by Kandelo UI presets and retained browser labs that need a working
+ * shell environment.
  */
 import type { BrowserKernel } from "@host/browser-kernel-host";
 import {

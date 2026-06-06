@@ -33,7 +33,7 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 ## Browser
 
 ### PTY terminal integration with xterm.js
-The kernel has full PTY support (PR #181) but browser demos still use plain `<div>` with `appendStdinData`. Connecting PTY pairs to xterm.js would give proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
+The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 
 ## Performance
 
@@ -248,9 +248,9 @@ Today's host test coverage is asymmetric: `host/test/*.test.ts` runs 56 vitest f
 
 - `host/test/browser-worker-adapter.test.ts` — single vitest file using mocked Web Workers in Node; does not run real browser code.
 - `host/test/php-browser.spec.ts` — Playwright, one fixture.
-- `examples/browser/test/demos.spec.ts` (~15 tests) + `doom.spec.ts` — Playwright over real demo pages.
+- `apps/browser-demos/test/*.spec.ts` - Playwright over the Kandelo UI and retained browser labs.
 
-Real-browser regressions land here repeatedly because the Node vitest suite is the de-facto fast feedback loop, and Playwright tests are slow, demo-shaped, and run `@slow`-tagged in CI. The dual-host-parity requirement (`CLAUDE.md` → *Two hosts: Browser AND Node.js*) is enforced by review prompts, not by tests — which has already failed twice (PRs #388 and #410 shipped Node-only fixes that broke browser demos with no test signal).
+Real-browser regressions land here repeatedly because the Node vitest suite is the de-facto fast feedback loop, and Playwright tests are slow and often `@slow`-tagged in CI. The dual-host-parity requirement (`CLAUDE.md` -> *Two hosts: Browser AND Node.js*) is enforced by review prompts, not by tests - which has already failed twice (PRs #388 and #410 shipped Node-only fixes that broke browser behavior with no test signal).
 
 The structural fix is to stand up `@vitest/browser` (Vitest's official browser provider, Playwright or WebdriverIO transport) so the existing `host/test/*.test.ts` suite can re-run inside a real Chromium. Each test that doesn't depend on Node-only APIs (worker_threads, fs from Node, etc.) becomes free dual-host coverage. The tests that *do* hit Node-only APIs would either be tagged `@node-only` or refactored against the host abstractions (`PlatformIO`, `WorkerAdapter`) so they pass through `BrowserWorkerAdapter` + `VirtualPlatformIO` in browser mode.
 

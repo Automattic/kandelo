@@ -327,7 +327,7 @@ node --experimental-strip-types your-script.ts
 
 ### Browser
 
-See the [Porting Guide](porting-guide.md) for creating browser demos.
+See the [Porting Guide](porting-guide.md) for preparing browser-facing package images.
 
 ## Tips
 

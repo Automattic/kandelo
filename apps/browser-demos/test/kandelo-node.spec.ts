@@ -1,6 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-async function gotoOrSkip(page: import("@playwright/test").Page, path: string) {
+async function gotoOrSkip(page: Page, path: string) {
   await page.goto(path, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2_000);
   if (await page.locator("vite-error-overlay").count()) {
@@ -8,8 +8,34 @@ async function gotoOrSkip(page: import("@playwright/test").Page, path: string) {
   }
 }
 
+async function terminalText(page: Page): Promise<string> {
+  return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
+}
+
+async function runTerminalCommand(
+  page: Page,
+  command: string,
+  expected: string | RegExp,
+  timeout = 120_000,
+) {
+  await page.locator(".kshell-host").first().click();
+  const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
+  if (await terminalInput.count()) {
+    await terminalInput.focus();
+  }
+  await page.keyboard.insertText(command);
+  await page.waitForTimeout(250);
+  await page.keyboard.press("Enter");
+  const assertion = expect.poll(() => terminalText(page), { timeout });
+  if (typeof expected === "string") {
+    await assertion.toContain(expected);
+  } else {
+    await assertion.toMatch(expected);
+  }
+}
+
 test("@slow Kandelo Node demo installs cowsay with npm", async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(300_000);
   const runtimeErrors: string[] = [];
   page.on("console", (msg) => {
     const text = msg.text();
@@ -19,7 +45,7 @@ test("@slow Kandelo Node demo installs cowsay with npm", async ({ page }) => {
   });
   page.on("pageerror", (err) => runtimeErrors.push(`pageerror: ${err.message}`));
 
-  await gotoOrSkip(page, "/pages/kandelo/?demo=node");
+  await gotoOrSkip(page, "/?demo=node");
   await page.waitForSelector("aside.kdemo", { timeout: 120_000 });
   await page.getByRole("button", { name: "Runtime check" }).click();
 
@@ -27,77 +53,32 @@ test("@slow Kandelo Node demo installs cowsay with npm", async ({ page }) => {
     .poll(() => page.evaluate(() => document.body.innerText), { timeout: 90_000 })
     .toContain("worker 7");
 
-  await page.getByRole("button", { name: "Install cowsay" }).click();
-  await expect
-    .poll(() => page.evaluate(() => document.body.innerText), { timeout: 120_000 })
-    .toContain("< Kandelo >");
-  await expect
-    .poll(() => page.evaluate(() => document.body.innerText), { timeout: 30_000 })
-    .toContain("npm install cowsay");
+  const npmInstallCommand = [
+    "rm -rf node_modules package-lock.json /tmp/.npm-cache /tmp/kandelo-npm.log /tmp/kandelo-cowsay.out",
+    [
+      "if npm install cowsay --verbose >/tmp/kandelo-npm.log 2>&1",
+      "&& ./node_modules/.bin/cowsay Kandelo >/tmp/kandelo-cowsay.out 2>&1",
+      "&& ! grep -E 'TAR_ENTRY_ERROR|EACCES' /tmp/kandelo-npm.log; then",
+      "cat /tmp/kandelo-cowsay.out;",
+      "export PS1=\"KANDELO_\"\"NPM_OK $ \";",
+      "else",
+      "cat /tmp/kandelo-npm.log;",
+      "cat /tmp/kandelo-cowsay.out 2>/dev/null;",
+      "export PS1=\"KANDELO_\"\"NPM_FAIL $ \";",
+      "fi",
+    ].join(" "),
+  ].join("; ");
+
+  await runTerminalCommand(
+    page,
+    npmInstallCommand,
+    "KANDELO_NPM_OK",
+    180_000,
+  );
 
   const text = await page.evaluate(() => document.body.innerText);
+  expect(text).toContain("< Kandelo >");
+  expect(text).not.toContain("KANDELO_NPM_FAIL");
   expect(text).not.toContain("Segmentation fault");
-  expect(runtimeErrors).toEqual([]);
-});
-
-test("standalone Node demo runs npm CLI", async ({ page }) => {
-  test.setTimeout(90_000);
-  const runtimeErrors: string[] = [];
-  page.on("console", (msg) => {
-    const text = msg.text();
-    if (msg.type() === "error" || /Maximum call stack|Segmentation fault/i.test(text)) {
-      runtimeErrors.push(`${msg.type()}: ${text}`);
-    }
-  });
-  page.on("pageerror", (err) => runtimeErrors.push(`pageerror: ${err.message}`));
-
-  await gotoOrSkip(page, "/pages/node/");
-  await page.waitForSelector(".xterm-rows", { timeout: 60_000 });
-  await page.click("#terminal");
-  await page.keyboard.type("npm --version");
-  await page.keyboard.press("Enter");
-
-  await expect
-    .poll(() => page.locator(".xterm-rows").evaluate((el) => el.textContent || ""), {
-      timeout: 60_000,
-    })
-    .toContain("10.9.2");
-  await expect
-    .poll(() => page.locator(".xterm-rows").evaluate((el) => el.textContent || ""), {
-      timeout: 30_000,
-    })
-    .toContain("[exit 0");
-
-  expect(runtimeErrors).toEqual([]);
-});
-
-test("standalone Node demo installs cowsay before exit", async ({ page }) => {
-  test.setTimeout(240_000);
-  const runtimeErrors: string[] = [];
-  page.on("console", (msg) => {
-    const text = msg.text();
-    if (msg.type() === "error" || /Maximum call stack|Segmentation fault/i.test(text)) {
-      runtimeErrors.push(`${msg.type()}: ${text}`);
-    }
-  });
-  page.on("pageerror", (err) => runtimeErrors.push(`pageerror: ${err.message}`));
-
-  await gotoOrSkip(page, "/pages/node/");
-  await page.waitForSelector(".xterm-rows", { timeout: 60_000 });
-  await page.click("#terminal");
-  await page.keyboard.type("npm install cowsay && cowsay 'Hello Kandelo'");
-  await page.keyboard.press("Enter");
-
-  await expect
-    .poll(() => page.locator(".xterm-rows").evaluate((el) => el.textContent || ""), {
-      timeout: 180_000,
-    })
-    .toContain("< Hello Kandelo >");
-  await expect
-    .poll(() => page.locator(".xterm-rows").evaluate((el) => el.textContent || ""), {
-      timeout: 30_000,
-    })
-    .toContain("[exit 0");
-
   expect(runtimeErrors).toEqual([]);
 });

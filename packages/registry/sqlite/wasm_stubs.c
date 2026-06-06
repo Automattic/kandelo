@@ -1,18 +1,12 @@
 /* Stubs for test modules excluded from the wasm32 testfixture build.
  *
- * test_thread.c requires pthreads (SQLITE_THREADSAFE=0 disables threading).
- * test_syscall.c overrides Unix VFS syscalls (conflicts with wasm kernel).
- *
- * test_tclsh.c references both _Init functions unconditionally, so we
- * provide no-op stubs to satisfy the linker.
+ * test_thread.c is still excluded because it creates native pthreads.
+ * test_tclsh.c references its _Init function unconditionally, so provide a
+ * no-op stub to satisfy the linker.
  */
 
 #include <tcl.h>
 
 int SqlitetestThread_Init(Tcl_Interp *interp) {
-    return TCL_OK;
-}
-
-int SqlitetestSyscall_Init(Tcl_Interp *interp) {
     return TCL_OK;
 }

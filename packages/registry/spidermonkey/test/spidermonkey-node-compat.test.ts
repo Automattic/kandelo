@@ -817,16 +817,19 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     const result = await runNode(
       [
         "const { Worker } = require('worker_threads')",
-        "const sab = new SharedArrayBuffer(4)",
+        "const sab = new SharedArrayBuffer(8)",
         "const view = new Int32Array(sab)",
-        "new Worker(\"const view = new Int32Array(workerData); Atomics.store(view, 0, 42); Atomics.notify(view, 0);\", { eval: true, workerData: sab })",
-        "Atomics.wait(view, 0, 0, 10000)",
+        "const worker = new Worker(\"const view = new Int32Array(workerData); Atomics.store(view, 0, 42); Atomics.store(view, 1, 1); Atomics.notify(view, 1);\", { eval: true, workerData: sab })",
+        "if (Atomics.load(view, 1) === 0) Atomics.wait(view, 1, 0, 10000)",
+        "if (Atomics.load(view, 1) !== 1) throw new Error('worker did not finish')",
         "console.log(Atomics.load(view, 0))",
+        "worker.terminate()",
+        "console.log('after-terminate')",
       ].join("\n"),
       LONG_TIMEOUT,
     );
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe("42");
+    expect(result.stdout.trim().split("\n")).toEqual(["42", "after-terminate"]);
   }, LONG_TEST_TIMEOUT);
 });

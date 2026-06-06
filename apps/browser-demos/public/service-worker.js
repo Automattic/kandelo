@@ -292,15 +292,31 @@ if (typeof window !== "undefined") {
     }
   });
 
-  // --- CORS proxy URL (injected at build time, empty string in dev) ---
+  // --- CORS proxy URL (injected at build time, main proxy in dev) ---
   var CORS_PROXY_URL = "__CORS_PROXY_URL__";
-  // In dev mode the placeholder is not replaced — treat as unconfigured
+  // In dev mode the placeholder is not replaced — use the main proxy so dev
+  // and production exercise the same CORS proxy backend.
   if (CORS_PROXY_URL.indexOf("__") === 0) {
-    CORS_PROXY_URL =
-      self.location.hostname === "127.0.0.1" ||
-      self.location.hostname === "localhost"
-        ? "/cors-proxy?url="
-        : "";
+    CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
+  }
+
+  function normalizedCorsProxyUrl() {
+    return CORS_PROXY_URL ? new URL(CORS_PROXY_URL, self.location.href).href : "";
+  }
+
+  function isCorsProxyFetchUrl(targetUrl) {
+    var proxyUrl = normalizedCorsProxyUrl();
+    return proxyUrl && targetUrl.startsWith(proxyUrl);
+  }
+
+  function corsProxyFetchUrl(targetUrl) {
+    var proxyUrl = normalizedCorsProxyUrl();
+    if (targetUrl.startsWith(proxyUrl)) {
+      return targetUrl;
+    }
+    return proxyUrl + (
+      proxyUrl.endsWith("?") ? targetUrl : encodeURIComponent(targetUrl)
+    );
   }
 
   /**
@@ -402,7 +418,27 @@ if (typeof window !== "undefined") {
   function redirectIntoApp(url) {
     var redirectUrl = new URL(url.href);
     redirectUrl.pathname = appRootPath() + pathInsideApp(url.pathname);
-    return Response.redirect(redirectUrl.href, 307);
+    return new Response(null, {
+      status: 307,
+      headers: appRedirectHeaders(redirectUrl.href),
+    });
+  }
+
+  function appRedirectHeaders(location) {
+    var headers = new Headers();
+    headers.set("Location", location);
+    addAppIsolationHeaders(headers);
+    return headers;
+  }
+
+  function addAppIsolationHeaders(headers) {
+    if (!headers.has("Cross-Origin-Embedder-Policy")) {
+      headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+    }
+    if (!headers.has("Cross-Origin-Resource-Policy")) {
+      headers.set("Cross-Origin-Resource-Policy", "same-origin");
+    }
+    return headers;
   }
 
   /**
@@ -446,19 +482,40 @@ if (typeof window !== "undefined") {
     return headers;
   }
 
+  function isNullBodyStatus(status) {
+    return status === 204 || status === 205 || status === 304;
+  }
+
+  function responseBodyForStatus(status, body) {
+    return isNullBodyStatus(status) ? null : body;
+  }
+
+  function responseWithHeaders(response, headers) {
+    return new Response(responseBodyForStatus(response.status, response.body), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: headers,
+    });
+  }
+
   function fetchCrossOrigin(request) {
     var targetUrl = request.url;
 
+    // The page and worker runtime may already be deliberately fetching the
+    // configured CORS proxy. Do not wrap that request in the same proxy again.
+    if (isCorsProxyFetchUrl(targetUrl)) {
+      return fetch(request).then(function (response) {
+        var headers = corsSafeResponseHeaders(response);
+        return responseWithHeaders(response, headers);
+      });
+    }
+
     // If we have a CORS proxy, route through it
     if (CORS_PROXY_URL) {
-      var proxyUrl = CORS_PROXY_URL + encodeURIComponent(targetUrl);
+      var proxyUrl = corsProxyFetchUrl(targetUrl);
       return fetch(proxyUrl, { credentials: "omit", mode: "cors" }).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: headers,
-        });
+        return responseWithHeaders(response, headers);
       });
     }
 
@@ -468,11 +525,7 @@ if (typeof window !== "undefined") {
         return response;
       }
       var headers = corsSafeResponseHeaders(response);
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headers,
-      });
+      return responseWithHeaders(response, headers);
     });
   }
 
@@ -518,11 +571,7 @@ if (typeof window !== "undefined") {
         headers.delete("Content-Encoding");
         headers.delete("Content-Length");
       }
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headers,
-      });
+      return responseWithHeaders(response, headers);
     });
   }
 
@@ -689,6 +738,7 @@ if (typeof window !== "undefined") {
                 redirectStatus = 303;
               }
               respHeaders.set("Location", locUrl.toString());
+              addAppIsolationHeaders(respHeaders);
               return new Response(null, {
                 status: redirectStatus,
                 headers: respHeaders,
@@ -701,12 +751,7 @@ if (typeof window !== "undefined") {
         rewriteAppUrlHeader(respHeaders, "Link", url);
 
         // COEP/CORP for cross-origin isolation
-        if (!respHeaders.has("Cross-Origin-Embedder-Policy")) {
-          respHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
-        }
-        if (!respHeaders.has("Cross-Origin-Resource-Policy")) {
-          respHeaders.set("Cross-Origin-Resource-Policy", "same-origin");
-        }
+        addAppIsolationHeaders(respHeaders);
 
         var body = bridgeResp.body;
         if (shouldRewriteAppResponseBody(respHeaders)) {
@@ -718,7 +763,7 @@ if (typeof window !== "undefined") {
           }
         }
 
-        return new Response(body, {
+        return new Response(responseBodyForStatus(bridgeResp.status, body), {
           status: bridgeResp.status,
           headers: respHeaders,
         });

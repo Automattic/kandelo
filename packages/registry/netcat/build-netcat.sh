@@ -41,17 +41,39 @@ PATCH_SET=(
     "udp-listen-single-socket.patch"
     "disable-pktinfo.patch"
 )
-if [ "$(cat "$PATCH_MARKER" 2>/dev/null || true)" != "${PATCH_SET[*]}" ]; then
-    echo "==> Applying Kandelo netcat portability patches..."
-    for patch_name in "${PATCH_SET[@]}"; do
-        patch_file="$SCRIPT_DIR/patches/$patch_name"
-        if patch --forward --dry-run -p1 < "$patch_file" >/dev/null 2>&1; then
-            patch -p1 < "$patch_file"
-        else
-            echo "    $patch_name already applied"
-        fi
-    done
-    printf '%s\n' "${PATCH_SET[*]}" > "$PATCH_MARKER"
+echo "==> Verifying Kandelo netcat portability patches..."
+for patch_name in "${PATCH_SET[@]}"; do
+    patch_file="$SCRIPT_DIR/patches/$patch_name"
+    if patch --reverse --dry-run -p1 < "$patch_file" >/dev/null 2>&1; then
+        echo "    $patch_name already applied"
+    elif patch --forward --dry-run -p1 < "$patch_file" >/dev/null 2>&1; then
+        patch -p1 < "$patch_file"
+    else
+        echo "ERROR: $patch_name does not apply and is not already present" >&2
+        exit 1
+    fi
+done
+printf '%s\n' "${PATCH_SET[*]}" > "$PATCH_MARKER"
+
+if ! awk '
+    /if \(netcat_mode == NETCAT_LISTEN\)/ { in_listen = 1; next }
+    in_listen && /glob_ret = EXIT_SUCCESS;/ { ok = 1; exit }
+    in_listen && /if \(opt_exec\)/ { exit }
+    END { exit ok ? 0 : 1 }
+' src/netcat.c; then
+    echo "ERROR: listen-success-exit.patch is missing from src/netcat.c" >&2
+    exit 1
+fi
+
+udp_marker_count=$(grep -c "Kandelo exposes normal POSIX UDP sockets" src/core.c || true)
+if [ "$udp_marker_count" -ne 1 ]; then
+    echo "ERROR: udp-listen-single-socket.patch marker count is $udp_marker_count, expected 1" >&2
+    exit 1
+fi
+
+if ! grep -q "/\\* #  define USE_PKTINFO \\*/" src/netcat.h; then
+    echo "ERROR: disable-pktinfo.patch is missing from src/netcat.h" >&2
+    exit 1
 fi
 
 if [ ! -f Makefile ]; then

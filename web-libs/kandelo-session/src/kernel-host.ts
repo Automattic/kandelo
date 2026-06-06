@@ -769,6 +769,7 @@ export class LiveKernelHost implements KernelHost {
       });
       void completion.then(resolveCommandDone, rejectCommandDone);
       pty.write(command.endsWith("\n") ? command : `${command}\n`);
+      await commandDone;
     } catch (err) {
       rejectCommandDone(err);
       throw err;
