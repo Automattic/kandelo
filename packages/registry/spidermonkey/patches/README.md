@@ -31,6 +31,9 @@ Kandelo wasm32 integration points needed by the standalone SpiderMonkey shell.
   Node-mode shell entry point, POSIX file/fd helpers, native crypto/zlib/TCP/TLS
   hooks, and the shell job-loop integration needed by the shared JavaScript
   CommonJS bootstrap.
+- `0013-kandelo-abandon-shell-workers-on-wasm.patch`: avoids browser wasm-pthread
+  cleanup faults by abandoning SpiderMonkey shell `evalInWorker` thread wrappers
+  during final wasm shell teardown.
 
 Revisit this set when bumping ESR versions. Most patches are
 Kandelo-specific integration glue, but any general wasm32 or POSIX portability
