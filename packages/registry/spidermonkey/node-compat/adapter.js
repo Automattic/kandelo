@@ -281,11 +281,6 @@
                 try { setSharedObject(null); } catch {}
             }
         }
-        function joinShellWorkers() {
-            if (typeof joinWorkerThreads === 'function') {
-                try { joinWorkerThreads(); } catch {}
-            }
-        }
         class Worker extends EventEmitter {
             constructor(filenameOrSource, options) {
                 super();
@@ -341,7 +336,9 @@
             }
             terminate() {
                 clearSharedWorkerData();
-                joinShellWorkers();
+                // The SpiderMonkey shell reaps evalInWorker threads during
+                // shell teardown. Joining them synchronously here can race
+                // wasm pthread teardown under browser hosts.
                 this.emit('exit', 0);
                 return Promise.resolve(0);
             }
