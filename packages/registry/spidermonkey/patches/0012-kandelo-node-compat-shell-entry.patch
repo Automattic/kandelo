@@ -1940,7 +1940,7 @@
    }
  }
 
-@@ -6876,7 +7958,43 @@
+@@ -6876,7 +7958,63 @@
 
  int shell::sArgc;
  char** shell::sArgv;
@@ -1981,6 +1981,26 @@
 +  return JS::Evaluate(cx, opts, srcBuf, &rval);
 +}
 +
++static bool RunKandeloNodeEval(JSContext* cx, const char* code) {
++  RootedValue runner(cx);
++  if (!JS_GetProperty(cx, cx->global(), "__kandeloRunNodeEval", &runner)) {
++    return false;
++  }
++  if (!runner.isObject() || !IsCallable(runner)) {
++    JS_ReportErrorASCII(cx, "__kandeloRunNodeEval is not callable");
++    return false;
++  }
++
++  RootedString str(cx, NewStringCopyUTF8(cx, code));
++  if (!str) {
++    return false;
++  }
++  RootedValue codeValue(cx, StringValue(str));
++  RootedValue rval(cx);
++  return Call(cx, UndefinedHandleValue, runner, HandleValueArray(codeValue),
++              &rval);
++}
++
  #ifndef __wasi__
  static const char sWasmCompileAndSerializeFlag[] =
      "--wasm-compile-and-serialize";
@@ -1994,6 +2014,22 @@
 +  if (IsKandeloNodeMode() && !RunKandeloNodeBootstrap(cx)) {
      return false;
    }
+
+@@ -11790,7 +12929,13 @@
+       RootedValue rval(cx);
+-      if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
+-        return false;
++      if (IsKandeloNodeMode()) {
++        if (!RunKandeloNodeEval(cx, code.get())) {
++          return false;
++        }
++      } else {
++        if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
++          return false;
++        }
+       }
+
+       codeChunks.popFront();
 
 @@ -12321,6 +13443,12 @@
    int result;

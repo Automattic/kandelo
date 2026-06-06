@@ -428,6 +428,25 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("hello wasm32 linux v22.0.0");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("runs -e scripts through the Node eval wrapper", async () => {
+    const result = await runNode(
+      [
+        "console.log(__filename)",
+        "console.log(__dirname)",
+        "console.log(module.filename.endsWith('/[eval]'))",
+        "console.log(typeof require)",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "[eval]",
+      ".",
+      "true",
+      "function",
+    ]);
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("prints the Node compatibility version", async () => {
     const result = await runCentralizedProgram({
       programPath: nodeWasm!,

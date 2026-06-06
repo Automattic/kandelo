@@ -4500,6 +4500,34 @@ function _runCommonJsMain(filename) {
     process.exit(process.exitCode || 0);
 }
 
+function _runNodeEval(code) {
+    const filename = '[eval]';
+    const dirname = process.cwd();
+    const moduleFilename = path.join(dirname, filename);
+    const evalRequire = _makeRequire(path.join(dirname, 'repl'));
+    const mod = {
+        id: filename,
+        filename: moduleFilename,
+        loaded: false,
+        exports: {},
+        children: [],
+        paths: Module._nodeModulePaths(dirname),
+        require: evalRequire,
+    };
+    const wrappedFn = _nodeNative.evalScriptAsFunction(
+        '(function (exports, require, module, __filename, __dirname) {\n' +
+            code +
+            '\n})',
+        filename,
+    );
+    wrappedFn.call(globalThis, mod.exports, evalRequire, mod, filename, '.');
+    mod.loaded = true;
+    if (typeof drainJobQueue === 'function') drainJobQueue();
+    return mod.exports;
+}
+
+globalThis.__kandeloRunNodeEval = _runNodeEval;
+
 function _formatThrownFailure(failure) {
     if (!failure) return String(failure);
     const text = String(failure);
