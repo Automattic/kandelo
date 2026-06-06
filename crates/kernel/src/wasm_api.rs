@@ -2391,6 +2391,12 @@ pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
         ]);
     }
 
+    if let Err(e) = validate_channel_cstrings(syscall_nr, &args, base) {
+        let result = -(e as i32);
+        write_channel_result(base, result);
+        return result;
+    }
+
     // Pointer args in the channel reference kernel memory (JS copies data
     // into the data buffer at offset + DATA_OFFSET). Convert relative
     // data-buffer references: if an arg points to offset 0 of the data
@@ -2434,6 +2440,78 @@ unsafe fn cstr_len(ptr: *const u8) -> u32 {
         len += 1;
     }
     len
+}
+
+fn validate_channel_cstring_arg(args: &[i64; 6], index: usize, base: usize) -> Result<(), Errno> {
+    let ptr = args[index];
+    if ptr == 0 {
+        return Ok(());
+    }
+    if ptr < 0 {
+        return Err(Errno::EFAULT);
+    }
+
+    let ptr = ptr as usize;
+    let data_start = base + wasm_posix_shared::channel::DATA_OFFSET;
+    let data_end = data_start + wasm_posix_shared::channel::DATA_SIZE;
+    if ptr < data_start || ptr >= data_end {
+        return Err(Errno::EFAULT);
+    }
+
+    let mut cur = ptr;
+    while cur < data_end {
+        if unsafe { *(cur as *const u8) } == 0 {
+            return Ok(());
+        }
+        cur += 1;
+    }
+    Err(Errno::ENAMETOOLONG)
+}
+
+fn validate_channel_cstrings(nr: u32, args: &[i64; 6], base: usize) -> Result<(), Errno> {
+    match nr {
+        1 | 11 | 12 | 13 | 14 | 15 | 19 | 20 | 21 | 22 | 24 | 25 | 43 | 45 | 85 | 109 | 129
+        | 140 | 211 | 271 | 299 | 331 | 332 => validate_channel_cstring_arg(args, 0, base),
+        16 | 17 | 18 | 44 => {
+            validate_channel_cstring_arg(args, 0, base)?;
+            validate_channel_cstring_arg(args, 1, base)
+        }
+        69 | 93 | 94 | 95 | 97 | 98 | 99 | 125 | 260 | 272 | 382 | 383 => {
+            validate_channel_cstring_arg(args, 1, base)
+        }
+        96 | 100 => {
+            validate_channel_cstring_arg(args, 1, base)?;
+            validate_channel_cstring_arg(args, 3, base)
+        }
+        101 => {
+            validate_channel_cstring_arg(args, 0, base)?;
+            validate_channel_cstring_arg(args, 2, base)
+        }
+        102 => validate_channel_cstring_arg(args, 1, base),
+        _ => Ok(()),
+    }
+}
+
+fn write_channel_result(base: usize, result: i32) {
+    use wasm_posix_shared::channel::*;
+
+    let out = unsafe {
+        let ptr = base as *mut u8;
+        core::slice::from_raw_parts_mut(ptr, MIN_CHANNEL_SIZE)
+    };
+
+    let ret_val: i64;
+    let errno_val: u32;
+    if result < 0 {
+        ret_val = -1;
+        errno_val = (-result) as u32;
+    } else {
+        ret_val = result as i64;
+        errno_val = 0;
+    }
+
+    out[RETURN_OFFSET..RETURN_OFFSET + 8].copy_from_slice(&ret_val.to_le_bytes());
+    out[ERRNO_OFFSET..ERRNO_OFFSET + 4].copy_from_slice(&errno_val.to_le_bytes());
 }
 
 /// Dispatch a syscall by number with raw musl arguments.

@@ -415,6 +415,7 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     ),
     entry!(extra_syscalls::SYS_MKNOD, [desc!(0, In, cstring!())]),
     entry!(extra_syscalls::SYS_MKNODAT, [desc!(1, In, cstring!())]),
+    entry!(extra_syscalls::SYS_LCHOWN, [desc!(0, In, cstring!())]),
     entry!(
         extra_syscalls::SYS_TIMER_CREATE,
         [desc!(1, In, fixed!(16)), desc!(2, Out, fixed!(4)),]
@@ -518,6 +519,11 @@ mod tests {
                 add: 0,
             }
         );
+
+        let lchown = find(extra_syscalls::SYS_LCHOWN).args[0];
+        assert_eq!(lchown.arg_index, 0);
+        assert_eq!(lchown.direction, SyscallArgDirection::In);
+        assert_eq!(lchown.size, SyscallArgSize::CString);
     }
 
     #[test]
