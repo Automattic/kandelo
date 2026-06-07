@@ -4534,7 +4534,10 @@ function _runNodeEval(code) {
         console.error(_formatThrownFailure(failure));
         process.exitCode = process.exitCode || 1;
     }
-    process.exit(process.exitCode || 0);
+    let exitCode = process.exitCode || 0;
+    process._exiting = true;
+    process.emit('exit', exitCode);
+    return process.exitCode || exitCode;
 }
 
 globalThis.__kandeloRunNodeEval = _runNodeEval;

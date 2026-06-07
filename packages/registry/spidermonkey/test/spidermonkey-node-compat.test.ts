@@ -447,6 +447,19 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     ]);
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("emits process exit for naturally completed -e scripts", async () => {
+    const result = await runNode(
+      [
+        "process.exitCode = 7",
+        "process.on('exit', code => console.log('exit:' + code))",
+        "console.log('body')",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(7);
+    expect(result.stdout.trim().split("\n")).toEqual(["body", "exit:7"]);
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("prints the Node compatibility version", async () => {
     const result = await runCentralizedProgram({
       programPath: nodeWasm!,

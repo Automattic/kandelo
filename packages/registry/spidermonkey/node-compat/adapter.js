@@ -325,9 +325,7 @@
             }
             terminate() {
                 const exitCode = this._exitCode || 0;
-                if (this.listenerCount('exit') > 0) {
-                    this.emit('exit', exitCode);
-                }
+                this.emit('exit', exitCode);
                 return exitCode;
             }
             ref() { return this; }
