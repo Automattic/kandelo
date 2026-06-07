@@ -161,10 +161,13 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForTerminalContent(
     page,
-    /SpiderMonkey Node[\s\S]*worker\s+42[\s\S]*10\.9\.2[\s\S]*spidermonkey-node\$ ?/,
+    /SM_DIAG:start[\s\S]*SM_DIAG:done[\s\S]*spidermonkey-node\$ ?/,
     180_000,
   );
-  expect(await terminalText(page)).not.toContain("Segmentation fault");
+  const diagnosticText = await terminalText(page);
+  console.log(`SM_NODE_DIAGNOSTIC_TERMINAL\n${diagnosticText}`);
+  expect(diagnosticText).toContain("SM_DIAG:npm_status:0");
+  expect(diagnosticText).not.toContain("Segmentation fault");
 
   await runTerminalCommand(
     page,

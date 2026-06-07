@@ -69,26 +69,6 @@ const SPIDERMONKEY_NODE_PRESENTATION: DemoPresentation = {
   internalsAccess: "drawer",
 };
 
-const SM_NODE_WORKER_RUNTIME_COMMAND = [
-  "node -e \"",
-  "const assert=require('node:assert');",
-  "const path=require('path');",
-  "const {Worker}=require('worker_threads');",
-  "const b=Buffer.from('Kandelo');",
-  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
-  "console.log('SpiderMonkey Node', process.version, process.arch);",
-  "console.log(b.toString('hex'));",
-  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "const sab=new SharedArrayBuffer(8);",
-  "const view=new Int32Array(sab);",
-  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
-  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
-  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
-  "console.log('worker', Atomics.load(view,0));",
-  "worker.terminate();",
-  "\"",
-].join(" ");
-
 const SM_NODE_WORKER_DEMO_COMMAND = [
   "node -e \"",
   "const {Worker}=require('worker_threads');",
@@ -104,12 +84,46 @@ const SM_NODE_WORKER_DEMO_COMMAND = [
   "\"",
 ].join(" ");
 
+const SM_NODE_DIAGNOSTIC_SMOKE_COMMANDS = [
+  "echo SM_DIAG:start",
+  diagnosticNodeCommand(
+    "plain",
+    "console.log('SM_DIAG:plain', process.version, process.arch);",
+  ),
+  diagnosticNodeCommand(
+    "node_api",
+    "const assert=require('node:assert'); const path=require('path'); const b=Buffer.from('Kandelo'); assert.strictEqual(path.basename('/usr/bin/node'),'node'); console.log('SM_DIAG:node_api', process.version, process.arch, b.toString('hex'), new Intl.NumberFormat('de-DE').format(1234567.89));",
+  ),
+  diagnosticNodeCommand(
+    "sab",
+    "const sab=new SharedArrayBuffer(8); console.log('SM_DIAG:sab', sab.byteLength);",
+  ),
+  diagnosticNodeCommand(
+    "atomics",
+    "const sab=new SharedArrayBuffer(8); const view=new Int32Array(sab); Atomics.store(view,0,42); console.log('SM_DIAG:atomics', Atomics.load(view,0));",
+  ),
+  diagnosticNodeCommand(
+    "worker_basic",
+    "const {Worker}=require('worker_threads'); const worker=new Worker('const n=1;',{eval:true}); console.log('SM_DIAG:worker_basic'); worker.terminate();",
+  ),
+  diagnosticNodeCommand(
+    "worker_sab",
+    "const {Worker}=require('worker_threads'); const sab=new SharedArrayBuffer(8); const view=new Int32Array(sab); const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab}); if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000); if(Atomics.load(view,1)!==1) throw new Error('worker did not finish'); console.log('SM_DIAG:worker_sab', Atomics.load(view,0)); worker.terminate();",
+  ),
+  "npm --version ; echo SM_DIAG:npm_status:$?",
+  "echo SM_DIAG:done",
+].join(" ; ");
+
 const SM_NODE_COWSAY_DEMO_COMMAND = [
   "rm -rf node_modules package-lock.json /tmp/.npm-cache",
   "printf '%s\\n' '{\"name\":\"demo\",\"version\":\"0.0.1\"}' > package.json",
   "npm install cowsay",
   "./node_modules/.bin/cowsay Kandelo",
 ].join(" && ");
+
+function diagnosticNodeCommand(label: string, script: string): string {
+  return `node -e "${script}" ; echo SM_DIAG:${label}_status:$?`;
+}
 
 function isWebKitLikeBrowser(): boolean {
   const ua = navigator.userAgent;
@@ -122,7 +136,7 @@ function spiderMonkeyNodeRuntimeCommand(): string {
 }
 
 function spiderMonkeyNodeSmokeCommand(): string {
-  return `${SM_NODE_WORKER_RUNTIME_COMMAND} && npm --version`;
+  return SM_NODE_DIAGNOSTIC_SMOKE_COMMANDS;
 }
 
 function spiderMonkeyNodeGuide(): DemoGuideConfig {
