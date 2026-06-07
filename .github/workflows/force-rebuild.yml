@@ -3,15 +3,17 @@ name: Force rebuild
 # Manually-triggered escape hatch for refreshing the durable binaries
 # release. Drives the same per-package matrix flow as prepare-merge.yml
 # (preflight + toolchain-cache + matrix-build + test-gate), with one
-# adjustment: the named packages BYPASS preflight's "already-published"
-# skip-check. Use this when the cache_key composition is suspected
-# incomplete (e.g., a toolchain pin was bumped without invalidating
-# package archives) and you want to confirm the published archives match
-# a fresh source build.
+# adjustment: a named package list restricts the build matrix to those
+# packages and bypasses preflight's "already-published" skip-check for
+# them. Use this when the cache_key composition is suspected incomplete
+# (e.g., a toolchain pin was bumped without invalidating package
+# archives) and you want to confirm the published archives match a fresh
+# source build.
 #
 # Flow (see docs/plans/2026-05-13-binary-resolution-via-index-ledger-design.md):
 #   * targets the undated `binaries-abi-v<N>` tag (per-archive uploads),
-#   * forces the listed packages back into the matrix even when their
+#   * when a package list is provided, restricts the matrix to those
+#     packages and forces them back into the matrix even when their
 #     cache_key_sha is already published (preflight's skip-check is
 #     suppressed for them),
 #   * builds each `(package, arch)` pair in parallel via `xtask
@@ -29,10 +31,9 @@ name: Force rebuild
 #   packages       — `all` (default) or a comma-separated list of
 #                    package.toml names (e.g. `php,mariadb`). `all`
 #                    forces every library + program manifest in the
-#                    registry into the build matrix; a list narrows it.
-#                    All listed packages bypass D3 (the "already
-#                    published" skip-check); unlisted packages still go
-#                    through the normal cache_key_sha gate.
+#                    registry into the build matrix; a list narrows it
+#                    to exactly those package names. Listed packages
+#                    bypass D3 (the "already published" skip-check).
 #   arches         — comma-separated subset of `wasm32,wasm64`
 #                    (default: both). Manifests whose `target_arches`
 #                    don't include a requested arch are silently
@@ -148,9 +149,10 @@ jobs:
   #
   # Mirrors prepare-merge.yml's preflight + toolchain-cache +
   # matrix-build + test-gate, with one adjustment: preflight reads
-  # `INPUT_PACKAGES` and force-includes listed packages in the
-  # matrix even if their cache_key_sha is already published. This is
-  # the D3 bypass. Each matrix-build job publishes its own archive +
+  # `INPUT_PACKAGES`, narrows listed runs to those packages, and
+  # force-includes listed packages in the matrix even if their
+  # cache_key_sha is already published. This is the D3 bypass. Each
+  # matrix-build job publishes its own archive +
   # index entry atomically via `scripts/index-update.sh`.
   #
   # A future cleanup PR can extract this shape into a reusable
@@ -236,8 +238,9 @@ jobs:
             TARGET_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
 
-            # Build a comma-list of package names whose skip-check is
-            # bypassed. `all` means every package; a name list narrows.
+            # Build a comma-list of package names to rebuild. `all`
+            # means every package; a name list narrows the matrix to
+            # exactly those package names.
             FORCE_ALL=0
             FORCE_LIST=""
             if [ "$INPUT_PACKAGES" = "all" ]; then
@@ -277,6 +280,12 @@ jobs:
               pkg=$(basename "$pkg_dir")
               if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
                 continue
+              fi
+
+              if [ "$FORCE_ALL" != "1" ]; then
+                if [ -z "$FORCE_LIST" ] || ! echo "$FORCE_LIST" | grep -q ",${pkg},"; then
+                  continue
+                fi
               fi
 
               kind=$(sed -nE "s/^kind *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
@@ -482,15 +491,6 @@ jobs:
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
-      - name: Resolve target package's transitive deps
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
         run: |
@@ -500,6 +500,7 @@ jobs:
               archive-stage \
                 --package "packages/registry/${{ matrix.package }}" \
                 --arch "${{ matrix.arch }}" \
+                --binaries-dir "$(pwd)/binaries" \
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}"
@@ -627,15 +628,6 @@ jobs:
         run: |
           bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
 
-      - name: Resolve target package's transitive deps
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
         run: |
@@ -645,6 +637,7 @@ jobs:
               archive-stage \
                 --package "packages/registry/${{ matrix.package }}" \
                 --arch "${{ matrix.arch }}" \
+                --binaries-dir "$(pwd)/binaries" \
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}"

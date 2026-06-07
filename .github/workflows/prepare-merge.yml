@@ -1017,15 +1017,6 @@ jobs:
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
 
-      - name: Resolve target package's transitive deps
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
         run: |
@@ -1035,6 +1026,7 @@ jobs:
               archive-stage \
                 --package "packages/registry/${{ matrix.package }}" \
                 --arch "${{ matrix.arch }}" \
+                --binaries-dir "$(pwd)/binaries" \
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}"
@@ -1203,15 +1195,6 @@ jobs:
         run: |
           bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
 
-      - name: Resolve target package's transitive deps
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
         run: |
@@ -1221,6 +1204,7 @@ jobs:
               archive-stage \
                 --package "packages/registry/${{ matrix.package }}" \
                 --arch "${{ matrix.arch }}" \
+                --binaries-dir "$(pwd)/binaries" \
                 --out "$RUNNER_TEMP/staged" \
                 --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
                 --build-host "${{ steps.provenance.outputs.build-host }}"

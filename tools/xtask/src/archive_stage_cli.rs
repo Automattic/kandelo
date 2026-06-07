@@ -32,6 +32,7 @@ struct Args {
     abi: Option<u32>,
     cache_root: Option<PathBuf>,
     registry_root: Option<PathBuf>,
+    binaries_dir: Option<PathBuf>,
 }
 
 /// CLI entry point for `xtask archive-stage`.
@@ -57,6 +58,9 @@ struct Args {
 ///   --registry     <dir>    Override the manifest registry search root
 ///                           (defaults to `WASM_POSIX_DEPS_REGISTRY` or
 ///                           `<repo>/packages/registry`).
+///   --binaries-dir <dir>    Materialize transitive program dependency
+///                           symlinks under this repo-local binaries/
+///                           layout while resolving the target.
 ///
 /// On success: prints the absolute path of the produced archive to
 /// stdout (one line, no trailing whitespace beyond the newline).
@@ -113,34 +117,45 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     fs::create_dir_all(&parsed.out_dir)
         .map_err(|e| format!("mkdir {}: {e}", parsed.out_dir.display()))?;
 
+    let sha_hex = compute_sha_hex(&manifest, &registry, parsed.arch, abi)?;
+
     // Filename convention (single source of truth for archive naming):
     //   <name>-<v>-rev<N>-abi<N>-<arch>-<short8>.tar.zst
     // The `<short8>` suffix is the first 8 hex chars of the cache_key
     // sha so a freshly-published archive is content-addressable from
     // its filename alone.
-    let archive_path = archive_path_for(&parsed.out_dir, &manifest, &registry, parsed.arch, abi)?;
+    let archive_path = archive_path_for_sha(&parsed.out_dir, &manifest, parsed.arch, abi, &sha_hex);
 
     // Resolve / build the cache entry. local_libs is intentionally
     // None — staged archives must reproduce from source / cache, never
-    // from a developer's hand-patched checkout.
+    // from a developer's hand-patched checkout. `binaries_dir` is only
+    // for transitive program deps whose build scripts resolve
+    // repo-local binaries; it does not materialize the target before
+    // archive staging.
     let resolve_opts = ResolveOpts {
         cache_root: &cache_root,
         local_libs: None,
         force_source_build: None,
         repo_root: None,
-        // archive-stage doesn't materialize binaries/ symlinks: it
-        // produces a single-package archive without touching consumer-
-        // facing layout.
-        binaries_dir: None,
+        binaries_dir: parsed.binaries_dir.as_deref(),
     };
     let cache_path =
         build_deps::ensure_built(&manifest, &registry, parsed.arch, abi, &resolve_opts)
             .map_err(|e| format!("ensure_built: {e}"))?;
 
-    // Same cache-key sha as the one encoded in archive_path's short
-    // suffix; recompute with a fresh memo so the result matches what
-    // archive_path_for derived (memos must not cross arch boundaries).
-    let sha_hex = compute_sha_hex(&manifest, &registry, parsed.arch, abi)?;
+    let post_build_sha_hex = compute_sha_hex(&manifest, &registry, parsed.arch, abi)?;
+    if post_build_sha_hex != sha_hex {
+        return Err(format!(
+            "archive-stage: cache_key_sha changed while building {}@{} for {} \
+             (before {}, after {}); build scripts must not mutate declared \
+             build.toml inputs before archive packaging",
+            manifest.name,
+            manifest.version,
+            parsed.arch.as_str(),
+            sha_hex,
+            post_build_sha_hex
+        ));
+    }
 
     let opts = StageOptions {
         cache_key_sha: sha_hex,
@@ -167,14 +182,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 /// recover `(name, version, revision, abi, arch, short_sha)` when
 /// regenerating `index.toml`, so the formatter and parser MUST stay
 /// aligned.
-fn archive_path_for(
+fn archive_path_for_sha(
     out_dir: &Path,
     manifest: &DepsManifest,
-    registry: &Registry,
     arch: TargetArch,
     abi: u32,
-) -> Result<PathBuf, String> {
-    let sha_hex = compute_sha_hex(manifest, registry, arch, abi)?;
+    sha_hex: &str,
+) -> PathBuf {
     let short = &sha_hex[..8];
     let archive_name = format!(
         "{}-{}-rev{}-abi{}-{}-{}.tar.zst",
@@ -185,7 +199,7 @@ fn archive_path_for(
         arch.as_str(),
         short,
     );
-    Ok(out_dir.join(archive_name))
+    out_dir.join(archive_name)
 }
 
 /// Compute the cache-key sha for a manifest as a 64-char lowercase hex
@@ -218,6 +232,7 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
     let mut abi: Option<u32> = None;
     let mut cache_root: Option<PathBuf> = None;
     let mut registry_root: Option<PathBuf> = None;
+    let mut binaries_dir: Option<PathBuf> = None;
 
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
@@ -287,6 +302,14 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
                 PathBuf::from(take_value(&mut it, "--registry")?),
                 "--registry",
             )?;
+        } else if let Some(v) = a.strip_prefix("--binaries-dir=") {
+            assign_once(&mut binaries_dir, PathBuf::from(v), "--binaries-dir")?;
+        } else if a == "--binaries-dir" {
+            assign_once(
+                &mut binaries_dir,
+                PathBuf::from(take_value(&mut it, "--binaries-dir")?),
+                "--binaries-dir",
+            )?;
         } else {
             return Err(format!("unexpected argument {a:?}"));
         }
@@ -311,6 +334,7 @@ fn parse_args(args: Vec<String>) -> Result<Args, String> {
         abi,
         cache_root,
         registry_root,
+        binaries_dir,
     })
 }
 
@@ -434,6 +458,29 @@ index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
         fs::write(registry.join(name).join("build.toml"), build_toml).unwrap();
     }
 
+    fn write_build_toml_with_inputs(registry: &Path, name: &str, inputs: &[&str]) {
+        let inputs = inputs
+            .iter()
+            .map(|input| format!("  \"{input}\","))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let build_toml = format!(
+            r#"
+script_path = "{name}/build-{name}.sh"
+inputs = [
+{inputs}
+]
+repo_url    = "https://example.test/repo.git"
+commit      = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+revision    = 1
+
+[binary]
+index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
+"#
+        );
+        fs::write(registry.join(name).join("build.toml"), build_toml).unwrap();
+    }
+
     /// End-to-end smoke: a clean run of the CLI produces a real
     /// `.tar.zst` whose name follows the canonical filename formula.
     #[test]
@@ -442,6 +489,7 @@ index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
         let registry = dir.join("registry");
         let cache_root = dir.join("cache");
         let out_dir = dir.join("out");
+        let binaries_dir = dir.join("binaries");
         fs::create_dir_all(&registry).unwrap();
         fs::create_dir_all(&cache_root).unwrap();
         write_wasm32_only_fixture(&registry, "z");
@@ -463,6 +511,8 @@ index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
             cache_root.display().to_string(),
             "--registry".into(),
             registry.display().to_string(),
+            "--binaries-dir".into(),
+            binaries_dir.display().to_string(),
         ])
         .expect("clean run must succeed");
 
@@ -533,6 +583,51 @@ index_url = "file:///tmp/wpk-nonexistent-binaries-abi-v{{abi}}/index.toml"
         );
         let name = &entries[0];
         assert!(name.starts_with("z-1.0.0-rev2-abi4-wasm32-"), "got: {name}");
+    }
+
+    #[test]
+    fn cli_rejects_build_that_mutates_cache_key_inputs() {
+        let dir = tempdir("e2-mutating-input");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("cache");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+        write_lib_fixture(
+            &registry,
+            "mutating",
+            r#"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+echo data > "$WASM_POSIX_DEP_OUT_DIR/lib/libMutating.a"
+echo changed > "$script_dir/watched.txt"
+"#,
+            "[outputs]\nlibs = [\"lib/libMutating.a\"]\n",
+        );
+        fs::write(registry.join("mutating").join("watched.txt"), "original\n").unwrap();
+        write_build_toml_with_inputs(&registry, "mutating", &["mutating/watched.txt"]);
+
+        let err = super::run(vec![
+            "--package".into(),
+            registry.join("mutating").display().to_string(),
+            "--arch".into(),
+            "wasm32".into(),
+            "--out".into(),
+            out_dir.display().to_string(),
+            "--build-timestamp".into(),
+            "2026-05-05T00:00:00Z".into(),
+            "--build-host".into(),
+            "test-host".into(),
+            "--abi".into(),
+            "4".into(),
+            "--cache-root".into(),
+            cache_root.display().to_string(),
+            "--registry".into(),
+            registry.display().to_string(),
+        ])
+        .expect_err("mutating a declared input must reject archive staging");
+        assert!(err.contains("cache_key_sha changed"), "got: {err}");
+        assert!(err.contains("mutating@1.0.0"), "got: {err}");
     }
 
     /// Two invocations with identical inputs must produce a
