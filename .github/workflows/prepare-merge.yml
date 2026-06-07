@@ -1813,6 +1813,114 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
+  browser-node-diagnostics:
+    name: browser-node-diagnostics
+    needs: [synthesize-merge, change-scope, test-gate-prepare]
+    if: |
+      !cancelled() &&
+      github.event.pull_request.number == 629 &&
+      needs.test-gate-prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Download toolchain sysroots artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract toolchain sysroots
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Download prepared test workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: test-workspace
+          path: ${{ runner.temp }}/test-workspace
+
+      - name: Extract prepared test workspace
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
+
+      - name: Record runner image before dev shell
+        run: |
+          mkdir -p "$RUNNER_TEMP/browser-node-diagnostics"
+          {
+            date -u
+            echo "ImageOS=${ImageOS:-}"
+            echo "ImageVersion=${ImageVersion:-}"
+            echo "ImageName=${ImageName:-}"
+            echo "RUNNER_OS=${RUNNER_OS:-}"
+            echo "RUNNER_ARCH=${RUNNER_ARCH:-}"
+            echo "RUNNER_NAME=${RUNNER_NAME:-}"
+            uname -a
+            cat /etc/os-release || true
+            df -h / /dev/shm || true
+          } | tee "$RUNNER_TEMP/browser-node-diagnostics/runner-before-dev-shell.txt"
+
+      - name: Run focused browser Node diagnostics
+        run: |
+          bash scripts/dev-shell.sh bash scripts/ci-browser-node-diagnostics.sh "$RUNNER_TEMP/browser-node-diagnostics" 5
+
+      - name: Upload browser Node diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-node-diagnostics-prepare
+          path: ${{ runner.temp }}/browser-node-diagnostics
+          retention-days: 3
+          if-no-files-found: warn
+
   test-gate:
     needs: [test-gate-prepare, test-suite]
     if: |

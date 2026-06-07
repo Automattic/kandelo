@@ -1285,6 +1285,84 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
+  browser-node-diagnostics:
+    name: browser-node-diagnostics
+    needs: [change-scope, test-gate-prepare]
+    if: |
+      !cancelled() &&
+      github.event.pull_request.number == 629 &&
+      needs.test-gate-prepare.result == 'success' &&
+      needs.change-scope.outputs.skip_staging_tests != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Download toolchain sysroots artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toolchain-sysroots
+          path: ${{ runner.temp }}/toolchain
+
+      - name: Extract toolchain sysroots
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
+
+      - name: Download prepared test workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: test-workspace
+          path: ${{ runner.temp }}/test-workspace
+
+      - name: Extract prepared test workspace
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
+
+      - name: Record runner image before dev shell
+        run: |
+          mkdir -p "$RUNNER_TEMP/browser-node-diagnostics"
+          {
+            date -u
+            echo "ImageOS=${ImageOS:-}"
+            echo "ImageVersion=${ImageVersion:-}"
+            echo "ImageName=${ImageName:-}"
+            echo "RUNNER_OS=${RUNNER_OS:-}"
+            echo "RUNNER_ARCH=${RUNNER_ARCH:-}"
+            echo "RUNNER_NAME=${RUNNER_NAME:-}"
+            uname -a
+            cat /etc/os-release || true
+            df -h / /dev/shm || true
+          } | tee "$RUNNER_TEMP/browser-node-diagnostics/runner-before-dev-shell.txt"
+
+      - name: Run focused browser Node diagnostics
+        run: |
+          bash scripts/dev-shell.sh bash scripts/ci-browser-node-diagnostics.sh "$RUNNER_TEMP/browser-node-diagnostics" 5
+
+      - name: Upload browser Node diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-node-diagnostics-staging
+          path: ${{ runner.temp }}/browser-node-diagnostics
+          retention-days: 3
+          if-no-files-found: warn
+
   test-gate:
     needs: [change-scope, test-gate-prepare, test-suite]
     if: |
