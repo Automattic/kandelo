@@ -121,6 +121,48 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.sharedMappings.has(42)).toBe(false);
   });
 
+  it("host-observed normal exits are marked in Rust before parent notification", () => {
+    const calls: string[] = [];
+    const markProcessExited = vi.fn(() => {
+      calls.push("mark");
+      return 0;
+    });
+    const worker = createWorkerHarness({
+      kernel_mark_process_exited: markProcessExited,
+      kernel_get_parent_pid: vi.fn(() => 7),
+      kernel_has_sa_nocldwait: vi.fn(() => 0),
+    });
+    worker.hostReaped = new Set();
+    worker.sharedMappings = new Map([[42, new Map()]]);
+    worker.sendSignalToProcess = vi.fn(() => calls.push("signal"));
+    worker.wakeWaitingParent = vi.fn(() => calls.push("wake"));
+
+    worker.notifyHostProcessExited(42, 5);
+
+    expect(markProcessExited).toHaveBeenCalledWith(42, 5);
+    expect(worker.sendSignalToProcess).toHaveBeenCalledWith(7, SIGCHLD);
+    expect(worker.wakeWaitingParent).toHaveBeenCalledWith(7);
+    expect(calls).toEqual(["mark", "signal", "wake"]);
+    expect(worker.sharedMappings.has(42)).toBe(false);
+  });
+
+  it("host-observed normal exits fall back to crash marking without the optional helper", () => {
+    const markProcessSignaled = vi.fn(() => 0);
+    const worker = createWorkerHarness({
+      kernel_mark_process_signaled: markProcessSignaled,
+      kernel_get_parent_pid: vi.fn(() => 7),
+      kernel_has_sa_nocldwait: vi.fn(() => 0),
+    });
+    worker.hostReaped = new Set();
+    worker.sharedMappings = new Map();
+    worker.sendSignalToProcess = vi.fn();
+    worker.wakeWaitingParent = vi.fn();
+
+    worker.notifyHostProcessExited(42, 0);
+
+    expect(markProcessSignaled).toHaveBeenCalledWith(42, 11);
+  });
+
   it("SA_NOCLDWAIT auto-reaps through Rust without SIGCHLD", () => {
     const reapExitedChild = vi.fn(() => 0);
     const worker = createWorkerHarness({

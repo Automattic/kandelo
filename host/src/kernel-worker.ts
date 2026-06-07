@@ -6246,6 +6246,29 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Notify the kernel that a host worker for `pid` exited normally without
+   * going through the normal SYS_EXIT_GROUP path.
+   *
+   * Some runtime adapters terminate by returning a worker-main `{type:"exit"}`
+   * message instead of driving the centralized syscall channel. The parent
+   * still needs a zombie and SIGCHLD, but the wait status must be a normal
+   * exit status rather than a synthetic signal death.
+   */
+  notifyHostProcessExited(pid: number, status: number): void {
+    if (this.hostReaped.has(pid)) return;
+    const markExited = this.kernelInstance!.exports.kernel_mark_process_exited as
+      ((pid: number, status: number) => number) | undefined;
+    if (!markExited) {
+      this.notifyHostProcessCrashed(pid);
+      return;
+    }
+    if (markExited(pid, status) < 0) return;
+    this.hostReaped.add(pid);
+    this.notifyParentOfExitedProcess(pid);
+    this.sharedMappings.delete(pid);
+  }
+
+  /**
    * Notify the kernel that a host worker for `pid` died asynchronously
    * (uncaught wasm trap, instantiation failure, externally terminated
    * Worker) WITHOUT going through the normal SYS_EXIT_GROUP path.

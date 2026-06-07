@@ -739,7 +739,7 @@ function installProcessWorkerListeners(
   pid: number,
 ): void {
   let exited = false;
-  const finalize = (status: number, source: string) => {
+  const finalize = (status: number, source: string, crashed: boolean) => {
     if (exited) return;
     exited = true;
     if (processes.get(pid)?.worker !== worker) return; // already replaced (e.g. by exec)
@@ -749,7 +749,7 @@ function installProcessWorkerListeners(
     } else {
       console.warn(message);
     }
-    handleExit(pid, status);
+    handleExit(pid, status, crashed);
   };
 
   // Status conventions match the Node host (PR #410):
@@ -761,7 +761,7 @@ function installProcessWorkerListeners(
   worker.on("error", (err: Error) => {
     if (intentionallyTerminated.has(worker as object)) return;
     console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
-    finalize(128 + 11, "worker.onerror");
+    finalize(128 + 11, "worker.onerror", true);
   });
   worker.on("exit", (code: number) => {
     // BrowserWorkerHandle synthesizes an "exit" event when the underlying
@@ -775,7 +775,7 @@ function installProcessWorkerListeners(
     // finalized via the "error" handler above, so this is a no-op there.
     // If "exit" fires without a prior "error" (worker died via some path
     // we don't yet model), still treat it as a crash.
-    finalize(128 + 11, "worker exit event");
+    finalize(128 + 11, "worker exit event", true);
   });
   worker.on("message", (msg: unknown) => {
     const m = msg as { type?: string; message?: string; pid?: number; status?: number };
@@ -791,9 +791,9 @@ function installProcessWorkerListeners(
         `[process-worker] ${m.message ?? "unknown error"}\n`,
       );
       post({ type: "stderr", pid, data: errBytes });
-      finalize(-1, "worker-main error message");
+      finalize(-1, "worker-main error message", true);
     } else if (m.type === "exit") {
-      finalize(m.status ?? 0, "worker-main exit message");
+      finalize(m.status ?? 0, "worker-main exit message", false);
     }
   });
 }
@@ -1194,11 +1194,11 @@ function handleThreadExit(pid: number, channelOffset: number): boolean {
   return threadExits.requestExit(pid, channelOffset);
 }
 
-function handleExit(pid: number, exitStatus: number): void {
-  void finishProcessExit(pid, exitStatus);
+function handleExit(pid: number, exitStatus: number, crashed = false): void {
+  void finishProcessExit(pid, exitStatus, crashed);
 }
 
-async function finishProcessExit(pid: number, exitStatus: number): Promise<void> {
+async function finishProcessExit(pid: number, exitStatus: number, crashed = false): Promise<void> {
   if (processTeardowns.has(pid)) return;
 
   const info = processes.get(pid);
@@ -1209,16 +1209,17 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
   threadedProcessPids.delete(pid);
 
   const teardown = (async () => {
-    // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
-    // case the worker died without sending SYS_EXIT_GROUP (uncaught
-    // wasm trap -> onerror, worker-main `{type:"error"}` -> finalize(-1),
-    // externally terminated Worker -> "exit" event). Without this, a
-    // concurrent waitpid in the parent blocks until destroy because
-    // the kernel never marked the child as a zombie. Idempotent via
-    // `hostReaped`: when the kernel already processed a clean
-    // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
-    // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
-    try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
+    // Mark host-observed worker exits before `deactivateProcess` so a
+    // concurrent waitpid in the parent sees a zombie. Clean worker-main
+    // exits are normal process exits; only worker errors/deaths are encoded
+    // as SIGSEGV-style crashes.
+    try {
+      if (crashed) {
+        kernelWorker.notifyHostProcessCrashed(pid);
+      } else {
+        kernelWorker.notifyHostProcessExited(pid, exitStatus);
+      }
+    } catch { /* best-effort */ }
     // Check if this is a "top-level" process or a fork child
     // For now, always deactivate — the main thread tracks exit promises
     kernelWorker.deactivateProcess(pid);

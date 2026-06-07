@@ -183,6 +183,7 @@
       }
     ],
     "optional_kernel_exports": [
+      "kernel_mark_process_exited",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_cwd",
@@ -934,6 +935,11 @@
       "kind": "func",
       "name": "kernel_madvise",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_mark_process_exited",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",

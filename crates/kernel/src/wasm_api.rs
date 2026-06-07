@@ -1639,6 +1639,26 @@ pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
     }
 }
 
+/// Mark a process as normally exited without removing it from the table.
+///
+/// Used by the host when the process Worker returns a normal exit message
+/// without first reaching the centralized SYS_EXIT channel. The process stays
+/// as an Exited zombie until its parent reaps it.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_mark_process_exited(pid: u32, status: i32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let proc = match table.get_mut(pid) {
+        Some(proc) => proc,
+        None => return -(Errno::ESRCH as i32),
+    };
+    if proc.state == crate::process::ProcessState::Exited {
+        return 0;
+    }
+    let mut host = WasmHostIO;
+    syscalls::sys_exit(proc, &mut host, status);
+    0
+}
+
 /// Return the recorded parent pid for a process, or -ESRCH if absent.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
