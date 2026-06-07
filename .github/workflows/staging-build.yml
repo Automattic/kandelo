@@ -1076,6 +1076,7 @@ jobs:
     env:
       KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
       KERNEL_ONLY: ${{ matrix.kernel_only }}
+      KANDELO_CI_TEST_WORKSPACE_PREPARED: ${{ matrix.needs_workspace }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
       SUITE: ${{ matrix.suite }}
     steps:

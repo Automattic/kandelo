@@ -1535,6 +1535,7 @@ jobs:
     env:
       KERNEL_CHANGED: ${{ needs.change-scope.outputs.kernel }}
       KERNEL_ONLY: ${{ matrix.kernel_only }}
+      KANDELO_CI_TEST_WORKSPACE_PREPARED: ${{ matrix.needs_workspace }}
       SUITE: ${{ matrix.suite }}
     steps:
       - name: Decide whether to run suite

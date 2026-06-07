@@ -22,6 +22,14 @@ install_node_deps() {
     )
 }
 
+prepare_browser_assets() {
+    if [ "${KANDELO_CI_TEST_WORKSPACE_PREPARED:-}" = "true" ]; then
+        echo "ci-run-test-suite: using prepared browser workspace"
+        return
+    fi
+    ./run.sh prepare-browser
+}
+
 case "$suite" in
     cargo-kernel)
         HOST_TARGET="$(host_target)"
@@ -38,7 +46,7 @@ case "$suite" in
         ;;
     browser)
         install_node_deps
-        ./run.sh prepare-browser
+        prepare_browser_assets
         (
             cd apps/browser-demos
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
@@ -48,7 +56,7 @@ case "$suite" in
         ;;
     browser-node)
         install_node_deps
-        ./run.sh prepare-browser
+        prepare_browser_assets
         (
             cd apps/browser-demos
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund

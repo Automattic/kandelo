@@ -847,6 +847,7 @@ jobs:
             needs_toolchain: true
             needs_workspace: true
     env:
+      KANDELO_CI_TEST_WORKSPACE_PREPARED: ${{ matrix.needs_workspace }}
       SUITE: ${{ matrix.suite }}
     steps:
       - uses: actions/checkout@v4
