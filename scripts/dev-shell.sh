@@ -71,6 +71,7 @@ nix_develop=(
     --keep GITHUB_WORKSPACE \
     --keep GITHUB_EVENT_NAME \
     --keep GITHUB_EVENT_PATH \
+    --keep KANDELO_CI_TEST_WORKSPACE_PREPARED \
     --keep SYNTH_BASE_SHA \
     --keep SYNTH_HEAD_SHA \
     --keep SYNTHETIC_MERGE_SHA \
