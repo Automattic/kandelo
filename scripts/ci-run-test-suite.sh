@@ -6,7 +6,7 @@ cd "$REPO_ROOT"
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix>" >&2
+    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|browser-node|libc|posix|sortix>" >&2
     exit 2
 fi
 
@@ -44,6 +44,18 @@ case "$suite" in
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             npx playwright install chromium
             npx playwright test --grep-invert "@slow" --project=chromium
+        )
+        ;;
+    browser-node)
+        install_node_deps
+        ./run.sh prepare-browser
+        (
+            cd apps/browser-demos
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            npx playwright install chromium
+            npx playwright test test/kandelo-merge-gate.spec.ts \
+                --grep "Kandelo Node.js demo" \
+                --project=chromium
         )
         ;;
     libc)
