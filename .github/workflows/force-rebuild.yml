@@ -48,6 +48,9 @@ name: Force rebuild
 #                    suites. Defaults to false (tests must pass before
 #                    publish). workflow_dispatch is maintainer-only,
 #                    so this is treated as deliberate.
+#   test_suites    — `all` (default) or a comma-separated subset of
+#                    cargo-kernel,fork-instrument,vitest,browser,browser-node,
+#                    libc,posix,sortix. Use this for focused diagnostics.
 #   bump_packages  — DEPRECATED no-op. Post
 #                    binary-resolution-via-index-ledger there is no
 #                    bot PR to open (the index.toml ledger IS the
@@ -83,6 +86,11 @@ on:
         required: false
         default: false
         type: boolean
+      test_suites:
+        description: 'Comma-separated test suites to run after rebuild, or `all`.'
+        required: false
+        default: 'all'
+        type: string
       bump_packages:
         description: 'After publish, open a bot PR amending each rebuilt package.toml. Disable for diagnostic-only rebuilds.'
         required: false
@@ -104,6 +112,8 @@ jobs:
       contents: read
     outputs:
       build_ref: ${{ steps.resolve.outputs.build_ref }}
+      test_suite_matrix: ${{ steps.resolve.outputs.test_suite_matrix }}
+      test_suites: ${{ steps.resolve.outputs.test_suites }}
     steps:
       - name: Resolve inputs + validate
         id: resolve
@@ -111,6 +121,7 @@ jobs:
           INPUT_PACKAGES: ${{ inputs.packages }}
           INPUT_ARCHES: ${{ inputs.arches }}
           INPUT_REF: ${{ inputs.ref }}
+          INPUT_TEST_SUITES: ${{ inputs.test_suites }}
         run: |
           set -euo pipefail
 
@@ -142,7 +153,65 @@ jobs:
             esac
           done
 
-          echo "force-rebuild gate ok: ref=$BUILD_REF packages=$INPUT_PACKAGES arches=$INPUT_ARCHES skip_tests=${{ inputs.skip_tests }} bump_packages=${{ inputs.bump_packages }}"
+          TEST_SUITES="${INPUT_TEST_SUITES:-all}"
+          if [ "$TEST_SUITES" = "all" ]; then
+            NORMALIZED_TEST_SUITES="all"
+          else
+            NORMALIZED_TEST_SUITES=""
+            IFS=',' read -ra suite_arr <<< "$TEST_SUITES"
+            if [ "${#suite_arr[@]}" -eq 0 ]; then
+              echo "::error::test_suites input is empty; expected all or a comma-separated suite list."
+              exit 1
+            fi
+            for suite in "${suite_arr[@]}"; do
+              suite="${suite#"${suite%%[![:space:]]*}"}"
+              suite="${suite%"${suite##*[![:space:]]}"}"
+              case "$suite" in
+                cargo-kernel|fork-instrument|vitest|browser|browser-node|libc|posix|sortix) ;;
+                *) echo "::error::invalid test suite \"$suite\"."; exit 1 ;;
+              esac
+              if [ -z "$NORMALIZED_TEST_SUITES" ]; then
+                NORMALIZED_TEST_SUITES="$suite"
+              else
+                NORMALIZED_TEST_SUITES="$NORMALIZED_TEST_SUITES,$suite"
+              fi
+            done
+          fi
+          echo "test_suites=$NORMALIZED_TEST_SUITES" >> "$GITHUB_OUTPUT"
+
+          TEST_SUITE_MATRIX="[]"
+          add_test_suite() {
+            local suite="$1"
+            local needs_submodules="$2"
+            local needs_toolchain="$3"
+            local needs_workspace="$4"
+            TEST_SUITE_MATRIX="$(jq -c \
+              --arg suite "$suite" \
+              --argjson needs_submodules "$needs_submodules" \
+              --argjson needs_toolchain "$needs_toolchain" \
+              --argjson needs_workspace "$needs_workspace" \
+              '. + [{
+                suite: $suite,
+                needs_submodules: $needs_submodules,
+                needs_toolchain: $needs_toolchain,
+                needs_workspace: $needs_workspace
+              }]' <<< "$TEST_SUITE_MATRIX")"
+          }
+          suite_requested() {
+            local suite="$1"
+            [ "$NORMALIZED_TEST_SUITES" = "all" ] || [[ ",$NORMALIZED_TEST_SUITES," == *",$suite,"* ]]
+          }
+          suite_requested cargo-kernel && add_test_suite cargo-kernel false false false
+          suite_requested fork-instrument && add_test_suite fork-instrument false false false
+          suite_requested vitest && add_test_suite vitest false true true
+          suite_requested browser && add_test_suite browser false true true
+          suite_requested browser-node && add_test_suite browser-node false true true
+          suite_requested libc && add_test_suite libc true true true
+          suite_requested posix && add_test_suite posix false true true
+          suite_requested sortix && add_test_suite sortix true true true
+          echo "test_suite_matrix=$TEST_SUITE_MATRIX" >> "$GITHUB_OUTPUT"
+
+          echo "force-rebuild gate ok: ref=$BUILD_REF packages=$INPUT_PACKAGES arches=$INPUT_ARCHES skip_tests=${{ inputs.skip_tests }} test_suites=$NORMALIZED_TEST_SUITES bump_packages=${{ inputs.bump_packages }}"
 
   # ---------------------------------------------------------------------
   # Per-package matrix flow.
@@ -813,39 +882,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - suite: cargo-kernel
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
-          - suite: fork-instrument
-            needs_submodules: false
-            needs_toolchain: false
-            needs_workspace: false
-          - suite: vitest
-            needs_submodules: false
-            needs_toolchain: true
-            needs_workspace: true
-          - suite: browser
-            needs_submodules: false
-            needs_toolchain: true
-            needs_workspace: true
-          - suite: browser-node
-            needs_submodules: false
-            needs_toolchain: true
-            needs_workspace: true
-          - suite: libc
-            needs_submodules: true
-            needs_toolchain: true
-            needs_workspace: true
-          - suite: posix
-            needs_submodules: false
-            needs_toolchain: true
-            needs_workspace: true
-          - suite: sortix
-            needs_submodules: true
-            needs_toolchain: true
-            needs_workspace: true
+        include: ${{ fromJSON(needs.gate.outputs.test_suite_matrix) }}
     env:
       KANDELO_CI_TEST_WORKSPACE_PREPARED: ${{ matrix.needs_workspace }}
       SUITE: ${{ matrix.suite }}
