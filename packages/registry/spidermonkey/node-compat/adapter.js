@@ -276,16 +276,6 @@
                 this.port2 = new MessagePort();
             }
         }
-        function clearSharedWorkerData() {
-            if (typeof setSharedObject === 'function') {
-                try { setSharedObject(null); } catch {}
-            }
-        }
-        function joinShellWorkers() {
-            if (typeof joinWorkerThreads === 'function') {
-                try { joinWorkerThreads(); } catch {}
-            }
-        }
         class Worker extends EventEmitter {
             constructor(filenameOrSource, options) {
                 super();
@@ -297,53 +287,46 @@
                     source = loaded;
                 }
 
-                let workerDataExpression = 'undefined';
-                if (Object.prototype.hasOwnProperty.call(options, 'workerData')) {
-                    const data = options.workerData;
-                    if (data instanceof SharedArrayBuffer ||
-                        (typeof WebAssembly === 'object' && WebAssembly.Memory && data instanceof WebAssembly.Memory)) {
-                        if (typeof setSharedObject !== 'function') {
-                            throw new Error('SpiderMonkey shared worker mailbox is unavailable');
-                        }
-                        setSharedObject(data);
-                        workerDataExpression = 'getSharedObject()';
-                    } else {
-                        workerDataExpression = JSON.stringify(data);
+                const workerData = Object.prototype.hasOwnProperty.call(options, 'workerData')
+                    ? options.workerData
+                    : undefined;
+                const parentPort = null;
+                const workerRequire = function(name) {
+                    if (name === 'worker_threads' || name === 'node:worker_threads') {
+                        return { isMainThread: false, parentPort, workerData };
                     }
-                } else if (typeof setSharedObject === 'function') {
-                    setSharedObject(null);
-                }
+                    throw new Error('Cannot find module ' + name);
+                };
+                const module = { exports: {} };
+                const exports = module.exports;
+                let exitCode = 0;
 
-                const prelude = [
-                    'var workerData = ' + workerDataExpression + ';',
-                    'var parentPort = null;',
-                    'var require = function(name) {',
-                    '  if (name === "worker_threads" || name === "node:worker_threads") {',
-                    '    return { isMainThread: false, parentPort: parentPort, workerData: workerData };',
-                    '  }',
-                    '  throw new Error("Cannot find module " + name);',
-                    '};',
-                    'var module = { exports: {} };',
-                    'var exports = module.exports;',
-                ].join('\n');
-
-                if (typeof evalInWorker !== 'function') {
-                    throw new Error('SpiderMonkey evalInWorker is unavailable');
+                try {
+                    // The browser wasm host currently faults when the
+                    // SAB-backed worker_threads shim leaves SpiderMonkey jobs
+                    // or worker state to clean up at process exit. Keep this
+                    // Node-compat Worker shim synchronous and leave no pending
+                    // jobs until that host/thread lifecycle is fixed.
+                    Function('workerData', 'parentPort', 'require', 'module', 'exports', source + '\n')(
+                        workerData,
+                        parentPort,
+                        workerRequire,
+                        module,
+                        exports,
+                    );
+                } catch (error) {
+                    exitCode = 1;
+                    throw error;
                 }
-                evalInWorker(prelude + '\n' + source + '\n');
-                const defer = typeof queueMicrotask === 'function'
-                    ? queueMicrotask
-                    : (fn) => Promise.resolve().then(fn);
-                defer(() => this.emit('online'));
+                this._exitCode = exitCode;
             }
             postMessage() {
                 throw new Error('Worker.postMessage is not implemented in the SpiderMonkey shell adapter');
             }
             terminate() {
-                clearSharedWorkerData();
-                joinShellWorkers();
-                this.emit('exit', 0);
-                return Promise.resolve(0);
+                const exitCode = this._exitCode || 0;
+                this.emit('exit', exitCode);
+                return exitCode;
             }
             ref() { return this; }
             unref() { return this; }
