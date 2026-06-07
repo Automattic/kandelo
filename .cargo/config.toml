@@ -1,5 +1,5 @@
 [build]
-target = "wasm32-unknown-unknown"
+target = "wasm64-unknown-unknown"
 
 # Kernel globals assume single-threaded access; serialize cargo tests.
 [env]
