@@ -132,6 +132,108 @@ NODE
     "$chromium_path" --version || true
 ) 2>&1 | tee "$OUT_DIR/playwright-install.log"
 
+log_section "targeted browser node diagnostics"
+cat > apps/browser-demos/test/browser-node-diagnostics.generated.spec.ts <<'TS'
+import { expect, test, type Page } from "@playwright/test";
+
+async function terminalText(page: Page): Promise<string> {
+  return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
+}
+
+async function waitForTerminalContent(page: Page, expected: RegExp, timeout = 120_000) {
+  await expect.poll(() => terminalText(page), { timeout }).toMatch(expected);
+}
+
+async function runTerminalCommand(page: Page, command: string, expected: RegExp, timeout = 120_000) {
+  await page.locator(".kshell-host").first().click();
+  const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
+  if (await terminalInput.count()) {
+    await terminalInput.focus();
+  }
+  await page.keyboard.insertText(command);
+  await page.waitForTimeout(250);
+  await page.keyboard.press("Enter");
+  await waitForTerminalContent(page, expected, timeout);
+}
+
+function nodeEval(source: string): string {
+  return `node -e ${JSON.stringify(source)}`;
+}
+
+function workerSource(options: { terminate: boolean; exitListener: boolean }): string {
+  return [
+    "const {Worker}=require('worker_threads');",
+    "const sab=new SharedArrayBuffer(8);",
+    "const view=new Int32Array(sab);",
+    "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+    "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
+    "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
+    "console.log('DIAG_WORKER_VALUE', Atomics.load(view,0));",
+    options.exitListener ? "worker.on('exit', code => console.log('DIAG_WORKER_EXIT', code));" : "",
+    options.terminate ? "console.log('DIAG_TERMINATE_BEFORE');" : "",
+    options.terminate ? "const terminateResult=worker.terminate();" : "",
+    options.terminate ? "console.log('DIAG_TERMINATE_AFTER', terminateResult);" : "",
+    "console.log('DIAG_WORKER_DONE');",
+  ].filter(Boolean).join(" ");
+}
+
+test("browser Node worker termination diagnostics", async ({ page }) => {
+  test.setTimeout(600_000);
+  await page.goto("/?demo=node", { waitUntil: "domcontentloaded" });
+  await expect.poll(() => page.evaluate(() => document.body.innerText), { timeout: 180_000 }).toContain("Ready");
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  await waitForTerminalContent(
+    page,
+    /worker\s+42[\s\S]*(10\.9\.2|Segmentation fault)[\s\S]*spidermonkey-node\$ ?/,
+    240_000,
+  );
+
+  await runTerminalCommand(
+    page,
+    `${nodeEval("console.log('DIAG_SIMPLE_BODY')")} && echo DIAG_SIMPLE_SHELL_OK`,
+    /DIAG_SIMPLE_BODY[\s\S]*DIAG_SIMPLE_SHELL_OK/,
+    180_000,
+  );
+
+  await runTerminalCommand(
+    page,
+    `${nodeEval(workerSource({ terminate: false, exitListener: false }))} && echo DIAG_NO_TERMINATE_SHELL_OK`,
+    /DIAG_WORKER_VALUE\s+42[\s\S]*DIAG_WORKER_DONE[\s\S]*DIAG_NO_TERMINATE_SHELL_OK/,
+    180_000,
+  );
+
+  await runTerminalCommand(
+    page,
+    `${nodeEval(workerSource({ terminate: true, exitListener: false }))} && echo DIAG_TERMINATE_SHELL_OK`,
+    /DIAG_TERMINATE_BEFORE[\s\S]*DIAG_TERMINATE_AFTER\s+0[\s\S]*DIAG_WORKER_DONE[\s\S]*DIAG_TERMINATE_SHELL_OK/,
+    180_000,
+  );
+
+  await runTerminalCommand(
+    page,
+    `${nodeEval(workerSource({ terminate: true, exitListener: true }))} && echo DIAG_TERMINATE_LISTENER_SHELL_OK`,
+    /DIAG_WORKER_EXIT\s+0[\s\S]*DIAG_TERMINATE_AFTER\s+0[\s\S]*DIAG_TERMINATE_LISTENER_SHELL_OK/,
+    180_000,
+  );
+
+  console.log(await terminalText(page));
+});
+TS
+trap 'rm -f apps/browser-demos/test/browser-node-diagnostics.generated.spec.ts' EXIT
+
+set +e
+(
+    cd apps/browser-demos
+    KANDELO_PLAYWRIGHT_PORT="${KANDELO_PLAYWRIGHT_PORT:-5581}" \
+        npx playwright test test/browser-node-diagnostics.generated.spec.ts \
+            --project=chromium \
+            --workers=1 \
+            --trace=on \
+            --output "$OUT_DIR/playwright-targeted-output"
+) 2>&1 | tee "$OUT_DIR/playwright-targeted.log"
+targeted_rc="${PIPESTATUS[0]}"
+set -e
+
 log_section "focused shell+node browser repeat"
 set +e
 (
@@ -145,9 +247,13 @@ set +e
             --trace=on \
             --output "$OUT_DIR/playwright-output"
 ) 2>&1 | tee "$OUT_DIR/playwright-repeat.log"
-test_rc="${PIPESTATUS[0]}"
+repeat_rc="${PIPESTATUS[0]}"
 set -e
 
 record_node_assets "after playwright"
 
-exit "$test_rc"
+if [ "$targeted_rc" -ne 0 ]; then
+    exit "$targeted_rc"
+fi
+
+exit "$repeat_rc"

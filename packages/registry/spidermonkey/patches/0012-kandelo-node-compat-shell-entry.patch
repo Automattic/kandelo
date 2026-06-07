@@ -1997,20 +1997,8 @@
 +  }
 +  RootedValue codeValue(cx, StringValue(str));
 +  RootedValue rval(cx);
-+  if (!Call(cx, UndefinedHandleValue, runner, HandleValueArray(codeValue),
-+            &rval)) {
-+    return false;
-+  }
-+  int32_t exitCode = 0;
-+  if (!ToInt32(cx, rval, &exitCode)) {
-+    return false;
-+  }
-+  if (exitCode < 0 || exitCode >= 128) {
-+    JS_ReportErrorASCII(cx, "node eval exit code should be in range 0-127");
-+    return false;
-+  }
-+  GetShellContext(cx)->exitCode = exitCode;
-+  return true;
++  return Call(cx, UndefinedHandleValue, runner, HandleValueArray(codeValue),
++              &rval);
 +}
 +
  #ifndef __wasi__
