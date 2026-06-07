@@ -44,6 +44,7 @@ import {
   createProcessMemory,
   DEFAULT_PROCESS_THREAD_SLOTS,
   FORK_SAVE_BUFFER_SIZE,
+  shouldPreallocateThreadSlotsForProcess,
   type ProcessMemoryLayout,
 } from "./process-memory";
 import type { PlatformIO } from "./types";
@@ -274,6 +275,7 @@ function createFreshProcessMemory(
   pid: number,
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
+  argv?: readonly string[],
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -286,6 +288,7 @@ function createFreshProcessMemory(
     ptrWidth,
     programBytes,
     heapBase,
+    preallocateThreadSlots: shouldPreallocateThreadSlotsForProcess(argv),
   });
   const memory = createProcessMemory(ptrWidth, layout);
   new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
@@ -573,7 +576,7 @@ function handleSpawn(msg: SpawnMessage) {
       memory,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(pid, msg.programBytes, ptrWidth);
+    } = createFreshProcessMemory(pid, msg.programBytes, ptrWidth, msg.argv);
     const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
@@ -789,7 +792,7 @@ async function handleExec(
     memory: newMemory,
     layout: newLayout,
     threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(pid, programBytes, newPtrWidth);
+  } = createFreshProcessMemory(pid, programBytes, newPtrWidth, launchArgv);
   const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
@@ -909,7 +912,7 @@ async function handlePosixSpawn(
     memory,
     layout,
     threadAllocator,
-  } = createFreshProcessMemory(childPid, programBytes, ptrWidth);
+  } = createFreshProcessMemory(childPid, programBytes, ptrWidth, argv);
   const channelOffset = layout.channelOffset;
 
   // The kernel already created the child Process via kernel_spawn_process,
