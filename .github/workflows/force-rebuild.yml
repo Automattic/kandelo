@@ -830,6 +830,10 @@ jobs:
             needs_submodules: false
             needs_toolchain: true
             needs_workspace: true
+          - suite: browser-node
+            needs_submodules: false
+            needs_toolchain: true
+            needs_workspace: true
           - suite: libc
             needs_submodules: true
             needs_toolchain: true

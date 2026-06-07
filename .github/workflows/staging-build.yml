@@ -1053,6 +1053,11 @@ jobs:
             needs_submodules: false
             needs_toolchain: true
             needs_workspace: true
+          - suite: browser-node
+            kernel_only: false
+            needs_submodules: false
+            needs_toolchain: true
+            needs_workspace: true
           - suite: libc
             kernel_only: true
             needs_submodules: true

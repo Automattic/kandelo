@@ -34,11 +34,10 @@ import spiderMonkeyNodeWasmUrl from "@binaries/programs/wasm32/spidermonkey-node
 
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const COI_RELOAD_SESSION_KEY = "kandelo:sm-node-coi-reload-attempted";
-const SPIDERMONKEY_NODE_MEMORY_PAGES = 16384;
-// WebKit is sensitive to large shared Wasm memory maxima. Keep its cap at
-// 256 MiB, while other browsers retain the 1 GiB headroom SpiderMonkey had
-// before PR #630.
-const SPIDERMONKEY_NODE_WEBKIT_MEMORY_PAGES = 4096;
+// WebKit is sensitive to large shared Wasm memory maxima. Match the generic
+// Node profile's 256 MiB cap instead of reserving the 1 GiB BrowserKernel
+// default for every bash/node/worker process in this demo.
+const SPIDERMONKEY_NODE_MEMORY_PAGES = 4096;
 
 const SHELL_ENV = [
   "HOME=/work",
@@ -138,12 +137,6 @@ function spiderMonkeyNodeRuntimeCommand(): string {
 
 function spiderMonkeyNodeSmokeCommand(): string {
   return SM_NODE_DIAGNOSTIC_SMOKE_COMMANDS;
-}
-
-function spiderMonkeyNodeMemoryPages(): number {
-  return isWebKitLikeBrowser()
-    ? SPIDERMONKEY_NODE_WEBKIT_MEMORY_PAGES
-    : SPIDERMONKEY_NODE_MEMORY_PAGES;
 }
 
 function spiderMonkeyNodeGuide(): DemoGuideConfig {
@@ -378,7 +371,7 @@ async function boot(
     kernel = new BrowserKernel({
       memfs,
       maxWorkers: 4,
-      maxMemoryPages: spiderMonkeyNodeMemoryPages(),
+      maxMemoryPages: SPIDERMONKEY_NODE_MEMORY_PAGES,
       onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
       onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
       onProcessEvent: (event) => {
