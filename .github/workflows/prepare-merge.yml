@@ -4,25 +4,30 @@ name: Prepare merge
 # approved PR. Captures the current base branch SHA once, synthesizes a
 # PR-head-into-that-base merge commit, and drives the per-package matrix
 # flow against that exact synthetic merge (preflight + toolchain-cache +
-# matrix-build + test-gate; Phase B-1's pattern, targeting the durable
-# `binaries-abi-v<N>` tag). It then posts `merge-gate=success` on the
+# matrix-build + test-gate; Phase B-1's pattern, targeting the per-PR
+# staging tag until tests pass). It then promotes validated archives to
+# the durable `binaries-abi-v<N>` tag, posts `merge-gate=success` on the
 # original PR head and enables auto-merge. PRs labeled `batched-changes`
 # use rebase auto-merge so their granular commits land on main; all other
 # PRs keep the default squash auto-merge behavior.
 #
 # Flow (see docs/plans/2026-05-05-decoupled-package-builds-design.md
 # §5.5 + docs/plans/2026-04-29-pr-package-builds-design.md §4.2):
-#   * targets the undated `binaries-abi-v<N>` tag (per-archive uploads),
+#   * stages missing archives on the per-PR staging tag,
 #   * preflight runs against the synthetic merge commit and narrows the
 #     matrix to `(package, arch)` pairs whose cache_key_sha differs from
 #     what's already published in the durable release,
 #   * builds each remaining pair in parallel via `xtask archive-stage`,
-#     publishing each archive and index entry atomically, and
+#     publishing each archive and index entry atomically to staging,
 #   * gates the merge on the test-suite resolving from the durable
-#     release state.
+#     release plus local overlays for staged synthetic-merge archives,
+#     and
+#   * promotes those exact staged archives to the durable release only
+#     after the test gate succeeds.
 #
 # `merge-gate=success` is posted on the original PR HEAD SHA after the
-# durable-release test gate passes against the synthetic merge commit.
+# synthetic-merge test gate passes and the durable release has been
+# updated with the validated archives.
 # Branch protection on `main` requires this status.
 #
 # See:
@@ -540,11 +545,9 @@ jobs:
   # Per-package matrix flow.
   #
   # Mirrors `staging-build.yml`'s preflight + toolchain-cache +
-  # matrix-build + test-gate + publish + generate-index, with one
-  # adjustment: target_tag is always `binaries-abi-v<N>` (durable),
-  # never `pr-<NNN>-staging`. The rest of the flow is structurally
-  # identical, including the deterministic-archive guarantees the
-  # matrix relies on.
+  # matrix-build + test-gate, but keeps prepare-merge writes on
+  # `pr-<NNN>-staging` until the test gate succeeds. Only the
+  # post-test `publish-durable` job mutates `binaries-abi-v<N>`.
   #
   # A future cleanup PR can extract this shape into a reusable
   # `workflow_call` workflow shared between staging-build and
@@ -563,8 +566,10 @@ jobs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
       promote_matrix: ${{ steps.compute.outputs.promote_matrix }}
+      publish_matrix: ${{ steps.compute.outputs.publish_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
+      durable_tag: ${{ steps.compute.outputs.durable_tag }}
       staging_tag: ${{ steps.compute.outputs.staging_tag }}
       merge_base_sha: ${{ steps.compute.outputs.merge_base_sha }}
     steps:
@@ -674,23 +679,26 @@ jobs:
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
-            # prepare-merge always targets the durable, undated tag.
-            # Distinct from staging-build, which uses pr-<NNN>-staging
-            # for PR runs. The two flows can run in parallel without
-            # conflict because their target tags differ.
-            TARGET_TAG="binaries-abi-v${ABI}"
+            # prepare-merge stages synthetic-merge artifacts on the
+            # per-PR tag and promotes them to durable only after the
+            # full test gate passes. Preflight still compares against
+            # the durable tag so already-published current entries are
+            # skipped.
+            DURABLE_TAG="binaries-abi-v${ABI}"
+            echo "durable_tag=$DURABLE_TAG" >> "$GITHUB_OUTPUT"
+            TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             STAGING_TAG="pr-${{ github.event.pull_request.number }}-staging"
             echo "staging_tag=$STAGING_TAG" >> "$GITHUB_OUTPUT"
 
-            existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
+            existing_assets=$(gh release view "$DURABLE_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
             echo "existing-assets:"
             echo "$existing_assets" | jq -r ".[0:20][]"
             echo "..."
             existing_index_dir=$(mktemp -d)
             existing_index="$existing_index_dir/index.toml"
-            if gh release download "$TARGET_TAG" --repo "${{ github.repository }}" --pattern index.toml --dir "$existing_index_dir" --clobber >/dev/null 2>&1; then
-              echo "existing-index: downloaded $TARGET_TAG/index.toml"
+            if gh release download "$DURABLE_TAG" --repo "${{ github.repository }}" --pattern index.toml --dir "$existing_index_dir" --clobber >/dev/null 2>&1; then
+              echo "existing-index: downloaded $DURABLE_TAG/index.toml"
             else
               echo "existing-index: none"
               : > "$existing_index"
@@ -712,6 +720,7 @@ jobs:
             library_matrix="[]"
             program_matrix="[]"
             promote_matrix="[]"
+            publish_matrix="[]"
 
             # Temporarily disabled packages — too slow to rebuild in
             # CI while we have no separate prebuilt-package repo to
@@ -759,6 +768,7 @@ jobs:
                 short=${sha:0:8}
                 prefix="${pkg}-"
                 suffix="-abi${ABI}-${arch}-${short}.tar.zst"
+                archive_name="${pkg}-${version}-rev${revision}-abi${ABI}-${arch}-${short}.tar.zst"
                 existing_archive=$(echo "$existing_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
                     "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
                 if [ -n "$existing_archive" ] && scripts/index-has-current-entry.sh "$existing_index" "$pkg" "$arch" "$sha" "$revision"; then
@@ -767,15 +777,18 @@ jobs:
                 fi
                 entry=$(jq -nc --arg pkg "$pkg" --arg arch "$arch" --arg sha "$sha" \
                                 --arg ver "$version" --argjson rev "$revision" \
-                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev}")
+                                --arg archive "$archive_name" \
+                  "{package: \$pkg, arch: \$arch, sha: \$sha, version: \$ver, revision: \$rev, archive_name: \$archive}")
                 staging_archive=$(echo "$staging_assets" | jq -r --arg pre "$prefix" --arg suf "$suffix" \
                     "first(.[] | select(startswith(\$pre) and endswith(\$suf))) // \"\"")
                 if [ -n "$staging_archive" ]; then
                   promote_entry=$(echo "$entry" | jq -c --arg archive "$staging_archive" ". + {archive_name: \$archive}")
                   promote_matrix=$(echo "$promote_matrix" | jq -c --argjson e "$promote_entry" ". + [\$e]")
+                  publish_matrix=$(echo "$publish_matrix" | jq -c --argjson e "$promote_entry" ". + [\$e]")
                   echo "preflight: promote $pkg/$arch (sha $short from $STAGING_TAG)"
                   continue
                 fi
+                publish_matrix=$(echo "$publish_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 if [ "$kind" = "library" ]; then
                   library_matrix=$(echo "$library_matrix" | jq -c --argjson e "$entry" ". + [\$e]")
                 else
@@ -787,10 +800,12 @@ jobs:
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
             echo "promote_matrix=$promote_matrix" >> "$GITHUB_OUTPUT"
-            echo "preflight: promote=$(echo "$promote_matrix" | jq length) library-build=$(echo "$library_matrix" | jq length) program-build=$(echo "$program_matrix" | jq length)"
+            echo "publish_matrix=$publish_matrix" >> "$GITHUB_OUTPUT"
+            echo "preflight: promote=$(echo "$promote_matrix" | jq length) library-build=$(echo "$library_matrix" | jq length) program-build=$(echo "$program_matrix" | jq length) publish=$(echo "$publish_matrix" | jq length)"
             echo "promote_matrix:"; echo "$promote_matrix" | jq .
             echo "library_matrix:"; echo "$library_matrix" | jq .
             echo "program_matrix:"; echo "$program_matrix" | jq .
+            echo "publish_matrix:"; echo "$publish_matrix" | jq .
           '
 
   toolchain-cache:
@@ -909,101 +924,6 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # Fast path for prepare-merge: if staging already built the exact
-  # cache-keyed archive for the merged tree, copy that asset into the
-  # durable release and update binaries-abi-v<N>/index.toml under the
-  # same state-lock used by regular matrix publishes. Fall back to
-  # lib/program matrix builds for entries absent from both durable and
-  # PR staging releases.
-  promote-staging:
-    needs: [synthesize-merge, preflight]
-    if: needs.preflight.outputs.promote_matrix != '[]'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write    # gh release download/upload + state-lock git push
-    strategy:
-      fail-fast: false
-      max-parallel: 10
-      matrix:
-        include: ${{ fromJSON(needs.preflight.outputs.promote_matrix) }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
-          fetch-depth: 1
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
-          path: ${{ runner.temp }}/synthetic-pr-merge
-
-      - name: Checkout synthesized PR merge
-        env:
-          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
-          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
-          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
-        run: |
-          set -euo pipefail
-          eval "$GIT_FETCH_RETRY_FUNC"
-          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
-          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
-            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
-          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
-          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
-            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
-            exit 1
-          fi
-          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
-          parents=$(git show --no-patch --format=%P HEAD)
-          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
-          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
-          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
-            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
-            exit 1
-          fi
-
-      - name: Build xtask
-        run: |
-          HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-          cargo build --release -p xtask --target "$HOST_TARGET"
-
-      - name: Download staged archive
-        id: archive
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/promote"
-          gh release download "${{ needs.preflight.outputs.staging_tag }}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "${{ matrix.archive_name }}" \
-            --dir "$RUNNER_TEMP/promote" \
-            --clobber
-          archive_path="$RUNNER_TEMP/promote/${{ matrix.archive_name }}"
-          if [ ! -f "$archive_path" ]; then
-            echo "::error::staged archive not downloaded: $archive_path"
-            exit 1
-          fi
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=${{ matrix.archive_name }}" >> "$GITHUB_OUTPUT"
-
-      - name: Promote archive + index entry
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          bash scripts/index-update.sh \
-            --target-tag "${{ needs.preflight.outputs.target_tag }}" \
-            --package "${{ matrix.package }}" \
-            --version "${{ matrix.version }}" \
-            --revision "${{ matrix.revision }}" \
-            --arch "${{ matrix.arch }}" \
-            --status success \
-            --archive-path "${{ steps.archive.outputs.archive-path }}" \
-            --archive-name "${{ steps.archive.outputs.archive-name }}" \
-            --cache-key-sha "${{ matrix.sha }}"
-
   # Library wave — kind=library packages. See staging-build.yml for
   # the lib-then-program design rationale.
   lib-matrix-build:
@@ -1014,7 +934,7 @@ jobs:
       actions: read      # gh run download library artifacts
       contents: write    # state-lock git push + gh release create/upload
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.durable_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -1132,11 +1052,9 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      # Atomic per-matrix-entry publish: archive upload + index.toml
-      # mutation under the state-lock acquired for the target tag.
-      # Different release tags use different lock subjects (durable
-      # binaries-abi-v<N> vs pr-<N>-staging), so concurrent rebuilds
-      # to independent tags don't block each other.
+      # Atomic per-matrix-entry publish to the per-PR staging tag.
+      # Durable binaries-abi-v<N> is updated only by publish-durable
+      # after test-gate succeeds.
       #
       # On failure: a separate step records status=failed in the
       # index so consumers see the rebuild attempt; if a prior
@@ -1177,19 +1095,18 @@ jobs:
 
   # Program wave — kind=program packages, gated on the library wave.
   matrix-build:
-    needs: [synthesize-merge, preflight, toolchain-cache, promote-staging, lib-matrix-build]
+    needs: [synthesize-merge, preflight, toolchain-cache, lib-matrix-build]
     if: |
       !cancelled() &&
       needs.preflight.result == 'success' &&
       needs.toolchain-cache.result == 'success' &&
-      (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
       (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
       needs.preflight.outputs.program_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.durable_tag }}/index.toml
     strategy:
       fail-fast: false
       max-parallel: 10
@@ -1357,7 +1274,7 @@ jobs:
             || true
 
   test-gate-prepare:
-    needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
+    needs: [synthesize-merge, change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
@@ -1365,7 +1282,6 @@ jobs:
         (
           needs.change-scope.outputs.package_staging_required == 'true' &&
           needs.preflight.result == 'success' &&
-          (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
           (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
           (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
         ) ||
@@ -1384,7 +1300,8 @@ jobs:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
       PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
-      PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+      PACKAGE_DURABLE_TAG: ${{ needs.preflight.outputs.durable_tag }}
+      PACKAGE_STAGING_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1476,6 +1393,32 @@ jobs:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
+      - name: Download reusable staged archives
+        if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && needs.preflight.outputs.promote_matrix != '[]' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PROMOTE_MATRIX: ${{ needs.preflight.outputs.promote_matrix }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/staged-archives"
+          echo "$PROMOTE_MATRIX" | jq -c '.[]' | while read -r entry; do
+            pkg=$(echo "$entry" | jq -r '.package')
+            arch=$(echo "$entry" | jq -r '.arch')
+            archive=$(echo "$entry" | jq -r '.archive_name')
+            out_dir="$RUNNER_TEMP/staged-archives/${pkg}-${arch}"
+            mkdir -p "$out_dir"
+            gh release download "$PACKAGE_STAGING_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$archive" \
+              --dir "$out_dir" \
+              --clobber
+            if [ ! -f "$out_dir/$archive" ]; then
+              echo "::error::staged archive not downloaded: $archive"
+              exit 1
+            fi
+          done
+
       - name: Install host npm deps (resolver prereq)
         # Must run before Materialize binaries (see staging-build.yml).
         run: |
@@ -1504,14 +1447,14 @@ jobs:
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
         # Package-staging runs resolve against the durable release plus
-        # local file:// overlays for newly built/promoted archives.
+        # local file:// overlays for newly built/reused PR archives.
         # Non-archive validation runs skip overlays and resolve every
         # package from the existing durable ABI release; the fresh kernel
         # built below shadows kernel.wasm via local-binaries/.
         run: |
           set -euo pipefail
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
-            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
+            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_DURABLE_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
           else
@@ -1729,6 +1672,103 @@ jobs:
             echo "::error::split test suites completed with result: $TEST_SUITE_RESULT"
             exit 1
           fi
+
+  # ---------------------------------------------------------------------
+  # publish-durable — after the synthetic merge has passed the full
+  # test gate, copy the exact staged archives into binaries-abi-v<N>.
+  #
+  # This is intentionally after test-gate. A failing prepare run must
+  # not mutate the durable release consumed by main and unrelated PRs.
+  # ---------------------------------------------------------------------
+  publish-durable:
+    needs: [synthesize-merge, change-scope, preflight, test-gate]
+    if: |
+      !cancelled() &&
+      needs.change-scope.outputs.package_staging_required == 'true' &&
+      needs.preflight.result == 'success' &&
+      needs.test-gate.result == 'success' &&
+      needs.preflight.outputs.publish_matrix != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write    # gh release download/upload + state-lock git push
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.preflight.outputs.publish_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
+          path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Checkout synthesized PR merge
+        env:
+          BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          SYNTHETIC_MERGE_SHA: ${{ needs.synthesize-merge.outputs.merge_sha }}
+        run: |
+          set -euo pipefail
+          eval "$GIT_FETCH_RETRY_FUNC"
+          git_fetch_retry --quiet --depth=1 origin "$PR_HEAD_SHA"
+          git fetch --quiet "$RUNNER_TEMP/synthetic-pr-merge/synthesized-merge.bundle" \
+            "refs/heads/synthesized-merge:refs/remotes/origin/synthesized-merge"
+          actual=$(git rev-parse refs/remotes/origin/synthesized-merge)
+          if [ "$actual" != "$SYNTHETIC_MERGE_SHA" ]; then
+            echo "::error::Synthetic merge bundle resolved to $actual, expected $SYNTHETIC_MERGE_SHA"
+            exit 1
+          fi
+          git checkout --quiet --detach "$SYNTHETIC_MERGE_SHA"
+          parents=$(git show --no-patch --format=%P HEAD)
+          actual_base=$(printf '%s\n' "$parents" | awk '{print $1}')
+          actual_head=$(printf '%s\n' "$parents" | awk '{print $2}')
+          if [ "$actual_base" != "$BASE_SHA" ] || [ "$actual_head" != "$PR_HEAD_SHA" ]; then
+            echo "::error::Synthetic merge parent mismatch: parents=$parents base=$BASE_SHA head=$PR_HEAD_SHA"
+            exit 1
+          fi
+
+      - name: Download staged archive
+        id: archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/promote"
+          gh release download "${{ needs.preflight.outputs.target_tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "${{ matrix.archive_name }}" \
+            --dir "$RUNNER_TEMP/promote" \
+            --clobber
+          archive_path="$RUNNER_TEMP/promote/${{ matrix.archive_name }}"
+          if [ ! -f "$archive_path" ]; then
+            echo "::error::staged archive not downloaded: $archive_path"
+            exit 1
+          fi
+          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "archive-name=${{ matrix.archive_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote archive + index entry to durable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          bash scripts/index-update.sh \
+            --target-tag "${{ needs.preflight.outputs.durable_tag }}" \
+            --package "${{ matrix.package }}" \
+            --version "${{ matrix.version }}" \
+            --revision "${{ matrix.revision }}" \
+            --arch "${{ matrix.arch }}" \
+            --status success \
+            --archive-path "${{ steps.archive.outputs.archive-path }}" \
+            --archive-name "${{ steps.archive.outputs.archive-name }}" \
+            --cache-key-sha "${{ matrix.sha }}"
 
   # publish / generate-index / amend-package-toml — REMOVED.
   #
@@ -1975,24 +2015,24 @@ jobs:
   # merge-gate-post — single merge-gate poster + auto-merge enabler.
   #
   # Post binary-resolution-via-index-ledger: there's no bot PR (no
-  # in-tree URLs to amend), and per-matrix-entry atomic
-  # archive+index publish happens inline. This job posts
-  # merge-gate=success on the ORIGINAL PR's HEAD SHA and enables
-  # auto-merge there.
+  # in-tree URLs to amend). The post-test publish-durable job has
+  # already copied any missing staged archives into the durable
+  # release. This job posts merge-gate=success on the ORIGINAL PR's
+  # HEAD SHA and enables auto-merge there.
   #
-  # Fires when test-gate succeeds against the durable release state.
-  # Prepare may have built missing archives, promoted exact archives
-  # from pr-<N>-staging, or found every cache_key_sha already on the
-  # durable tag; in all cases test-gate validates the synthetic PR merge
-  # against what consumers will fetch from binaries-abi-v<N>.
+  # Fires when test-gate succeeds against the synthetic merge using the
+  # durable release plus staged archive overlays, and publish-durable
+  # has either promoted missing entries or skipped because every
+  # cache_key_sha was already on the durable tag.
   # ---------------------------------------------------------------------
   merge-gate-post:
-    needs: [gate, change-scope, preflight, test-gate]
+    needs: [gate, change-scope, preflight, test-gate, publish-durable]
     if: |
       !cancelled() &&
       needs.change-scope.outputs.package_staging_required == 'true' &&
       needs.preflight.result == 'success' &&
-      needs.test-gate.result == 'success'
+      needs.test-gate.result == 'success' &&
+      (needs.publish-durable.result == 'success' || needs.publish-durable.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write          # gh pr merge --auto (enablePullRequestAutoMerge)
@@ -2028,7 +2068,7 @@ jobs:
 
       - name: Post merge-gate=success on original PR HEAD
         run: |
-          DESC="test-gate passed on the synthetic PR merge against durable archives on ${{ needs.preflight.outputs.target_tag }}."
+          DESC="test-gate passed; validated archives promoted to ${{ needs.preflight.outputs.durable_tag }}."
           gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
@@ -2076,9 +2116,9 @@ jobs:
         continue-on-error: true
         run: |
           if [ "${{ steps.automerge.outputs.manual_merge_required }}" = "true" ]; then
-            BODY="prepare-merge: test-gate passed against the synthetic PR merge and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
+            BODY="prepare-merge: test-gate passed against the synthetic PR merge and validated archives were promoted to [\`${{ needs.preflight.outputs.durable_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.durable_tag }}). Missing entries were built or reused from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD. Manual merge is required because GitHub Actions could not enable ${PREPARE_MERGE_METHOD} auto-merge for this workflow-changing PR."
           else
-            BODY="prepare-merge: test-gate passed against the synthetic PR merge and [\`${{ needs.preflight.outputs.target_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.target_tag }}). Missing entries were built or promoted from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
+            BODY="prepare-merge: test-gate passed against the synthetic PR merge and validated archives were promoted to [\`${{ needs.preflight.outputs.durable_tag }}\`](https://github.com/${{ github.repository }}/releases/tag/${{ needs.preflight.outputs.durable_tag }}). Missing entries were built or reused from PR staging only when their merged-tree cache key matched; \`merge-gate=success\` posted on PR HEAD and ${PREPARE_MERGE_METHOD} auto-merge enabled."
           fi
           set +e
           for attempt in 1 2 3; do
