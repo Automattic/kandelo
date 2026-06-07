@@ -200,21 +200,6 @@ function validateThreadSlotCount(threadSlotCount: number, label: string): number
   return threadSlotCount;
 }
 
-function pathBasename(path: string): string {
-  const idx = path.lastIndexOf("/");
-  return idx >= 0 ? path.slice(idx + 1) : path;
-}
-
-export function shouldPreallocateThreadSlotsForProcess(
-  argv: readonly string[] | undefined,
-): boolean {
-  const name = pathBasename(argv?.[0] ?? "");
-  // SpiderMonkey Node is a large pthread-capable runtime with its own memory
-  // management. Keep its pre-PR low control slab placement until the runtime
-  // is proven safe with a lower brk/mmap base.
-  return name === "node" || name === "spidermonkey-node" || name === "spidermonkey-node.wasm";
-}
-
 export function resolveProcessThreadSlotCount(
   programBytes: ArrayBuffer | undefined,
   hostDefaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS,

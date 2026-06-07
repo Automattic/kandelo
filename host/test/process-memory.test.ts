@@ -7,7 +7,6 @@ import {
   PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT,
   computeProcessMemoryLayout,
   createProcessMemory,
-  shouldPreallocateThreadSlotsForProcess,
 } from "../src/process-memory";
 import { WASM_PAGE_SIZE, DEFAULT_MAX_PAGES, CH_TOTAL_SIZE, PAGES_PER_THREAD } from "../src/constants";
 
@@ -164,11 +163,4 @@ describe("process memory layout", () => {
     }
   });
 
-  it("keeps SpiderMonkey Node on the preallocated thread-slot layout", () => {
-    expect(shouldPreallocateThreadSlotsForProcess(["node"])).toBe(true);
-    expect(shouldPreallocateThreadSlotsForProcess(["/usr/bin/spidermonkey-node"])).toBe(true);
-    expect(shouldPreallocateThreadSlotsForProcess(["spidermonkey-node.wasm"])).toBe(true);
-    expect(shouldPreallocateThreadSlotsForProcess(["bash"])).toBe(false);
-    expect(shouldPreallocateThreadSlotsForProcess(undefined)).toBe(false);
-  });
 });
