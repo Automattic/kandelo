@@ -51,6 +51,11 @@ name: Force rebuild
 #   test_suites    — `all` (default) or a comma-separated subset of
 #                    cargo-kernel,fork-instrument,vitest,browser,browser-node,
 #                    libc,posix,sortix. Use this for focused diagnostics.
+#   test_workspace_run_id
+#                  — optional workflow run id containing a prepared
+#                    `test-workspace` artifact. When set, force-rebuild skips
+#                    package rebuilds and runs the selected browser suites
+#                    against that artifact.
 #   bump_packages  — DEPRECATED no-op. Post
 #                    binary-resolution-via-index-ledger there is no
 #                    bot PR to open (the index.toml ledger IS the
@@ -91,6 +96,11 @@ on:
         required: false
         default: 'all'
         type: string
+      test_workspace_run_id:
+        description: 'Diagnostic-only: run selected browser suites against a test-workspace artifact from this run id, skipping rebuild/prep.'
+        required: false
+        default: ''
+        type: string
       bump_packages:
         description: 'After publish, open a bot PR amending each rebuilt package.toml. Disable for diagnostic-only rebuilds.'
         required: false
@@ -114,6 +124,7 @@ jobs:
       build_ref: ${{ steps.resolve.outputs.build_ref }}
       test_suite_matrix: ${{ steps.resolve.outputs.test_suite_matrix }}
       test_suites: ${{ steps.resolve.outputs.test_suites }}
+      test_workspace_run_id: ${{ steps.resolve.outputs.test_workspace_run_id }}
     steps:
       - name: Resolve inputs + validate
         id: resolve
@@ -122,6 +133,7 @@ jobs:
           INPUT_ARCHES: ${{ inputs.arches }}
           INPUT_REF: ${{ inputs.ref }}
           INPUT_TEST_SUITES: ${{ inputs.test_suites }}
+          INPUT_TEST_WORKSPACE_RUN_ID: ${{ inputs.test_workspace_run_id }}
         run: |
           set -euo pipefail
 
@@ -154,6 +166,18 @@ jobs:
           done
 
           TEST_SUITES="${INPUT_TEST_SUITES:-all}"
+          TEST_WORKSPACE_RUN_ID="${INPUT_TEST_WORKSPACE_RUN_ID:-}"
+          if [ -n "$TEST_WORKSPACE_RUN_ID" ]; then
+            case "$TEST_WORKSPACE_RUN_ID" in
+              *[!0-9]*) echo "::error::test_workspace_run_id must be a numeric GitHub Actions run id."; exit 1 ;;
+            esac
+            if [ "$TEST_SUITES" = "all" ]; then
+              echo "::error::test_workspace_run_id requires an explicit browser test_suites value."
+              exit 1
+            fi
+          fi
+          echo "test_workspace_run_id=$TEST_WORKSPACE_RUN_ID" >> "$GITHUB_OUTPUT"
+
           if [ "$TEST_SUITES" = "all" ]; then
             NORMALIZED_TEST_SUITES="all"
           else
@@ -170,6 +194,12 @@ jobs:
                 cargo-kernel|fork-instrument|vitest|browser|browser-node|libc|posix|sortix) ;;
                 *) echo "::error::invalid test suite \"$suite\"."; exit 1 ;;
               esac
+              if [ -n "$TEST_WORKSPACE_RUN_ID" ]; then
+                case "$suite" in
+                  browser|browser-node) ;;
+                  *) echo "::error::test_workspace_run_id only supports browser and browser-node suites."; exit 1 ;;
+                esac
+              fi
               if [ -z "$NORMALIZED_TEST_SUITES" ]; then
                 NORMALIZED_TEST_SUITES="$suite"
               else
@@ -211,7 +241,7 @@ jobs:
           suite_requested sortix && add_test_suite sortix true true true
           echo "test_suite_matrix=$TEST_SUITE_MATRIX" >> "$GITHUB_OUTPUT"
 
-          echo "force-rebuild gate ok: ref=$BUILD_REF packages=$INPUT_PACKAGES arches=$INPUT_ARCHES skip_tests=${{ inputs.skip_tests }} test_suites=$NORMALIZED_TEST_SUITES bump_packages=${{ inputs.bump_packages }}"
+          echo "force-rebuild gate ok: ref=$BUILD_REF packages=$INPUT_PACKAGES arches=$INPUT_ARCHES skip_tests=${{ inputs.skip_tests }} test_suites=$NORMALIZED_TEST_SUITES test_workspace_run_id=${TEST_WORKSPACE_RUN_ID:-<none>} bump_packages=${{ inputs.bump_packages }}"
 
   # ---------------------------------------------------------------------
   # Per-package matrix flow.
@@ -232,6 +262,7 @@ jobs:
 
   preflight:
     needs: [gate]
+    if: inputs.test_workspace_run_id == ''
     runs-on: ubuntu-latest
     permissions:
       contents: read           # gh release view (target tag probe)
@@ -422,6 +453,7 @@ jobs:
 
   toolchain-cache:
     needs: [gate]
+    if: inputs.test_workspace_run_id == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -503,7 +535,7 @@ jobs:
   # Library wave — kind=library packages. See staging-build.yml.
   lib-matrix-build:
     needs: [gate, preflight, toolchain-cache]
-    if: needs.preflight.outputs.library_matrix != '[]'
+    if: inputs.test_workspace_run_id == '' && needs.preflight.outputs.library_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
@@ -627,7 +659,7 @@ jobs:
   # Program wave — kind=program packages, gated on the library wave.
   matrix-build:
     needs: [gate, preflight, toolchain-cache, lib-matrix-build]
-    if: ${{ !cancelled() && needs.preflight.outputs.program_matrix != '[]' }}
+    if: ${{ !cancelled() && inputs.test_workspace_run_id == '' && needs.preflight.outputs.program_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write    # state-lock git push + gh release create/upload
@@ -770,6 +802,7 @@ jobs:
     # did succeed.
     if: |
       !cancelled() &&
+      inputs.test_workspace_run_id == '' &&
       (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') &&
       inputs.skip_tests != true
     runs-on: ubuntu-latest
@@ -874,6 +907,7 @@ jobs:
     needs: [gate, test-gate-prepare]
     if: |
       !cancelled() &&
+      inputs.test_workspace_run_id == '' &&
       needs.test-gate-prepare.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -936,11 +970,61 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
+  artifact-test-suite:
+    name: artifact test-suite (${{ matrix.suite }})
+    needs: [gate]
+    if: |
+      !cancelled() &&
+      inputs.test_workspace_run_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.gate.outputs.test_suite_matrix) }}
+    env:
+      KANDELO_CI_TEST_WORKSPACE_PREPARED: "true"
+      SUITE: ${{ matrix.suite }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.build_ref }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v18
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Download prepared test workspace
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.gate.outputs.test_workspace_run_id }}
+          name: test-workspace
+          path: ${{ runner.temp }}/test-workspace
+
+      - name: Extract prepared test workspace
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/test-workspace/test-workspace.tar.zst"
+
+      - name: Run ${{ matrix.suite }} suite
+        run: |
+          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+
   test-gate:
     needs: [test-gate-prepare, test-suite]
     if: |
       always() &&
       !cancelled() &&
+      inputs.test_workspace_run_id == '' &&
       needs.test-gate-prepare.result != 'skipped'
     runs-on: ubuntu-latest
     steps:
