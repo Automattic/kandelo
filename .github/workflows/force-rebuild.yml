@@ -278,6 +278,11 @@ jobs:
               if ! grep -q "^\[build\]" "$pkg_dir/package.toml"; then
                 continue
               fi
+              if [ "$FORCE_ALL" != "1" ]; then
+                if [ -z "$FORCE_LIST" ] || ! echo "$FORCE_LIST" | grep -q ",${pkg},"; then
+                  continue
+                fi
+              fi
 
               kind=$(sed -nE "s/^kind *= *\"([^\"]+)\".*/\\1/p" "$pkg_dir/package.toml" | head -1)
               case "$kind" in
