@@ -4500,23 +4500,6 @@ function _runCommonJsMain(filename) {
     process.exit(process.exitCode || 0);
 }
 
-const _nodeEvalCleanupHooks = {
-    drainJobQueue: typeof drainJobQueue === 'function' ? drainJobQueue : null,
-    clearKeptObjects: typeof clearKeptObjects === 'function' ? clearKeptObjects : null,
-    gc: typeof gc === 'function' ? gc : null,
-};
-
-function _cleanupAfterNodeEval() {
-    if (_nodeEvalCleanupHooks.drainJobQueue) _nodeEvalCleanupHooks.drainJobQueue();
-    if (_nodeEvalCleanupHooks.clearKeptObjects) {
-        try { _nodeEvalCleanupHooks.clearKeptObjects(); } catch {}
-    }
-    if (_nodeEvalCleanupHooks.gc) {
-        try { _nodeEvalCleanupHooks.gc(); } catch {}
-    }
-    if (_nodeEvalCleanupHooks.drainJobQueue) _nodeEvalCleanupHooks.drainJobQueue();
-}
-
 function _runNodeEval(code) {
     const filename = '[eval]';
     const dirname = process.cwd();
@@ -4537,14 +4520,21 @@ function _runNodeEval(code) {
             '\n})',
         filename,
     );
+    let failure = null;
     try {
         wrappedFn.call(globalThis, mod.exports, evalRequire, mod, filename, '.');
         mod.loaded = true;
-    } finally {
-        wrappedFn = null;
-        _cleanupAfterNodeEval();
+    } catch (error) {
+        if (process._exiting) throw error;
+        failure = error;
     }
-    return mod.exports;
+    wrappedFn = null;
+    if (typeof drainJobQueue === 'function') drainJobQueue();
+    if (failure) {
+        console.error(_formatThrownFailure(failure));
+        process.exitCode = process.exitCode || 1;
+    }
+    process.exit(process.exitCode || 0);
 }
 
 globalThis.__kandeloRunNodeEval = _runNodeEval;
