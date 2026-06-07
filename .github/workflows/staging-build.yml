@@ -1038,6 +1038,10 @@ jobs:
                 local-binaries/kernel.wasm
               PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
               cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+              cd ..
+              mkdir -p host/wasm examples
+              : > host/wasm/rootfs.vfs
+              : > examples/gencat.wasm
             '
           else
             bash scripts/dev-shell.sh bash -c '
