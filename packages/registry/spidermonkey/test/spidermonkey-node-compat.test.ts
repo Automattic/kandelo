@@ -336,6 +336,10 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     );
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("loads the SpiderMonkey Node module for CI control coverage", () => {
+    expect(nodeModule).toBeInstanceOf(WebAssembly.Module);
+  });
+
   it("evaluates Node-style -e scripts with process and console globals", async () => {
     const result = await runNode(
       "console.log('hello', process.arch, process.platform, process.version)",
