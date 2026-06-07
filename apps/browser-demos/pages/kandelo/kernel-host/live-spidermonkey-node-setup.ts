@@ -1,6 +1,5 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
-import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
 import {
   COREUTILS_NAMES,
 } from "../../../lib/init/shell-binaries";
@@ -356,7 +355,6 @@ async function boot(
     const memfs = MemoryFileSystem.fromImage(new Uint8Array(vfsBytes), {
       maxByteLength: 256 * 1024 * 1024,
     });
-    rewriteShellLazyFileUrls(memfs);
     rewriteNodeLazyFileUrl(memfs);
     stageRuntime(memfs, bashBytes, dashBytes, coreutilsBytes, nodeBytes);
     assertCurrent();

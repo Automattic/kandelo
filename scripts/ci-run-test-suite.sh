@@ -48,7 +48,6 @@ case "$suite" in
         ;;
     browser-node)
         install_node_deps
-        ./run.sh prepare-browser
         (
             cd apps/browser-demos
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
