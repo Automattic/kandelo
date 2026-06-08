@@ -6,6 +6,13 @@ cd "$REPO_ROOT"
 
 OUT_DIR="${1:-${RUNNER_TEMP:-$REPO_ROOT}/browser-node-diagnostics}"
 REPEAT="${2:-5}"
+prepared_workspace=0
+if [ "${3:-}" = "--prepared-workspace" ]; then
+    prepared_workspace=1
+elif [ -n "${3:-}" ]; then
+    echo "unknown browser Node diagnostics option: $3" >&2
+    exit 2
+fi
 mkdir -p "$OUT_DIR"
 
 log_section() {
@@ -111,8 +118,13 @@ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund 2>&1 | tee "$OUT_
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
 ) 2>&1 | tee "$OUT_DIR/npm-host.log"
 
-log_section "prepare-browser"
-./run.sh prepare-browser 2>&1 | tee "$OUT_DIR/prepare-browser.log"
+if [ "$prepared_workspace" = "1" ]; then
+    log_section "verify prepared browser workspace"
+    bash scripts/ci-verify-browser-workspace.sh 2>&1 | tee "$OUT_DIR/prepare-browser.log"
+else
+    log_section "prepare-browser"
+    ./run.sh prepare-browser 2>&1 | tee "$OUT_DIR/prepare-browser.log"
+fi
 record_node_assets "after prepare-browser"
 
 log_section "install browser demo deps and chromium"

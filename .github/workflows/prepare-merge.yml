@@ -1811,16 +1811,11 @@ jobs:
       - name: Run ${{ matrix.suite }} suite
         if: steps.suite.outputs.skip != 'true'
         run: |
+          suite_args=("$SUITE")
           if [ "$SUITE" = "browser" ]; then
-            skip_pkgs=""
-            for pkg_dir in packages/registry/*; do
-              [ -d "$pkg_dir" ] || continue
-              [ -f "$pkg_dir/package.toml" ] || continue
-              skip_pkgs="$skip_pkgs $(basename "$pkg_dir")"
-            done
-            export WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $skip_pkgs"
+            suite_args+=("--prepared-workspace")
           fi
-          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
+          bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "${suite_args[@]}"
 
   browser-node-diagnostics:
     name: browser-node-diagnostics
@@ -1919,14 +1914,7 @@ jobs:
 
       - name: Run focused browser Node diagnostics
         run: |
-          skip_pkgs=""
-          for pkg_dir in packages/registry/*; do
-            [ -d "$pkg_dir" ] || continue
-            [ -f "$pkg_dir/package.toml" ] || continue
-            skip_pkgs="$skip_pkgs $(basename "$pkg_dir")"
-          done
-          export WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $skip_pkgs"
-          bash scripts/dev-shell.sh bash scripts/ci-browser-node-diagnostics.sh "$RUNNER_TEMP/browser-node-diagnostics" 5
+          bash scripts/dev-shell.sh bash scripts/ci-browser-node-diagnostics.sh "$RUNNER_TEMP/browser-node-diagnostics" 5 --prepared-workspace
 
       - name: Upload browser Node diagnostics
         if: always()

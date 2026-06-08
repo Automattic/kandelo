@@ -6,7 +6,14 @@ cd "$REPO_ROOT"
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix>" >&2
+    echo "usage: $0 <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix> [--prepared-workspace]" >&2
+    exit 2
+fi
+prepared_workspace=0
+if [ "${2:-}" = "--prepared-workspace" ]; then
+    prepared_workspace=1
+elif [ -n "${2:-}" ]; then
+    echo "unknown CI test-suite option: $2" >&2
     exit 2
 fi
 
@@ -38,7 +45,11 @@ case "$suite" in
         ;;
     browser)
         install_node_deps
-        ./run.sh prepare-browser
+        if [ "$prepared_workspace" = "1" ]; then
+            bash scripts/ci-verify-browser-workspace.sh
+        else
+            ./run.sh prepare-browser
+        fi
         (
             cd apps/browser-demos
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
