@@ -7,6 +7,7 @@ test.skip(
 
 const DEFAULT_MEMORY_PAGES = [4096, 8192, 16384];
 const DIAGNOSTIC_STYLE = process.env.KANDELO_SM_NODE_DIAG_STYLE ?? "fresh";
+const REPEAT_COUNT = selectedRepeatCount();
 
 type DiagCase = {
   name: string;
@@ -31,6 +32,13 @@ function selectedCaseNames(): Set<string> | null {
     .map((value) => value.trim())
     .filter(Boolean);
   return names.length > 0 ? new Set(names) : null;
+}
+
+function selectedRepeatCount(): number {
+  const raw = process.env.KANDELO_SM_NODE_DIAG_REPEAT;
+  if (!raw) return 1;
+  const repeat = Number(raw);
+  return Number.isInteger(repeat) && repeat > 0 ? repeat : 1;
 }
 
 async function terminalText(page: Page): Promise<string> {
@@ -102,6 +110,10 @@ function nodeEval(source: string): string {
   return `node -e ${JSON.stringify(source)}`;
 }
 
+function jsShellEval(source: string): string {
+  return `ln -sf /usr/bin/node /usr/bin/js && js --shared-memory=on -e ${JSON.stringify(source)}`;
+}
+
 function statusPattern(name: string): RegExp {
   return new RegExp(`DIAG_STATUS_${name}:\\d+[\\s\\S]*spidermonkey-node\\$ ?`);
 }
@@ -119,6 +131,9 @@ async function runStatusCase(page: Page, diagCase: DiagCase): Promise<number> {
   if (!lastMatch) {
     throw new Error(`missing DIAG_STATUS_${diagCase.name}`);
   }
+  console.log(
+    `DIAG_TERMINAL ${diagCase.name} ${JSON.stringify(text.slice(-900))}`,
+  );
   return Number(lastMatch[1]);
 }
 
@@ -175,6 +190,22 @@ const ALL_CASES: DiagCase[] = [
     command: nodeEval("const sab=new SharedArrayBuffer(8); const view=new Int32Array(sab); Atomics.store(view,1,1); Atomics.notify(view,1); console.log('DIAG_SAB_NOTIFY');"),
   },
   {
+    name: "JS_SIMPLE",
+    command: jsShellEval("print('DIAG_JS_SIMPLE_BODY')"),
+  },
+  {
+    name: "JS_SAB_ONLY",
+    command: jsShellEval("var sab=new SharedArrayBuffer(8); print('DIAG_JS_SAB_ONLY '+sab.byteLength);"),
+  },
+  {
+    name: "JS_SAB_STORE",
+    command: jsShellEval("var sab=new SharedArrayBuffer(8); var view=new Int32Array(sab); Atomics.store(view,0,42); print('DIAG_JS_SAB_STORE '+Atomics.load(view,0));"),
+  },
+  {
+    name: "JS_SAB_NOTIFY",
+    command: jsShellEval("var sab=new SharedArrayBuffer(8); var view=new Int32Array(sab); Atomics.store(view,1,1); Atomics.notify(view,1); print('DIAG_JS_SAB_NOTIFY');"),
+  },
+  {
     name: "WORKER_NO_TERMINATE",
     command: nodeEval(workerSource({ terminate: false, exitListener: false })),
   },
@@ -214,15 +245,18 @@ function attachDiagnosticLogging(page: Page, memoryPages: number, label: string)
 
 if (DIAGNOSTIC_STYLE === "fresh" || DIAGNOSTIC_STYLE === "both") {
   for (const memoryPages of selectedMemoryPages()) {
-    for (const diagCase of diagCases) {
-      test(`SpiderMonkey Node ${diagCase.name} with ${memoryPages} memory pages`, async ({ page }) => {
-        test.setTimeout(360_000);
-        attachDiagnosticLogging(page, memoryPages, diagCase.name);
+    for (let repeatIndex = 1; repeatIndex <= REPEAT_COUNT; repeatIndex++) {
+      for (const diagCase of diagCases) {
+        const label = REPEAT_COUNT === 1 ? diagCase.name : `${diagCase.name}#${repeatIndex}`;
+        test(`SpiderMonkey Node ${label} with ${memoryPages} memory pages`, async ({ page }) => {
+          test.setTimeout(360_000);
+          attachDiagnosticLogging(page, memoryPages, label);
 
-        await gotoReadyDiagnosticPage(page, memoryPages);
-        const status = await runStatusCase(page, diagCase);
-        console.log(`DIAG_RESULT ${memoryPages} ${diagCase.name} ${status}`);
-      });
+          await gotoReadyDiagnosticPage(page, memoryPages);
+          const status = await runStatusCase(page, { ...diagCase, name: label });
+          console.log(`DIAG_RESULT ${memoryPages} ${label} ${status}`);
+        });
+      }
     }
   }
 }
