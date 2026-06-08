@@ -10276,3 +10276,36 @@ pub extern "C" fn kernel_drain_wakeup_events(
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wakeup::drain(out, max_events)
 }
+
+// ---------------------------------------------------------------------------
+// DRI / KMS
+// ---------------------------------------------------------------------------
+
+/// Tick the global vblank sequence counter and return the new value.
+///
+/// The host runs this on a 16.67 ms RAF / setInterval pump in the
+/// kernel worker; user programs that posted `DRM_IOCTL_WAIT_VBLANK`
+/// observe the new sequence on the next syscall round-trip.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_vblank() -> u32 {
+    crate::dri::vblank_tick()
+}
+
+/// Number of successful page-flip commits on the given crtc.
+///
+/// Useful for the host-side stats UI ("how many frames has the
+/// compositor produced since boot"). Today only `crtc_id == 1` is
+/// tracked; any other value returns 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kms_commit_count(crtc_id: u32) -> u64 {
+    crate::dri::kms_commit_count(crtc_id)
+}
+
+/// Microseconds between the two most recent successful page-flip
+/// commits on the given crtc. Returns 0 if fewer than two flips have
+/// landed. Lets the host expose a real wasm-side frame rate without
+/// having to sample its own clock.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kms_last_frame_us(crtc_id: u32) -> u64 {
+    crate::dri::kms_last_frame_us(crtc_id)
+}

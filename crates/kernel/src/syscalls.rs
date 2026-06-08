@@ -65,6 +65,8 @@ pub enum VirtualDevice {
     Fb0,     // /dev/fb0          host_handle = -5
     Mice,    // /dev/input/mice   host_handle = -6
     Dsp,     // /dev/dsp          host_handle = -7
+    DriRenderD128, // /dev/dri/renderD128  host_handle = -8
+    DriCard0,      // /dev/dri/card0       host_handle = -9
 }
 
 impl VirtualDevice {
@@ -78,6 +80,8 @@ impl VirtualDevice {
             VirtualDevice::Fb0 => -5,
             VirtualDevice::Mice => -6,
             VirtualDevice::Dsp => -7,
+            VirtualDevice::DriRenderD128 => -8,
+            VirtualDevice::DriCard0 => -9,
         }
     }
 
@@ -91,6 +95,8 @@ impl VirtualDevice {
             -5 => Some(VirtualDevice::Fb0),
             -6 => Some(VirtualDevice::Mice),
             -7 => Some(VirtualDevice::Dsp),
+            -8 => Some(VirtualDevice::DriRenderD128),
+            -9 => Some(VirtualDevice::DriCard0),
             _ => None,
         }
     }
@@ -105,6 +111,8 @@ impl VirtualDevice {
             VirtualDevice::Fb0 => 5,
             VirtualDevice::Mice => 6,
             VirtualDevice::Dsp => 7,
+            VirtualDevice::DriRenderD128 => 8,
+            VirtualDevice::DriCard0 => 9,
         }
     }
 }
@@ -124,6 +132,8 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/fb0" => Some(VirtualDevice::Fb0),
         b"/dev/input/mice" => Some(VirtualDevice::Mice),
         b"/dev/dsp" => Some(VirtualDevice::Dsp),
+        b"/dev/dri/renderD128" => Some(VirtualDevice::DriRenderD128),
+        b"/dev/dri/card0" => Some(VirtualDevice::DriCard0),
         _ => None,
     }
 }
@@ -526,6 +536,69 @@ fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
             Ok(())
         }
         _ => Err(Errno::ENOTTY),
+    }
+}
+
+/// Handle ioctl on `/dev/dri/renderD128` or `/dev/dri/card0`.
+///
+/// First-pass: only the two ioctls libdrm's `drmOpen()` probe issues
+/// during init are implemented in-kernel. Everything else returns
+/// `ENOSYS` so libdrm reports "feature unsupported" instead of silently
+/// succeeding with a bogus result.
+///
+/// - `DRM_IOCTL_VERSION` — return version 1.0.0 with zero-length name /
+///   date / desc strings. The user-supplied pointers are echoed back
+///   unchanged (libdrm uses them for round-tripping; an empty length is
+///   accepted).
+/// - `DRM_IOCTL_GET_CAP` — `DRM_CAP_DUMB_BUFFER` → 1,
+///   `DRM_CAP_PRIME` → IMPORT|EXPORT, unknown caps → 0. Matches Linux's
+///   "unknown cap is silently 0" rather than EINVAL.
+///
+/// Both nodes share the same probe surface; KMS-specific ioctls
+/// (resources, page-flip, master) will be split out when the second
+/// pass adds DriFdState.
+fn handle_dri_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+    use wasm_posix_shared::dri::*;
+    match request {
+        DRM_IOCTL_VERSION => {
+            if buf.len() < core::mem::size_of::<WpkDrmVersion>() {
+                return Err(Errno::EINVAL);
+            }
+            let v_in: WpkDrmVersion =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let v_out = WpkDrmVersion {
+                version_major: 1,
+                version_minor: 0,
+                version_patchlevel: 0,
+                name_len: 0,
+                name_ptr: v_in.name_ptr,
+                date_len: 0,
+                date_ptr: v_in.date_ptr,
+                desc_len: 0,
+                desc_ptr: v_in.desc_ptr,
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v_out);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_GET_CAP => {
+            if buf.len() < core::mem::size_of::<WpkDrmGetCap>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut cap: WpkDrmGetCap =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            cap.value = match cap.capability {
+                DRM_CAP_DUMB_BUFFER => 1,
+                DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
+                _ => 0,
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, cap);
+            }
+            Ok(())
+        }
+        _ => Err(Errno::ENOSYS),
     }
 }
 
@@ -1500,7 +1573,11 @@ pub fn sys_read(
                         // "no-op for unsupported access" pattern. /dev/dsp
                         // is write-only too: the host drains via the
                         // dedicated wasm export, not via user-space read().
-                        VirtualDevice::Null | VirtualDevice::Fb0 | VirtualDevice::Dsp => 0,
+                        VirtualDevice::Null
+                        | VirtualDevice::Fb0
+                        | VirtualDevice::Dsp
+                        | VirtualDevice::DriRenderD128
+                        | VirtualDevice::DriCard0 => 0,
                         VirtualDevice::Zero | VirtualDevice::Full => {
                             for b in buf.iter_mut() {
                                 *b = 0;
@@ -7763,6 +7840,23 @@ pub fn sys_ioctl(proc: &mut Process, fd: i32, request: u32, buf: &mut [u8]) -> R
             && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Dsp)
         {
             return handle_dsp_ioctl(request, buf);
+        }
+    }
+
+    // --- /dev/dri/{renderD128,card0} ioctls — DRM surface ---
+    //
+    // First pass: only DRM_IOCTL_VERSION and DRM_IOCTL_GET_CAP are
+    // implemented in-kernel so libdrm's drmOpen() probe succeeds.
+    // Everything else returns ENOSYS. Render and card nodes share the
+    // same probe surface; a second pass will split KMS-specific ioctls
+    // out of the card path.
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice {
+            let dev = VirtualDevice::from_host_handle(ofd.host_handle);
+            if dev == Some(VirtualDevice::DriRenderD128) || dev == Some(VirtualDevice::DriCard0) {
+                return handle_dri_ioctl(request, buf);
+            }
         }
     }
 
@@ -16445,6 +16539,8 @@ mod tests {
             VirtualDevice::Fb0,
             VirtualDevice::Mice,
             VirtualDevice::Dsp,
+            VirtualDevice::DriRenderD128,
+            VirtualDevice::DriCard0,
         ] {
             assert_eq!(
                 VirtualDevice::from_host_handle(dev.host_handle()),
@@ -16453,7 +16549,7 @@ mod tests {
         }
         assert_eq!(VirtualDevice::from_host_handle(0), None);
         // First sentinel past the allocated range — must not roundtrip.
-        assert_eq!(VirtualDevice::from_host_handle(-8), None);
+        assert_eq!(VirtualDevice::from_host_handle(-10), None);
     }
 
     // ===== Loopback socket tests =====
@@ -19735,5 +19831,146 @@ mod tests {
             0,
             "exec should drain the ring when releasing ownership"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // /dev/dri/* tests — minimal DRM surface (probe ioctls only).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn match_virtual_device_recognizes_dri_nodes() {
+        assert_eq!(
+            match_virtual_device(b"/dev/dri/renderD128"),
+            Some(VirtualDevice::DriRenderD128)
+        );
+        assert_eq!(
+            match_virtual_device(b"/dev/dri/card0"),
+            Some(VirtualDevice::DriCard0)
+        );
+        assert_eq!(match_virtual_device(b"/dev/dri/card1"), None);
+    }
+
+    #[test]
+    fn dri_render_is_multi_process_no_busy() {
+        // DRI is multi-process by design — opening from two pids must
+        // succeed (unlike fb0/mice/dsp which are single-owner).
+        let mut proc1 = Process::new(101);
+        let mut proc2 = Process::new(102);
+        let mut host = MockHostIO::new();
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd2 = sys_open(&mut proc2, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        assert!(fd1 >= 0);
+        assert!(fd2 >= 0);
+    }
+
+    #[test]
+    fn dri_card_is_multi_process_no_busy() {
+        let mut proc1 = Process::new(201);
+        let mut proc2 = Process::new(202);
+        let mut host = MockHostIO::new();
+        let fd1 = sys_open(&mut proc1, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let fd2 = sys_open(&mut proc2, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        assert!(fd1 >= 0);
+        assert!(fd2 >= 0);
+    }
+
+    #[test]
+    fn dri_ioctl_version_returns_v1_with_zero_lengths() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let v_in = WpkDrmVersion {
+            name_len: 64,
+            name_ptr: 0xdead_beef,
+            date_len: 64,
+            date_ptr: 0xcafe_1234,
+            desc_len: 64,
+            desc_ptr: 0xabad_1dea,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmVersion>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmVersion, v_in) };
+        sys_ioctl(&mut proc, fd, DRM_IOCTL_VERSION, &mut buf).unwrap();
+        let v_out: WpkDrmVersion =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmVersion) };
+        assert_eq!(v_out.version_major, 1);
+        assert_eq!(v_out.version_minor, 0);
+        assert_eq!(v_out.name_len, 0);
+        assert_eq!(v_out.date_len, 0);
+        assert_eq!(v_out.desc_len, 0);
+        // Pointers are echoed back verbatim — libdrm round-trips them.
+        assert_eq!(v_out.name_ptr, 0xdead_beef);
+        assert_eq!(v_out.date_ptr, 0xcafe_1234);
+        assert_eq!(v_out.desc_ptr, 0xabad_1dea);
+    }
+
+    #[test]
+    fn dri_ioctl_get_cap_known_and_unknown() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmGetCap>()];
+        let cap_in = WpkDrmGetCap {
+            capability: DRM_CAP_DUMB_BUFFER,
+            value: 0,
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGetCap, cap_in) };
+        sys_ioctl(&mut proc, fd, DRM_IOCTL_GET_CAP, &mut buf).unwrap();
+        let cap_out: WpkDrmGetCap =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGetCap) };
+        assert_eq!(cap_out.value, 1);
+
+        let cap_in = WpkDrmGetCap {
+            capability: DRM_CAP_PRIME,
+            value: 0,
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGetCap, cap_in) };
+        sys_ioctl(&mut proc, fd, DRM_IOCTL_GET_CAP, &mut buf).unwrap();
+        let cap_out: WpkDrmGetCap =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGetCap) };
+        assert_eq!(cap_out.value, DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT);
+
+        let cap_in = WpkDrmGetCap {
+            capability: 0xdead_beef,
+            value: 0,
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGetCap, cap_in) };
+        sys_ioctl(&mut proc, fd, DRM_IOCTL_GET_CAP, &mut buf).unwrap();
+        let cap_out: WpkDrmGetCap =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGetCap) };
+        // Unknown capabilities return value=0, errno=0 — matches Linux.
+        assert_eq!(cap_out.value, 0);
+    }
+
+    #[test]
+    fn dri_ioctl_unknown_returns_enosys() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        // DRM_IOCTL_MODE_GETRESOURCES — not implemented in first pass.
+        let mut buf = [0u8; 64];
+        let err = sys_ioctl(
+            &mut proc,
+            fd,
+            wasm_posix_shared::dri::DRM_IOCTL_MODE_GETRESOURCES,
+            &mut buf,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::ENOSYS);
+    }
+
+    #[test]
+    fn read_dri_returns_zero() {
+        // DRI nodes are not stream-readable — clients use mmap/ioctl.
+        // Same policy as /dev/fb0: read returns 0.
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 16];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 0);
     }
 }
