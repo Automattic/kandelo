@@ -216,6 +216,44 @@ function workerPlainSource(options: { terminate: boolean }): string {
   ].filter(Boolean).join(" ");
 }
 
+const corePrelude = [
+  "const assert=require('node:assert');",
+  "const path=require('path');",
+  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
+  "console.log('DIAG_CORE_PRELUDE_DONE');",
+];
+
+const bufferPrelude = [
+  "const b=Buffer.from('Kandelo');",
+  "console.log(b.toString('hex'));",
+];
+
+const intlPrelude = [
+  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
+];
+
+const sabWorkerLines = [
+  "const {Worker}=require('worker_threads');",
+  "const sab=new SharedArrayBuffer(8);",
+  "const view=new Int32Array(sab);",
+  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
+  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
+  "console.log('worker', Atomics.load(view,0));",
+];
+
+function sabWorkerProbe(prefix: string[], action: "terminate" | "listenerCount"): string {
+  const actionLines = action === "terminate"
+    ? ["worker.terminate();"]
+    : ["console.log('DIAG_WORKER_LISTENER_COUNT', worker.listenerCount('exit'));"];
+  return [
+    ...prefix,
+    ...sabWorkerLines,
+    ...actionLines,
+    "console.log('DIAG_SAB_WORKER_PROBE_DONE');",
+  ].join(" ");
+}
+
 const ALL_CASES: DiagCase[] = [
   {
     name: "NODE_VERSION",
@@ -296,6 +334,38 @@ const ALL_CASES: DiagCase[] = [
   {
     name: "WORKER_SAB_TERMINATE_NO_EXIT",
     command: nodeEval(`${noNaturalProcessExit} ${workerSource({ terminate: true, exitListener: false })}`),
+  },
+  {
+    name: "WORKER_SAB_TERMINATE_CORE",
+    command: nodeEval(sabWorkerProbe([...corePrelude], "terminate")),
+  },
+  {
+    name: "WORKER_SAB_TERMINATE_BUFFER",
+    command: nodeEval(sabWorkerProbe([...bufferPrelude], "terminate")),
+  },
+  {
+    name: "WORKER_SAB_TERMINATE_INTL",
+    command: nodeEval(sabWorkerProbe([...intlPrelude], "terminate")),
+  },
+  {
+    name: "WORKER_SAB_TERMINATE_BUFFER_INTL",
+    command: nodeEval(sabWorkerProbe([...bufferPrelude, ...intlPrelude], "terminate")),
+  },
+  {
+    name: "WORKER_SAB_TERMINATE_CORE_BUFFER",
+    command: nodeEval(sabWorkerProbe([...corePrelude, ...bufferPrelude], "terminate")),
+  },
+  {
+    name: "WORKER_SAB_TERMINATE_CORE_INTL",
+    command: nodeEval(sabWorkerProbe([...corePrelude, ...intlPrelude], "terminate")),
+  },
+  {
+    name: "WORKER_SAB_TERMINATE_CORE_BUFFER_INTL",
+    command: nodeEval(sabWorkerProbe([...corePrelude, ...bufferPrelude, ...intlPrelude], "terminate")),
+  },
+  {
+    name: "WORKER_SAB_LISTENERCOUNT_CORE_BUFFER_INTL",
+    command: nodeEval(sabWorkerProbe([...corePrelude, ...bufferPrelude, ...intlPrelude], "listenerCount")),
   },
   {
     name: "WORKER_PLAIN_TERMINATE",
