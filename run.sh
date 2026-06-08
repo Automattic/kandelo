@@ -1565,6 +1565,10 @@ build_browser() {
 fetch_browser_binaries() {
     local disabled_pkgs
     local fetch_args=("${ALLOW_STALE_ARGS[@]+"${ALLOW_STALE_ARGS[@]}"}")
+    if [ "${WASM_POSIX_SKIP_BROWSER_FETCH:-0}" = "1" ]; then
+        warn "Skipping browser binary fetch because WASM_POSIX_SKIP_BROWSER_FETCH=1"
+        return 0
+    fi
     disabled_pkgs="${BROWSER_EXTERNAL_GALLERY_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
     if [ ${#fetch_args[@]} -eq 0 ]; then
         # Browser prep has a source-build fallback for every enabled demo

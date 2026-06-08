@@ -1811,6 +1811,9 @@ jobs:
       - name: Run ${{ matrix.suite }} suite
         if: steps.suite.outputs.skip != 'true'
         run: |
+          if [ "$SUITE" = "browser" ]; then
+            export WASM_POSIX_SKIP_BROWSER_FETCH=1
+          fi
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
   browser-node-diagnostics:
@@ -1909,6 +1912,8 @@ jobs:
           } | tee "$RUNNER_TEMP/browser-node-diagnostics/runner-before-dev-shell.txt"
 
       - name: Run focused browser Node diagnostics
+        env:
+          WASM_POSIX_SKIP_BROWSER_FETCH: "1"
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-browser-node-diagnostics.sh "$RUNNER_TEMP/browser-node-diagnostics" 5
 
