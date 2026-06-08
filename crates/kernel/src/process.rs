@@ -197,6 +197,172 @@ pub trait HostIO {
     /// copy into. Geometry/format come from a prior `bind_framebuffer`
     /// call with `addr=0, len=0` (the sentinel "write-based binding").
     fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]);
+    // --- DRI v2 buffer-sharing surface (renderD128 GBM) -----------------
+    //
+    // Default impls return `-ENOSYS as i32` / no-op so existing test
+    // mocks need no boilerplate. Concrete production hosts (Node +
+    // Browser) override these with their wasm-import bindings.
+
+    /// Allocate host-side SAB backing for a freshly-created bo. Called
+    /// once per `DRM_IOCTL_MODE_CREATE_DUMB`. Returns ≥ 0 on success,
+    /// negative errno on failure.
+    #[allow(unused_variables)]
+    fn gbm_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        size: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Free host-side SAB backing for a bo whose refcount has reached
+    /// zero. Idempotent: calling on an unknown `bo_id` is a no-op.
+    #[allow(unused_variables)]
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
+
+    /// Create a GPU-tier bo (host `WebGLTexture`). Returns ≥ 0 on
+    /// success, negative errno on failure. `gbm_bo_destroy` releases
+    /// the texture on the final refcount drop.
+    #[allow(unused_variables)]
+    fn gbm_bo_create_gpu(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Bind a bo's SAB slice into a process's wasm `Memory` at `addr`
+    /// for `len` bytes. Called from the mmap path once
+    /// `mmap_anonymous` has reserved the wasm pages. After this
+    /// returns, writes to `[addr, addr+len)` go directly to the SAB.
+    /// Returns 0 on success, negative errno on failure.
+    #[allow(unused_variables)]
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Unbind a prior `gbm_bo_bind` — called from munmap /
+    /// process-exit before the wasm pages are returned to the
+    /// anonymous pool.
+    #[allow(unused_variables)]
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {}
+
+    /// Notify the host that process `pid` has mapped its GL cmdbuf at the
+    /// given offset within its wasm `Memory`. Length is always
+    /// `shared::gl::CMDBUF_LEN` in v1.
+    #[allow(unused_variables)]
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize) {}
+
+    /// Notify the host that the GL cmdbuf for `pid` is gone (`munmap`,
+    /// process exit, or exec). Idempotent.
+    #[allow(unused_variables)]
+    fn gl_unbind(&mut self, pid: i32) {}
+
+    /// Allocate a host-side WebGL context. `ctx_id` is the per-fd id chosen
+    /// by the kernel; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
+    #[allow(unused_variables)]
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {}
+
+    #[allow(unused_variables)]
+    fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {}
+
+    /// Allocate a host-side surface (default canvas or pbuffer). `attrs`
+    /// is a marshalled `shared::gl::GlSurfaceAttrs`.
+    #[allow(unused_variables)]
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {}
+
+    #[allow(unused_variables)]
+    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32) {}
+
+    /// Bind ctx + surface as the current rendering target for `pid`.
+    #[allow(unused_variables)]
+    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, surface_id: u32) {}
+
+    /// Decode and dispatch one cmdbuf submit. `offset` / `length` are
+    /// within the bound cmdbuf region (validated by the kernel against
+    /// `shared::gl::CMDBUF_LEN`).
+    #[allow(unused_variables)]
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) {}
+
+    /// Flush any pending GL work and signal "frame ready". v1 no-op
+    /// (canvas presents on the next RAF); kept as a hook for future
+    /// fence/sync work.
+    #[allow(unused_variables)]
+    fn gl_present(&mut self, pid: i32) {}
+
+    /// Synchronous GL query (`glGetError`, `glReadPixels`, etc.).
+    /// Returns bytes written into `out`, or negative errno on failure.
+    #[allow(unused_variables)]
+    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    /// Bind a GPU-tier bo as a `WebGLTexture` in the caller's GL context.
+    /// Returns the WebGLTexture id (≥ 0) on success, negative errno on
+    /// failure.
+    #[allow(unused_variables)]
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
+    #[allow(unused_variables)]
+    fn kms_set_master(&mut self, pid: i32) {}
+
+    #[allow(unused_variables)]
+    fn kms_drop_master(&mut self, pid: i32) {}
+
+    #[allow(unused_variables)]
+    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
+        0
+    }
+
+    /// Copy `dst.len()` bytes from the wasm process at `pid`'s linear
+    /// memory at `addr` into the kernel-side scratch `dst`. Returns 0 on
+    /// success, negative errno on failure.
+    #[allow(unused_variables)]
+    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
+        0
+    }
+
+    #[allow(unused_variables)]
+    fn kms_mode_info(&mut self, connector_id: u32) -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
+        wasm_posix_shared::dri::WpkDrmModeModeinfo::default()
+    }
+
+    #[allow(unused_variables)]
+    fn kms_addfb(
+        &mut self,
+        pid: i32,
+        fb_id: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        pixel_format: u32,
+        pitch: u32,
+    ) -> i32 {
+        0
+    }
+
+    #[allow(unused_variables)]
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {}
+
+    #[allow(unused_variables)]
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {}
 }
 
 /// Process lifecycle state.
