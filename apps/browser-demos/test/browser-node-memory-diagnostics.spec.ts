@@ -157,7 +157,7 @@ function workerSource(options: { terminate: boolean; exitListener: boolean }): s
   ].filter(Boolean).join(" ");
 }
 
-const fullSmokeSource = [
+const fullSmokeLines = [
   "const assert=require('node:assert');",
   "const path=require('path');",
   "const {Worker}=require('worker_threads');",
@@ -173,7 +173,34 @@ const fullSmokeSource = [
   "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
   "console.log('worker', Atomics.load(view,0));",
   "worker.terminate();",
+];
+
+const fullSmokeSource = fullSmokeLines.join(" ");
+
+const fullSmokeMarkerSource = [
+  ...fullSmokeLines,
+  "console.log('DIAG_FULL_AFTER_TERMINATE');",
 ].join(" ");
+
+const fullSmokeTerminateResultSource = [
+  ...fullSmokeLines.slice(0, -1),
+  "const terminateResult=worker.terminate();",
+].join(" ");
+
+const fullSmokeTerminateResultMarkerSource = [
+  ...fullSmokeLines.slice(0, -1),
+  "const terminateResult=worker.terminate();",
+  "console.log('DIAG_FULL_TERMINATE_RESULT', terminateResult);",
+].join(" ");
+
+const fullSmokeListenerCountSource = [
+  ...fullSmokeLines.slice(0, -1),
+  "console.log('DIAG_FULL_LISTENER_COUNT', worker.listenerCount('exit'));",
+].join(" ");
+
+const fullSmokeNoProcessInfoSource = fullSmokeLines
+  .filter((line) => !line.startsWith("console.log('SpiderMonkey Node'"))
+  .join(" ");
 
 const fullSmokeNoWorkerSource = [
   "const assert=require('node:assert');",
@@ -253,6 +280,14 @@ function sabWorkerProbe(prefix: string[], action: "terminate" | "listenerCount")
     "console.log('DIAG_SAB_WORKER_PROBE_DONE');",
   ].join(" ");
 }
+
+const reducedCoreBufferIntlNoMarkerSource = [
+  ...corePrelude,
+  ...bufferPrelude,
+  ...intlPrelude,
+  ...sabWorkerLines,
+  "worker.terminate();",
+].join(" ");
 
 const ALL_CASES: DiagCase[] = [
   {
@@ -364,6 +399,10 @@ const ALL_CASES: DiagCase[] = [
     command: nodeEval(sabWorkerProbe([...corePrelude, ...bufferPrelude, ...intlPrelude], "terminate")),
   },
   {
+    name: "WORKER_SAB_TERMINATE_CORE_BUFFER_INTL_NO_MARKER",
+    command: nodeEval(reducedCoreBufferIntlNoMarkerSource),
+  },
+  {
     name: "WORKER_SAB_LISTENERCOUNT_CORE_BUFFER_INTL",
     command: nodeEval(sabWorkerProbe([...corePrelude, ...bufferPrelude, ...intlPrelude], "listenerCount")),
   },
@@ -387,6 +426,36 @@ const ALL_CASES: DiagCase[] = [
   {
     name: "FULL_SMOKE",
     command: `${nodeEval(fullSmokeSource)} && npm --version`,
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_NO_NPM",
+    command: nodeEval(fullSmokeSource),
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_MARKER",
+    command: nodeEval(fullSmokeMarkerSource),
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_TERMINATE_RESULT",
+    command: nodeEval(fullSmokeTerminateResultSource),
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_TERMINATE_RESULT_MARKER",
+    command: nodeEval(fullSmokeTerminateResultMarkerSource),
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_LISTENERCOUNT",
+    command: nodeEval(fullSmokeListenerCountSource),
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_NO_PROCESS_INFO",
+    command: nodeEval(fullSmokeNoProcessInfoSource),
     timeout: 180_000,
   },
   {
