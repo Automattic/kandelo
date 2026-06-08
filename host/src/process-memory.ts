@@ -34,7 +34,7 @@ export const FORK_SAVE_BUFFER_SIZE = PROCESS_MEMORY_FORK_SAVE_BUFFER_SIZE;
 export const CHANNEL_PAGES = Math.ceil(CH_TOTAL_SIZE / WASM_PAGE_SIZE);
 
 export interface ProcessMemoryLayout {
-  /** Initial WebAssembly.Memory pages required for the low control slab. */
+  /** Initial WebAssembly.Memory pages required before user code starts. */
   initialPages: number;
   /** Maximum pages configured for this process. */
   maximumPages: number;
@@ -54,13 +54,13 @@ export interface ProcessMemoryLayout {
   brkLimit: number;
   /** Highest mmap address permitted by the process memory maximum. */
   maxAddr: number;
-  /** First pthread slot start page in the low control slab. */
+  /** First page after the main control area; dynamic pthread slots may start here. */
   firstThreadSlotPage: number;
   /** @deprecated Use firstThreadSlotPage or per-slot channel offsets. */
   firstThreadBasePage: number;
-  /** Exclusive page limit for low control slab thread allocations. */
+  /** Exclusive page limit for preallocated thread allocations. */
   threadArenaEndPage: number;
-  /** Number of pthread control slots reserved in this process memory. */
+  /** Maximum concurrent pthread slots for this process. */
   threadSlotCount: number;
 }
 
@@ -74,6 +74,8 @@ export interface ProcessMemoryLayoutOptions {
   defaultThreadSlots?: number;
   /** Explicit exact pthread slot count; bypasses the process-wasm declaration. */
   threadSlots?: number;
+  /** Preallocate the full pthread control slab. Defaults to dynamic slots. */
+  preallocateThreadSlots?: boolean;
   /** @deprecated brk and mmap are coordinated by the kernel allocator. */
   brkReservePages?: number;
 }
@@ -259,7 +261,9 @@ export function computeProcessMemoryLayout(
   const firstThreadBasePage =
     firstThreadSlotPage + PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE;
   const threadArenaEndPage =
-    firstThreadSlotPage + threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT;
+    firstThreadSlotPage + (
+      options.preallocateThreadSlots ? threadSlotCount * PROCESS_MEMORY_PAGES_PER_THREAD_SLOT : 0
+    );
 
   const initialPages = Math.max(
     minPages,

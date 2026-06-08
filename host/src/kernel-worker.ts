@@ -53,6 +53,8 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
+  PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
+  PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   SYSCALL_ARGS,
   type SyscallArgDesc,
 } from "./generated/abi";
@@ -446,6 +448,12 @@ interface ProcessRegistration {
   channels: ChannelInfo[];
   /** Pointer width: 4 for wasm32, 8 for wasm64. */
   ptrWidth: 4 | 8;
+  /**
+   * True when the host registered a compact/dynamic process layout with an
+   * explicit address-space ceiling. Legacy high-address thread channels lower
+   * max_addr as channels are added; dynamic pthread control slots must not.
+   */
+  explicitMaxAddr: boolean;
 }
 
 interface RegisterProcessOptions {
@@ -480,11 +488,16 @@ type WaitPollResult =
  *   *thread's* channel — i.e. `thread_channelOffset - FORK_BUF_SIZE`.
  *   In the child's memory copy this offset holds the saved frames and globals
  *   the parent thread wrote during its wpk_fork unwind.
+ * - `slotStart`/`slotLen`: the dynamic pthread control reservation that
+ *   contains the caller's TLS, fork-save buffer, and channel. Fork children
+ *   retain this one slot and discard all other parent pthread reservations.
  */
 export interface ForkFromThreadContext {
   fnPtr: number;
   argPtr: number;
   forkBufAddr: number;
+  slotStart: number;
+  slotLen: number;
 }
 
 export interface ResolvedSpawnProgram {
@@ -569,6 +582,14 @@ export interface CentralizedKernelCallbacks {
    * spawn a thread Worker sharing the parent's Memory. Returns the TID.
    */
   onClone?: (pid: number, tid: number, fnPtr: number, argPtr: number, stackPtr: number, tlsPtr: number, ctidPtr: number, memory: WebAssembly.Memory) => Promise<number>;
+
+  /**
+   * Called after a pthread channel reaches SYS_EXIT and the kernel worker has
+   * performed the Linux CLONE_CHILD_CLEARTID wake. Return true when the host
+   * will terminate the backing Worker, so the syscall channel should not be
+   * completed back into guest code.
+   */
+  onThreadExit?: (pid: number, tid: number, channelOffset: number) => boolean;
 
   /**
    * Called when a process exits.
@@ -1083,7 +1104,13 @@ export class CentralizedKernelWorker {
       consecutiveSyscalls: 0,
     }));
 
-    const registration: ProcessRegistration = { pid, memory, channels, ptrWidth: options?.ptrWidth ?? 4 };
+    const registration: ProcessRegistration = {
+      pid,
+      memory,
+      channels,
+      ptrWidth: options?.ptrWidth ?? 4,
+      explicitMaxAddr: options?.maxAddr !== undefined,
+    };
     this.processes.set(pid, registration);
     this.activeChannels.push(...channels);
 
@@ -1622,7 +1649,7 @@ export class CentralizedKernelWorker {
     // process's mmap base when the process is registered.
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: KernelPointer) => number) | undefined;
-    if (setMaxAddr) {
+    if (setMaxAddr && !registration.explicitMaxAddr) {
       const tlsPageAddr = channelOffset - 2 * WASM_PAGE_SIZE;
       if (tlsPageAddr >= PROCESS_MMAP_BASE) {
         setMaxAddr(pid, this.toKernelPtr(tlsPageAddr));
@@ -2718,6 +2745,12 @@ export class CentralizedKernelWorker {
     const i32View = new Int32Array(channel.memory.buffer, channel.channelOffset);
     Atomics.store(i32View, CH_STATUS / 4, CH_COMPLETE);
     Atomics.notify(i32View, CH_STATUS / 4, 1);
+  }
+
+  private abandonChannel(channel: ChannelInfo): void {
+    channel.handling = false;
+    this.clearSocketTimeout(channel);
+    this.pendingCancels.delete(channel.channelOffset);
   }
 
   /**
@@ -5562,13 +5595,30 @@ export class CentralizedKernelWorker {
     // correctly.
     const threadKey = `${parentPid}:${channel.channelOffset}`;
     const threadCtx = this.threadForkContexts.get(threadKey);
+    const callerSlotStart =
+      channel.channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
+    const callerSlotLen = PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
     const threadFork: ForkFromThreadContext | undefined = threadCtx
       ? {
           fnPtr: threadCtx.fnPtr,
           argPtr: threadCtx.argPtr,
           forkBufAddr: channel.channelOffset - FORK_BUF_SIZE,
+          slotStart: callerSlotStart,
+          slotLen: callerSlotLen,
         }
       : undefined;
+
+    if (threadFork) {
+      try {
+        this.reserveHostRegionAt(childPid, threadFork.slotStart, threadFork.slotLen);
+      } catch (err) {
+        this.removeFromKernelProcessTable(childPid);
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[kernel-worker] fork child slot reservation failed: ${message}`);
+        this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, 12);
+        return;
+      }
+    }
 
     // Call the async fork handler to spawn child Worker
     this.callbacks.onFork(parentPid, childPid, channel.memory, threadFork).then((childChannelOffsets) => {
@@ -6027,16 +6077,30 @@ export class CentralizedKernelWorker {
     const tlsPtr = origArgs[3];
     const ctidPtr = origArgs[4];
 
+    // Register the clear-TID pointer before starting the host Worker. A very
+    // short-lived pthread can reach SYS_EXIT before onClone resolves.
+    if (ctidPtr !== 0) {
+      this.threadCtidPtrs.set(`${channel.pid}:${tid}`, ctidPtr);
+    }
+
     this.callbacks.onClone(
       channel.pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, channel.memory,
     ).then((assignedTid) => {
-      if (!this.processes.has(channel.pid)) return;
-      // Store ctidPtr for CLONE_CHILD_CLEARTID on thread exit
-      if (ctidPtr !== 0) {
+      if (!this.processes.has(channel.pid)) {
+        if (ctidPtr !== 0) {
+          this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
+        }
+        return;
+      }
+      if (assignedTid !== tid && ctidPtr !== 0) {
+        this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
         this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
       }
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
     }).catch((err) => {
+      if (ctidPtr !== 0) {
+        this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
+      }
       console.error(`[kernel-worker] onClone failed: ${err}`);
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, -1, 12); // ENOMEM
     });
@@ -6046,7 +6110,9 @@ export class CentralizedKernelWorker {
    * Handle SYS_EXIT/SYS_EXIT_GROUP: notify the kernel and clean up.
    *
    * For SYS_EXIT from a non-main channel (thread exit): notify kernel,
-   * remove channel, complete channel to unblock thread worker.
+   * remove channel, and let the host terminate the backing Worker. If an
+   * older host entry has no thread-exit callback, fall back to completing the
+   * channel for compatibility.
    * For SYS_EXIT from main channel or SYS_EXIT_GROUP: current behavior.
    */
   private handleExit(channel: ChannelInfo, syscallNr: number, origArgs: number[]): void {
@@ -6086,8 +6152,14 @@ export class CentralizedKernelWorker {
         this.notifyThreadExit(channel.pid, tid);
       }
       this.removeChannel(channel.pid, channel.channelOffset);
-      // Complete channel to unblock the thread worker so it can exit cleanly
-      this.completeChannelRaw(channel, 0, 0);
+      const hostWillTerminateThread = tid > 0 &&
+        this.callbacks.onThreadExit?.(channel.pid, tid, channel.channelOffset) === true;
+      if (hostWillTerminateThread) {
+        this.abandonChannel(channel);
+      } else {
+        // Back-compatibility for embedders that have not wired onThreadExit.
+        this.completeChannelRaw(channel, 0, 0);
+      }
       return;
     }
 
@@ -7093,9 +7165,49 @@ export class CentralizedKernelWorker {
     return setMmapBaseFn(pid, this.toKernelPtr(mmapBase)) >= 0;
   }
 
+  reserveHostRegion(pid: number, len: number): number {
+    const reserveHostRegionFn = this.kernelInstance!.exports.kernel_reserve_host_region as
+      ((pid: number, len: KernelPointer) => KernelPointer) | undefined;
+    if (!reserveHostRegionFn) {
+      throw new Error(
+        "Kernel export kernel_reserve_host_region is required for dynamic pthread control slots",
+      );
+    }
+    const addr = reserveHostRegionFn(pid, this.toKernelPtr(len));
+    const n = typeof addr === "bigint" ? Number(addr) : addr;
+    if (!Number.isSafeInteger(n) || n < 0 || (n >>> 0) === 0xffffffff) {
+      throw new Error(`failed to reserve ${len} bytes of pthread control memory for pid=${pid}`);
+    }
+    return n;
+  }
+
+  reserveHostRegionAt(pid: number, addr: number, len: number): number {
+    const reserveHostRegionAtFn = this.kernelInstance!.exports.kernel_reserve_host_region_at as
+      ((pid: number, addr: KernelPointer, len: KernelPointer) => KernelPointer) | undefined;
+    if (!reserveHostRegionAtFn) {
+      throw new Error(
+        "Kernel export kernel_reserve_host_region_at is required for fork-from-pthread control slots",
+      );
+    }
+    const reserved = reserveHostRegionAtFn(
+      pid,
+      this.toKernelPtr(addr),
+      this.toKernelPtr(len),
+    );
+    const n = typeof reserved === "bigint" ? Number(reserved) : reserved;
+    if (!Number.isSafeInteger(n) || n < 0 || (n >>> 0) === 0xffffffff || n !== addr) {
+      throw new Error(
+        `failed to reserve pthread control memory at 0x${addr.toString(16)} ` +
+          `for pid=${pid}`,
+      );
+    }
+    return n;
+  }
+
   private highControlFloorForProcess(pid: number): number | null {
     const registration = this.processes.get(pid);
     if (!registration) return null;
+    if (registration.explicitMaxAddr) return null;
     let floor: number | null = null;
     for (const ch of registration.channels) {
       const tlsPageAddr = ch.channelOffset - 2 * WASM_PAGE_SIZE;

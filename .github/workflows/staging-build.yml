@@ -112,6 +112,7 @@ jobs:
       repair_index: ${{ steps.compute.outputs.repair_index }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
+      baseline_tag: ${{ steps.compute.outputs.baseline_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -128,12 +129,12 @@ jobs:
           submodules: libc/musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -169,31 +170,23 @@ jobs:
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
-            # Target tag: pr-<NNN>-staging on PR runs, binaries-abi-v<N>
-            # otherwise. Phase B-2 Task 10 formally flips the active
-            # publish target to the undated tag; the new matrix flow can
-            # already target it because it runs in parallel with the
-            # legacy job and any duplicate work is idempotent (D3
-            # content-hash gating below).
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging"
-            else
-              TARGET_TAG="binaries-abi-v${ABI}"
-            fi
+            TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging"
+            BASELINE_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
+            echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
 
             # One-shot fetch of existing release assets for fast lookup.
             # Falls back to empty list if the release doesn'"'"'t exist
             # yet (new ABI, new PR) — that just means everything in the
             # matrix needs to build.
-            existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
+            existing_assets=$(gh release view "$BASELINE_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
             echo "existing-assets:"
             echo "$existing_assets" | jq -r ".[0:20][]"
             echo "..."
             existing_index_dir=$(mktemp -d)
             existing_index="$existing_index_dir/index.toml"
-            if gh release download "$TARGET_TAG" --repo "${{ github.repository }}" --pattern index.toml --dir "$existing_index_dir" --clobber >/dev/null 2>&1; then
-              echo "existing-index: downloaded $TARGET_TAG/index.toml"
+            if gh release download "$BASELINE_TAG" --repo "${{ github.repository }}" --pattern index.toml --dir "$existing_index_dir" --clobber >/dev/null 2>&1; then
+              echo "existing-index: downloaded $BASELINE_TAG/index.toml"
             else
               echo "existing-index: none"
               : > "$existing_index"
@@ -202,8 +195,9 @@ jobs:
             if [ -s "$existing_index" ]; then
               existing_index_abi=$(sed -nE "s/^abi_version *= *([0-9]+).*$/\\1/p" "$existing_index" | head -n1)
               if [ "$existing_index_abi" != "$ABI" ]; then
-                repair_index=1
-                echo "preflight: $TARGET_TAG/index.toml declares ABI ${existing_index_abi:-unknown}; expected $ABI"
+                echo "preflight: $BASELINE_TAG/index.toml declares ABI ${existing_index_abi:-unknown}; expected $ABI; ignoring baseline index"
+                : > "$existing_index"
+                existing_assets="[]"
               fi
             fi
 
@@ -384,103 +378,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Fetch musl submodule
-        # build-musl.sh + build-libcxx.sh consume libc/musl/ directly. The
-        # other submodules (libc-test, os-test) are test inputs and not
-        # needed here.
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Compute cache key
-        # Mirrors prepare-merge exactly so both workflows share one
-        # sysroot cache. hashFiles() covers the inputs that affect the
-        # produced sysroot:
-        #   - flake/rust-toolchain/dev-shell: the compiler/tool env
-        #   - scripts/build-musl.sh + install-overlay-headers.sh: musl
-        #     build and sysroot header install recipes
-        #   - packages/registry/libcxx/**: the libcxx package (build script,
-        #     manifest, and any helpers — replaces the deleted
-        #     scripts/build-libcxx.sh)
-        #   - libc/musl-overlay/**: source patches/overrides applied on top of
-        #     the musl submodule
-        #   - libc/glue/**: channel_syscall.c + headers compiled into libc.a
-        #   - sdk compiler-driver inputs used by package builds
-        id: key
-        run: |
-          set -euo pipefail
-          musl_gitlink="$(git rev-parse HEAD:libc/musl)"
-          KEY="musl-sysroot-v5-${{ runner.os }}-$musl_gitlink-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml', 'scripts/dev-shell.sh', 'scripts/build-musl.sh', 'scripts/install-overlay-headers.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**', 'sdk/activate.sh', 'sdk/bin/**', 'sdk/config.site', 'sdk/package.json', 'sdk/package-lock.json', 'sdk/src/**') }}"
-          echo "value=$KEY" >> "$GITHUB_OUTPUT"
-          echo "toolchain-cache key: $KEY"
-
-      - name: Cache musl sysroot + libc++
-        uses: actions/cache@v4
-        id: cache
-        with:
-          path: |
-            sysroot
-            sysroot64
-          key: ${{ steps.key.outputs.value }}
-
-      - name: Build sysroots if cache miss
-        if: steps.cache.outputs.cache-hit != 'true'
-        # Mirrors the legacy `build` job's "Build musl sysroot + resolve
-        # libcxx" step so a cache populated here is interchangeable with
-        # what the legacy path produces. libcxx is resolved via the
-        # package system (packages/registry/libcxx/) and symlinked into the
-        # sysroot; its build script handles the Nix-vs-Homebrew libc++
-        # header path difference internally.
-        run: |
-          bash scripts/dev-shell.sh bash scripts/build-musl.sh
-          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
-            HOST_TARGET="$(rustc -vV | awk "/^host/ {print \$2}")"
-            for arch in wasm32 wasm64; do
-              cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-                build-deps resolve libcxx --arch "$arch"
-              prefix="$(cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-                build-deps path libcxx --arch "$arch")"
-              if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
-              mkdir -p "$sysroot/lib" "$sysroot/include/c++"
-              ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
-              ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
-              rm -rf "$sysroot/include/c++/v1"
-              ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
-            done
-          '
-
-      - name: Build fork-instrument host tool
-        run: bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
-
-      - name: Pack toolchain sysroots + host tools
-        # Matrix jobs fan out from this per-run artifact instead of
-        # each restoring the same large sysroot cache. That keeps
-        # Actions Cache traffic to one restore/save per workflow run
-        # and shifts matrix fanout onto workflow artifacts.
-        run: |
-          tar --zstd -cf "$RUNNER_TEMP/toolchain-sysroots.tar.zst" \
-            sysroot sysroot64 tools/bin/wasm-fork-instrument
-
-      - name: Upload toolchain sysroots artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain-sysroots.tar.zst
-          retention-days: 1
-          if-no-files-found: error
+      - name: Prepare package toolchain
+        uses: ./.github/actions/package-toolchain
 
   # Library wave — kind=library packages build first. Each runner
   # uploads its archive as `<lib>-<arch>` so the program wave below
@@ -492,10 +391,10 @@ jobs:
     if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
-      actions: read      # gh run download library artifacts
+      actions: read      # download toolchain artifact
       contents: write    # state-lock git push + gh release create/upload
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.baseline_tag }}/index.toml
     strategy:
       fail-fast: false
       # Keep GitHub codeload/action downloads and the staging index state-lock
@@ -510,86 +409,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Compute commit-bound build provenance
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain
-
-      - name: Extract toolchain sysroots
-        run: |
-          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
-
-      - name: Install host npm deps (build prereq)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Resolve target package's transitive deps
-        # Libraries depend on at most a handful of other libraries
-        # (e.g. libpng → zlib, libcurl → openssl + zlib). Within the
-        # library wave each entry source-builds its own transitive
-        # libs from a cold cache; this is bounded duplicate work.
-        # Eliminating it would require either topological sub-staging
-        # or a cross-runner cache, both deferred follow-ups.
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              archive-stage \
-                --package "packages/registry/${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                --out "$RUNNER_TEMP/staged" \
-                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-                --build-host "${{ steps.provenance.outputs.build-host }}"
-          '
-          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
-          archive_name=$(basename "$archive_path")
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/package-archive-build
         with:
-          name: ${{ matrix.package }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/staged/*.tar.zst
-          retention-days: 7
-          if-no-files-found: error
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          build-host: ${{ github.repository }}@${{ github.sha }}
 
       # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
       # Different state-lock subjects from durable-release, so PR
@@ -640,9 +466,10 @@ jobs:
     if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.program_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
+      actions: read      # download toolchain + library artifacts
       contents: write    # state-lock git push + gh release create/upload
     env:
-      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
+      WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.baseline_tag }}/index.toml
     strategy:
       fail-fast: false
       # Program jobs also publish through the same per-PR state-lock path; high
@@ -656,141 +483,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Compute commit-bound build provenance
-        # Use the commit author timestamp (%aI) — stable for a given SHA
-        # across all wall-clock re-runs of this workflow. github.event.
-        # repository.updated_at is NOT stable: it advances on every push
-        # to any branch, so a re-run after an unrelated push would change
-        # the embedded [compatibility].build_timestamp and shift archive
-        # bytes. %aI (author date) survives rebases that don't change
-        # content; %cI (committer date) does not. ISO-8601 with offset.
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          echo "provenance: build-timestamp=$ts" >&2
-
-      - name: Fetch musl submodule
-        # Even though sysroot/ + sysroot64/ are restored from cache,
-        # downstream package builds (Task 4) reach into libc/musl/ for
-        # headers/sources during their configure steps. Initialize it
-        # here so the cache restore that follows can layer on top.
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain
-
-      - name: Extract toolchain sysroots
-        run: |
-          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
-
-      - name: Install host npm deps (build prereq)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Download library archives from lib-matrix-build
-        if: needs.preflight.outputs.library_matrix != '[]'
-        # Pull every library artifact produced by lib-matrix-build.
-        # The pattern matches both wasm32 and wasm64 entries; the
-        # downstream materialize step writes per-arch overlays so a
-        # wasm32 program runner ignores wasm64 libs (and vice versa).
-        # Libraries are filtered by name in lib-matrix-build's
-        # `library_matrix` input; we don't need a separate filter
-        # here because no other artifact uploaded earlier in the run
-        # matches `*-wasm*`.
-        uses: ./.github/actions/download-run-artifacts
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: '*-wasm*'
-          path: ${{ runner.temp }}/lib-archives
-
-      - name: Materialize library overlays
-        if: needs.preflight.outputs.library_matrix != '[]'
-        # Write packages/registry/<lib>/package.pr.toml file:// pointers
-        # for every downloaded library archive. The next step's
-        # resolver finds each library via overlay → file:// → cache
-        # without source-building. Each library was built exactly
-        # once in lib-matrix-build above.
-        run: |
-          bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
-
-      - name: Resolve target package's transitive deps
-        # Target-only prerequisite resolve: invoke the resolver on
-        # this matrix entry's package. With library overlays in place,
-        # every library dep resolves via file:// (cache hit). Programs
-        # that source-build their own transitive program deps (e.g.
-        # mariadb-vfs → mariadb, dinit) still build those once here.
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
-        # Per-package wrapper around the existing build-deps +
-        # archive_stage internals. Builds one (package, arch) slice
-        # via `xtask archive-stage` — no registry walk.
-        #
-        # build-timestamp + build-host are pinned to commit-bound values
-        # computed in the "Compute commit-bound build provenance" step
-        # above, so re-running the same SHA at any wall-clock time
-        # produces byte-identical archives — load-bearing for
-        # test-gate that re-installs from artifacts. Both values are a
-        # function of the commit alone; neither depends on workflow run
-        # number, repository.updated_at, or any other mutable field.
-        #   * build-timestamp: commit author date (%aI), ISO-8601.
-        #   * build-host: <repo>@<sha> identifies the producing CI run
-        #     in the embedded manifest.toml so consumers can correlate
-        #     archive contents back to the workflow that emitted them.
         id: build
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              archive-stage \
-                --package "packages/registry/${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                --out "$RUNNER_TEMP/staged" \
-                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-                --build-host "${{ steps.provenance.outputs.build-host }}"
-          '
-          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
-          archive_name=$(basename "$archive_path")
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload archive as workflow artifact
-        # if-no-files-found: error so a silent build that produced no
-        # archive surfaces as a CI failure rather than a quiet upload
-        # of nothing. Consumed by test-gate.
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/package-archive-build
         with:
-          name: ${{ matrix.package }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/staged/*.tar.zst
-          retention-days: 7
-          if-no-files-found: error
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          build-host: ${{ github.repository }}@${{ github.sha }}
+          materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Atomic per-matrix-entry publish — same flow as
       # lib-matrix-build, targeting the pr-<N>-staging tag.
@@ -842,12 +543,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -900,6 +601,7 @@ jobs:
       PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+      PACKAGE_BASELINE_TAG: ${{ needs.preflight.outputs.baseline_tag }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
       - uses: actions/checkout@v4
@@ -917,12 +619,12 @@ jobs:
           submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -979,15 +681,14 @@ jobs:
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
-        # Package-staging runs resolve against the PR staging release plus
+        # Package-staging runs resolve against the durable ABI release plus
         # local file:// overlays for matrix-built archives. Non-archive
-        # validation runs skip overlays and resolve every package from the
-        # durable ABI release; the fresh kernel built below shadows
-        # kernel.wasm via local-binaries/.
+        # validation runs use the same durable release; the fresh kernel
+        # built below shadows kernel.wasm via local-binaries/.
         run: |
           set -euo pipefail
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
-            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
+            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_BASELINE_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
           else
@@ -1122,13 +823,13 @@ jobs:
 
       - name: Install Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false

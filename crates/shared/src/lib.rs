@@ -913,18 +913,20 @@ pub mod process_memory {
     /// Minimum initial page count used when a binary does not import more.
     pub const DEFAULT_INITIAL_PAGES: u32 = 17;
 
-    /// Host default pthread slot reservation when a program declares
-    /// [`THREAD_SLOTS_USE_HOST_DEFAULT`].
-    pub const DEFAULT_THREAD_SLOTS: u32 = 16;
+    /// Host default concurrent pthread limit when a program declares
+    /// [`THREAD_SLOTS_USE_HOST_DEFAULT`]. This is intentionally an arbitrary
+    /// high default to avoid surprising pthread_create failures for most
+    /// programs; hosts can tune it through the kernel worker options.
+    pub const DEFAULT_THREAD_SLOTS: u32 = 1024;
 
     /// A process-wasm declaration value meaning "use the host default".
     pub const THREAD_SLOTS_USE_HOST_DEFAULT: i32 = -1;
 
-    /// A process-wasm declaration value meaning "reserve no pthread slots".
+    /// A process-wasm declaration value meaning "allow no pthreads".
     pub const THREAD_SLOTS_NONE: i32 = 0;
 
     /// Export name of the process-wasm constant-return function that declares
-    /// the requested pthread slot reservation.
+    /// the requested concurrent pthread limit.
     pub const THREAD_SLOT_DECL_EXPORT: &str = "__wasm_posix_thread_slots";
 
     /// Legacy kernel MemoryManager::MMAP_BASE. Compact hosts override this
@@ -1097,6 +1099,8 @@ pub mod abi {
     ];
 
     pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
+        "kernel_reserve_host_region",
+        "kernel_reserve_host_region_at",
         "kernel_set_cwd",
         "kernel_set_max_addr",
         "kernel_set_mmap_base",

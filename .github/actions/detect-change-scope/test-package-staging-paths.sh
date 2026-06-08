@@ -76,5 +76,20 @@ assert_not_selected \
 assert_not_selected \
   "crates/fork-instrument/tests/instrument.rs" \
   "crates/fork-instrument/tests/instrument.rs"
+assert_selected \
+  ".github/actions/package-archive-build/action.yml" \
+  ".github/actions/package-archive-build/action.yml"
+assert_selected \
+  ".github/actions/package-toolchain/action.yml" \
+  ".github/actions/package-toolchain/action.yml"
+assert_selected \
+  ".github/actions/download-run-artifacts/action.yml" \
+  ".github/actions/download-run-artifacts/action.yml"
+assert_not_selected \
+  ".github/workflows/staging-build.yml" \
+  ".github/workflows/staging-build.yml"
+assert_not_selected \
+  ".github/workflows/prepare-merge.yml" \
+  ".github/workflows/prepare-merge.yml"
 
 echo "package-staging path filter tests passed"
