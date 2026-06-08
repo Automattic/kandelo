@@ -170,6 +170,61 @@ unsafe extern "C" {
     );
     fn host_unbind_framebuffer(pid: i32);
     fn host_fb_write(pid: i32, offset: usize, src: *const u8, len: usize);
+    fn host_gbm_bo_create(
+        pid: i32,
+        bo_id: u32,
+        size: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> i32;
+    fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
+    fn host_gbm_bo_create_gpu(
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32;
+    fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
+    fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
+    fn host_gl_bind(pid: i32, addr: usize, len: usize);
+    fn host_gl_unbind(pid: i32);
+    fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize);
+    fn host_gl_destroy_context(pid: i32, ctx_id: u32);
+    fn host_gl_create_surface(pid: i32, surface_id: u32, attrs_ptr: *const u8, attrs_len: usize);
+    fn host_gl_destroy_surface(pid: i32, surface_id: u32);
+    fn host_gl_make_current(pid: i32, ctx_id: u32, surface_id: u32);
+    fn host_gl_submit(pid: i32, offset: usize, length: usize);
+    fn host_gl_present(pid: i32);
+    fn host_gl_query(
+        pid: i32, op: u32,
+        in_ptr: *const u8, in_len: usize,
+        out_ptr: *mut u8, out_len: usize,
+    ) -> i32;
+    fn host_gl_bind_foreign_texture(
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32;
+    fn host_kms_set_master(pid: i32);
+    fn host_kms_drop_master(pid: i32);
+    fn host_proc_write_bytes(pid: i32, addr: u32, src_ptr: *const u8, len: u32) -> i32;
+    fn host_proc_read_bytes(pid: i32, addr: u32, dst_ptr: *mut u8, len: u32) -> i32;
+    fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
+    fn host_kms_addfb(
+        pid: i32,
+        fb_id: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        pixel_format: u32,
+        pitch: u32,
+    ) -> i32;
+    fn host_kms_rmfb(pid: i32, fb_id: u32);
+    fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +941,144 @@ impl HostIO for WasmHostIO {
 
     fn fb_write(&mut self, pid: i32, offset: usize, bytes: &[u8]) {
         unsafe { host_fb_write(pid, offset, bytes.as_ptr(), bytes.len()) }
+    }
+
+    fn gbm_bo_create(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        size: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> i32 {
+        unsafe { host_gbm_bo_create(pid, bo_id, size, width, height, stride) }
+    }
+
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
+        unsafe { host_gbm_bo_destroy(pid, bo_id) }
+    }
+
+    fn gbm_bo_create_gpu(
+        &mut self,
+        pid: i32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        format: u32,
+        usage: u32,
+    ) -> i32 {
+        unsafe { host_gbm_bo_create_gpu(pid, bo_id, width, height, format, usage) }
+    }
+
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+        unsafe { host_gbm_bo_bind(pid, bo_id, addr, len) }
+    }
+
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
+        unsafe { host_gbm_bo_unbind(pid, bo_id, addr, len) }
+    }
+
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize) {
+        unsafe { host_gl_bind(pid, addr, len) }
+    }
+
+    fn gl_unbind(&mut self, pid: i32) {
+        unsafe { host_gl_unbind(pid) }
+    }
+
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {
+        unsafe { host_gl_create_context(pid, ctx_id, attrs.as_ptr(), attrs.len()) }
+    }
+
+    fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {
+        unsafe { host_gl_destroy_context(pid, ctx_id) }
+    }
+
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {
+        unsafe { host_gl_create_surface(pid, surface_id, attrs.as_ptr(), attrs.len()) }
+    }
+
+    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32) {
+        unsafe { host_gl_destroy_surface(pid, surface_id) }
+    }
+
+    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, surface_id: u32) {
+        unsafe { host_gl_make_current(pid, ctx_id, surface_id) }
+    }
+
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) {
+        unsafe { host_gl_submit(pid, offset, length) }
+    }
+
+    fn gl_present(&mut self, pid: i32) {
+        unsafe { host_gl_present(pid) }
+    }
+
+    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+        unsafe {
+            host_gl_query(
+                pid, op,
+                input.as_ptr(), input.len(),
+                out.as_mut_ptr(), out.len(),
+            )
+        }
+    }
+
+    fn gl_bind_foreign_texture(
+        &mut self,
+        pid: i32,
+        ctx_id: u32,
+        bo_id: u32,
+        gl_target: u32,
+    ) -> i32 {
+        unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
+    }
+
+    fn kms_set_master(&mut self, pid: i32) {
+        unsafe { host_kms_set_master(pid) }
+    }
+
+    fn kms_drop_master(&mut self, pid: i32) {
+        unsafe { host_kms_drop_master(pid) }
+    }
+
+    fn proc_write_bytes(&mut self, pid: i32, addr: u32, src: &[u8]) -> i32 {
+        unsafe { host_proc_write_bytes(pid, addr, src.as_ptr(), src.len() as u32) }
+    }
+
+    fn proc_read_bytes(&mut self, pid: i32, addr: u32, dst: &mut [u8]) -> i32 {
+        unsafe { host_proc_read_bytes(pid, addr, dst.as_mut_ptr(), dst.len() as u32) }
+    }
+
+    fn kms_mode_info(
+        &mut self,
+        connector_id: u32,
+    ) -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
+        let mut info = wasm_posix_shared::dri::WpkDrmModeModeinfo::default();
+        unsafe { host_kms_mode_info(connector_id, &mut info as *mut _ as *mut u8) }
+        info
+    }
+
+    fn kms_addfb(
+        &mut self,
+        pid: i32,
+        fb_id: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        pixel_format: u32,
+        pitch: u32,
+    ) -> i32 {
+        unsafe { host_kms_addfb(pid, fb_id, bo_id, width, height, pixel_format, pitch) }
+    }
+
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {
+        unsafe { host_kms_rmfb(pid, fb_id) }
+    }
+
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
+        unsafe { host_kms_set_fb(pid, crtc_id, fb_id) }
     }
 }
 
