@@ -1,6 +1,7 @@
 name: Browser demo smoke tests
 
 on:
+  workflow_dispatch:
   pull_request:
     paths:
       - ".github/workflows/browser-demos-ci.yml"
@@ -64,3 +65,99 @@ jobs:
             --project=chromium \
             --project=firefox \
             --project=webkit
+
+  spidermonkey-node-oob-debug:
+    name: SpiderMonkey Node OOB debug
+    if: |
+      (
+        github.event_name == 'workflow_dispatch' &&
+        startsWith(github.ref_name, 'debug-spidermonkey-oob')
+      ) ||
+      (
+        github.event_name == 'pull_request' &&
+        startsWith(github.head_ref, 'debug-spidermonkey-oob')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PR629_RUN_ID: "27139189591"
+      KANDELO_PLAYWRIGHT_PORT: "5591"
+      KANDELO_BROWSER_NODE_MEMORY_DIAGNOSTICS: "1"
+      KANDELO_SM_NODE_DIAG_STYLE: both
+      KANDELO_SM_NODE_MEMORY_PAGES: "4096 8192 16384"
+      KANDELO_SM_NODE_DIAG_CASES: "SAB_STORE SAB_NOTIFY WORKER_NO_TERMINATE WORKER_TERMINATE WORKER_TERMINATE_LISTENER FULL_SMOKE"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            apps/browser-demos/package-lock.json
+            host/package-lock.json
+
+      - name: Download PR629 prepared workspace
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pr629-test-workspace"
+          gh run download "$PR629_RUN_ID" \
+            --repo "${{ github.repository }}" \
+            --name test-workspace \
+            --dir "$RUNNER_TEMP/pr629-test-workspace"
+          tar --zstd -xf "$RUNNER_TEMP/pr629-test-workspace/test-workspace.tar.zst" \
+            -C "$RUNNER_TEMP/pr629-test-workspace"
+          rsync -a "$RUNNER_TEMP/pr629-test-workspace/binaries/" binaries/
+          rsync -a "$RUNNER_TEMP/pr629-test-workspace/local-binaries/" local-binaries/
+          mkdir -p host/wasm
+          rsync -a "$RUNNER_TEMP/pr629-test-workspace/host/wasm/" host/wasm/
+          bash scripts/ci-verify-browser-workspace.sh
+
+      - name: Install dependencies and Chromium
+        run: |
+          set -euo pipefail
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+          (cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund)
+          (
+            cd apps/browser-demos
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            npx playwright install --with-deps chromium
+          )
+
+      - name: Run focused SpiderMonkey Node diagnostics
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/spidermonkey-node-oob-debug"
+          mkdir -p "$out"
+          {
+            echo "head=$(git rev-parse HEAD)"
+            echo "PR629_RUN_ID=$PR629_RUN_ID"
+            echo "KANDELO_SM_NODE_DIAG_STYLE=$KANDELO_SM_NODE_DIAG_STYLE"
+            echo "KANDELO_SM_NODE_MEMORY_PAGES=$KANDELO_SM_NODE_MEMORY_PAGES"
+            echo "KANDELO_SM_NODE_DIAG_CASES=$KANDELO_SM_NODE_DIAG_CASES"
+            uname -a
+            google-chrome --version || true
+            npx --prefix apps/browser-demos playwright --version
+          } | tee "$out/environment.txt"
+          (
+            cd apps/browser-demos
+            npx playwright test test/browser-node-memory-diagnostics.spec.ts \
+              --project=chromium \
+              --workers=1 \
+              --trace=on \
+              --output "$out/playwright-output"
+          ) 2>&1 | tee "$out/playwright.log"
+
+      - name: Upload SpiderMonkey Node debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spidermonkey-node-oob-debug
+          path: ${{ runner.temp }}/spidermonkey-node-oob-debug
+          retention-days: 7
+          if-no-files-found: warn

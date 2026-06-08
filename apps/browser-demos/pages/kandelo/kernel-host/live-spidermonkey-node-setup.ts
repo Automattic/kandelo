@@ -38,6 +38,7 @@ const COI_RELOAD_SESSION_KEY = "kandelo:sm-node-coi-reload-attempted";
 // Node profile's 256 MiB cap instead of reserving the 1 GiB BrowserKernel
 // default for every bash/node/worker process in this demo.
 const SPIDERMONKEY_NODE_MEMORY_PAGES = 4096;
+const DEV_DIAGNOSTIC_QUERY_ENABLED = import.meta.env.DEV;
 
 const SHELL_ENV = [
   "HOME=/work",
@@ -231,7 +232,8 @@ export async function createLiveSpiderMonkeyNodeHost(
   requestedDemo?: string | null,
 ): Promise<LiveKernelHost> {
   const initialDemo = normalizeSpiderMonkeyNodeDemoId(requestedDemo) ?? "node";
-  const descriptor = descriptorForSpiderMonkeyNode(initialDemo);
+  const memoryPages = spiderMonkeyNodeMemoryPages();
+  const descriptor = descriptorForSpiderMonkeyNode(initialDemo, memoryPages);
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
   const host = new LiveKernelHost({
@@ -254,7 +256,7 @@ export async function createLiveSpiderMonkeyNodeHost(
         window.location.href = url.href;
         return;
       }
-      await startBoot(host, descriptorForSpiderMonkeyNode(nextDemo));
+      await startBoot(host, descriptorForSpiderMonkeyNode(nextDemo, spiderMonkeyNodeMemoryPages()));
     },
   });
 
@@ -357,7 +359,7 @@ async function boot(
     kernel = new BrowserKernel({
       memfs,
       maxWorkers: 4,
-      maxMemoryPages: SPIDERMONKEY_NODE_MEMORY_PAGES,
+      maxMemoryPages: descriptor.runtime.memoryPages,
       onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
       onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
       onProcessEvent: (event) => {
@@ -376,10 +378,14 @@ async function boot(
       env: SHELL_ENV,
       cwd: "/work",
     });
-    tick("running SpiderMonkey Node smoke...");
-    await host.runShellCommand(spiderMonkeyNodeSmokeCommand()).catch((err) => {
-      tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    if (shouldSkipSpiderMonkeyNodeSmoke()) {
+      tick("SpiderMonkey Node smoke skipped by diagnostics");
+    } else {
+      tick("running SpiderMonkey Node smoke...");
+      await host.runShellCommand(spiderMonkeyNodeSmokeCommand()).catch((err) => {
+        tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
     assertCurrent();
     tick("ready");
     host.setStatus("running");
@@ -444,7 +450,25 @@ function normalizeSpiderMonkeyNodeDemoId(id: string | null | undefined): SpiderM
   return null;
 }
 
-function descriptorForSpiderMonkeyNode(id: SpiderMonkeyNodeDemoId): BootDescriptor {
+function spiderMonkeyNodeMemoryPages(): number {
+  if (!DEV_DIAGNOSTIC_QUERY_ENABLED) return SPIDERMONKEY_NODE_MEMORY_PAGES;
+  const raw = new URLSearchParams(location.search).get("smNodeMemoryPages");
+  if (!raw) return SPIDERMONKEY_NODE_MEMORY_PAGES;
+  const pages = Number(raw);
+  if (!Number.isInteger(pages) || pages < 1024 || pages > 32768) {
+    console.warn(`Ignoring invalid smNodeMemoryPages=${raw}`);
+    return SPIDERMONKEY_NODE_MEMORY_PAGES;
+  }
+  return pages;
+}
+
+function shouldSkipSpiderMonkeyNodeSmoke(): boolean {
+  if (!DEV_DIAGNOSTIC_QUERY_ENABLED) return false;
+  const value = new URLSearchParams(location.search).get("smNodeSkipSmoke");
+  return value === "1" || value === "true";
+}
+
+function descriptorForSpiderMonkeyNode(id: SpiderMonkeyNodeDemoId, memoryPages: number): BootDescriptor {
   const item = PRESET_LIBRARY.find((p) => p.id === id)
     ?? PRESET_LIBRARY.find((p) => p.id === "node")!;
   return {
@@ -455,7 +479,7 @@ function descriptorForSpiderMonkeyNode(id: SpiderMonkeyNodeDemoId): BootDescript
     runtime: {
       arch: "wasm32",
       kernel: "kernel@local",
-      memoryPages: SPIDERMONKEY_NODE_MEMORY_PAGES,
+      memoryPages,
       features: ["shared-array-buffer", "pty", "js-workers"],
       time: "real",
     },
