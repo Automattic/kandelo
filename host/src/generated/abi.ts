@@ -34,6 +34,8 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
 ] as const;
 
 export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
+  "kernel_reserve_host_region",
+  "kernel_reserve_host_region_at",
   "kernel_set_cwd",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
@@ -81,7 +83,7 @@ export const CH_TOTAL_SIZE = 65608 as const;
 export const PROCESS_MEMORY_WASM_PAGE_SIZE = 65536 as const;
 export const PROCESS_MEMORY_DEFAULT_MAX_PAGES = 16384 as const;
 export const PROCESS_MEMORY_DEFAULT_INITIAL_PAGES = 17 as const;
-export const PROCESS_MEMORY_DEFAULT_THREAD_SLOTS = 16 as const;
+export const PROCESS_MEMORY_DEFAULT_THREAD_SLOTS = 1024 as const;
 export const PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT = -1 as const;
 export const PROCESS_MEMORY_THREAD_SLOTS_NONE = 0 as const;
 export const PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT = "__wasm_posix_thread_slots" as const;

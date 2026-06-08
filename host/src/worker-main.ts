@@ -1858,15 +1858,9 @@ export async function centralizedThreadWorkerMain(
       }
     }
 
-    // CLONE_CHILD_CLEARTID: write 0 to ctidPtr and futex-wake it
-    if (ctidPtr !== 0) {
-      const view = new DataView(memory.buffer);
-      view.setInt32(ctidPtr, 0, true);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.notify(i32, ctidPtr / 4, 1);
-    }
-
-    // Send SYS_EXIT through channel to notify kernel of thread exit
+    // Send SYS_EXIT through the channel. The kernel worker performs
+    // CLONE_CHILD_CLEARTID after it observes SYS_EXIT; doing it here would
+    // let pthread_join reclaim the stack while this Worker is still running.
     {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
