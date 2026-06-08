@@ -815,6 +815,36 @@ export class BrowserKernel {
   }
 
   /**
+   * Hand an `OffscreenCanvas` to the kernel worker as the scanout
+   * target for KMS CRTC `crtcId`. The worker's vblank pump blits the
+   * CRTC's currently-bound framebuffer into this canvas at 60 Hz.
+   *
+   * `canvas` is transferred — the main thread loses control of it.
+   * Pass `stats` to receive blit + page-flip telemetry (see
+   * `attachKmsStats` for the slot layout).
+   */
+  kmsAttachCanvas(
+    crtcId: number,
+    canvas: OffscreenCanvas,
+    stats?: SharedArrayBuffer,
+  ): void {
+    this.sendToKernel(
+      { type: "kms_attach_canvas", crtcId, canvas, stats },
+      [canvas],
+    );
+  }
+
+  /**
+   * Register a stats SAB for KMS CRTC `crtcId` without binding a
+   * scanout canvas. The worker still writes `commit_count` and
+   * `last_frame_us` into slots 5/6 each vblank tick. Used by demos
+   * that render through WebGL rather than the 2D blit path.
+   */
+  kmsAttachStats(crtcId: number, stats: SharedArrayBuffer): void {
+    this.sendToKernel({ type: "kms_attach_stats", crtcId, stats });
+  }
+
+  /**
    * Drain up to `maxBytes` of PCM audio buffered in the kernel's
    * `/dev/dsp` ring. Returns the bytes plus the configured sample
    * rate / channel count so the caller can build a correctly-sized
