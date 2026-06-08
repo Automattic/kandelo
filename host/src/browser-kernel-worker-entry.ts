@@ -117,6 +117,7 @@ interface ProcessInfo {
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
+  argv: string[];
   channelOffset: number;
   ptrWidth: 4 | 8;
   layout: ProcessMemoryLayout;
@@ -129,6 +130,7 @@ const processTeardowns = new Map<number, Promise<void>>();
 const workerTeardowns = new Set<Promise<void>>();
 const threadedProcessPids = new Set<number>();
 const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
+const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
@@ -190,6 +192,21 @@ const threadExits = new ThreadExitCoordinator();
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function basename(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
+function processWorkerTerminationSettleMs(argv: readonly string[] | undefined): number {
+  const name = basename(argv?.[0] ?? "");
+  // Chrome can still have SpiderMonkey Node's process Worker teardown in
+  // flight after worker.terminate() resolves. Launching another Node-mode
+  // process too quickly can make the second process trap in its wasm runtime.
+  return name === "node" || name === "spidermonkey-node" || name === "spidermonkey-node.wasm"
+    ? NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS
+    : 0;
 }
 
 async function waitForProcessTeardowns(): Promise<void> {
@@ -681,6 +698,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       memory,
       programBytes,
       worker,
+      argv: msg.argv,
       channelOffset,
       ptrWidth,
       layout,
@@ -843,6 +861,7 @@ async function handleFork(
     programBytes: parentInfo.programBytes,
     programModule: parentInfo.programModule,
     worker: childWorker,
+    argv: parentInfo.argv,
     channelOffset: childChannelOffset,
     ptrWidth,
     layout: childLayout,
@@ -932,6 +951,7 @@ async function handleExec(
     memory: newMemory,
     programBytes: bytes,
     worker: newWorker,
+    argv: launchArgv,
     channelOffset: newChannelOffset,
     ptrWidth,
     layout: newLayout,
@@ -1031,6 +1051,7 @@ async function handlePosixSpawn(
     memory: newMemory,
     programBytes,
     worker: newWorker,
+    argv,
     channelOffset: newChannelOffset,
     ptrWidth,
     layout: newLayout,
@@ -1176,9 +1197,13 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
   if (processTeardowns.has(pid)) return;
 
   const info = processes.get(pid);
-  const settleMs = threadedProcessPids.has(pid)
+  const threadedSettleMs = threadedProcessPids.has(pid)
     ? THREADED_WORKER_TERMINATION_SETTLE_MS
     : 0;
+  const settleMs = Math.max(
+    threadedSettleMs,
+    processWorkerTerminationSettleMs(info?.argv),
+  );
   threadedProcessPids.delete(pid);
 
   const teardown = (async () => {

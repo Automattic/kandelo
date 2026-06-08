@@ -154,10 +154,6 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
 });
 
 test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page }) => {
-  test.skip(
-    true,
-    "Bug under investigation: SpiderMonkey Node browser demo traps with wasm memory access out of bounds after the worker_threads/SAB smoke.",
-  );
   test.setTimeout(240_000);
 
   await gotoOrSkip(page, "/?demo=node");
