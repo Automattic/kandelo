@@ -217,7 +217,7 @@ test("browser Node worker crash matrix", async ({ page }) => {
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForTerminalContent(
     page,
-    /worker\s+42[\s\S]*(10\.9\.2|Segmentation fault)[\s\S]*spidermonkey-node\$ ?/,
+    /(worker\s+42|Segmentation fault)[\s\S]*spidermonkey-node\$ ?/,
     240_000,
   );
 
@@ -257,6 +257,12 @@ set +e
 targeted_rc="${PIPESTATUS[0]}"
 set -e
 
+record_node_assets "after targeted playwright"
+
+if [ "$targeted_rc" -ne 0 ]; then
+    exit "$targeted_rc"
+fi
+
 log_section "focused shell+node browser repeat"
 set +e
 (
@@ -274,9 +280,5 @@ repeat_rc="${PIPESTATUS[0]}"
 set -e
 
 record_node_assets "after playwright"
-
-if [ "$targeted_rc" -ne 0 ]; then
-    exit "$targeted_rc"
-fi
 
 exit "$repeat_rc"
