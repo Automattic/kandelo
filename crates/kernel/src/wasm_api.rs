@@ -7795,11 +7795,11 @@ pub extern "C" fn kernel_tcsetattr(fd: i32, action: u32, buf_ptr: *const u8, buf
 pub extern "C" fn kernel_ioctl(fd: i32, request: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
     let (_gkl, proc) = unsafe { get_process() };
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
-    let result = match syscalls::sys_ioctl(proc, fd, request, buf) {
+    let mut host = WasmHostIO;
+    let result = match syscalls::sys_ioctl(proc, &mut host, fd, request, buf) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    let mut host = WasmHostIO;
     deliver_pending_signals(proc, &mut host);
     result
 }
