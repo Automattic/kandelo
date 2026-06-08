@@ -1132,7 +1132,10 @@ jobs:
         # runners). build-rootfs.sh produces host/wasm/rootfs.vfs, which
         # NodeKernelHost loads when callers request `rootfsImage:"default"`
         # — the default for runCentralizedProgram. Without this, vitest
-        # tests fail with "rootfs.vfs is missing".
+        # tests fail with "rootfs.vfs is missing". The browser suite also
+        # imports nginx/nginx+PHP VFS images directly through @binaries/; those
+        # images are not package artifacts, so build them before packing the
+        # prepared workspace.
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
@@ -1145,6 +1148,7 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
+            ./run.sh build nginx-vfs nginx-php-vfs
           '
 
       - name: Pack prepared test workspace

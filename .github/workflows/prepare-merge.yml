@@ -1635,7 +1635,8 @@ jobs:
       - name: Build kernel + test programs + install host deps
         # The vitest suite installs Chromium in its own runner because
         # browser downloads are not part of the prepared workspace
-        # artifact.
+        # artifact. Browser-only nginx/nginx+PHP VFS images are not package
+        # artifacts, so build them before packing the prepared workspace.
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
@@ -1648,6 +1649,7 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
+            ./run.sh build nginx-vfs nginx-php-vfs
           '
 
       - name: Pack prepared test workspace
