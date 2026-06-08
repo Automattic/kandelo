@@ -175,6 +175,47 @@ const fullSmokeSource = [
   "worker.terminate();",
 ].join(" ");
 
+const fullSmokeNoWorkerSource = [
+  "const assert=require('node:assert');",
+  "const path=require('path');",
+  "const b=Buffer.from('Kandelo');",
+  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
+  "console.log('SpiderMonkey Node', process.version, process.arch);",
+  "console.log(b.toString('hex'));",
+  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
+  "console.log('DIAG_FULL_NO_WORKER_DONE');",
+].join(" ");
+
+const fullSmokeNoTerminateSource = [
+  "const assert=require('node:assert');",
+  "const path=require('path');",
+  "const {Worker}=require('worker_threads');",
+  "const b=Buffer.from('Kandelo');",
+  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
+  "console.log('SpiderMonkey Node', process.version, process.arch);",
+  "console.log(b.toString('hex'));",
+  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
+  "const sab=new SharedArrayBuffer(8);",
+  "const view=new Int32Array(sab);",
+  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
+  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
+  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
+  "console.log('worker', Atomics.load(view,0));",
+  "console.log('DIAG_FULL_NO_TERMINATE_DONE');",
+].join(" ");
+
+function workerPlainSource(options: { terminate: boolean }): string {
+  return [
+    "const {Worker}=require('worker_threads');",
+    "const worker=new Worker('console.log(\"DIAG_WORKER_PLAIN_BODY\")',{eval:true});",
+    "console.log('DIAG_WORKER_PLAIN_CREATED');",
+    options.terminate ? "console.log('DIAG_WORKER_PLAIN_TERMINATE_BEFORE');" : "",
+    options.terminate ? "const terminateResult=worker.terminate();" : "",
+    options.terminate ? "console.log('DIAG_WORKER_PLAIN_TERMINATE_AFTER', terminateResult);" : "",
+    "console.log('DIAG_WORKER_PLAIN_DONE');",
+  ].filter(Boolean).join(" ");
+}
+
 const ALL_CASES: DiagCase[] = [
   {
     name: "NODE_VERSION",
@@ -237,6 +278,14 @@ const ALL_CASES: DiagCase[] = [
     command: jsShellEval("var sab=new SharedArrayBuffer(8); var view=new Int32Array(sab); Atomics.store(view,1,1); Atomics.notify(view,1); print('DIAG_JS_SAB_NOTIFY');"),
   },
   {
+    name: "FULL_NO_WORKER",
+    command: nodeEval(fullSmokeNoWorkerSource),
+  },
+  {
+    name: "WORKER_REQUIRE_ONLY",
+    command: nodeEval("const {Worker}=require('worker_threads'); console.log('DIAG_WORKER_REQUIRE_ONLY', typeof Worker);"),
+  },
+  {
     name: "WORKER_NO_TERMINATE",
     command: nodeEval(workerSource({ terminate: false, exitListener: false })),
   },
@@ -245,8 +294,25 @@ const ALL_CASES: DiagCase[] = [
     command: nodeEval(workerSource({ terminate: true, exitListener: false })),
   },
   {
+    name: "WORKER_SAB_TERMINATE_NO_EXIT",
+    command: nodeEval(`${noNaturalProcessExit} ${workerSource({ terminate: true, exitListener: false })}`),
+  },
+  {
+    name: "WORKER_PLAIN_TERMINATE",
+    command: nodeEval(workerPlainSource({ terminate: true })),
+  },
+  {
+    name: "WORKER_PLAIN_TERMINATE_NO_EXIT",
+    command: nodeEval(`${noNaturalProcessExit} ${workerPlainSource({ terminate: true })}`),
+  },
+  {
     name: "WORKER_TERMINATE_LISTENER",
     command: nodeEval(workerSource({ terminate: true, exitListener: true })),
+  },
+  {
+    name: "FULL_SMOKE_NO_TERMINATE",
+    command: nodeEval(fullSmokeNoTerminateSource),
+    timeout: 180_000,
   },
   {
     name: "FULL_SMOKE",
