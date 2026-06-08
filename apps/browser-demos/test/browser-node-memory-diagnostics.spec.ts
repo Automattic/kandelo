@@ -110,6 +110,10 @@ function nodeEval(source: string): string {
   return `node -e ${JSON.stringify(source)}`;
 }
 
+function chainNpm(command: string): string {
+  return `${command} && npm --version`;
+}
+
 function jsShellEval(source: string): string {
   return `ln -sf /usr/bin/node /usr/bin/js && js --shared-memory=on -e ${JSON.stringify(source)}`;
 }
@@ -295,8 +299,23 @@ const ALL_CASES: DiagCase[] = [
     command: "node --version",
   },
   {
+    name: "NPM_VERSION",
+    command: "npm --version",
+    timeout: 180_000,
+  },
+  {
+    name: "NODE_VERSION_NPM",
+    command: chainNpm("node --version"),
+    timeout: 180_000,
+  },
+  {
     name: "NODE_EMPTY",
     command: nodeEval(""),
+  },
+  {
+    name: "NODE_EMPTY_NPM",
+    command: chainNpm(nodeEval("")),
+    timeout: 180_000,
   },
   {
     name: "NODE_EMPTY_NO_EXIT",
@@ -305,6 +324,11 @@ const ALL_CASES: DiagCase[] = [
   {
     name: "SIMPLE",
     command: nodeEval("console.log('DIAG_SIMPLE_BODY')"),
+  },
+  {
+    name: "SIMPLE_NPM",
+    command: chainNpm(nodeEval("console.log('DIAG_SIMPLE_BODY')")),
+    timeout: 180_000,
   },
   {
     name: "SIMPLE_NO_EXIT",
@@ -355,6 +379,11 @@ const ALL_CASES: DiagCase[] = [
     command: nodeEval(fullSmokeNoWorkerSource),
   },
   {
+    name: "FULL_NO_WORKER_NPM",
+    command: chainNpm(nodeEval(fullSmokeNoWorkerSource)),
+    timeout: 180_000,
+  },
+  {
     name: "WORKER_REQUIRE_ONLY",
     command: nodeEval("const {Worker}=require('worker_threads'); console.log('DIAG_WORKER_REQUIRE_ONLY', typeof Worker);"),
   },
@@ -399,8 +428,18 @@ const ALL_CASES: DiagCase[] = [
     command: nodeEval(sabWorkerProbe([...corePrelude, ...bufferPrelude, ...intlPrelude], "terminate")),
   },
   {
+    name: "WORKER_SAB_TERMINATE_CORE_BUFFER_INTL_NPM",
+    command: chainNpm(nodeEval(sabWorkerProbe([...corePrelude, ...bufferPrelude, ...intlPrelude], "terminate"))),
+    timeout: 180_000,
+  },
+  {
     name: "WORKER_SAB_TERMINATE_CORE_BUFFER_INTL_NO_MARKER",
     command: nodeEval(reducedCoreBufferIntlNoMarkerSource),
+  },
+  {
+    name: "WORKER_SAB_TERMINATE_CORE_BUFFER_INTL_NO_MARKER_NPM",
+    command: chainNpm(nodeEval(reducedCoreBufferIntlNoMarkerSource)),
+    timeout: 180_000,
   },
   {
     name: "WORKER_SAB_LISTENERCOUNT_CORE_BUFFER_INTL",
@@ -424,8 +463,13 @@ const ALL_CASES: DiagCase[] = [
     timeout: 180_000,
   },
   {
+    name: "FULL_SMOKE_NO_TERMINATE_NPM",
+    command: chainNpm(nodeEval(fullSmokeNoTerminateSource)),
+    timeout: 180_000,
+  },
+  {
     name: "FULL_SMOKE",
-    command: `${nodeEval(fullSmokeSource)} && npm --version`,
+    command: chainNpm(nodeEval(fullSmokeSource)),
     timeout: 180_000,
   },
   {
@@ -439,8 +483,18 @@ const ALL_CASES: DiagCase[] = [
     timeout: 180_000,
   },
   {
+    name: "FULL_SMOKE_MARKER_NPM",
+    command: chainNpm(nodeEval(fullSmokeMarkerSource)),
+    timeout: 180_000,
+  },
+  {
     name: "FULL_SMOKE_TERMINATE_RESULT",
     command: nodeEval(fullSmokeTerminateResultSource),
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_TERMINATE_RESULT_NPM",
+    command: chainNpm(nodeEval(fullSmokeTerminateResultSource)),
     timeout: 180_000,
   },
   {
@@ -449,13 +503,28 @@ const ALL_CASES: DiagCase[] = [
     timeout: 180_000,
   },
   {
+    name: "FULL_SMOKE_TERMINATE_RESULT_MARKER_NPM",
+    command: chainNpm(nodeEval(fullSmokeTerminateResultMarkerSource)),
+    timeout: 180_000,
+  },
+  {
     name: "FULL_SMOKE_LISTENERCOUNT",
     command: nodeEval(fullSmokeListenerCountSource),
     timeout: 180_000,
   },
   {
+    name: "FULL_SMOKE_LISTENERCOUNT_NPM",
+    command: chainNpm(nodeEval(fullSmokeListenerCountSource)),
+    timeout: 180_000,
+  },
+  {
     name: "FULL_SMOKE_NO_PROCESS_INFO",
     command: nodeEval(fullSmokeNoProcessInfoSource),
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_NO_PROCESS_INFO_NPM",
+    command: chainNpm(nodeEval(fullSmokeNoProcessInfoSource)),
     timeout: 180_000,
   },
   {
