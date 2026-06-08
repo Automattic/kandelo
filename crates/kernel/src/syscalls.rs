@@ -5770,7 +5770,7 @@ pub fn sys_mmap(
     prot: u32,
     flags: u32,
     fd: i32,
-    _offset: i64,
+    offset: i64,
 ) -> Result<usize, Errno> {
     if flags & MAP_ANONYMOUS == 0 {
         // File-backed mapping: validate the fd is open.
@@ -5816,6 +5816,60 @@ pub fn sys_mmap(
                 FB_LINE_LENGTH,
                 0,
             );
+            return Ok(addr_out);
+        }
+
+        // /dev/dri/{renderD128,card0}: the caller obtained `offset` from
+        // `DRM_IOCTL_MODE_MAP_DUMB`, which encodes the target bo id as
+        // `(bo_id as u64) << 12`. Decode, validate the bo is live and
+        // the requested `len` matches the bo's backing size, allocate
+        // wasm pages, then ask the host to point that region at the
+        // bo's SAB slice via `gbm_bo_bind`.
+        if ofd.dri_state.is_some()
+            && matches!(
+                ofd.dri_state.as_deref(),
+                Some(crate::ofd::DriOfdState::RenderNode(_))
+                    | Some(crate::ofd::DriOfdState::Card { .. })
+            )
+        {
+            if offset < 0 {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id = ((offset as u64) >> 12) as crate::dri::BoId;
+            let bo_info = crate::dri::with_registry(|r| {
+                r.get(bo_id).map(|b| (b.tier, b.size))
+            });
+            let (tier, bo_size) = bo_info.ok_or(Errno::EINVAL)?;
+            // GPU-tier bos are WebGLTexture-backed and have no CPU
+            // mapping; only CpuShared bos are mmap-able.
+            if tier != crate::dri::BoTier::CpuShared {
+                return Err(Errno::EINVAL);
+            }
+            // libgbm rounds the map length up to a wasm page (64 KiB)
+            // and the kernel mirrors that here so the request matches
+            // whatever `mmap_anonymous` actually allocates.
+            let aligned_bo_size = (bo_size as usize)
+                .checked_add(0xFFFF)
+                .ok_or(Errno::EINVAL)?
+                & !0xFFFF;
+            if len != aligned_bo_size {
+                return Err(Errno::EINVAL);
+            }
+            let alloc_flags = flags | MAP_ANONYMOUS;
+            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
+            if addr_out == MAP_FAILED {
+                return Err(Errno::ENOMEM);
+            }
+            let bind_rc = host.gbm_bo_bind(proc.pid as i32, bo_id, addr_out, len);
+            if bind_rc < 0 {
+                proc.memory.munmap(addr_out, len);
+                return Err(Errno::ENOMEM);
+            }
+            proc.dri_bindings.push(crate::process::DriBoBinding {
+                addr: addr_out,
+                len,
+                bo_id,
+            });
             return Ok(addr_out);
         }
     }
@@ -5869,6 +5923,27 @@ pub fn sys_munmap(
         if !proc_has_fb0_fd(proc) {
             maybe_release_fb0(proc.pid);
         }
+    }
+
+    // DRI bo cleanup: drop every binding fully covered by [addr, addr+len)
+    // and tell the host so it stops mirroring the region before the
+    // wasm pages return to the anonymous pool. Partial munmap of a
+    // bo binding is unsupported (libgbm always pairs map/unmap with
+    // matching geometry, mirroring fb0 semantics).
+    let pid = proc.pid as i32;
+    let unmap_end = addr.saturating_add(len);
+    let mut released: alloc::vec::Vec<crate::process::DriBoBinding> = alloc::vec::Vec::new();
+    proc.dri_bindings.retain(|b| {
+        let b_end = b.addr.saturating_add(b.len);
+        if addr <= b.addr && unmap_end >= b_end {
+            released.push(*b);
+            false
+        } else {
+            true
+        }
+    });
+    for b in &released {
+        host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
     }
 
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
@@ -11223,6 +11298,14 @@ mod tests {
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
         missing_paths: std::collections::HashSet<Vec<u8>>,
         statfs_by_path: std::collections::HashMap<Vec<u8>, WasmStatfs>,
+        /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_bind` call so
+        /// the DRI mmap path can be asserted against.
+        gbm_bo_bind_calls: Vec<(i32, u32, usize, usize)>,
+        /// Recorded `(pid, bo_id, addr, len)` for every `gbm_bo_unbind` call.
+        gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
+        /// Override for `gbm_bo_bind`'s return value (0 = success, negative
+        /// = errno). Defaults to 0.
+        gbm_bo_bind_rc: i32,
     }
 
     impl MockHostIO {
@@ -11241,6 +11324,9 @@ mod tests {
                 handle_paths: std::collections::HashMap::new(),
                 missing_paths: std::collections::HashSet::new(),
                 statfs_by_path: std::collections::HashMap::new(),
+                gbm_bo_bind_calls: Vec::new(),
+                gbm_bo_unbind_calls: Vec::new(),
+                gbm_bo_bind_rc: 0,
             }
         }
 
@@ -11701,6 +11787,13 @@ mod tests {
             0
         }
         fn gbm_bo_destroy(&mut self, _pid: i32, _bo_id: u32) {}
+        fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+            self.gbm_bo_bind_calls.push((pid, bo_id, addr, len));
+            self.gbm_bo_bind_rc
+        }
+        fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
+            self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
+        }
     }
 
     fn user_process(pid: u32) -> Process {
@@ -21574,5 +21667,269 @@ mod tests {
         let mut buf = [0u8; 16];
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
         assert_eq!(n, 0);
+    }
+
+    /// Helper: open `/dev/dri/renderD128`, allocate a dumb buffer, fetch its
+    /// mmap offset via `MODE_MAP_DUMB`, and return `(fd, offset, size)`.
+    fn dri_alloc_dumb_for_mmap(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        width: u32,
+        height: u32,
+    ) -> (i32, u64, usize) {
+        use wasm_posix_shared::dri::*;
+        let fd = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let create = WpkDrmModeCreateDumb {
+            width,
+            height,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe {
+            core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+        };
+        sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let map = WpkDrmModeMapDumb {
+            handle: created.handle,
+            pad: 0,
+            offset: 0,
+        };
+        let mut mbuf = [0u8; core::mem::size_of::<WpkDrmModeMapDumb>()];
+        unsafe { core::ptr::write_unaligned(mbuf.as_mut_ptr() as *mut WpkDrmModeMapDumb, map) };
+        sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_MAP_DUMB, &mut mbuf).unwrap();
+        let mapped: WpkDrmModeMapDumb =
+            unsafe { core::ptr::read_unaligned(mbuf.as_ptr() as *const WpkDrmModeMapDumb) };
+
+        (fd, mapped.offset, created.size as usize)
+    }
+
+    #[test]
+    fn mmap_dri_binds_bo_in_process_memory() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        // libgbm rounds the map length up to a wasm page; the kernel
+        // requires the caller to match that to avoid SAB/wasm geometry
+        // skew.
+        let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap();
+        assert_ne!(addr, 0);
+
+        // The host saw a single bind for our pid + the bo whose id we
+        // can recover from the encoded offset.
+        let bo_id = (offset >> 12) as u32;
+        assert_eq!(host.gbm_bo_bind_calls, vec![(proc.pid as i32, bo_id, addr, aligned_len)]);
+
+        // Process tracks the binding so munmap can locate it later.
+        assert_eq!(proc.dri_bindings.len(), 1);
+        assert_eq!(proc.dri_bindings[0].addr, addr);
+        assert_eq!(proc.dri_bindings[0].len, aligned_len);
+        assert_eq!(proc.dri_bindings[0].bo_id, bo_id);
+    }
+
+    #[test]
+    fn mmap_dri_with_wrong_length_returns_einval_and_skips_host() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+
+        // Wrong length (single page < page-aligned bo size) → EINVAL,
+        // no host call.
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+        assert!(host.gbm_bo_bind_calls.is_empty());
+        assert!(proc.dri_bindings.is_empty());
+    }
+
+    #[test]
+    fn mmap_dri_with_unknown_bo_offset_returns_einval() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // An offset that doesn't decode to a live bo → EINVAL.
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            0x10000,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            (0x9999u64 << 12) as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+        assert!(host.gbm_bo_bind_calls.is_empty());
+        assert!(proc.dri_bindings.is_empty());
+    }
+
+    #[test]
+    fn mmap_dri_rolls_back_when_host_bind_fails() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.gbm_bo_bind_rc = -(Errno::ENOMEM as i32);
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::ENOMEM);
+        // Bind attempt was made and observed.
+        assert_eq!(host.gbm_bo_bind_calls.len(), 1);
+        // Wasm pages were rolled back: no binding recorded, no live
+        // anonymous mapping in the address range we asked about.
+        assert!(proc.dri_bindings.is_empty());
+        // The host was NOT asked to unbind — the bind itself failed.
+        assert!(host.gbm_bo_unbind_calls.is_empty());
+    }
+
+    #[test]
+    fn munmap_dri_unbinds_host_and_clears_binding() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, _size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let aligned_len = (64usize * 64 * 4 + 0xFFFF) & !0xFFFF;
+
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            offset as i64,
+        )
+        .unwrap();
+        let bo_id = (offset >> 12) as u32;
+        assert_eq!(proc.dri_bindings.len(), 1);
+
+        sys_munmap(&mut proc, &mut host, addr, aligned_len).unwrap();
+        assert!(proc.dri_bindings.is_empty());
+        assert_eq!(
+            host.gbm_bo_unbind_calls,
+            vec![(proc.pid as i32, bo_id, addr, aligned_len)]
+        );
+    }
+
+    #[test]
+    fn mmap_dri_works_for_card0_too() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB on card0 — the Card variant carries a DriFdState too.
+        let create = WpkDrmModeCreateDumb {
+            width: 16,
+            height: 16,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe {
+            core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create)
+        };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let map = WpkDrmModeMapDumb {
+            handle: created.handle,
+            pad: 0,
+            offset: 0,
+        };
+        let mut mbuf = [0u8; core::mem::size_of::<WpkDrmModeMapDumb>()];
+        unsafe { core::ptr::write_unaligned(mbuf.as_mut_ptr() as *mut WpkDrmModeMapDumb, map) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_MAP_DUMB, &mut mbuf).unwrap();
+        let mapped: WpkDrmModeMapDumb =
+            unsafe { core::ptr::read_unaligned(mbuf.as_ptr() as *const WpkDrmModeMapDumb) };
+
+        let aligned_len = (16usize * 16 * 4 + 0xFFFF) & !0xFFFF;
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            aligned_len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            mapped.offset as i64,
+        )
+        .unwrap();
+        assert_eq!(host.gbm_bo_bind_calls.len(), 1);
+        assert_eq!(proc.dri_bindings.len(), 1);
+        assert_eq!(proc.dri_bindings[0].addr, addr);
     }
 }

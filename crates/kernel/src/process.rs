@@ -393,6 +393,22 @@ pub struct FbBinding {
     pub fmt: u32,
 }
 
+/// Per-process binding tracking the live mmap of a DRI buffer object.
+///
+/// Recorded by `sys_mmap` on a `/dev/dri/{card0,renderD128}` fd whose
+/// `MODE_MAP_DUMB` offset decodes to `bo_id`. `sys_munmap` consults
+/// this list so it can call [`HostIO::gbm_bo_unbind`] before the wasm
+/// pages are returned to the anonymous pool.
+#[derive(Debug, Clone, Copy)]
+pub struct DriBoBinding {
+    /// Start address in the process's wasm `Memory`.
+    pub addr: usize,
+    /// Length in bytes (aligned to wasm page).
+    pub len: usize,
+    /// Bo currently bound at `[addr, addr+len)`.
+    pub bo_id: crate::dri::BoId,
+}
+
 /// Per-thread state within a process.
 #[derive(Debug, Clone)]
 pub struct ThreadInfo {
@@ -590,6 +606,10 @@ pub struct Process {
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
     /// `mmap` and the matching `munmap`/process-exit/exec.
     pub fb_binding: Option<FbBinding>,
+    /// Active mmaps of DRI buffer objects. Each entry pairs a wasm
+    /// memory region with the bo currently bound there so `sys_munmap`
+    /// can issue the matching [`HostIO::gbm_bo_unbind`].
+    pub dri_bindings: Vec<DriBoBinding>,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -674,6 +694,7 @@ impl Process {
             procfs_bufs: Vec::new(),
             has_exec: false,
             fb_binding: None,
+            dri_bindings: Vec::new(),
             fork_count: 0,
         }
     }
