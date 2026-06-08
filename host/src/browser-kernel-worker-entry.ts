@@ -131,7 +131,7 @@ const processTeardowns = new Map<number, Promise<void>>();
 const workerTeardowns = new Set<Promise<void>>();
 const threadedProcessPids = new Set<number>();
 const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
-const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = THREADED_WORKER_TERMINATION_SETTLE_MS;
+const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
 
 /**
  * Workers we deliberately terminated — exec, exit, top-level destroy. The
