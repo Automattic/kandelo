@@ -174,6 +174,14 @@ const fullSmokeSource = [
 
 const ALL_CASES: DiagCase[] = [
   {
+    name: "NODE_VERSION",
+    command: "node --version",
+  },
+  {
+    name: "NODE_EMPTY",
+    command: nodeEval(""),
+  },
+  {
     name: "SIMPLE",
     command: nodeEval("console.log('DIAG_SIMPLE_BODY')"),
   },
@@ -194,12 +202,24 @@ const ALL_CASES: DiagCase[] = [
     command: jsShellEval("print('DIAG_JS_SIMPLE_BODY')"),
   },
   {
+    name: "JS_QUIT",
+    command: jsShellEval("quit(0)"),
+  },
+  {
+    name: "JS_PRINT_QUIT",
+    command: jsShellEval("print('DIAG_JS_PRINT_QUIT'); quit(0)"),
+  },
+  {
     name: "JS_SAB_ONLY",
     command: jsShellEval("var sab=new SharedArrayBuffer(8); print('DIAG_JS_SAB_ONLY '+sab.byteLength);"),
   },
   {
     name: "JS_SAB_STORE",
     command: jsShellEval("var sab=new SharedArrayBuffer(8); var view=new Int32Array(sab); Atomics.store(view,0,42); print('DIAG_JS_SAB_STORE '+Atomics.load(view,0));"),
+  },
+  {
+    name: "JS_SAB_STORE_QUIT",
+    command: jsShellEval("var sab=new SharedArrayBuffer(8); var view=new Int32Array(sab); Atomics.store(view,0,42); print('DIAG_JS_SAB_STORE_QUIT '+Atomics.load(view,0)); quit(0);"),
   },
   {
     name: "JS_SAB_NOTIFY",
