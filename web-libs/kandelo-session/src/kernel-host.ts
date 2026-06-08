@@ -107,6 +107,19 @@ export interface KernelLike {
    */
   injectMouseEvent?(dx: number, dy: number, buttons: number): void;
   /**
+   * Hand an `OffscreenCanvas` to the kernel worker as the scanout
+   * target for KMS CRTC `crtcId`. The worker's vblank pump blits the
+   * CRTC's currently-bound framebuffer into the canvas at 60 Hz.
+   * Optional `stats` SAB receives blit + page-flip telemetry.
+   */
+  kmsAttachCanvas?(crtcId: number, canvas: OffscreenCanvas, stats?: SharedArrayBuffer): void;
+  /**
+   * Register a stats SAB for `crtcId` without binding a scanout
+   * canvas. Used by WebGL-rendered demos that want page-flip
+   * telemetry without a 2D blit.
+   */
+  kmsAttachStats?(crtcId: number, stats: SharedArrayBuffer): void;
+  /**
    * Drain PCM bytes buffered in `/dev/dsp` for browser playback.
    */
   drainAudio?(maxBytes: number): Promise<{
@@ -259,6 +272,30 @@ export interface AudioOutputHandle {
   resume(): Promise<void>;
   close(): void;
   getState(): AudioContextState | "unavailable";
+}
+
+/**
+ * Handle returned by `attachKmsDisplay`. The wrapped canvas is wired up
+ * as the scanout target for a KMS CRTC; whatever wasm process holds
+ * DRM master and commits page-flips drives the pixels.
+ *
+ * Stats slots (Int32Array view over the SAB the handle owns):
+ *   0: frame count (host pump, monotonic)
+ *   1: last blit timestamp (ms, performance.now() | 0)
+ *   2: current scanout width
+ *   3: current scanout height
+ *   4: last blit µs
+ *   5: kernel-side PAGE_FLIP commit count
+ *   6: kernel-side last frame µs (clock at PAGE_FLIP completion)
+ */
+export interface KmsDisplayHandle {
+  /** CRTC the canvas is bound to (matches what the wasm process passes
+   *  to `drmModePageFlip(crtc_id, …)`). */
+  readonly crtcId: number;
+  /** Int32Array view over the stats SAB. Slots above. */
+  readonly stats: Int32Array;
+  /** Detach the canvas. Subsequent vblank ticks no-op for this CRTC. */
+  close(): void;
 }
 
 export type WebPreviewStatus = "starting" | "running" | "error";
@@ -460,6 +497,14 @@ export interface KernelHost {
   // that the embedder uses to forward keyboard, mouse, and audio device
   // traffic for the bound process.
   attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle;
+
+  // KMS display — registers a 2D canvas as the scanout target for a
+  // DRM CRTC. The kernel-worker's vblank pump blits the CRTC's
+  // currently-bound framebuffer into the canvas at 60 Hz. Returns
+  // null when the wrapped kernel does not yet expose
+  // `kmsAttachCanvas` (older ABI, Node host without an OffscreenCanvas
+  // polyfill, etc.).
+  attachKmsDisplay(canvas: HTMLCanvasElement, crtcId?: number): KmsDisplayHandle | null;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
   getWebPreview(): WebPreviewState | null;
@@ -1376,6 +1421,31 @@ export class LiveKernelHost implements KernelHost {
         stop?.();
         stop = null;
         setBoundPid(null);
+      },
+    };
+  }
+
+  // ── KernelHost: KMS display ──────────────────────────────────────────────
+
+  attachKmsDisplay(
+    canvas: HTMLCanvasElement,
+    crtcId: number = 1,
+  ): KmsDisplayHandle | null {
+    if (!this.kernel?.kmsAttachCanvas) return null;
+    if (typeof canvas.transferControlToOffscreen !== "function") return null;
+    // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
+    const statsSab = new SharedArrayBuffer(64);
+    const stats = new Int32Array(statsSab);
+    const offscreen = canvas.transferControlToOffscreen();
+    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab);
+    return {
+      crtcId,
+      stats,
+      close: () => {
+        // The worker auto-stops the pump tick for unused CRTCs on the
+        // next teardown; there's no explicit detach API yet. Closing
+        // the handle just drops the local view so callers can drop
+        // their reference.
       },
     };
   }
