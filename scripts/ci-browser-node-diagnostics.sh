@@ -212,6 +212,12 @@ function workerSource(options: { terminate: boolean; exitListener: boolean }): s
 
 test("browser Node worker crash matrix", async ({ page }) => {
   test.setTimeout(600_000);
+  page.on("console", (msg) => {
+    console.log(`BROWSER_CONSOLE ${msg.type()} ${msg.text()}`);
+  });
+  page.on("pageerror", (error) => {
+    console.log(`BROWSER_PAGEERROR ${error.message}`);
+  });
   await page.goto("/?demo=node", { waitUntil: "domcontentloaded" });
   await expect.poll(() => page.evaluate(() => document.body.innerText), { timeout: 180_000 }).toContain("Ready");
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });

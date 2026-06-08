@@ -6241,6 +6241,9 @@ export class CentralizedKernelWorker {
       const getExitStatus = this.kernelInstance!.exports
         .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
       const exitStatus = getExitStatus ? getExitStatus(exitingPid) : -1;
+      console.warn(
+        `[kernel-worker] pid=${exitingPid} kernel process terminated with status ${exitStatus}`,
+      );
       this.callbacks.onExit(exitingPid, exitStatus >= 128 ? exitStatus : -1);
     }
   }
