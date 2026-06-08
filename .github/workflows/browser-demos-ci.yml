@@ -89,6 +89,7 @@ jobs:
       KANDELO_SM_NODE_MEMORY_PAGES: "16384"
       KANDELO_SM_NODE_DIAG_REPEAT: "10"
       KANDELO_SM_NODE_DIAG_CASES: "NODE_VERSION NODE_EMPTY NODE_EMPTY_NO_EXIT SIMPLE SIMPLE_NO_EXIT JS_QUIT JS_SAB_STORE_QUIT FULL_SMOKE FULL_SMOKE_NO_EXIT"
+      KANDELO_SM_NODE_DISABLE_NATIVE_EVAL: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -119,6 +120,47 @@ jobs:
           rsync -a "$RUNNER_TEMP/pr629-test-workspace/host/wasm/" host/wasm/
           bash scripts/ci-verify-browser-workspace.sh
 
+      - name: Patch SpiderMonkey Node native eval hook
+        if: env.KANDELO_SM_NODE_DISABLE_NATIVE_EVAL == '1'
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+          const paths = [
+            'binaries/programs/wasm32/spidermonkey-node.wasm',
+            'binaries/programs/wasm32/node.wasm',
+            'binaries/programs/wasm32/js.wasm',
+            'local-binaries/programs/wasm32/spidermonkey-node.wasm',
+            'local-binaries/programs/wasm32/node.wasm',
+            'local-binaries/programs/wasm32/js.wasm',
+          ];
+          const from = Buffer.from("typeof native.evalScriptAsFunction === 'function'");
+          const to = Buffer.from("false&&native.evalScriptAsFunction === 'function'");
+          if (from.length !== to.length) {
+            throw new Error(`replacement length mismatch: ${from.length} !== ${to.length}`);
+          }
+          for (const path of paths) {
+            if (!existsSync(path)) continue;
+            const bytes = readFileSync(path);
+            let count = 0;
+            let offset = 0;
+            while ((offset = bytes.indexOf(from, offset)) !== -1) {
+              to.copy(bytes, offset);
+              offset += to.length;
+              count++;
+            }
+            if (count !== 1) {
+              throw new Error(`${path}: expected one native eval hook marker, found ${count}`);
+            }
+            writeFileSync(path, bytes);
+            console.log(`${path}: disabled native eval hook`);
+          }
+          NODE
+          sha256sum \
+            binaries/programs/wasm32/spidermonkey-node.wasm \
+            binaries/programs/wasm32/node.wasm \
+            binaries/programs/wasm32/js.wasm
+
       - name: Install dependencies and Chromium
         run: |
           set -euo pipefail
@@ -141,6 +183,10 @@ jobs:
             echo "KANDELO_SM_NODE_DIAG_STYLE=$KANDELO_SM_NODE_DIAG_STYLE"
             echo "KANDELO_SM_NODE_MEMORY_PAGES=$KANDELO_SM_NODE_MEMORY_PAGES"
             echo "KANDELO_SM_NODE_DIAG_CASES=$KANDELO_SM_NODE_DIAG_CASES"
+            echo "KANDELO_SM_NODE_DISABLE_NATIVE_EVAL=$KANDELO_SM_NODE_DISABLE_NATIVE_EVAL"
+            sha256sum binaries/programs/wasm32/spidermonkey-node.wasm
+            sha256sum binaries/programs/wasm32/node.wasm
+            sha256sum binaries/programs/wasm32/js.wasm
             uname -a
             google-chrome --version || true
             npx --prefix apps/browser-demos playwright --version
