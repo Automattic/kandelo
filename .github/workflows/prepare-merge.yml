@@ -1812,7 +1812,13 @@ jobs:
         if: steps.suite.outputs.skip != 'true'
         run: |
           if [ "$SUITE" = "browser" ]; then
-            export WASM_POSIX_SKIP_BROWSER_FETCH=1
+            skip_pkgs=""
+            for pkg_dir in packages/registry/*; do
+              [ -d "$pkg_dir" ] || continue
+              [ -f "$pkg_dir/package.toml" ] || continue
+              skip_pkgs="$skip_pkgs $(basename "$pkg_dir")"
+            done
+            export WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $skip_pkgs"
           fi
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
@@ -1912,9 +1918,14 @@ jobs:
           } | tee "$RUNNER_TEMP/browser-node-diagnostics/runner-before-dev-shell.txt"
 
       - name: Run focused browser Node diagnostics
-        env:
-          WASM_POSIX_SKIP_BROWSER_FETCH: "1"
         run: |
+          skip_pkgs=""
+          for pkg_dir in packages/registry/*; do
+            [ -d "$pkg_dir" ] || continue
+            [ -f "$pkg_dir/package.toml" ] || continue
+            skip_pkgs="$skip_pkgs $(basename "$pkg_dir")"
+          done
+          export WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $skip_pkgs"
           bash scripts/dev-shell.sh bash scripts/ci-browser-node-diagnostics.sh "$RUNNER_TEMP/browser-node-diagnostics" 5
 
       - name: Upload browser Node diagnostics
