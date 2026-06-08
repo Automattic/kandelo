@@ -148,8 +148,12 @@
             void key;
         },
         exit(code) {
-            if (typeof quit === 'function') quit(code | 0);
-            throw new Error('exit ' + (code | 0));
+            const exitCode = code | 0;
+            if (native && typeof native.exit === 'function') {
+                native.exit(exitCode);
+            }
+            if (typeof quit === 'function') quit(exitCode);
+            throw new Error('exit ' + exitCode);
         },
         loadFile(path) {
             try { return readFileText(path); } catch (_) { return null; }
