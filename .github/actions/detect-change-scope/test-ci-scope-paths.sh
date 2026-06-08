@@ -49,6 +49,21 @@ assert_not_matches package_archive_changed_files \
 assert_not_matches package_archive_changed_files \
   "packages/registry/php/test/php.test.ts" \
   "packages/registry/php/test/php.test.ts"
+assert_matches package_archive_changed_files \
+  ".github/actions/package-archive-build/action.yml" \
+  ".github/actions/package-archive-build/action.yml"
+assert_matches package_archive_changed_files \
+  ".github/actions/package-toolchain/action.yml" \
+  ".github/actions/package-toolchain/action.yml"
+assert_matches package_archive_changed_files \
+  ".github/actions/fetch-submodules/action.yml" \
+  ".github/actions/fetch-submodules/action.yml"
+assert_not_matches package_archive_changed_files \
+  ".github/workflows/staging-build.yml" \
+  ".github/workflows/staging-build.yml"
+assert_not_matches package_archive_changed_files \
+  ".github/workflows/prepare-merge.yml" \
+  ".github/workflows/prepare-merge.yml"
 
 assert_matches binary_materialization_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
@@ -83,5 +98,11 @@ assert_not_matches kernel_runtime_changed_files \
 assert_matches ci_control_changed_files \
   ".github/actions/detect-change-scope/action.yml" \
   ".github/actions/detect-change-scope/action.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/staging-build.yml" \
+  ".github/workflows/staging-build.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/prepare-merge.yml" \
+  ".github/workflows/prepare-merge.yml"
 
 echo "ci-scope path classifier tests passed"
