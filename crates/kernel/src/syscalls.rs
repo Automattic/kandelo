@@ -582,6 +582,23 @@ fn dri_state_mut(
         .ok_or(Errno::EBADF)
 }
 
+fn kms_state(proc: &Process, ofd_idx: usize) -> Result<&crate::ofd::KmsFdState, Errno> {
+    proc.ofd_table
+        .get(ofd_idx)
+        .and_then(|o| o.kms())
+        .ok_or(Errno::EBADF)
+}
+
+fn kms_state_mut(
+    proc: &mut Process,
+    ofd_idx: usize,
+) -> Result<&mut crate::ofd::KmsFdState, Errno> {
+    proc.ofd_table
+        .get_mut(ofd_idx)
+        .and_then(|o| o.kms_mut())
+        .ok_or(Errno::EBADF)
+}
+
 /// Release a per-fd handle (DESTROY_DUMB / GEM_CLOSE): drops the
 /// handle from the fd's namespace, decrefs the bo, and if the
 /// refcount hits zero asks the host to free the backing.
@@ -890,6 +907,376 @@ fn handle_dri_ioctl(
     }
 }
 
+/// Handle ioctl on `/dev/dri/card0` — KMS surface on top of the
+/// shared render ioctls.
+///
+/// Card0 carries the same per-fd GEM-handle namespace as a render
+/// node plus per-fd KMS state (`KmsFdState`). Unknown ioctls fall
+/// through to `handle_dri_ioctl` so the dumb-buffer + prime path
+/// stays in one place.
+///
+/// What's wired:
+///
+/// - SET_MASTER / DROP_MASTER. Single global master enforced by
+///   `crate::dri::master`; re-set by the same `(pid, ofd)` is
+///   idempotent, anyone else gets `EBUSY`. The `holds_master` flag on
+///   the KMS sidecar tracks ownership for the SETCRTC / PAGE_FLIP
+///   gates below.
+/// - MODE_GETRESOURCES. Reports a single virtual {crtc, connector,
+///   encoder} triple (id=1 for all three) plus 1×16384 dimension
+///   bounds. The caller's count/ptr arrays are populated via
+///   HostIO::proc_write_bytes; a write failure surfaces as EFAULT.
+/// - MODE_GETCRTC / MODE_GETENCODER / MODE_GETCONNECTOR. Return
+///   sensible defaults for the one slot we expose; a different id
+///   fails with ENOENT. The connector reports VIRTUAL +
+///   CONNECTED + the host's preferred mode (host.kms_mode_info(1)).
+/// - MODE_ADDFB2. Looks up the bo, validates pixel_format
+///   (ARGB8888/XRGB8888/RGB565), enforces stride == bo stride for
+///   CPU-shared bos, registers a per-fd fb_id, bumps the bo
+///   refcount, and asks the host to bind the host-side fb. Rollback
+///   on host failure releases both the fb slot and the bo.
+/// - MODE_RMFB. Drops the fb slot, decrefs the bo, asks the host
+///   to release its backing on the last refcount drop and to drop
+///   the host fb.
+/// - MODE_SETCRTC. Gated on `holds_master` (EACCES otherwise).
+///   crtc_id==1 only; fb_id must be either 0 (unset scanout) or a
+///   previously registered fb_id on this fd. Delegates the bind to
+///   HostIO::kms_set_fb.
+/// - MODE_PAGE_FLIP. Same master + crtc + fb_id gates. EBUSY if a
+///   flip on the same crtc is already pending. The flip is queued on
+///   the fd's `pending_flips` and `dri::record_kms_commit` bumps the
+///   global commit counter (the host queries it via
+///   kernel_kms_commit_count for the UI).
+/// - WAIT_VBLANK. Returns a best-effort reply with the current
+///   monotonic time; sequence=0. The full vblank handshake (queued
+///   waiters drained by kernel_vblank) lands when the host pump is
+///   wired in a later commit.
+fn handle_dri_card_ioctl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::dri::*;
+    let pid = proc.pid as i32;
+    match request {
+        DRM_IOCTL_SET_MASTER => {
+            kms_state(proc, ofd_idx)?;
+            crate::dri::master::try_set_master(pid, ofd_idx)?;
+            if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+                kms.holds_master = true;
+            }
+            host.kms_set_master(pid);
+            Ok(())
+        }
+        DRM_IOCTL_DROP_MASTER => {
+            kms_state(proc, ofd_idx)?;
+            if crate::dri::master::drop_master(pid, ofd_idx) {
+                if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+                    kms.holds_master = false;
+                }
+                host.kms_drop_master(pid);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETRESOURCES => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeCardRes>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeCardRes =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.count_crtcs >= 1 && req.crtc_id_ptr != 0 {
+                let rc = host.proc_write_bytes(pid, req.crtc_id_ptr as u32, &1u32.to_le_bytes());
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            if req.count_connectors >= 1 && req.connector_id_ptr != 0 {
+                let rc = host.proc_write_bytes(
+                    pid,
+                    req.connector_id_ptr as u32,
+                    &1u32.to_le_bytes(),
+                );
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            if req.count_encoders >= 1 && req.encoder_id_ptr != 0 {
+                let rc = host.proc_write_bytes(pid, req.encoder_id_ptr as u32, &1u32.to_le_bytes());
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            let resp = WpkDrmModeCardRes {
+                count_fbs: 0,
+                count_crtcs: 1,
+                count_connectors: 1,
+                count_encoders: 1,
+                min_width: 1,
+                max_width: 16384,
+                min_height: 1,
+                max_height: 16384,
+                ..req
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETCRTC => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeGetCrtc>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeGetCrtc =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.crtc_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            let resp = WpkDrmModeGetCrtc {
+                crtc_id: 1,
+                ..Default::default()
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETENCODER => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeGetEncoder>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeGetEncoder =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.encoder_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            let resp = WpkDrmModeGetEncoder {
+                encoder_id: 1,
+                crtc_id: 1,
+                possible_crtcs: 0b1,
+                ..Default::default()
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETCONNECTOR => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeGetConnector>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeGetConnector =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.connector_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            if req.count_modes >= 1 && req.modes_ptr != 0 {
+                let mode = host.kms_mode_info(1);
+                let mode_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &mode as *const _ as *const u8,
+                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                    )
+                };
+                let rc = host.proc_write_bytes(pid, req.modes_ptr as u32, mode_bytes);
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            if req.count_encoders >= 1 && req.encoders_ptr != 0 {
+                let rc =
+                    host.proc_write_bytes(pid, req.encoders_ptr as u32, &1u32.to_le_bytes());
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            let resp = WpkDrmModeGetConnector {
+                encoders_ptr: req.encoders_ptr,
+                modes_ptr: req.modes_ptr,
+                props_ptr: req.props_ptr,
+                prop_values_ptr: req.prop_values_ptr,
+                count_modes: 1,
+                count_encoders: 1,
+                encoder_id: 1,
+                connector_id: 1,
+                connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
+                connector_type_id: 1,
+                connection: DRM_MODE_CONNECTED,
+                subpixel: DRM_MODE_SUBPIXEL_UNKNOWN,
+                ..Default::default()
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_ADDFB2 => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeFbCmd2>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmModeFbCmd2 =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.width == 0 || req.height == 0 {
+                return Err(Errno::EINVAL);
+            }
+            if req.handles[1..].iter().any(|&h| h != 0) {
+                return Err(Errno::EINVAL);
+            }
+            if !matches!(
+                req.pixel_format,
+                DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 | DRM_FORMAT_RGB565
+            ) {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id = *dri_state(proc, ofd_idx)?
+                .handles
+                .get(&req.handles[0])
+                .ok_or(Errno::ENOENT)?;
+            let (tier, bo_stride) =
+                crate::dri::with_registry(|r| r.get(bo_id).map(|b| (b.tier, b.stride)))
+                    .ok_or(Errno::ENOENT)?;
+            // CPU-shared bos require stride == bo's natural stride;
+            // GPU-tier bos have stride=0 in the registry and skip
+            // the check.
+            if tier == crate::dri::BoTier::CpuShared && req.pitches[0] != bo_stride {
+                return Err(Errno::EINVAL);
+            }
+            let fb_id = {
+                let kms = kms_state_mut(proc, ofd_idx)?;
+                let id = kms.next_fb_id.checked_add(1).ok_or(Errno::ENOMEM)?;
+                kms.next_fb_id = id;
+                kms.fbs.insert(
+                    id,
+                    crate::ofd::KmsFb {
+                        bo_id,
+                        width: req.width,
+                        height: req.height,
+                        pixel_format: req.pixel_format,
+                        stride: req.pitches[0],
+                    },
+                );
+                id
+            };
+            crate::dri::with_registry(|r| r.incref(bo_id));
+            let rc = host.kms_addfb(
+                pid,
+                fb_id,
+                bo_id,
+                req.width,
+                req.height,
+                req.pixel_format,
+                req.pitches[0],
+            );
+            if rc < 0 {
+                if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+                    kms.fbs.remove(&fb_id);
+                }
+                let _ = crate::dri::with_registry(|r| r.decref(bo_id));
+                return Err(Errno::ENOMEM);
+            }
+            req.fb_id = fb_id;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_RMFB => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let fb_id = u32::from_le_bytes(buf[..4].try_into().unwrap());
+            let bo_id = kms_state_mut(proc, ofd_idx)?
+                .fbs
+                .remove(&fb_id)
+                .map(|fb| fb.bo_id)
+                .ok_or(Errno::ENOENT)?;
+            let new_rc = crate::dri::with_registry(|r| r.decref(bo_id));
+            if new_rc == Some(0) {
+                host.gbm_bo_destroy(pid, bo_id);
+            }
+            host.kms_rmfb(pid, fb_id);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_SETCRTC => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeGetCrtc>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeGetCrtc =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let kms = kms_state(proc, ofd_idx)?;
+            if !kms.holds_master {
+                return Err(Errno::EACCES);
+            }
+            if req.crtc_id != 1 {
+                return Err(Errno::ENOENT);
+            }
+            if req.fb_id != 0 && !kms.fbs.contains_key(&req.fb_id) {
+                return Err(Errno::ENOENT);
+            }
+            host.kms_set_fb(pid, req.crtc_id, req.fb_id);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_PAGE_FLIP => {
+            if buf.len() < core::mem::size_of::<WpkDrmModeCrtcPageFlip>() {
+                return Err(Errno::EINVAL);
+            }
+            let req: WpkDrmModeCrtcPageFlip =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // Read-only gates first to avoid a redundant borrow split.
+            {
+                let kms = kms_state(proc, ofd_idx)?;
+                if req.crtc_id != 1 {
+                    return Err(Errno::ENOENT);
+                }
+                if !kms.holds_master {
+                    return Err(Errno::EACCES);
+                }
+                if !kms.fbs.contains_key(&req.fb_id) {
+                    return Err(Errno::ENOENT);
+                }
+                if kms.pending_flips.iter().any(|p| p.crtc_id == req.crtc_id) {
+                    return Err(Errno::EBUSY);
+                }
+            }
+            kms_state_mut(proc, ofd_idx)?
+                .pending_flips
+                .push(crate::ofd::PendingFlip {
+                    crtc_id: req.crtc_id,
+                    fb_id: req.fb_id,
+                    user_data: req.user_data,
+                });
+            // Best-effort stats: a clock-read failure leaves the flip
+            // queued and just skips the counter bump. The host reads
+            // the running totals via the kernel_kms_* exports.
+            if let Ok((sec, nsec)) =
+                host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC)
+            {
+                let now_us = (sec as u64).wrapping_mul(1_000_000) + (nsec as u64) / 1000;
+                crate::dri::record_kms_commit(req.crtc_id, now_us);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_WAIT_VBLANK => {
+            if buf.len() < core::mem::size_of::<WpkDrmWaitVblankRequest>() {
+                return Err(Errno::EINVAL);
+            }
+            let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC)?;
+            let reply = WpkDrmWaitVblankReply {
+                rep_type: u32::from_le_bytes(buf[..4].try_into().unwrap()),
+                sequence: 0,
+                tv_sec: sec as u32,
+                tv_usec: (nsec / 1000) as u32,
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, reply);
+            }
+            Ok(())
+        }
+        _ => handle_dri_ioctl(proc, host, ofd_idx, request, buf),
+    }
+}
+
 /// Run DRI-specific cleanup for a freshly-freed OFD: release the
 /// per-fd GEM handle map (decref every bo, free host backing on the
 /// last drop) and release a prime-bo capability cookie if any.
@@ -900,25 +1287,48 @@ fn handle_dri_ioctl(
 pub(crate) fn dri_release_ofd_state(
     pid: i32,
     host: &mut dyn HostIO,
+    ofd_idx: usize,
     state: Option<alloc::boxed::Box<crate::ofd::DriOfdState>>,
 ) {
     let Some(state) = state else {
         return;
     };
+    // Helper: decref a bo, destroy host backing on the last drop.
+    let release_bo = |host: &mut dyn HostIO, bo_id: u32| {
+        let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
+        if new_count == Some(0) {
+            host.gbm_bo_destroy(pid, bo_id);
+        }
+    };
     match *state {
         crate::ofd::DriOfdState::PrimeBo(p) => {
-            let new_count = crate::dri::with_registry(|r| r.decref(p.bo_id));
-            if new_count == Some(0) {
-                host.gbm_bo_destroy(pid, p.bo_id);
+            release_bo(host, p.bo_id);
+        }
+        crate::ofd::DriOfdState::RenderNode(dri) => {
+            for (_handle, bo_id) in dri.handles.into_iter() {
+                release_bo(host, bo_id);
             }
         }
-        crate::ofd::DriOfdState::RenderNode(dri)
-        | crate::ofd::DriOfdState::Card { dri, .. } => {
+        crate::ofd::DriOfdState::Card { dri, kms } => {
+            // KMS-side cleanup first: release framebuffers (each
+            // holds an extra bo refcount) and notify the host so it
+            // can drop GL textures / canvases bound to those fbs.
+            for (fb_id, fb) in kms.fbs.into_iter() {
+                release_bo(host, fb.bo_id);
+                host.kms_rmfb(pid, fb_id);
+            }
+            // Drop master if this OFD held it — otherwise a
+            // dangling holder would block future SET_MASTER calls
+            // by other processes.
+            crate::dri::master::release_if_held(
+                kms.holds_master,
+                pid,
+                ofd_idx,
+                host,
+            );
+            // Then the GEM handle namespace, like a render node.
             for (_handle, bo_id) in dri.handles.into_iter() {
-                let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
-                if new_count == Some(0) {
-                    host.gbm_bo_destroy(pid, bo_id);
-                }
+                release_bo(host, bo_id);
             }
         }
     }
@@ -1336,10 +1746,10 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
     let freed = proc.ofd_table.dec_ref(idx);
 
     if freed {
-        // DRI per-fd cleanup runs first: drop GEM handles and
-        // prime-bo cookies so close-time bo destroy is observed
-        // before any FileType-specific release path runs.
-        dri_release_ofd_state(proc.pid as i32, host, dri_state_for_release);
+        // DRI per-fd cleanup runs first: drop GEM handles, framebuffers,
+        // KMS master, and prime-bo cookies so close-time bo destroy is
+        // observed before any FileType-specific release path runs.
+        dri_release_ofd_state(proc.pid as i32, host, idx, dri_state_for_release);
         match file_type {
             FileType::Pipe => {
                 if host_handle >= 0 {
@@ -8194,15 +8604,18 @@ pub fn sys_ioctl(
 
     // --- /dev/dri/{renderD128,card0} ioctls — DRM surface ---
     //
-    // Probe ioctls (VERSION / GET_CAP) plus the dumb-buffer surface
-    // (CREATE_DUMB / MAP_DUMB / DESTROY_DUMB / GEM_CLOSE) are
-    // implemented in-kernel via the per-fd DriFdState.
+    // renderD128 → handle_dri_ioctl (probe + dumb-buffer + prime).
+    // card0      → handle_dri_card_ioctl, which falls through to
+    //              handle_dri_ioctl for shared ioctls.
     {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         if ofd.file_type == FileType::CharDevice {
             let dev = VirtualDevice::from_host_handle(ofd.host_handle);
-            if dev == Some(VirtualDevice::DriRenderD128) || dev == Some(VirtualDevice::DriCard0) {
+            if dev == Some(VirtualDevice::DriRenderD128) {
                 return handle_dri_ioctl(proc, host, ofd_idx, request, buf);
+            }
+            if dev == Some(VirtualDevice::DriCard0) {
+                return handle_dri_card_ioctl(proc, host, ofd_idx, request, buf);
             }
         }
     }
@@ -20320,16 +20733,12 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
-        // DRM_IOCTL_MODE_GETRESOURCES — not implemented in first pass.
+        // An unallocated ioctl number must fall through both
+        // handle_dri_card_ioctl and handle_dri_ioctl, ending in
+        // ENOSYS — libdrm reads that as "feature unsupported"
+        // rather than silently succeeding with a bogus result.
         let mut buf = [0u8; 64];
-        let err = sys_ioctl(
-            &mut proc,
-            &mut host,
-            fd,
-            wasm_posix_shared::dri::DRM_IOCTL_MODE_GETRESOURCES,
-            &mut buf,
-        )
-        .unwrap_err();
+        let err = sys_ioctl(&mut proc, &mut host, fd, 0xdead_beef, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOSYS);
     }
 
@@ -20832,6 +21241,293 @@ mod tests {
         // Close the original fd — bo gone.
         sys_close(&mut proc, &mut host, fd).unwrap();
         assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()));
+    }
+
+    #[test]
+    fn kms_set_and_drop_master_round_trip() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let mut buf = [0u8; 16];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut buf).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap().holds_master);
+
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut buf).unwrap();
+        assert!(!proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap().holds_master);
+    }
+
+    #[test]
+    fn kms_second_set_master_from_other_pid_is_ebusy() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc_a = Process::new(1);
+        let mut proc_b = Process::new(2);
+        let mut host = MockHostIO::new();
+        let fd_a = sys_open(&mut proc_a, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let fd_b = sys_open(&mut proc_b, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let mut buf = [0u8; 16];
+        sys_ioctl(&mut proc_a, &mut host, fd_a, DRM_IOCTL_SET_MASTER, &mut buf).unwrap();
+        let err =
+            sys_ioctl(&mut proc_b, &mut host, fd_b, DRM_IOCTL_SET_MASTER, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EBUSY);
+    }
+
+    #[test]
+    fn kms_close_releases_master() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 16];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut buf).unwrap();
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(crate::dri::master::current().is_none());
+    }
+
+    #[test]
+    fn kms_getresources_reports_one_crtc_one_connector_one_encoder() {
+        use wasm_posix_shared::dri::*;
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        // Caller passes zero count/ptr first (probe), then re-issues
+        // with allocated buffers. We only assert the count outputs.
+        let req = WpkDrmModeCardRes::default();
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCardRes>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCardRes, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETRESOURCES, &mut buf).unwrap();
+        let out: WpkDrmModeCardRes =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCardRes) };
+        assert_eq!(out.count_crtcs, 1);
+        assert_eq!(out.count_connectors, 1);
+        assert_eq!(out.count_encoders, 1);
+        assert_eq!(out.min_width, 1);
+        assert_eq!(out.min_height, 1);
+        assert_eq!(out.max_width, 16384);
+        assert_eq!(out.max_height, 16384);
+    }
+
+    #[test]
+    fn kms_getcrtc_only_id_one_else_enoent() {
+        use wasm_posix_shared::dri::*;
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let req = WpkDrmModeGetCrtc {
+            crtc_id: 1,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETCRTC, &mut buf).unwrap();
+        let out: WpkDrmModeGetCrtc =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeGetCrtc) };
+        assert_eq!(out.crtc_id, 1);
+
+        let req = WpkDrmModeGetCrtc {
+            crtc_id: 99,
+            ..Default::default()
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETCRTC, &mut buf).unwrap_err(),
+            Errno::ENOENT
+        );
+    }
+
+    #[test]
+    fn kms_addfb_then_setcrtc_then_page_flip_happy_path() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        // Acquire master.
+        let mut master_buf = [0u8; 16];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut master_buf).unwrap();
+
+        // CREATE_DUMB.
+        let create = WpkDrmModeCreateDumb {
+            width: 64,
+            height: 32,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // ADDFB2.
+        let mut fb_req = WpkDrmModeFbCmd2 {
+            width: 64,
+            height: 32,
+            pixel_format: DRM_FORMAT_ARGB8888,
+            ..Default::default()
+        };
+        fb_req.handles[0] = created.handle;
+        fb_req.pitches[0] = created.pitch;
+        let mut fbuf = [0u8; core::mem::size_of::<WpkDrmModeFbCmd2>()];
+        unsafe { core::ptr::write_unaligned(fbuf.as_mut_ptr() as *mut WpkDrmModeFbCmd2, fb_req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut fbuf).unwrap();
+        let fb_out: WpkDrmModeFbCmd2 =
+            unsafe { core::ptr::read_unaligned(fbuf.as_ptr() as *const WpkDrmModeFbCmd2) };
+        assert_ne!(fb_out.fb_id, 0);
+
+        // SETCRTC.
+        let crtc_req = WpkDrmModeGetCrtc {
+            crtc_id: 1,
+            fb_id: fb_out.fb_id,
+            ..Default::default()
+        };
+        let mut crtcbuf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
+        unsafe { core::ptr::write_unaligned(crtcbuf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, crtc_req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, &mut crtcbuf).unwrap();
+
+        // PAGE_FLIP enqueues + bumps the commit counter.
+        let commits_before = crate::dri::kms_commit_count(1);
+        let flip = WpkDrmModeCrtcPageFlip {
+            crtc_id: 1,
+            fb_id: fb_out.fb_id,
+            flags: 0,
+            reserved: 0,
+            user_data: 0x42,
+        };
+        let mut flipbuf = [0u8; core::mem::size_of::<WpkDrmModeCrtcPageFlip>()];
+        unsafe { core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap();
+        assert_eq!(crate::dri::kms_commit_count(1), commits_before + 1);
+
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        assert_eq!(kms.pending_flips.len(), 1);
+        assert_eq!(kms.pending_flips[0].user_data, 0x42);
+
+        // Second flip on the same crtc with one already pending → EBUSY.
+        unsafe { core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip) };
+        let err = sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf)
+            .unwrap_err();
+        assert_eq!(err, Errno::EBUSY);
+    }
+
+    #[test]
+    fn kms_setcrtc_without_master_returns_eacces() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        let crtc_req = WpkDrmModeGetCrtc {
+            crtc_id: 1,
+            ..Default::default()
+        };
+        let mut crtcbuf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
+        unsafe { core::ptr::write_unaligned(crtcbuf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, crtc_req) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, &mut crtcbuf)
+                .unwrap_err(),
+            Errno::EACCES
+        );
+    }
+
+    #[test]
+    fn kms_rmfb_releases_fb_and_bo_refcount() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB + ADDFB2 path.
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut cbuf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(cbuf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut cbuf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let mut fb_req = WpkDrmModeFbCmd2 {
+            width: 8,
+            height: 8,
+            pixel_format: DRM_FORMAT_ARGB8888,
+            ..Default::default()
+        };
+        fb_req.handles[0] = created.handle;
+        fb_req.pitches[0] = created.pitch;
+        let mut fbuf = [0u8; core::mem::size_of::<WpkDrmModeFbCmd2>()];
+        unsafe { core::ptr::write_unaligned(fbuf.as_mut_ptr() as *mut WpkDrmModeFbCmd2, fb_req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut fbuf).unwrap();
+        let fb_out: WpkDrmModeFbCmd2 =
+            unsafe { core::ptr::read_unaligned(fbuf.as_ptr() as *const WpkDrmModeFbCmd2) };
+
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        // ADDFB2 incref'd the bo (handle held ref + fb held ref = 2).
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount)),
+            Some(2)
+        );
+
+        // RMFB drops the fb's ref.
+        let mut rmbuf = fb_out.fb_id.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut rmbuf).unwrap();
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount)),
+            Some(1)
+        );
+
+        // Per-fd kms.fbs map is empty.
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap().fbs.is_empty());
+
+        // Second RMFB on the same id → ENOENT.
+        let mut rmbuf = fb_out.fb_id.to_le_bytes();
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut rmbuf).unwrap_err(),
+            Errno::ENOENT
+        );
     }
 
     #[test]
