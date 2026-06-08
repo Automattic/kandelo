@@ -172,6 +172,27 @@ function nodeEval(source: string): string {
   return `node -e ${JSON.stringify(source)}`;
 }
 
+function statusPattern(name: string): RegExp {
+  return new RegExp(`DIAG_STATUS_${name}:\\d+[\\s\\S]*spidermonkey-node\\$ ?`);
+}
+
+async function runNodeStatusCase(page: Page, name: string, source: string, timeout = 120_000): Promise<number> {
+  await runTerminalCommand(
+    page,
+    `${nodeEval(source)} ; echo DIAG_STATUS_${name}:$?`,
+    statusPattern(name),
+    timeout,
+  );
+  const text = await terminalText(page);
+  const match = text.match(new RegExp(`DIAG_STATUS_${name}:(\\d+)`));
+  if (!match) {
+    throw new Error(`missing DIAG_STATUS_${name}`);
+  }
+  const status = Number(match[1]);
+  console.log(`DIAG_RESULT ${name} ${status}`);
+  return status;
+}
+
 function workerSource(options: { terminate: boolean; exitListener: boolean }): string {
   return [
     "const {Worker}=require('worker_threads');",
@@ -189,7 +210,7 @@ function workerSource(options: { terminate: boolean; exitListener: boolean }): s
   ].filter(Boolean).join(" ");
 }
 
-test("browser Node worker termination diagnostics", async ({ page }) => {
+test("browser Node worker crash matrix", async ({ page }) => {
   test.setTimeout(600_000);
   await page.goto("/?demo=node", { waitUntil: "domcontentloaded" });
   await expect.poll(() => page.evaluate(() => document.body.innerText), { timeout: 180_000 }).toContain("Ready");
@@ -200,33 +221,23 @@ test("browser Node worker termination diagnostics", async ({ page }) => {
     240_000,
   );
 
-  await runTerminalCommand(
-    page,
-    `${nodeEval("console.log('DIAG_SIMPLE_BODY')")} && echo DIAG_SIMPLE_SHELL_OK`,
-    /DIAG_SIMPLE_BODY[\s\S]*DIAG_SIMPLE_SHELL_OK/,
-    180_000,
-  );
+  const cases: Array<[string, string]> = [
+    ["SIMPLE", "console.log('DIAG_SIMPLE_BODY')"],
+    ["SAB_ONLY", "const sab=new SharedArrayBuffer(8); console.log('DIAG_SAB_ONLY', sab.byteLength);"],
+    ["SAB_STORE", "const sab=new SharedArrayBuffer(8); const view=new Int32Array(sab); Atomics.store(view,0,42); console.log('DIAG_SAB_STORE', Atomics.load(view,0));"],
+    ["SAB_NOTIFY", "const sab=new SharedArrayBuffer(8); const view=new Int32Array(sab); Atomics.store(view,1,1); Atomics.notify(view,1); console.log('DIAG_SAB_NOTIFY');"],
+    ["WORKER_NO_TERMINATE", workerSource({ terminate: false, exitListener: false })],
+    ["WORKER_TERMINATE", workerSource({ terminate: true, exitListener: false })],
+    ["WORKER_TERMINATE_LISTENER", workerSource({ terminate: true, exitListener: true })],
+  ];
 
-  await runTerminalCommand(
-    page,
-    `${nodeEval(workerSource({ terminate: false, exitListener: false }))} && echo DIAG_NO_TERMINATE_SHELL_OK`,
-    /DIAG_WORKER_VALUE\s+42[\s\S]*DIAG_WORKER_DONE[\s\S]*DIAG_NO_TERMINATE_SHELL_OK/,
-    180_000,
-  );
+  const results: Array<{ name: string; status: number }> = [];
+  for (const [name, source] of cases) {
+    results.push({ name, status: await runNodeStatusCase(page, name, source, 120_000) });
+  }
 
-  await runTerminalCommand(
-    page,
-    `${nodeEval(workerSource({ terminate: true, exitListener: false }))} && echo DIAG_TERMINATE_SHELL_OK`,
-    /DIAG_TERMINATE_BEFORE[\s\S]*DIAG_TERMINATE_AFTER\s+0[\s\S]*DIAG_WORKER_DONE[\s\S]*DIAG_TERMINATE_SHELL_OK/,
-    180_000,
-  );
-
-  await runTerminalCommand(
-    page,
-    `${nodeEval(workerSource({ terminate: true, exitListener: true }))} && echo DIAG_TERMINATE_LISTENER_SHELL_OK`,
-    /DIAG_WORKER_EXIT\s+0[\s\S]*DIAG_TERMINATE_AFTER\s+0[\s\S]*DIAG_TERMINATE_LISTENER_SHELL_OK/,
-    180_000,
-  );
+  console.log(`DIAG_SUMMARY ${JSON.stringify(results)}`);
+  expect(results.filter((result) => result.status !== 0)).toEqual([]);
 
   console.log(await terminalText(page));
 });
