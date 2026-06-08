@@ -114,6 +114,9 @@ function jsShellEval(source: string): string {
   return `ln -sf /usr/bin/node /usr/bin/js && js --shared-memory=on -e ${JSON.stringify(source)}`;
 }
 
+const noNaturalProcessExit =
+  "process.exit=(code)=>{ process.exitCode=code ?? process.exitCode; };";
+
 function statusPattern(name: string): RegExp {
   return new RegExp(`DIAG_STATUS_${name}:\\d+[\\s\\S]*spidermonkey-node\\$ ?`);
 }
@@ -182,8 +185,16 @@ const ALL_CASES: DiagCase[] = [
     command: nodeEval(""),
   },
   {
+    name: "NODE_EMPTY_NO_EXIT",
+    command: nodeEval(noNaturalProcessExit),
+  },
+  {
     name: "SIMPLE",
     command: nodeEval("console.log('DIAG_SIMPLE_BODY')"),
+  },
+  {
+    name: "SIMPLE_NO_EXIT",
+    command: nodeEval(`${noNaturalProcessExit} console.log('DIAG_SIMPLE_NO_EXIT_BODY')`),
   },
   {
     name: "SAB_ONLY",
@@ -240,6 +251,11 @@ const ALL_CASES: DiagCase[] = [
   {
     name: "FULL_SMOKE",
     command: `${nodeEval(fullSmokeSource)} && npm --version`,
+    timeout: 180_000,
+  },
+  {
+    name: "FULL_SMOKE_NO_EXIT",
+    command: nodeEval(`${noNaturalProcessExit} ${fullSmokeSource}`),
     timeout: 180_000,
   },
 ];
