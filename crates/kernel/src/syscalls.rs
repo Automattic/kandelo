@@ -774,7 +774,153 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             release_dri_handle(proc, host, ofd_idx, req.handle)
         }
+        DRM_IOCTL_PRIME_HANDLE_TO_FD => {
+            if buf.len() < core::mem::size_of::<WpkDrmPrimeHandle>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmPrimeHandle =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let bo_id = *dri_state(proc, ofd_idx)?
+                .handles
+                .get(&req.handle)
+                .ok_or(Errno::ENOENT)?;
+
+            // Materialise the cookie (idempotent — re-export reuses
+            // the existing one). Bump the bo refcount for the new OFD
+            // that will hold the prime fd.
+            let cookie = crate::dri::with_registry(|r| r.ensure_prime_cookie(bo_id))
+                .ok_or(Errno::EINVAL)?;
+            crate::dri::with_registry(|r| r.incref(bo_id));
+
+            // Allocate a fresh OFD with the prime-bo sidecar. The
+            // host_handle = -200 sentinel sits outside the
+            // VirtualDevice range (-1..=-9) so this fd isn't
+            // mistakenly routed to a render or card ioctl path.
+            let path = alloc::format!("/dev/dri/prime-{}-{:x}", bo_id, cookie).into_bytes();
+            let prime_ofd = proc.ofd_table.create(
+                crate::ofd::FileType::CharDevice,
+                wasm_posix_shared::flags::O_RDWR,
+                -200,
+                path,
+            );
+            if let Some(new_ofd) = proc.ofd_table.get_mut(prime_ofd) {
+                new_ofd.dri_state = Some(alloc::boxed::Box::new(
+                    crate::ofd::DriOfdState::PrimeBo(crate::ofd::PrimeBoState { bo_id, cookie }),
+                ));
+            }
+            let fd_flags = if req.flags & wasm_posix_shared::flags::O_CLOEXEC != 0 {
+                wasm_posix_shared::fd_flags::FD_CLOEXEC
+            } else {
+                0
+            };
+            let new_fd = match proc
+                .fd_table
+                .alloc(crate::fd::OpenFileDescRef(prime_ofd), fd_flags)
+            {
+                Ok(fd) => fd,
+                Err(e) => {
+                    // Roll back: drop the OFD and decref the bo.
+                    proc.ofd_table.dec_ref(prime_ofd);
+                    let _ = crate::dri::with_registry(|r| r.decref(bo_id));
+                    return Err(e);
+                }
+            };
+            req.fd = new_fd;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_PRIME_FD_TO_HANDLE => {
+            if buf.len() < core::mem::size_of::<WpkDrmPrimeHandle>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut req: WpkDrmPrimeHandle =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+
+            // Look up the prime-fd OFD and clone its prime-bo state.
+            let prime = {
+                let entry = proc.fd_table.get(req.fd)?;
+                let prime_ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+                prime_ofd.prime_bo().cloned().ok_or(Errno::EINVAL)?
+            };
+
+            // Capability check: the bo's current cookie must match the
+            // one stored on the prime-fd OFD. A stale cookie (bo
+            // destroyed + new bo took its id) fails with EACCES,
+            // matching Linux.
+            let bo_cookie = crate::dri::with_registry(|r| {
+                r.get(prime.bo_id).and_then(|b| b.prime_cookie)
+            })
+            .ok_or(Errno::EACCES)?;
+            if bo_cookie != prime.cookie {
+                return Err(Errno::EACCES);
+            }
+
+            // Bump refcount for the new local handle.
+            crate::dri::with_registry(|r| r.incref(prime.bo_id));
+
+            let handle = match dri_state_mut(proc, ofd_idx) {
+                Ok(dri) => {
+                    let h = dri.next_handle;
+                    match dri.next_handle.checked_add(1) {
+                        Some(n) => {
+                            dri.next_handle = n;
+                            dri.handles.insert(h, prime.bo_id);
+                            h
+                        }
+                        None => {
+                            let _ = crate::dri::with_registry(|r| r.decref(prime.bo_id));
+                            return Err(Errno::EMFILE);
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = crate::dri::with_registry(|r| r.decref(prime.bo_id));
+                    return Err(e);
+                }
+            };
+            req.handle = handle;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
         _ => Err(Errno::ENOSYS),
+    }
+}
+
+/// Run DRI-specific cleanup for a freshly-freed OFD: release the
+/// per-fd GEM handle map (decref every bo, free host backing on the
+/// last drop) and release a prime-bo capability cookie if any.
+///
+/// Called from `sys_close` after `dec_ref` has freed the OFD slot
+/// (the caller is responsible for serializing). No-op for OFDs
+/// without DRI state.
+pub(crate) fn dri_release_ofd_state(
+    pid: i32,
+    host: &mut dyn HostIO,
+    state: Option<alloc::boxed::Box<crate::ofd::DriOfdState>>,
+) {
+    let Some(state) = state else {
+        return;
+    };
+    match *state {
+        crate::ofd::DriOfdState::PrimeBo(p) => {
+            let new_count = crate::dri::with_registry(|r| r.decref(p.bo_id));
+            if new_count == Some(0) {
+                host.gbm_bo_destroy(pid, p.bo_id);
+            }
+        }
+        crate::ofd::DriOfdState::RenderNode(dri)
+        | crate::ofd::DriOfdState::Card { dri, .. } => {
+            for (_handle, bo_id) in dri.handles.into_iter() {
+                let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
+                if new_count == Some(0) {
+                    host.gbm_bo_destroy(pid, bo_id);
+                }
+            }
+        }
     }
 }
 
@@ -1156,6 +1302,21 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         )
     };
 
+    // Snapshot the DRI sidecar so we can release it (decref bos, drop
+    // prime-bo cookies) once `dec_ref` actually frees the OFD on the
+    // last fd. `take()` only when this is the last reference — a
+    // `dup`-shared OFD must keep its DRI state until every fd closes.
+    let dri_state_for_release = {
+        let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
+        if ofd.ref_count == 1 {
+            proc.ofd_table
+                .get_mut(idx)
+                .and_then(|ofd| ofd.dri_state.take())
+        } else {
+            None
+        }
+    };
+
     // POSIX: closing any fd for a file releases all advisory locks on that file
     // held by this process, regardless of which fd acquired the lock.
     if host_handle >= 0
@@ -1175,6 +1336,10 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
     let freed = proc.ofd_table.dec_ref(idx);
 
     if freed {
+        // DRI per-fd cleanup runs first: drop GEM handles and
+        // prime-bo cookies so close-time bo destroy is observed
+        // before any FileType-specific release path runs.
+        dri_release_ofd_state(proc.pid as i32, host, dri_state_for_release);
         match file_type {
             FileType::Pipe => {
                 if host_handle >= 0 {
@@ -20419,6 +20584,254 @@ mod tests {
                 .handles
                 .contains_key(&created.handle)
         );
+    }
+
+    #[test]
+    fn dri_ioctl_prime_handle_to_fd_returns_new_fd_with_prime_state() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB to get a handle.
+        let create = WpkDrmModeCreateDumb {
+            width: 32,
+            height: 32,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // PRIME_HANDLE_TO_FD on that handle.
+        let req = WpkDrmPrimeHandle {
+            handle: created.handle,
+            flags: wasm_posix_shared::flags::O_CLOEXEC,
+            fd: -1,
+        };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        let out: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+        assert!(out.fd >= 0);
+        assert_ne!(out.fd, fd);
+
+        // The new fd's OFD must carry PrimeBo state.
+        let prime_entry = proc.fd_table.get(out.fd).unwrap();
+        let prime_ofd = proc.ofd_table.get(prime_entry.ofd_ref.0).unwrap();
+        assert!(prime_ofd.prime_bo().is_some());
+        assert!(prime_ofd.dri().is_none());
+
+        // O_CLOEXEC propagates to FD_CLOEXEC.
+        assert_ne!(
+            prime_entry.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC,
+            0
+        );
+    }
+
+    #[test]
+    fn dri_ioctl_prime_fd_to_handle_roundtrip() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd_a = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd_b = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        // CREATE_DUMB on fd_a.
+        let create = WpkDrmModeCreateDumb {
+            width: 16,
+            height: 16,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // Export via fd_a.
+        let exp = WpkDrmPrimeHandle {
+            handle: created.handle,
+            flags: 0,
+            fd: -1,
+        };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, exp) };
+        sys_ioctl(&mut proc, &mut host, fd_a, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        let exported: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+
+        // Import the prime fd on fd_b — same bo, fresh per-fd handle.
+        let imp = WpkDrmPrimeHandle {
+            handle: 0,
+            flags: 0,
+            fd: exported.fd,
+        };
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, imp) };
+        sys_ioctl(&mut proc, &mut host, fd_b, DRM_IOCTL_PRIME_FD_TO_HANDLE, &mut pbuf).unwrap();
+        let imported: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+        assert_eq!(imported.handle, 1, "first handle in fd_b's namespace");
+
+        // The imported handle must resolve to the SAME bo as the
+        // original handle on fd_a.
+        let ofd_a_idx = proc.fd_table.get(fd_a).unwrap().ofd_ref.0;
+        let ofd_b_idx = proc.fd_table.get(fd_b).unwrap().ofd_ref.0;
+        let bo_a = *proc
+            .ofd_table
+            .get(ofd_a_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .handles
+            .get(&created.handle)
+            .unwrap();
+        let bo_b = *proc
+            .ofd_table
+            .get(ofd_b_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .handles
+            .get(&imported.handle)
+            .unwrap();
+        assert_eq!(bo_a, bo_b, "prime export+import must alias the same bo");
+    }
+
+    #[test]
+    fn dri_ioctl_prime_fd_to_handle_rejects_non_prime_fd() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd_render = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd_null = sys_open(&mut proc, &mut host, b"/dev/null", O_RDWR, 0).unwrap();
+
+        let imp = WpkDrmPrimeHandle {
+            handle: 0,
+            flags: 0,
+            fd: fd_null, // not a prime-bo fd
+        };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, imp) };
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd_render,
+                DRM_IOCTL_PRIME_FD_TO_HANDLE,
+                &mut pbuf,
+            )
+            .unwrap_err(),
+            Errno::EINVAL
+        );
+    }
+
+    #[test]
+    fn close_releases_dri_handles_and_destroys_host_bo() {
+        // Closing the last fd that references a bo must decref the bo
+        // to 0 and ask the host to destroy its SAB backing.
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        // Bo exists in the registry with refcount = 1.
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        let bo_present_before =
+            crate::dri::with_registry(|r| r.get(bo_id).is_some());
+        assert!(bo_present_before);
+
+        // Close the fd — the bo must be gone.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        let bo_gone_after =
+            crate::dri::with_registry(|r| r.get(bo_id).is_none());
+        assert!(bo_gone_after, "close should have released the bo");
+        // Avoid "unused variable" warning.
+        let _ = created;
+    }
+
+    #[test]
+    fn close_prime_fd_decrements_bo_refcount() {
+        // After PRIME_HANDLE_TO_FD, the bo refcount is 2 (original +
+        // prime). Closing only the prime fd decrements to 1; closing
+        // the original fd then destroys the bo.
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+
+        let create = WpkDrmModeCreateDumb {
+            width: 8,
+            height: 8,
+            bpp: 32,
+            ..Default::default()
+        };
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, create) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut buf).unwrap();
+        let created: WpkDrmModeCreateDumb =
+            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmModeCreateDumb) };
+
+        let req = WpkDrmPrimeHandle {
+            handle: created.handle,
+            flags: 0,
+            fd: -1,
+        };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkDrmPrimeHandle>()];
+        unsafe { core::ptr::write_unaligned(pbuf.as_mut_ptr() as *mut WpkDrmPrimeHandle, req) };
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut pbuf).unwrap();
+        let exported: WpkDrmPrimeHandle =
+            unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const WpkDrmPrimeHandle) };
+
+        // Bo refcount is 2.
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount)),
+            Some(2)
+        );
+
+        // Close just the prime fd — refcount drops to 1, bo still alive.
+        sys_close(&mut proc, &mut host, exported.fd).unwrap();
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount)),
+            Some(1)
+        );
+
+        // Close the original fd — bo gone.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()));
     }
 
     #[test]

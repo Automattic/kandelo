@@ -163,12 +163,21 @@ pub fn with_registry<R>(f: impl FnOnce(&mut BoRegistry) -> R) -> R {
 pub static TEST_REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-fn reset_registry() {
+pub(crate) fn reset_registry() {
     with_registry(|r| {
         r.map.clear();
         r.next_id = 1;
         r.next_cookie = 1;
     });
+}
+
+/// Test-only: the id the registry would assign on the next `alloc` /
+/// `alloc_gpu` call. Used by syscall-layer tests to identify the most
+/// recently allocated bo (the id returned via ioctls is a per-fd
+/// handle, not the global BoId).
+#[cfg(test)]
+pub(crate) fn next_id_for_test() -> BoId {
+    with_registry(|r| r.next_id)
 }
 
 #[cfg(test)]
