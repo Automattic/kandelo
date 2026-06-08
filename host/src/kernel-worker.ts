@@ -778,6 +778,21 @@ export class CentralizedKernelWorker {
   /** Virtual MAC address for this kernel instance (locally administered, unicast) */
   private virtualMacAddress: Uint8Array;
 
+  /** KMS presenter: OffscreenCanvas per CRTC for the vblank pump to blit
+   *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
+  private kmsCanvases = new Map<number, OffscreenCanvas>();
+  private kmsContexts = new Map<number, OffscreenCanvasRenderingContext2D>();
+  /** KMS stats SAB per CRTC. Slots [0..4] populated by the pump (frame
+   *  count, timestamp, width, height, blit µs); slots [5,6] populated
+   *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`. */
+  private kmsStatsViews = new Map<number, Int32Array>();
+  /** Cached per-CRTC `Uint8ClampedArray` for `putImageData` so the pump
+   *  doesn't allocate 8 MB/frame at 1080p. Resized on bo geometry change.
+   *  Backed by a plain `ArrayBuffer` so `new ImageData(scratch, …)`
+   *  accepts it (an `ImageDataArray` rejects SAB-backed views). */
+  private kmsScratchBytes = new Map<number, Uint8ClampedArray<ArrayBuffer>>();
+  private vblankTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(
     private config: KernelConfig,
     private io: PlatformIO,
@@ -786,6 +801,9 @@ export class CentralizedKernelWorker {
     this.kernel = new WasmPosixKernel(config, io, {
       // In centralized mode, callbacks like onKill/onFork are handled
       // differently — the kernel returns EAGAIN and JS handles them.
+      getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
+        return this.processes.get(pid)?.memory;
+      },
       onStdin: (maxLen: number): Uint8Array | null => {
         const pid = this.currentHandlePid;
         const buf = this.stdinBuffers.get(pid);
@@ -8242,6 +8260,113 @@ export class CentralizedKernelWorker {
       const signo = dv.getUint32(4, true);
       if (signo > 0) {
         this.sendSignalToProcess(pid, signo);
+      }
+    }
+  }
+
+  // ---- DRI/KMS presenter wiring ------------------------------------------
+
+  /** Live `/dev/dri/renderD128` GBM bos. Pixel storage for a bound bo
+   *  lives in the owning process's wasm Memory at the binding range;
+   *  consumers read pixels by projecting `[addr, addr+len)` onto the
+   *  SAB returned by `getProcessMemory(pid)`. */
+  get bos() {
+    return this.kernel.bos;
+  }
+
+  get gl() {
+    return this.kernel.gl;
+  }
+
+  get kms() {
+    return this.kernel.kms;
+  }
+
+  /** Register an `OffscreenCanvas` (and optional stats SAB) as the
+   *  scanout target for a CRTC. Starts the vblank pump on first
+   *  attach. */
+  attachKmsCanvas(
+    crtc_id: number,
+    canvas: OffscreenCanvas,
+    statsSab?: SharedArrayBuffer,
+  ): void {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    this.kmsCanvases.set(crtc_id, canvas);
+    this.kmsContexts.set(crtc_id, ctx);
+    if (statsSab) this.kmsStatsViews.set(crtc_id, new Int32Array(statsSab));
+    this.startVblankPump();
+  }
+
+  /** Attach a stats SAB for a CRTC without registering a scanout canvas.
+   *  Slots 5/6 (kernel commit count + last-frame µs) are populated by
+   *  the vblank pump regardless of whether the same crtc owns a blit
+   *  target. Used by demos that render through the GL bridge while
+   *  still driving real `drmModePageFlip` ioctls. */
+  attachKmsStats(crtc_id: number, statsSab: SharedArrayBuffer): void {
+    this.kmsStatsViews.set(crtc_id, new Int32Array(statsSab));
+    this.startVblankPump();
+  }
+
+  private startVblankPump(): void {
+    if (this.vblankTimer) return;
+    this.vblankTimer = setInterval(() => this.tickVblank(), 1000 / 60);
+    // Node only: prevent the pump from blocking process exit.
+    (this.vblankTimer as { unref?: () => void }).unref?.();
+  }
+
+  private tickVblank(): void {
+    const vblankFn = this.kernelInstance?.exports.kernel_vblank as
+      (() => void) | undefined;
+    vblankFn?.();
+    for (const [crtc_id, ctx] of this.kmsContexts) {
+      const fb = this.kernel.kms.currentFb(crtc_id);
+      if (!fb) continue;
+      const pixels = this.kernel.kms.scanoutBytes(crtc_id);
+      if (!pixels) continue;
+      const canvas = this.kmsCanvases.get(crtc_id);
+      if (!canvas) continue;
+      if (canvas.width !== fb.width || canvas.height !== fb.height) {
+        canvas.width = fb.width;
+        canvas.height = fb.height;
+      }
+      // bo bytes are opaque RGBA8888 — one memcpy into a cached
+      // Uint8ClampedArray is all the pump owes the canvas.
+      const blitStart = performance.now();
+      const need = fb.width * fb.height * 4;
+      let scratch = this.kmsScratchBytes.get(crtc_id);
+      if (!scratch || scratch.byteLength !== need) {
+        scratch = new Uint8ClampedArray(new ArrayBuffer(need)) as Uint8ClampedArray<ArrayBuffer>;
+        this.kmsScratchBytes.set(crtc_id, scratch);
+      }
+      scratch.set(pixels);
+      ctx.putImageData(new ImageData(scratch, fb.width, fb.height), 0, 0);
+      const blitUs = ((performance.now() - blitStart) * 1000) | 0;
+      const stats = this.kmsStatsViews.get(crtc_id);
+      if (stats) {
+        Atomics.add(stats, 0, 1);
+        Atomics.store(stats, 1, performance.now() | 0);
+        Atomics.store(stats, 2, fb.width);
+        Atomics.store(stats, 3, fb.height);
+        Atomics.store(stats, 4, blitUs);
+      }
+    }
+
+    // Slots 5/6 are populated for every crtc with a stats SAB, even
+    // those attached via `attachKmsStats` (no canvas). They reflect
+    // kernel-side PAGE_FLIP ioctls — independent of the 60 Hz blit
+    // loop above.
+    if (this.kmsStatsViews.size > 0) {
+      const exports = this.kernelInstance?.exports as
+        | { kernel_kms_commit_count?: (id: number) => bigint;
+            kernel_kms_last_frame_us?: (id: number) => bigint }
+        | undefined;
+      for (const [crtc_id, stats] of this.kmsStatsViews) {
+        if (stats.length < 7) continue;
+        const commits = exports?.kernel_kms_commit_count?.(crtc_id) ?? 0n;
+        const lastUs = exports?.kernel_kms_last_frame_us?.(crtc_id) ?? 0n;
+        Atomics.store(stats, 5, Number(commits & 0x7fffffffn));
+        Atomics.store(stats, 6, Number(lastUs & 0x7fffffffn));
       }
     }
   }
