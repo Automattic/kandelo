@@ -30,17 +30,18 @@ export interface ThreadPageAllocatorOptions {
   maxPageExclusive: number;
   /** Pointer width of the process memory, used when growing memory64. */
   ptrWidth?: 4 | 8;
-  /** Reserved slot count used in exhaustion diagnostics. */
+  /** Maximum concurrent pthread slots for this process. */
   reservedSlots?: number;
+  /** Dynamically reserve a fresh pthread slot start page when no free slot exists. */
+  reserveSlotStartPage?: () => number;
 }
 
 /**
  * Manages pthread channel/TLS allocation within a process WebAssembly.Memory.
  *
- * New process launches reserve a low control slab before the guest-managed
- * brk/mmap region. Allocations move upward from the main process channel
- * through fixed per-process slots, so pthread workers share the same SAB
- * without allocating control pages near the process maximum.
+ * New process launches reserve only the main-thread control pages. Pthread
+ * slots are either allocated from a fixed compatibility arena or dynamically
+ * reserved in the process address space by the kernel worker.
  *
  * Per-thread slot layout:
  *   slotStart+0 - TLS/control page
@@ -55,6 +56,7 @@ export class ThreadPageAllocator {
   private readonly direction: "up" | "down";
   private readonly ptrWidth: 4 | 8;
   private readonly reservedSlots: number;
+  private readonly reserveSlotStartPage?: () => number;
   private activeCount = 0;
 
   constructor(options: ThreadPageAllocatorOptions);
@@ -68,6 +70,7 @@ export class ThreadPageAllocator {
       this.direction = "down";
       this.ptrWidth = 4;
       this.reservedSlots = Math.max(0, Math.floor(options / PAGES_PER_THREAD));
+      this.reserveSlotStartPage = undefined;
     } else {
       if (options.firstSlotStartPage !== undefined) {
         this.nextPage = options.firstSlotStartPage;
@@ -84,14 +87,25 @@ export class ThreadPageAllocator {
         0,
         Math.floor((this.maxPageExclusive - this.nextPage) / PAGES_PER_THREAD),
       );
+      this.reserveSlotStartPage = options.reserveSlotStartPage;
     }
   }
 
   /** Allocate pages for a new thread. Zeros the channel and TLS regions. */
   allocate(memory: WebAssembly.Memory): ThreadAllocation {
+    if (this.activeCount >= this.reservedSlots) {
+      throw new Error(
+        `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
+          `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
+          "or increase the host defaultThreadSlots setting.",
+      );
+    }
+
     let slotStartPage: number;
     if (this.freePages.length > 0) {
       slotStartPage = this.freePages.pop()!;
+    } else if (this.reserveSlotStartPage) {
+      slotStartPage = this.reserveSlotStartPage();
     } else {
       slotStartPage = this.nextPage;
       if (this.direction === "up") {
@@ -101,12 +115,12 @@ export class ThreadPageAllocator {
       }
     }
 
-    if (
+    if (!this.reserveSlotStartPage && (
       slotStartPage < 0 ||
       slotStartPage + PAGES_PER_THREAD > this.maxPageExclusive
-    ) {
+    )) {
       throw new Error(
-        `process reserved pthread slots exhausted (reserved=${this.reservedSlots}, ` +
+        `process pthread slot limit exhausted (limit=${this.reservedSlots}, ` +
           `active=${this.activeCount}). Rebuild with --kandelo-thread-slots=N ` +
           "or increase the host defaultThreadSlots setting.",
       );
@@ -123,21 +137,6 @@ export class ThreadPageAllocator {
       (slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE,
       this.ptrWidth,
     );
-
-    // Check if TLS page already has data (diagnostic: detect address space overlap)
-    const preCheck = new DataView(memory.buffer);
-    let nonZeroCount = 0;
-    for (let i = 0; i < 64; i += 4) {
-      if (preCheck.getUint32(tlsOffset + i, true) !== 0) nonZeroCount++;
-    }
-    if (nonZeroCount > 0) {
-      const vals: string[] = [];
-      for (let i = 0; i < 64; i += 4) {
-        vals.push(`0x${preCheck.getUint32(tlsOffset + i, true).toString(16).padStart(8, '0')}`);
-      }
-      console.error(`[thread-alloc] WARNING: TLS page 0x${tlsOffset.toString(16)} has ${nonZeroCount}/16 non-zero dwords BEFORE zeroing!`);
-      console.error(`[thread-alloc]   data: ${vals.join(' ')}`);
-    }
 
     // Zero channel, TLS, and the per-thread fork save buffer.
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
