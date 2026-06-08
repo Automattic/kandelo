@@ -666,6 +666,9 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            // DRI fd state is per-fd in-kernel; fork inheritance is
+            // handled by the DRI-aware path in a later commit.
+            dri_state: None,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -1265,6 +1268,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            // DRI fd state is per-fd in-kernel; fork inheritance is
+            // handled by the DRI-aware path in a later commit.
+            dri_state: None,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
