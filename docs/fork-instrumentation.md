@@ -130,10 +130,22 @@ context as well as the buffer:
 - `handleFork` passes a `ForkFromThreadContext` through the host `onFork`
   callback. Node and browser hosts copy `forkBufAddr`, `fnPtr`, and `argPtr`
   into the child init message.
+- The same context carries the caller's exact dynamic pthread slot range
+  (`slotStart`, `slotLen`). After the kernel clones the child process state,
+  the host calls `kernel_reserve_host_region_at(childPid, slotStart, slotLen)`
+  so the child retains only the calling thread's copied TLS/fork-save/channel
+  pages.
 - A fork child created from a pthread enters the saved pthread function from the
   indirect-function table instead of `_start`, then starts REWIND from the
   thread's copied buffer. `_start` is not in that call chain and cannot reach
   the saved fork site.
+
+The child does not inherit every parent pthread reservation. POSIX fork resumes
+only the calling thread, so dead parent pthread slots become ordinary copied
+memory bytes in the child and can be reused by later child `brk`, `mmap`, or
+`pthread_create()` activity. Retaining the caller's one slot avoids having to
+move the saved `__tls_base`, thread-local state, and fork-save buffer during
+rewind.
 
 This path is covered by `host/test/fork-instrument-coverage.test.ts` P-06
 (`pthread_create` worker calls `fork`) and K-03 (`pthread_cleanup_push` handler

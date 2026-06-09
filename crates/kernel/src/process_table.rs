@@ -41,6 +41,7 @@ pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
 pub struct ProcessTable {
     pub(crate) processes: BTreeMap<u32, Process>,
     current_pid: u32,
+    next_spawn_pid: u32,
     /// TID of the thread currently servicing a syscall. 0 means "main thread"
     /// (or unknown — callers that don't set this get main-thread semantics).
     /// The host sets this before each `kernel_handle_channel` when a thread
@@ -219,6 +220,7 @@ impl ProcessTable {
         ProcessTable {
             processes: BTreeMap::new(),
             current_pid: 0,
+            next_spawn_pid: 2,
             current_tid: 0,
         }
     }
@@ -781,12 +783,18 @@ impl ProcessTable {
         Ok(())
     }
 
-    /// Smallest unused pid >= 2 (pid 1 is reserved for init).
-    fn allocate_spawn_pid(&self) -> u32 {
-        let mut pid = 2u32;
+    /// Next unused spawn pid >= 2 (pid 1 is reserved for init).
+    ///
+    /// Keep this monotonic instead of reusing the smallest recently-reaped pid.
+    /// The JS host can still be asynchronously terminating pthread workers for
+    /// the old process generation after waitpid reaps it; avoiding immediate
+    /// pid reuse prevents stale host cleanup from targeting the new child.
+    fn allocate_spawn_pid(&mut self) -> u32 {
+        let mut pid = self.next_spawn_pid.max(2);
         while self.processes.contains_key(&pid) {
             pid += 1;
         }
+        self.next_spawn_pid = pid.saturating_add(1).max(2);
         pid
     }
 
@@ -905,6 +913,21 @@ impl ProcessTable {
 #[cfg(test)]
 mod wait_tests {
     use super::*;
+
+    #[test]
+    fn spawn_pid_allocation_does_not_reuse_reaped_pid() {
+        let mut table = ProcessTable::new();
+
+        let first_pid = table.allocate_spawn_pid();
+        table.processes.insert(first_pid, Process::new(first_pid));
+        table.processes.remove(&first_pid);
+
+        let second_pid = table.allocate_spawn_pid();
+        assert!(
+            second_pid > first_pid,
+            "spawn pid allocation must not immediately reuse a reaped pid"
+        );
+    }
 
     #[test]
     fn reap_retains_group_leader_as_limbo_until_group_empties() {

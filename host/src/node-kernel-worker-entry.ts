@@ -36,8 +36,9 @@ import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
+import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import { detectPtrWidth, extractHeapBase } from "./constants";
-import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES } from "./constants";
+import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -144,6 +145,7 @@ interface ThreadWorkerInfo {
   termination?: Promise<void>;
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
+const threadExits = new ThreadExitCoordinator();
 
 async function terminateTrackedWorker(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
@@ -158,6 +160,7 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
   threadWorkers.delete(pid);
   for (const t of threads) {
     await (t.termination ?? terminateTrackedWorker(t.worker));
+    threadExits.release(pid, t.channelOffset);
   }
 }
 
@@ -251,16 +254,20 @@ function createSharedProcessMemory(
 function threadAllocatorForLayout(
   layout: ProcessMemoryLayout,
   ptrWidth: 4 | 8,
+  pid: number,
 ): ThreadPageAllocator {
   return new ThreadPageAllocator({
     firstSlotStartPage: layout.firstThreadSlotPage,
     maxPageExclusive: layout.threadArenaEndPage,
     ptrWidth,
     reservedSlots: layout.threadSlotCount,
+    reserveSlotStartPage: () =>
+      kernelWorker.reserveHostRegion(pid, PAGES_PER_THREAD * WASM_PAGE_SIZE) / WASM_PAGE_SIZE,
   });
 }
 
 function createFreshProcessMemory(
+  pid: number,
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
 ): {
@@ -281,7 +288,7 @@ function createFreshProcessMemory(
   return {
     memory,
     layout,
-    threadAllocator: threadAllocatorForLayout(layout, ptrWidth),
+    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
   };
 }
 
@@ -514,6 +521,7 @@ async function handleInit(msg: InitMessage) {
       onResolveSpawn: handlePosixSpawnResolve,
       onSpawn: handlePosixSpawn,
       onClone: handleClone,
+      onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
       onExit: handleExit,
     },
   );
@@ -561,7 +569,7 @@ function handleSpawn(msg: SpawnMessage) {
       memory,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(msg.programBytes, ptrWidth);
+    } = createFreshProcessMemory(pid, msg.programBytes, ptrWidth);
     const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
@@ -726,7 +734,7 @@ async function handleFork(
     channelOffset: childChannelOffset,
     ptrWidth,
     layout: childLayout,
-    threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth),
+    threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
   });
 
   childWorker.on("error", (err: Error) => failProcess(childPid, `worker error: ${err.message ?? err}`));
@@ -777,7 +785,7 @@ async function handleExec(
     memory: newMemory,
     layout: newLayout,
     threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(programBytes, newPtrWidth);
+  } = createFreshProcessMemory(pid, programBytes, newPtrWidth);
   const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
@@ -897,7 +905,7 @@ async function handlePosixSpawn(
     memory,
     layout,
     threadAllocator,
-  } = createFreshProcessMemory(programBytes, ptrWidth);
+  } = createFreshProcessMemory(childPid, programBytes, ptrWidth);
   const channelOffset = layout.channelOffset;
 
   // The kernel already created the child Process via kernel_spawn_process,
@@ -1028,6 +1036,7 @@ async function handleClone(
     if (reclaimed) return;
     reclaimed = true;
     processInfo.threadAllocator.free(alloc.basePage);
+    threadExits.release(pid, alloc.channelOffset);
     const threads = threadWorkers.get(pid);
     if (threads) {
       const idx = threads.indexOf(threadEntry);
@@ -1040,6 +1049,7 @@ async function handleClone(
     }
     return threadEntry.termination;
   };
+  threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
   const failThread = (reason: string) => {
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
@@ -1059,6 +1069,10 @@ async function handleClone(
   threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
 
   return tid;
+}
+
+function handleThreadExit(pid: number, channelOffset: number): boolean {
+  return threadExits.requestExit(pid, channelOffset);
 }
 
 function handleExit(pid: number, exitStatus: number): void {

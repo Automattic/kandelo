@@ -12,8 +12,9 @@ description: |
       When true, every test step skips.
 
     package_archive_changed — at least one changed file can alter
-      built package archive bytes or package cache keys. This is the
-      only category that requires the package matrix.
+      built package archive bytes or package cache keys, including
+      package build composite actions. This is the only category that
+      requires the package matrix.
 
     package_publish_flow_changed — package release/index/source-publish
       mechanics changed. This runs publish-flow checks without
@@ -31,8 +32,8 @@ description: |
     package_staging_required — compatibility alias for
       package_archive_changed. Ordinary kernel/runtime, binary fetch,
       additive ABI snapshot, package-owned test/demo, advisory package
-      set, browser demo app, CI workflow/action-only, and docs-only
-      changes do not set it.
+      set, browser demo app, outer CI workflow/control-action, and
+      docs-only changes do not set it.
 
   Filters fail safe for expensive package work: an unknown path
   outside the docs allowlist runs the non-package test gate, but it
