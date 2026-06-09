@@ -168,42 +168,22 @@ export ac_cv_sizeof_void_p=4
         fi
     done
 
-    # The cross-compiled `tic` can't run during `make`, so MKfallback.sh
-    # would produce an empty fallback.c. Stub it out now and regenerate
-    # it below with the host-built tic/infocmp.
-    cat > ncurses/fallback.c <<'STUB'
-#include <curses.priv.h>
-NCURSES_EXPORT(const TERMTYPE2 *)
-_nc_fallback2(const char *name GCC_UNUSED)
-{ return (0); }
-#if NCURSES_EXT_NUMBERS
-NCURSES_EXPORT(const TERMTYPE *)
-_nc_fallback(const char *name GCC_UNUSED)
-{ return (0); }
-#endif
-STUB
+    # The target utilities are statically linked, so the fallback table
+    # must be present before `make` links clear/tput/etc. Generate it
+    # with the host tic/infocmp configured above; the target tic cannot
+    # run on the build host.
+    echo "==> Generating fallback terminal entries..."
+    TERMINFO_SRC="$SRC_DIR/misc/terminfo.src"
+    MKFALLBACK="$SRC_DIR/ncurses/tinfo/MKfallback.sh"
+    TERMINFO="$TERMINFO_DIR" bash -e "$MKFALLBACK" \
+        "$TERMINFO_DIR" "$TERMINFO_SRC" "$HOST_TIC" "$HOST_INFOCMP" \
+        xterm-256color xterm vt100 dumb \
+        > ncurses/fallback.c 2>/dev/null
 
     echo "==> Building ncurses..."
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -20
 )
 
-# --- Regenerate fallback.c with real terminal entries, recompile, re-archive ---
-echo "==> Regenerating fallback terminal entries..."
-TERMINFO_SRC="$SRC_DIR/misc/terminfo.src"
-MKFALLBACK="$SRC_DIR/ncurses/tinfo/MKfallback.sh"
-TERMINFO="$TERMINFO_DIR" bash -e "$MKFALLBACK" \
-    "$TERMINFO_DIR" "$TERMINFO_SRC" "$HOST_TIC" "$HOST_INFOCMP" \
-    xterm-256color xterm vt100 dumb \
-    > "$WASM_BUILD_DIR/ncurses/fallback.c" 2>/dev/null
-
-(
-    cd "$WASM_BUILD_DIR"
-    wasm32posix-cc -I./ncurses -I./include -I"$SRC_DIR/ncurses" -I"$SRC_DIR/include" \
-        -DHAVE_CONFIG_H -DNDEBUG -O2 -DNCURSES_STATIC -DUSE_TERMLIB \
-        -c ncurses/fallback.c -o objects/fallback.o 2>&1 | grep -v warning || true
-    wasm32posix-ar r lib/libtinfow.a objects/fallback.o 2>&1
-    wasm32posix-ranlib lib/libtinfow.a
-)
 echo "==> Fallback entries compiled into libtinfow.a"
 
 # --- Install into $INSTALL_DIR ---
