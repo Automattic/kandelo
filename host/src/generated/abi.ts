@@ -29,7 +29,6 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_mark_process_signaled",
   "kernel_reap_exited_child",
   "kernel_remove_process",
-  "kernel_set_mode",
   "kernel_wait4_poll",
 ] as const;
 

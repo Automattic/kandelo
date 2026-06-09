@@ -1,9 +1,8 @@
-//! Process table for centralized kernel mode.
+//! Process table for the kernel.
 //!
-//! In centralized mode (mode=1), a single kernel instance manages multiple
-//! processes. The `ProcessTable` maps PIDs to `Process` structs, allowing
-//! the kernel to service syscalls for any process based on the PID passed
-//! via `kernel_handle_channel`.
+//! A single kernel instance manages all processes. The `ProcessTable` maps
+//! PIDs to `Process` structs, allowing the kernel to service syscalls for
+//! any process based on the PID passed via `kernel_handle_channel`.
 //!
 //! Operations:
 //! - `create_process` — create a new empty process
@@ -32,9 +31,8 @@ use crate::process::{Process, ProcessState};
 /// framebuffer region, or exits.
 pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
 
-/// Table of all processes managed by the centralized kernel.
+/// Table of all processes managed by the kernel.
 ///
-/// In centralized mode (mode=1), the kernel manages multiple processes.
 /// Each process is identified by its pid. The `current_pid` field tracks
 /// which process is currently being serviced (set by the JS host before
 /// calling `kernel_handle_channel`).
@@ -971,14 +969,14 @@ mod wait_tests {
 /// Global process table wrapper for static storage.
 pub struct GlobalProcessTable(pub UnsafeCell<ProcessTable>);
 
-/// SAFETY: Access is serialized — the centralized kernel services one syscall
-/// at a time from the JS event loop (no concurrent Wasm execution).
+/// SAFETY: Access is serialized — the kernel services one syscall at a time
+/// from the JS event loop (no concurrent Wasm execution).
 unsafe impl Sync for GlobalProcessTable {}
 
-/// Single global `ProcessTable` instance used by the centralized kernel.
-/// Lives here (rather than inside `wasm_api.rs`) so other modules can read
-/// the currently-serviced `pid`/`tid` without a back-reference through the
-/// export layer.
+/// Single global `ProcessTable` instance used by the kernel. Lives here
+/// (rather than inside `wasm_api.rs`) so other modules can read the
+/// currently-serviced `pid`/`tid` without a back-reference through the export
+/// layer.
 pub static GLOBAL_PROCESS_TABLE: GlobalProcessTable =
     GlobalProcessTable(UnsafeCell::new(ProcessTable::new()));
 

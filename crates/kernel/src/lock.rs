@@ -44,7 +44,7 @@ impl FileLock {
 
 /// Per-file lock table keyed by host_handle.
 pub struct LockTable {
-    /// All active locks. Centralized kernel manages locks for all processes.
+    /// All active locks. The kernel manages locks for all processes.
     locks: Vec<(i64, FileLock)>, // (host_handle, lock)
 }
 

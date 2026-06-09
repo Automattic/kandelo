@@ -780,7 +780,7 @@ function installProcessWorkerListeners(
     if (m.type === "error") {
       console.error(`[kernel-worker] Process error pid=${pid}:`, m.message);
       // Forward to host stderr so the demo log shows the actual failure
-      // ("Centralized worker failed: …" with the wasm trap or
+      // ("Kernel worker failed: ..." with the wasm trap or
       // instantiation error). Without this, a process death in the
       // browser is invisible to the user — only console.error in the
       // kernel-worker scope, which most users don't open. Mirrors the
