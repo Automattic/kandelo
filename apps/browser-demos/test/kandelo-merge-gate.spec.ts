@@ -53,6 +53,12 @@ async function runTerminalCommand(
   await waitForTerminalContent(page, expected, timeout);
 }
 
+async function openTerminalDrawer(page: Page) {
+  const terminalDrawer = page.locator(".kmachine-drawer-toggle").filter({ hasText: "Terminal" });
+  await terminalDrawer.click();
+  await expect(page.locator(".kshell-host").first()).toBeVisible({ timeout: 120_000 });
+}
+
 function webFrame(page: Page, title: string): FrameLocator {
   return page.frameLocator(`iframe[title="${title}"]`);
 }
@@ -184,6 +190,14 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   await expect(webFrame(page, "nginx").locator("body")).toContainText(
     "Hello from nginx on WebAssembly!",
     { timeout: 120_000 },
+  );
+
+  await openTerminalDrawer(page);
+  await waitForTerminalContent(page, /bash-[0-9][^\r\n]*# ?/, 120_000);
+  await runTerminalCommand(
+    page,
+    "export PS1='KANDELO_NGINX_TERMINAL_OK $ '",
+    "KANDELO_NGINX_TERMINAL_OK",
   );
 });
 

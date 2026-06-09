@@ -940,6 +940,7 @@ async function bootProfile(
     host.attachKernel(kernel);
     const shellIdentity = shellIdentityForProfile(profile, effectiveBoot);
     host.setDefaultShell({
+      programPath: "/bin/bash",
       programBytes: bashBytes,
       argv: ["bash", "-l", "-i"],
       env: shellIdentity.env,
