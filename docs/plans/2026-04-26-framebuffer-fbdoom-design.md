@@ -142,7 +142,7 @@ A second mmap on the same fd returns `EINVAL` (one binding per process).
 - `munmap` covering the region: clear `fb_binding`, call `host_io.unbind_framebuffer(pid)`.
 - `close` of last fb fd: drop `FB0_OWNER`. Binding stays alive — Linux semantics: mmap survives close; only cleared on munmap or exit.
 - Process exit / exec: clear `fb_binding`, call `unbind_framebuffer(pid)`, drop `FB0_OWNER` if owned.
-- `fork`: child gets a copy of the mmap region (existing behavior). For DOOM (single process) we don't bind the child; if a forked child later does its own `open + mmap`, it goes through the normal path. Documented as a known limitation.
+- `fork`: child gets a copy of the mmap region (existing behavior). For DOOM's single-worker demo setup we don't bind the child; if a forked child later does its own `open + mmap`, it goes through the normal path. Documented as a known limitation.
 
 **HostIO trait additions**:
 

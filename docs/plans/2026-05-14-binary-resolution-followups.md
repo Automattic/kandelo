@@ -16,7 +16,7 @@ master process. The crash moves to per-request startup in the
 forked workers:
 
 ```
-[process-worker] Centralized worker failed: table index is out of bounds
+[process-worker] Kernel worker failed: table index is out of bounds
 RuntimeError: table index is out of bounds
   php-fpm.zend_activate_modules @ wasm-function[22982]:0x730a9e
   php-fpm.php_request_startup    @ wasm-function[21669]:0x6ad61c

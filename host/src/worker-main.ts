@@ -1,5 +1,5 @@
 /**
- * Centralized worker entry points.
+ * Kernel worker entry points.
  *
  * Programs compiled with channel_syscall.c run in Worker threads.
  * All syscalls go through a shared-memory channel to the
@@ -94,7 +94,7 @@ function buildKernelImports(
       return len;
     },
 
-    // Fork/exec state — not a fork child in centralized mode
+    // Fork/exec state — not a fork child.
     kernel_is_fork_child: (): number => 0,
     kernel_apply_fork_fd_actions: (): number => 0,
     kernel_get_fork_exec_path: (_buf: number | bigint, _max: number): number => 0,
@@ -1125,7 +1125,7 @@ export async function centralizedWorkerMain(
     port.postMessage({
       type: "error",
       pid: initData.pid,
-      message: `Centralized worker failed: ${errMsg}`,
+      message: `Kernel worker failed: ${errMsg}`,
     } satisfies WorkerToHostMessage);
   }
 }
@@ -1691,7 +1691,7 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
 }
 
 /**
- * Thread worker entry point for centralized mode.
+ * Thread worker entry point.
  *
  * Threads share the parent process's Memory. This function:
  * 1. Instantiates the same Wasm module with shared memory (start section stripped)

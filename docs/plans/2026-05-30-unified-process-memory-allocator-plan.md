@@ -74,7 +74,7 @@ maxMemoryPages * 64KiB
 
 Future linker ABI target: reserve the host-control slab before the toolchain's exported `__heap_base` and add explicit exports such as `__wpk_control_base`, `__wpk_control_end`, and thread slot metadata. That would let guest tooling see `__heap_base` as the true guest heap start. The current host-computed layout avoids corrupting existing binaries because it never places host data below the exported `__heap_base`.
 
-All workers for a process still share one `WebAssembly.Memory`. The main worker uses the main process slot. Each pthread worker receives the same memory plus a distinct pthread slot. The host tracks slot ownership per pid; exited pthreads return their slots to that process-local free list after zeroing.
+All workers for a process still share one `WebAssembly.Memory`. The main worker uses the main process slot. Each pthread worker receives the same memory plus a distinct pthread slot. The host tracks slot ownership per pid; exited pthreads return their slots to that process's free list after zeroing.
 
 ## Design decisions
 
