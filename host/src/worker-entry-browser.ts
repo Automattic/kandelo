@@ -1,14 +1,24 @@
 import { centralizedWorkerMain, centralizedThreadWorkerMain } from "./worker-main";
 import type { CentralizedWorkerInitMessage, CentralizedThreadInitMessage } from "./worker-protocol";
 
+const WORKER_SHUTDOWN_MESSAGE = "__kandelo_worker_shutdown";
+const WORKER_SHUTDOWN_ACK_MESSAGE = "__kandelo_worker_shutdown_ack";
+
 // Web Worker global scope
 const sw = globalThis as unknown as {
   onmessage: ((e: MessageEvent) => void) | null;
   postMessage(msg: unknown, transfer?: Transferable[]): void;
+  close?: () => void;
 };
 
 sw.onmessage = (e: MessageEvent) => {
   const data = e.data as { type: string };
+  if (data.type === WORKER_SHUTDOWN_MESSAGE) {
+    sw.postMessage({ type: WORKER_SHUTDOWN_ACK_MESSAGE });
+    sw.close?.();
+    return;
+  }
+
   const port = {
     postMessage: (msg: unknown, transfer?: unknown[]) =>
       sw.postMessage(msg, transfer as Transferable[]),

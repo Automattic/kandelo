@@ -615,12 +615,12 @@ jobs:
           submodules: libc/musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -835,79 +835,8 @@ jobs:
             exit 1
           fi
 
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Compute cache key
-        # Mirrors `staging-build.yml`'s `toolchain-cache.key` formula
-        # exactly so a hit on either workflow's cache warms both.
-        id: key
-        run: |
-          set -euo pipefail
-          musl_gitlink="$(git rev-parse HEAD:libc/musl)"
-          KEY="musl-sysroot-v5-${{ runner.os }}-$musl_gitlink-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml', 'scripts/dev-shell.sh', 'scripts/build-musl.sh', 'scripts/install-overlay-headers.sh', 'packages/registry/libcxx/**', 'libc/musl-overlay/**', 'libc/glue/**', 'sdk/activate.sh', 'sdk/bin/**', 'sdk/config.site', 'sdk/package.json', 'sdk/package-lock.json', 'sdk/src/**') }}"
-          echo "value=$KEY" >> "$GITHUB_OUTPUT"
-          echo "toolchain-cache key: $KEY"
-
-      - name: Cache musl sysroot + libc++
-        uses: actions/cache@v4
-        id: cache
-        with:
-          path: |
-            sysroot
-            sysroot64
-          key: ${{ steps.key.outputs.value }}
-
-      - name: Build sysroots if cache miss
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          bash scripts/dev-shell.sh bash scripts/build-musl.sh
-          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
-          bash scripts/dev-shell.sh bash -c '
-            set -euo pipefail
-            HOST_TARGET="$(rustc -vV | awk "/^host/ {print \$2}")"
-            for arch in wasm32 wasm64; do
-              cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-                build-deps resolve libcxx --arch "$arch"
-              prefix="$(cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-                build-deps path libcxx --arch "$arch")"
-              if [ "$arch" = "wasm64" ]; then sysroot="sysroot64"; else sysroot="sysroot"; fi
-              mkdir -p "$sysroot/lib" "$sysroot/include/c++"
-              ln -sf "$prefix/lib/libc++.a"    "$sysroot/lib/libc++.a"
-              ln -sf "$prefix/lib/libc++abi.a" "$sysroot/lib/libc++abi.a"
-              rm -rf "$sysroot/include/c++/v1"
-              ln -sfn "$prefix/include/c++/v1" "$sysroot/include/c++/v1"
-            done
-          '
-
-      - name: Build fork-instrument host tool
-        run: bash scripts/dev-shell.sh bash scripts/build-fork-instrument-tool.sh
-
-      - name: Pack toolchain sysroots + host tools
-        run: |
-          tar --zstd -cf "$RUNNER_TEMP/toolchain-sysroots.tar.zst" \
-            sysroot sysroot64 tools/bin/wasm-fork-instrument
-
-      - name: Upload toolchain sysroots artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain-sysroots.tar.zst
-          retention-days: 1
-          if-no-files-found: error
+      - name: Prepare package toolchain
+        uses: ./.github/actions/package-toolchain
 
   # Fast path for prepare-merge: if staging already built the exact
   # cache-keyed archive for the merged tree, copy that asset into the
@@ -1011,7 +940,7 @@ jobs:
     if: ${{ needs.preflight.result == 'success' && needs.toolchain-cache.result == 'success' && needs.preflight.outputs.library_matrix != '[]' }}
     runs-on: ubuntu-latest
     permissions:
-      actions: read      # gh run download library artifacts
+      actions: read      # download toolchain artifact
       contents: write    # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
@@ -1057,80 +986,13 @@ jobs:
             exit 1
           fi
 
-      - name: Compute commit-bound build provenance
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain
-
-      - name: Extract toolchain sysroots
-        run: |
-          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
-
-      - name: Install host npm deps (build prereq)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Resolve target package's transitive deps
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              archive-stage \
-                --package "packages/registry/${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                --out "$RUNNER_TEMP/staged" \
-                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-                --build-host "${{ steps.provenance.outputs.build-host }}"
-          '
-          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
-          archive_name=$(basename "$archive_path")
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/package-archive-build
         with:
-          name: ${{ matrix.package }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/staged/*.tar.zst
-          retention-days: 7
-          if-no-files-found: error
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          build-host: ${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}
 
       # Atomic per-matrix-entry publish: archive upload + index.toml
       # mutation under the state-lock acquired for the target tag.
@@ -1187,6 +1049,7 @@ jobs:
       needs.preflight.outputs.program_matrix != '[]'
     runs-on: ubuntu-latest
     permissions:
+      actions: read      # download toolchain + library artifacts
       contents: write    # state-lock git push + gh release create/upload
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
@@ -1232,94 +1095,15 @@ jobs:
             exit 1
           fi
 
-      - name: Compute commit-bound build provenance
-        id: provenance
-        run: |
-          ts=$(git log -1 --format=%aI HEAD)
-          echo "build-timestamp=$ts" >> "$GITHUB_OUTPUT"
-          echo "build-host=${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}" >> "$GITHUB_OUTPUT"
-          echo "provenance: build-timestamp=$ts" >&2
-
-      - name: Fetch musl submodule
-        uses: ./.github/actions/fetch-submodules
-        with:
-          submodules: libc/musl
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: toolchain-sysroots
-          path: ${{ runner.temp }}/toolchain
-
-      - name: Extract toolchain sysroots
-        run: |
-          tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
-
-      - name: Install host npm deps (build prereq)
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-            cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-          '
-
-      - name: Download library archives from lib-matrix-build
-        if: needs.preflight.outputs.library_matrix != '[]'
-        uses: ./.github/actions/download-run-artifacts
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: '*-wasm*'
-          path: ${{ runner.temp }}/lib-archives
-
-      - name: Materialize library overlays
-        if: needs.preflight.outputs.library_matrix != '[]'
-        run: |
-          bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/lib-archives"
-
-      - name: Resolve target package's transitive deps
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              build-deps --arch "${{ matrix.arch }}" --binaries-dir "$(pwd)/binaries" \
-                resolve "${{ matrix.package }}"
-          '
-
       - name: Build ${{ matrix.package }} (${{ matrix.arch }})
         id: build
-        run: |
-          bash scripts/dev-shell.sh bash -c '
-            HOST_TARGET=$(rustc -vV | awk "/^host/ {print \$2}")
-            cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-              archive-stage \
-                --package "packages/registry/${{ matrix.package }}" \
-                --arch "${{ matrix.arch }}" \
-                --out "$RUNNER_TEMP/staged" \
-                --build-timestamp "${{ steps.provenance.outputs.build-timestamp }}" \
-                --build-host "${{ steps.provenance.outputs.build-host }}"
-          '
-          archive_path=$(find "$RUNNER_TEMP/staged" -name '*.tar.zst' -print -quit)
-          archive_name=$(basename "$archive_path")
-          echo "archive-path=$archive_path" >> "$GITHUB_OUTPUT"
-          echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
-
-      - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/package-archive-build
         with:
-          name: ${{ matrix.package }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/staged/*.tar.zst
-          retention-days: 7
-          if-no-files-found: error
+          package: ${{ matrix.package }}
+          arch: ${{ matrix.arch }}
+          build-host: ${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}
+          materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Atomic per-matrix-entry publish — see lib-matrix-build for
       # the rationale.
@@ -1448,12 +1232,12 @@ jobs:
           submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -1531,7 +1315,7 @@ jobs:
             cargo build --release -p kandelo \
               -Z build-std=core,alloc
             mkdir -p local-binaries
-            cp target/wasm64-unknown-unknown/release/kandelo_kernel.wasm \
+            cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
               local-binaries/kernel.wasm
             bash scripts/build-programs.sh
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
@@ -1662,13 +1446,13 @@ jobs:
 
       - name: Install Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@v18
+        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@v13
+        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
         with:
           use-gha-cache: false
           use-flakehub: false

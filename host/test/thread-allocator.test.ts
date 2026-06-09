@@ -129,6 +129,59 @@ describe("ThreadPageAllocator", () => {
     });
     const mem = makeMemory();
 
-    expect(() => alloc.allocate(mem)).toThrow(/reserved pthread slots exhausted/);
+    expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
+  });
+
+  it("dynamically reserves slots when configured", () => {
+    let nextPage = 128;
+    let reservations = 0;
+    const alloc = new ThreadPageAllocator({
+      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE,
+      reservedSlots: 2,
+      reserveSlotStartPage: () => {
+        reservations++;
+        const page = nextPage;
+        nextPage += PAGES_PER_THREAD;
+        return page;
+      },
+    });
+    const mem = makeMemory();
+
+    const t1 = alloc.allocate(mem);
+    const t2 = alloc.allocate(mem);
+
+    expect(t1.slotStartPage).toBe(128);
+    expect(t2.slotStartPage).toBe(128 + PAGES_PER_THREAD);
+    expect(reservations).toBe(2);
+    expect(mem.buffer.byteLength).toBe((t2.slotStartPage + PAGES_PER_THREAD) * WASM_PAGE_SIZE);
+    expect(() => alloc.allocate(mem)).toThrow(/pthread slot limit exhausted/);
+  });
+
+  it("reuses dynamic slots without reserving a new host range", () => {
+    let nextPage = 128;
+    let reservations = 0;
+    const alloc = new ThreadPageAllocator({
+      firstSlotStartPage: FIRST_THREAD_SLOT_PAGE,
+      maxPageExclusive: FIRST_THREAD_SLOT_PAGE,
+      reservedSlots: 2,
+      reserveSlotStartPage: () => {
+        reservations++;
+        const page = nextPage;
+        nextPage += PAGES_PER_THREAD;
+        return page;
+      },
+    });
+    const mem = makeMemory();
+
+    const t1 = alloc.allocate(mem);
+    const t2 = alloc.allocate(mem);
+    alloc.free(t1.slotStartPage);
+
+    const reused = alloc.allocate(mem);
+
+    expect(reused.slotStartPage).toBe(t1.slotStartPage);
+    expect(t2.slotStartPage).toBe(128 + PAGES_PER_THREAD);
+    expect(reservations).toBe(2);
   });
 });

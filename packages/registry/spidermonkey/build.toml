@@ -1,4 +1,11 @@
 script_path = "packages/registry/spidermonkey/build-spidermonkey.sh"
+inputs = [
+  "packages/registry/spidermonkey/build-spidermonkey.sh",
+  "packages/registry/spidermonkey/node-compat/adapter.js",
+  "packages/registry/spidermonkey/node-compat/suffix.js",
+  "packages/registry/spidermonkey/patches",
+  "packages/registry/node-compat/bootstrap.js",
+]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "d50f54f16bf242c0897e48b71bb519b386407fa8"
 revision    = 10

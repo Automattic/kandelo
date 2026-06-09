@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish = false
 # xtask is a host-only build tool. The workspace `.cargo/config.toml`
-# defaults `target` to `wasm64-unknown-unknown`, but xtask MUST be
+# defaults `target` to `wasm32-unknown-unknown`, but xtask MUST be
 # built and tested for the host: `ureq`'s `tls` feature transitively
 # depends on `ring`, whose C build does not support wasm targets.
 #

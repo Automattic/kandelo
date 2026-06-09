@@ -1,0 +1,57 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -5019,6 +5019,42 @@ static void KillWorkerThreads(JSContext* cx) {
+   workerThreadsLock = nullptr;
+ }
+ 
++static void JoinShellWorkerThreadsForKandelo() {
++  MOZ_ASSERT_IF(!CanUseExtraThreads(), workerThreads.empty());
++
++  if (!workerThreadsLock) {
++    MOZ_ASSERT(workerThreads.empty());
++    return;
++  }
++
++  while (true) {
++    UniquePtr<Thread> thread;
++    {
++      AutoLockWorkerThreads alwt;
++      if (workerThreads.empty()) {
++        break;
++      }
++      thread = std::move(workerThreads.back());
++      workerThreads.popBack();
++    }
++    thread->join();
++  }
++
++  workerThreads.clearAndFree();
++}
++
++static bool JoinWorkerThreads(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 0) {
++    JS_ReportErrorASCII(cx, "joinWorkerThreads takes no arguments");
++    return false;
++  }
++
++  JoinShellWorkerThreadsForKandelo();
++  args.rval().setUndefined();
++  return true;
++}
++
+ static void CancelExecution(JSContext* cx) {
+   ShellContext* sc = GetShellContext(cx);
+   sc->serviceInterrupt = true;
+@@ -10122,6 +10158,11 @@ static const JSFunctionSpecWithHelp shell_functions[] = {
+ "evalInWorker(str)",
+ "  Evaluate 'str' in a separate thread with its own runtime.\n"),
+ 
++    JS_FN_HELP("joinWorkerThreads", JoinWorkerThreads, 0, 0,
++"joinWorkerThreads()",
++"  Join all shell worker threads created by evalInWorker.\n"
++"  This is intended for shell adapter teardown after workers finish.\n"),
++
+     JS_FN_HELP("getSharedObject", GetSharedObject, 0, 0,
+ "getSharedObject()",
+ "  Retrieve the shared object from the cross-worker mailbox.\n"

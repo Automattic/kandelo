@@ -5021,6 +5021,9 @@ pub fn sys_munmap(
     if addr.checked_add(len).is_none() {
         return Err(Errno::EINVAL);
     }
+    if proc.memory.overlaps_host_reserved_region(addr, len) {
+        return Err(Errno::EINVAL);
+    }
 
     // /dev/fb0 cleanup: if this munmap fully covers the framebuffer
     // binding, drop it and tell the host. We check before the actual
@@ -12261,6 +12264,19 @@ mod tests {
         let mut host = MockHostIO::new();
         assert_eq!(
             sys_munmap(&mut proc, &mut host, 0x10000, 0),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn test_munmap_rejects_host_reserved_region() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let addr = proc.memory.reserve_host_region(0x10000);
+        assert_ne!(addr, MAP_FAILED);
+
+        assert_eq!(
+            sys_munmap(&mut proc, &mut host, addr, 0x10000),
             Err(Errno::EINVAL)
         );
     }

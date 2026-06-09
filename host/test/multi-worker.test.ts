@@ -2,7 +2,7 @@
 //
 // Tests CentralizedKernelWorker process management: register/unregister,
 // setNextChildPid, and fork flow.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { resolveBinary } from "../src/binary-resolver";
@@ -12,7 +12,13 @@ import {
   createProcessMemory as createLayoutMemory,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
-import { CH_TOTAL_SIZE, WASM_PAGE_SIZE } from "../src/constants";
+import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
+import {
+  ABI_SYSCALLS,
+  CH_DATA,
+  CH_ERRNO,
+  CH_RETURN,
+} from "../src/generated/abi";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 
@@ -51,6 +57,205 @@ function registerProcess(
 }
 
 describe("CentralizedKernelWorker Process Management", () => {
+  it("lets the host terminate pthread workers without waking SYS_EXIT back into guest code", () => {
+    const pid = 123;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
+    const tid = 77;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channel = {
+      pid,
+      channelOffset: threadChannelOffset,
+      memory,
+      handling: true,
+    };
+    const onThreadExit = vi.fn(() => true);
+    const completeChannelRaw = vi.fn();
+    const abandonChannel = vi.fn((ch: typeof channel) => {
+      ch.handling = false;
+    });
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onThreadExit },
+      processes: new Map([
+        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
+      ]),
+      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
+      threadForkContexts: new Map([
+        [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
+      ]),
+      threadCtidPtrs: new Map(),
+      notifyThreadExit: vi.fn(),
+      removeChannel: vi.fn(),
+      completeChannelRaw,
+      abandonChannel,
+    });
+
+    (kw as any).handleExit(channel, ABI_SYSCALLS.Exit, [0]);
+
+    expect(onThreadExit).toHaveBeenCalledWith(pid, tid, threadChannelOffset);
+    expect(abandonChannel).toHaveBeenCalledWith(channel);
+    expect(completeChannelRaw).not.toHaveBeenCalled();
+    expect(channel.handling).toBe(false);
+  });
+
+  it("keeps completing pthread SYS_EXIT channels when no host terminator is installed", () => {
+    const pid = 124;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
+    const tid = 78;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channel = {
+      pid,
+      channelOffset: threadChannelOffset,
+      memory,
+      handling: true,
+    };
+    const completeChannelRaw = vi.fn((ch: typeof channel) => {
+      ch.handling = false;
+    });
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: {},
+      processes: new Map([
+        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
+      ]),
+      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
+      threadForkContexts: new Map(),
+      threadCtidPtrs: new Map(),
+      notifyThreadExit: vi.fn(),
+      removeChannel: vi.fn(),
+      completeChannelRaw,
+      abandonChannel: vi.fn(),
+    });
+
+    (kw as any).handleExit(channel, ABI_SYSCALLS.Exit, [0]);
+
+    expect(completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
+    expect((kw as any).abandonChannel).not.toHaveBeenCalled();
+    expect(channel.handling).toBe(false);
+  });
+
+  it("registers pthread clear-TID before the host clone callback can complete", async () => {
+    const pid = 125;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const tid = 79;
+    const stackPtr = 0x00800000;
+    const tlsPtr = 0x00900000;
+    const ctidPtr = 0x00040000;
+    const memory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const processView = new DataView(memory.buffer, mainChannelOffset);
+    processView.setUint32(CH_DATA, 11, true);
+    processView.setUint32(CH_DATA + 4, 22, true);
+
+    const kernelMemory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+    });
+    const kernelView = new DataView(kernelMemory.buffer);
+    const threadCtidPtrs = new Map<string, number>();
+    let resolveClone!: (value: number) => void;
+    const onClone = vi.fn(() => {
+      expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(ctidPtr);
+      return new Promise<number>((resolve) => {
+        resolveClone = resolve;
+      });
+    });
+
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onClone },
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      processes: new Map([
+        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
+      ]),
+      threadCtidPtrs,
+      completeChannel: vi.fn(),
+      bindKernelTidForChannel: vi.fn(),
+      kernelInstance: {
+        exports: {
+          kernel_handle_channel: vi.fn(() => {
+            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
+        },
+      },
+    });
+
+    (kw as any).handleClone(
+      { pid, channelOffset: mainChannelOffset, memory },
+      [0, stackPtr, 0, tlsPtr, ctidPtr, 0],
+    );
+
+    expect(onClone).toHaveBeenCalledTimes(1);
+    expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(ctidPtr);
+    resolveClone(tid);
+    await Promise.resolve();
+    expect((kw as any).completeChannel).toHaveBeenCalled();
+  });
+
+  it("does not lower compact process max_addr when adding dynamic pthread channels", () => {
+    const setMaxAddr = vi.fn(() => 0);
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      initialized: true,
+      hostReaped: new Set(),
+      processes: new Map(),
+      activeChannels: [],
+      channelTids: new Map(),
+      threadForkContexts: new Map(),
+      usePolling: true,
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
+      kernelInstance: {
+        exports: {
+          kernel_create_process: vi.fn(() => 0),
+          kernel_set_brk_base: vi.fn(() => 0),
+          kernel_set_mmap_base: vi.fn(() => 0),
+          kernel_set_max_addr: setMaxAddr,
+        },
+      },
+    }) as CentralizedKernelWorker;
+    const highThreadChannelOffset = 0x04000000 + 2 * WASM_PAGE_SIZE;
+    const memory = new WebAssembly.Memory({
+      initial: highThreadChannelOffset / WASM_PAGE_SIZE + 1,
+      maximum: DEFAULT_MAX_PAGES,
+      shared: true,
+    });
+    const maxAddr = 0x20000000;
+
+    kw.registerProcess(321, memory, [4 * WASM_PAGE_SIZE], {
+      brkBase: 4 * WASM_PAGE_SIZE,
+      mmapBase: 4 * WASM_PAGE_SIZE,
+      maxAddr,
+    });
+    kw.addChannel(321, highThreadChannelOffset, 7);
+
+    expect(setMaxAddr).toHaveBeenCalledTimes(1);
+    expect(setMaxAddr).toHaveBeenCalledWith(321, maxAddr);
+  });
+
   it("should register and unregister processes", async () => {
     const kw = new CentralizedKernelWorker(
       { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },

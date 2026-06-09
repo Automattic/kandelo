@@ -301,16 +301,17 @@ fell back to fork.
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
-2. Host allocates an explicit pthread control slot in the SAME shared memory
-3. Host spawns a new worker that shares the parent's `WebAssembly.Memory`
-4. Thread worker runs `centralizedThreadWorkerMain`, calls `__wasm_thread_init` to set up TLS
-5. Thread starts executing the given function pointer with the given argument
+2. Host asks the kernel to reserve one dynamic pthread control slot in the same process address space
+3. Host grows the process `WebAssembly.Memory` only far enough to cover that slot
+4. Host spawns a new worker that shares the parent's `WebAssembly.Memory`
+5. Thread worker runs `centralizedThreadWorkerMain`, calls `__wasm_thread_init` to set up TLS
+6. Thread starts executing the given function pointer with the given argument
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
 
 ## Memory Layout
 
-Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus a fixed low control slab, then grows it only after successful guest allocation syscalls.
+Each process has a WebAssembly linear memory (shared, up to 1GB by default). The host does not instantiate that memory at the maximum size. It creates the memory large enough for the wasm import minimum plus the main-thread control pages, then grows it after successful guest allocation syscalls or after dynamically reserving a pthread control slot.
 
 ```
 Address           Region
@@ -321,28 +322,42 @@ control_base      Host-owned low control slab
                   - main page 0: fork-save/scratch
                   - main page 1: syscall channel primary page
                   - main page 2: syscall channel spill page
-                  - reserved pthread slots:
-                    page 0: TLS/control
-                    page 1: fork-save/scratch
-                    page 2: syscall channel primary page
-                    page 3: syscall channel spill page
 control_end       End of host-owned control slab
 brk_base          Initial brk; brk(0) returns this address
 mmap_base         First automatic mmap address; normally equals brk_base
-...               Guest-managed brk and mmap address space
+...               Guest-managed brk/mmap address space, with dynamic
+                  host-reserved pthread slots interleaved as needed
+                  - slot page 0: TLS/control
+                  - slot page 1: fork-save/scratch
+                  - slot page 2: syscall channel primary page
+                  - slot page 3: syscall channel spill page
 ...
 MAX_PAGES         End of memory (1GB default)
 ```
 
-For current binaries, `control_base` is page-aligned from the larger of the imported-memory minimum and the program's `__heap_base`. The host then reserves a bounded number of pthread slots in that slab and calls `kernel_set_brk_base(pid, control_end)` and `kernel_set_mmap_base(pid, control_end)` before `_start` can run. `__heap_base` is therefore treated as "first byte available to the host layout" rather than the value returned by guest `brk(0)`.
+For current binaries, `control_base` is page-aligned from the larger of the imported-memory minimum and the program's `__heap_base`. The host installs only the main control pages before `_start` can run, then calls `kernel_set_brk_base(pid, control_end)` and `kernel_set_mmap_base(pid, control_end)`. `__heap_base` is therefore treated as "first byte available to the host layout" rather than the value returned by guest `brk(0)`.
 
-The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct slot and returns the slot to that process-local allocator after thread exit.
+The Rust ABI declaration in `crates/shared/src/lib.rs` is the source of truth for this layout and is mirrored into `abi/snapshot.json` plus generated TypeScript constants. The main control area uses three Wasm pages: fork-save/scratch, syscall channel primary, and syscall channel spill. Each pthread slot is four Wasm pages addressed from the slot start: TLS/control, per-thread fork-save/scratch, syscall channel primary, and syscall channel spill. Pthread workers share the process `WebAssembly.Memory`; the host gives each worker a distinct dynamically reserved slot and returns the slot to that process-local allocator after thread exit.
 
-Processes may export `__wasm_posix_thread_slots` to declare how many pthread slots the host should reserve. A value of `-1` uses the host default, `0` reserves no pthread slots, and a positive value reserves exactly that many slots. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case; the default remains 16. A future runtime control surface under `/sys` or `/proc` can make that default tunable after boot.
+Processes may export `__wasm_posix_thread_slots` to declare their maximum concurrent pthread count. A value of `-1` uses the host default, `0` allows no pthreads, and a positive value sets the exact process-local limit. The kernel worker creation options expose `defaultThreadSlots` for the `-1`/missing-export case. The built-in default is 1024: an intentionally arbitrary high limit meant to avoid pthread availability problems for most programs now that slots are reserved on demand. Hosts can lower or raise it with `defaultThreadSlots` when they need a different resource policy. This limit is a resource-control guard, not a static memory reservation.
 
-`mmap` remains coherent because the kernel has one per-process address-space model for brk and mmap. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. `brk` growth succeeds only when the adjacent range is free; if an mmap region occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED` and `mremap` growth are rejected when they would overlap the reserved prefix or legacy host-control range. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls so returned guest addresses are backed before user code touches them.
+`mmap` remains coherent because the kernel has one per-process address-space model for brk, mmap, and host-reserved dynamic control ranges. Automatic `mmap` starts at the process's `mmap_base`, not at the legacy fixed 64MB floor. `brk` growth succeeds only when the adjacent range is free; if an mmap region or host-reserved pthread slot occupies the next pages, `brk` fails by returning the old break. `MAP_FIXED`, `munmap`, and `mremap` growth are rejected when they would overlap the reserved prefix, legacy host-control range, or a host-reserved pthread slot. The host grows the process `WebAssembly.Memory` after successful brk/mmap/mremap syscalls and after dynamic pthread-slot reservations so returned guest addresses are backed before user code touches them.
 
-Every spawn or exec computes a fresh layout from the target binary's memory import and `__heap_base`; the layout is process-local and is discarded when the process is unregistered. Fork children copy the parent's current memory length, not the configured maximum, and pthread workers share the owning process memory plus that process's thread allocator. Correctness must not depend on page reloads, context resets, periodic kernel resets, or browser garbage collection reclaiming old shared memories.
+Every spawn or exec computes a fresh layout from the target binary's memory import and `__heap_base`; the layout is process-local and is discarded when the process is unregistered. Fork children copy the parent's current memory length, not the configured maximum, and pthread workers share the owning process memory plus that process's thread allocator. WebAssembly memory cannot shrink, so a fork child may inherit the parent's current byte length, but it does not inherit dead parent pthread slot reservations. Correctness must not depend on page reloads, context resets, periodic kernel resets, or browser garbage collection reclaiming old shared memories.
+
+### Pthread slots and fork
+
+POSIX `fork()` from a multithreaded process creates a child with exactly one live thread: the caller. The child copies the parent's memory bytes, but the host must not restart or retain every parent pthread worker.
+
+The dynamic slot rules follow that POSIX shape:
+
+- fork from the main thread copies memory and kernel process state but inherits no dynamic pthread slot reservations;
+- fork from a pthread records `forkBufAddr`, `fnPtr`, `argPtr`, and the caller's exact slot range in `ForkFromThreadContext`;
+- after `kernel_fork_process` creates the child kernel process, the host calls `kernel_reserve_host_region_at(childPid, slotStart, slotLen)` to retain only the caller's copied pthread slot;
+- the child worker uses the copied pthread fork-save buffer and enters the saved pthread function before `wpk_fork_rewind_begin` replays to the fork call site;
+- all other parent pthread slots become ordinary copied memory bytes in the child and may be reused later by child `brk`, `mmap`, or new pthread slots.
+
+Retaining the caller slot instead of migrating its TLS into the main control prefix keeps fork replay simple: `wpk_fork_rewind_begin` restores the saved `__tls_base`, `__stack_pointer`, and other mutable globals exactly as the calling thread wrote them. The cost is one retained 256 KiB address-space reservation for fork-from-pthread children.
 
 ### Heap initialization (brk)
 

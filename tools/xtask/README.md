@@ -17,7 +17,7 @@ Repo-local build/release utilities. Subcommands:
 ## Always build/test xtask with `--target <host>`
 
 The workspace `.cargo/config.toml` sets the default build target to
-`wasm64-unknown-unknown` (for the kernel). xtask is a **host-only** tool:
+`wasm32-unknown-unknown` (for the kernel). xtask is a **host-only** tool:
 it pulls in `ureq` with TLS, which transitively depends on `ring`, whose
 C build does not support wasm targets.
 

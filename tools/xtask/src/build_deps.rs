@@ -185,7 +185,7 @@ fn expand_tilde(s: &str) -> PathBuf {
 ///   domain `"wasm-posix-pkg\n"`, then
 ///   `name`, `version`, `revision`, `target_arch`, `abi_version`,
 ///   `source.url`, `source.sha256`, declared build input content
-///   digests, global toolchain/sysroot content digests, optional
+///   digests, global package build/toolchain content digests, optional
 ///   fork-instrument tool content digests for program outputs that use
 ///   that post-processor, then for each dep (sorted by name):
 ///   `dep.name`, `dep.version`, hex(dep_sha).
@@ -407,6 +407,10 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "scripts/dev-shell.sh",
     "scripts/build-musl.sh",
     "scripts/install-overlay-headers.sh",
+    ".github/actions/package-archive-build",
+    ".github/actions/package-toolchain",
+    ".github/actions/fetch-submodules",
+    ".github/actions/download-run-artifacts",
     "libc/glue",
     "libc/musl-overlay",
     "libc/musl",
@@ -420,7 +424,6 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
 
 const FORK_INSTRUMENT_TOOL_INPUTS: &[&str] = &[
     "Cargo.toml",
-    "Cargo.lock",
     "crates/fork-instrument/Cargo.toml",
     "crates/fork-instrument/src",
     "scripts/build-fork-instrument-tool.sh",
@@ -443,7 +446,14 @@ fn global_package_toolchain_digests() -> Result<Vec<BuildInputDigest>, String> {
 fn fork_instrument_tool_digests() -> Result<Vec<BuildInputDigest>, String> {
     FORK_INSTRUMENT_TOOL_DIGESTS
         .get_or_init(|| {
-            global_package_build_input_digests_for(&repo_root(), FORK_INSTRUMENT_TOOL_INPUTS)
+            let root = repo_root();
+            let mut digests =
+                global_package_build_input_digests_for(&root, FORK_INSTRUMENT_TOOL_INPUTS)?;
+            digests.push(BuildInputDigest {
+                label: "cargo-metadata:fork-instrument-build-deps".to_string(),
+                digest: fork_instrument_cargo_dependency_digest(&root)?,
+            });
+            Ok(digests)
         })
         .clone()
 }
@@ -454,6 +464,271 @@ fn package_uses_fork_instrument_tool(target: &DepsManifest) -> bool {
             .program_outputs
             .iter()
             .any(|out| out.fork_instrumentation != ForkInstrumentationPolicy::Disabled)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CargoLock {
+    #[serde(default)]
+    package: Vec<CargoLockPackage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CargoLockPackage {
+    name: String,
+    version: String,
+    source: Option<String>,
+    checksum: Option<String>,
+}
+
+fn fork_instrument_cargo_dependency_digest(root: &Path) -> Result<[u8; 32], String> {
+    let host_target = host_target_triple()?;
+    let output = Command::new("cargo")
+        .arg("metadata")
+        .arg("--format-version=1")
+        .arg("--locked")
+        .arg("--filter-platform")
+        .arg(&host_target)
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("run cargo metadata for fork-instrument cache key: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata for fork-instrument cache key failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("parse cargo metadata for fork-instrument cache key: {e}"))?;
+    let lock_text = std::fs::read_to_string(root.join("Cargo.lock"))
+        .map_err(|e| format!("read Cargo.lock for fork-instrument cache key: {e}"))?;
+    let lock: CargoLock = toml::from_str(&lock_text)
+        .map_err(|e| format!("parse Cargo.lock for fork-instrument cache key: {e}"))?;
+    fork_instrument_cargo_dependency_digest_from_metadata(root, &metadata, &lock)
+}
+
+fn host_target_triple() -> Result<String, String> {
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .map_err(|e| format!("run rustc -vV: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "rustc -vV failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("host: ").map(str::to_owned))
+        .filter(|host| !host.is_empty())
+        .ok_or_else(|| "rustc -vV did not report host target".to_string())
+}
+
+fn fork_instrument_cargo_dependency_digest_from_metadata(
+    root: &Path,
+    metadata: &serde_json::Value,
+    lock: &CargoLock,
+) -> Result<[u8; 32], String> {
+    let packages = metadata_array(metadata, "packages")?;
+    let nodes = metadata
+        .get("resolve")
+        .and_then(|resolve| resolve.get("nodes"))
+        .and_then(|nodes| nodes.as_array())
+        .ok_or_else(|| "cargo metadata missing resolve.nodes".to_string())?;
+
+    let mut packages_by_id: BTreeMap<String, &serde_json::Value> = BTreeMap::new();
+    let mut root_package_id: Option<String> = None;
+    for package in packages {
+        let id = metadata_str(package, "id")?.to_string();
+        let name = metadata_str(package, "name")?;
+        let manifest_path = metadata_str(package, "manifest_path")?;
+        if name == "fork-instrument"
+            && manifest_path.ends_with("/crates/fork-instrument/Cargo.toml")
+        {
+            root_package_id = Some(id.clone());
+        }
+        packages_by_id.insert(id, package);
+    }
+
+    let root_package_id = root_package_id
+        .ok_or_else(|| "cargo metadata missing fork-instrument package".to_string())?;
+    let mut nodes_by_id: BTreeMap<String, &serde_json::Value> = BTreeMap::new();
+    for node in nodes {
+        nodes_by_id.insert(metadata_str(node, "id")?.to_string(), node);
+    }
+
+    let mut closure = BTreeSet::new();
+    let mut stack = vec![root_package_id.clone()];
+    while let Some(package_id) = stack.pop() {
+        if !closure.insert(package_id.clone()) {
+            continue;
+        }
+        let node = nodes_by_id
+            .get(&package_id)
+            .ok_or_else(|| format!("cargo metadata missing resolve node for {package_id}"))?;
+        for dep in selected_cargo_metadata_deps(node)? {
+            stack.push(dep);
+        }
+    }
+
+    let lock_checksums = cargo_lock_checksums(lock);
+    let mut entries = Vec::with_capacity(closure.len());
+    for package_id in closure {
+        let package = packages_by_id
+            .get(&package_id)
+            .ok_or_else(|| format!("cargo metadata missing package for {package_id}"))?;
+        let node = nodes_by_id
+            .get(&package_id)
+            .ok_or_else(|| format!("cargo metadata missing resolve node for {package_id}"))?;
+        let stable_id = stable_cargo_package_id(root, package)?;
+        let features = sorted_string_array(node, "features")?;
+        let deps = selected_cargo_metadata_deps(node)?
+            .into_iter()
+            .map(|dep_id| {
+                let dep_package = packages_by_id
+                    .get(&dep_id)
+                    .ok_or_else(|| format!("cargo metadata missing package for {dep_id}"))?;
+                stable_cargo_package_id(root, dep_package)
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let lock_key = cargo_lock_key(package)?;
+        let checksum = lock_checksums.get(&lock_key).cloned().unwrap_or_default();
+        entries.push((stable_id, features, deps, checksum));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut h = Sha256::new();
+    h.update(b"fork-instrument-cargo-build-deps-v1\n");
+    for (stable_id, features, deps, checksum) in entries {
+        h.update(b"package\0");
+        h.update(stable_id.as_bytes());
+        h.update(b"\0checksum\0");
+        h.update(checksum.as_bytes());
+        h.update(b"\0features\0");
+        for feature in features {
+            h.update(feature.as_bytes());
+            h.update(b"\0");
+        }
+        h.update(b"deps\0");
+        for dep in deps {
+            h.update(dep.as_bytes());
+            h.update(b"\0");
+        }
+        h.update(b"\n");
+    }
+    Ok(h.finalize().into())
+}
+
+fn selected_cargo_metadata_deps(node: &serde_json::Value) -> Result<Vec<String>, String> {
+    let deps = match node.get("deps").and_then(|deps| deps.as_array()) {
+        Some(deps) => deps,
+        None => return Ok(Vec::new()),
+    };
+    let mut out = Vec::new();
+    for dep in deps {
+        if !cargo_metadata_dep_is_build_input(dep)? {
+            continue;
+        }
+        out.push(metadata_str(dep, "pkg")?.to_string());
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn cargo_metadata_dep_is_build_input(dep: &serde_json::Value) -> Result<bool, String> {
+    let dep_kinds = dep
+        .get("dep_kinds")
+        .and_then(|dep_kinds| dep_kinds.as_array())
+        .ok_or_else(|| "cargo metadata dependency missing dep_kinds".to_string())?;
+    Ok(dep_kinds.iter().any(|kind| {
+        kind.get("kind")
+            .and_then(|kind| kind.as_str())
+            .map(|kind| kind == "build")
+            .unwrap_or(true)
+    }))
+}
+
+fn stable_cargo_package_id(root: &Path, package: &serde_json::Value) -> Result<String, String> {
+    let name = metadata_str(package, "name")?;
+    let version = metadata_str(package, "version")?;
+    let source = package.get("source").and_then(|source| source.as_str());
+    if let Some(source) = source {
+        return Ok(format!("{source}#{name}@{version}"));
+    }
+
+    let manifest_path = PathBuf::from(metadata_str(package, "manifest_path")?);
+    let rel_manifest = manifest_path.strip_prefix(root).unwrap_or(&manifest_path);
+    Ok(format!(
+        "path:{}#{name}@{version}",
+        rel_manifest.to_string_lossy()
+    ))
+}
+
+fn cargo_lock_key(package: &serde_json::Value) -> Result<(String, String, String), String> {
+    Ok((
+        metadata_str(package, "name")?.to_string(),
+        metadata_str(package, "version")?.to_string(),
+        package
+            .get("source")
+            .and_then(|source| source.as_str())
+            .unwrap_or("")
+            .to_string(),
+    ))
+}
+
+fn cargo_lock_checksums(lock: &CargoLock) -> BTreeMap<(String, String, String), String> {
+    lock.package
+        .iter()
+        .filter_map(|package| {
+            package.checksum.as_ref().map(|checksum| {
+                (
+                    (
+                        package.name.clone(),
+                        package.version.clone(),
+                        package.source.clone().unwrap_or_default(),
+                    ),
+                    checksum.clone(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn metadata_array<'a>(
+    value: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a Vec<serde_json::Value>, String> {
+    value
+        .get(field)
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| format!("cargo metadata missing {field} array"))
+}
+
+fn metadata_str<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str, String> {
+    value
+        .get(field)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("cargo metadata missing {field} string"))
+}
+
+fn sorted_string_array(value: &serde_json::Value, field: &str) -> Result<Vec<String>, String> {
+    let mut out = value
+        .get(field)
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| format!("cargo metadata missing {field} array"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("cargo metadata {field} array contains a non-string"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    out.sort();
+    Ok(out)
 }
 
 fn global_package_build_input_digests_for(
@@ -2740,6 +3015,7 @@ fn cmd_check(registry: &Registry) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
 
     fn write(dir: &Path, name: &str, version: &str, depends_on: &[&str]) {
@@ -3213,6 +3489,156 @@ index_url = "https://example.test/releases/download/binaries-abi-v{abi}/index.to
         assert_ne!(
             before[0].digest, after[0].digest,
             "global build input content changes must change its digest"
+        );
+    }
+
+    #[test]
+    fn global_package_toolchain_inputs_include_package_build_actions() {
+        for input in [
+            ".github/actions/package-archive-build",
+            ".github/actions/package-toolchain",
+            ".github/actions/fetch-submodules",
+            ".github/actions/download-run-artifacts",
+        ] {
+            assert!(
+                GLOBAL_PACKAGE_TOOLCHAIN_INPUTS.contains(&input),
+                "{input} must stay in package cache-key inputs"
+            );
+        }
+    }
+
+    #[test]
+    fn fork_instrument_tool_inputs_hash_dependency_closure_instead_of_whole_lockfile() {
+        assert!(
+            !FORK_INSTRUMENT_TOOL_INPUTS.contains(&"Cargo.lock"),
+            "raw Cargo.lock changes are too broad for program package cache keys"
+        );
+    }
+
+    #[test]
+    fn fork_instrument_cargo_dependency_digest_ignores_unrelated_lockfile_entries() {
+        let root = tempdir("fork-cargo-closure");
+        let fork_manifest = root.join("crates/fork-instrument/Cargo.toml");
+        fs::create_dir_all(fork_manifest.parent().unwrap()).unwrap();
+        fs::write(&fork_manifest, "").unwrap();
+        let fork_manifest = fork_manifest.to_string_lossy().to_string();
+
+        let metadata = json!({
+            "packages": [
+                {
+                    "id": "path+file:///repo/crates/fork-instrument#0.1.0",
+                    "name": "fork-instrument",
+                    "version": "0.1.0",
+                    "source": null,
+                    "manifest_path": fork_manifest,
+                },
+                {
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.0",
+                    "name": "anyhow",
+                    "version": "1.0.0",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "manifest_path": "/cargo/registry/anyhow-1.0.0/Cargo.toml",
+                },
+                {
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#dev-only@1.0.0",
+                    "name": "dev-only",
+                    "version": "1.0.0",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "manifest_path": "/cargo/registry/dev-only-1.0.0/Cargo.toml",
+                },
+                {
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#kernel-only@1.0.0",
+                    "name": "kernel-only",
+                    "version": "1.0.0",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "manifest_path": "/cargo/registry/kernel-only-1.0.0/Cargo.toml",
+                }
+            ],
+            "resolve": {
+                "nodes": [
+                    {
+                        "id": "path+file:///repo/crates/fork-instrument#0.1.0",
+                        "features": [],
+                        "deps": [
+                            {
+                                "name": "anyhow",
+                                "pkg": "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.0",
+                                "dep_kinds": [{ "kind": null, "target": null }]
+                            },
+                            {
+                                "name": "dev-only",
+                                "pkg": "registry+https://github.com/rust-lang/crates.io-index#dev-only@1.0.0",
+                                "dep_kinds": [{ "kind": "dev", "target": null }]
+                            }
+                        ]
+                    },
+                    {
+                        "id": "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.0",
+                        "features": ["std"],
+                        "deps": []
+                    },
+                    {
+                        "id": "registry+https://github.com/rust-lang/crates.io-index#dev-only@1.0.0",
+                        "features": [],
+                        "deps": []
+                    },
+                    {
+                        "id": "registry+https://github.com/rust-lang/crates.io-index#kernel-only@1.0.0",
+                        "features": [],
+                        "deps": []
+                    }
+                ]
+            }
+        });
+        let lock = |anyhow_checksum: &str, dev_checksum: &str, unrelated_checksum: &str| CargoLock {
+            package: vec![
+                CargoLockPackage {
+                    name: "anyhow".into(),
+                    version: "1.0.0".into(),
+                    source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
+                    checksum: Some(anyhow_checksum.into()),
+                },
+                CargoLockPackage {
+                    name: "dev-only".into(),
+                    version: "1.0.0".into(),
+                    source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
+                    checksum: Some(dev_checksum.into()),
+                },
+                CargoLockPackage {
+                    name: "kernel-only".into(),
+                    version: "1.0.0".into(),
+                    source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
+                    checksum: Some(unrelated_checksum.into()),
+                },
+            ],
+        };
+
+        let before = fork_instrument_cargo_dependency_digest_from_metadata(
+            &root,
+            &metadata,
+            &lock("normal-a", "dev-a", "unrelated-a"),
+        )
+        .unwrap();
+        let unrelated_after = fork_instrument_cargo_dependency_digest_from_metadata(
+            &root,
+            &metadata,
+            &lock("normal-a", "dev-b", "unrelated-b"),
+        )
+        .unwrap();
+        assert_eq!(
+            before, unrelated_after,
+            "dev-only and unrelated Cargo.lock entries must not affect the fork-instrument build digest"
+        );
+
+        let dependency_after = fork_instrument_cargo_dependency_digest_from_metadata(
+            &root,
+            &metadata,
+            &lock("normal-b", "dev-b", "unrelated-b"),
+        )
+        .unwrap();
+        assert_ne!(
+            before, dependency_after,
+            "normal fork-instrument dependency lockfile changes must affect the build digest"
         );
     }
 

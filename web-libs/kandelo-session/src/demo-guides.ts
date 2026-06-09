@@ -40,9 +40,6 @@ const nodeCowsayScript = [
   "./node_modules/.bin/cowsay Kandelo",
 ].join(" && ");
 
-const nodeScript = `${nodeRuntimeScript}
-${nodeCowsayScript}`;
-
 const nginxScript = `curl -i http://127.0.0.1:8080/ | head -40
 echo "--- nginx processes ---"
 lsof | grep nginx | head -40 || true`;
@@ -148,7 +145,7 @@ export function nodeGuide(): DemoGuideConfig {
     {
       title: "SpiderMonkey Node script",
       language: "sh",
-      initialText: nodeScript,
+      initialText: nodeCowsayScript,
     },
     {
       title: "Companion HTML",

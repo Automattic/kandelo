@@ -11,7 +11,7 @@ describe("Rust-owned process wait lifecycle", () => {
     const processMemory = createSharedMemory();
     const statusPtr = 256;
     const waitStatus = 5 << 8;
-    const wait4Poll = vi.fn((_parentPid: number, _targetPid: number, statusPtr: bigint) => {
+    const wait4Poll = vi.fn((_parentPid: number, _targetPid: number, statusPtr: number | bigint) => {
       new DataView(kernelMemory.buffer).setInt32(Number(statusPtr), waitStatus, true);
       return 42;
     });
@@ -26,7 +26,7 @@ describe("Rust-owned process wait lifecycle", () => {
 
     worker.handleWaitpid(createChannel(7, processMemory), [-1, statusPtr, 0, 0]);
 
-    expect(wait4Poll).toHaveBeenCalledWith(7, -1, BigInt(128));
+    expect(wait4Poll).toHaveBeenCalledWith(7, -1, 128);
     expect(reapExitedChild).toHaveBeenCalledWith(7, 42);
     expect(new DataView(processMemory.buffer).getInt32(statusPtr, true)).toBe(waitStatus);
     expect(worker.completeWaitpid).toHaveBeenCalledWith(
@@ -68,6 +68,25 @@ describe("Rust-owned process wait lifecycle", () => {
 
     worker.handleWaitpid(createChannel(7, createSharedMemory()), [-1, 0, WNOHANG, 0]);
 
+    expect(worker.waitingForChild).toEqual([]);
+    expect(worker.completeWaitpid).toHaveBeenCalledWith(
+      expect.any(Object),
+      [-1, 0, WNOHANG, 0],
+      0,
+      0,
+    );
+  });
+
+  it("wait4 passes a bigint status pointer for wasm64 kernels", () => {
+    const wait4Poll = vi.fn(() => 0);
+    const worker = createWorkerHarness({ kernel_wait4_poll: wait4Poll }, 8);
+    worker.kernelMemory = createSharedMemory();
+    worker.waitingForChild = [];
+    worker.completeWaitpid = vi.fn();
+
+    worker.handleWaitpid(createChannel(7, createSharedMemory()), [-1, 0, WNOHANG, 0]);
+
+    expect(wait4Poll).toHaveBeenCalledWith(7, -1, BigInt(128));
     expect(worker.waitingForChild).toEqual([]);
     expect(worker.completeWaitpid).toHaveBeenCalledWith(
       expect.any(Object),
@@ -123,8 +142,14 @@ describe("Rust-owned process wait lifecycle", () => {
   });
 });
 
-function createWorkerHarness(exports: Record<string, unknown>): any {
+function createWorkerHarness(exports: Record<string, unknown>, kernelPtrWidth: 4 | 8 = 4): any {
   return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+    kernel: {
+      toKernelPtr(value: number | bigint): number | bigint {
+        const numberValue = typeof value === "bigint" ? Number(value) : value;
+        return kernelPtrWidth === 8 ? BigInt(numberValue) : numberValue;
+      },
+    },
     kernelInstance: { exports },
     kernelMemory: createSharedMemory(),
     scratchOffset: 128,

@@ -1,5 +1,13 @@
 import type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 
+const WORKER_SHUTDOWN_MESSAGE = "__kandelo_worker_shutdown";
+const WORKER_SHUTDOWN_ACK_MESSAGE = "__kandelo_worker_shutdown_ack";
+const WORKER_SHUTDOWN_ACK_TIMEOUT_MS = 500;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class BrowserWorkerAdapter implements WorkerAdapter {
   private entryUrl: string | URL;
 
@@ -21,10 +29,21 @@ class BrowserWorkerHandle implements WorkerHandle {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handlers = new Map<string, Set<(...args: any[]) => void>>();
   private terminated = false;
+  private terminationPromise: Promise<number> | null = null;
+  private shutdownAckResolver: (() => void) | null = null;
 
   constructor(worker: Worker) {
     this.worker = worker;
     worker.onmessage = (e: MessageEvent) => {
+      if (
+        e.data &&
+        typeof e.data === "object" &&
+        (e.data as { type?: string }).type === WORKER_SHUTDOWN_ACK_MESSAGE
+      ) {
+        this.shutdownAckResolver?.();
+        this.shutdownAckResolver = null;
+        return;
+      }
       for (const h of this.handlers.get("message") ?? []) h(e.data);
     };
     worker.onerror = (e: ErrorEvent) => {
@@ -32,6 +51,8 @@ class BrowserWorkerHandle implements WorkerHandle {
       // Worker errors are unrecoverable — synthesize an exit event
       if (!this.terminated) {
         this.terminated = true;
+        this.shutdownAckResolver?.();
+        this.shutdownAckResolver = null;
         for (const h of this.handlers.get("exit") ?? []) h(1);
       }
     };
@@ -60,6 +81,33 @@ class BrowserWorkerHandle implements WorkerHandle {
   }
 
   async terminate(): Promise<number> {
+    if (this.terminationPromise) return this.terminationPromise;
+    this.terminationPromise = this.terminateOnce();
+    return this.terminationPromise;
+  }
+
+  private async terminateOnce(): Promise<number> {
+    if (!this.terminated) {
+      let acked = false;
+      try {
+        const ack = new Promise<void>((resolve) => {
+          this.shutdownAckResolver = () => {
+            acked = true;
+            resolve();
+          };
+        });
+        this.worker.postMessage({ type: WORKER_SHUTDOWN_MESSAGE });
+        await Promise.race([ack, delay(WORKER_SHUTDOWN_ACK_TIMEOUT_MS)]);
+      } catch {
+        // Fall back to immediate termination for workers that cannot process
+        // the cooperative shutdown message.
+      } finally {
+        if (!acked && this.shutdownAckResolver) {
+          this.shutdownAckResolver = null;
+        }
+      }
+    }
+
     this.worker.terminate();
     if (!this.terminated) {
       this.terminated = true;

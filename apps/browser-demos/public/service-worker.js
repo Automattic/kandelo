@@ -418,7 +418,27 @@ if (typeof window !== "undefined") {
   function redirectIntoApp(url) {
     var redirectUrl = new URL(url.href);
     redirectUrl.pathname = appRootPath() + pathInsideApp(url.pathname);
-    return Response.redirect(redirectUrl.href, 307);
+    return new Response(null, {
+      status: 307,
+      headers: appRedirectHeaders(redirectUrl.href),
+    });
+  }
+
+  function appRedirectHeaders(location) {
+    var headers = new Headers();
+    headers.set("Location", location);
+    addAppIsolationHeaders(headers);
+    return headers;
+  }
+
+  function addAppIsolationHeaders(headers) {
+    if (!headers.has("Cross-Origin-Embedder-Policy")) {
+      headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+    }
+    if (!headers.has("Cross-Origin-Resource-Policy")) {
+      headers.set("Cross-Origin-Resource-Policy", "same-origin");
+    }
+    return headers;
   }
 
   /**
@@ -462,6 +482,22 @@ if (typeof window !== "undefined") {
     return headers;
   }
 
+  function isNullBodyStatus(status) {
+    return status === 204 || status === 205 || status === 304;
+  }
+
+  function responseBodyForStatus(status, body) {
+    return isNullBodyStatus(status) ? null : body;
+  }
+
+  function responseWithHeaders(response, headers) {
+    return new Response(responseBodyForStatus(response.status, response.body), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: headers,
+    });
+  }
+
   function fetchCrossOrigin(request) {
     var targetUrl = request.url;
 
@@ -470,11 +506,7 @@ if (typeof window !== "undefined") {
     if (isCorsProxyFetchUrl(targetUrl)) {
       return fetch(request).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: headers,
-        });
+        return responseWithHeaders(response, headers);
       });
     }
 
@@ -483,11 +515,7 @@ if (typeof window !== "undefined") {
       var proxyUrl = corsProxyFetchUrl(targetUrl);
       return fetch(proxyUrl, { credentials: "omit", mode: "cors" }).then(function (response) {
         var headers = corsSafeResponseHeaders(response);
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers: headers,
-        });
+        return responseWithHeaders(response, headers);
       });
     }
 
@@ -497,11 +525,7 @@ if (typeof window !== "undefined") {
         return response;
       }
       var headers = corsSafeResponseHeaders(response);
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headers,
-      });
+      return responseWithHeaders(response, headers);
     });
   }
 
@@ -547,11 +571,7 @@ if (typeof window !== "undefined") {
         headers.delete("Content-Encoding");
         headers.delete("Content-Length");
       }
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headers,
-      });
+      return responseWithHeaders(response, headers);
     });
   }
 
@@ -718,6 +738,7 @@ if (typeof window !== "undefined") {
                 redirectStatus = 303;
               }
               respHeaders.set("Location", locUrl.toString());
+              addAppIsolationHeaders(respHeaders);
               return new Response(null, {
                 status: redirectStatus,
                 headers: respHeaders,
@@ -730,12 +751,7 @@ if (typeof window !== "undefined") {
         rewriteAppUrlHeader(respHeaders, "Link", url);
 
         // COEP/CORP for cross-origin isolation
-        if (!respHeaders.has("Cross-Origin-Embedder-Policy")) {
-          respHeaders.set("Cross-Origin-Embedder-Policy", "require-corp");
-        }
-        if (!respHeaders.has("Cross-Origin-Resource-Policy")) {
-          respHeaders.set("Cross-Origin-Resource-Policy", "same-origin");
-        }
+        addAppIsolationHeaders(respHeaders);
 
         var body = bridgeResp.body;
         if (shouldRewriteAppResponseBody(respHeaders)) {
@@ -747,7 +763,7 @@ if (typeof window !== "undefined") {
           }
         }
 
-        return new Response(body, {
+        return new Response(responseBodyForStatus(bridgeResp.status, body), {
           status: bridgeResp.status,
           headers: respHeaders,
         });

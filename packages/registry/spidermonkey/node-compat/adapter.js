@@ -276,6 +276,16 @@
                 this.port2 = new MessagePort();
             }
         }
+        function clearSharedWorkerData() {
+            if (typeof setSharedObject === 'function') {
+                try { setSharedObject(null); } catch {}
+            }
+        }
+        function joinShellWorkers() {
+            if (typeof joinWorkerThreads === 'function') {
+                try { joinWorkerThreads(); } catch {}
+            }
+        }
         class Worker extends EventEmitter {
             constructor(filenameOrSource, options) {
                 super();
@@ -329,7 +339,12 @@
             postMessage() {
                 throw new Error('Worker.postMessage is not implemented in the SpiderMonkey shell adapter');
             }
-            terminate() { this.emit('exit', 0); return Promise.resolve(0); }
+            terminate() {
+                clearSharedWorkerData();
+                joinShellWorkers();
+                this.emit('exit', 0);
+                return Promise.resolve(0);
+            }
             ref() { return this; }
             unref() { return this; }
         }

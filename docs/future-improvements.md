@@ -96,15 +96,25 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 
 ## Host runtime
 
-### Runtime tuning for default pthread slot reservation
+### Runtime tuning for the default pthread limit
 Kernel worker creation currently accepts `defaultThreadSlots`, and processes
 that declare `__wasm_posix_thread_slots = -1` use that boot-time default.
 The next step is a runtime control surface, likely under `/sys` or `/proc`,
-so an integration can tune the host default without rebuilding the SDK output
-or recreating the worker.
+so an integration can tune the host default pthread concurrency limit without
+rebuilding the SDK output or recreating the worker.
 
 **Files:** `host/src/browser-kernel-worker-entry.ts`,
 `host/src/node-kernel-worker-entry.ts`, `host/src/process-memory.ts`
+
+### Move pthread control channels to a separate Wasm control memory
+WebAssembly multi-memory can eventually split guest process memory from
+host/kernel communication memory. That would let pthread syscall channels,
+spill buffers, and fork-save scratch storage grow in a separate per-process
+control memory instead of being statically reserved in the guest process memory
+prefix. Safari/iOS Safari support is not sufficient for this to be the only
+browser ABI yet, so this remains future work with a single-memory fallback.
+
+**Plan:** `docs/plans/2026-06-04-pthread-control-memory-multimemory-plan.md`
 
 ### Use a tracked dlopen memory arena instead of one mmap per side module
 `host/src/worker-main.ts` currently allocates each dlopen side module's
