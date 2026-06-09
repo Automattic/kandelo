@@ -127,6 +127,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         cache_root: &cache_root,
         local_libs: None,
         force_source_build: None,
+        fetch_only: false,
         repo_root: None,
         // archive-stage doesn't materialize binaries/ symlinks: it
         // produces a single-package archive without touching consumer-

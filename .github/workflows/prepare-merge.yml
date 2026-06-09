@@ -359,7 +359,9 @@ jobs:
           fi
 
       - name: Checkout workflow helpers
-        if: needs.change-scope.outputs.package_staging_required == 'true'
+        if: |
+          needs.change-scope.outputs.package_staging_required == 'true' ||
+          needs.change-scope.outputs.test_gate_required == 'true'
         uses: actions/checkout@v6.0.2
         with:
           ref: ${{ github.sha }}
@@ -367,7 +369,9 @@ jobs:
             .github/scripts
 
       - name: Inspect staging-build on PR HEAD
-        if: needs.change-scope.outputs.package_staging_required == 'true'
+        if: |
+          needs.change-scope.outputs.package_staging_required == 'true' ||
+          needs.change-scope.outputs.test_gate_required == 'true'
         # staging-build runs the same matrix flow on every PR push.
         # If a real non-skipped staging-build exists for this HEAD,
         # respect it: wait while it is running and block if it failed.
@@ -554,7 +558,9 @@ jobs:
 
   preflight:
     needs: [synthesize-merge, gate, change-scope]
-    if: needs.change-scope.outputs.package_staging_required == 'true'
+    if: |
+      needs.change-scope.outputs.package_staging_required == 'true' ||
+      needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: read            # download synthesized merge artifact
@@ -1145,19 +1151,10 @@ jobs:
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
-      (
-        (
-          needs.change-scope.outputs.package_staging_required == 'true' &&
-          needs.preflight.result == 'success' &&
-          (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
-          (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-          (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
-        ) ||
-        (
-          needs.change-scope.outputs.package_staging_required == 'false' &&
-          needs.change-scope.outputs.test_gate_required == 'true'
-        )
-      )
+      needs.preflight.result == 'success' &&
+      (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -1166,6 +1163,7 @@ jobs:
       merge_base_sha: ${{ steps.merge_ref.outputs.merge_base_sha }}
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
       PACKAGE_PUBLISH_FLOW_CHANGED: ${{ needs.change-scope.outputs.package_publish_flow_changed }}
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
@@ -1253,15 +1251,17 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Download matrix artifacts
-        if: ${{ needs.change-scope.outputs.package_staging_required == 'true' && (needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]') }}
+        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
         uses: ./.github/actions/download-run-artifacts
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
 
-      - name: Install host npm deps (resolver prereq)
-        # Must run before Materialize binaries (see staging-build.yml).
+      - name: Install host npm deps
+        # Keep this before the host typecheck, package-system tests,
+        # and later test-program/rootfs build steps. Binary
+        # materialization itself runs fetch-only in CI.
         run: |
           bash scripts/dev-shell.sh bash -c '
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
@@ -1287,14 +1287,13 @@ jobs:
       - name: Materialize binaries
         env:
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis ruby texlive
-        # Package-staging runs resolve against the durable release plus
-        # local file:// overlays for newly built/promoted archives.
-        # Non-archive validation runs skip overlays and resolve every
-        # package from the existing durable ABI release; the fresh kernel
-        # built below shadows kernel.wasm via local-binaries/.
+        # Resolve against the durable release plus local file://
+        # overlays for newly built archives. Runtime-only PRs can still
+        # reach this overlay path when preflight detects durable index
+        # drift from an earlier package-key change.
         run: |
           set -euo pipefail
-          if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
+          if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
             STAGE="$RUNNER_TEMP/staged-overlay"
             bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
@@ -1303,7 +1302,7 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
-          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --allow-stale
+          bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh --fetch-only
 
       - name: Build kernel + test programs + install host deps
         # The vitest suite installs Chromium in its own runner because
