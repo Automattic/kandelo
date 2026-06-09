@@ -1,0 +1,26 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+name = "libzip"
+version = "1.11.4"
+kernel_abi = 7
+depends_on = ["zlib@1.3.1"]
+arches = ["wasm32"]
+
+[source]
+url = "https://libzip.org/download/libzip-1.11.4.tar.gz"
+sha256 = "82e9f2f2421f9d7c2466bbc3173cd09595a88ea37db0d559a9d0a2dc60dc722e"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/nih-at/libzip/blob/main/LICENSE"
+
+[build]
+script_path = "packages/registry/libzip/build-libzip.sh"
+
+[outputs]
+libs = ["lib/libzip.a"]
+headers = ["include/zip.h", "include/zipconf.h"]
+pkgconfig = ["lib/pkgconfig/libzip.pc"]

@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+#
+# Build libzip for wasm32-posix-kernel as a static archive (libzip.a)
+# consumed by PHP's bundled ext/zip extension. ext/zip pkg-config-probes
+# `libzip >= 0.11` from configure and links libzip statically into the
+# `zip.so` side module emitted by packages/registry/php/build-php.sh.
+#
+# Honors the dep-resolver build-script contract (see
+# docs/dependency-management.md). When invoked via
+# `cargo xtask build-deps resolve libzip`, the resolver sets:
+#
+#     WASM_POSIX_DEP_OUT_DIR        # destination prefix
+#     WASM_POSIX_DEP_VERSION        # upstream version
+#     WASM_POSIX_DEP_SOURCE_URL     # tarball URL
+#     WASM_POSIX_DEP_SOURCE_SHA256  # sha256 of the tarball
+#     WASM_POSIX_DEP_ZLIB_DIR       # zlib build (from depends_on)
+#
+# Falls back to in-tree paths when run manually.
+#
+# Build strategy: libzip upstream uses CMake exclusively, but cmake is
+# not in this repo's toolchain — only mariadb pulls it in, via the host
+# `brew install cmake` / Nix flake escape hatch. Adding cmake to libzip
+# would force every contributor and every CI runner to install it just
+# to satisfy a ~100-source-file static library. Instead we hand-roll
+# the build: pre-baked `zipconf.h` + `config.h` for wasm32+musl with
+# DEFLATE-only / no bz2 / no lzma / no zstd / no crypto, then a plain
+# shell compile loop driven by `wasm32posix-cc` + `wasm32posix-ar`.
+# `zip_err_str.c` is reproduced from cmake/GenerateZipErrorStrings.cmake
+# via a perl one-liner. The source list mirrors lib/CMakeLists.txt at
+# the pinned version — when bumping libzip, diff lib/CMakeLists.txt
+# against the new tarball and refresh SOURCES below.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SRC_DIR="$SCRIPT_DIR/libzip-src"
+BUILD_DIR="$SCRIPT_DIR/libzip-build"
+
+# Worktree-local SDK on PATH (no global npm link required).
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+
+# --- Inputs from resolver, with legacy fallbacks ---
+LIBZIP_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBZIP_VERSION:-1.11.4}}"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libzip-install}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://libzip.org/download/libzip-${LIBZIP_VERSION}.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+export WASM_POSIX_SYSROOT="$SYSROOT"
+
+if ! command -v wasm32posix-cc &>/dev/null; then
+    echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
+    exit 1
+fi
+if ! command -v perl &>/dev/null; then
+    echo "ERROR: perl not found — required to regenerate lib/zip_err_str.c" >&2
+    exit 1
+fi
+if [ ! -f "$SYSROOT/lib/libc.a" ]; then
+    echo "ERROR: sysroot not found at $SYSROOT. Run: bash scripts/build-musl.sh" >&2
+    exit 1
+fi
+
+# --- Resolve transitive deps (zlib) ---
+HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
+ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:-}"
+if [ -z "$ZLIB_PREFIX" ]; then
+    echo "==> Resolving zlib (not provided by parent)..."
+    ZLIB_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve zlib)"
+fi
+[ -f "$ZLIB_PREFIX/lib/libz.a" ] || { echo "ERROR: zlib missing libz.a at $ZLIB_PREFIX" >&2; exit 1; }
+[ -f "$ZLIB_PREFIX/include/zlib.h" ] || { echo "ERROR: zlib missing zlib.h at $ZLIB_PREFIX" >&2; exit 1; }
+echo "==> zlib at $ZLIB_PREFIX"
+
+# --- Fetch + verify source ---
+if [ ! -d "$SRC_DIR" ]; then
+    echo "==> Downloading libzip $LIBZIP_VERSION..."
+    TARBALL="libzip-${LIBZIP_VERSION}.tar.gz"
+    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "/tmp/$TARBALL"
+    if [ -n "$SOURCE_SHA256" ]; then
+        echo "==> Verifying source sha256..."
+        echo "$SOURCE_SHA256  /tmp/$TARBALL" | shasum -a 256 -c -
+    else
+        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
+    fi
+    mkdir -p "$SRC_DIR"
+    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
+    rm "/tmp/$TARBALL"
+fi
+
+# --- Clean previous build ---
+rm -rf "$BUILD_DIR" "$INSTALL_DIR"
+mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib/pkgconfig" "$INSTALL_DIR/include"
+
+# --- Generate zipconf.h ---
+# Mirrors the cmake configure_file step on CMakeLists.txt:375-456. wasm32
+# is ILP32 with <stdint.h> available, so all integer types resolve to the
+# stdint.h fixed-width form. ZIP_STATIC is left undefined — we ship a
+# static archive but downstream consumers (ext/zip) link us into a
+# `-shared` side module and need the public functions visible there.
+ZIPCONF_H="$BUILD_DIR/zipconf.h"
+LIBZIP_MAJOR="${LIBZIP_VERSION%%.*}"
+_LIBZIP_REST="${LIBZIP_VERSION#*.}"
+LIBZIP_MINOR="${_LIBZIP_REST%%.*}"
+LIBZIP_MICRO="${LIBZIP_VERSION##*.}"
+cat > "$ZIPCONF_H" <<EOF
+#ifndef _HAD_ZIPCONF_H
+#define _HAD_ZIPCONF_H
+
+/*
+   zipconf.h -- platform specific include file
+
+   This file was generated by packages/registry/libzip/build-libzip.sh
+   (hand-rolled equivalent of upstream cmake-zipconf.h.in).
+ */
+
+#define LIBZIP_VERSION "${LIBZIP_VERSION}"
+#define LIBZIP_VERSION_MAJOR ${LIBZIP_MAJOR}
+#define LIBZIP_VERSION_MINOR ${LIBZIP_MINOR}
+#define LIBZIP_VERSION_MICRO ${LIBZIP_MICRO}
+
+/* ZIP_STATIC intentionally undefined — see build-libzip.sh */
+
+#include <stdint.h>
+
+typedef int8_t zip_int8_t;
+typedef uint8_t zip_uint8_t;
+typedef int16_t zip_int16_t;
+typedef uint16_t zip_uint16_t;
+typedef int32_t zip_int32_t;
+typedef uint32_t zip_uint32_t;
+typedef int64_t zip_int64_t;
+typedef uint64_t zip_uint64_t;
+
+#define ZIP_INT8_MIN	 (-ZIP_INT8_MAX-1)
+#define ZIP_INT8_MAX	 0x7f
+#define ZIP_UINT8_MAX	 0xff
+
+#define ZIP_INT16_MIN	 (-ZIP_INT16_MAX-1)
+#define ZIP_INT16_MAX	 0x7fff
+#define ZIP_UINT16_MAX	 0xffff
+
+#define ZIP_INT32_MIN	 (-ZIP_INT32_MAX-1L)
+#define ZIP_INT32_MAX	 0x7fffffffL
+#define ZIP_UINT32_MAX	 0xffffffffLU
+
+#define ZIP_INT64_MIN	 (-ZIP_INT64_MAX-1LL)
+#define ZIP_INT64_MAX	 0x7fffffffffffffffLL
+#define ZIP_UINT64_MAX	 0xffffffffffffffffULL
+
+#endif /* zipconf.h */
+EOF
+
+# --- Generate config.h ---
+# Mirrors the cmake configure_file step on CMakeLists.txt:459. Each
+# HAVE_* corresponds to a check_function_exists / check_include_files
+# probe — for wasm32+musl the result is fixed and small, so we bake it
+# in rather than recomputing every build. SIZEOF_OFF_T=8 because wasm32
+# musl uses 64-bit off_t; SIZEOF_SIZE_T=4 because wasm32 is ILP32.
+CONFIG_H="$BUILD_DIR/config.h"
+cat > "$CONFIG_H" <<'EOF'
+#ifndef HAD_CONFIG_H
+#define HAD_CONFIG_H
+#ifndef _HAD_ZIPCONF_H
+#include "zipconf.h"
+#endif
+/* Generated by packages/registry/libzip/build-libzip.sh for wasm32+musl.
+   Settings: deflate-only (no bz2/lzma/zstd), no crypto backend, POSIX
+   stdio file source. When bumping libzip, diff config.h.in against the
+   new tarball and refresh any new HAVE_* lines. */
+
+#define ENABLE_FDOPEN
+#define HAVE_FCHMOD
+#define HAVE_FILENO
+#define HAVE_FSEEKO
+#define HAVE_FTELLO
+#define HAVE_LOCALTIME_R
+#define HAVE_MKSTEMP
+#define HAVE_SNPRINTF
+#define HAVE_STRCASECMP
+#define HAVE_STRDUP
+#define HAVE_STRTOLL
+#define HAVE_STRTOULL
+#define HAVE_STRUCT_TM_TM_ZONE
+#define HAVE_STDBOOL_H
+#define HAVE_STRINGS_H
+#define HAVE_UNISTD_H
+#define HAVE_DIRENT_H
+#define SIZEOF_OFF_T 8
+#define SIZEOF_SIZE_T 4
+
+/* Intentionally unset: HAVE___PROGNAME, HAVE_*_WINDOWS_*, HAVE_ARC4RANDOM,
+   HAVE_CLONEFILE, HAVE_COMMONCRYPTO, HAVE_CRYPTO, HAVE_FICLONERANGE,
+   HAVE_GETPROGNAME, HAVE_GETSECURITYINFO, HAVE_GNUTLS, HAVE_LIBBZ2,
+   HAVE_LIBLZMA, HAVE_LIBZSTD, HAVE_LOCALTIME_S, HAVE_MEMCPY_S,
+   HAVE_MBEDTLS, HAVE_OPENSSL, HAVE_SETMODE, HAVE_SNPRINTF_S,
+   HAVE_STRERROR_S, HAVE_STRERRORLEN_S, HAVE_STRICMP, HAVE_STRNCPY_S,
+   HAVE_FTS_H, HAVE_NDIR_H, HAVE_SYS_DIR_H, HAVE_SYS_NDIR_H,
+   WORDS_BIGENDIAN, HAVE_SHARED. */
+
+#define PACKAGE "libzip"
+#define VERSION "1.11.4"
+
+#endif /* HAD_CONFIG_H */
+EOF
+
+# --- Generate lib/zip_err_str.c ---
+# Reproduces cmake/GenerateZipErrorStrings.cmake. Reads
+# lib/zip.h (ZIP_ER_*)  and lib/zipint.h (ZIP_ER_DETAIL_*),
+# emits two compile-time tables consumed by zip_error.c.
+ZIP_ERR_STR="$BUILD_DIR/zip_err_str.c"
+{
+cat <<'EOF'
+/*
+  This file was generated automatically by build-libzip.sh
+  from zip.h and zipint.h.
+*/
+
+#include "zipint.h"
+
+#define L ZIP_ET_LIBZIP
+#define N ZIP_ET_NONE
+#define S ZIP_ET_SYS
+#define Z ZIP_ET_ZLIB
+
+#define E ZIP_DETAIL_ET_ENTRY
+#define G ZIP_DETAIL_ET_GLOBAL
+
+const struct _zip_err_info _zip_err_str[] = {
+EOF
+perl -ne '
+  if (/^#define ZIP_ER_([A-Z0-9_]+)\s+\d+\s+\/\*\s+([LNSZ])\s+(.*?)\s+\*\//) {
+    printf("    { %s, \"%s\" },\n", $2, $3);
+  }
+' "$SRC_DIR/lib/zip.h"
+cat <<'EOF'
+};
+
+const int _zip_err_str_count = sizeof(_zip_err_str)/sizeof(_zip_err_str[0]);
+
+const struct _zip_err_info _zip_err_details[] = {
+EOF
+perl -ne '
+  if (/^#define ZIP_ER_DETAIL_([A-Z0-9_]+)\s+\d+\s+\/\*\s+([EG])\s+(.*?)\s+\*\//) {
+    printf("    { %s, \"%s\" },\n", $2, $3);
+  }
+' "$SRC_DIR/lib/zipint.h"
+cat <<'EOF'
+};
+
+const int _zip_err_details_count = sizeof(_zip_err_details)/sizeof(_zip_err_details[0]);
+EOF
+} > "$ZIP_ERR_STR"
+
+# Sanity check: cmake's regex would produce a non-empty error table.
+ER_COUNT=$(grep -c '^    { [LNSZ],' "$ZIP_ERR_STR" || true)
+if [ "$ER_COUNT" -lt 30 ]; then
+    echo "ERROR: zip_err_str.c codegen produced only $ER_COUNT error entries; expected ~36+" >&2
+    echo "       Check that lib/zip.h's ZIP_ER_* comment format hasn't changed." >&2
+    exit 1
+fi
+echo "==> zip_err_str.c codegen: $ER_COUNT main entries"
+
+# --- Source file list ---
+# Mirrors lib/CMakeLists.txt:6-116 (always-on sources) + the unix branch
+# at line 136-139. zip_err_str.c is the generated entry from
+# $BUILD_DIR; everything else is under $SRC_DIR/lib.
+#
+# When bumping libzip, refresh this list against the new tarball's
+# lib/CMakeLists.txt — `diff -u <(grep -oE '^  zip_.*\.c$' old.cmake) ...`
+# is enough to spot adds/removes.
+SOURCES=(
+  zip_add.c zip_add_dir.c zip_add_entry.c
+  zip_algorithm_deflate.c
+  zip_buffer.c
+  zip_close.c
+  zip_delete.c
+  zip_dir_add.c zip_dirent.c zip_discard.c
+  zip_entry.c
+  zip_error.c zip_error_clear.c zip_error_get.c zip_error_get_sys_type.c
+  zip_error_strerror.c zip_error_to_str.c
+  zip_extra_field.c zip_extra_field_api.c
+  zip_fclose.c zip_fdopen.c
+  zip_file_add.c
+  zip_file_error_clear.c zip_file_error_get.c
+  zip_file_get_comment.c zip_file_get_external_attributes.c zip_file_get_offset.c
+  zip_file_rename.c zip_file_replace.c
+  zip_file_set_comment.c zip_file_set_encryption.c
+  zip_file_set_external_attributes.c zip_file_set_mtime.c
+  zip_file_strerror.c
+  zip_fopen.c zip_fopen_encrypted.c zip_fopen_index.c zip_fopen_index_encrypted.c
+  zip_fread.c zip_fseek.c zip_ftell.c
+  zip_get_archive_comment.c zip_get_archive_flag.c
+  zip_get_encryption_implementation.c
+  zip_get_file_comment.c
+  zip_get_name.c zip_get_num_entries.c zip_get_num_files.c
+  zip_hash.c
+  zip_io_util.c
+  zip_libzip_version.c
+  zip_memdup.c
+  zip_name_locate.c
+  zip_new.c
+  zip_open.c
+  zip_pkware.c
+  zip_progress.c
+  zip_realloc.c
+  zip_rename.c zip_replace.c
+  zip_set_archive_comment.c zip_set_archive_flag.c
+  zip_set_default_password.c
+  zip_set_file_comment.c zip_set_file_compression.c
+  zip_set_name.c
+  zip_source_accept_empty.c
+  zip_source_begin_write.c zip_source_begin_write_cloning.c
+  zip_source_buffer.c
+  zip_source_call.c
+  zip_source_close.c
+  zip_source_commit_write.c
+  zip_source_compress.c
+  zip_source_crc.c
+  zip_source_error.c
+  zip_source_file_common.c zip_source_file_stdio.c
+  zip_source_free.c
+  zip_source_function.c
+  zip_source_get_dostime.c
+  zip_source_get_file_attributes.c
+  zip_source_is_deleted.c
+  zip_source_layered.c
+  zip_source_open.c
+  zip_source_pass_to_lower_layer.c
+  zip_source_pkware_decode.c zip_source_pkware_encode.c
+  zip_source_read.c
+  zip_source_remove.c
+  zip_source_rollback_write.c
+  zip_source_seek.c zip_source_seek_write.c
+  zip_source_stat.c
+  zip_source_supports.c
+  zip_source_tell.c zip_source_tell_write.c
+  zip_source_window.c
+  zip_source_write.c
+  zip_source_zip.c zip_source_zip_new.c
+  zip_stat.c zip_stat_index.c zip_stat_init.c
+  zip_strerror.c
+  zip_string.c
+  zip_unchange.c zip_unchange_all.c zip_unchange_archive.c zip_unchange_data.c
+  zip_utf-8.c
+  # POSIX branch (lib/CMakeLists.txt:136-139)
+  zip_source_file_stdio_named.c
+  zip_random_unix.c
+)
+
+# --- Compile ---
+# -fPIC because PHP later links libzip.a into a -shared zip.so side
+# module — without PIC objects wasm-ld rejects the link with
+# "R_WASM_MEMORY_ADDR_LEB cannot be used; recompile with -fPIC".
+# -DHAVE_CONFIG_H switches lib/zipint.h to the config.h path.
+# -DZIP_DISABLE_DEPRECATED so we don't trip on legacy symbols.
+CFLAGS_LIBZIP=(
+    -c -fPIC -O2
+    -DHAVE_CONFIG_H
+    -I"$BUILD_DIR"
+    -I"$SRC_DIR/lib"
+    -I"$ZLIB_PREFIX/include"
+)
+
+OBJ_DIR="$BUILD_DIR/obj"
+mkdir -p "$OBJ_DIR"
+
+NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+echo "==> Compiling ${#SOURCES[@]} libzip sources (-j$NPROC)..."
+
+# Throttle to NPROC concurrent compiles. PID-FIFO drain keeps the
+# dispatch loop simple — `wait $oldest` blocks until that one slot is
+# free, then we shift it off and push the next one.
+PIDS=()
+for src in "${SOURCES[@]}" __ZIP_ERR_STR__; do
+    if [ "$src" = "__ZIP_ERR_STR__" ]; then
+        # The generated zip_err_str.c lives in $BUILD_DIR, not $SRC_DIR/lib.
+        wasm32posix-cc "${CFLAGS_LIBZIP[@]}" -o "$OBJ_DIR/zip_err_str.o" "$ZIP_ERR_STR" &
+    else
+        wasm32posix-cc "${CFLAGS_LIBZIP[@]}" -o "$OBJ_DIR/${src%.c}.o" "$SRC_DIR/lib/$src" &
+    fi
+    PIDS+=($!)
+    if [ "${#PIDS[@]}" -ge "$NPROC" ]; then
+        wait "${PIDS[0]}"
+        PIDS=("${PIDS[@]:1}")
+    fi
+done
+wait
+
+echo "==> Archiving libzip.a..."
+wasm32posix-ar rcs "$INSTALL_DIR/lib/libzip.a" "$OBJ_DIR"/*.o
+
+# --- Install public headers ---
+cp "$SRC_DIR/lib/zip.h"   "$INSTALL_DIR/include/zip.h"
+cp "$ZIPCONF_H"           "$INSTALL_DIR/include/zipconf.h"
+
+# --- Install pkg-config descriptor ---
+# Mirrors libzip.pc.in. Libs.private declares -lz so ext/zip's
+# `pkg-config --libs --static libzip` picks zlib up — same effect as the
+# upstream Libs.private = @LIBS@ expansion under our deflate-only config.
+cat > "$INSTALL_DIR/lib/pkgconfig/libzip.pc" <<EOF
+prefix=$INSTALL_DIR
+exec_prefix=\${prefix}
+bindir=\${prefix}/bin
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: libzip
+Description: library for handling zip archives
+Version: ${LIBZIP_VERSION}
+Libs: -L\${libdir} -lzip
+Libs.private: -lz
+Cflags: -I\${includedir}
+EOF
+
+# --- Post-install sanity checks ---
+[ -f "$INSTALL_DIR/lib/libzip.a" ]              || { echo "ERROR: libzip.a not produced" >&2; exit 1; }
+[ -f "$INSTALL_DIR/include/zip.h" ]             || { echo "ERROR: zip.h not installed" >&2; exit 1; }
+[ -f "$INSTALL_DIR/include/zipconf.h" ]         || { echo "ERROR: zipconf.h not installed" >&2; exit 1; }
+[ -f "$INSTALL_DIR/lib/pkgconfig/libzip.pc" ]   || { echo "ERROR: libzip.pc not installed" >&2; exit 1; }
+
+# Verify a marquee symbol so a silent codegen / file-list slip is caught
+# before the PHP link step does it for us (with worse error messages).
+# Use a here-string instead of `nm | grep -q`: nm dumps ~35 KB and on
+# Linux grep -q exits on first match, SIGPIPEing nm, and `set -o pipefail`
+# then reports a false "symbol missing" even when the symbol was found.
+if ! grep -q ' T zip_open$' <<<"$(wasm32posix-nm "$INSTALL_DIR/lib/libzip.a" 2>/dev/null)"; then
+    echo "ERROR: libzip.a missing exported symbol zip_open — file list / config drift?" >&2
+    exit 1
+fi
+
+echo "==> libzip build complete!"
+ls -lh "$INSTALL_DIR/lib/libzip.a"

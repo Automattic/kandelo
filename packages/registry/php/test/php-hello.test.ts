@@ -204,3 +204,47 @@ describe.skipIf(!PHP_AVAILABLE)("PHP XML extensions on kandelo", () => {
         expect(exitCode).toBe(0);
     }, 60_000);
 });
+
+const zipSoPath = tryResolveBinary("programs/php/zip.so");
+const ZIP_AVAILABLE = PHP_AVAILABLE && zipSoPath !== null;
+const zipExtArgs = ZIP_AVAILABLE
+    ? ["-d", `extension_dir=${dirname(zipSoPath!)}`, "-d", "extension=zip.so"]
+    : [];
+
+describe.skipIf(!ZIP_AVAILABLE)("PHP zip extension on kandelo", () => {
+    // NodePlatformIO: extension_dir and the test archive are real host
+    // paths the default mount-based VFS does not expose.
+    it("ZipArchive class is registered when zip.so is loaded", async () => {
+        const { stdout, exitCode } = await runCentralizedProgram({
+            programPath: phpBinaryPath,
+            argv: ["php", ...zipExtArgs, "-r",
+                'echo class_exists("ZipArchive") ? "ziparchive-ok" : "fail";'],
+            io: new NodePlatformIO(),
+        });
+        expect(stdout).toContain("ziparchive-ok");
+        expect(exitCode).toBe(0);
+    }, 60_000);
+
+    it("round-trips a DEFLATE-compressed entry through ZipArchive", async () => {
+        const tmpDir = join(__dirname, ".tmp-zip");
+        mkdirSync(tmpDir, { recursive: true });
+        const zipPath = join(tmpDir, "smoke.zip");
+        const { stdout, exitCode } = await runCentralizedProgram({
+            programPath: phpBinaryPath,
+            argv: ["php", ...zipExtArgs, "-r", `
+            $z = new ZipArchive;
+            if ($z->open(${JSON.stringify(zipPath)}, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) { echo "open-fail"; exit; }
+            $z->addFromString("hello.txt", "kandelo-zip-ok");
+            $z->close();
+            $r = new ZipArchive;
+            if ($r->open(${JSON.stringify(zipPath)}) !== true) { echo "reopen-fail"; exit; }
+            echo $r->getFromName("hello.txt");
+            $r->close();
+            `],
+            io: new NodePlatformIO(),
+        });
+        rmSync(tmpDir, { recursive: true, force: true });
+        expect(stdout).toContain("kandelo-zip-ok");
+        expect(exitCode).toBe(0);
+    }, 60_000);
+});
