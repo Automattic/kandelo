@@ -306,7 +306,7 @@ has_texlive_vfs()   { pkg_has_output texlive texlive-bundle.json || [ -f "$REPO_
 has_nginx_vfs()     { has_resolvable programs/nginx-vfs.vfs.zst; }
 has_redis_vfs()     { has_resolvable programs/redis-vfs.vfs.zst; }
 has_nginx_php_vfs() { has_resolvable programs/nginx-php-vfs.vfs.zst; }
-has_ncurses()       { [ -f "$REPO_ROOT/sysroot/lib/libncursesw.a" ]; }
+has_ncurses()       { pkg_has_output ncurses clear.wasm && pkg_has_output ncurses tic.wasm && pkg_has_output ncurses tput.wasm; }
 has_zlib()          { [ -f "$REPO_ROOT/sysroot/lib/libz.a" ]; }
 has_openssl()       { [ -f "$REPO_ROOT/sysroot/lib/libssl.a" ] && [ -f "$REPO_ROOT/sysroot/lib/libcrypto.a" ]; }
 has_libcurl()       { [ -f "$REPO_ROOT/sysroot/lib/libcurl.a" ] && [ -f "$REPO_ROOT/sysroot/include/curl/curl.h" ]; }
