@@ -198,6 +198,10 @@ if [ ! -f Makefile ]; then
         PREFIX_ARGS+=(--prefix="$INSTALL_DIR")
     fi
 
+    # -fPIC lets libcurl.a be statically linked into PHP's `curl.so`
+    # side module — wasm-ld rejects non-PIC objects in a -shared link.
+    export CFLAGS="${CFLAGS:-} -fPIC"
+
     wasm32posix-configure \
         ${PREFIX_ARGS[@]+"${PREFIX_ARGS[@]}"} \
         --disable-nls \
