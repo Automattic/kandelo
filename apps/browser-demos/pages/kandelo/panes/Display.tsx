@@ -2,6 +2,8 @@ import * as React from "react";
 import { useWebPreview } from "../kernel-host/react";
 import { PaneHead } from "./PaneHead";
 import { Framebuffer, type FramebufferProps } from "./Framebuffer";
+import { Modeset } from "./Modeset";
+import type { PrimarySurface } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 const ICON = (
   <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4">
@@ -10,8 +12,21 @@ const ICON = (
   </svg>
 );
 
-export const Display: React.FC<FramebufferProps> = (props) => {
+export interface DisplayProps extends FramebufferProps {
+  /**
+   * Which demo surface the parent decided to mount. The mount is one of
+   * "framebuffer" | "web" | "kms" — Display routes to the matching pane.
+   * Defaults to legacy behavior (web if a preview exists, otherwise
+   * framebuffer) for callers that don't yet pass a surface.
+   */
+  surface?: PrimarySurface;
+}
+
+export const Display: React.FC<DisplayProps> = ({ surface, ...props }) => {
   const preview = useWebPreview();
+  if (surface === "kms") return <Modeset {...props} />;
+  if (surface === "framebuffer") return <Framebuffer {...props} />;
+  if (surface === "web" && preview) return <WebPreviewPane preview={preview} {...props} />;
   if (!preview) return <Framebuffer {...props} />;
   return <WebPreviewPane preview={preview} {...props} />;
 };

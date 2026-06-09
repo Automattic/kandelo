@@ -309,7 +309,7 @@ export interface WebPreviewState {
 
 // ── Presentation intent ──────────────────────────────────────────────────
 
-export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web";
+export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web" | "kms";
 
 export type SurfaceAvailability = Record<PrimarySurface, boolean>;
 
@@ -663,6 +663,7 @@ const DEFAULT_SURFACE_AVAILABILITY: SurfaceAvailability = {
   terminal: false,
   framebuffer: false,
   web: false,
+  kms: false,
 };
 
 const NOT_IMPLEMENTED = (m: string) =>
@@ -723,6 +724,7 @@ export class LiveKernelHost implements KernelHost {
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.refreshWebAvailability();
+    this.refreshKmsAvailability();
   }
 
   // ── owner-facing wiring helpers ──────────────────────────────────────────
@@ -742,6 +744,7 @@ export class LiveKernelHost implements KernelHost {
     }
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
+    this.refreshKmsAvailability();
   }
 
   /** Clear the wrapped kernel after a failed boot without changing status. */
@@ -754,7 +757,7 @@ export class LiveKernelHost implements KernelHost {
     this.shellPids.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
-    this.setSurfaceAvailability({ web: false });
+    this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
   }
 
@@ -868,7 +871,8 @@ export class LiveKernelHost implements KernelHost {
       next.syslog === this.surfaceAvailability.syslog &&
       next.terminal === this.surfaceAvailability.terminal &&
       next.framebuffer === this.surfaceAvailability.framebuffer &&
-      next.web === this.surfaceAvailability.web
+      next.web === this.surfaceAvailability.web &&
+      next.kms === this.surfaceAvailability.kms
     ) {
       return;
     }
@@ -888,6 +892,18 @@ export class LiveKernelHost implements KernelHost {
 
   private refreshWebAvailability(): void {
     this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+  }
+
+  /**
+   * KMS surface is treated as "available" once the wrapped kernel exposes
+   * `kmsAttachCanvas`. The kernel-side CRTC always advertises one CRTC, so
+   * there is no separate per-CRTC availability event; the Modeset pane
+   * surfaces "waiting for PAGE_FLIP" until a process binds DRM master.
+   */
+  private refreshKmsAvailability(): void {
+    this.setSurfaceAvailability({
+      kms: Boolean(this.kernel?.kmsAttachCanvas),
+    });
   }
 
   // ── KernelHost: status ───────────────────────────────────────────────────
@@ -918,7 +934,7 @@ export class LiveKernelHost implements KernelHost {
     this.setStatus("halted");
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
-    this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false });
+    this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     await this.kernel?.destroy?.();
   }

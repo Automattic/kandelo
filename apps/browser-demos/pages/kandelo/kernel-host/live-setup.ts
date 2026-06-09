@@ -82,6 +82,12 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/fbtest.wasm", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/modeset.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/modeset.wasm", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(relPaths: string[], label: string): Promise<string> {
@@ -222,6 +228,7 @@ const LIVE_DEMO_IDS = [
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
+  "modeset",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -322,6 +329,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["framebuffer"],
   },
+  modeset: {
+    image: "shell",
+    features: ["kms"],
+  },
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
@@ -360,6 +371,12 @@ interface LiveProfile {
     web?: { label: string; requiredPorts: number[] };
   };
   framebufferTest: boolean;
+  /**
+   * Spawn the `modeset` binary on top of the booted shell so the Modeset
+   * pane has a process driving DRM master + PAGE_FLIP. Mirrors the
+   * `framebufferTest` path for /dev/fb0 demos.
+   */
+  modesetDemo: boolean;
 }
 
 interface WebReadinessState {
@@ -648,6 +665,7 @@ function customVfsProfile(
     includeNodeUtility: false,
     maxVfsByteLength: 256 * 1024 * 1024,
     framebufferTest: fb === "test",
+    modesetDemo: false,
   };
 }
 
@@ -667,6 +685,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       fallbackPresentation: software.presentation,
       init: software.init,
       framebufferTest: false,
+      modesetDemo: false,
     };
   }
 
@@ -696,6 +715,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       },
     },
     framebufferTest: fb === "test",
+    modesetDemo: normalized === "modeset",
   };
 }
 
@@ -1011,6 +1031,12 @@ async function bootProfile(
         "../../../../../binaries/programs/wasm32/fbtest.wasm",
       ], "fbtest.wasm");
       void spawnLazy(kernel, "/usr/local/bin/fbtest", fbtestWasmUrl, ["fbtest"], tick);
+    } else if (profile.modesetDemo) {
+      const modesetWasmUrl = await optionalBinaryUrl([
+        "../../../../../local-binaries/programs/wasm32/modeset.wasm",
+        "../../../../../binaries/programs/wasm32/modeset.wasm",
+      ], "modeset.wasm");
+      void spawnLazy(kernel, "/usr/local/bin/modeset", modesetWasmUrl, ["modeset"], tick);
     } else if (presentation?.autoCommand) {
       tick("starting configured command from bash...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {
@@ -1036,6 +1062,9 @@ async function bootProfile(
 
 function genericPresentationForProfile(profile: LiveProfile): DemoPresentation {
   if (profile.init?.web) return genericDemoPresentation("web");
+  if (profile.modesetDemo || profile.descriptor.runtime.features.includes("kms")) {
+    return genericDemoPresentation("kms");
+  }
   if (profile.framebufferTest || profile.descriptor.runtime.features.includes("framebuffer")) {
     return genericDemoPresentation("framebuffer");
   }
@@ -1533,7 +1562,10 @@ function liveDemoIdForVfsImageUrl(vfsUrl: string): LiveDemoId | null {
 
   const matches = LIVE_DEMO_IDS.filter((id) => baseUrl === profileVfsBaseUrl(id));
   if (matches.length === 1) return matches[0];
-  return matches.find((id) => id !== "doom") ?? null;
+  // Multiple presets share the shell VFS image (doom, modeset). When the URL
+  // doesn't pin one via the hash, fall back to the shell preset so the
+  // ambiguous shell-image link doesn't auto-launch a demo binary.
+  return matches.find((id) => id !== "doom" && id !== "modeset") ?? null;
 }
 
 function profileVfsBaseUrl(id: LiveDemoId): string {
