@@ -145,8 +145,7 @@ export function nodeGuide(): DemoGuideConfig {
     {
       title: "SpiderMonkey Node script",
       language: "sh",
-      initialText: `${nodeRuntimeScript}
-${nodeCowsayScript}`,
+      initialText: nodeCowsayScript,
     },
     {
       title: "Companion HTML",
