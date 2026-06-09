@@ -69,26 +69,6 @@ const SPIDERMONKEY_NODE_PRESENTATION: DemoPresentation = {
   internalsAccess: "drawer",
 };
 
-const SM_NODE_WORKER_RUNTIME_COMMAND = [
-  "node -e \"",
-  "const assert=require('node:assert');",
-  "const path=require('path');",
-  "const {Worker}=require('worker_threads');",
-  "const b=Buffer.from('Kandelo');",
-  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
-  "console.log('SpiderMonkey Node', process.version, process.arch);",
-  "console.log(b.toString('hex'));",
-  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "const sab=new SharedArrayBuffer(8);",
-  "const view=new Int32Array(sab);",
-  "const worker=new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
-  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
-  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
-  "console.log('worker', Atomics.load(view,0));",
-  "worker.terminate();",
-  "\"",
-].join(" ");
-
 const SM_NODE_WORKER_DEMO_COMMAND = [
   "node -e \"",
   "const {Worker}=require('worker_threads');",
@@ -119,10 +99,6 @@ function isWebKitLikeBrowser(): boolean {
 
 function spiderMonkeyNodeRuntimeCommand(): string {
   return SM_NODE_WORKER_DEMO_COMMAND;
-}
-
-function spiderMonkeyNodeSmokeCommand(): string {
-  return `${SM_NODE_WORKER_RUNTIME_COMMAND} && npm --version`;
 }
 
 function spiderMonkeyNodeGuide(): DemoGuideConfig {
@@ -173,7 +149,7 @@ function spiderMonkeyNodeGuide(): DemoGuideConfig {
     script: {
       title: "SpiderMonkey Node script",
       language: "sh",
-      initialText: `${runtimeCommand}\n${SM_NODE_COWSAY_DEMO_COMMAND}`,
+      initialText: SM_NODE_COWSAY_DEMO_COMMAND,
     },
     companion: {
       title: "Companion HTML",
@@ -376,10 +352,6 @@ async function boot(
       argv: ["bash", "-l", "-i"],
       env: SHELL_ENV,
       cwd: "/work",
-    });
-    tick("running SpiderMonkey Node smoke...");
-    await host.runShellCommand(spiderMonkeyNodeSmokeCommand()).catch((err) => {
-      tick(`command failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     assertCurrent();
     tick("ready");

@@ -163,7 +163,7 @@ jobs:
           echo "Synthetic merge $MERGE_SHA uses base $BASE_SHA and head $PR_HEAD_SHA."
 
       - name: Upload synthetic merge bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: synthetic-pr-merge
           path: ${{ runner.temp }}/synthetic-pr-merge/synthesized-merge.bundle
@@ -201,12 +201,12 @@ jobs:
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -360,7 +360,7 @@ jobs:
 
       - name: Checkout workflow helpers
         if: needs.change-scope.outputs.package_staging_required == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ github.sha }}
           sparse-checkout: |
@@ -568,12 +568,12 @@ jobs:
       staging_tag: ${{ steps.compute.outputs.staging_tag }}
       merge_base_sha: ${{ steps.compute.outputs.merge_base_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -620,7 +620,7 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -629,7 +629,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -800,12 +800,12 @@ jobs:
       needs.change-scope.outputs.test_gate_required == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -856,12 +856,12 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.promote_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -951,12 +951,12 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -1060,12 +1060,12 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -1170,12 +1170,12 @@ jobs:
       BINARY_MATERIALIZATION_CHANGED: ${{ needs.change-scope.outputs.binary_materialization_changed }}
       PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
@@ -1232,18 +1232,18 @@ jobs:
           submodules: libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -1328,7 +1328,7 @@ jobs:
           bash scripts/pack-ci-test-workspace.sh "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace.tar.zst
@@ -1400,13 +1400,13 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         if: steps.suite.outputs.skip != 'true'
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: steps.suite.outputs.skip != 'true'
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
@@ -1446,20 +1446,20 @@ jobs:
 
       - name: Install Nix
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
         if: steps.suite.outputs.skip != 'true'
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         if: steps.suite.outputs.skip != 'true' && matrix.needs_toolchain == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -1471,7 +1471,7 @@ jobs:
 
       - name: Download prepared test workspace
         if: steps.suite.outputs.skip != 'true' && matrix.needs_workspace == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace

@@ -226,26 +226,6 @@ const LIVE_DEMO_IDS = [
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
 
-const NODE_WORKER_AUTO_COMMAND = [
-  "node -e \"",
-  "const assert=require('node:assert');",
-  "const path=require('path');",
-  "const {Worker}=require('worker_threads');",
-  "const b=Buffer.from('Kandelo');",
-  "assert.strictEqual(path.basename('/usr/bin/node'),'node');",
-  "console.log('SpiderMonkey Node', process.version, process.arch);",
-  "console.log(b.toString('hex'));",
-  "console.log(new Intl.NumberFormat('de-DE').format(1234567.89));",
-  "const sab=new SharedArrayBuffer(8);",
-  "const view=new Int32Array(sab);",
-  "new Worker('const view=new Int32Array(workerData); Atomics.store(view,0,42); Atomics.store(view,1,1); Atomics.notify(view,1);',{eval:true,workerData:sab});",
-  "if(Atomics.load(view,1)===0) Atomics.wait(view,1,0,5000);",
-  "if(Atomics.load(view,1)!==1) throw new Error('worker did not finish');",
-  "console.log('worker', Atomics.load(view,0));",
-  "\"",
-  "&& npm --version",
-].join(" ");
-
 async function settleAfterKernelDestroy(): Promise<void> {
   const ua = navigator.userAgent;
   const isWebKitLikeBrowser = /AppleWebKit/i.test(ua)
@@ -266,7 +246,6 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     memoryPages: 4096,
     network: true,
     features: ["js-workers"],
-    autoCommand: NODE_WORKER_AUTO_COMMAND,
   },
   nginx: {
     image: "nginx",

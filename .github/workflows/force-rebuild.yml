@@ -170,7 +170,7 @@ jobs:
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -191,7 +191,7 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -200,7 +200,7 @@ jobs:
         run: bash scripts/dev-shell.sh true
 
       - name: Cache xtask build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -346,7 +346,7 @@ jobs:
     needs: [gate]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -356,12 +356,12 @@ jobs:
           git submodule update --init --depth 1 libc/musl
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
@@ -376,7 +376,7 @@ jobs:
           echo "toolchain-cache key: $KEY"
 
       - name: Cache musl sysroot + libc++
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: cache
         with:
           path: |
@@ -415,7 +415,7 @@ jobs:
             sysroot sysroot64 tools/bin/wasm-fork-instrument
 
       - name: Upload toolchain sysroots artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain-sysroots.tar.zst
@@ -438,7 +438,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.library_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -460,13 +460,13 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -510,7 +510,7 @@ jobs:
           echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.package }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/staged/*.tar.zst
@@ -570,7 +570,7 @@ jobs:
         include: ${{ fromJSON(needs.preflight.outputs.program_matrix) }}
     steps:
       - id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -593,13 +593,13 @@ jobs:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -617,7 +617,7 @@ jobs:
 
       - name: Download library archives from lib-matrix-build
         if: needs.preflight.outputs.library_matrix != '[]'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/lib-archives
@@ -655,7 +655,7 @@ jobs:
           echo "archive-name=$archive_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload archive as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.package }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/staged/*.tar.zst
@@ -716,7 +716,7 @@ jobs:
     env:
       WASM_POSIX_BINARY_INDEX_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.target_tag }}/index.toml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -726,18 +726,18 @@ jobs:
           git submodule update --init --depth 1 libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -747,7 +747,7 @@ jobs:
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
       - name: Download matrix artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: '*-wasm*'
           path: ${{ runner.temp }}/staged-archives
@@ -798,7 +798,7 @@ jobs:
           bash scripts/pack-ci-test-workspace.sh "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace.tar.zst
@@ -846,7 +846,7 @@ jobs:
     env:
       SUITE: ${{ matrix.suite }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.2
         with:
           ref: ${{ needs.gate.outputs.build_ref }}
 
@@ -857,19 +857,19 @@ jobs:
           git submodule update --init --depth 1 libc/musl tests/libc/libc-test tests/sortix/os-test
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@c723f3a885e3f1d866d91f4f0c33dd44b1fc7c60 # v18
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           github-token: ""
 
       - name: Cache Nix store + flake eval
-        uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
         with:
           use-gha-cache: false
           use-flakehub: false
 
       - name: Download toolchain sysroots artifact
         if: matrix.needs_toolchain == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: toolchain-sysroots
           path: ${{ runner.temp }}/toolchain
@@ -881,7 +881,7 @@ jobs:
 
       - name: Download prepared test workspace
         if: matrix.needs_workspace == true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: test-workspace
           path: ${{ runner.temp }}/test-workspace
