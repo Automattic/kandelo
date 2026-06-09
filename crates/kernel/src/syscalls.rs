@@ -13,7 +13,7 @@ use wasm_posix_shared::seek::*;
 use wasm_posix_shared::{WasmFlock, WasmPollFd, WasmStat, WasmStatfs, WasmTimespec};
 
 use crate::fd::OpenFileDescRef;
-use crate::lock::FileLock;
+use crate::lock::{FileLock, LockTable};
 use crate::ofd::FileType;
 use crate::pipe::{DEFAULT_PIPE_CAPACITY, PipeBuffer};
 use crate::process::{HostIO, Process};
@@ -130,6 +130,15 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
 
 /// Sentinel host_handle for synthetic in-kernel files.
 const SYNTHETIC_FILE_HANDLE: i64 = -100;
+
+#[inline]
+fn fallback_lock_table(proc: &mut Process) -> &mut LockTable {
+    if crate::is_centralized_mode() {
+        unsafe { crate::lock::global_fallback_lock_table() }
+    } else {
+        &mut proc.lock_table
+    }
+}
 
 /// Mozilla CA root bundle, vendored from <https://curl.se/ca/cacert.pem>.
 /// Served at `/etc/ssl/cert.pem` so OpenSSL's `SSL_CTX_set_default_verify_paths`
@@ -908,21 +917,29 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
 
     // POSIX: closing any fd for a file releases all advisory locks on that file
     // held by this process, regardless of which fd acquired the lock.
-    if host_handle >= 0
+    let pid = proc.pid;
+    fallback_lock_table(proc).remove_for_handle(host_handle, pid);
+    let host_lock_cleanup = host_handle >= 0
         && file_type != FileType::Pipe
         && file_type != FileType::Socket
         && file_type != FileType::PtyMaster
         && file_type != FileType::PtySlave
-    {
-        proc.lock_table.remove_for_handle(host_handle, proc.pid);
-        // Also release in the shared (cross-process) lock table
-        if !path.is_empty() {
-            let mut dummy = [0u8; 24];
-            let _ = host.host_fcntl_lock(&path, proc.pid, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
-        }
+        && !path.is_empty();
+    if host_lock_cleanup {
+        let mut dummy = [0u8; 24];
+        let _ = host.host_fcntl_lock(&path, pid, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
     }
 
     let freed = proc.ofd_table.dec_ref(idx);
+
+    if freed {
+        let ofd_lock_owner = (idx as u32) | 0x80000000;
+        fallback_lock_table(proc).remove_for_handle(host_handle, ofd_lock_owner);
+        if host_lock_cleanup {
+            let mut dummy = [0u8; 24];
+            let _ = host.host_fcntl_lock(&path, ofd_lock_owner, F_SETLK, F_UNLCK, 0, 0, &mut dummy);
+        }
+    }
 
     if freed {
         match file_type {
@@ -2897,8 +2914,15 @@ pub fn sys_fcntl_lock(
 
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
-    let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    let host_handle = ofd.host_handle;
+    let (host_handle, status_flags, offset, path) = {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        (
+            ofd.host_handle,
+            ofd.status_flags,
+            ofd.offset,
+            ofd.path.clone(),
+        )
+    };
 
     // OFD locks use the OFD index as lock owner (not PID).
     // Map OFD and POSIX (5/6/7) commands to the internal lock constants (12/13/14).
@@ -2923,8 +2947,8 @@ pub fn sys_fcntl_lock(
 
     // Resolve start offset based on whence
     let start = match flock.l_whence {
-        0 => flock.l_start,              // SEEK_SET
-        1 => ofd.offset + flock.l_start, // SEEK_CUR
+        0 => flock.l_start,          // SEEK_SET
+        1 => offset + flock.l_start, // SEEK_CUR
         2 => {
             // SEEK_END: resolve relative to file size
             if host_handle >= 0 {
@@ -2942,10 +2966,10 @@ pub fn sys_fcntl_lock(
     let lock_type = flock.l_type as u32;
 
     // For host-backed files, delegate to the shared lock table via host import
-    if host_handle >= 0 && !ofd.path.is_empty() {
+    if host_handle >= 0 && !path.is_empty() {
         // Access mode check
         if base_cmd == F_SETLK || base_cmd == F_SETLKW {
-            let access_mode = ofd.status_flags & O_ACCMODE;
+            let access_mode = status_flags & O_ACCMODE;
             if lock_type == F_RDLCK && access_mode == O_WRONLY {
                 return Err(Errno::EBADF);
             }
@@ -2953,10 +2977,9 @@ pub fn sys_fcntl_lock(
                 return Err(Errno::EBADF);
             }
         }
-        let path = &ofd.path;
         let mut result_buf = [0u8; 24];
         host.host_fcntl_lock(
-            path,
+            &path,
             lock_owner,
             base_cmd,
             lock_type,
@@ -2983,10 +3006,12 @@ pub fn sys_fcntl_lock(
         return Ok(());
     }
 
-    // Fallback: use local lock_table for non-host files (pipes, etc.)
+    // Fallback: kernel-managed lock table for non-host files (pipes, etc.).
+    // Centralized mode uses one kernel-wide table so different Process objects
+    // coordinate. Non-centralized mode keeps the legacy per-process table.
     match base_cmd {
         F_GETLK => {
-            match proc.lock_table.get_blocking_lock(
+            match fallback_lock_table(proc).get_blocking_lock(
                 host_handle,
                 lock_type,
                 start,
@@ -3008,7 +3033,7 @@ pub fn sys_fcntl_lock(
             Ok(())
         }
         F_SETLK | F_SETLKW => {
-            let access_mode = ofd.status_flags & O_ACCMODE;
+            let access_mode = status_flags & O_ACCMODE;
             if lock_type == F_RDLCK && access_mode == O_WRONLY {
                 return Err(Errno::EBADF);
             }
@@ -3023,31 +3048,39 @@ pub fn sys_fcntl_lock(
                     start,
                     len: flock.l_len,
                 };
-                proc.lock_table.set_lock(host_handle, lock);
+                fallback_lock_table(proc).set_lock(host_handle, lock);
                 return Ok(());
             }
 
-            if proc
-                .lock_table
+            if fallback_lock_table(proc)
                 .get_blocking_lock(host_handle, lock_type, start, flock.l_len, lock_owner)
                 .is_some()
             {
-                if base_cmd == F_SETLK {
+                if base_cmd == F_SETLK || crate::is_centralized_mode() {
                     return Err(Errno::EAGAIN);
                 }
-                // F_SETLKW: report "would block" to the caller/host retry
-                // machinery. Deadlock detection requires a wait-for graph; a
-                // conflicting lock from another owner is not itself deadlock.
-                return Err(Errno::EAGAIN);
+
+                loop {
+                    if proc.signals.deliverable() != 0 && !proc.signals.should_restart() {
+                        return Err(Errno::EINTR);
+                    }
+                    let _ = host.host_nanosleep(0, 1_000_000);
+                    if fallback_lock_table(proc)
+                        .get_blocking_lock(host_handle, lock_type, start, flock.l_len, lock_owner)
+                        .is_none()
+                    {
+                        break;
+                    }
+                }
             }
 
             let lock = FileLock {
                 pid: lock_owner,
-                lock_type: lock_type,
+                lock_type,
                 start,
                 len: flock.l_len,
             };
-            proc.lock_table.set_lock(host_handle, lock);
+            fallback_lock_table(proc).set_lock(host_handle, lock);
             Ok(())
         }
         _ => Err(Errno::EINVAL),
@@ -4628,7 +4661,8 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     }
 
     // POSIX: all advisory locks held by the process are released on exit.
-    proc.lock_table.remove_all_for_pid(proc.pid);
+    let pid = proc.pid;
+    fallback_lock_table(proc).remove_all_for_pid(pid);
 
     proc.state = ProcessState::Exited;
     proc.exit_status = status;
@@ -11990,34 +12024,103 @@ mod tests {
     }
 
     #[test]
-    fn test_fcntl_setlk_and_setlkw_local_conflicts_report_would_block() {
-        for cmd in [F_SETLK, F_SETLKW] {
-            let mut proc = Process::new(1);
-            let mut host = MockHostIO::new();
-            let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-            let host_handle = fd_host_handle(&proc, write_fd);
+    fn test_fcntl_setlk_local_conflict_reports_would_block() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
 
-            proc.lock_table.set_lock(
-                host_handle,
-                FileLock {
-                    pid: 2,
-                    lock_type: F_WRLCK,
-                    start: 0,
-                    len: 100,
-                },
-            );
+        proc.lock_table.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
 
-            let mut flock = WasmFlock {
-                l_type: F_WRLCK as i16,
-                l_whence: 0,
-                _pad1: 0,
-                l_start: 0,
-                l_len: 100,
-                l_pid: 0,
-                _pad2: 0,
-            };
-            let result = sys_fcntl_lock(&mut proc, write_fd, cmd, &mut flock, &mut host);
-            assert_eq!(result, Err(Errno::EAGAIN), "cmd {}", cmd);
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLK, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_fcntl_setlkw_local_conflict_is_interruptible() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
+        let host_handle = fd_host_handle(&proc, write_fd);
+
+        proc.lock_table.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+        proc.signals.raise(wasm_posix_shared::signal::SIGTERM);
+
+        let mut flock = WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
+        assert_eq!(result, Err(Errno::EINTR));
+    }
+
+    struct KernelModeTestGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for KernelModeTestGuard {
+        fn drop(&mut self) {
+            crate::set_kernel_mode(0);
+            unsafe { crate::lock::global_fallback_lock_table().clear() };
+        }
+    }
+
+    fn enter_centralized_lock_test() -> KernelModeTestGuard {
+        let guard = crate::lock::FALLBACK_LOCK_TEST_LOCK.lock().unwrap();
+        crate::set_kernel_mode(1);
+        unsafe { crate::lock::global_fallback_lock_table().clear() };
+        KernelModeTestGuard { _guard: guard }
+    }
+
+    fn add_fallback_pipe_fd(proc: &mut Process, host_handle: i64, status_flags: u32) -> i32 {
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            status_flags,
+            host_handle,
+            b"/dev/pipe".to_vec(),
+        );
+        proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
+    }
+
+    fn write_lock(start: i64, len: i64) -> WasmFlock {
+        WasmFlock {
+            l_type: F_WRLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: start,
+            l_len: len,
+            l_pid: 0,
+            _pad2: 0,
         }
     }
 
@@ -12057,7 +12160,75 @@ mod tests {
     }
 
     #[test]
-    fn test_flock_local_conflicts_report_would_block() {
+    fn test_fallback_locks_are_kernel_wide_in_centralized_mode() {
+        let _mode = enter_centralized_lock_test();
+        let mut proc1 = Process::new(1);
+        let mut proc2 = Process::new(2);
+        let mut host = MockHostIO::new();
+        let shared_handle = -700;
+        let fd1 = add_fallback_pipe_fd(&mut proc1, shared_handle, O_RDWR);
+        let fd2 = add_fallback_pipe_fd(&mut proc2, shared_handle, O_RDWR);
+
+        let mut flock = write_lock(0, 100);
+        sys_fcntl_lock(&mut proc1, fd1, F_SETLK, &mut flock, &mut host).unwrap();
+
+        assert!(
+            proc1
+                .lock_table
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 2)
+                .is_none(),
+            "centralized fallback locks must not be stored on proc1"
+        );
+        assert!(
+            proc2
+                .lock_table
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 1)
+                .is_none(),
+            "centralized fallback locks must not be stored on proc2"
+        );
+
+        let mut conflict = write_lock(0, 100);
+        assert_eq!(
+            sys_fcntl_lock(&mut proc2, fd2, F_SETLK, &mut conflict, &mut host),
+            Err(Errno::EAGAIN)
+        );
+
+        let mut query = WasmFlock {
+            l_type: F_RDLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 50,
+            l_len: 10,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc2, fd2, F_GETLK, &mut query, &mut host).unwrap();
+        assert_eq!(query.l_type as u32, F_WRLCK);
+        assert_eq!(query.l_pid, 1);
+        assert_eq!(query.l_start, 0);
+        assert_eq!(query.l_len, 100);
+
+        let mut unlock = WasmFlock {
+            l_type: F_UNLCK as i16,
+            l_whence: 0,
+            _pad1: 0,
+            l_start: 0,
+            l_len: 100,
+            l_pid: 0,
+            _pad2: 0,
+        };
+        sys_fcntl_lock(&mut proc1, fd1, F_SETLK, &mut unlock, &mut host).unwrap();
+        sys_fcntl_lock(&mut proc2, fd2, F_SETLK, &mut conflict, &mut host).unwrap();
+
+        assert!(
+            unsafe { crate::lock::global_fallback_lock_table() }
+                .get_blocking_lock(shared_handle, F_WRLCK, 0, 100, 1)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_flock_local_nonblocking_conflict_reports_would_block() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
@@ -12074,23 +12245,42 @@ mod tests {
         );
 
         assert_eq!(
-            sys_flock(&mut proc, write_fd, LOCK_EX, &mut host),
-            Err(Errno::EAGAIN)
-        );
-        assert_eq!(
             sys_flock(&mut proc, write_fd, LOCK_EX | LOCK_NB, &mut host),
             Err(Errno::EAGAIN)
         );
     }
 
     #[test]
-    fn test_fcntl_setlkw_local_conflict_can_succeed_after_unlock() {
+    fn test_flock_blocking_centralized_fallback_conflict_uses_cooperative_retry() {
+        let _mode = enter_centralized_lock_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        let (_read_fd, write_fd) = sys_pipe(&mut proc).unwrap();
-        let host_handle = fd_host_handle(&proc, write_fd);
+        let host_handle = -701;
+        let write_fd = add_fallback_pipe_fd(&mut proc, host_handle, O_RDWR);
 
-        proc.lock_table.set_lock(
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            FileLock {
+                pid: 2,
+                lock_type: F_WRLCK,
+                start: 0,
+                len: 0,
+            },
+        );
+
+        let result = sys_flock(&mut proc, write_fd, LOCK_EX, &mut host);
+        assert_eq!(result, Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn test_fcntl_setlkw_centralized_fallback_succeeds_after_unlock() {
+        let _mode = enter_centralized_lock_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let host_handle = -702;
+        let write_fd = add_fallback_pipe_fd(&mut proc, host_handle, O_RDWR);
+
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
             host_handle,
             FileLock {
                 pid: 2,
@@ -12100,19 +12290,11 @@ mod tests {
             },
         );
 
-        let mut flock = WasmFlock {
-            l_type: F_WRLCK as i16,
-            l_whence: 0,
-            _pad1: 0,
-            l_start: 0,
-            l_len: 100,
-            l_pid: 0,
-            _pad2: 0,
-        };
+        let mut flock = write_lock(0, 100);
         let result = sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host);
         assert_eq!(result, Err(Errno::EAGAIN));
 
-        proc.lock_table.set_lock(
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
             host_handle,
             FileLock {
                 pid: 2,
@@ -12124,7 +12306,7 @@ mod tests {
 
         sys_fcntl_lock(&mut proc, write_fd, F_SETLKW, &mut flock, &mut host).unwrap();
         assert!(
-            proc.lock_table
+            unsafe { crate::lock::global_fallback_lock_table() }
                 .get_blocking_lock(host_handle, F_WRLCK, 0, 100, 2)
                 .is_some()
         );
