@@ -193,11 +193,17 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   );
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /bash-[0-9][^\r\n]*# ?/, 120_000);
+  await waitForTerminalContent(page, /(?:^|\n)# ?/, 120_000);
   await runTerminalCommand(
     page,
     "export PS1='KANDELO_NGINX_TERMINAL_OK $ '",
     "KANDELO_NGINX_TERMINAL_OK",
+  );
+  await runTerminalCommand(
+    page,
+    "touch /home/.nethack/record; nethack -s all >/tmp/kandelo-nginx-nethack.out 2>&1; status=$?; if grep -Eq 'message 1 not found|Program in disorder|Cannot open record file' /tmp/kandelo-nginx-nethack.out; then export PS1=\"KANDELO_\"\"NGINX_NETHACK_BAD:$status $ \"; else export PS1=\"KANDELO_\"\"NGINX_NETHACK_OK:$status $ \"; fi",
+    "KANDELO_NGINX_NETHACK_OK:0",
+    180_000,
   );
 });
 
