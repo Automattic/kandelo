@@ -3,7 +3,7 @@
 // During boot the machine shows syslog as the primary surface. Once the demo
 // reaches the useful state, the primary surface follows the active profile:
 // web preview for service demos, framebuffer for Doom, terminal for shell-like
-// demos. Terminal and internals stay available as drawers.
+// demos. Terminal is exposed after boot; internals stay available as a drawer.
 
 import * as React from "react";
 import { useDemoGuide, usePresentation, useStatus, useSurfaceAvailability, useWebPreview } from "../kernel-host/react";
@@ -49,6 +49,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
   const [terminalDrawerHeight, setTerminalDrawerHeight] = React.useState(320);
   const [internalsDrawerHeight, setInternalsDrawerHeight] = React.useState(320);
   const previousAvailability = React.useRef(availability);
+  const canUseTerminal = status === "running" && availability.terminal;
 
   const defaultPrimary = React.useMemo<PrimarySurface>(() => {
     if (status !== "running") {
@@ -89,6 +90,10 @@ export const MachineView: React.FC<MachineViewProps> = ({
     setTerminalOpen(false);
     setInternalsOpen(false);
   }, [presentation.runningPrimary, presentation.autoCommand]);
+
+  React.useEffect(() => {
+    if (!canUseTerminal) setTerminalOpen(false);
+  }, [canUseTerminal]);
 
   const choosePrimary = (surface: PrimarySurface) => {
     if (status !== "running" && surface !== "syslog") return;
@@ -160,7 +165,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
           />
           <SurfaceButton
             active={activePrimary === "terminal"}
-            disabled={status !== "running" || !availability.terminal}
+            disabled={!canUseTerminal}
             onClick={() => choosePrimary("terminal")}
             label="Terminal"
           />
@@ -180,7 +185,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
               <Display autoFocus={activePrimary === demoSurface} />
             </PrimarySurfaceSlot>
           )}
-          {activePrimary === "terminal" && (
+          {activePrimary === "terminal" && canUseTerminal && (
             <PrimarySurfaceSlot active>
               <Shell autoFocus {...shellProps} />
             </PrimarySurfaceSlot>
@@ -194,13 +199,13 @@ export const MachineView: React.FC<MachineViewProps> = ({
         {showDemoGuide && (
           <DemoGuide
             onOpenTerminal={() => {
-              setTerminalOpen(true);
+              if (canUseTerminal) setTerminalOpen(true);
             }}
           />
         )}
       </div>
 
-      {activePrimary !== "terminal" && (
+      {activePrimary !== "terminal" && canUseTerminal && (
         <MachineDrawer
           title="Terminal"
           open={terminalOpen}

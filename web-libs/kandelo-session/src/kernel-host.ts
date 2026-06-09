@@ -804,6 +804,7 @@ export class LiveKernelHost implements KernelHost {
   setStatus(s: MachineStatus): void {
     if (s === this._status) return;
     this._status = s;
+    this.refreshTerminalAvailability();
     this.statusListeners.emit(s);
   }
 
@@ -856,7 +857,9 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshTerminalAvailability(): void {
-    this.setSurfaceAvailability({ terminal: Boolean(this.kernel && this.shell) });
+    this.setSurfaceAvailability({
+      terminal: this._status === "running" && Boolean(this.kernel && this.shell),
+    });
   }
 
   private refreshFramebufferAvailability(): void {
