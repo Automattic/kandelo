@@ -28,6 +28,8 @@ import { nginxPhpGuide } from "./kandelo-demo-guides";
 const OUT_FILE = join(findRepoRoot(), "apps", "browser-demos", "public", "nginx-php.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 const NGINX_PHP_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
 
 const NGINX_CONF = `user root;
 daemon off;
@@ -115,8 +117,8 @@ request_slowlog_trace_depth = 0
 
 // opcache: file-cache backend, populated at build time by
 // prewarmOpcache (see end of main()). See build-wp-vfs-image.ts for
-// the rationale. validate_timestamps=0 is safe because VFS files
-// don't change at runtime.
+// the rationale. Timestamp revalidation stays enabled so files edited from
+// the demo terminal are reflected after a browser reload.
 const PHP_INI = `zend_extension=/usr/lib/php/extensions/opcache.so
 
 [opcache]
@@ -124,7 +126,8 @@ opcache.enable=1
 opcache.enable_cli=1
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
-opcache.validate_timestamps=0
+opcache.validate_timestamps=1
+opcache.revalidate_freq=0
 `;
 
 const FPM_ROUTER_PHP = `<?php
@@ -239,6 +242,14 @@ async function main() {
   writeVfsFile(fs, "/etc/php.ini", PHP_INI);
   writeVfsFile(fs, "/var/www/fpm-router.php", FPM_ROUTER_PHP);
   writeVfsFile(fs, "/var/www/html/index.php", INDEX_PHP);
+  fs.chown("/var/www", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/fpm-router.php", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html/index.php", DEMO_UID, DEMO_GID);
+  fs.chmod("/var/www", 0o755);
+  fs.chmod("/var/www/html", 0o755);
+  fs.chmod("/var/www/fpm-router.php", 0o644);
+  fs.chmod("/var/www/html/index.php", 0o644);
 
   // Prewarm opcache: compile the demo's router and document-root PHP
   // files into the file cache so the first request doesn't pay the parse

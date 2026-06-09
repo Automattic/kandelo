@@ -431,8 +431,6 @@ const SERVICE_ENV: string[] = [
   "TERM=xterm-256color",
   "USER=root",
   "LOGNAME=root",
-  "PS1=# ",
-  "NETHACKOPTIONS=windowtype:curses,color,lit_corridor,hilite_pet",
   "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "SSL_CERT_DIR=/etc/ssl/certs",
@@ -721,14 +719,10 @@ function shellIdentityForProfile(profile: LiveProfile, boot?: BootDescriptor["bo
   gid: number;
 } {
   let identity: { env: string[]; cwd: string; uid: number; gid: number };
-  if (profile.software?.shellEnv) {
-    identity = profile.init || profile.software.shellEnv === SERVICE_ENV
-      ? { env: profile.software.shellEnv, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID }
-      : { env: profile.software.shellEnv, cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
-  } else if (profile.shell === "node") {
+  if (profile.shell === "node") {
     identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
-  } else if (profile.init) {
-    identity = { env: SERVICE_ENV, cwd: ROOT_HOME, uid: ROOT_UID, gid: ROOT_GID };
+  } else if (profile.software?.shellEnv && profile.software.shellEnv !== SERVICE_ENV) {
+    identity = { env: profile.software.shellEnv, cwd: DEMO_HOME, uid: DEMO_UID, gid: DEMO_GID };
   } else {
     identity = { env: shellEnvFor(profile.shell), cwd: shellCwdFor(profile.shell), uid: DEMO_UID, gid: DEMO_GID };
   }
@@ -940,7 +934,7 @@ async function bootProfile(
     stageSoftwareBinaries(kernel, softwareBinaries);
     assertCurrent();
     host.attachKernel(kernel);
-    const shellIdentity = shellIdentityForProfile(profile, effectiveBoot);
+    const shellIdentity = shellIdentityForProfile(profile, profile.init ? undefined : effectiveBoot);
     host.setDefaultShell({
       programPath: "/bin/bash",
       programBytes: bashBytes,

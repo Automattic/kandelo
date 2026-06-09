@@ -193,18 +193,23 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   );
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /(?:^|\n)# ?/, 120_000);
+  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
   await runTerminalCommand(
     page,
-    "export PS1='KANDELO_NGINX_TERMINAL_OK $ '",
+    "if [ \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user' ]; then export PS1=\"KANDELO_\"\"NGINX_TERMINAL_OK $ \"; else export PS1=\"KANDELO_\"\"NGINX_TERMINAL_BAD:$(id -u):$HOME:$(pwd) $ \"; fi",
     "KANDELO_NGINX_TERMINAL_OK",
   );
   await runTerminalCommand(
     page,
-    "touch /home/.nethack/record; nethack -s all >/tmp/kandelo-nginx-nethack.out 2>&1; status=$?; if grep -Eq 'message 1 not found|Program in disorder|Cannot open record file' /tmp/kandelo-nginx-nethack.out; then export PS1=\"KANDELO_\"\"NGINX_NETHACK_BAD:$status $ \"; else export PS1=\"KANDELO_\"\"NGINX_NETHACK_OK:$status $ \"; fi",
-    "KANDELO_NGINX_NETHACK_OK:0",
-    180_000,
+    "printf '%s\\n' '<!doctype html><title>Kandelo nginx</title><h1>KANDELO_EDIT_OK</h1>' > /var/www/html/index.html && export PS1=\"KANDELO_\"\"NGINX_EDIT_OK $ \" || export PS1=\"KANDELO_\"\"NGINX_EDIT_BAD:$? $ \"",
+    "KANDELO_NGINX_EDIT_OK",
   );
+  await webFrame(page, "nginx").locator("body").evaluate(() => {
+    window.location.reload();
+  });
+  await expect(webFrame(page, "nginx").locator("body")).toContainText("KANDELO_EDIT_OK", {
+    timeout: 120_000,
+  });
 });
 
 test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", async ({ page }) => {
@@ -216,6 +221,14 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   await expect(webFrame(page, "nginx + PHP").locator("body")).toContainText(
     "PHP-FPM on WebAssembly",
     { timeout: 180_000 },
+  );
+
+  await openTerminalDrawer(page);
+  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await runTerminalCommand(
+    page,
+    "if [ \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user' ]; then export PS1=\"KANDELO_\"\"NGINX_PHP_TERMINAL_OK $ \"; else export PS1=\"KANDELO_\"\"NGINX_PHP_TERMINAL_BAD:$(id -u):$HOME:$(pwd) $ \"; fi",
+    "KANDELO_NGINX_PHP_TERMINAL_OK",
   );
 });
 

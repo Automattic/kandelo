@@ -28,6 +28,8 @@ import { nginxGuide } from "./kandelo-demo-guides";
 const REPO_ROOT = findRepoRoot();
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "nginx.vfs.zst");
 const NGINX_IMAGE_MAX_BYTES = 256 * 1024 * 1024;
+const DEMO_UID = 1000;
+const DEMO_GID = 1000;
 
 // Multi-process nginx config — master + 2 workers, mirroring the
 // standalone CLI demo's nginx.conf. AF_INET listening sockets share a
@@ -116,6 +118,12 @@ async function main() {
   writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_WASM)));
   writeVfsFile(fs, "/etc/nginx/nginx.conf", NGINX_CONF);
   writeVfsFile(fs, "/var/www/html/index.html", INDEX_HTML);
+  fs.chown("/var/www", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html", DEMO_UID, DEMO_GID);
+  fs.chown("/var/www/html/index.html", DEMO_UID, DEMO_GID);
+  fs.chmod("/var/www", 0o755);
+  fs.chmod("/var/www/html", 0o755);
+  fs.chmod("/var/www/html/index.html", 0o644);
 
   // dinit + service tree
   addDinitInit(fs, [
