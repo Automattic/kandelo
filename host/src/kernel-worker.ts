@@ -1470,14 +1470,7 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Release all advisory file locks held by this process.
-    // Force-reset the spinlock first: a terminated worker may have been holding it,
-    // and Atomics.wait is not allowed on the browser main thread.
-    if (this.lockTable) {
-      const lockBuf = this.lockTable.getBuffer();
-      Atomics.store(new Int32Array(lockBuf), 0, 0); // force-release spinlock
-      this.lockTable.removeLocksByPid(pid);
-    }
+    this.releaseAdvisoryLocksForPid(pid);
 
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
@@ -1524,11 +1517,22 @@ export class CentralizedKernelWorker {
     removeProcess(pid);
   }
 
+  private releaseAdvisoryLocksForPid(pid: number): void {
+    if (!this.lockTable) return;
+
+    // Force-reset the spinlock first: a terminated worker may have been
+    // holding it, and Atomics.wait is not allowed on the browser main thread.
+    const lockBuf = this.lockTable.getBuffer();
+    Atomics.store(new Int32Array(lockBuf), 0, 0);
+    this.lockTable.removeLocksByPid(pid);
+  }
+
   deactivateProcess(pid: number): void {
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
+    this.releaseAdvisoryLocksForPid(pid);
     // Cancel any pending alarm timer for this process
     const alarmTimer = this.alarmTimers.get(pid);
     if (alarmTimer) {
