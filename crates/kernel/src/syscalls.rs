@@ -655,6 +655,7 @@ fn handle_dri_ioctl(
     buf: &mut [u8],
 ) -> Result<(), Errno> {
     use wasm_posix_shared::dri::*;
+    use wasm_posix_shared::gl;
     let pid = proc.pid as i32;
     match request {
         DRM_IOCTL_VERSION => {
@@ -900,6 +901,203 @@ fn handle_dri_ioctl(
             req.handle = handle;
             unsafe {
                 core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+            }
+            Ok(())
+        }
+        // --- GLES2 session ioctls --------------------------------------
+        //
+        // libEGL / libGLESv2 drive these. The cmdbuf mmap lives in the
+        // sys_mmap renderD128 block when offset==0; everything below is
+        // pure state-machine + host bridge forwarding.
+        gl::GLIO_INIT => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let client_version = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+            if client_version != gl::OP_VERSION {
+                return Err(Errno::ENOSYS);
+            }
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            if dri.gl.is_some() {
+                return Err(Errno::EBUSY);
+            }
+            dri.gl = Some(crate::ofd::GlState {
+                initialized: true,
+                ..Default::default()
+            });
+            Ok(())
+        }
+        gl::GLIO_TERMINATE => {
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            if dri.gl.is_none() {
+                return Err(Errno::EINVAL);
+            }
+            dri.gl = None;
+            host.gl_unbind(pid);
+            Ok(())
+        }
+        gl::GLIO_CREATE_CONTEXT => {
+            if buf.len() < core::mem::size_of::<gl::GlContextAttrs>() {
+                return Err(Errno::EINVAL);
+            }
+            let attrs_bytes = &buf[..core::mem::size_of::<gl::GlContextAttrs>()];
+            let attrs: gl::GlContextAttrs =
+                unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
+            if attrs.client_version != 2 && attrs.client_version != 3 {
+                return Err(Errno::EINVAL);
+            }
+            let ctx_id;
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                if !gls.initialized {
+                    return Err(Errno::EINVAL);
+                }
+                if gls.context_id.is_some() {
+                    return Err(Errno::EBUSY);
+                }
+                ctx_id = 1u32;
+                gls.context_id = Some(ctx_id);
+            }
+            host.gl_create_context(pid, ctx_id, attrs_bytes);
+            Ok(())
+        }
+        gl::GLIO_DESTROY_CONTEXT => {
+            let ctx_id;
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                ctx_id = gls.context_id.ok_or(Errno::EINVAL)?;
+                gls.context_id = None;
+                gls.current = false;
+            }
+            host.gl_destroy_context(pid, ctx_id);
+            Ok(())
+        }
+        gl::GLIO_CREATE_SURFACE => {
+            if buf.len() < core::mem::size_of::<gl::GlSurfaceAttrs>() {
+                return Err(Errno::EINVAL);
+            }
+            let attrs_bytes = &buf[..core::mem::size_of::<gl::GlSurfaceAttrs>()];
+            let attrs: gl::GlSurfaceAttrs =
+                unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
+            if attrs.kind != gl::WPK_SURFACE_DEFAULT && attrs.kind != gl::WPK_SURFACE_PBUFFER {
+                return Err(Errno::EINVAL);
+            }
+            let surface_id;
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                if !gls.initialized {
+                    return Err(Errno::EINVAL);
+                }
+                if gls.surface_id.is_some() {
+                    return Err(Errno::EBUSY);
+                }
+                surface_id = 1u32;
+                gls.surface_id = Some(surface_id);
+            }
+            host.gl_create_surface(pid, surface_id, attrs_bytes);
+            Ok(())
+        }
+        gl::GLIO_DESTROY_SURFACE => {
+            let surface_id;
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                surface_id = gls.surface_id.ok_or(Errno::EINVAL)?;
+                gls.surface_id = None;
+                gls.current = false;
+            }
+            host.gl_destroy_surface(pid, surface_id);
+            Ok(())
+        }
+        gl::GLIO_MAKE_CURRENT => {
+            let (ctx_id, surface_id);
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                ctx_id = gls.context_id.ok_or(Errno::EINVAL)?;
+                surface_id = gls.surface_id.ok_or(Errno::EINVAL)?;
+                gls.current = true;
+            }
+            host.gl_make_current(pid, ctx_id, surface_id);
+            Ok(())
+        }
+        gl::GLIO_SUBMIT => {
+            if buf.len() < core::mem::size_of::<gl::GlSubmitInfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let info: gl::GlSubmitInfo =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let (offset, length);
+            {
+                let dri = dri_state_mut(proc, ofd_idx)?;
+                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                let cmdbuf = gls.cmdbuf.as_mut().ok_or(Errno::EINVAL)?;
+                let end = (info.offset as usize)
+                    .checked_add(info.length as usize)
+                    .ok_or(Errno::EINVAL)?;
+                if end > cmdbuf.len {
+                    return Err(Errno::EINVAL);
+                }
+                cmdbuf.submit_seq = cmdbuf.submit_seq.wrapping_add(1);
+                offset = info.offset as usize;
+                length = info.length as usize;
+            }
+            host.gl_submit(pid, offset, length);
+            Ok(())
+        }
+        gl::GLIO_PRESENT => {
+            {
+                let dri = dri_state(proc, ofd_idx)?;
+                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            host.gl_present(pid);
+            Ok(())
+        }
+        gl::GLIO_QUERY => {
+            if buf.len() < core::mem::size_of::<gl::GlQueryInfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let info: gl::GlQueryInfo =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if info.out_buf_len > gl::MAX_QUERY_OUT_LEN {
+                return Err(Errno::EINVAL);
+            }
+            {
+                let dri = dri_state(proc, ofd_idx)?;
+                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            // Copy input from process memory through the host bridge,
+            // forward to host.gl_query, then copy the result back. The
+            // kernel never decodes the bytes — `op` is the only thing
+            // the host needs to dispatch.
+            let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
+            if info.in_buf_len > 0 {
+                let rc = host.proc_read_bytes(pid, info.in_buf_ptr, &mut in_buf);
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
+            }
+            let mut out_buf: alloc::vec::Vec<u8> =
+                alloc::vec![0u8; info.out_buf_len as usize];
+            let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf);
+            if written < 0 {
+                return Err(Errno::EIO);
+            }
+            let n = (written as usize).min(out_buf.len());
+            if n > 0 && info.out_buf_ptr != 0 {
+                let rc = host.proc_write_bytes(pid, info.out_buf_ptr, &out_buf[..n]);
+                if rc < 0 {
+                    return Err(Errno::EFAULT);
+                }
             }
             Ok(())
         }
@@ -5835,6 +6033,48 @@ pub fn sys_mmap(
             if offset < 0 {
                 return Err(Errno::EINVAL);
             }
+            // Cmdbuf mmap: libEGL's eglInitialize does
+            // `mmap(NULL, CMDBUF_LEN, ..., MAP_SHARED, fd, 0)` after
+            // GLIO_INIT to acquire the encoder's write region. offset=0
+            // is the only valid GLIO indicator; bo mmaps go through
+            // MAP_DUMB which always encodes bo_id >= 1 into the offset.
+            let needs_cmdbuf = offset == 0
+                && ofd
+                    .dri()
+                    .and_then(|d| d.gl.as_ref())
+                    .map(|g| g.initialized && g.cmdbuf.is_none())
+                    .unwrap_or(false);
+            if needs_cmdbuf {
+                if len != wasm_posix_shared::gl::CMDBUF_LEN {
+                    return Err(Errno::EINVAL);
+                }
+                let alloc_flags = flags | MAP_ANONYMOUS;
+                let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
+                if addr_out == MAP_FAILED {
+                    return Err(Errno::ENOMEM);
+                }
+                // Re-borrow the OFD mutably to record the binding. The
+                // earlier `ofd` borrow goes out of scope at the start
+                // of this block; entry remains valid.
+                {
+                    let entry2 = proc.fd_table.get(fd)?;
+                    let ofd_mut = proc
+                        .ofd_table
+                        .get_mut(entry2.ofd_ref.0)
+                        .ok_or(Errno::EBADF)?;
+                    if let Some(dri_mut) = ofd_mut.dri_mut() {
+                        if let Some(gls) = dri_mut.gl.as_mut() {
+                            gls.cmdbuf = Some(crate::ofd::CmdbufBinding {
+                                addr: addr_out,
+                                len,
+                                submit_seq: 0,
+                            });
+                        }
+                    }
+                }
+                host.gl_bind(proc.pid as i32, addr_out, len);
+                return Ok(addr_out);
+            }
             let bo_id = ((offset as u64) >> 12) as crate::dri::BoId;
             let bo_info = crate::dri::with_registry(|r| {
                 r.get(bo_id).map(|b| (b.tier, b.size))
@@ -5845,14 +6085,18 @@ pub fn sys_mmap(
             if tier != crate::dri::BoTier::CpuShared {
                 return Err(Errno::EINVAL);
             }
-            // libgbm rounds the map length up to a wasm page (64 KiB)
-            // and the kernel mirrors that here so the request matches
-            // whatever `mmap_anonymous` actually allocates.
+            // Accept either the raw bo size (matching what DRM_IOCTL_MODE_
+            // CREATE_DUMB returned and what the libgbm stub + direct
+            // mmap callers pass) or the wasm-page-aligned size some
+            // consumers round to. `mmap_anonymous` rounds to a wasm
+            // page internally, so either request maps the same number
+            // of pages; we just track the binding length the caller
+            // asked for.
             let aligned_bo_size = (bo_size as usize)
                 .checked_add(0xFFFF)
                 .ok_or(Errno::EINVAL)?
                 & !0xFFFF;
-            if len != aligned_bo_size {
+            if len != bo_size as usize && len != aligned_bo_size {
                 return Err(Errno::EINVAL);
             }
             let alloc_flags = flags | MAP_ANONYMOUS;
@@ -21931,5 +22175,194 @@ mod tests {
         assert_eq!(host.gbm_bo_bind_calls.len(), 1);
         assert_eq!(proc.dri_bindings.len(), 1);
         assert_eq!(proc.dri_bindings[0].addr, addr);
+    }
+
+    #[test]
+    fn glio_init_rejects_version_skew() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        // A bumped op-table version from a user binary built against a
+        // newer kernel must be caught at first contact, not later as a
+        // silent decode error.
+        let bad_version: u32 = gl::OP_VERSION + 1;
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&bad_version.to_le_bytes());
+        let err = sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOSYS);
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.is_none());
+    }
+
+    #[test]
+    fn glio_init_accepts_matching_version_and_marks_initialized() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let ver = gl::OP_VERSION;
+        let mut buf = [0u8; 4];
+        buf.copy_from_slice(&ver.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc
+            .ofd_table
+            .get(ofd_idx)
+            .unwrap()
+            .dri()
+            .unwrap()
+            .gl
+            .as_ref()
+            .expect("GlState installed");
+        assert!(gls.initialized);
+        assert!(gls.cmdbuf.is_none());
+        assert!(gls.context_id.is_none());
+        // Second GLIO_INIT on the same fd must be rejected with EBUSY.
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err(),
+            Errno::EBUSY,
+        );
+    }
+
+    #[test]
+    fn glio_create_context_assigns_id_and_rejects_double_create() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        let attrs = gl::GlContextAttrs { client_version: 2, reserved: [0; 3] };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        assert_eq!(gls.context_id, Some(1));
+
+        // Second CREATE_CONTEXT on the same fd must fail until the
+        // first is destroyed.
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap_err(),
+            Errno::EBUSY,
+        );
+
+        // After DESTROY_CONTEXT a fresh CREATE_CONTEXT succeeds.
+        let mut nullbuf = [0u8; 0];
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_CONTEXT, &mut nullbuf).unwrap();
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+    }
+
+    #[test]
+    fn glio_submit_rejects_out_of_range_range() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        // Map the cmdbuf at offset==0 so submit has a binding to
+        // validate against.
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+
+        // offset + length > CMDBUF_LEN must EINVAL.
+        let info = gl::GlSubmitInfo {
+            offset: (gl::CMDBUF_LEN - 4) as u32,
+            length: 16,
+        };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlSubmitInfo>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlSubmitInfo, info) };
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut buf).unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        // A valid sub-range succeeds and bumps the submit counter.
+        let info_ok = gl::GlSubmitInfo { offset: 0, length: 64 };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlSubmitInfo, info_ok) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut buf).unwrap();
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        assert_eq!(gls.cmdbuf.unwrap().submit_seq, 1);
+    }
+
+    #[test]
+    fn glio_cmdbuf_mmap_validates_length_and_records_binding() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = [0u8; 4];
+        ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        // Wrong length is rejected.
+        let err = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+
+        // Correct length succeeds and installs the CmdbufBinding.
+        let addr = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+        assert_ne!(addr, MAP_FAILED);
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = proc.ofd_table.get(ofd_idx).unwrap().dri().unwrap().gl.as_ref().unwrap();
+        let cb = gls.cmdbuf.expect("cmdbuf binding recorded");
+        assert_eq!(cb.addr, addr);
+        assert_eq!(cb.len, gl::CMDBUF_LEN);
+        assert_eq!(cb.submit_seq, 0);
+
+        // A second mmap at offset 0 after the cmdbuf is bound falls
+        // through to the bo path and EINVALs (bo_id=0 doesn't exist).
+        let err2 = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(err2, Errno::EINVAL);
     }
 }

@@ -2974,18 +2974,36 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6]) -> i32 {
         46 => {
             // SYS_MMAP: (addr, len, prot, flags, fd, pgoffset)
             // musl sends page offset (off / 4096) as a6.
-            // Convert to byte offset for kernel_mmap (lo, hi).
+            // Call sys_mmap directly so the errno reaches the channel
+            // dispatcher — going through kernel_mmap would squash every
+            // Errno variant to MAP_FAILED (usize::MAX), and `as i32`
+            // turns that into -1, which the dispatcher interprets as
+            // -EPERM.
             let pgoff = a6 as u32;
-            let byte_off = (pgoff as u64) << 12; // * 4096
-            kernel_mmap(
+            let byte_off = ((pgoff as u64) << 12) as i64;
+            let (_gkl, proc) = unsafe { get_process() };
+            let mut host = WasmHostIO;
+            let result = match syscalls::sys_mmap(
+                proc,
+                &mut host,
                 a1 as usize,
                 a2 as usize,
                 a3 as u32,
                 a4 as u32,
                 a5,
-                byte_off as u32,
-                (byte_off >> 32) as i32,
-            ) as i32
+                byte_off,
+            ) {
+                Ok(addr) => {
+                    if a3 as u32 != 0 {
+                        let end = addr.saturating_add(a2 as usize);
+                        ensure_memory_covers(end);
+                    }
+                    addr as i32
+                }
+                Err(e) => -(e as i32),
+            };
+            deliver_pending_signals(proc, &mut host);
+            result
         }
         47 => kernel_munmap(a1 as usize, a2 as usize), // SYS_MUNMAP
         48 => kernel_brk(a1 as usize) as i32,          // SYS_BRK
