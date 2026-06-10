@@ -782,6 +782,15 @@ export class CentralizedKernelWorker {
    *  the bound framebuffer into. Populated via `attachKmsCanvas`. */
   private kmsCanvases = new Map<number, OffscreenCanvas>();
   private kmsContexts = new Map<number, OffscreenCanvasRenderingContext2D>();
+  /** Which context type each CRTC's canvas has been claimed for. Set
+   *  by `attachKmsCanvas` when the embedder declares the mode up-front
+   *  (`"2d"` for legacy CPU-blit demos, `"webgl2"` for libdrm/libgbm/EGL
+   *  apps like modeset.c). Auto-mode leaves this unset so the pump
+   *  never touches the canvas — `host_gl_create_context` later flips
+   *  it to `"webgl2"` via `markKmsCanvasGlOwned` once the GL session
+   *  claims the canvas. Once set, the value is sticky: an OffscreenCanvas
+   *  can only ever hold one context type for its lifetime. */
+  private kmsContextMode = new Map<number, "2d" | "webgl2">();
   /** KMS stats SAB per CRTC. Slots [0..4] populated by the pump (frame
    *  count, timestamp, width, height, blit µs); slots [5,6] populated
    *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`. */
@@ -803,6 +812,14 @@ export class CentralizedKernelWorker {
       // differently — the kernel returns EAGAIN and JS handles them.
       getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
         return this.processes.get(pid)?.memory;
+      },
+      // KMS scanout canvas lookup for the GL bridge's auto-attach
+      // path. `host_gl_create_context` calls this when a DRM-master
+      // pid has no canvas bound yet; the kernel-worker's KMS registry
+      // is the single source of truth for `crtc_id → OffscreenCanvas`.
+      getKmsCanvas: (crtcId: number) => this.kmsCanvases.get(crtcId),
+      markKmsCanvasGlOwned: (crtcId: number) => {
+        this.kmsContextMode.set(crtcId, "webgl2");
       },
       onStdin: (maxLen: number): Uint8Array | null => {
         const pid = this.currentHandlePid;
@@ -2359,6 +2376,17 @@ export class CentralizedKernelWorker {
             len: origArgs[1] >>> 0,
           });
         }
+      }
+      // DRI bo mmap prime: the kernel's sys_mmap on /dev/dri/{render,card}
+      // already called `host_gbm_bo_bind` to record metadata, but the
+      // actual SAB→Memory copy is deferred until here so the
+      // anonymous-mmap zero-fill is in place first. This is what
+      // delivers the parent's writes to a child across PRIME
+      // export → fork → PRIME import. No-op for non-DRI mmaps.
+      const mmapAddr = retVal >>> 0;
+      const boId = this.kernel.bos.findBindingByAddr(channel.pid, mmapAddr);
+      if (boId !== undefined) {
+        this.kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory);
       }
     }
 
@@ -8284,17 +8312,42 @@ export class CentralizedKernelWorker {
 
   /** Register an `OffscreenCanvas` (and optional stats SAB) as the
    *  scanout target for a CRTC. Starts the vblank pump on first
-   *  attach. */
+   *  attach.
+   *
+   *  `opts.mode` selects how the canvas is painted:
+   *  - `"auto"` (default): the pump never grabs a 2D context. If the
+   *    DRM-master pid later calls `eglCreateContext`, the GL bridge's
+   *    auto-attach path claims the canvas for WebGL2 and the user
+   *    program paints directly. Slots 5/6 (commit count, last µs)
+   *    still tick from kernel-side PAGE_FLIP state.
+   *  - `"2d"`: legacy CPU-blit path. The pump eagerly grabs 2D here
+   *    and copies the kernel's scanout BO into the canvas each frame.
+   *    Used by demos that render into the FB via memcpy rather than GL.
+   *  - `"webgl2"`: marks the canvas as GL-owned up front. Pump never
+   *    blits. Same effect as auto + a later `markKmsCanvasGlOwned`,
+   *    but spares the GL bridge from racing the pump's 2D acquisition. */
   attachKmsCanvas(
     crtc_id: number,
     canvas: OffscreenCanvas,
     statsSab?: SharedArrayBuffer,
+    opts?: { mode?: "auto" | "2d" | "webgl2" },
   ): void {
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
     this.kmsCanvases.set(crtc_id, canvas);
-    this.kmsContexts.set(crtc_id, ctx);
     if (statsSab) this.kmsStatsViews.set(crtc_id, new Int32Array(statsSab));
+    const mode = opts?.mode ?? "auto";
+    if (mode === "2d") {
+      // Eagerly acquire 2D so the first tickVblank can blit without a
+      // round-trip. If acquisition fails (some other path already
+      // claimed the canvas), the pump will skip the blit branch and
+      // slots 0/1/4 stay 0 — better than throwing.
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        this.kmsContexts.set(crtc_id, ctx);
+        this.kmsContextMode.set(crtc_id, "2d");
+      }
+    } else if (mode === "webgl2") {
+      this.kmsContextMode.set(crtc_id, "webgl2");
+    }
     this.startVblankPump();
   }
 
@@ -8319,13 +8372,19 @@ export class CentralizedKernelWorker {
     const vblankFn = this.kernelInstance?.exports.kernel_vblank as
       (() => void) | undefined;
     vblankFn?.();
-    for (const [crtc_id, ctx] of this.kmsContexts) {
+    // 2D-blit path. Runs only for CRTCs the embedder explicitly opted
+    // into `mode: "2d"`. The pump never touches the canvas in "auto"
+    // or "webgl2" mode — touching it with `getContext("2d")` would
+    // claim the canvas for life and break the later WebGL2 attach
+    // (an OffscreenCanvas can only hold one context type ever).
+    for (const [crtc_id, canvas] of this.kmsCanvases) {
+      if (this.kmsContextMode.get(crtc_id) !== "2d") continue;
       const fb = this.kernel.kms.currentFb(crtc_id);
       if (!fb) continue;
       const pixels = this.kernel.kms.scanoutBytes(crtc_id);
       if (!pixels) continue;
-      const canvas = this.kmsCanvases.get(crtc_id);
-      if (!canvas) continue;
+      const ctx = this.kmsContexts.get(crtc_id);
+      if (!ctx) continue;
       if (canvas.width !== fb.width || canvas.height !== fb.height) {
         canvas.width = fb.width;
         canvas.height = fb.height;
@@ -8346,22 +8405,28 @@ export class CentralizedKernelWorker {
       if (stats) {
         Atomics.add(stats, 0, 1);
         Atomics.store(stats, 1, performance.now() | 0);
-        Atomics.store(stats, 2, fb.width);
-        Atomics.store(stats, 3, fb.height);
         Atomics.store(stats, 4, blitUs);
       }
     }
 
-    // Slots 5/6 are populated for every crtc with a stats SAB, even
-    // those attached via `attachKmsStats` (no canvas). They reflect
-    // kernel-side PAGE_FLIP ioctls — independent of the 60 Hz blit
-    // loop above.
+    // Slots 2/3 (scanout width/height) and 5/6 (kernel-side PAGE_FLIP
+    // commit count, last frame µs) are populated for every CRTC with
+    // a stats SAB, regardless of the canvas-owner mode. Slots 2/3
+    // sourced from the kernel's current FB so embedders (e.g. the
+    // Modeset React pane) can detect "scanout active" without
+    // depending on the 2D-blit path. Slots 5/6 reflect kernel-side
+    // ioctls — independent of the 60 Hz blit loop above.
     if (this.kmsStatsViews.size > 0) {
       const exports = this.kernelInstance?.exports as
         | { kernel_kms_commit_count?: (id: number) => bigint;
             kernel_kms_last_frame_us?: (id: number) => bigint }
         | undefined;
       for (const [crtc_id, stats] of this.kmsStatsViews) {
+        const fb = this.kernel.kms.currentFb(crtc_id);
+        if (fb) {
+          Atomics.store(stats, 2, fb.width);
+          Atomics.store(stats, 3, fb.height);
+        }
         if (stats.length < 7) continue;
         const commits = exports?.kernel_kms_commit_count?.(crtc_id) ?? 0n;
         const lastUs = exports?.kernel_kms_last_frame_us?.(crtc_id) ?? 0n;

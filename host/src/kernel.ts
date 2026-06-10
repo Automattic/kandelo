@@ -130,6 +130,21 @@ export interface KernelCallbacks {
    * process is gone" and turns the GL call into a silent no-op.
    */
   getProcessMemory?: (pid: number) => WebAssembly.Memory | undefined;
+  /**
+   * Resolve the KMS scanout canvas for `crtcId`, if one is registered.
+   * Used by `host_gl_create_context` to auto-attach the canvas to the
+   * DRM-master pid's GL binding so user programs that drive the modeset
+   * stack (drmModeSetCrtc + eglCreateContext) don't have to call
+   * `gl.attachCanvas` separately. Returning `undefined` keeps the
+   * legacy "embedder must call attachCanvas manually" path alive.
+   */
+  getKmsCanvas?: (crtcId: number) => OffscreenCanvas | HTMLCanvasElement | undefined;
+  /**
+   * Notify the embedder that GL has claimed the canvas for `crtcId`.
+   * The KMS vblank pump uses this to skip the CPU `putImageData` blit
+   * for canvases now painted directly by WebGL2. Idempotent.
+   */
+  markKmsCanvasGlOwned?: (crtcId: number) => void;
 }
 
 export class WasmPosixKernel {
@@ -203,6 +218,13 @@ export class WasmPosixKernel {
     this.config = config;
     this.io = io;
     this.callbacks = callbacks ?? {};
+    // Let the GBM bo registry reach per-pid wasm Memory so the
+    // bind/unbind sync (parent writes → SAB → child reads after PRIME
+    // export+import) actually moves bytes. The closure follows
+    // `mergeCallbacks` because it reads `this.callbacks` at call time.
+    this.bos.setProcessMemoryResolver((pid) =>
+      this.callbacks.getProcessMemory?.(pid),
+    );
   }
 
   getKernelPtrWidth(): 4 | 8 {
@@ -730,7 +752,37 @@ export class WasmPosixKernel {
             b.forward.onCreateContext();
             return;
           }
-          if (!b.canvas) return;
+          if (!b.canvas) {
+            // Auto-attach the KMS scanout canvas if this pid holds DRM
+            // master on a CRTC the embedder has registered with
+            // `kmsAttachCanvas`. Without this, a libdrm/libgbm/EGL
+            // program (e.g. modeset.c) that drove drmModeSetCrtc and
+            // is about to call eglCreateContext would silently no-op
+            // every shader compile/link/draw because `b.canvas` stays
+            // null and `b.gl` is never built.
+            const crtc = this.kms.masterCrtcForPid(pid);
+            if (crtc != null) {
+              const canvas = this.callbacks.getKmsCanvas?.(crtc);
+              if (canvas) {
+                // Resize the OffscreenCanvas's drawing buffer to match
+                // the kernel-side FB before WebGL2 binds, so glViewport
+                // and gl_FragCoord operate on the full surface rather
+                // than the default 300×150 corner. Modeset programs set
+                // their viewport from CANVAS_W/H (the FB they registered
+                // via drmModeAddFB2) and would otherwise render into a
+                // tiny clipped region of a default-sized canvas.
+                const fb = this.kms.currentFb(crtc);
+                if (fb && (canvas.width !== fb.width || canvas.height !== fb.height)) {
+                  canvas.width = fb.width;
+                  canvas.height = fb.height;
+                }
+                this.gl.attachCanvas(pid, canvas);
+                b.canvas = canvas;
+                this.callbacks.markKmsCanvasGlOwned?.(crtc);
+              }
+            }
+            if (!b.canvas) return;
+          }
           const ctx = b.canvas.getContext("webgl2", {
             antialias: false,
             premultipliedAlpha: false,

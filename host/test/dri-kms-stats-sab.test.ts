@@ -39,7 +39,9 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
 
     const statsSab = new SharedArrayBuffer(20);
     const view = new Int32Array(statsSab);
-    kernel.attachKmsCanvas(1, makeFakeCanvas(), statsSab);
+    // mode: "2d" opts into the legacy CPU-blit path — the default
+    // "auto" mode skips the blit branch and slots 0/1/4 stay 0.
+    kernel.attachKmsCanvas(1, makeFakeCanvas(), statsSab, { mode: "2d" });
 
     (kernel as unknown as { tickVblank: () => void }).tickVblank();
     expect(Atomics.load(view, 0)).toBe(1);

@@ -29,6 +29,19 @@ export class KmsRegistry {
   dropMaster(): void { this.masterPid = null; }
   isMasterPid(pid: number): boolean { return this.masterPid === pid; }
 
+  /** First CRTC with an FB bound for which `pid` holds DRM master.
+   *  Null if `pid` is not master or no CRTC has an FB yet. The kernel
+   *  currently advertises a single CRTC, so the iteration order doesn't
+   *  matter; once multi-head lands the caller can iterate `crtcBindings`
+   *  directly. */
+  masterCrtcForPid(pid: number): number | null {
+    if (this.masterPid !== pid) return null;
+    for (const crtc_id of this.crtcBindings.keys()) {
+      return crtc_id;
+    }
+    return null;
+  }
+
   scanoutBytes(crtc_id: number): Uint8Array | undefined {
     const fb = this.currentFb(crtc_id);
     if (!fb) return undefined;
