@@ -9,6 +9,7 @@ on:
       - 'host/package.json'
       - 'host/package-lock.json'
       - 'host/tsconfig.json'
+      - 'host/tsconfig.docs.json'
       - 'host/tsup.config.ts'
 
 jobs:
@@ -27,9 +28,9 @@ jobs:
         working-directory: host
         run: npm ci
 
-      - name: Typecheck host package
+      - name: Typecheck API docs
         working-directory: host
-        run: npm run typecheck
+        run: npx tsc --noEmit -p tsconfig.docs.json
 
       - name: Build API docs
         working-directory: host
