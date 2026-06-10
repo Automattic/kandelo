@@ -2,13 +2,15 @@ script_path = "packages/registry/php/build-php.sh"
 inputs = [
   "packages/registry/php/build-php.sh",
   "packages/registry/php/intl-icu-data-loader.c",
+  "packages/registry/php/patches/iterative-chain-compile.patch",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 # Batch 3 extension landings advance this recipe once per byte-changing layer:
 # zip (11), curl (12), intl/ICU (13), truthful unshare detection (14), then
-# pdo_sqlite column metadata against sqlite revision 2 (15).
-revision    = 15
+# pdo_sqlite column metadata against sqlite revision 2 (15), then iterative
+# compilation of deep expression chains in zend_compile.c (16).
+revision    = 16
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

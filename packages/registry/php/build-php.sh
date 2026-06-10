@@ -211,6 +211,15 @@ p.write_bytes(b)
 PY
 fi
 
+# Rewrite zend_compile_short_circuiting and zend_compile_binary_op to
+# walk left-leaning same-kind chains iteratively. The recursive form
+# overflows wasm engines' tight per-frame stack budget on long chains.
+# Idempotency: the rewrite introduces the helper zend_compile_binary_op_emit,
+# which is absent from upstream php-src.
+if ! grep -q 'zend_compile_binary_op_emit' Zend/zend_compile.c; then
+    patch -p1 < "$SCRIPT_DIR/patches/iterative-chain-compile.patch"
+fi
+
 # Disable inline assembly in Zend (safety net — Wasm doesn't match arch guards anyway)
 if ! grep -q 'ZEND_USE_ASM_ARITHMETIC 0' Zend/zend_multiply.h 2>/dev/null; then
     if [ -f Zend/zend_multiply.h ]; then

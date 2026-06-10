@@ -1,0 +1,418 @@
+--- a/Zend/zend_compile.c
++++ b/Zend/zend_compile.c
+@@ -8954,94 +8954,126 @@
+ }
+ /* }}} */
+ 
+-static void zend_compile_binary_op(znode *result, zend_ast *ast) /* {{{ */
++/* Per-rung emit for zend_compile_binary_op, extracted so the iterative
++ * driver can reuse it without re-entering zend_compile_expr. */
++static void zend_compile_binary_op_emit(znode *result, uint32_t opcode,
++		znode *left_node, znode *right_node)
+ {
+-	zend_ast *left_ast = ast->child[0];
+-	zend_ast *right_ast = ast->child[1];
+-	uint32_t opcode = ast->attr;
+-
+-	znode left_node, right_node;
+-
+-	zend_compile_expr(&left_node, left_ast);
+-	zend_compile_expr(&right_node, right_ast);
+-
+-	if (left_node.op_type == IS_CONST && right_node.op_type == IS_CONST) {
++	if (left_node->op_type == IS_CONST && right_node->op_type == IS_CONST) {
+ 		if (zend_try_ct_eval_binary_op(&result->u.constant, opcode,
+-				&left_node.u.constant, &right_node.u.constant)
++				&left_node->u.constant, &right_node->u.constant)
+ 		) {
+ 			result->op_type = IS_CONST;
+-			zval_ptr_dtor(&left_node.u.constant);
+-			zval_ptr_dtor(&right_node.u.constant);
++			zval_ptr_dtor(&left_node->u.constant);
++			zval_ptr_dtor(&right_node->u.constant);
+ 			return;
+ 		}
+ 	}
+ 
+-	do {
+-		if (opcode == ZEND_IS_EQUAL || opcode == ZEND_IS_NOT_EQUAL) {
+-			if (left_node.op_type == IS_CONST) {
+-				if (Z_TYPE(left_node.u.constant) == IS_FALSE) {
+-					opcode = (opcode == ZEND_IS_NOT_EQUAL) ? ZEND_BOOL : ZEND_BOOL_NOT;
+-					zend_emit_op_tmp(result, opcode, &right_node, NULL);
+-					break;
+-				} else if (Z_TYPE(left_node.u.constant) == IS_TRUE) {
+-					opcode = (opcode == ZEND_IS_EQUAL) ? ZEND_BOOL : ZEND_BOOL_NOT;
+-					zend_emit_op_tmp(result, opcode, &right_node, NULL);
+-					break;
+-				}
+-			} else if (right_node.op_type == IS_CONST) {
+-				if (Z_TYPE(right_node.u.constant) == IS_FALSE) {
+-					opcode = (opcode == ZEND_IS_NOT_EQUAL) ? ZEND_BOOL : ZEND_BOOL_NOT;
+-					zend_emit_op_tmp(result, opcode, &left_node, NULL);
+-					break;
+-				} else if (Z_TYPE(right_node.u.constant) == IS_TRUE) {
+-					opcode = (opcode == ZEND_IS_EQUAL) ? ZEND_BOOL : ZEND_BOOL_NOT;
+-					zend_emit_op_tmp(result, opcode, &left_node, NULL);
+-					break;
+-				}
++	if (opcode == ZEND_IS_EQUAL || opcode == ZEND_IS_NOT_EQUAL) {
++		if (left_node->op_type == IS_CONST) {
++			if (Z_TYPE(left_node->u.constant) == IS_FALSE) {
++				opcode = (opcode == ZEND_IS_NOT_EQUAL) ? ZEND_BOOL : ZEND_BOOL_NOT;
++				zend_emit_op_tmp(result, opcode, right_node, NULL);
++				return;
++			} else if (Z_TYPE(left_node->u.constant) == IS_TRUE) {
++				opcode = (opcode == ZEND_IS_EQUAL) ? ZEND_BOOL : ZEND_BOOL_NOT;
++				zend_emit_op_tmp(result, opcode, right_node, NULL);
++				return;
+ 			}
+-		} else if (opcode == ZEND_IS_IDENTICAL || opcode == ZEND_IS_NOT_IDENTICAL) {
+-			/* convert $x === null to is_null($x) (i.e. ZEND_TYPE_CHECK opcode). Do the same thing for false/true. (covers IS_NULL, IS_FALSE, and IS_TRUE) */
+-			if (left_node.op_type == IS_CONST) {
+-				if (Z_TYPE(left_node.u.constant) <= IS_TRUE && Z_TYPE(left_node.u.constant) >= IS_NULL) {
+-					zend_op *opline = zend_emit_op_tmp(result, ZEND_TYPE_CHECK, &right_node, NULL);
+-					opline->extended_value =
+-						(opcode == ZEND_IS_IDENTICAL) ?
+-							(1 << Z_TYPE(left_node.u.constant)) :
+-							(MAY_BE_ANY - (1 << Z_TYPE(left_node.u.constant)));
+-					return;
+-				}
+-			} else if (right_node.op_type == IS_CONST) {
+-				if (Z_TYPE(right_node.u.constant) <= IS_TRUE && Z_TYPE(right_node.u.constant) >= IS_NULL) {
+-					zend_op *opline = zend_emit_op_tmp(result, ZEND_TYPE_CHECK, &left_node, NULL);
+-					opline->extended_value =
+-						(opcode == ZEND_IS_IDENTICAL) ?
+-							(1 << Z_TYPE(right_node.u.constant)) :
+-							(MAY_BE_ANY - (1 << Z_TYPE(right_node.u.constant)));
+-					return;
+-				}
++		} else if (right_node->op_type == IS_CONST) {
++			if (Z_TYPE(right_node->u.constant) == IS_FALSE) {
++				opcode = (opcode == ZEND_IS_NOT_EQUAL) ? ZEND_BOOL : ZEND_BOOL_NOT;
++				zend_emit_op_tmp(result, opcode, left_node, NULL);
++				return;
++			} else if (Z_TYPE(right_node->u.constant) == IS_TRUE) {
++				opcode = (opcode == ZEND_IS_EQUAL) ? ZEND_BOOL : ZEND_BOOL_NOT;
++				zend_emit_op_tmp(result, opcode, left_node, NULL);
++				return;
+ 			}
+-		} else if (opcode == ZEND_CONCAT) {
+-			/* convert constant operands to strings at compile-time */
+-			if (left_node.op_type == IS_CONST) {
+-				if (Z_TYPE(left_node.u.constant) == IS_ARRAY) {
+-					zend_emit_op_tmp(&left_node, ZEND_CAST, &left_node, NULL)->extended_value = IS_STRING;
+-				} else {
+-					convert_to_string(&left_node.u.constant);
+-				}
++		}
++	} else if (opcode == ZEND_IS_IDENTICAL || opcode == ZEND_IS_NOT_IDENTICAL) {
++		/* convert $x === null to is_null($x) (i.e. ZEND_TYPE_CHECK opcode). Do the same thing for false/true. (covers IS_NULL, IS_FALSE, and IS_TRUE) */
++		if (left_node->op_type == IS_CONST) {
++			if (Z_TYPE(left_node->u.constant) <= IS_TRUE && Z_TYPE(left_node->u.constant) >= IS_NULL) {
++				zend_op *opline = zend_emit_op_tmp(result, ZEND_TYPE_CHECK, right_node, NULL);
++				opline->extended_value =
++					(opcode == ZEND_IS_IDENTICAL) ?
++						(1 << Z_TYPE(left_node->u.constant)) :
++						(MAY_BE_ANY - (1 << Z_TYPE(left_node->u.constant)));
++				return;
+ 			}
+-			if (right_node.op_type == IS_CONST) {
+-				if (Z_TYPE(right_node.u.constant) == IS_ARRAY) {
+-					zend_emit_op_tmp(&right_node, ZEND_CAST, &right_node, NULL)->extended_value = IS_STRING;
+-				} else {
+-					convert_to_string(&right_node.u.constant);
+-				}
++		} else if (right_node->op_type == IS_CONST) {
++			if (Z_TYPE(right_node->u.constant) <= IS_TRUE && Z_TYPE(right_node->u.constant) >= IS_NULL) {
++				zend_op *opline = zend_emit_op_tmp(result, ZEND_TYPE_CHECK, left_node, NULL);
++				opline->extended_value =
++					(opcode == ZEND_IS_IDENTICAL) ?
++						(1 << Z_TYPE(right_node->u.constant)) :
++						(MAY_BE_ANY - (1 << Z_TYPE(right_node->u.constant)));
++				return;
+ 			}
+-			if (left_node.op_type == IS_CONST && right_node.op_type == IS_CONST) {
+-				opcode = ZEND_FAST_CONCAT;
++		}
++	} else if (opcode == ZEND_CONCAT) {
++		/* convert constant operands to strings at compile-time */
++		if (left_node->op_type == IS_CONST) {
++			if (Z_TYPE(left_node->u.constant) == IS_ARRAY) {
++				zend_emit_op_tmp(left_node, ZEND_CAST, left_node, NULL)->extended_value = IS_STRING;
++			} else {
++				convert_to_string(&left_node->u.constant);
+ 			}
+ 		}
+-		zend_emit_op_tmp(result, opcode, &left_node, &right_node);
+-	} while (0);
++		if (right_node->op_type == IS_CONST) {
++			if (Z_TYPE(right_node->u.constant) == IS_ARRAY) {
++				zend_emit_op_tmp(right_node, ZEND_CAST, right_node, NULL)->extended_value = IS_STRING;
++			} else {
++				convert_to_string(&right_node->u.constant);
++			}
++		}
++		if (left_node->op_type == IS_CONST && right_node->op_type == IS_CONST) {
++			opcode = ZEND_FAST_CONCAT;
++		}
++	}
++	zend_emit_op_tmp(result, opcode, left_node, right_node);
++}
++
++/* Flatten a left-leaning chain of same-opcode binary_op expressions
++ * and emit it iteratively. The recursive form re-enters this function
++ * once per chain element via zend_compile_expr on the left subtree;
++ * on hosts with a tight per-frame C-stack budget (notably WebAssembly
++ * engines) a long chain overflows before reaching the leftmost leaf. */
++static void zend_compile_binary_op(znode *result, zend_ast *ast) /* {{{ */
++{
++	ZEND_ASSERT(ast->kind == ZEND_AST_BINARY_OP);
++	uint32_t opcode = ast->attr;
++
++	zend_ast **chain_right = NULL;
++	uint32_t chain_n = 0, chain_cap = 0;
++	zend_ast *cur = ast;
++	while (cur->kind == ZEND_AST_BINARY_OP && cur->attr == opcode) {
++		if (chain_n == chain_cap) {
++			chain_cap = chain_cap ? chain_cap * 2 : 8;
++			chain_right = erealloc(chain_right, chain_cap * sizeof(zend_ast *));
++		}
++		chain_right[chain_n++] = cur->child[1];
++		cur = cur->child[0];
++	}
++
++	znode left_node;
++	zend_compile_expr(&left_node, cur);
++
++	uint32_t link_idx = chain_n;
++	while (link_idx > 0) {
++		link_idx--;
++		znode right_node;
++		zend_compile_expr(&right_node, chain_right[link_idx]);
++
++		znode out_node;
++		zend_compile_binary_op_emit(&out_node, opcode, &left_node, &right_node);
++		left_node = out_node;
++	}
++
++	*result = left_node;
++	efree(chain_right);
+ }
+ /* }}} */
+ 
+@@ -9114,58 +9146,84 @@
+ }
+ /* }}} */
+ 
++/* Flatten a left-leaning chain of same-kind && or || expressions and
++ * emit it iteratively. The recursive form re-enters this function once
++ * per chain element via zend_compile_expr on the left subtree; on hosts
++ * with a tight per-frame C-stack budget (notably WebAssembly engines)
++ * a long chain overflows before reaching the leftmost leaf. */
+ static void zend_compile_short_circuiting(znode *result, zend_ast *ast) /* {{{ */
+ {
+-	zend_ast *left_ast = ast->child[0];
+-	zend_ast *right_ast = ast->child[1];
+-
+-	znode left_node, right_node;
+-	zend_op *opline_jmpz, *opline_bool;
+-	uint32_t opnum_jmpz;
+-
+ 	ZEND_ASSERT(ast->kind == ZEND_AST_AND || ast->kind == ZEND_AST_OR);
++	uint32_t kind = ast->kind;
+ 
+-	zend_compile_expr(&left_node, left_ast);
+-
+-	if (left_node.op_type == IS_CONST) {
+-		if ((ast->kind == ZEND_AST_AND && !zend_is_true(&left_node.u.constant))
+-		 || (ast->kind == ZEND_AST_OR && zend_is_true(&left_node.u.constant))) {
+-			result->op_type = IS_CONST;
+-			ZVAL_BOOL(&result->u.constant, zend_is_true(&left_node.u.constant));
+-		} else {
+-			zend_compile_expr(&right_node, right_ast);
+-
+-			if (right_node.op_type == IS_CONST) {
+-				result->op_type = IS_CONST;
+-				ZVAL_BOOL(&result->u.constant, zend_is_true(&right_node.u.constant));
+-
+-				zval_ptr_dtor(&right_node.u.constant);
+-			} else {
+-				zend_emit_op_tmp(result, ZEND_BOOL, &right_node, NULL);
+-			}
++	zend_ast **chain_right = NULL;
++	uint32_t chain_n = 0, chain_cap = 0;
++	zend_ast *cur = ast;
++	while (cur->kind == kind) {
++		if (chain_n == chain_cap) {
++			chain_cap = chain_cap ? chain_cap * 2 : 8;
++			chain_right = erealloc(chain_right, chain_cap * sizeof(zend_ast *));
+ 		}
++		chain_right[chain_n++] = cur->child[1];
++		cur = cur->child[0];
++	}
+ 
++	znode left_node;
++	zend_compile_expr(&left_node, cur);
++
++	/* Const-fold the all-const prefix. A const operand that short-
++	 * circuits (OR + truthy, AND + falsy) collapses the rest of the
++	 * chain to its boolean. */
++	uint32_t link_idx = chain_n;
++	while (left_node.op_type == IS_CONST && link_idx > 0) {
++		bool truthy = zend_is_true(&left_node.u.constant);
+ 		zval_ptr_dtor(&left_node.u.constant);
+-		return;
++		if ((kind == ZEND_AST_OR) ? truthy : !truthy) {
++			result->op_type = IS_CONST;
++			ZVAL_BOOL(&result->u.constant, kind == ZEND_AST_OR);
++			goto done;
++		}
++		link_idx--;
++		zend_compile_expr(&left_node, chain_right[link_idx]);
+ 	}
+ 
+-	opnum_jmpz = get_next_op_number();
+-	opline_jmpz = zend_emit_op(NULL, ast->kind == ZEND_AST_AND ? ZEND_JMPZ_EX : ZEND_JMPNZ_EX,
+-		&left_node, NULL);
++	if (link_idx == 0) {
++		if (left_node.op_type == IS_CONST) {
++			result->op_type = IS_CONST;
++			ZVAL_BOOL(&result->u.constant, zend_is_true(&left_node.u.constant));
++			zval_ptr_dtor(&left_node.u.constant);
++		} else {
++			zend_emit_op_tmp(result, ZEND_BOOL, &left_node, NULL);
++		}
++		goto done;
++	}
+ 
+-	if (left_node.op_type == IS_TMP_VAR) {
+-		SET_NODE(opline_jmpz->result, &left_node);
+-		GET_NODE(result, opline_jmpz->result);
+-	} else {
+-		zend_make_tmp_result(result, opline_jmpz);
+-	}
++	while (link_idx > 0) {
++		uint32_t opnum_jmpz = get_next_op_number();
++		zend_op *opline_jmpz = zend_emit_op(NULL,
++			kind == ZEND_AST_AND ? ZEND_JMPZ_EX : ZEND_JMPNZ_EX,
++			&left_node, NULL);
+ 
+-	zend_compile_expr(&right_node, right_ast);
+-
+-	opline_bool = zend_emit_op(NULL, ZEND_BOOL, &right_node, NULL);
+-	SET_NODE(opline_bool->result, result);
++		if (left_node.op_type == IS_TMP_VAR) {
++			SET_NODE(opline_jmpz->result, &left_node);
++			GET_NODE(result, opline_jmpz->result);
++		} else {
++			zend_make_tmp_result(result, opline_jmpz);
++		}
+ 
+-	zend_update_jump_target_to_next(opnum_jmpz);
++		link_idx--;
++		znode right_node;
++		zend_compile_expr(&right_node, chain_right[link_idx]);
++
++		zend_op *opline_bool = zend_emit_op(NULL, ZEND_BOOL, &right_node, NULL);
++		SET_NODE(opline_bool->result, result);
++		zend_update_jump_target_to_next(opnum_jmpz);
++
++		left_node = *result;
++	}
++
++done:
++	efree(chain_right);
+ }
+ /* }}} */
+ 
+--- a/Zend/tests/stack_limit/stack_limit_014.phpt
++++ b/Zend/tests/stack_limit/stack_limit_014.phpt
+@@ -0,0 +1,20 @@
++--TEST--
++Stack limit 014 - Deep || chain compiles iteratively without overflowing
++--SKIPIF--
++<?php
++if (!function_exists('zend_test_zend_call_stack_get')) die("skip zend_test_zend_call_stack_get() is not available");
++?>
++--EXTENSIONS--
++zend_test
++--INI--
++zend.max_allowed_stack_size=64K
++--FILE--
++<?php
++$a = $b = $c = false;
++$d = true;
++$src = '$result = $a' . str_repeat(' || $b || $c', 500) . ' || $d;';
++eval($src);
++var_dump($result);
++?>
++--EXPECT--
++bool(true)
+--- a/Zend/tests/stack_limit/stack_limit_015.phpt
++++ b/Zend/tests/stack_limit/stack_limit_015.phpt
+@@ -0,0 +1,20 @@
++--TEST--
++Stack limit 015 - Deep && chain compiles iteratively without overflowing
++--SKIPIF--
++<?php
++if (!function_exists('zend_test_zend_call_stack_get')) die("skip zend_test_zend_call_stack_get() is not available");
++?>
++--EXTENSIONS--
++zend_test
++--INI--
++zend.max_allowed_stack_size=64K
++--FILE--
++<?php
++$a = $b = $c = true;
++$d = false;
++$src = '$result = $a' . str_repeat(' && $b && $c', 500) . ' && $d;';
++eval($src);
++var_dump($result);
++?>
++--EXPECT--
++bool(false)
+--- a/Zend/tests/stack_limit/stack_limit_016.phpt
++++ b/Zend/tests/stack_limit/stack_limit_016.phpt
+@@ -0,0 +1,19 @@
++--TEST--
++Stack limit 016 - Deep arithmetic binary_op chain compiles iteratively
++--SKIPIF--
++<?php
++if (!function_exists('zend_test_zend_call_stack_get')) die("skip zend_test_zend_call_stack_get() is not available");
++?>
++--EXTENSIONS--
++zend_test
++--INI--
++zend.max_allowed_stack_size=64K
++--FILE--
++<?php
++$a = 1;
++$src = '$result = $a' . str_repeat(' + $a', 1500) . ';';
++eval($src);
++var_dump($result);
++?>
++--EXPECT--
++int(1501)
+--- a/Zend/tests/stack_limit/stack_limit_017.phpt
++++ b/Zend/tests/stack_limit/stack_limit_017.phpt
+@@ -0,0 +1,19 @@
++--TEST--
++Stack limit 017 - Deep concat binary_op chain compiles iteratively
++--SKIPIF--
++<?php
++if (!function_exists('zend_test_zend_call_stack_get')) die("skip zend_test_zend_call_stack_get() is not available");
++?>
++--EXTENSIONS--
++zend_test
++--INI--
++zend.max_allowed_stack_size=64K
++--FILE--
++<?php
++$a = 'x';
++$src = '$result = $a' . str_repeat(" . 'y' . \$a", 500) . ';';
++eval($src);
++var_dump(strlen($result));
++?>
++--EXPECT--
++int(1001)
