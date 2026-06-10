@@ -1153,7 +1153,7 @@
 
 .ksys-line {
   display: grid;
-  grid-template-columns: 88px 56px 92px 1fr;
+  grid-template-columns: 88px 56px 1fr;
   gap: 10px;
   padding: 1px 12px;
   align-items: baseline;
@@ -1176,7 +1176,6 @@
 .ksys-lvl-err  { color: var(--k-err);  background: color-mix(in oklch, var(--k-err) 14%, transparent); }
 .ksys-lvl-ok   { color: var(--k-ok);   background: color-mix(in oklch, var(--k-ok) 12%, transparent); }
 .ksys-lvl-debug { color: var(--k-text-faint); background: color-mix(in oklch, var(--k-text) 6%, transparent); }
-.ksys-fac { color: var(--k-text-muted); }
 .ksys-msg { color: var(--k-text); white-space: pre-wrap; word-break: break-word; }
 
 /* ── Inspector tables ───────────────────────────────────────────────────── */

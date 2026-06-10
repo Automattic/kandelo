@@ -862,6 +862,12 @@ export class BrowserKernel {
     }
   }
 
+  /** Remove any registered or buffered PTY output for a process. */
+  clearPtyOutput(pid: number): void {
+    this.ptyOutputCallbacks.delete(pid);
+    this.pendingPtyOutput.delete(pid);
+  }
+
   /** Terminate a specific process. */
   async terminateProcess(pid: number, status = -1): Promise<void> {
     const requestId = this.nextRequestId++;
