@@ -85,19 +85,11 @@
 #define SUN_H   196
 
 /* Pavel's config{} defaults (same names, prefixed). */
-/* DT is sourced from a per-frame wall-clock delta now (see main loop +
- * g_dt) — Pavel does the same: `dt = (now - lastUpdateTime) / 1000`
- * capped to a max. Hardcoding 1/60 broke the sim because the
- * kernel-side vblank pump doesn't actually throttle modeset's render
- * loop to monitor refresh (Q4); the loop spins at ~2 kHz, so 1/60
- * meant ~30 sim steps per real frame, dissipating dye and velocity.
- * Following Pavel's behavior we only clamp the MAX (so a stalled
- * frame doesn't blow up the sim with a single giant integration
- * step). No low clamp: at 2 kHz the natural dt of ~0.0005s flowing
- * into the sim makes physics-time track wall-clock 1:1. */
-#define DT_FALLBACK          (1.0f / 60.0f)
+/* g_dt is the wall-clock delta from the previous frame (see main loop).
+ * Only the max is clamped (matching Pavel) so a stalled frame can't
+ * blow up integration. */
 #define DT_MAX               (1.0f / 15.0f)
-static float g_dt = DT_FALLBACK;
+static float g_dt = 1.0f / 60.0f;
 #define VEL_DISSIPATION      0.2f
 #define DEN_DISSIPATION      2.0f
 #define PRESSURE_RETENTION   0.8f
@@ -911,7 +903,7 @@ static void pass_advect_dye(void) {
     swap_rt(&dye);
 }
 
-static void splat_velocity(float u, float v, float dx, float dy, float aspect, float radius_sq) {
+static void splat_velocity(float u, float v, float dx, float dy, float aspect, float radius) {
     glUseProgram(splat_prog.id);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, velocity.read.tex);
@@ -919,13 +911,13 @@ static void splat_velocity(float u, float v, float dx, float dy, float aspect, f
     glUniform1f(splat_prog.aspectRatio, aspect);
     glUniform2f(splat_prog.point, u, v);
     glUniform3f(splat_prog.color, dx, dy, 0.0f);
-    glUniform1f(splat_prog.radius, radius_sq);
+    glUniform1f(splat_prog.radius, radius);
     bind_target(velocity.write);
     blit_quad();
     swap_rt(&velocity);
 }
 
-static void splat_dye(float u, float v, float r, float g, float b, float aspect, float radius_sq) {
+static void splat_dye(float u, float v, float r, float g, float b, float aspect, float radius) {
     glUseProgram(splat_prog.id);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, dye.read.tex);
@@ -933,7 +925,7 @@ static void splat_dye(float u, float v, float r, float g, float b, float aspect,
     glUniform1f(splat_prog.aspectRatio, aspect);
     glUniform2f(splat_prog.point, u, v);
     glUniform3f(splat_prog.color, r, g, b);
-    glUniform1f(splat_prog.radius, radius_sq);
+    glUniform1f(splat_prog.radius, radius);
     bind_target(dye.write);
     blit_quad();
     swap_rt(&dye);
@@ -1276,7 +1268,7 @@ int main(int argc, char **argv) {
 
     float aspect = (float)CANVAS_W / (float)CANVAS_H;
     /* Pavel's correctRadius: multiply by aspect when > 1. */
-    float splat_radius_sq = SPLAT_RADIUS_BASE * (aspect > 1.0f ? aspect : 1.0f);
+    float splat_radius = SPLAT_RADIUS_BASE * (aspect > 1.0f ? aspect : 1.0f);
 
     int cursor_x = CANVAS_W / 2;
     int cursor_y = CANVAS_H / 2;
@@ -1285,21 +1277,13 @@ int main(int argc, char **argv) {
     int color_timer = 0;
     uint8_t buttons = 0;
 
-    /* Per-frame dt: Pavel's approach. Clock-drive the sim from the
-     * wall-clock delta instead of a hardcoded 1/60. Cap the max so a
-     * stalled frame doesn't blow up the sim with one giant integration
-     * step. The program-level throttle below caps the loop at ~60 Hz
-     * (kernel-side vblank gating is Q4 — not throttling today), so
-     * dt naturally lands near 1/60 s after warm-up. */
+    /* The kernel-side vblank pump currently retires PAGE_FLIP events
+     * immediately (Q4), so kms_pageflip_wait() returns at ~2 kHz instead
+     * of monitor refresh. We throttle the loop ourselves at 60 Hz and
+     * drive the sim from a wall-clock dt. */
     struct timespec t_prev;
     clock_gettime(CLOCK_MONOTONIC, &t_prev);
-
-    /* Program-level 60 Hz throttle. kms_pageflip_wait() is supposed to
-     * block on the kernel-side vblank pump, but the pump currently
-     * delivers PAGE_FLIP_EVENTs at ~2 kHz (Q4). Without this throttle
-     * the loop spins, integrating sim + bloom + sunrays + display
-     * ~33× per real frame and pinning the GPU. */
-    const long FRAME_NS = 16666667L; /* 1/60 s */
+    const long FRAME_NS = 16666667L;
     struct timespec t_next = t_prev;
 
     for (uint64_t frame = 0; ; frame++) {
@@ -1333,8 +1317,8 @@ int main(int argc, char **argv) {
             float vy = dy_norm * SPLAT_FORCE;
             /* Browser dy positive-down; sim y positive-up — flip
              * once at the splat boundary. */
-            splat_velocity(u, v, vx, -vy, aspect, splat_radius_sq);
-            splat_dye(u, v, cur_r, cur_g, cur_b, aspect, splat_radius_sq);
+            splat_velocity(u, v, vx, -vy, aspect, splat_radius);
+            splat_dye(u, v, cur_r, cur_g, cur_b, aspect, splat_radius);
         }
         prev_cursor_x = cursor_x;
         prev_cursor_y = cursor_y;
@@ -1363,10 +1347,9 @@ int main(int argc, char **argv) {
         if (!eglSwapBuffers(dpy, surf)) return 7;
         if (kms_pageflip_wait() != 0) return 9;
 
-        /* Throttle to 60 Hz. Advance the absolute target by 1/60 s and
-         * sleep the remainder; resync if we fell more than 100 ms
-         * behind (browser tab backgrounded, heavy host stall) so we
-         * don't spend the next second sprinting to "catch up". */
+        /* Resync if we fell more than 100 ms behind (backgrounded tab,
+         * heavy host stall) so we don't burn the next second sprinting
+         * to catch up. */
         t_next.tv_nsec += FRAME_NS;
         while (t_next.tv_nsec >= 1000000000L) {
             t_next.tv_sec += 1;

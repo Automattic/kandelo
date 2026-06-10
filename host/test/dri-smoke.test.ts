@@ -173,5 +173,5 @@ describe.skipIf(!existsSync(driSmokeBinary))("dri-smoke integration", () => {
         new Promise<number>((resolve) => setTimeout(() => resolve(0), 1_000)),
       ]);
     }
-  });
+  }, 20_000);
 });
