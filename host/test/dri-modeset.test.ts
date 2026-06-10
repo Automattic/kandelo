@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const programBinary = tryResolveBinary("programs/modeset.wasm");
+const programBinary = tryResolveBinary("programs/dri-modeset.wasm");
 
 const SUMMARY = /modeset OK frames=(\d+) w=(\d+) h=(\d+)/;
 
