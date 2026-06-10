@@ -29,20 +29,11 @@ pub type BoId = u32;
 /// that doesn't match it gets `EACCES`.
 pub type PrimeCookie = u64;
 
-/// Backing-tier discriminator. `CpuShared` bos are SAB-backed and
-/// mmap-able; `Gpu` bos are `WebGLTexture`-backed and not CPU-mappable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoTier {
-    CpuShared,
-    Gpu,
-}
-
 #[derive(Debug, Clone)]
 pub struct GbmBo {
     pub id: BoId,
     pub stride: u32,
     pub size: u64,
-    pub tier: BoTier,
     pub refcount: u32,
     pub prime_cookie: Option<PrimeCookie>,
 }
@@ -74,24 +65,6 @@ impl BoRegistry {
             id,
             stride,
             size,
-            tier: BoTier::CpuShared,
-            refcount: 1,
-            prime_cookie: None,
-        };
-        self.map.insert(id, bo);
-        self.map.get_mut(&id).unwrap()
-    }
-
-    /// Allocate a GPU-tier bo. The host backs it with a `WebGLTexture`,
-    /// so `stride` and `size` are not CPU-meaningful and stay 0.
-    pub fn alloc_gpu(&mut self) -> &mut GbmBo {
-        let id = self.next_id;
-        self.next_id += 1;
-        let bo = GbmBo {
-            id,
-            stride: 0,
-            size: 0,
-            tier: BoTier::Gpu,
             refcount: 1,
             prime_cookie: None,
         };
@@ -171,10 +144,10 @@ pub(crate) fn reset_registry() {
     });
 }
 
-/// Test-only: the id the registry would assign on the next `alloc` /
-/// `alloc_gpu` call. Used by syscall-layer tests to identify the most
-/// recently allocated bo (the id returned via ioctls is a per-fd
-/// handle, not the global BoId).
+/// Test-only: the id the registry would assign on the next `alloc`
+/// call. Used by syscall-layer tests to identify the most recently
+/// allocated bo (the id returned via ioctls is a per-fd handle, not
+/// the global BoId).
 #[cfg(test)]
 pub(crate) fn next_id_for_test() -> BoId {
     with_registry(|r| r.next_id)
@@ -262,30 +235,6 @@ mod tests {
             assert_eq!(bo2.stride, 20);
             let id2 = bo2.id;
             r.decref(id2);
-        });
-    }
-
-    #[test]
-    fn alloc_gpu_sets_tier_and_zero_stride() {
-        let _g = fresh();
-        with_registry(|r| {
-            let bo = r.alloc_gpu();
-            assert_eq!(bo.tier, BoTier::Gpu);
-            assert_eq!(bo.stride, 0);
-            assert_eq!(bo.size, 0);
-            let id = bo.id;
-            r.decref(id);
-        });
-    }
-
-    #[test]
-    fn alloc_marks_cpu_shared_tier() {
-        let _g = fresh();
-        with_registry(|r| {
-            let bo = r.alloc(8, 8, 32);
-            assert_eq!(bo.tier, BoTier::CpuShared);
-            let id = bo.id;
-            r.decref(id);
         });
     }
 

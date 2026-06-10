@@ -56,8 +56,6 @@
  * — bind/unbind still record the binding but don't touch any
  * Memory.
  */
-import type { ForeignTextureRegistry } from "../webgl/registry.js";
-
 export type GbmBoCreateInput = {
   pid: number;
   bo_id: number;
@@ -65,14 +63,6 @@ export type GbmBoCreateInput = {
   w: number;
   h: number;
   stride: number;
-};
-
-export type GbmBoGpuCreateInput = {
-  pid: number;
-  bo_id: number;
-  w: number;
-  h: number;
-  format: number;
 };
 
 export type GbmBoBinding = {
@@ -95,9 +85,6 @@ export type GbmBoEntry = {
   /** This pid's binding, or null if the pid holds a handle but
    *  hasn't mmap'd (post-create / post-unbind). */
   binding: GbmBoBinding | null;
-  tier: "cpu_shared" | "gpu";
-  format?: number;
-  texture?: WebGLTexture;
 };
 
 export type GbmBoChangeEvent = "create" | "bind" | "unbind" | "destroy";
@@ -109,7 +96,6 @@ export type GbmBoChangeListener = (
 
 type InternalEntry = {
   bo_id: number;
-  tier: "cpu_shared" | "gpu";
   size: number;
   w: number;
   h: number;
@@ -118,9 +104,6 @@ type InternalEntry = {
    *  authoritative buffer that bind/unbind syncs each pid's wasm
    *  Memory against. Allocated on the first `create` for the bo. */
   sab: SharedArrayBuffer;
-  /** GPU-tier only: pixel storage lives in a WebGLTexture; SAB is empty. */
-  format?: number;
-  texture?: WebGLTexture;
   /** Every pid currently holding a handle to this bo (creator +
    *  any PRIME importers). A pid lands here on `create` or on its
    *  first `bind` — see the import-path note in the file header. */
@@ -169,7 +152,6 @@ export class GbmBoRegistry {
     } else {
       this.bos.set(b.bo_id, {
         bo_id: b.bo_id,
-        tier: "cpu_shared",
         size: b.size,
         w: b.w,
         h: b.h,
@@ -180,35 +162,6 @@ export class GbmBoRegistry {
       });
     }
     for (const l of this.listeners) l(b.pid, b.bo_id, "create");
-  }
-
-  createGpu(
-    b: GbmBoGpuCreateInput,
-    gl: WebGL2RenderingContext,
-    foreignTex: ForeignTextureRegistry,
-  ): number {
-    const existing = this.bos.get(b.bo_id);
-    if (existing) {
-      existing.pids.add(b.pid);
-      for (const l of this.listeners) l(b.pid, b.bo_id, "create");
-      return 0;
-    }
-    const tex = foreignTex.allocate(b.bo_id, b.w, b.h, gl);
-    this.bos.set(b.bo_id, {
-      bo_id: b.bo_id,
-      tier: "gpu",
-      size: 0,
-      w: b.w,
-      h: b.h,
-      stride: 0,
-      sab: new SharedArrayBuffer(0),
-      format: b.format,
-      texture: tex,
-      pids: new Set([b.pid]),
-      bindingsByPid: new Map(),
-    });
-    for (const l of this.listeners) l(b.pid, b.bo_id, "create");
-    return 0;
   }
 
   destroy(pid: number, bo_id: number): void {
@@ -313,11 +266,10 @@ export class GbmBoRegistry {
     return out;
   }
 
-  /** Direct view onto a bo's canonical pixel SAB. Undefined for unknown
-   *  or GPU-tier bos. */
+  /** Direct view onto a bo's canonical pixel SAB. Undefined for unknown bos. */
   pixelView(bo_id: number): Uint8Array | undefined {
     const e = this.bos.get(bo_id);
-    if (!e || e.tier !== "cpu_shared") return undefined;
+    if (!e) return undefined;
     return new Uint8Array(e.sab);
   }
 
@@ -325,7 +277,7 @@ export class GbmBoRegistry {
    *  per vblank so mid-bind paints land without an explicit munmap). */
   syncFromMemory(bo_id: number): void {
     const e = this.bos.get(bo_id);
-    if (!e || e.tier !== "cpu_shared") return;
+    if (!e) return;
     for (const [pid, binding] of e.bindingsByPid) {
       this.flushMemoryToSab(e, pid, binding);
     }
@@ -347,9 +299,6 @@ export class GbmBoRegistry {
       h: e.h,
       stride: e.stride,
       binding: e.bindingsByPid.get(pid) ?? null,
-      tier: e.tier,
-      format: e.format,
-      texture: e.texture,
     };
   }
 }

@@ -193,7 +193,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # (sysroot/lib/libdrm.a, libgbm.a). EGL/GLES2 stubs are picked up
     # by build_program's header-based auto-detection.
     case "$(basename "$src")" in
-        modeset.c|dri-modeset.c|dri_paint.c|dumb_roundtrip.c)
+        modeset.c|dri-modeset.c|dumb_roundtrip.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;

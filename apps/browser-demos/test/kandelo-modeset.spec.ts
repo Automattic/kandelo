@@ -29,27 +29,15 @@ test("Kandelo modeset demo commits PAGE_FLIPs through /dev/dri/card0", async ({ 
     .poll(() => modesetHead.innerText(), { timeout: 180_000 })
     .toMatch(/[1-9]\d*\s+flips/i);
 
-  // The flip counter ticking is necessary but not sufficient — it only
-  // proves PAGE_FLIP ioctls reach the kernel. The actual rendering
-  // gate is: WebGL2 acquired the scanout canvas and Pavel's fluid sim
-  // is producing pixels. Grab a screenshot of the canvas and require
-  // at least one non-background pixel; if the shaders silently
-  // failed-to-compile against a null `b.gl`, the canvas stays the
-  // pane-background color forever and this assertion fails loudly
-  // rather than passing on flip-counter alone.
+  // Flip-counter ticks prove PAGE_FLIP reached the kernel; the canvas
+  // screenshot proves WebGL2 actually compiled+rendered. Without the
+  // second gate, a silent shader compile failure would leave the canvas
+  // pane-background-colored forever and the test would still pass.
   const canvas = page.locator("canvas").first();
   await expect(canvas).toBeVisible({ timeout: 60_000 });
   await expect
     .poll(
-      async () => {
-        const buf = await canvas.screenshot();
-        // PNG IDAT comes after the 8-byte signature + IHDR chunk;
-        // for our purposes a "real" frame produces a screenshot
-        // measurably larger than a uniform-color one. Empirically a
-        // blank 800×600 canvas serializes to <2 KiB; Pavel's fluid
-        // sim frame is ~20 KiB+. The threshold leaves a wide margin.
-        return buf.byteLength;
-      },
+      async () => (await canvas.screenshot()).byteLength,
       { timeout: 60_000, intervals: [1_000, 2_000, 5_000] },
     )
     .toBeGreaterThan(5_000);

@@ -224,22 +224,6 @@ pub trait HostIO {
     #[allow(unused_variables)]
     fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
 
-    /// Create a GPU-tier bo (host `WebGLTexture`). Returns ≥ 0 on
-    /// success, negative errno on failure. `gbm_bo_destroy` releases
-    /// the texture on the final refcount drop.
-    #[allow(unused_variables)]
-    fn gbm_bo_create_gpu(
-        &mut self,
-        pid: i32,
-        bo_id: u32,
-        width: u32,
-        height: u32,
-        format: u32,
-        usage: u32,
-    ) -> i32 {
-        -(Errno::ENOSYS as i32)
-    }
-
     /// Bind a bo's SAB slice into a process's wasm `Memory` at `addr`
     /// for `len` bytes. Called from the mmap path once
     /// `mmap_anonymous` has reserved the wasm pages. After this
@@ -303,20 +287,6 @@ pub trait HostIO {
     /// Returns bytes written into `out`, or negative errno on failure.
     #[allow(unused_variables)]
     fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
-        -(Errno::ENOSYS as i32)
-    }
-
-    /// Bind a GPU-tier bo as a `WebGLTexture` in the caller's GL context.
-    /// Returns the WebGLTexture id (≥ 0) on success, negative errno on
-    /// failure.
-    #[allow(unused_variables)]
-    fn gl_bind_foreign_texture(
-        &mut self,
-        pid: i32,
-        ctx_id: u32,
-        bo_id: u32,
-        gl_target: u32,
-    ) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 

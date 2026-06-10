@@ -179,14 +179,6 @@ unsafe extern "C" {
         stride: u32,
     ) -> i32;
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
-    fn host_gbm_bo_create_gpu(
-        pid: i32,
-        bo_id: u32,
-        width: u32,
-        height: u32,
-        format: u32,
-        usage: u32,
-    ) -> i32;
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
     fn host_gl_bind(pid: i32, addr: usize, len: usize);
@@ -202,12 +194,6 @@ unsafe extern "C" {
         pid: i32, op: u32,
         in_ptr: *const u8, in_len: usize,
         out_ptr: *mut u8, out_len: usize,
-    ) -> i32;
-    fn host_gl_bind_foreign_texture(
-        pid: i32,
-        ctx_id: u32,
-        bo_id: u32,
-        gl_target: u32,
     ) -> i32;
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
@@ -959,18 +945,6 @@ impl HostIO for WasmHostIO {
         unsafe { host_gbm_bo_destroy(pid, bo_id) }
     }
 
-    fn gbm_bo_create_gpu(
-        &mut self,
-        pid: i32,
-        bo_id: u32,
-        width: u32,
-        height: u32,
-        format: u32,
-        usage: u32,
-    ) -> i32 {
-        unsafe { host_gbm_bo_create_gpu(pid, bo_id, width, height, format, usage) }
-    }
-
     fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
         unsafe { host_gbm_bo_bind(pid, bo_id, addr, len) }
     }
@@ -1023,16 +997,6 @@ impl HostIO for WasmHostIO {
                 out.as_mut_ptr(), out.len(),
             )
         }
-    }
-
-    fn gl_bind_foreign_texture(
-        &mut self,
-        pid: i32,
-        ctx_id: u32,
-        bo_id: u32,
-        gl_target: u32,
-    ) -> i32 {
-        unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
     }
 
     fn kms_set_master(&mut self, pid: i32) {

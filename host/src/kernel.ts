@@ -20,7 +20,7 @@ import { SharedLockTable } from "./shared-lock-table";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
-import { ForeignTextureRegistry, GlContextRegistry } from "./webgl/registry";
+import { GlContextRegistry } from "./webgl/registry";
 import { decodeAndDispatch } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
@@ -185,7 +185,6 @@ export class WasmPosixKernel {
    * once the embedder has attached a canvas.
    */
   readonly gl = new GlContextRegistry();
-  readonly foreignTextures = new ForeignTextureRegistry();
   /**
    * Worker-side submit lanes. The compositor (current DRM_MASTER on
    * card0) jumps ahead of clients; clients round-robin. Drain runs
@@ -693,22 +692,6 @@ export class WasmPosixKernel {
         host_gbm_bo_destroy: (pid: number, bo_id: number): void => {
           this.bos.destroy(pid, bo_id);
         },
-        host_gbm_bo_create_gpu: (
-          pid: number,
-          bo_id: number,
-          width: number,
-          height: number,
-          format: number,
-          _usage: number,
-        ): number => {
-          const compositorGl = this.gl.get(2)?.gl;
-          if (!compositorGl) return -1;
-          return this.bos.createGpu(
-            { pid, bo_id, w: width, h: height, format },
-            compositorGl,
-            this.foreignTextures,
-          );
-        },
         host_gbm_bo_bind: (
           pid: number,
           bo_id: number,
@@ -889,12 +872,6 @@ export class WasmPosixKernel {
           }
           return written;
         },
-        host_gl_bind_foreign_texture: (
-          _pid: number,
-          ctx_id: number,
-          bo_id: number,
-          _gl_target: number,
-        ): number => this.foreignTextures.bind(bo_id, ctx_id),
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
         host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
         host_proc_write_bytes: (

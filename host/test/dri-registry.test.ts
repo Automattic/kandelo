@@ -11,7 +11,6 @@
  */
 import { describe, expect, it } from "vitest";
 import { GbmBoRegistry } from "../src/dri/registry.js";
-import { ForeignTextureRegistry } from "../src/webgl/registry.js";
 
 const BO_SIZE = 4096;
 const BO_ADDR = 0;
@@ -223,46 +222,5 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
   it("syncFromMemory is a no-op for unknown bo_id", () => {
     const reg = new GbmBoRegistry();
     expect(() => reg.syncFromMemory(999)).not.toThrow();
-  });
-});
-
-class FakeGl {
-  created = 0;
-  createTexture(): object { return { id: ++this.created }; }
-  bindTexture(): void {}
-  texImage2D(): void {}
-}
-const asGl = (g: FakeGl) => g as unknown as WebGL2RenderingContext;
-
-describe("GbmBoRegistry — GPU tier (plan 3 §B7)", () => {
-  it("createGpu allocates a texture and tags the entry tier='gpu'", () => {
-    const reg = new GbmBoRegistry();
-    const ft = new ForeignTextureRegistry();
-    const gl = new FakeGl();
-    expect(reg.createGpu({ pid: 10, bo_id: 7, w: 32, h: 32, format: 0 }, asGl(gl), ft)).toBe(0);
-    const e = reg.get(10, 7);
-    expect(e?.tier).toBe("gpu");
-    expect(e?.texture).toBeDefined();
-    expect(e?.format).toBe(0);
-    expect(gl.created).toBe(1);
-  });
-
-  it("create() entries are tagged tier='cpu_shared' with no texture", () => {
-    const reg = new GbmBoRegistry();
-    reg.create({ pid: 10, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
-    const e = reg.get(10, 1);
-    expect(e?.tier).toBe("cpu_shared");
-    expect(e?.texture).toBeUndefined();
-  });
-
-  it("createGpu on a re-issued bo_id adds the pid without re-allocating", () => {
-    const reg = new GbmBoRegistry();
-    const ft = new ForeignTextureRegistry();
-    const gl = new FakeGl();
-    reg.createGpu({ pid: 10, bo_id: 9, w: 8, h: 8, format: 0 }, asGl(gl), ft);
-    reg.createGpu({ pid: 11, bo_id: 9, w: 8, h: 8, format: 0 }, asGl(gl), ft);
-    expect(gl.created).toBe(1);
-    expect(reg.get(10, 9)?.tier).toBe("gpu");
-    expect(reg.get(11, 9)?.tier).toBe("gpu");
   });
 });

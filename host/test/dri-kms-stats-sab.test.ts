@@ -81,6 +81,21 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(Atomics.load(view, 6)).toBe(16_667);
   });
 
+  it("tickVblank populates slots 2/3 from the current FB in auto mode (no 2D blit)", () => {
+    // Regression guard: scanout w/h must publish whenever a stats SAB is
+    // attached, even when the canvas isn't owned by the CPU-blit path.
+    const kernel = makeKernel();
+    stubScanout(kernel, 1920, 1080);
+    const statsSab = new SharedArrayBuffer(5 * 4);
+    const view = new Int32Array(statsSab);
+    kernel.attachKmsCanvas(1, makeFakeCanvas(), statsSab);
+    (kernel as unknown as { tickVblank: () => void }).tickVblank();
+    expect(Atomics.load(view, 2)).toBe(1920);
+    expect(Atomics.load(view, 3)).toBe(1080);
+    expect(Atomics.load(view, 0)).toBe(0);
+    expect(Atomics.load(view, 4)).toBe(0);
+  });
+
   it("tickVblank leaves slots 5/6 alone when the SAB is the legacy 5-slot size", () => {
     const kernel = makeKernel();
     stubScanout(kernel, 16, 16);

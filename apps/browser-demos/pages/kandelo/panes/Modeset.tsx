@@ -1,18 +1,6 @@
-// Modeset pane — paints whatever process holds DRM master on CRTC 1 and
-// commits page-flips through the KMS pipeline. Mirrors the Framebuffer
-// pane in shape: the pane never spawns the renderer (whoever the user
-// runs from the shell drives it); it only attaches an OffscreenCanvas
-// + stats SAB so the kernel-worker's 60 Hz vblank pump has somewhere
-// to land pixels.
-//
-// Stats slot layout (set by CentralizedKernelWorker.tickVblank):
-//   0: frame count (host pump, monotonic)
-//   1: last blit timestamp (ms, performance.now() | 0)
-//   2: current scanout width
-//   3: current scanout height
-//   4: last blit µs
-//   5: kernel-side PAGE_FLIP commit count
-//   6: kernel-side last frame µs (clock at PAGE_FLIP completion)
+// Modeset pane — mirrors the Framebuffer pane: never spawns the renderer,
+// only attaches an OffscreenCanvas + stats SAB for the kernel-worker's
+// vblank pump. Stats slot layout is set by tickVblank in kernel-worker.ts.
 
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";

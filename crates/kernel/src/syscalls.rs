@@ -620,33 +620,10 @@ fn release_dri_handle(
     Ok(())
 }
 
-/// Handle ioctl on `/dev/dri/renderD128` or `/dev/dri/card0`.
-///
-/// Today: probe (VERSION / GET_CAP) plus the four dumb-buffer ioctls
-/// libgbm and libdrm use to allocate, mmap, and free CPU-shared bos:
-///
-/// - `DRM_IOCTL_VERSION` — version 1.0.0 + zero-length strings (user
-///   pointers are echoed back so libdrm's round-trip stays clean).
-/// - `DRM_IOCTL_GET_CAP` — `DUMB_BUFFER` → 1,
-///   `PRIME` → IMPORT|EXPORT, unknown caps → 0. Matches Linux's
-///   value=0,errno=0 default.
-/// - `DRM_IOCTL_MODE_CREATE_DUMB` — allocate a bo in the global
-///   registry, ask the host to back it with a SAB, register a fresh
-///   per-fd handle, return `(handle, stride, size)` on the in/out
-///   buffer.
-/// - `DRM_IOCTL_MODE_MAP_DUMB` — encode the bo id into a fake mmap
-///   offset (BoId << 12) that the mmap path decodes later. We don't
-///   share Linux's "vma_offset_manager" — every bo has a single,
-///   stable mmap offset.
-/// - `DRM_IOCTL_MODE_DESTROY_DUMB` — release the per-fd handle, decref
-///   the bo, and free host backing on the last reference. Mirrors
-///   `DRM_IOCTL_GEM_CLOSE`.
-/// - `DRM_IOCTL_GEM_CLOSE` — same release path; libgbm calls it via
-///   `gbm_bo_destroy()`.
-///
-/// PRIME, KMS, and the WPK extensions land in subsequent commits.
-/// Anything not listed here returns `ENOSYS` so libdrm reports
-/// "feature unsupported" rather than silently succeeding.
+/// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
+/// quartet (CREATE / MAP / DESTROY / GEM_CLOSE), PRIME export/import, and
+/// GLES2 session ioctls. Unknown requests return `ENOSYS` so libdrm
+/// reports "feature unsupported" rather than silently succeeding.
 fn handle_dri_ioctl(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -837,7 +814,6 @@ fn handle_dri_ioctl(
             {
                 Ok(fd) => fd,
                 Err(e) => {
-                    // Roll back: drop the OFD and decref the bo.
                     proc.ofd_table.dec_ref(prime_ofd);
                     let _ = crate::dri::with_registry(|r| r.decref(bo_id));
                     return Err(e);
@@ -875,7 +851,6 @@ fn handle_dri_ioctl(
                 return Err(Errno::EACCES);
             }
 
-            // Bump refcount for the new local handle.
             crate::dri::with_registry(|r| r.incref(prime.bo_id));
 
             let handle = match dri_state_mut(proc, ofd_idx) {
@@ -1105,50 +1080,9 @@ fn handle_dri_ioctl(
     }
 }
 
-/// Handle ioctl on `/dev/dri/card0` — KMS surface on top of the
-/// shared render ioctls.
-///
-/// Card0 carries the same per-fd GEM-handle namespace as a render
-/// node plus per-fd KMS state (`KmsFdState`). Unknown ioctls fall
-/// through to `handle_dri_ioctl` so the dumb-buffer + prime path
-/// stays in one place.
-///
-/// What's wired:
-///
-/// - SET_MASTER / DROP_MASTER. Single global master enforced by
-///   `crate::dri::master`; re-set by the same `(pid, ofd)` is
-///   idempotent, anyone else gets `EBUSY`. The `holds_master` flag on
-///   the KMS sidecar tracks ownership for the SETCRTC / PAGE_FLIP
-///   gates below.
-/// - MODE_GETRESOURCES. Reports a single virtual {crtc, connector,
-///   encoder} triple (id=1 for all three) plus 1×16384 dimension
-///   bounds. The caller's count/ptr arrays are populated via
-///   HostIO::proc_write_bytes; a write failure surfaces as EFAULT.
-/// - MODE_GETCRTC / MODE_GETENCODER / MODE_GETCONNECTOR. Return
-///   sensible defaults for the one slot we expose; a different id
-///   fails with ENOENT. The connector reports VIRTUAL +
-///   CONNECTED + the host's preferred mode (host.kms_mode_info(1)).
-/// - MODE_ADDFB2. Looks up the bo, validates pixel_format
-///   (ARGB8888/XRGB8888/RGB565), enforces stride == bo stride for
-///   CPU-shared bos, registers a per-fd fb_id, bumps the bo
-///   refcount, and asks the host to bind the host-side fb. Rollback
-///   on host failure releases both the fb slot and the bo.
-/// - MODE_RMFB. Drops the fb slot, decrefs the bo, asks the host
-///   to release its backing on the last refcount drop and to drop
-///   the host fb.
-/// - MODE_SETCRTC. Gated on `holds_master` (EACCES otherwise).
-///   crtc_id==1 only; fb_id must be either 0 (unset scanout) or a
-///   previously registered fb_id on this fd. Delegates the bind to
-///   HostIO::kms_set_fb.
-/// - MODE_PAGE_FLIP. Same master + crtc + fb_id gates. EBUSY if a
-///   flip on the same crtc is already pending. The flip is queued on
-///   the fd's `pending_flips` and `dri::record_kms_commit` bumps the
-///   global commit counter (the host queries it via
-///   kernel_kms_commit_count for the UI).
-/// - WAIT_VBLANK. Returns a best-effort reply with the current
-///   monotonic time; sequence=0. The full vblank handshake (queued
-///   waiters drained by kernel_vblank) lands when the host pump is
-///   wired in a later commit.
+/// Card0-specific KMS ioctls (SET/DROP_MASTER, MODE_GET*, ADDFB2/RMFB,
+/// SETCRTC, PAGE_FLIP, WAIT_VBLANK). Unknown requests fall through to
+/// `handle_dri_ioctl` so the per-fd GEM/PRIME path stays in one place.
 fn handle_dri_card_ioctl(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -1331,13 +1265,9 @@ fn handle_dri_card_ioctl(
                 .handles
                 .get(&req.handles[0])
                 .ok_or(Errno::ENOENT)?;
-            let (tier, bo_stride) =
-                crate::dri::with_registry(|r| r.get(bo_id).map(|b| (b.tier, b.stride)))
-                    .ok_or(Errno::ENOENT)?;
-            // CPU-shared bos require stride == bo's natural stride;
-            // GPU-tier bos have stride=0 in the registry and skip
-            // the check.
-            if tier == crate::dri::BoTier::CpuShared && req.pitches[0] != bo_stride {
+            let bo_stride = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.stride))
+                .ok_or(Errno::ENOENT)?;
+            if req.pitches[0] != bo_stride {
                 return Err(Errno::EINVAL);
             }
             let fb_id = {
@@ -1548,7 +1478,6 @@ pub(crate) fn dri_release_ofd_state(
                 ofd_idx,
                 host,
             );
-            // Then the GEM handle namespace, like a render node.
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(host, bo_id);
             }
@@ -6126,15 +6055,8 @@ pub fn sys_mmap(
                 return Ok(addr_out);
             }
             let bo_id = ((offset as u64) >> 12) as crate::dri::BoId;
-            let bo_info = crate::dri::with_registry(|r| {
-                r.get(bo_id).map(|b| (b.tier, b.size))
-            });
-            let (tier, bo_size) = bo_info.ok_or(Errno::EINVAL)?;
-            // GPU-tier bos are WebGLTexture-backed and have no CPU
-            // mapping; only CpuShared bos are mmap-able.
-            if tier != crate::dri::BoTier::CpuShared {
-                return Err(Errno::EINVAL);
-            }
+            let bo_size = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.size))
+                .ok_or(Errno::EINVAL)?;
             // Accept either the raw bo size (matching what DRM_IOCTL_MODE_
             // CREATE_DUMB returned and what the libgbm stub + direct
             // mmap callers pass) or the wasm-page-aligned size some
