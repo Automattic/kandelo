@@ -17,7 +17,18 @@
 import * as React from "react";
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { KmsDisplayHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
 import { PaneHead } from "./PaneHead";
+
+// modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
+// auto-attach resizes the OffscreenCanvas drawing buffer to match the
+// FB before `getContext("webgl2")`, but the placeholder HTMLCanvas in
+// the main thread keeps whatever `width`/`height` we set BEFORE
+// `transferControlToOffscreen()`. We need correct attribute dims here
+// so the pointer scaling math (`canvas.width / rect.width`) matches
+// the framebuffer the wasm program actually paints into.
+const MODESET_FB_W = 1920;
+const MODESET_FB_H = 1080;
 
 const ICON = (
   <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.4">
@@ -37,19 +48,15 @@ export interface ModesetProps {
 }
 
 interface KmsStats {
-  frameCount: number;
   width: number;
   height: number;
-  blitUs: number;
   commitCount: number;
   lastFrameUs: number;
 }
 
 const ZERO_STATS: KmsStats = {
-  frameCount: 0,
   width: 0,
   height: 0,
-  blitUs: 0,
   commitCount: 0,
   lastFrameUs: 0,
 };
@@ -69,6 +76,18 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     if (!canvas) return;
     if (handleRef.current) return;
 
+    // Match the wasm program's framebuffer dims BEFORE
+    // `transferControlToOffscreen()`. The placeholder HTMLCanvas keeps
+    // these as its `.width`/`.height` attribute values after transfer;
+    // the OffscreenCanvas inherits them too. Both matter:
+    //   - The pointer scaler reads `canvas.width / rect.width` to map
+    //     CSS deltas to framebuffer pixels. Default 300/150 would mean
+    //     the cursor crawls at ~1/6 speed and Pavel's splats clump.
+    //   - The OffscreenCanvas drawing buffer must be 1920×1080 so
+    //     `glViewport(0, 0, 1920, 1080)` covers the full surface.
+    if (canvas.width !== MODESET_FB_W) canvas.width = MODESET_FB_W;
+    if (canvas.height !== MODESET_FB_H) canvas.height = MODESET_FB_H;
+
     try {
       const handle = host.attachKmsDisplay(canvas, crtcId);
       if (!handle) {
@@ -87,6 +106,101 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     };
   }, [host, status, crtcId]);
 
+  // Forward mouse motion + buttons into the kernel's `/dev/input/mice`.
+  // The wasm side has no absolute-cursor input — it integrates int8
+  // deltas from PS/2 packets — so we mirror the wasm cursor estimate
+  // here (centered at the FB midpoint, matching modeset.c's initial
+  // `cursor_x/y = CANVAS_W/H / 2`) and snap it to the OS pointer on
+  // mouseenter with a synthetic teleport delta. Browser Y grows down,
+  // PS/2 dy is positive-up, so flip once in `sendDelta`. Large jumps
+  // get chunked into legal i8 packets — without that, a fast drag
+  // wraps `(int8_t)pkt[1]` and `drain_mouse()` interprets it as the
+  // opposite direction.
+  React.useEffect(() => {
+    if (status !== "running") return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    let prevCanvasX: number | null = null;
+    let prevCanvasY: number | null = null;
+    let wasmCursorX = MODESET_FB_W / 2;
+    let wasmCursorY = MODESET_FB_H / 2;
+    let buttons = 0;
+    const buttonBit = (button: number) =>
+      button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : 0;
+    const sink: MouseEventSink = {
+      injectMouseEvent: (dx, dy, bts) => {
+        handleRef.current?.sendMouseEvent(dx, dy, bts);
+      },
+    };
+    const toCanvasCoords = (clientX: number, clientY: number) => {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: rect.width > 0 ? ((clientX - rect.left) * canvas.width) / rect.width : 0,
+        y: rect.height > 0 ? ((clientY - rect.top) * canvas.height) / rect.height : 0,
+      };
+    };
+    const sendDelta = (dx: number, dy: number) => {
+      if (dx === 0 && dy === 0) return;
+      injectChunkedMouseMotion(sink, dx, -dy, buttons);
+      wasmCursorX += dx;
+      wasmCursorY += dy;
+    };
+    const handlePointerAt = (canvasX: number, canvasY: number) => {
+      if (prevCanvasX === null || prevCanvasY === null) {
+        sendDelta(Math.round(canvasX - wasmCursorX), Math.round(canvasY - wasmCursorY));
+      } else {
+        sendDelta(Math.round(canvasX - prevCanvasX), Math.round(canvasY - prevCanvasY));
+      }
+      prevCanvasX = canvasX;
+      prevCanvasY = canvasY;
+    };
+    const onMouseEnter = (e: MouseEvent) => {
+      const c = toCanvasCoords(e.clientX, e.clientY);
+      handlePointerAt(c.x, c.y);
+    };
+    const onMouseLeave = () => {
+      prevCanvasX = null;
+      prevCanvasY = null;
+    };
+    const onMouseMove = (e: MouseEvent) => {
+      const c = toCanvasCoords(e.clientX, e.clientY);
+      handlePointerAt(c.x, c.y);
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      const bit = buttonBit(e.button);
+      if (bit === 0) return;
+      e.preventDefault();
+      buttons |= bit;
+      handleRef.current?.sendMouseEvent(0, 0, buttons);
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      const bit = buttonBit(e.button);
+      if (bit === 0) return;
+      e.preventDefault();
+      buttons &= ~bit;
+      handleRef.current?.sendMouseEvent(0, 0, buttons);
+    };
+    const onContextMenu = (e: Event) => e.preventDefault();
+    canvas.addEventListener("mouseenter", onMouseEnter);
+    canvas.addEventListener("mouseleave", onMouseLeave);
+    canvas.addEventListener("mousemove", onMouseMove);
+    canvas.addEventListener("mousedown", onMouseDown);
+    canvas.addEventListener("contextmenu", onContextMenu);
+    // mouseup on the document so a release outside the canvas still
+    // clears button state — matches fbDOOM's pointer-lock controls.
+    const doc = canvas.ownerDocument;
+    doc.addEventListener("mouseup", onMouseUp);
+    return () => {
+      canvas.removeEventListener("mouseenter", onMouseEnter);
+      canvas.removeEventListener("mouseleave", onMouseLeave);
+      canvas.removeEventListener("mousemove", onMouseMove);
+      canvas.removeEventListener("mousedown", onMouseDown);
+      canvas.removeEventListener("contextmenu", onContextMenu);
+      doc.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [status]);
+
   // Drain the stats SAB at 4 Hz. The numbers are advisory; rAF would
   // re-render every blit, which is overkill for a status panel.
   React.useEffect(() => {
@@ -95,10 +209,8 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
     const tick = () => {
       const s = handle.stats;
       setStats({
-        frameCount: Atomics.load(s, 0),
         width: Atomics.load(s, 2),
         height: Atomics.load(s, 3),
-        blitUs: Atomics.load(s, 4),
         commitCount: Atomics.load(s, 5),
         lastFrameUs: Atomics.load(s, 6),
       });
@@ -133,7 +245,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
             fontWeight: 600,
           }}>
             {hasFrame
-              ? `${stats.commitCount} flips · ${stats.lastFrameUs}µs`
+              ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs`
               : "waiting for PAGE_FLIP"}
           </span>
         }
@@ -149,6 +261,7 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
       }}>
         <div style={{
           flex: 1,
+          minHeight: 0,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -158,7 +271,8 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
           <canvas
             ref={canvasRef}
             style={{
-              maxWidth: "100%",
+              width: "100%",
+              height: "auto",
               maxHeight: "100%",
               imageRendering: "pixelated",
               background: "var(--k-fb-bg)",
@@ -185,6 +299,11 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
           )}
           {(error || status !== "running") && (
             <div style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
               fontFamily: "var(--k-font-mono)",
               fontSize: 11,
               color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
@@ -197,25 +316,6 @@ export const Modeset: React.FC<ModesetProps> = ({ dragProps, onCollapse, onMaxim
             </div>
           )}
         </div>
-        {hasFrame && (
-          <div style={{
-            fontFamily: "var(--k-font-mono)",
-            fontSize: 10,
-            color: "color-mix(in oklch, var(--k-fb-text) 70%, transparent)",
-            padding: "6px 10px",
-            borderTop: "1px solid var(--k-border)",
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: "2px 16px",
-          }}>
-            <span>scanout {stats.width}×{stats.height}</span>
-            <span>blit {stats.blitUs}µs</span>
-            <span>pump frame #{stats.frameCount}</span>
-            <span>commits {stats.commitCount}</span>
-            <span>last flip {stats.lastFrameUs}µs</span>
-            <span>crtc {crtcId}</span>
-          </div>
-        )}
       </div>
     </div>
   );
