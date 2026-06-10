@@ -252,6 +252,7 @@ echo "Usage: file.wasm -m /path/to/magic.lite /path/to/file"
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary file "$SCRIPT_DIR/bin/file.wasm"
+install_local_binary file "$SCRIPT_DIR/bin/magic.lite"
 
 # Stage magic.lite into the resolver scratch so it lands in the cache
 # canonical path (and from there, the .tar.zst release archive).

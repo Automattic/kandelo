@@ -169,6 +169,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
+            PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
@@ -177,6 +178,14 @@ jobs:
             BASELINE_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             echo "baseline_tag=$BASELINE_TAG" >> "$GITHUB_OUTPUT"
+
+            if [ "$PACKAGE_STAGING_REQUIRED" != "true" ]; then
+              echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "repair_index=false" >> "$GITHUB_OUTPUT"
+              echo "preflight: package staging not required; skipping package drift matrix"
+              exit 0
+            fi
 
             # One-shot fetch of existing release assets for fast lookup.
             # Falls back to empty list if the release doesn'"'"'t exist
@@ -289,6 +298,14 @@ jobs:
                 fi
               done
             done
+
+            program_matrix_file=$(mktemp)
+            printf "%s" "$program_matrix" > "$program_matrix_file"
+            program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              sort-package-matrix \
+                --registry packages/registry \
+                --matrix "$program_matrix_file")
+            rm -f "$program_matrix_file"
 
             library_count=$(echo "$library_matrix" | jq length)
             program_count=$(echo "$program_matrix" | jq length)
@@ -419,6 +436,7 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ github.sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
 
       # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
       # Different state-lock subjects from durable-release, so PR
@@ -493,8 +511,11 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ github.sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
           materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          library-matrix: ${{ needs.preflight.outputs.library_matrix }}
+          dependency-matrix: ${{ needs.preflight.outputs.program_matrix }}
+          github-token: ${{ github.token }}
 
       # Atomic per-matrix-entry publish — same flow as
       # lib-matrix-build, targeting the pr-<N>-staging tag.
@@ -721,6 +742,15 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
+          '
+
+      - name: Prepare browser assets from package index
+        if: env.SKIP_STAGING_TESTS != 'true'
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            ./run.sh --fetch-only prepare-browser
+            bash scripts/ci-check-browser-assets.sh
           '
 
       - name: Pack prepared test workspace

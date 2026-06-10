@@ -661,6 +661,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
+            PACKAGE_STAGING_REQUIRED="${{ needs.change-scope.outputs.package_staging_required }}"
 
             if [ "$(git rev-parse HEAD)" != "$SYNTHETIC_MERGE_SHA" ]; then
               echo "::error::preflight is not on synthetic merge $SYNTHETIC_MERGE_SHA"
@@ -688,6 +689,14 @@ jobs:
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
             STAGING_TAG="pr-${{ github.event.pull_request.number }}-staging"
             echo "staging_tag=$STAGING_TAG" >> "$GITHUB_OUTPUT"
+
+            if [ "$PACKAGE_STAGING_REQUIRED" != "true" ]; then
+              echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "promote_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "preflight: package staging not required; skipping package drift matrix"
+              exit 0
+            fi
 
             existing_assets=$(gh release view "$TARGET_TAG" --repo "${{ github.repository }}" --json assets --jq "[.assets[].name]" 2>/dev/null || echo "[]")
             echo "existing-assets:"
@@ -789,6 +798,14 @@ jobs:
                 fi
               done
             done
+
+            program_matrix_file=$(mktemp)
+            printf "%s" "$program_matrix" > "$program_matrix_file"
+            program_matrix=$(cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+              sort-package-matrix \
+                --registry packages/registry \
+                --matrix "$program_matrix_file")
+            rm -f "$program_matrix_file"
 
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
@@ -999,6 +1016,7 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
 
       # Atomic per-matrix-entry publish: archive upload + index.toml
       # mutation under the state-lock acquired for the target tag.
@@ -1108,8 +1126,11 @@ jobs:
           package: ${{ matrix.package }}
           arch: ${{ matrix.arch }}
           build-host: ${{ github.repository }}@${{ needs.synthesize-merge.outputs.merge_sha }}
+          expected-cache-key-sha: ${{ matrix.sha }}
           materialize-library-overlays: ${{ needs.preflight.outputs.library_matrix != '[]' }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          library-matrix: ${{ needs.preflight.outputs.library_matrix }}
+          dependency-matrix: ${{ needs.preflight.outputs.program_matrix }}
+          github-token: ${{ github.token }}
 
       # Atomic per-matrix-entry publish — see lib-matrix-build for
       # the rationale.
@@ -1320,6 +1341,14 @@ jobs:
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             cd host && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund && cd ..
             bash scripts/build-rootfs.sh
+          '
+
+      - name: Prepare browser assets from package index
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            ./run.sh --fetch-only prepare-browser
+            bash scripts/ci-check-browser-assets.sh
           '
 
       - name: Pack prepared test workspace

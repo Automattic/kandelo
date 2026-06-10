@@ -8,8 +8,8 @@
 # (or `archive-stage`) finds the archive without source-building.
 #
 # Used by:
-#   * matrix-build (program wave) — pre-stage library archives so the
-#     program's transitive deps are warm-cache hits.
+#   * matrix-build (program wave) — pre-stage already-built archives so
+#     the program's transitive deps are warm-cache hits.
 #   * test-gate's "Materialize binaries" — same primitive, applied to
 #     both lib + prog matrix outputs.
 #
@@ -39,7 +39,6 @@ set -euo pipefail
 
 ART_DIR="${1:-}"
 [ -n "$ART_DIR" ] || { echo "usage: $0 <artifact-dir> [stage-dir]" >&2; exit 2; }
-
 STAGE_DIR="${2:-$ART_DIR}"
 
 if [ ! -d "$ART_DIR" ]; then
