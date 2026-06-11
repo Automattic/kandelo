@@ -447,6 +447,42 @@ describe("MemoryFileSystem", () => {
     expect(after.bfree).toBeLessThan(before.bfree);
     expect(after.bavail).toBe(after.bfree);
   });
+
+  it("statfs reports effective max capacity for growable filesystems", () => {
+    const initialBytes = 1 * 1024 * 1024;
+    const maxBytes = 8 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(initialBytes, {
+      maxByteLength: maxBytes,
+    });
+    const mfs = MemoryFileSystem.create(sab, maxBytes);
+
+    const before = mfs.statfs("/");
+    expect(before.blocks * before.bsize).toBe(maxBytes);
+    expect(before.bfree).toBeGreaterThan(initialBytes / before.bsize);
+    expect(sab.byteLength).toBe(initialBytes);
+
+    const fd = mfs.open("/grow.bin", 0x0040 | 0x0002 | 0x0200, 0o644);
+    const data = new Uint8Array(initialBytes);
+    expect(mfs.write(fd, data, null, data.length)).toBe(data.length);
+    mfs.close(fd);
+
+    const after = mfs.statfs("/");
+    expect(sab.byteLength).toBeGreaterThan(initialBytes);
+    expect(after.blocks).toBe(before.blocks);
+    expect(after.blocks * after.bsize).toBe(maxBytes);
+    expect(after.bfree).toBeLessThan(before.bfree);
+    expect(after.bavail).toBe(after.bfree);
+  });
+
+  it("statfs does not report the internal default growth cap for non-growable buffers", () => {
+    const initialBytes = 1 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(initialBytes);
+    const mfs = MemoryFileSystem.create(sab);
+    const stats = mfs.statfs("/");
+
+    expect(stats.blocks * stats.bsize).toBe(initialBytes);
+    expect(sab.maxByteLength).toBe(initialBytes);
+  });
 });
 
 // ---------------------------------------------------------------------------

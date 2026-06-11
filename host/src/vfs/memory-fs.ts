@@ -653,7 +653,8 @@ export class MemoryFileSystem implements FileSystemBackend {
    * Allocates a new SharedArrayBuffer and populates it from the image.
    *
    * When `maxByteLength` is specified, creates a growable SharedArrayBuffer
-   * so the filesystem can expand beyond the image's original size.
+   * so the filesystem can expand beyond the image's original size, up to the
+   * maximum already recorded in the image superblock.
    */
   static fromImage(image: Uint8Array, options?: { maxByteLength?: number }): MemoryFileSystem {
     const parsed = parseImageHeader(image);

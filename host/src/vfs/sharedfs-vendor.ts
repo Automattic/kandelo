@@ -309,10 +309,25 @@ export class SharedFS {
   }
 
   statfs(): SharedFsStats {
+    const blockSize = this.r32(SB_BLOCK_SIZE);
+    const currentBlocks = this.r32(SB_TOTAL_BLOCKS);
+    const configuredMaxBlocks = this.r32(SB_MAX_SIZE_BLOCKS);
+    const runtimeMaxByteLength =
+      typeof this.buffer.maxByteLength === "number"
+        ? this.buffer.maxByteLength
+        : this.buffer.byteLength;
+    const runtimeMaxBlocks = Math.floor(runtimeMaxByteLength / blockSize);
+    const effectiveMaxBlocks = Math.max(
+      currentBlocks,
+      Math.min(configuredMaxBlocks, runtimeMaxBlocks),
+    );
+    const currentFreeBlocks = Atomics.load(this.i32, SB_FREE_BLOCKS >> 2);
+    const ungrownBlocks = Math.max(0, effectiveMaxBlocks - currentBlocks);
+
     return {
-      blockSize: this.r32(SB_BLOCK_SIZE),
-      totalBlocks: this.r32(SB_TOTAL_BLOCKS),
-      freeBlocks: Atomics.load(this.i32, SB_FREE_BLOCKS >> 2),
+      blockSize,
+      totalBlocks: effectiveMaxBlocks,
+      freeBlocks: currentFreeBlocks + ungrownBlocks,
       totalInodes: this.r32(SB_TOTAL_INODES),
       freeInodes: Atomics.load(this.i32, SB_FREE_INODES >> 2),
       maxName: MAX_NAME,
