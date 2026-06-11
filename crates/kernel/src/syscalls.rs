@@ -2652,12 +2652,74 @@ pub fn sys_read(
                         | VirtualDevice::Fb0
                         | VirtualDevice::Dsp
                         | VirtualDevice::DriRenderD128 => 0,
-                        // A2 placeholder — A5 replaces with the ring
-                        // drain. Returning 0 here is "no events
-                        // pending", which is what reads against a
-                        // freshly-opened evdev fd see before any
-                        // host-pushed events arrive.
-                        VirtualDevice::InputEvent { .. } => 0,
+                        VirtualDevice::InputEvent { .. } => {
+                            // Drain the per-OFD evdev ring into the
+                            // caller buffer. Linux evdev semantics:
+                            // the buffer is floored to a whole
+                            // 24-byte `struct input_event` boundary
+                            // and we never return a partial record.
+                            // A sub-record buffer is a protocol bug
+                            // and returns EINVAL.
+                            use wasm_posix_shared::clock::CLOCK_MONOTONIC;
+                            use wasm_posix_shared::input::{
+                                EV_SYN, SYN_DROPPED, WpkInputEvent,
+                            };
+                            let usable = (buf.len() / 24) * 24;
+                            if usable == 0 {
+                                return Err(Errno::EINVAL);
+                            }
+                            let input = input_state_mut(proc, ofd_idx)?;
+                            // Nothing queued and no overflow latch
+                            // outstanding: match DriCard0's
+                            // non-blocking behaviour. The kernel
+                            // doesn't actually park the reader here;
+                            // host JS retries poll on a timer until
+                            // wake_event_reader gets real routing in
+                            // Phase B.
+                            if input.event_ring.is_empty() && !input.dropped {
+                                if status_flags & O_NONBLOCK != 0 {
+                                    return Err(Errno::EAGAIN);
+                                }
+                                return Ok(0);
+                            }
+                            let mut written = 0;
+                            // Producer overflowed: synthesise a
+                            // SYN_DROPPED marker at the head of this
+                            // read so userspace can resync state via
+                            // EVIOCG* before resuming the event
+                            // stream. CLOCK_MONOTONIC stamp matches
+                            // real records; fallback (0,0) is fine
+                            // because readers select on type/code.
+                            if input.dropped {
+                                let (sec, nsec) = host
+                                    .host_clock_gettime(CLOCK_MONOTONIC)
+                                    .unwrap_or((0, 0));
+                                let synth = WpkInputEvent {
+                                    tv_sec: sec,
+                                    tv_usec: (nsec / 1_000) as i32,
+                                    _pad: 0,
+                                    ev_type: EV_SYN,
+                                    code: SYN_DROPPED,
+                                    value: 0,
+                                };
+                                let bytes: [u8; 24] = unsafe {
+                                    core::mem::transmute(synth)
+                                };
+                                buf[..24].copy_from_slice(&bytes);
+                                written = 24;
+                                input.dropped = false;
+                            }
+                            while written + 24 <= usable
+                                && !input.event_ring.is_empty()
+                            {
+                                for i in 0..24 {
+                                    buf[written + i] =
+                                        input.event_ring.pop_front().unwrap();
+                                }
+                                written += 24;
+                            }
+                            written
+                        }
                         VirtualDevice::DriCard0 => {
                             // Drain queued DRM events (DRM_EVENT_FLIP_COMPLETE)
                             // into the caller buffer, one byte at a time so a
@@ -8213,6 +8275,26 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         }
                     }
                     // card0 doesn't accept writes — never report POLLOUT.
+                } else if ofd.file_type == FileType::CharDevice
+                    && matches!(
+                        VirtualDevice::from_host_handle(ofd.host_handle),
+                        Some(VirtualDevice::InputEvent { .. })
+                    )
+                {
+                    // /dev/input/event{0,1} gates POLLIN on the per-OFD
+                    // ring holding a record OR the SYN_DROPPED latch
+                    // being set. Either condition means the next read
+                    // returns >0 bytes — sys_read returns Ok(0) on an
+                    // empty/no-latch ring, so reporting always-ready
+                    // POLLIN would spin libinput.
+                    if pollfd.events & POLLIN != 0 {
+                        if let Some(input) = ofd.input() {
+                            if !input.event_ring.is_empty() || input.dropped {
+                                revents |= POLLIN;
+                            }
+                        }
+                    }
+                    // evdev is read-only — never report POLLOUT.
                 } else {
                     // Regular files and char devices are always ready
                     if pollfd.events & POLLIN != 0 {
@@ -22653,9 +22735,11 @@ mod tests {
 
     #[test]
     fn read_eventN_returns_zero_before_any_event() {
-        // A2 placeholder: the ring is empty; read returns 0 (no
-        // events). A5 replaces this with the actual ring drain +
-        // SYN_DROPPED resync semantics.
+        // Empty ring + no dropped latch + caller didn't request
+        // O_NONBLOCK → Ok(0). Matches DriCard0's read semantics
+        // (the kernel doesn't park readers; host JS retries poll
+        // on a timer until wake_event_reader gets real routing in
+        // Phase B).
         let mut proc = Process::new(401);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
@@ -22871,5 +22955,235 @@ mod tests {
         let mut buf = [0u8; 4];
         let err = sys_ioctl(&mut proc, &mut host, fd, foreign, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOTTY);
+    }
+
+    // -----------------------------------------------------------------
+    // sys_read drain + sys_poll(POLLIN) + SYN_DROPPED resync (A5).
+    // -----------------------------------------------------------------
+
+    /// Inject one `WpkInputEvent` into an OFD's ring without going
+    /// through `dispatch::push_event` (avoids registering the test
+    /// process in GLOBAL_PROCESS_TABLE).
+    fn push_event_into_ofd(
+        proc: &mut Process,
+        ofd_idx: usize,
+        ev_type: u16,
+        code: u16,
+        value: i32,
+    ) {
+        use wasm_posix_shared::input::WpkInputEvent;
+        let input = proc
+            .ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .input_mut()
+            .unwrap();
+        let ev = WpkInputEvent {
+            tv_sec: 0,
+            tv_usec: 0,
+            _pad: 0,
+            ev_type,
+            code,
+            value,
+        };
+        let bytes: [u8; 24] = unsafe { core::mem::transmute(ev) };
+        for b in bytes {
+            input.event_ring.push_back(b);
+        }
+    }
+
+    fn extract_record_at(
+        buf: &[u8],
+        off: usize,
+    ) -> wasm_posix_shared::input::WpkInputEvent {
+        unsafe {
+            core::ptr::read_unaligned(
+                buf.as_ptr().add(off) as *const wasm_posix_shared::input::WpkInputEvent,
+            )
+        }
+    }
+
+    #[test]
+    fn read_returns_einval_for_buffer_shorter_than_one_record() {
+        // Linux evdev semantics: reads must be sized to at least one
+        // `struct input_event`. A 12-byte buffer would force a
+        // partial record return, which the protocol forbids.
+        let (mut proc, mut host, fd) = open_evdev(701, b"/dev/input/event0");
+        let mut buf = [0u8; 12];
+        let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EINVAL);
+    }
+
+    #[test]
+    fn read_drains_whole_records_from_ring() {
+        use wasm_posix_shared::input::{EV_KEY, EV_SYN, KEY_A, SYN_REPORT};
+        let (mut proc, mut host, fd) = open_evdev(702, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 1);
+        push_event_into_ofd(&mut proc, ofd_idx, EV_SYN, SYN_REPORT, 0);
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 0);
+        let mut buf = [0u8; 72];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 72);
+        let r0 = extract_record_at(&buf, 0);
+        let r1 = extract_record_at(&buf, 24);
+        let r2 = extract_record_at(&buf, 48);
+        assert_eq!((r0.ev_type, r0.code, r0.value), (EV_KEY, KEY_A, 1));
+        assert_eq!((r1.ev_type, r1.code, r1.value), (EV_SYN, SYN_REPORT, 0));
+        assert_eq!((r2.ev_type, r2.code, r2.value), (EV_KEY, KEY_A, 0));
+        let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert!(input.event_ring.is_empty());
+    }
+
+    #[test]
+    fn read_truncates_to_whole_record_boundary_and_leaves_remainder() {
+        use wasm_posix_shared::input::{EV_KEY, KEY_A};
+        let (mut proc, mut host, fd) = open_evdev(703, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        for v in 0..3 {
+            push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, v);
+        }
+        // 50 bytes: floors to 48 (= 2 whole records); one stays in
+        // the ring.
+        let mut buf = [0u8; 50];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 48);
+        let r0 = extract_record_at(&buf, 0);
+        let r1 = extract_record_at(&buf, 24);
+        assert_eq!(r0.value, 0);
+        assert_eq!(r1.value, 1);
+        let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert_eq!(input.event_ring.len(), 24);
+        // The remaining record is value=2; drain via a second read.
+        let mut buf2 = [0u8; 24];
+        let n2 = sys_read(&mut proc, &mut host, fd, &mut buf2).unwrap();
+        assert_eq!(n2, 24);
+        assert_eq!(extract_record_at(&buf2, 0).value, 2);
+    }
+
+    #[test]
+    fn read_with_dropped_flag_emits_syn_dropped_and_clears_flag() {
+        use wasm_posix_shared::input::{EV_SYN, SYN_DROPPED};
+        let (mut proc, mut host, fd) = open_evdev(704, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .input_mut()
+            .unwrap()
+            .dropped = true;
+        let mut buf = [0u8; 24];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 24);
+        let synth = extract_record_at(&buf, 0);
+        assert_eq!(synth.ev_type, EV_SYN);
+        assert_eq!(synth.code, SYN_DROPPED);
+        assert_eq!(synth.value, 0);
+        let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert!(!input.dropped, "dropped flag must clear after SYN_DROPPED emit");
+    }
+
+    #[test]
+    fn read_after_overflow_emits_syn_dropped_then_real_records() {
+        use wasm_posix_shared::input::{EV_KEY, EV_SYN, KEY_A, SYN_DROPPED};
+        let (mut proc, mut host, fd) = open_evdev(705, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 100);
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 101);
+        // Latch the overflow flag as if the producer hit a full ring
+        // after pushing those two records — dispatch::push_event sets
+        // this exact field on the OFD.
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .input_mut()
+            .unwrap()
+            .dropped = true;
+        let mut buf = [0u8; 72];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 72);
+        let synth = extract_record_at(&buf, 0);
+        assert_eq!((synth.ev_type, synth.code), (EV_SYN, SYN_DROPPED));
+        let r1 = extract_record_at(&buf, 24);
+        let r2 = extract_record_at(&buf, 48);
+        assert_eq!((r1.ev_type, r1.code, r1.value), (EV_KEY, KEY_A, 100));
+        assert_eq!((r2.ev_type, r2.code, r2.value), (EV_KEY, KEY_A, 101));
+        let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert!(!input.dropped);
+        assert!(input.event_ring.is_empty());
+    }
+
+    #[test]
+    fn read_empty_ring_with_nonblock_returns_eagain() {
+        // Matches DriCard0: O_NONBLOCK + no data ready → EAGAIN.
+        // Blocking-mode reads still return Ok(0) (covered above).
+        let mut proc = Process::new(706);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(
+            &mut proc,
+            &mut host,
+            b"/dev/input/event0",
+            O_RDONLY | O_NONBLOCK,
+            0,
+        )
+        .unwrap();
+        let mut buf = [0u8; 24];
+        let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::EAGAIN);
+    }
+
+    #[test]
+    fn poll_pollin_idle_then_ready_after_event_pushed() {
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::input::{EV_KEY, KEY_A};
+        use wasm_posix_shared::poll::POLLIN;
+        let (mut proc, mut host, fd) = open_evdev(707, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0, "empty ring + no dropped latch → POLLIN idle");
+        assert_eq!(pollfd.revents, 0);
+        push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 1);
+        let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLIN, 0);
+    }
+
+    #[test]
+    fn poll_pollin_ready_when_only_dropped_flag_is_set() {
+        // The SYN_DROPPED marker alone is a readable record — the
+        // ring is empty but read() will still return 24 bytes.
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::poll::POLLIN;
+        let (mut proc, mut host, fd) = open_evdev(708, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.ofd_table
+            .get_mut(ofd_idx)
+            .unwrap()
+            .input_mut()
+            .unwrap()
+            .dropped = true;
+        let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 1);
+        assert_ne!(pollfd.revents & POLLIN, 0);
+    }
+
+    #[test]
+    fn poll_never_reports_pollout_for_evdev_fd() {
+        // Input devices are read-only — POLLOUT must never fire,
+        // even with an empty ring and POLLOUT requested.
+        use wasm_posix_shared::WasmPollFd;
+        use wasm_posix_shared::poll::{POLLIN, POLLOUT};
+        let (mut proc, mut host, fd) = open_evdev(709, b"/dev/input/event0");
+        let mut pollfd = WasmPollFd {
+            fd,
+            events: POLLIN | POLLOUT,
+            revents: 0,
+        };
+        let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(pollfd.revents & POLLOUT, 0);
     }
 }
