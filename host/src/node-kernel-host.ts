@@ -26,6 +26,7 @@ import type {
 } from "./node-kernel-protocol";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+import type { InputSource } from "./input/input-source";
 
 export type { HttpRequest, HttpResponse };
 
@@ -282,6 +283,57 @@ export class NodeKernelHost {
    */
   kmsAttachStats(crtcId: number, stats: SharedArrayBuffer): void {
     this.sendToWorker({ type: "kms_attach_stats", crtcId, stats });
+  }
+
+  /**
+   * Push one evdev record into the kernel's `/dev/input/event{0,1}`
+   * ring. Mirrors `BrowserKernel.injectInputEvent`. The Node host
+   * doesn't have a DOM source; tests drive evdev traffic directly
+   * via this entry point.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.sendToWorker({
+      type: "input_event_inject",
+      device,
+      ev_type,
+      code,
+      value,
+    });
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
+   * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.sendToWorker({ type: "set_input_canvas_dims", width, height });
+  }
+
+  /**
+   * Wire an `InputSource` into the kernel: sets canvas dims, then
+   * starts the source with a dispatch callback that funnels each
+   * emitted record through `injectInputEvent`. Mirrors
+   * `BrowserKernel.attachInputSource` — dual-host parity per
+   * CLAUDE.md §"Two hosts".
+   *
+   * On the Node host the source is typically a `NodeInputSource`
+   * (no-op) so the init path is symmetric with the browser; tests
+   * call `injectInputEvent` directly afterwards.
+   */
+  attachInputSource(
+    source: InputSource,
+    dims: { width: number; height: number },
+  ): void {
+    this.setInputCanvasDims(dims.width, dims.height);
+    source.start((ev) =>
+      this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
+    );
   }
 
   /**

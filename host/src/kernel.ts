@@ -274,6 +274,43 @@ export class WasmPosixKernel {
     inject(dx, dy, buttons);
   }
 
+  /**
+   * Push one evdev record into the kernel's `/dev/input/event{0,1}`
+   * ring. `device` selects keyboard (0) or pointer (1); `ev_type`,
+   * `code`, `value` mirror the Linux `struct input_event` tail. The
+   * host runtime is expected to follow each type-specific record with
+   * an `EV_SYN(SYN_REPORT, 0)` so the kernel sees one logical frame
+   * per gesture — see `BrowserInputSource`'s dispatch contract.
+   * Silently dropped if the kernel module is not instantiated yet.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    const inject = this.instance?.exports?.kernel_input_event as
+      | ((device: number, ev_type: number, code: number, value: number) => void)
+      | undefined;
+    if (!inject) return;
+    inject(device, ev_type, code, value);
+  }
+
+  /**
+   * Record the host canvas dimensions on the kernel so EVIOCGABS on
+   * `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
+   * `ABS_Y.maximum = height - 1`. Must be called once the canvas
+   * exists and again on any resize; silently dropped if the kernel
+   * module is not instantiated yet.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    const set = this.instance?.exports?.kernel_set_input_canvas_dims as
+      | ((width: number, height: number) => void)
+      | undefined;
+    if (!set) return;
+    set(width, height);
+  }
+
   // ---------------------------------------------------------------------------
   // /dev/dsp — host-drained PCM audio
   // ---------------------------------------------------------------------------

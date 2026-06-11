@@ -1655,6 +1655,12 @@ sw.onmessage = (e: MessageEvent) => {
     case "kms_attach_stats":
       kernelWorker.attachKmsStats(msg.crtcId, msg.stats);
       break;
+    case "input_event_inject":
+      kernelWorker.injectInputEvent(msg.device, msg.ev_type, msg.code, msg.value);
+      break;
+    case "set_input_canvas_dims":
+      kernelWorker.setInputCanvasDims(msg.width, msg.height);
+      break;
     default: {
       // Handle non-protocol messages (e.g., bridge port transfer)
       const raw = e.data as any;

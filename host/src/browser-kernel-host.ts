@@ -15,6 +15,7 @@ import type {
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
+import type { InputSource } from "./input/input-source";
 
 export type { HttpRequest, HttpResponse };
 import kernelWasmUrl from "@kernel-wasm?url";
@@ -812,6 +813,59 @@ export class BrowserKernel {
    */
   injectMouseEvent(dx: number, dy: number, buttons: number): void {
     this.sendToKernel({ type: "mouse_inject", dx, dy, buttons });
+  }
+
+  /**
+   * Push one evdev record into the kernel's `/dev/input/event{0,1}`
+   * ring. `device` is 0 for the keyboard, 1 for the pointer; the
+   * other three fields mirror Linux `struct input_event`. Apps
+   * normally route through `attachInputSource` and never call this
+   * directly — exposed for tests + niche injection paths.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.sendToKernel({
+      type: "input_event_inject",
+      device,
+      ev_type,
+      code,
+      value,
+    });
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
+   * `ABS_Y.maximum = height - 1`. Call once at boot when the canvas
+   * is attached and again on any resize.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.sendToKernel({ type: "set_input_canvas_dims", width, height });
+  }
+
+  /**
+   * Wire an `InputSource` into the kernel: sets canvas dims, then
+   * starts the source with a dispatch callback that funnels each
+   * emitted record through `injectInputEvent`. Mirrors
+   * `NodeKernelHost.attachInputSource` — dual-host parity per
+   * CLAUDE.md §"Two hosts".
+   *
+   * The browser caller is responsible for instantiating the source
+   * with the right DOM target + canvas: typically
+   * `new BrowserInputSource(window, canvas)`.
+   */
+  attachInputSource(
+    source: InputSource,
+    dims: { width: number; height: number },
+  ): void {
+    this.setInputCanvasDims(dims.width, dims.height);
+    source.start((ev) =>
+      this.injectInputEvent(ev.device, ev.ev_type, ev.code, ev.value),
+    );
   }
 
   /**

@@ -218,6 +218,35 @@ export interface MouseInjectMessage {
 }
 
 /**
+ * Main-thread → kernel-worker evdev injection. The main thread's
+ * `BrowserInputSource` translates DOM events to evdev records and
+ * forwards them here; the worker calls
+ * `CentralizedKernelWorker.injectInputEvent` which routes the record
+ * through the kernel's fan-out (`kernel_input_event` → `push_event`)
+ * to `/dev/input/event{0,1}` and wakes any blocked reader.
+ */
+export interface InputEventInjectMessage {
+  type: "input_event_inject";
+  device: 0 | 1;
+  ev_type: number;
+  code: number;
+  value: number;
+}
+
+/**
+ * Main-thread → kernel-worker canvas-dims update. Tells the kernel
+ * the current host canvas dimensions so EVIOCGABS on
+ * `/dev/input/event1` reports the right `ABS_X.maximum` /
+ * `ABS_Y.maximum`. Sent at boot once the canvas exists; resend on
+ * canvas resize.
+ */
+export interface SetInputCanvasDimsMessage {
+  type: "set_input_canvas_dims";
+  width: number;
+  height: number;
+}
+
+/**
  * Main-thread → kernel-worker audio drain request. The main thread's
  * AudioContext scheduler ticks every ~50 ms, asks the kernel ring for
  * up to `maxBytes` of PCM samples, and feeds them to a chained
@@ -347,6 +376,8 @@ export type MainToKernelMessage =
   | RegisterLazyArchivesMessage
   | GetForkCountRequestMessage
   | MouseInjectMessage
+  | InputEventInjectMessage
+  | SetInputCanvasDimsMessage
   | AudioDrainMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage

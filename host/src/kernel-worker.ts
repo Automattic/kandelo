@@ -7236,6 +7236,34 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Push one evdev record into `/dev/input/event{0,1}` and wake any
+   * process blocked on `sys_read` / `sys_poll` against the device.
+   * The per-OFD ring caps at 1024 records; overflow latches `dropped`
+   * and the next read returns `SYN_DROPPED` (kernel A4/A5). Wake
+   * routing reuses `scheduleWakeBlockedRetries` so the existing
+   * pending-readers tick services event ofds too — same shape as
+   * `injectMouseEvent` for `/dev/input/mice`.
+   */
+  injectInputEvent(
+    device: 0 | 1,
+    ev_type: number,
+    code: number,
+    value: number,
+  ): void {
+    this.kernel.injectInputEvent(device, ev_type, code, value);
+    this.scheduleWakeBlockedRetries();
+  }
+
+  /**
+   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
+   * `ABS_Y.maximum`. Idempotent; call again on canvas resize.
+   */
+  setInputCanvasDims(width: number, height: number): void {
+    this.kernel.setInputCanvasDims(width, height);
+  }
+
+  /**
    * Drain up to `out.byteLength` bytes of PCM audio buffered in
    * `/dev/dsp` into `out`. Returns the number of bytes copied, always
    * a multiple of the active frame size (2 bytes mono / 4 bytes
