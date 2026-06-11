@@ -117,4 +117,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["/usr/games/fbdoom"],
     estimatedUrlBytes: 1018,
   },
+  {
+    id: "modeset",
+    title: "DRM/KMS modeset",
+    summary: "Rotating gradient driven through /dev/dri/card0 + drmModePageFlip onto a host OffscreenCanvas.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#4f8fd6",
+    glyph: "K",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
 ];

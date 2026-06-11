@@ -107,6 +107,28 @@ export interface KernelLike {
    */
   injectMouseEvent?(dx: number, dy: number, buttons: number): void;
   /**
+   * Hand an `OffscreenCanvas` to the kernel worker as the scanout
+   * target for KMS CRTC `crtcId`. Optional `stats` SAB receives
+   * blit + page-flip telemetry. `opts.mode` declares how the canvas
+   * is painted (see `CentralizedKernelWorker.attachKmsCanvas`):
+   * `"auto"` (default) defers context acquisition to whichever path
+   * arrives first; `"2d"` opts into the legacy CPU-blit pump; `"webgl2"`
+   * tells the pump the canvas is GL-owned so it stays hands-off and
+   * lets a libdrm/libgbm/EGL program (e.g. modeset.c) claim it.
+   */
+  kmsAttachCanvas?(
+    crtcId: number,
+    canvas: OffscreenCanvas,
+    stats?: SharedArrayBuffer,
+    opts?: { mode?: "auto" | "2d" | "webgl2" },
+  ): void;
+  /**
+   * Register a stats SAB for `crtcId` without binding a scanout
+   * canvas. Used by WebGL-rendered demos that want page-flip
+   * telemetry without a 2D blit.
+   */
+  kmsAttachStats?(crtcId: number, stats: SharedArrayBuffer): void;
+  /**
    * Drain PCM bytes buffered in `/dev/dsp` for browser playback.
    */
   drainAudio?(maxBytes: number): Promise<{
@@ -261,6 +283,37 @@ export interface AudioOutputHandle {
   getState(): AudioContextState | "unavailable";
 }
 
+/**
+ * Handle returned by `attachKmsDisplay`. The wrapped canvas is wired up
+ * as the scanout target for a KMS CRTC; whatever wasm process holds
+ * DRM master and commits page-flips drives the pixels.
+ *
+ * Stats slots (Int32Array view over the SAB the handle owns):
+ *   0: frame count (host pump, monotonic)
+ *   1: last blit timestamp (ms, performance.now() | 0)
+ *   2: current scanout width
+ *   3: current scanout height
+ *   4: last blit µs
+ *   5: kernel-side PAGE_FLIP commit count
+ *   6: kernel-side last frame µs (clock at PAGE_FLIP completion)
+ */
+export interface KmsDisplayHandle {
+  /** CRTC the canvas is bound to (matches what the wasm process passes
+   *  to `drmModePageFlip(crtc_id, …)`). */
+  readonly crtcId: number;
+  /** Int32Array view over the stats SAB. Slots above. */
+  readonly stats: Int32Array;
+  /** Inject one PS/2-style mouse event into the kernel's
+   *  `/dev/input/mice`. The renderer (e.g. modeset.c → Pavel's fluid sim)
+   *  reads cursor + button state from there. Deltas use the same
+   *  convention as `KernelHost.injectMouseEvent` (positive X right,
+   *  positive Y up). `buttons` uses PS/2 bits: bit0=left, bit1=right,
+   *  bit2=middle. No-op when the wrapped kernel lacks mouse injection. */
+  sendMouseEvent(dx: number, dy: number, buttons: number): void;
+  /** Detach the canvas. Subsequent vblank ticks no-op for this CRTC. */
+  close(): void;
+}
+
 export type WebPreviewStatus = "starting" | "running" | "error";
 
 export interface WebPreviewState {
@@ -272,7 +325,7 @@ export interface WebPreviewState {
 
 // ── Presentation intent ──────────────────────────────────────────────────
 
-export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web";
+export type PrimarySurface = "syslog" | "terminal" | "framebuffer" | "web" | "kms";
 
 export type SurfaceAvailability = Record<PrimarySurface, boolean>;
 
@@ -461,6 +514,20 @@ export interface KernelHost {
   // traffic for the bound process.
   attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle;
 
+  // KMS display — registers a canvas as the scanout target for a
+  // DRM CRTC. `opts.mode` (default "webgl2") selects how the canvas
+  // is painted: "webgl2" hands ownership to the libdrm/libgbm/EGL
+  // path (modeset.c etc.); "2d" keeps the legacy CPU-blit pump that
+  // copies the kernel's scanout BO into the canvas at 60 Hz; "auto"
+  // defers the choice to whichever path arrives first. Returns null
+  // when the wrapped kernel does not yet expose `kmsAttachCanvas`
+  // (older ABI, Node host without an OffscreenCanvas polyfill, etc.).
+  attachKmsDisplay(
+    canvas: HTMLCanvasElement,
+    crtcId?: number,
+    opts?: { mode?: "auto" | "2d" | "webgl2" },
+  ): KmsDisplayHandle | null;
+
   // web preview — service demos can expose an HTTP bridge endpoint.
   getWebPreview(): WebPreviewState | null;
   subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void;
@@ -618,6 +685,7 @@ const DEFAULT_SURFACE_AVAILABILITY: SurfaceAvailability = {
   terminal: false,
   framebuffer: false,
   web: false,
+  kms: false,
 };
 
 const NOT_IMPLEMENTED = (m: string) =>
@@ -666,6 +734,13 @@ export class LiveKernelHost implements KernelHost {
    * the PTY slave, not a host-side stdin buffer.
    */
   private shellPids = new Map<number, string>();
+  /**
+   * KMS display handles keyed by their canvas DOM node. React 18 StrictMode
+   * double-invokes effects, and `transferControlToOffscreen()` may only run
+   * once per canvas, so attachKmsDisplay memoizes the handle here. A WeakMap
+   * lets the handle drop naturally when the canvas itself is GC'd.
+   */
+  private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
 
   constructor(opts: LiveKernelHostOptions = {}) {
     this._status = opts.status ?? "idle";
@@ -678,6 +753,7 @@ export class LiveKernelHost implements KernelHost {
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.refreshWebAvailability();
+    this.refreshKmsAvailability();
   }
 
   // ── owner-facing wiring helpers ──────────────────────────────────────────
@@ -697,6 +773,7 @@ export class LiveKernelHost implements KernelHost {
     }
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
+    this.refreshKmsAvailability();
   }
 
   /** Clear the wrapped kernel after a failed boot without changing status. */
@@ -709,7 +786,7 @@ export class LiveKernelHost implements KernelHost {
     this.shellPids.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
-    this.setSurfaceAvailability({ web: false });
+    this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
   }
 
@@ -823,7 +900,8 @@ export class LiveKernelHost implements KernelHost {
       next.syslog === this.surfaceAvailability.syslog &&
       next.terminal === this.surfaceAvailability.terminal &&
       next.framebuffer === this.surfaceAvailability.framebuffer &&
-      next.web === this.surfaceAvailability.web
+      next.web === this.surfaceAvailability.web &&
+      next.kms === this.surfaceAvailability.kms
     ) {
       return;
     }
@@ -843,6 +921,18 @@ export class LiveKernelHost implements KernelHost {
 
   private refreshWebAvailability(): void {
     this.setSurfaceAvailability({ web: this.webPreview?.status === "running" });
+  }
+
+  /**
+   * KMS surface is treated as "available" once the wrapped kernel exposes
+   * `kmsAttachCanvas`. The kernel-side CRTC always advertises one CRTC, so
+   * there is no separate per-CRTC availability event; the Modeset pane
+   * surfaces "waiting for PAGE_FLIP" until a process binds DRM master.
+   */
+  private refreshKmsAvailability(): void {
+    this.setSurfaceAvailability({
+      kms: Boolean(this.kernel?.kmsAttachCanvas),
+    });
   }
 
   // ── KernelHost: status ───────────────────────────────────────────────────
@@ -873,7 +963,7 @@ export class LiveKernelHost implements KernelHost {
     this.setStatus("halted");
     this.offFramebufferAvailability?.();
     this.offFramebufferAvailability = null;
-    this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false });
+    this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
     await this.kernel?.destroy?.();
   }
@@ -1378,6 +1468,45 @@ export class LiveKernelHost implements KernelHost {
         setBoundPid(null);
       },
     };
+  }
+
+  // ── KernelHost: KMS display ──────────────────────────────────────────────
+
+  attachKmsDisplay(
+    canvas: HTMLCanvasElement,
+    crtcId: number = 1,
+    opts: { mode?: "auto" | "2d" | "webgl2" } = { mode: "webgl2" },
+  ): KmsDisplayHandle | null {
+    if (!this.kernel?.kmsAttachCanvas) return null;
+    if (typeof canvas.transferControlToOffscreen !== "function") return null;
+    // React 18 StrictMode double-invokes effects: mount → cleanup → mount,
+    // and the second mount hits this method again on the same DOM canvas.
+    // `transferControlToOffscreen()` can only be called once per canvas, so
+    // memoize the handle here. The cached handle keeps the original
+    // statsSab/OffscreenCanvas alive across the StrictMode unmount.
+    const cached = this.kmsHandles.get(canvas);
+    if (cached) return cached;
+    // 7 i32 slots × 4 bytes = 28 bytes; align to 64 so atomics are happy.
+    const statsSab = new SharedArrayBuffer(64);
+    const stats = new Int32Array(statsSab);
+    const offscreen = canvas.transferControlToOffscreen();
+    this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, opts);
+    const kernel = this.kernel;
+    const handle: KmsDisplayHandle = {
+      crtcId,
+      stats,
+      sendMouseEvent: (dx, dy, buttons) => {
+        kernel.injectMouseEvent?.(dx, dy, buttons);
+      },
+      close: () => {
+        // The worker auto-stops the pump tick for unused CRTCs on the
+        // next teardown; there's no explicit detach API yet. Closing
+        // the handle just drops the local view so callers can drop
+        // their reference.
+      },
+    };
+    this.kmsHandles.set(canvas, handle);
+    return handle;
   }
 
   getWebPreview(): WebPreviewState | null {

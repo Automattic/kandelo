@@ -907,6 +907,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_kms_commit_count",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_kms_last_frame_us",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_link",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -1614,6 +1624,11 @@
       "kind": "func",
       "name": "kernel_utimensat",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_vblank",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
