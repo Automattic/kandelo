@@ -1,9 +1,46 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 
+type BrowserDiagnostics = {
+  console: string[];
+  pageErrors: string[];
+  requestFailures: string[];
+};
+
+const diagnosticsByPage = new WeakMap<Page, BrowserDiagnostics>();
+const MAX_LOG_LINES = 160;
+
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;
   return baseUrl ? new URL(path, baseUrl).href : path;
 };
+
+test.beforeEach(({ page }) => {
+  const diagnostics: BrowserDiagnostics = {
+    console: [],
+    pageErrors: [],
+    requestFailures: [],
+  };
+  diagnosticsByPage.set(page, diagnostics);
+
+  page.on("console", (msg) => {
+    diagnostics.console.push(`[${msg.type()}] ${msg.text()}`);
+    trimLog(diagnostics.console);
+  });
+  page.on("pageerror", (err) => {
+    diagnostics.pageErrors.push(err.stack || err.message);
+    trimLog(diagnostics.pageErrors);
+  });
+  page.on("requestfailed", (request) => {
+    diagnostics.requestFailures.push(`${request.method()} ${request.url()} :: ${request.failure()?.errorText ?? "failed"}`);
+    trimLog(diagnostics.requestFailures);
+  });
+});
+
+function trimLog(lines: string[]) {
+  if (lines.length > MAX_LOG_LINES) {
+    lines.splice(0, lines.length - MAX_LOG_LINES);
+  }
+}
 
 async function gotoOrSkip(page: Page, path: string) {
   await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
@@ -63,73 +100,147 @@ function webFrame(page: Page, title: string): FrameLocator {
   return page.frameLocator(`iframe[title="${title}"]`);
 }
 
+async function attachKandeloDiagnostics(page: Page, label: string) {
+  const info = test.info();
+  const safeLabel = label.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
+  const diagnostics = diagnosticsByPage.get(page);
+
+  await attachText(
+    `${safeLabel}-browser-events.txt`,
+    [
+      "Console",
+      ...(diagnostics?.console.length ? diagnostics.console : ["<none>"]),
+      "",
+      "Page errors",
+      ...(diagnostics?.pageErrors.length ? diagnostics.pageErrors : ["<none>"]),
+      "",
+      "Request failures",
+      ...(diagnostics?.requestFailures.length ? diagnostics.requestFailures : ["<none>"]),
+    ].join("\n"),
+  );
+
+  const snapshot = await page.evaluate(() => {
+    const text = (node: Element | null): string => (node?.textContent ?? "").replace(/\s+/g, " ").trim();
+    return {
+      url: window.location.href,
+      title: document.title,
+      readyState: document.readyState,
+      bodyText: document.body.innerText,
+      machineCurrent: text(document.querySelector(".kmachine-current")),
+      surfaceButtons: Array.from(document.querySelectorAll(".kmachine-switch-btn")).map((button) => ({
+        text: text(button),
+        disabled: (button as HTMLButtonElement).disabled,
+        ariaCurrent: button.getAttribute("aria-current"),
+      })),
+      drawers: Array.from(document.querySelectorAll(".kmachine-drawer-toggle")).map((button) => ({
+        text: text(button),
+        expanded: button.getAttribute("aria-expanded"),
+      })),
+      webPreviewMessages: Array.from(document.querySelectorAll(".kpane-body")).map(text)
+        .filter((value) => /waiting|starting|ready|error|bridge|service|http/i.test(value)),
+      iframes: Array.from(document.querySelectorAll("iframe")).map((iframe) => {
+        const rect = iframe.getBoundingClientRect();
+        return {
+          title: iframe.title,
+          src: iframe.src,
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          visible: rect.width > 0 && rect.height > 0,
+        };
+      }),
+      syslog: Array.from(document.querySelectorAll(".ksys-line"))
+        .slice(-120)
+        .map((line) => line.textContent ?? ""),
+    };
+  }).catch((err) => ({
+    error: err instanceof Error ? err.stack || err.message : String(err),
+  }));
+
+  await attachText(`${safeLabel}-page-state.json`, JSON.stringify(snapshot, null, 2));
+  await page.screenshot({ fullPage: true })
+    .then((body) => info.attach(`${safeLabel}-screenshot.png`, { body, contentType: "image/png" }))
+    .catch(() => undefined);
+}
+
+async function attachText(name: string, body: string) {
+  await test.info().attach(name, {
+    body,
+    contentType: "text/plain",
+  }).catch(() => undefined);
+}
+
 async function runWordPressInstall(page: Page, demo: string, title: string) {
   test.setTimeout(600_000);
 
-  await gotoOrSkip(page, `/?demo=${demo}`);
-  await page.waitForSelector(`iframe[title="${title}"]`, { timeout: 240_000 });
-  const frame = webFrame(page, title);
+  try {
+    await gotoOrSkip(page, `/?demo=${demo}`);
+    await page.waitForSelector(`iframe[title="${title}"]`, { timeout: 240_000 });
+    const frame = webFrame(page, title);
 
-  await expect(
-    frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
-  ).toBeVisible({ timeout: 240_000 });
+    await expect(
+      frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
+    ).toBeVisible({ timeout: 240_000 });
 
-  if ((await frame.locator("form#language-chooser").count()) > 0) {
-    await frame.locator("form#language-chooser [type='submit']").click();
-    await expect(frame.locator("form#setup")).toBeVisible({ timeout: 60_000 });
-  }
-
-  const username = "admin";
-  const password = "Testpass123!Testpass123!";
-
-  await frame.locator("#weblog_title").fill(`Kandelo ${demo} E2E`);
-  await frame.locator("#user_login").fill(username);
-
-  const passField = frame.locator("#pass1");
-  if ((await passField.count()) > 0) {
-    await passField.fill(password);
-  }
-  const pass2Field = frame.locator("#pass2");
-  if ((await pass2Field.count()) > 0 && await pass2Field.isVisible()) {
-    await pass2Field.fill(password);
-  }
-
-  const weakPw = frame.locator("#pw_weak, .pw-weak input[type='checkbox']");
-  if ((await weakPw.count()) > 0) {
-    try {
-      await weakPw.check({ timeout: 5_000 });
-    } catch {
-      // WordPress may hide this when it accepts the generated password.
+    if ((await frame.locator("form#language-chooser").count()) > 0) {
+      await frame.locator("form#language-chooser [type='submit']").click();
+      await expect(frame.locator("form#setup")).toBeVisible({ timeout: 60_000 });
     }
-  }
 
-  await frame.locator("#admin_email").fill("admin@example.com");
-  await frame.locator("#submit, [name='Submit']").click();
+    const username = "admin";
+    const password = "Testpass123!Testpass123!";
 
-  await expect(
-    frame.locator(".step, .install-success, h1").filter({ hasText: /success|installed|log in/i }).first(),
-  ).toBeVisible({ timeout: 360_000 });
+    await frame.locator("#weblog_title").fill(`Kandelo ${demo} E2E`);
+    await frame.locator("#user_login").fill(username);
 
-  const loginLink = frame.locator("a").filter({ hasText: /log in/i }).first();
-  if ((await loginLink.count()) > 0) {
-    await loginLink.click();
-  } else {
-    await frame.locator("body").evaluate(() => {
-      window.location.href = "/app/wp-login.php";
+    const passField = frame.locator("#pass1");
+    if ((await passField.count()) > 0) {
+      await passField.fill(password);
+    }
+    const pass2Field = frame.locator("#pass2");
+    if ((await pass2Field.count()) > 0 && await pass2Field.isVisible()) {
+      await pass2Field.fill(password);
+    }
+
+    const weakPw = frame.locator("#pw_weak, .pw-weak input[type='checkbox']");
+    if ((await weakPw.count()) > 0) {
+      try {
+        await weakPw.check({ timeout: 5_000 });
+      } catch {
+        // WordPress may hide this when it accepts the generated password.
+      }
+    }
+
+    await frame.locator("#admin_email").fill("admin@example.com");
+    await frame.locator("#submit, [name='Submit']").click();
+
+    await expect(
+      frame.locator(".step, .install-success, h1").filter({ hasText: /success|installed|log in/i }).first(),
+    ).toBeVisible({ timeout: 360_000 });
+
+    const loginLink = frame.locator("a").filter({ hasText: /log in/i }).first();
+    if ((await loginLink.count()) > 0) {
+      await loginLink.click();
+    } else {
+      await frame.locator("body").evaluate(() => {
+        window.location.href = "/app/wp-login.php";
+      });
+    }
+
+    await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
+    await frame.locator("#user_login").fill(username);
+    await frame.locator("#user_pass").fill(password);
+    await frame.locator("#wp-submit").click();
+
+    await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
+      timeout: 180_000,
     });
+    await expect(frame.locator("body")).toContainText(/Dashboard|WordPress/i, {
+      timeout: 60_000,
+    });
+  } catch (err) {
+    await attachKandeloDiagnostics(page, `${demo}-${title}`);
+    throw err;
   }
-
-  await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
-  await frame.locator("#user_login").fill(username);
-  await frame.locator("#user_pass").fill(password);
-  await frame.locator("#wp-submit").click();
-
-  await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
-    timeout: 180_000,
-  });
-  await expect(frame.locator("body")).toContainText(/Dashboard|WordPress/i, {
-    timeout: 60_000,
-  });
 }
 
 test.describe.configure({ mode: "serial" });
