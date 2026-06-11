@@ -17,6 +17,7 @@ pub(crate) mod exec_target;
 pub mod fd;
 pub mod fifo;
 pub mod fork;
+pub mod input;
 pub mod ipc;
 pub(crate) mod ipc_wire;
 pub mod lock;
