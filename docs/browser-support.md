@@ -177,8 +177,8 @@ Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFile
 
 ### How it works
 
-1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download.
-2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`.
+1. **Build time**: A TypeScript build script creates a `MemoryFileSystem`, writes files/dirs/symlinks into it, and calls `saveImage()` to produce a zstd-compressed `.vfs.zst` file. Empty regions of the SharedFS allocator compress to nearly nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1–3 MB download. If the image should grow or report a larger `df` capacity at runtime, build it with `MemoryFileSystem.create(sab, permittedMaxBytes)` so the filesystem metadata is sized for that capacity.
+2. **Runtime**: The demo page fetches the `.vfs.zst` file, calls `MemoryFileSystem.fromImage(imageBytes, { maxByteLength })` (which auto-detects zstd magic and decompresses transparently), and passes the resulting filesystem to `BrowserKernel({ memfs })`. `maxByteLength` makes the restored `SharedArrayBuffer` growable; it does not raise the filesystem maximum beyond the image's superblock limit.
 
 ```typescript
 // Typical demo pattern
