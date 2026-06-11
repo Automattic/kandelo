@@ -1277,6 +1277,11 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state,
+            // TODO(plan-5 A4/A5): once the host produces events and
+            // sys_read drains the ring, serialise input_state through
+            // fork the same way dri_state is. A2 leaves it None
+            // because no consumer exists yet.
+            input_state: None,
         };
         ofd.reset_directory_iterator_for_reopen();
         ofd_entries[index] = Some(ofd);
@@ -1952,6 +1957,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state,
+            // TODO(plan-5 A4/A5): see same TODO in the other
+            // OpenFileDesc reconstruction site above.
+            input_state: None,
         };
         ofd.reset_directory_iterator_for_reopen();
         ofd_entries[index] = Some(ofd);
