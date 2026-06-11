@@ -513,6 +513,46 @@ describe("VFS image save/restore", () => {
       expect(buf.byteLength).toBe(4 * 1024 * 1024);
     });
 
+    it("restored growable filesystem reports the image's permitted max capacity", async () => {
+      const initialBytes = 1 * 1024 * 1024;
+      const maxBytes = 8 * 1024 * 1024;
+      const sab = new SharedArrayBuffer(initialBytes, {
+        maxByteLength: maxBytes,
+      });
+      const mfs = MemoryFileSystem.create(sab, maxBytes);
+      writeFile(mfs, "/test.txt", new TextEncoder().encode("hello"));
+      const image = await mfs.saveImage();
+
+      const restored = MemoryFileSystem.fromImage(image, {
+        maxByteLength: maxBytes,
+      });
+      const stats = restored.statfs("/");
+
+      expect(restored.sharedBuffer.byteLength).toBe(initialBytes);
+      expect(restored.sharedBuffer.maxByteLength).toBe(maxBytes);
+      expect(stats.blocks * stats.bsize).toBe(maxBytes);
+      expect(stats.bfree).toBeGreaterThan(initialBytes / stats.bsize);
+    });
+
+    it("restored statfs capacity is capped by the image superblock max", async () => {
+      const initialBytes = 1 * 1024 * 1024;
+      const imageMaxBytes = 4 * 1024 * 1024;
+      const runtimeMaxBytes = 8 * 1024 * 1024;
+      const sab = new SharedArrayBuffer(initialBytes, {
+        maxByteLength: imageMaxBytes,
+      });
+      const mfs = MemoryFileSystem.create(sab, imageMaxBytes);
+      const image = await mfs.saveImage();
+
+      const restored = MemoryFileSystem.fromImage(image, {
+        maxByteLength: runtimeMaxBytes,
+      });
+      const stats = restored.statfs("/");
+
+      expect(restored.sharedBuffer.maxByteLength).toBe(runtimeMaxBytes);
+      expect(stats.blocks * stats.bsize).toBe(imageMaxBytes);
+    });
+
     it("restored filesystem with maxByteLength is writable", async () => {
       const mfs = createMemfs();
       writeFile(mfs, "/original.txt", new TextEncoder().encode("data"));
