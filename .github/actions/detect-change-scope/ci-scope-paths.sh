@@ -3,8 +3,13 @@
 # Effect-based changed-path classifiers. Each function reads a
 # newline-delimited path list on stdin and prints matching paths.
 
+ci_scope_paths_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 package_archive_changed_files() {
-  grep -E \
+  local files static_matches declared_input_matches
+  files=$(cat)
+
+  static_matches=$(printf '%s\n' "$files" | grep -E \
     -e '^packages/registry/' \
     -e '^sdk/(activate\.sh|config\.site|package(-lock)?\.json|tsconfig\.json)$' \
     -e '^sdk/(bin|kandelo|src)/' \
@@ -23,7 +28,20 @@ package_archive_changed_files() {
     -e '^scripts/(build-fork-instrument-tool|build-musl|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
     | grep -vE \
       -e '^packages/registry/[^/]+/(demo|test)(/|$)' \
-    || true
+    || true)
+
+  declared_input_matches=$(printf '%s\n' "$files" | package_declared_build_input_changed_files)
+
+  printf '%s\n%s\n' "$static_matches" "$declared_input_matches" | sed '/^$/d' | sort -u
+}
+
+package_declared_build_input_changed_files() {
+  local files
+  files=$(cat)
+
+  [ -d packages/registry ] || return 0
+
+  printf '%s\n' "$files" | python3 "$ci_scope_paths_dir/package-build-input-matches.py" packages/registry
 }
 
 package_publish_flow_changed_files() {

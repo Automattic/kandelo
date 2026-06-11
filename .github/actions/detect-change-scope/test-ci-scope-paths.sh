@@ -61,6 +61,18 @@ assert_matches package_archive_changed_files \
 assert_matches package_archive_changed_files \
   ".github/actions/fetch-submodules/action.yml" \
   ".github/actions/fetch-submodules/action.yml"
+assert_matches package_archive_changed_files \
+  "host/src/vfs/memory-fs.ts" \
+  "host/src/vfs/memory-fs.ts"
+assert_matches package_archive_changed_files \
+  "host/src/vfs/sharedfs-vendor.ts" \
+  "host/src/vfs/sharedfs-vendor.ts"
+assert_matches package_archive_changed_files \
+  "images/rootfs/etc/profile" \
+  "images/rootfs/etc/profile"
+assert_not_matches package_archive_changed_files \
+  "host/src/process.ts" \
+  "host/src/process.ts"
 assert_not_matches package_archive_changed_files \
   ".github/workflows/staging-build.yml" \
   ".github/workflows/staging-build.yml"
