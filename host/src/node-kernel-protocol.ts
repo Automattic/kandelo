@@ -63,6 +63,8 @@ export interface SpawnMessage {
   ptyCols?: number;
   ptyRows?: number;
   stdin?: Uint8Array;
+  /** Stdio fds (0, 1, 2) that should be host-backed pipes, not terminals. */
+  pipeStdio?: number[];
   /** Limit heap growth to protect thread channel pages */
   maxAddr?: number;
 }

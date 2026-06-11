@@ -1188,6 +1188,19 @@ fn ensure_memory_covers(_end_addr: usize) {
     // No-op on non-Wasm targets (tests)
 }
 
+fn terminate_process_by_signal(
+    proc: &mut crate::process::Process,
+    host: &mut WasmHostIO,
+    signum: u32,
+) {
+    proc.sigsuspend_saved_mask = None;
+    for t in proc.threads.iter_mut() {
+        t.signals.sigsuspend_saved_mask = None;
+    }
+    crate::syscalls::sys_exit(proc, host, 0);
+    proc.exit_signal = signum & 0x7f;
+}
+
 // 3c. Signal delivery at syscall boundaries
 // ---------------------------------------------------------------------------
 
@@ -1195,7 +1208,6 @@ fn ensure_memory_covers(_end_addr: usize) {
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
     use crate::signal::{DefaultAction, SignalHandler, default_action};
     let tid = crate::process_table::current_tid();
-    let _ = host;
     loop {
         // Caught signals are delivered by the glue code via
         // kernel_dequeue_signal; default and ignored signals are consumed here.
@@ -1214,8 +1226,7 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                 let _ = dequeue_signal_for(proc, tid, signum);
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+                        terminate_process_by_signal(proc, host, signum);
                     }
                     _ => {}
                 }
@@ -1460,16 +1471,48 @@ pub extern "C" fn kernel_set_process_argv(pid: u32, data_ptr: *const u8, data_le
 /// Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_stdin_pipe(pid: u32) -> i32 {
+    kernel_set_stdio_pipe(pid, 0)
+}
+
+/// Mark one of a process's standard descriptors as a host-backed pipe.
+///
+/// Hosts use this when they connect stdin/stdout/stderr to capture pipes
+/// rather than a terminal. The descriptor continues to use its existing
+/// host handle (0, 1, or 2), so reads and writes still delegate to the host
+/// stdio callbacks, but POSIX-visible metadata changes from character device
+/// to FIFO: isatty() returns ENOTTY and fstat() reports S_IFIFO.
+/// Returns 0 on success, -EINVAL for non-stdio fds, -ESRCH if pid not found.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_stdio_pipe(pid: u32, fd: i32) -> i32 {
+    if !(0..=2).contains(&fd) {
+        return -(Errno::EINVAL as i32);
+    }
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     if let Some(proc) = table.get_mut(pid) {
-        // Change OFD 0 (stdin) from CharDevice to Pipe
-        if let Some(ofd) = proc.ofd_table.get_mut(0) {
-            ofd.file_type = crate::ofd::FileType::Pipe;
+        if let Ok(entry) = proc.fd_table.get(fd) {
+            let ofd_idx = entry.ofd_ref.0;
+            if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+                ofd.host_handle = fd as i64;
+                ofd.path = match fd {
+                    0 => b"/dev/stdin".to_vec(),
+                    1 => b"/dev/stdout".to_vec(),
+                    _ => b"/dev/stderr".to_vec(),
+                };
+                ofd.file_type = crate::ofd::FileType::Pipe;
+            }
+        } else {
+            return -(Errno::EBADF as i32);
         }
         0
     } else {
         -(Errno::ESRCH as i32)
     }
+}
+
+/// Backwards-compatible alias for older host code.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_fd_pipe(pid: u32, fd: i32) -> i32 {
+    kernel_set_stdio_pipe(pid, fd)
 }
 
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
@@ -1643,13 +1686,21 @@ pub extern "C" fn kernel_clear_fork_child(pid: u32) -> i32 {
     }
 }
 
-/// Get process exit status.
-/// Returns exit_status if process is exited, -1 if still alive, -ESRCH if not found.
+/// Get process exit status (centralized mode).
+/// Returns the shell-style status used by host-side kill scans: normal exit
+/// code for regular exits, 128+signal for signal termination, -1 if still
+/// alive, or -ESRCH if not found.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_get_process_exit_status(pid: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     match table.get(pid) {
-        Some(proc) if proc.state == crate::process::ProcessState::Exited => proc.exit_status,
+        Some(proc) if proc.state == crate::process::ProcessState::Exited => {
+            if proc.exit_signal != 0 {
+                128 + proc.exit_signal as i32
+            } else {
+                proc.exit_status
+            }
+        }
         Some(_) => -1,
         None => -(Errno::ESRCH as i32),
     }
@@ -2116,13 +2167,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                 let _ = dequeue_signal_for(proc, tid, signum);
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        // Process is dying; clear sigsuspend state
-                        proc.sigsuspend_saved_mask = None;
-                        for t in proc.threads.iter_mut() {
-                            t.signals.sigsuspend_saved_mask = None;
-                        }
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+                        let mut host = WasmHostIO;
+                        terminate_process_by_signal(proc, &mut host, signum);
                         return 0;
                     }
                     _ => continue,
@@ -6930,7 +6976,8 @@ pub extern "C" fn kernel_exit(status: i32) -> ! {
         if unsafe { host_is_thread_worker() } != 0 {
             // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
             // Just set exit status and return — the glue will trap via unreachable.
-            proc.exit_status = status;
+            proc.exit_status = status & 0xff;
+            proc.exit_signal = 0;
             // Drop GKL guard before trapping
         } else {
             let mut host = WasmHostIO;

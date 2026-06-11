@@ -97,6 +97,9 @@ const FORK_BUF_SIZE = FORK_SAVE_BUFFER_SIZE;
 
 /** Errno values */
 const EAGAIN = 11;
+const EFAULT = 14;
+const EEXIST = 17;
+const ENAMETOOLONG = 36;
 const ETIMEDOUT = 110;
 const EINTR_ERRNO = 4;
 
@@ -1186,6 +1189,27 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Mark selected stdio descriptors as host-backed pipes rather than
+   * terminal character devices. Reads/writes still use host handles 0/1/2,
+   * but POSIX-visible metadata changes so isatty() fails with ENOTTY and
+   * fstat() reports FIFO semantics.
+   */
+  setStdioPipes(pid: number, fds: number[]): void {
+    if (!this.kernelInstance) return;
+    const kernelSetStdioPipe =
+      (this.kernelInstance.exports.kernel_set_stdio_pipe ??
+        this.kernelInstance.exports.kernel_set_fd_pipe) as
+        | ((pid: number, fd: number) => number)
+        | undefined;
+    if (!kernelSetStdioPipe) return;
+    for (const fd of fds) {
+      if (fd >= 0 && fd <= 2) {
+        kernelSetStdioPipe(pid, fd);
+      }
+    }
+  }
+
+  /**
    * Set stdout/stderr capture callbacks on the underlying kernel instance.
    * Must be called after construction but works at any time.
    */
@@ -1835,6 +1859,96 @@ export class CentralizedKernelWorker {
     const copy = new Uint8Array(capped);
     copy.set(mem.subarray(ptr, ptr + capped));
     return new TextDecoder("utf-8", { fatal: false }).decode(copy);
+  }
+
+  private writeKernelScratchString(value: string, offset: number): { ptr: number; len: number } {
+    const encoded = new TextEncoder().encode(value);
+    const ptr = this.scratchOffset + offset;
+    const kernelMem = this.getKernelMem();
+    if (offset + encoded.length + 1 > CH_DATA_SIZE) {
+      throw new Error(`kernel scratch string too large (${encoded.length} bytes)`);
+    }
+    kernelMem.set(encoded, ptr);
+    kernelMem[ptr + encoded.length] = 0;
+    return { ptr, len: encoded.length };
+  }
+
+  private unsetProcessEnv(pid: number, name: string): void {
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
+      ((pid: number) => void) | undefined;
+    const unsetEnv = this.kernelInstance!.exports.kernel_unsetenv as
+      ((namePtr: KernelPointer, nameLen: number) => number) | undefined;
+    if (!setCurrentPid || !unsetEnv) return;
+
+    const nameBuf = this.writeKernelScratchString(name, 0);
+    setCurrentPid(pid);
+    unsetEnv(this.toKernelPtr(nameBuf.ptr), nameBuf.len);
+  }
+
+  private setProcessEnv(pid: number, entry: string): void {
+    const eq = entry.indexOf("=");
+    if (eq <= 0) return;
+
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
+      ((pid: number) => void) | undefined;
+    const setEnv = this.kernelInstance!.exports.kernel_setenv as
+      ((namePtr: KernelPointer, nameLen: number, valuePtr: KernelPointer, valueLen: number, overwrite: number) => number) | undefined;
+    if (!setCurrentPid || !setEnv) return;
+
+    const name = entry.slice(0, eq);
+    const value = entry.slice(eq + 1);
+    const nameBuf = this.writeKernelScratchString(name, 0);
+    const valueBuf = this.writeKernelScratchString(value, nameBuf.len + 1);
+    setCurrentPid(pid);
+    setEnv(this.toKernelPtr(nameBuf.ptr), nameBuf.len, this.toKernelPtr(valueBuf.ptr), valueBuf.len, 1);
+  }
+
+  private replaceProcessEnvironment(pid: number, env: string[]): void {
+    for (const entry of this.snapshotProcessEnv(pid)) {
+      const eq = entry.indexOf("=");
+      if (eq > 0) this.unsetProcessEnv(pid, entry.slice(0, eq));
+    }
+    for (const entry of env) {
+      this.setProcessEnv(pid, entry);
+    }
+  }
+
+  private snapshotCurrentProcessStrings(
+    pid: number,
+    countExport: "kernel_get_argc" | "kernel_environ_count",
+    readExport: "kernel_argv_read" | "kernel_environ_get",
+  ): string[] {
+    const setCurrentPid = this.kernelInstance!.exports.kernel_set_current_pid as
+      ((pid: number) => void) | undefined;
+    const countFn = this.kernelInstance!.exports[countExport] as
+      (() => number) | undefined;
+    const readFn = this.kernelInstance!.exports[readExport] as
+      ((index: number, bufPtr: KernelPointer, bufLen: number) => number) | undefined;
+    if (!setCurrentPid || !countFn || !readFn) return [];
+
+    setCurrentPid(pid);
+    const count = countFn();
+    const out: string[] = [];
+    const maxLen = Math.min(CH_DATA_SIZE, 65536);
+    const ptr = this.scratchOffset + CH_DATA;
+    const kernelMem = this.getKernelMem();
+    const decoder = new TextDecoder();
+    for (let i = 0; i < count; i++) {
+      const len = readFn(i, this.toKernelPtr(ptr), maxLen);
+      if (len <= 0 || len > maxLen) continue;
+      const copy = new Uint8Array(len);
+      copy.set(kernelMem.subarray(ptr, ptr + len));
+      out.push(decoder.decode(copy));
+    }
+    return out;
+  }
+
+  snapshotProcessArgv(pid: number): string[] {
+    return this.snapshotCurrentProcessStrings(pid, "kernel_get_argc", "kernel_argv_read");
+  }
+
+  snapshotProcessEnv(pid: number): string[] {
+    return this.snapshotCurrentProcessStrings(pid, "kernel_environ_count", "kernel_environ_get");
   }
 
   /** Format a syscall for logging, decoding path/string args from process memory */
@@ -5634,19 +5748,31 @@ export class CentralizedKernelWorker {
     }
 
     const parentPid = channel.pid;
-    // Skip pids that are already registered (e.g., pid 3 is nginx master)
-    while (this.processes.has(this.nextChildPid)) {
-      this.nextChildPid++;
-    }
-    const childPid = this.nextChildPid++;
-
-    // Clone the Process in the kernel's ProcessTable
+    // Clone the Process in the kernel's ProcessTable. The JS host tracks live
+    // workers, but the kernel is the source of truth for zombies/limbo process
+    // records that still occupy a pid until POSIX wait semantics release them.
+    // If the host-side monotonic counter lands on such a pid, retry with the
+    // next candidate instead of surfacing EEXIST to fork() callers.
     const kernelForkProcess = this.kernelInstance!.exports.kernel_fork_process as
       (parentPid: number, childPid: number) => number;
-    const forkResult = kernelForkProcess(parentPid, childPid);
-    if (forkResult < 0) {
+    let childPid = 0;
+    let forkResult = 0;
+    for (let attempts = 0; attempts < 4096; attempts++) {
+      while (this.processes.has(this.nextChildPid)) {
+        this.nextChildPid++;
+      }
+      childPid = this.nextChildPid++;
+      forkResult = kernelForkProcess(parentPid, childPid);
+      if (forkResult === 0) break;
+      if (((-forkResult) >>> 0) !== EEXIST) break;
+    }
+    if (forkResult < 0 || childPid === 0) {
       // Fork failed in kernel (e.g., ESRCH, ENOMEM)
-      this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, (-forkResult) >>> 0);
+      const errno = ((-forkResult) >>> 0) || EEXIST;
+      console.error(
+        `[kernel] kernel_fork_process failed parent=${parentPid} child=${childPid} errno=${errno}`,
+      );
+      this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, errno);
       return;
     }
 
@@ -6220,13 +6346,19 @@ export class CentralizedKernelWorker {
       // (it loops on SYS_EXIT).
       if (tid > 0) {
         const ctidKey = `${channel.pid}:${tid}`;
-        const ctidPtr = this.threadCtidPtrs.get(ctidKey);
-        if (ctidPtr && ctidPtr !== 0) {
-          this.threadCtidPtrs.delete(ctidKey);
+        const ctidPtr = this.threadCtidPtrs.get(ctidKey) ?? 0;
+        this.threadCtidPtrs.delete(ctidKey);
+        if (ctidPtr !== 0) {
           const procView = new DataView(channel.memory.buffer);
+          const before = procView.getInt32(ctidPtr, true);
           procView.setInt32(ctidPtr, 0, true);
           const i32View = new Int32Array(channel.memory.buffer);
-          Atomics.notify(i32View, ctidPtr >>> 2, 1);
+          const woken = Atomics.notify(i32View, ctidPtr >>> 2, 1);
+          if (THREAD_TRACE) {
+            console.error(`[thread] exit pid=${channel.pid} tid=${tid} clear ctid=0x${ctidPtr.toString(16)} before=${before} woken=${woken}`);
+          }
+        } else if (THREAD_TRACE) {
+          console.error(`[thread] exit pid=${channel.pid} tid=${tid} missing ctid`);
         }
       }
 
@@ -6248,19 +6380,31 @@ export class CentralizedKernelWorker {
     // Run the kernel's exit path so it closes all FDs (including pipe
     // write ends). kernel_exit calls sys_exit then traps — catch the trap.
     {
-      const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
-      kernelView.setUint32(CH_SYSCALL, syscallNr, true);
-      kernelView.setBigInt64(CH_ARGS, BigInt(exitStatus), true);
-      const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
-        (offset: KernelPointer, pid: number) => number;
-      this.currentHandlePid = channel.pid;
-      this.bindKernelTidForChannel(channel);
-      try {
-        handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
-      } catch {
-        // Expected: kernel_exit traps with unreachable after closing FDs
-      } finally {
-        this.currentHandlePid = 0;
+      if (EXIT_TRACE) console.error(`[exit] pid=${channel.pid} status=${exitStatus} mark start`);
+      const markExited = this.kernelInstance!.exports.kernel_mark_process_exited as
+        ((pid: number, status: number) => number) | undefined;
+      if (markExited) {
+        const rc = markExited(channel.pid, exitStatus);
+        if (rc < 0) {
+          console.error(`[handleExit] kernel_mark_process_exited failed for pid=${channel.pid}: errno=${-rc}`);
+        }
+        if (EXIT_TRACE) console.error(`[exit] pid=${channel.pid} mark done rc=${rc}`);
+      } else {
+        const kernelView = new DataView(this.kernelMemory!.buffer, this.scratchOffset);
+        kernelView.setUint32(CH_SYSCALL, syscallNr, true);
+        kernelView.setBigInt64(CH_ARGS, BigInt(exitStatus), true);
+        const handleChannel = this.kernelInstance!.exports.kernel_handle_channel as
+          (offset: KernelPointer, pid: number) => number;
+        this.currentHandlePid = channel.pid;
+        this.bindKernelTidForChannel(channel);
+        try {
+          handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
+        } catch {
+          // Compatibility with older kernels where kernel_exit traps after cleanup.
+        } finally {
+          this.currentHandlePid = 0;
+        }
+        if (EXIT_TRACE) console.error(`[exit] pid=${channel.pid} legacy mark done`);
       }
     }
 
