@@ -15,13 +15,13 @@
     "pack:packages": "npm run pack:host && npm run pack:sdk"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
+    "@playwright/test": "^1.60.0",
     "playwright": "^1.59.1",
-    "tsx": "^4.21.0"
+    "tsx": "^4.22.4"
   },
   "dependencies": {
     "fflate": "^0.8.3",
     "fzstd": "^0.1.1",
-    "vite": "^8.0.3"
+    "vite": "^8.0.16"
   }
 }
