@@ -2421,6 +2421,332 @@ pub mod dri {
     }
 }
 
+/// evdev — `/dev/input/event*` UAPI exposed to user programs.
+///
+/// Mirror image of [`dri`] above: the kernel synthesises records and
+/// user programs drain them through `read()` / `poll()`. The struct
+/// layouts, ioctl numbers, and code points here are Linux-verbatim so
+/// libinput / SDL2 / X11 evdev paths can be ported without an
+/// abstraction layer.
+///
+/// **Additive only.** Adding new `EV_*` / `KEY_*` / `EVIOC*` is
+/// allowed without bumping [`ABI_VERSION`]; changing the layout of
+/// [`input::WpkInputEvent`] or the value of any existing constant is
+/// not.
+pub mod input {
+    // --- Event types (struct input_event.type) ---------------------------
+
+    /// `EV_SYN` = 0. End-of-logical-event sentinel; readers use this
+    /// to coalesce a (REL_X, REL_Y) pair into one cursor move.
+    pub const EV_SYN: u16 = 0x00;
+    /// `EV_KEY` = 1. Press / release / autorepeat. Value is
+    /// 0 = release, 1 = press, 2 = repeat.
+    pub const EV_KEY: u16 = 0x01;
+    /// `EV_REL` = 2. Relative axis (pointer dx/dy/wheel).
+    pub const EV_REL: u16 = 0x02;
+    /// `EV_ABS` = 3. Absolute axis (pointer position when not locked,
+    /// joystick, touch coords).
+    pub const EV_ABS: u16 = 0x03;
+    /// `EV_MSC` = 4. Misc events (scancode, timestamp). Not produced
+    /// in v1.
+    pub const EV_MSC: u16 = 0x04;
+
+    // --- SYN codes (struct input_event.code when type == EV_SYN) ---------
+
+    /// `SYN_REPORT` = 0. End-of-frame; readers should treat
+    /// everything since the previous `SYN_REPORT` as atomic.
+    pub const SYN_REPORT: u16 = 0x00;
+    /// `SYN_DROPPED` = 3. Posted when the ring overflowed and the
+    /// oldest record was dropped; userspace should resynchronise
+    /// (re-query EVIOCG* state).
+    pub const SYN_DROPPED: u16 = 0x03;
+
+    // --- KEY_* codes (verbatim from linux/input-event-codes.h) -----------
+    //
+    // Range 0..248 covers every code Chrome / Firefox / WebKit emit
+    // through `KeyboardEvent.code`; values >248 (KEY_BUTTONCONFIG, the
+    // KEY_VENDOR range, etc.) are not browser-reachable.
+
+    pub const KEY_RESERVED: u16 = 0;
+    pub const KEY_ESC: u16 = 1;
+    pub const KEY_1: u16 = 2;
+    pub const KEY_2: u16 = 3;
+    pub const KEY_3: u16 = 4;
+    pub const KEY_4: u16 = 5;
+    pub const KEY_5: u16 = 6;
+    pub const KEY_6: u16 = 7;
+    pub const KEY_7: u16 = 8;
+    pub const KEY_8: u16 = 9;
+    pub const KEY_9: u16 = 10;
+    pub const KEY_0: u16 = 11;
+    pub const KEY_MINUS: u16 = 12;
+    pub const KEY_EQUAL: u16 = 13;
+    pub const KEY_BACKSPACE: u16 = 14;
+    pub const KEY_TAB: u16 = 15;
+    pub const KEY_Q: u16 = 16;
+    pub const KEY_W: u16 = 17;
+    pub const KEY_E: u16 = 18;
+    pub const KEY_R: u16 = 19;
+    pub const KEY_T: u16 = 20;
+    pub const KEY_Y: u16 = 21;
+    pub const KEY_U: u16 = 22;
+    pub const KEY_I: u16 = 23;
+    pub const KEY_O: u16 = 24;
+    pub const KEY_P: u16 = 25;
+    pub const KEY_LEFTBRACE: u16 = 26;
+    pub const KEY_RIGHTBRACE: u16 = 27;
+    pub const KEY_ENTER: u16 = 28;
+    pub const KEY_LEFTCTRL: u16 = 29;
+    pub const KEY_A: u16 = 30;
+    pub const KEY_S: u16 = 31;
+    pub const KEY_D: u16 = 32;
+    pub const KEY_F: u16 = 33;
+    pub const KEY_G: u16 = 34;
+    pub const KEY_H: u16 = 35;
+    pub const KEY_J: u16 = 36;
+    pub const KEY_K: u16 = 37;
+    pub const KEY_L: u16 = 38;
+    pub const KEY_SEMICOLON: u16 = 39;
+    pub const KEY_APOSTROPHE: u16 = 40;
+    pub const KEY_GRAVE: u16 = 41;
+    pub const KEY_LEFTSHIFT: u16 = 42;
+    pub const KEY_BACKSLASH: u16 = 43;
+    pub const KEY_Z: u16 = 44;
+    pub const KEY_X: u16 = 45;
+    pub const KEY_C: u16 = 46;
+    pub const KEY_V: u16 = 47;
+    pub const KEY_B: u16 = 48;
+    pub const KEY_N: u16 = 49;
+    pub const KEY_M: u16 = 50;
+    pub const KEY_COMMA: u16 = 51;
+    pub const KEY_DOT: u16 = 52;
+    pub const KEY_SLASH: u16 = 53;
+    pub const KEY_RIGHTSHIFT: u16 = 54;
+    pub const KEY_KPASTERISK: u16 = 55;
+    pub const KEY_LEFTALT: u16 = 56;
+    pub const KEY_SPACE: u16 = 57;
+    pub const KEY_CAPSLOCK: u16 = 58;
+    pub const KEY_F1: u16 = 59;
+    pub const KEY_F2: u16 = 60;
+    pub const KEY_F3: u16 = 61;
+    pub const KEY_F4: u16 = 62;
+    pub const KEY_F5: u16 = 63;
+    pub const KEY_F6: u16 = 64;
+    pub const KEY_F7: u16 = 65;
+    pub const KEY_F8: u16 = 66;
+    pub const KEY_F9: u16 = 67;
+    pub const KEY_F10: u16 = 68;
+    pub const KEY_NUMLOCK: u16 = 69;
+    pub const KEY_SCROLLLOCK: u16 = 70;
+    pub const KEY_KP7: u16 = 71;
+    pub const KEY_KP8: u16 = 72;
+    pub const KEY_KP9: u16 = 73;
+    pub const KEY_KPMINUS: u16 = 74;
+    pub const KEY_KP4: u16 = 75;
+    pub const KEY_KP5: u16 = 76;
+    pub const KEY_KP6: u16 = 77;
+    pub const KEY_KPPLUS: u16 = 78;
+    pub const KEY_KP1: u16 = 79;
+    pub const KEY_KP2: u16 = 80;
+    pub const KEY_KP3: u16 = 81;
+    pub const KEY_KP0: u16 = 82;
+    pub const KEY_KPDOT: u16 = 83;
+    pub const KEY_ZENKAKUHANKAKU: u16 = 85;
+    pub const KEY_102ND: u16 = 86;
+    pub const KEY_F11: u16 = 87;
+    pub const KEY_F12: u16 = 88;
+    pub const KEY_RO: u16 = 89;
+    pub const KEY_KATAKANA: u16 = 90;
+    pub const KEY_HIRAGANA: u16 = 91;
+    pub const KEY_HENKAN: u16 = 92;
+    pub const KEY_KATAKANAHIRAGANA: u16 = 93;
+    pub const KEY_MUHENKAN: u16 = 94;
+    pub const KEY_KPJPCOMMA: u16 = 95;
+    pub const KEY_KPENTER: u16 = 96;
+    pub const KEY_RIGHTCTRL: u16 = 97;
+    pub const KEY_KPSLASH: u16 = 98;
+    pub const KEY_SYSRQ: u16 = 99;
+    pub const KEY_RIGHTALT: u16 = 100;
+    pub const KEY_LINEFEED: u16 = 101;
+    pub const KEY_HOME: u16 = 102;
+    pub const KEY_UP: u16 = 103;
+    pub const KEY_PAGEUP: u16 = 104;
+    pub const KEY_LEFT: u16 = 105;
+    pub const KEY_RIGHT: u16 = 106;
+    pub const KEY_END: u16 = 107;
+    pub const KEY_DOWN: u16 = 108;
+    pub const KEY_PAGEDOWN: u16 = 109;
+    pub const KEY_INSERT: u16 = 110;
+    pub const KEY_DELETE: u16 = 111;
+    pub const KEY_MACRO: u16 = 112;
+    pub const KEY_MUTE: u16 = 113;
+    pub const KEY_VOLUMEDOWN: u16 = 114;
+    pub const KEY_VOLUMEUP: u16 = 115;
+    pub const KEY_POWER: u16 = 116;
+    pub const KEY_KPEQUAL: u16 = 117;
+    pub const KEY_KPPLUSMINUS: u16 = 118;
+    pub const KEY_PAUSE: u16 = 119;
+    pub const KEY_SCALE: u16 = 120;
+    pub const KEY_KPCOMMA: u16 = 121;
+    pub const KEY_HANGEUL: u16 = 122;
+    pub const KEY_HANJA: u16 = 123;
+    pub const KEY_YEN: u16 = 124;
+    pub const KEY_LEFTMETA: u16 = 125;
+    pub const KEY_RIGHTMETA: u16 = 126;
+    pub const KEY_COMPOSE: u16 = 127;
+    pub const KEY_STOP: u16 = 128;
+    pub const KEY_AGAIN: u16 = 129;
+    pub const KEY_PROPS: u16 = 130;
+    pub const KEY_UNDO: u16 = 131;
+    pub const KEY_FRONT: u16 = 132;
+    pub const KEY_COPY: u16 = 133;
+    pub const KEY_OPEN: u16 = 134;
+    pub const KEY_PASTE: u16 = 135;
+    pub const KEY_FIND: u16 = 136;
+    pub const KEY_CUT: u16 = 137;
+    pub const KEY_HELP: u16 = 138;
+    pub const KEY_MENU: u16 = 139;
+    pub const KEY_CALC: u16 = 140;
+    pub const KEY_SLEEP: u16 = 142;
+    pub const KEY_WAKEUP: u16 = 143;
+    pub const KEY_PLAYPAUSE: u16 = 164;
+    pub const KEY_PREVIOUSSONG: u16 = 165;
+    pub const KEY_STOPCD: u16 = 166;
+    pub const KEY_NEXTSONG: u16 = 163;
+    pub const KEY_EJECTCD: u16 = 161;
+    pub const KEY_REFRESH: u16 = 173;
+    pub const KEY_F13: u16 = 183;
+    pub const KEY_F14: u16 = 184;
+    pub const KEY_F15: u16 = 185;
+    pub const KEY_F16: u16 = 186;
+    pub const KEY_F17: u16 = 187;
+    pub const KEY_F18: u16 = 188;
+    pub const KEY_F19: u16 = 189;
+    pub const KEY_F20: u16 = 190;
+    pub const KEY_F21: u16 = 191;
+    pub const KEY_F22: u16 = 192;
+    pub const KEY_F23: u16 = 193;
+    pub const KEY_F24: u16 = 194;
+    pub const KEY_PLAYCD: u16 = 200;
+    pub const KEY_PAUSECD: u16 = 201;
+    pub const KEY_BRIGHTNESSDOWN: u16 = 224;
+    pub const KEY_BRIGHTNESSUP: u16 = 225;
+    pub const KEY_MICMUTE: u16 = 248;
+
+    // --- BTN_* codes (button class; reuse the EV_KEY event type) ---------
+
+    pub const BTN_LEFT: u16 = 0x110;
+    pub const BTN_RIGHT: u16 = 0x111;
+    pub const BTN_MIDDLE: u16 = 0x112;
+    pub const BTN_SIDE: u16 = 0x113;
+    pub const BTN_EXTRA: u16 = 0x114;
+
+    // --- REL_* codes (relative axes; EV_REL records carry these) ---------
+
+    pub const REL_X: u16 = 0x00;
+    pub const REL_Y: u16 = 0x01;
+    pub const REL_HWHEEL: u16 = 0x06;
+    pub const REL_WHEEL: u16 = 0x08;
+
+    // --- ABS_* codes (absolute axes; EV_ABS records carry these) ---------
+
+    pub const ABS_X: u16 = 0x00;
+    pub const ABS_Y: u16 = 0x01;
+
+    // --- BUS_* constants (subset) ----------------------------------------
+
+    /// `BUS_VIRTUAL` = 0x06 — closest match for a kernel-synthesised
+    /// device (Linux uses this for `uinput`-backed devices).
+    pub const BUS_VIRTUAL: u16 = 0x06;
+
+    // --- ioctl numbers ('E' magic, Linux UAPI verbatim) ------------------
+    //
+    // Encoding: `(dir << 30) | (size << 16) | (magic << 8) | nr`.
+    // `_IOR` = dir 2 (kernel writes back to userland buffer),
+    // `_IOW` = dir 1 (kernel reads from userland buffer). The
+    // `evioc_numbers_match_linux_uapi` test below re-derives each one
+    // through `ioc(...)` so a copy-paste typo cannot survive.
+
+    /// `_IOR('E', 0x01, int)` = `0x8004_4501`.
+    pub const EVIOCGVERSION: u32 = 0x8004_4501;
+
+    /// `_IOR('E', 0x02, WpkInputId)` = `0x8008_4502`.
+    pub const EVIOCGID: u32 = 0x8008_4502;
+
+    /// `_IOC(_IOC_READ, 'E', 0x06, len)` — `EVIOCGNAME(len)` in C.
+    /// `len` is caller-supplied; A3 matches on `(dir, magic, nr)`
+    /// and recomputes the buffer size from the encoded `size` field
+    /// at dispatch time (1 ≤ size ≤ 256).
+    pub const EVIOCGNAME_NR: u32 = 0x06;
+
+    /// `EVIOCGBIT(ev_type, len)` — same variable-length shape as
+    /// `EVIOCGNAME`. `nr = 0x20 + ev_type`.
+    pub const EVIOCGBIT_NR_BASE: u32 = 0x20;
+
+    /// `EVIOCGABS(axis)` — `_IOR('E', 0x40 + axis, WpkInputAbsinfo)`.
+    /// `axis` is a small integer (`ABS_X = 0`, `ABS_Y = 1`, …).
+    pub const EVIOCGABS_NR_BASE: u32 = 0x40;
+
+    /// `_IOW('E', 0x90, int)` = `0x4004_4590`.
+    pub const EVIOCGRAB: u32 = 0x4004_4590;
+
+    // --- marshalled structs ----------------------------------------------
+
+    /// `struct input_event` on wasm32-musl (`time_t = int64_t`,
+    /// `suseconds_t = int32_t`, `__u16` + `__u16` + `__s32`).
+    /// Total = 24 bytes.
+    ///
+    /// The explicit `_pad: i32` at byte 12 is **load-bearing**.
+    /// `repr(C)` would otherwise place `ev_type` at offset 12 (no
+    /// interior padding between the `i32 tv_usec` and the `u16
+    /// ev_type`), but C's `struct timeval` substruct is itself 16
+    /// bytes on wasm32-musl: the `int64_t tv_sec` forces 8-byte
+    /// alignment of the substruct, and the trailing `int32_t
+    /// tv_usec` is padded to 16 to satisfy that alignment. So the
+    /// C reader expects `ev_type` at offset 16 while the
+    /// pad-less Rust writer would put it at offset 12 — silent
+    /// corruption on every record. The `input_event_field_offsets`
+    /// test below gates the layout; if `ev_type` ever drifts back
+    /// to offset 12, restore `_pad`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkInputEvent {
+        pub tv_sec: i64,    // 0   CLOCK_MONOTONIC seconds since kernel boot
+        pub tv_usec: i32,   // 8   microseconds; matches musl suseconds_t
+        pub _pad: i32,      // 12  pad so the trailing union 8-aligns with C
+        pub ev_type: u16,   // 16  EV_KEY / EV_REL / EV_ABS / EV_SYN / EV_MSC
+        pub code: u16,      // 18  KEY_* / BTN_* / REL_* / ABS_* / SYN_*
+        pub value: i32,     // 20  press/release/repeat; delta; absolute pos
+                            // total: 24
+    }
+
+    /// `struct input_id` — 8 bytes (4 × u16). Returned by `EVIOCGID`.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkInputId {
+        pub bustype: u16,   // 0   BUS_VIRTUAL = 0x06
+        pub vendor: u16,    // 2
+        pub product: u16,   // 4   0x0001 = kbd, 0x0002 = ptr
+        pub version: u16,   // 6
+                            // total: 8
+    }
+
+    /// `struct input_absinfo` — 24 bytes (6 × i32). Returned by
+    /// `EVIOCGABS(axis)`. Used for `ABS_X` / `ABS_Y` on the pointer
+    /// device when pointer lock is not active.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkInputAbsinfo {
+        pub value: i32,     // 0   current value
+        pub minimum: i32,   // 4
+        pub maximum: i32,   // 8   canvas width-1 / height-1
+        pub fuzz: i32,      // 12
+        pub flat: i32,      // 16
+        pub resolution: i32,// 20  1 unit per pixel
+                            // total: 24
+    }
+}
+
 #[cfg(test)]
 mod dri_tests {
     use super::dri::*;
@@ -2605,5 +2931,77 @@ mod gl_tests {
                 assert_ne!(a, b, "duplicate query opcode 0x{a:02x}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::input::*;
+    use core::mem::size_of;
+
+    // Linux's `_IOC` packs (dir, size, magic, nr) into a u32.
+    // Mirrors include/uapi/asm-generic/ioctl.h. `IOC_READ = 2`
+    // (`_IOR`); `IOC_WRITE = 1` (`_IOW`).
+    const fn ioc(dir: u32, magic: u32, nr: u32, size: u32) -> u32 {
+        (dir << 30) | (size << 16) | (magic << 8) | nr
+    }
+    const IOC_READ: u32 = 2;
+    const IOC_WRITE: u32 = 1;
+
+    #[test]
+    fn input_struct_sizes_match_wasm32_repr_c() {
+        assert_eq!(size_of::<WpkInputEvent>(), 24);
+        assert_eq!(size_of::<WpkInputId>(), 8);
+        assert_eq!(size_of::<WpkInputAbsinfo>(), 24);
+    }
+
+    #[test]
+    fn input_event_field_offsets() {
+        // The 24-byte layout is load-bearing — every reader walks
+        // the ring 24 bytes at a time. Lock the offsets explicitly.
+        let e = WpkInputEvent::default();
+        let base = (&e as *const _) as usize;
+        assert_eq!((&e.tv_sec as *const _ as usize) - base, 0);
+        assert_eq!((&e.tv_usec as *const _ as usize) - base, 8);
+        assert_eq!((&e.ev_type as *const _ as usize) - base, 16);
+        assert_eq!((&e.code as *const _ as usize) - base, 18);
+        assert_eq!((&e.value as *const _ as usize) - base, 20);
+    }
+
+    #[test]
+    fn evioc_numbers_match_linux_uapi() {
+        assert_eq!(
+            EVIOCGVERSION,
+            ioc(IOC_READ, 'E' as u32, 0x01, 4)
+        );
+        assert_eq!(
+            EVIOCGID,
+            ioc(IOC_READ, 'E' as u32, 0x02, size_of::<WpkInputId>() as u32)
+        );
+        assert_eq!(
+            EVIOCGRAB,
+            ioc(IOC_WRITE, 'E' as u32, 0x90, 4)
+        );
+        // EVIOCGABS(ABS_X) — exercises both the variable nr base
+        // and the absinfo struct size.
+        assert_eq!(
+            ioc(
+                IOC_READ,
+                'E' as u32,
+                EVIOCGABS_NR_BASE + ABS_X as u32,
+                size_of::<WpkInputAbsinfo>() as u32
+            ),
+            0x8018_4540
+        );
+    }
+
+    #[test]
+    fn evioc_nr_bases_match_linux_uapi() {
+        // Spot-check the variable-length / per-axis bases used by
+        // A3's dispatch; the precise number is only known once the
+        // size field is filled in at ioctl time.
+        assert_eq!(EVIOCGNAME_NR, 0x06);
+        assert_eq!(EVIOCGBIT_NR_BASE, 0x20);
+        assert_eq!(EVIOCGABS_NR_BASE, 0x40);
     }
 }
