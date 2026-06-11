@@ -85,6 +85,9 @@ assert_selected \
 assert_selected \
   ".github/actions/download-run-artifacts/action.yml" \
   ".github/actions/download-run-artifacts/action.yml"
+assert_selected \
+  ".github/scripts/download-dependency-artifacts.sh" \
+  ".github/scripts/download-dependency-artifacts.sh"
 assert_not_selected \
   ".github/workflows/staging-build.yml" \
   ".github/workflows/staging-build.yml"
