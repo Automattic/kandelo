@@ -10,6 +10,7 @@ pub mod devfs;
 pub mod dri;
 pub mod fd;
 pub mod fork;
+pub mod input;
 pub mod ipc;
 pub mod lock;
 pub mod memory;

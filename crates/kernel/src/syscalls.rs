@@ -626,6 +626,26 @@ fn kms_state_mut(
         .ok_or(Errno::EBADF)
 }
 
+fn input_state(
+    proc: &Process,
+    ofd_idx: usize,
+) -> Result<&crate::ofd::InputFdState, Errno> {
+    proc.ofd_table
+        .get(ofd_idx)
+        .and_then(|o| o.input())
+        .ok_or(Errno::EBADF)
+}
+
+fn input_state_mut(
+    proc: &mut Process,
+    ofd_idx: usize,
+) -> Result<&mut crate::ofd::InputFdState, Errno> {
+    proc.ofd_table
+        .get_mut(ofd_idx)
+        .and_then(|o| o.input_mut())
+        .ok_or(Errno::EBADF)
+}
+
 /// Release a per-fd handle (DESTROY_DUMB / GEM_CLOSE): drops the
 /// handle from the fd's namespace, decrefs the bo, and if the
 /// refcount hits zero asks the host to free the backing.
@@ -1438,6 +1458,145 @@ fn handle_dri_card_ioctl(
             Ok(())
         }
         _ => handle_dri_ioctl(proc, host, ofd_idx, request, buf),
+    }
+}
+
+/// `EVIOCG*` ioctl surface for `/dev/input/event{0,1}`.
+///
+/// Unknown requests return `ENOTTY` rather than `EINVAL` so SDL2's
+/// evdev probe (which greps the errno) keeps walking instead of
+/// fataling on the first unsupported call. EVIOCGRAB records the
+/// per-OFD grab flag but does not enforce cross-fd exclusivity in
+/// v1 — that lands with plan 9's compositor.
+fn handle_input_ioctl(
+    proc: &mut Process,
+    ofd_idx: usize,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::input::*;
+
+    // Decode (dir, magic, nr, size) per asm-generic/ioctl.h. The
+    // size sub-field is informational for variable-length ioctls
+    // (EVIOCGNAME, EVIOCGBIT) — Linux matches on (dir, magic, nr)
+    // only and uses _IOC_SIZE(request) to learn the caller's buffer
+    // length, which we mirror here.
+    let dir = (request >> 30) & 0x3;
+    let magic = (request >> 8) & 0xff;
+    let nr = request & 0xff;
+    let size = ((request >> 16) & 0x3fff) as usize;
+
+    // Foreign magic — not an evdev ioctl. ENOTTY keeps probing loops
+    // moving (EINVAL would fatal SDL2's evdev detection).
+    if magic != b'E' as u32 {
+        return Err(Errno::ENOTTY);
+    }
+
+    match nr {
+        // EVIOCGVERSION — read u32
+        0x01 if dir == 2 => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let version: u32 = 0x0001_0001;
+            buf[0..4].copy_from_slice(&version.to_le_bytes());
+            Ok(())
+        }
+        // EVIOCGID — read WpkInputId
+        0x02 if dir == 2 => {
+            if buf.len() < core::mem::size_of::<WpkInputId>() {
+                return Err(Errno::EINVAL);
+            }
+            let device = input_state(proc, ofd_idx)?.device;
+            let id = WpkInputId {
+                bustype: BUS_VIRTUAL,
+                vendor: 0x1209,
+                product: if device == 0 { 0x0001 } else { 0x0002 },
+                version: 0x0001,
+            };
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkInputId, id);
+            }
+            Ok(())
+        }
+        // EVIOCGNAME(len) — variable size; nr fixed at EVIOCGNAME_NR.
+        n if n == EVIOCGNAME_NR && dir == 2 => {
+            let device = input_state(proc, ofd_idx)?.device;
+            let name: &[u8] = if device == 0 {
+                b"wpk virtual keyboard\0"
+            } else {
+                b"wpk virtual pointer\0"
+            };
+            let copy_len = name.len().min(size).min(buf.len());
+            buf[..copy_len].copy_from_slice(&name[..copy_len]);
+            Ok(())
+        }
+        // EVIOCGBIT(ev_type, len) — nr = EVIOCGBIT_NR_BASE + ev_type;
+        // 32 EV_* slots reserved.
+        n if (EVIOCGBIT_NR_BASE..EVIOCGBIT_NR_BASE + 32).contains(&n) && dir == 2 => {
+            let ev_type = (n - EVIOCGBIT_NR_BASE) as u16;
+            let device = input_state(proc, ofd_idx)?.device;
+            let len = size.min(buf.len());
+            let slice = &mut buf[..len];
+            for b in slice.iter_mut() {
+                *b = 0;
+            }
+            crate::input::populate_evbit(device, ev_type, slice);
+            Ok(())
+        }
+        // EVIOCGABS(axis) — pointer device only; nr = EVIOCGABS_NR_BASE
+        // + axis; 64 ABS_* slots reserved.
+        n if (EVIOCGABS_NR_BASE..EVIOCGABS_NR_BASE + 64).contains(&n) && dir == 2 => {
+            if buf.len() < core::mem::size_of::<WpkInputAbsinfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let axis = (n - EVIOCGABS_NR_BASE) as u16;
+            let device = input_state(proc, ofd_idx)?.device;
+            // Keyboard has no absolute axes — ENOTTY (not EINVAL) so
+            // SDL2 keeps probing.
+            if device != 1 {
+                return Err(Errno::ENOTTY);
+            }
+            let (w, h) = crate::input::canvas_dims();
+            let abs = match axis {
+                ABS_X => WpkInputAbsinfo {
+                    value: 0,
+                    minimum: 0,
+                    maximum: (w as i32) - 1,
+                    fuzz: 0,
+                    flat: 0,
+                    resolution: 1,
+                },
+                ABS_Y => WpkInputAbsinfo {
+                    value: 0,
+                    minimum: 0,
+                    maximum: (h as i32) - 1,
+                    fuzz: 0,
+                    flat: 0,
+                    resolution: 1,
+                },
+                _ => return Err(Errno::ENOTTY),
+            };
+            unsafe {
+                core::ptr::write_unaligned(
+                    buf.as_mut_ptr() as *mut WpkInputAbsinfo,
+                    abs,
+                );
+            }
+            Ok(())
+        }
+        // EVIOCGRAB — write i32 (value != 0 grabs, 0 releases). Per-fd
+        // idempotent (Linux semantics in drivers/input/evdev.c); cross-
+        // fd EBUSY enforcement is the plan 9 follow-up.
+        0x90 if dir == 1 => {
+            if buf.len() < 4 {
+                return Err(Errno::EINVAL);
+            }
+            let value = i32::from_le_bytes(buf[..4].try_into().unwrap());
+            input_state_mut(proc, ofd_idx)?.grabbed = value != 0;
+            Ok(())
+        }
+        _ => Err(Errno::ENOTTY),
     }
 }
 
@@ -8945,6 +9104,18 @@ pub fn sys_ioctl(
             }
             if dev == Some(VirtualDevice::DriCard0) {
                 return handle_dri_card_ioctl(proc, host, ofd_idx, request, buf);
+            }
+        }
+    }
+
+    // --- /dev/input/event{0,1} ioctls — evdev EVIOCG* surface ---
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.file_type == FileType::CharDevice {
+            if let Some(VirtualDevice::InputEvent { .. }) =
+                VirtualDevice::from_host_handle(ofd.host_handle)
+            {
+                return handle_input_ioctl(proc, ofd_idx, request, buf);
             }
         }
     }
@@ -22491,5 +22662,214 @@ mod tests {
         let mut buf = [0u8; 24];
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
         assert_eq!(n, 0);
+    }
+
+    // -----------------------------------------------------------------
+    // EVIOCG* ioctl dispatch (A3).
+    // -----------------------------------------------------------------
+
+    /// `_IOC(dir, magic, nr, size)` — mirrors include/uapi/asm-generic/ioctl.h
+    /// (dir 2 = read / dir 1 = write — Linux's `_IOC_READ` / `_IOC_WRITE`).
+    const fn evioc(dir: u32, nr: u32, size: u32) -> u32 {
+        (dir << 30) | (size << 16) | ((b'E' as u32) << 8) | nr
+    }
+
+    fn open_evdev(pid: u32, path: &[u8]) -> (Process, MockHostIO, i32) {
+        let mut proc = Process::new(pid);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, path, O_RDWR, 0).unwrap();
+        (proc, host, fd)
+    }
+
+    #[test]
+    fn evioc_gversion_returns_010001() {
+        use wasm_posix_shared::input::EVIOCGVERSION;
+        let (mut proc, mut host, fd) = open_evdev(601, b"/dev/input/event0");
+        let mut buf = [0u8; 4];
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGVERSION, &mut buf).unwrap();
+        assert_eq!(u32::from_le_bytes(buf), 0x0001_0001);
+    }
+
+    #[test]
+    fn evioc_gid_keyboard_vs_pointer_differs_by_product() {
+        use wasm_posix_shared::input::{EVIOCGID, WpkInputId, BUS_VIRTUAL};
+        let (mut proc, mut host, kfd) = open_evdev(602, b"/dev/input/event0");
+        let pfd = sys_open(&mut proc, &mut host, b"/dev/input/event1", O_RDWR, 0).unwrap();
+        let mut kbuf = [0u8; core::mem::size_of::<WpkInputId>()];
+        sys_ioctl(&mut proc, &mut host, kfd, EVIOCGID, &mut kbuf).unwrap();
+        let kid: WpkInputId = unsafe { core::ptr::read_unaligned(kbuf.as_ptr() as *const _) };
+        let mut pbuf = [0u8; core::mem::size_of::<WpkInputId>()];
+        sys_ioctl(&mut proc, &mut host, pfd, EVIOCGID, &mut pbuf).unwrap();
+        let pid_: WpkInputId = unsafe { core::ptr::read_unaligned(pbuf.as_ptr() as *const _) };
+        assert_eq!(kid.bustype, BUS_VIRTUAL);
+        assert_eq!(pid_.bustype, BUS_VIRTUAL);
+        assert_eq!(kid.vendor, pid_.vendor, "vendor matches across devices");
+        assert_ne!(kid.product, pid_.product, "product distinguishes kbd vs ptr");
+        assert_eq!(kid.product, 0x0001);
+        assert_eq!(pid_.product, 0x0002);
+    }
+
+    #[test]
+    fn evioc_gname_event0_returns_keyboard_string() {
+        use wasm_posix_shared::input::EVIOCGNAME_NR;
+        let (mut proc, mut host, fd) = open_evdev(603, b"/dev/input/event0");
+        let mut buf = [0u8; 64];
+        let req = evioc(2, EVIOCGNAME_NR, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        let nul = buf.iter().position(|&b| b == 0).unwrap();
+        assert_eq!(&buf[..nul], b"wpk virtual keyboard");
+    }
+
+    #[test]
+    fn evioc_gname_event1_returns_pointer_string() {
+        use wasm_posix_shared::input::EVIOCGNAME_NR;
+        let (mut proc, mut host, fd) = open_evdev(604, b"/dev/input/event1");
+        let mut buf = [0u8; 64];
+        let req = evioc(2, EVIOCGNAME_NR, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        let nul = buf.iter().position(|&b| b == 0).unwrap();
+        assert_eq!(&buf[..nul], b"wpk virtual pointer");
+    }
+
+    #[test]
+    fn evioc_gname_truncates_to_caller_buffer() {
+        use wasm_posix_shared::input::EVIOCGNAME_NR;
+        let (mut proc, mut host, fd) = open_evdev(605, b"/dev/input/event0");
+        let mut buf = [0xffu8; 5];
+        // Caller asks for 5 bytes; "wpk virtual keyboard" is 20 chars,
+        // so we should fill all 5 with the first 5 bytes (no terminator
+        // — caller is expected to handle the cut-off case).
+        let req = evioc(2, EVIOCGNAME_NR, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        assert_eq!(&buf, b"wpk v");
+    }
+
+    #[test]
+    fn evioc_gbit_keyboard_evtype_query_advertises_syn_and_key_only() {
+        use wasm_posix_shared::input::{EVIOCGBIT_NR_BASE, EV_KEY, EV_REL, EV_SYN};
+        let (mut proc, mut host, fd) = open_evdev(606, b"/dev/input/event0");
+        let mut buf = [0u8; 4];
+        // EVIOCGBIT(ev_type = 0, len = 4) — nr = base + 0.
+        let req = evioc(2, EVIOCGBIT_NR_BASE, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        assert_ne!(buf[0] & (1 << EV_SYN), 0);
+        assert_ne!(buf[0] & (1 << EV_KEY), 0);
+        assert_eq!(buf[0] & (1 << EV_REL), 0, "keyboard must not advertise EV_REL");
+    }
+
+    #[test]
+    fn evioc_gbit_pointer_evtype_query_adds_rel_and_abs() {
+        use wasm_posix_shared::input::{EVIOCGBIT_NR_BASE, EV_ABS, EV_REL};
+        let (mut proc, mut host, fd) = open_evdev(607, b"/dev/input/event1");
+        let mut buf = [0u8; 4];
+        let req = evioc(2, EVIOCGBIT_NR_BASE, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        assert_ne!(buf[0] & (1 << EV_REL), 0);
+        assert_ne!(buf[0] & (1 << EV_ABS), 0);
+    }
+
+    #[test]
+    fn evioc_gbit_keyboard_ev_key_lists_key_a() {
+        use wasm_posix_shared::input::{EVIOCGBIT_NR_BASE, EV_KEY, KEY_A};
+        let (mut proc, mut host, fd) = open_evdev(608, b"/dev/input/event0");
+        let mut buf = [0u8; 32];
+        // EVIOCGBIT(EV_KEY, 32) — nr = base + EV_KEY.
+        let req = evioc(2, EVIOCGBIT_NR_BASE + EV_KEY as u32, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+        let byte = (KEY_A >> 3) as usize;
+        assert_ne!(buf[byte] & (1 << (KEY_A & 7)), 0);
+    }
+
+    #[test]
+    fn evioc_gabs_keyboard_returns_enotty() {
+        use wasm_posix_shared::input::{EVIOCGABS_NR_BASE, ABS_X, WpkInputAbsinfo};
+        let (mut proc, mut host, fd) = open_evdev(609, b"/dev/input/event0");
+        let mut buf = [0u8; core::mem::size_of::<WpkInputAbsinfo>()];
+        let req = evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, buf.len() as u32);
+        let err = sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap_err();
+        // ENOTTY (not EINVAL) — SDL2 greps the errno; EINVAL fatals it.
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    #[test]
+    fn evioc_gabs_pointer_x_returns_canvas_width_minus_one() {
+        use wasm_posix_shared::input::{EVIOCGABS_NR_BASE, ABS_X, ABS_Y, WpkInputAbsinfo};
+        crate::input::set_canvas_dims(800, 600);
+        let (mut proc, mut host, fd) = open_evdev(610, b"/dev/input/event1");
+        let mut buf = [0u8; core::mem::size_of::<WpkInputAbsinfo>()];
+        let req_x = evioc(2, EVIOCGABS_NR_BASE + ABS_X as u32, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req_x, &mut buf).unwrap();
+        let abs: WpkInputAbsinfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(abs.maximum, 799);
+        assert_eq!(abs.resolution, 1);
+        assert_eq!(abs.minimum, 0);
+        let req_y = evioc(2, EVIOCGABS_NR_BASE + ABS_Y as u32, buf.len() as u32);
+        sys_ioctl(&mut proc, &mut host, fd, req_y, &mut buf).unwrap();
+        let aby: WpkInputAbsinfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+        assert_eq!(aby.maximum, 599);
+        // Restore the default — other tests in this module may run in
+        // parallel and expect the boot value.
+        crate::input::set_canvas_dims(1280, 720);
+    }
+
+    #[test]
+    fn evioc_grab_sets_flag_then_release_clears_it() {
+        use wasm_posix_shared::input::EVIOCGRAB;
+        let (mut proc, mut host, fd) = open_evdev(611, b"/dev/input/event0");
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let mut on = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on).unwrap();
+        assert!(proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().grabbed);
+        let mut off = 0i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off).unwrap();
+        assert!(!proc.ofd_table.get(ofd_idx).unwrap().input().unwrap().grabbed);
+    }
+
+    #[test]
+    fn evioc_grab_twice_from_same_fd_is_idempotent() {
+        use wasm_posix_shared::input::EVIOCGRAB;
+        let (mut proc, mut host, fd) = open_evdev(612, b"/dev/input/event0");
+        let mut on = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on).unwrap();
+        // Re-grab from the same fd must succeed (Linux semantics in
+        // drivers/input/evdev.c). The cross-fd EBUSY case lands with
+        // plan 9.
+        let mut on2 = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on2).unwrap();
+    }
+
+    #[test]
+    fn evioc_grab_release_without_prior_grab_is_a_noop() {
+        use wasm_posix_shared::input::EVIOCGRAB;
+        let (mut proc, mut host, fd) = open_evdev(613, b"/dev/input/event0");
+        let mut off = 0i32.to_le_bytes();
+        // Never grabbed; release returns 0, not an error.
+        sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off).unwrap();
+    }
+
+    #[test]
+    fn evioc_unknown_request_returns_enotty_not_einval() {
+        // SDL2's evdev probe greps the errno from EVIOCG* calls; EINVAL
+        // fatals it. Every unhandled request on an evdev fd must come
+        // back as ENOTTY.
+        let (mut proc, mut host, fd) = open_evdev(614, b"/dev/input/event0");
+        // 'E' magic, dir = 2 (read), nr = 0xfe (never assigned), size = 0.
+        let bogus = evioc(2, 0xfe, 0);
+        let mut buf = [0u8; 4];
+        let err = sys_ioctl(&mut proc, &mut host, fd, bogus, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
+    }
+
+    #[test]
+    fn evioc_foreign_magic_on_evdev_fd_returns_enotty() {
+        // Non-'E' magic — caller probed something foreign on the fd.
+        // ENOTTY (not EINVAL) so probing loops keep moving.
+        let (mut proc, mut host, fd) = open_evdev(615, b"/dev/input/event0");
+        // dir = 2, magic = 'X', nr = 0x01, size = 4 — looks like a read
+        // ioctl for some other subsystem.
+        let foreign = (2u32 << 30) | (4u32 << 16) | ((b'X' as u32) << 8) | 0x01;
+        let mut buf = [0u8; 4];
+        let err = sys_ioctl(&mut proc, &mut host, fd, foreign, &mut buf).unwrap_err();
+        assert_eq!(err, Errno::ENOTTY);
     }
 }
