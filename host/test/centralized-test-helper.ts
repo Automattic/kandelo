@@ -136,6 +136,8 @@ export interface RunProgramOptions {
    *  only (NodeKernelHost.getForkCount); main-thread mode falls back to
    *  reading from the kernel instance directly. */
   captureForkCount?: boolean;
+  /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
+  useDefaultRootfs?: boolean;
 }
 
 export interface RunProgramResult {
@@ -202,7 +204,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   const host = new NodeKernelHost({
     maxWorkers: 4,
     execPrograms,
-    rootfsImage: "default",
+    rootfsImage: options.useDefaultRootfs === false ? undefined : "default",
     enableTcpNetwork: options.enableTcpNetwork,
     onStdout: (_pid: number, data: Uint8Array) => {
       stdout += new TextDecoder().decode(data);

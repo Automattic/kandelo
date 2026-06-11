@@ -40,6 +40,12 @@ import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import { detectPtrWidth, extractHeapBase } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
+  classifiedSignalOrFallback,
+  classifiedTrapExitStatus,
+  signalExitStatus,
+  SIGSEGV,
+} from "./trap-signals";
+import {
   computeProcessMemoryLayout,
   createProcessMemory,
   DEFAULT_PROCESS_THREAD_SLOTS,
@@ -107,9 +113,9 @@ const intentionallyTerminated = new WeakSet<object>();
  * the host's spawn promise would hang waiting for an exit notification
  * that never comes. This listener detects that case — when the worker we
  * registered here is *still* the one bound to `pid` in `processes` and we
- * didn't terminate it ourselves — and synthesizes a crash exit so the
- * host learns the process is gone. Encoded as 128+SIGSEGV (139) by
- * convention for "killed by signal 11".
+ * didn't terminate it ourselves — and synthesizes a SIGSEGV crash exit
+ * so the host learns the process is gone. There is no reliable trap
+ * reason on this path, so it keeps the generic 128+SIGSEGV convention.
  */
 function installCrashSafetyNet(
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
@@ -123,7 +129,7 @@ function installCrashSafetyNet(
       `[process-worker] pid=${pid} crashed (worker exit code=${code}, no SYS_exit_group from wasm)\n`,
     );
     post({ type: "stderr", pid, data: errBytes });
-    void finalizeProcessWorker(pid, worker, 128 + 11 /* SIGSEGV */);
+    void finalizeProcessWorker(pid, worker, signalExitStatus(SIGSEGV), SIGSEGV);
   });
 }
 
@@ -170,6 +176,10 @@ function reportProcessExit(pid: number, status: number): void {
   post({ type: "exit", pid, status });
 }
 
+function signalFromExitStatus(exitStatus: number): number | null {
+  return exitStatus >= 128 ? (exitStatus - 128) & 0x7f : null;
+}
+
 // PTY index per-PID
 const ptyByPid = new Map<number, number>();
 
@@ -198,17 +208,18 @@ async function finalizeProcessWorker(
   pid: number,
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
   exitStatus: number,
+  crashSignum: number = signalFromExitStatus(exitStatus) ?? SIGSEGV,
 ): Promise<void> {
   const cur = processes.get(pid);
   if (cur && cur.worker === worker) {
-    // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
+    // Synthesize a signal-style reap *before* `deactivateProcess` in
     // case the worker died without sending SYS_EXIT_GROUP (uncaught
     // wasm trap, instantiation failure → `{type:"error"}` path).
     // Without this, a concurrent waitpid in the parent blocks until
     // destroy because the kernel never marked the child as a zombie.
     // Idempotent via `hostReaped`: when the kernel already processed
     // a clean SYS_EXIT_GROUP for this pid, this is a no-op.
-    try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
+    try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
     try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
     processes.delete(pid);
     threadModuleCache.delete(pid);
@@ -217,6 +228,48 @@ async function finalizeProcessWorker(
     await terminateTrackedWorker(worker);
   }
   reportProcessExit(pid, exitStatus);
+}
+
+function processWorkerErrorDisposition(reason: string | undefined): {
+  exitStatus: number;
+  signum: number;
+} {
+  return {
+    exitStatus: classifiedTrapExitStatus(reason) ?? -1,
+    signum: classifiedSignalOrFallback(reason),
+  };
+}
+
+function unexpectedWorkerCrashDisposition(reason: unknown): {
+  exitStatus: number;
+  signum: number;
+} {
+  const signum = classifiedSignalOrFallback(reason);
+  return { exitStatus: signalExitStatus(signum), signum };
+}
+
+function finalizeProcessWorkerError(
+  pid: number,
+  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+  message: string | undefined,
+): void {
+  const errBytes = new TextEncoder().encode(`[process-worker] ${message ?? "unknown error"}\n`);
+  post({ type: "stderr", pid, data: errBytes });
+  const { exitStatus, signum } = processWorkerErrorDisposition(message);
+  void finalizeProcessWorker(pid, worker, exitStatus, signum);
+}
+
+function finalizeUnexpectedWorkerError(
+  pid: number,
+  worker: ReturnType<NodeWorkerAdapter["createWorker"]>,
+  label: string,
+  err: unknown,
+): void {
+  const message = err instanceof Error ? (err.message ?? String(err)) : String(err);
+  const errBytes = new TextEncoder().encode(`[kernel-worker] pid=${pid}: ${label}: ${message}\n`);
+  post({ type: "stderr", pid, data: errBytes });
+  const { exitStatus, signum } = unexpectedWorkerCrashDisposition(err);
+  void finalizeProcessWorker(pid, worker, exitStatus, signum);
 }
 
 function post(msg: KernelToMainMessage) {
@@ -540,20 +593,6 @@ async function handleInit(msg: InitMessage) {
   post({ type: "ready" });
 }
 
-// Init-time failure path. centralizedWorkerMain catches its own throws and
-// posts {type:"error"} — without surfacing those, spawn() hangs on exitResolvers.
-function failProcess(pid: number, reason: string) {
-  const text = `[kernel-worker] pid=${pid}: ${reason}\n`;
-  post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
-  try { kernelWorker.deactivateProcess(pid); } catch {}
-  const info = processes.get(pid);
-  info?.worker.terminate().catch(() => {});
-  processes.delete(pid);
-  threadModuleCache.delete(pid);
-  ptyByPid.delete(pid);
-  reportProcessExit(pid, -1);
-}
-
 // --- Spawn ---
 
 function handleSpawn(msg: SpawnMessage) {
@@ -633,11 +672,7 @@ function handleSpawn(msg: SpawnMessage) {
       threadAllocator,
     });
 
-    worker.on("error", (err: Error) => failProcess(pid, `worker error: ${err.message ?? err}`));
-    worker.on("message", (m: unknown) => {
-      const wmsg = m as WorkerToHostMessage;
-      if (wmsg.type === "error") failProcess(pid, wmsg.message);
-    });
+    worker.on("error", (err: Error) => finalizeUnexpectedWorkerError(pid, worker, "worker error", err));
 
     // Process-worker top-level catch in worker-main posts {type:"error"}
     // for instantiation failures (ABI mismatch, link errors). Without
@@ -647,9 +682,7 @@ function handleSpawn(msg: SpawnMessage) {
     worker.on("message", (raw: unknown) => {
       const m = raw as { type: string; pid?: number; message?: string; status?: number };
       if (m.type === "error" && m.pid === pid) {
-        const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
-        post({ type: "stderr", pid, data: errBytes });
-        void finalizeProcessWorker(pid, worker, -1);
+        finalizeProcessWorkerError(pid, worker, m.message);
       } else if (m.type === "exit" && m.pid === pid) {
         // worker-main posts {type:"exit"} when _start returns or hits an
         // "unreachable" trap (the latter is treated as normal _Exit). If
@@ -737,18 +770,12 @@ async function handleFork(
     threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
   });
 
-  childWorker.on("error", (err: Error) => failProcess(childPid, `worker error: ${err.message ?? err}`));
-  childWorker.on("message", (m: unknown) => {
-    const wmsg = m as WorkerToHostMessage;
-    if (wmsg.type === "error") failProcess(childPid, wmsg.message);
-  });
+  childWorker.on("error", (err: Error) => finalizeUnexpectedWorkerError(childPid, childWorker, "worker error", err));
 
   childWorker.on("message", (raw: unknown) => {
     const m = raw as { type: string; pid?: number; message?: string; status?: number };
     if (m.type === "error" && m.pid === childPid) {
-      const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
-      post({ type: "stderr", pid: childPid, data: errBytes });
-      void finalizeProcessWorker(childPid, childWorker, -1);
+      finalizeProcessWorkerError(childPid, childWorker, m.message);
     } else if (m.type === "exit" && m.pid === childPid) {
       void finalizeProcessWorker(childPid, childWorker, m.status ?? 0);
     }
@@ -827,11 +854,7 @@ async function handleExec(
     threadAllocator: newThreadAllocator,
   });
 
-  newWorker.on("error", (err: Error) => failProcess(pid, `exec worker error: ${err.message ?? err}`));
-  newWorker.on("message", (m: unknown) => {
-    const wmsg = m as WorkerToHostMessage;
-    if (wmsg.type === "error") failProcess(pid, wmsg.message);
-  });
+  newWorker.on("error", (err: Error) => finalizeUnexpectedWorkerError(pid, newWorker, "exec worker error", err));
 
   // Forward worker-main top-level errors (instantiation failures,
   // uncaught wasm traps) so the host learns the process died — same
@@ -839,9 +862,7 @@ async function handleExec(
   newWorker.on("message", (raw: unknown) => {
     const m = raw as { type: string; pid?: number; message?: string; status?: number };
     if (m.type === "error" && m.pid === pid) {
-      const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
-      post({ type: "stderr", pid, data: errBytes });
-      void finalizeProcessWorker(pid, newWorker, -1);
+      finalizeProcessWorkerError(pid, newWorker, m.message);
     } else if (m.type === "exit" && m.pid === pid) {
       void finalizeProcessWorker(pid, newWorker, m.status ?? 0);
     }
@@ -942,18 +963,12 @@ async function handlePosixSpawn(
     threadAllocator,
   });
 
-  newWorker.on("error", (err: Error) => failProcess(childPid, `spawn worker error: ${err.message ?? err}`));
-  newWorker.on("message", (m: unknown) => {
-    const wmsg = m as WorkerToHostMessage;
-    if (wmsg.type === "error") failProcess(childPid, wmsg.message);
-  });
+  newWorker.on("error", (err: Error) => finalizeUnexpectedWorkerError(childPid, newWorker, "spawn worker error", err));
 
   newWorker.on("message", (raw: unknown) => {
     const m = raw as { type: string; pid?: number; message?: string; status?: number };
     if (m.type === "error" && m.pid === childPid) {
-      const errBytes = new TextEncoder().encode(`[process-worker] ${m.message ?? "unknown error"}\n`);
-      post({ type: "stderr", pid: childPid, data: errBytes });
-      void finalizeProcessWorker(childPid, newWorker, -1);
+      finalizeProcessWorkerError(childPid, newWorker, m.message);
     } else if (m.type === "exit" && m.pid === childPid) {
       void finalizeProcessWorker(childPid, newWorker, m.status ?? 0);
     }

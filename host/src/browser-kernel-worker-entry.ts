@@ -80,6 +80,12 @@ import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
 import { detectPtrWidth, extractHeapBase } from "./constants";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
+import {
+  classifiedSignalOrFallback,
+  classifiedTrapExitStatus,
+  signalExitStatus,
+  SIGSEGV,
+} from "./trap-signals";
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
@@ -737,7 +743,7 @@ function installProcessWorkerListeners(
   pid: number,
 ): void {
   let exited = false;
-  const finalize = (status: number, source: string) => {
+  const finalize = (status: number, source: string, crashSignum?: number) => {
     if (exited) return;
     exited = true;
     if (processes.get(pid)?.worker !== worker) return; // already replaced (e.g. by exec)
@@ -747,19 +753,20 @@ function installProcessWorkerListeners(
     } else {
       console.warn(message);
     }
-    handleExit(pid, status);
+    handleExit(pid, status, crashSignum);
   };
 
-  // Status conventions match the Node host (PR #410):
-  //   139 = 128 + SIGSEGV (11) — uncaught wasm trap, worker died without
-  //         a SYS_exit_group. Matches a Linux child killed by SIGSEGV.
-  //   -1  — worker-main caught an instantiation/init error and posted
-  //         {type:"error"}. Same convention as Node-side handleSpawn.
+  // Status conventions match the Node host:
+  //   128+signal — classified Wasm trap, or generic SIGSEGV when a worker
+  //         dies without a trap reason. Matches Linux signal-death status.
+  //   -1  — worker-main caught an unclassified instantiation/init error
+  //         and posted {type:"error"}.
   //   m.status — worker-main posted {type:"exit"}, normal exit path.
   worker.on("error", (err: Error) => {
     if (intentionallyTerminated.has(worker as object)) return;
     console.error(`[kernel-worker] Worker error pid=${pid}:`, err.message);
-    finalize(128 + 11, "worker.onerror");
+    const signum = classifiedSignalOrFallback(err);
+    finalize(signalExitStatus(signum), "worker.onerror", signum);
   });
   worker.on("exit", (code: number) => {
     // BrowserWorkerHandle synthesizes an "exit" event when the underlying
@@ -773,7 +780,7 @@ function installProcessWorkerListeners(
     // finalized via the "error" handler above, so this is a no-op there.
     // If "exit" fires without a prior "error" (worker died via some path
     // we don't yet model), still treat it as a crash.
-    finalize(128 + 11, "worker exit event");
+    finalize(signalExitStatus(SIGSEGV), "worker exit event", SIGSEGV);
   });
   worker.on("message", (msg: unknown) => {
     const m = msg as { type?: string; message?: string; pid?: number; status?: number };
@@ -789,7 +796,8 @@ function installProcessWorkerListeners(
         `[process-worker] ${m.message ?? "unknown error"}\n`,
       );
       post({ type: "stderr", pid, data: errBytes });
-      finalize(-1, "worker-main error message");
+      const signum = classifiedSignalOrFallback(m.message);
+      finalize(classifiedTrapExitStatus(m.message) ?? -1, "worker-main error message", signum);
     } else if (m.type === "exit") {
       finalize(m.status ?? 0, "worker-main exit message");
     }
@@ -1189,11 +1197,19 @@ function handleThreadExit(pid: number, channelOffset: number): boolean {
   return threadExits.requestExit(pid, channelOffset);
 }
 
-function handleExit(pid: number, exitStatus: number): void {
-  void finishProcessExit(pid, exitStatus);
+function signalFromExitStatus(exitStatus: number): number | null {
+  return exitStatus >= 128 ? (exitStatus - 128) & 0x7f : null;
 }
 
-async function finishProcessExit(pid: number, exitStatus: number): Promise<void> {
+function handleExit(pid: number, exitStatus: number, crashSignum?: number): void {
+  void finishProcessExit(pid, exitStatus, crashSignum);
+}
+
+async function finishProcessExit(
+  pid: number,
+  exitStatus: number,
+  crashSignum: number = signalFromExitStatus(exitStatus) ?? SIGSEGV,
+): Promise<void> {
   if (processTeardowns.has(pid)) return;
 
   const info = processes.get(pid);
@@ -1207,7 +1223,7 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
   threadedProcessPids.delete(pid);
 
   const teardown = (async () => {
-    // Synthesize a SIGSEGV-style reap *before* `deactivateProcess` in
+    // Synthesize a signal-style reap *before* `deactivateProcess` in
     // case the worker died without sending SYS_EXIT_GROUP (uncaught
     // wasm trap -> onerror, worker-main `{type:"error"}` -> finalize(-1),
     // externally terminated Worker -> "exit" event). Without this, a
@@ -1216,7 +1232,7 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
     // `hostReaped`: when the kernel already processed a clean
     // SYS_EXIT_GROUP for this pid, this is a no-op. Mirrors
     // `finalizeProcessWorker` in host/src/node-kernel-worker-entry.ts.
-    try { kernelWorker.notifyHostProcessCrashed(pid); } catch { /* best-effort */ }
+    try { kernelWorker.notifyHostProcessCrashed(pid, crashSignum); } catch { /* best-effort */ }
     // Check if this is a "top-level" process or a fork child
     // For now, always deactivate — the main thread tracks exit promises
     kernelWorker.deactivateProcess(pid);

@@ -25,6 +25,8 @@ const TEST_PROGRAMS = [
   "getaddrinfo_test.c",
   "sysv_ipc_test.c",
   "wasm_trap_test.c",
+  "oob_trap_test.c",
+  "divzero_trap_test.c",
   "abort_test.c",
   "mount_probe_test.c",
   "getpwent_smoke.c",
