@@ -5490,7 +5490,8 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     fallback_lock_table(proc).remove_all_for_pid(pid);
 
     proc.state = ProcessState::Exited;
-    proc.exit_status = status;
+    proc.exit_status = status & 0xff;
+    proc.exit_signal = 0;
 }
 
 /// Get the current time from the specified clock.

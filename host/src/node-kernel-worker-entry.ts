@@ -655,9 +655,15 @@ function handleSpawn(msg: SpawnMessage) {
       kernelWorker.onPtyOutput(ptyIdx, (data: Uint8Array) => {
         post({ type: "pty_output", pid, data });
       });
-    } else if (msg.stdin) {
-      const stdinData = msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
-      kernelWorker.setStdinData(pid, stdinData);
+    } else {
+      if (msg.pipeStdio) {
+        kernelWorker.setStdioPipes(pid, msg.pipeStdio);
+      }
+      if (msg.stdin) {
+        const stdinData =
+          msg.stdin instanceof Uint8Array ? msg.stdin : new Uint8Array(msg.stdin);
+        kernelWorker.setStdinData(pid, stdinData);
+      }
     }
 
     const initData: CentralizedWorkerInitMessage = {
@@ -1078,6 +1084,7 @@ async function handleClone(
     if (threads) {
       const idx = threads.indexOf(threadEntry);
       if (idx >= 0) threads.splice(idx, 1);
+      if (threads.length === 0) threadWorkers.delete(pid);
     }
   };
   const terminateThreadEntry = (): Promise<void> => {
