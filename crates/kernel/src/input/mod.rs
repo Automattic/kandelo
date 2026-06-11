@@ -1,11 +1,10 @@
 //! evdev input subsystem — backs `/dev/input/event{0,1}`.
 //!
-//! Covers the `EVIOCG*` ioctl helpers, the canvas-dim cache used to
-//! size `EVIOCGABS(ABS_X/ABS_Y)`, and (in [`dispatch`]) the host-
-//! callable event fan-out. sys_read ring drain lands in A5.
+//! Covers the canvas-dim cache used to size `EVIOCGABS(ABS_X/ABS_Y)`,
+//! the `EVIOCGBIT(*)` bitmap helper, and (in [`dispatch`]) the host-
+//! callable event fan-out.
 
 pub mod dispatch;
-pub mod wait;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
