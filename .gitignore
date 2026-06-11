@@ -63,6 +63,8 @@ node_modules/
 .vite/
 .playwright-mcp/
 .build-cache/
+docs-site/.vitepress/cache/
+docs-site/.vitepress/dist/
 
 # Browser example build output
 apps/browser-demos/dist/
