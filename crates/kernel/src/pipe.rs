@@ -232,7 +232,7 @@ impl PipeBuffer {
     }
 }
 
-/// Table of pipe buffers shared across all processes in centralized mode.
+/// Table of pipe buffers shared across all processes.
 pub struct PipeTable {
     pipes: Vec<Option<PipeBuffer>>,
     free_list: Vec<usize>,
@@ -332,11 +332,11 @@ impl PipeTable {
 /// Global pipe table wrapper for static storage.
 pub struct GlobalPipeTable(pub UnsafeCell<PipeTable>);
 
-/// SAFETY: Access is serialized — the centralized kernel services one syscall
-/// at a time from the JS event loop (no concurrent Wasm execution).
+/// SAFETY: Access is serialized — the kernel services one syscall at a time
+/// from the JS event loop (no concurrent Wasm execution).
 unsafe impl Sync for GlobalPipeTable {}
 
-/// Global pipe table shared across all processes in centralized mode.
+/// Global pipe table shared across all processes.
 pub static PIPE_TABLE: GlobalPipeTable = GlobalPipeTable(UnsafeCell::new(PipeTable::new()));
 
 /// Get a mutable reference to the global pipe table.

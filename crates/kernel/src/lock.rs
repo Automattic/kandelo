@@ -45,7 +45,7 @@ impl FileLock {
 
 /// Per-file lock table keyed by host_handle.
 pub struct LockTable {
-    /// All active locks. Centralized kernel manages locks for all processes.
+    /// All active locks. The kernel manages locks for all processes.
     locks: Vec<(i64, FileLock)>, // (host_handle, lock)
 }
 
@@ -103,12 +103,11 @@ impl LockTable {
     }
 }
 
-/// Global fallback lock table for non-host-backed file descriptions in
-/// centralized kernel mode.
+/// Global fallback lock table for non-host-backed file descriptions.
 pub struct GlobalFallbackLockTable(pub UnsafeCell<LockTable>);
 
-/// SAFETY: Centralized kernel access is serialized by the host worker; tests
-/// that access this table directly must serialize themselves.
+/// SAFETY: Kernel access is serialized by the host worker; tests that access
+/// this table directly must serialize themselves.
 unsafe impl Sync for GlobalFallbackLockTable {}
 
 /// Kernel-wide fallback advisory lock table.

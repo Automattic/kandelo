@@ -14,7 +14,7 @@
 
 ### Decision 1: socketpair() over full AF_UNIX
 **Chosen:** Implement socketpair() for Unix domain stream sockets. Full bind/listen/accept for AF_UNIX deferred.
-**Rationale:** In a single-process kernel, there's no peer process to connect to via named Unix sockets. socketpair() creates a pre-connected bidirectional channel — useful for self-pipe tricks, testing, and future IPC when multi-process is added. Full AF_UNIX named sockets (bind to filesystem path, listen, accept) require multi-process coordination.
+**Rationale:** socketpair() creates a pre-connected bidirectional channel — useful for self-pipe tricks, testing, and IPC. Full AF_UNIX named sockets (bind to filesystem path, listen, accept) require a kernel-managed namespace and connection queue.
 **Alternative:** Full AF_UNIX with named sockets. Would require a kernel-managed namespace and connection queue. Documented for Phase 3b integration.
 
 ### Decision 2: TCP as non-blocking stubs
