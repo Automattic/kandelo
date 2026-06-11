@@ -18,11 +18,14 @@ use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicI32;
 
-use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
+use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
 use crate::process::{Process, ProcessState};
+
+const INITIAL_FORK_STATE_BUFFER_LEN: usize = 64 * 1024;
+const MAX_FORK_STATE_BUFFER_LEN: usize = 4 * 1024 * 1024;
 
 /// Owning pid of `/dev/fb0`, or `-1` if no process holds it.
 ///
@@ -213,6 +216,26 @@ fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
         }
     }
     pipe_fd_pairs.into_values().collect()
+}
+
+fn serialize_fork_state_with_growing_buffer(parent: &Process) -> Result<Vec<u8>, Errno> {
+    let mut len = INITIAL_FORK_STATE_BUFFER_LEN;
+
+    loop {
+        let mut buf = Vec::new();
+        buf.resize(len, 0u8);
+
+        match crate::fork::serialize_fork_state(parent, &mut buf) {
+            Ok(written) => {
+                buf.truncate(written);
+                return Ok(buf);
+            }
+            Err(Errno::ENOMEM) if len < MAX_FORK_STATE_BUFFER_LEN => {
+                len = len.saturating_mul(2).min(MAX_FORK_STATE_BUFFER_LEN);
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 impl ProcessTable {
@@ -516,15 +539,13 @@ impl ProcessTable {
         if self.processes.contains_key(&child_pid) {
             return Err(Errno::EEXIST);
         }
-        let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
-
-        // Serialize parent state into a temporary buffer
-        let mut buf = Vec::new();
-        buf.resize(64 * 1024, 0u8); // 64KB should be plenty
-        let written = crate::fork::serialize_fork_state(parent, &mut buf)?;
+        let serialized_parent = {
+            let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            serialize_fork_state_with_growing_buffer(parent)?
+        };
 
         // Deserialize as child
-        let mut child = crate::fork::deserialize_fork_state(&buf[..written], child_pid)?;
+        let mut child = crate::fork::deserialize_fork_state(&serialized_parent, child_pid)?;
 
         // Bump cross-process refcounts on inherited fd state (host handles,
         // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
@@ -540,8 +561,7 @@ impl ProcessTable {
 
         // Parent's fork-counter regression guardrail. The non-forking spawn
         // tests assert this stays put across a SYS_SPAWN, proving the new
-        // path doesn't fall back to fork. Re-borrow at the very end because
-        // earlier code held an immutable `&parent`.
+        // path doesn't fall back to fork.
         if let Some(parent) = self.processes.get_mut(&parent_pid) {
             parent.increment_fork_count();
         }
@@ -997,6 +1017,53 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_process_grows_state_buffer_for_large_parent_state() {
+        const LARGE_FD_COUNT: usize = 80;
+        const LARGE_PATH_LEN: usize = 1024;
+
+        let mut table = ProcessTable::new();
+        table.create_process(100).unwrap();
+
+        let last_fd = {
+            let parent = table.processes.get_mut(&100).unwrap();
+            let mut last_fd = -1;
+
+            for _ in 0..LARGE_FD_COUNT {
+                let path = alloc::vec![b'x'; LARGE_PATH_LEN];
+                let ofd_ref = parent.ofd_table.create(FileType::MemFd, 0, -1, path);
+                last_fd = parent
+                    .fd_table
+                    .alloc(crate::fd::OpenFileDescRef(ofd_ref), 0)
+                    .unwrap();
+            }
+
+            last_fd
+        };
+
+        {
+            let parent = table.processes.get(&100).unwrap();
+            let mut old_limit_buf = alloc::vec![0u8; INITIAL_FORK_STATE_BUFFER_LEN];
+
+            assert_eq!(
+                crate::fork::serialize_fork_state(parent, &mut old_limit_buf),
+                Err(Errno::ENOMEM)
+            );
+        }
+
+        table
+            .fork_process(100, 101)
+            .expect("fork should grow its process-state buffer");
+
+        let child = table.processes.get(&101).unwrap();
+        let child_fd = child.fd_table.get(last_fd).unwrap();
+        let child_ofd = child.ofd_table.get(child_fd.ofd_ref.0).unwrap();
+
+        assert_eq!(child.ppid, 100);
+        assert_eq!(child_ofd.file_type, FileType::MemFd);
+        assert_eq!(child_ofd.path.len(), LARGE_PATH_LEN);
+    }
 
     #[test]
     fn poll_waitable_child_returns_exited_child_status() {
