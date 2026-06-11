@@ -14,8 +14,76 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 static VBLANK_SEQ: AtomicU32 = AtomicU32::new(0);
 
+/// Bump the global vblank sequence counter and return the new value.
+///
+/// Called from `kernel_vblank` (the host's 60 Hz pump) and from kernel
+/// unit tests that want to simulate one vblank tick. `WAIT_VBLANK`
+/// reads the counter on the next syscall round-trip so user programs
+/// observe the new sequence.
 pub fn vblank_tick() -> u32 {
     VBLANK_SEQ.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
+}
+
+/// Append one 32-byte `DRM_EVENT_FLIP_COMPLETE` record for the given
+/// `flip` to `event_ring`, stamped with `seq` and the host's monotonic
+/// time. Shared between the per-process drain and any future caller
+/// that wants to synthesize a flip-complete event in tests.
+fn write_flip_complete_event(
+    event_ring: &mut alloc::collections::VecDeque<u8>,
+    flip: &crate::ofd::PendingFlip,
+    seq: u32,
+    tv_sec: u32,
+    tv_usec: u32,
+) {
+    let mut record = [0u8; 32];
+    record[0..4].copy_from_slice(&2u32.to_le_bytes()); // DRM_EVENT_FLIP_COMPLETE
+    record[4..8].copy_from_slice(&32u32.to_le_bytes());
+    record[8..16].copy_from_slice(&flip.user_data.to_le_bytes());
+    record[16..20].copy_from_slice(&tv_sec.to_le_bytes());
+    record[20..24].copy_from_slice(&tv_usec.to_le_bytes());
+    record[24..28].copy_from_slice(&seq.to_le_bytes());
+    record[28..32].copy_from_slice(&flip.crtc_id.to_le_bytes());
+    event_ring.extend(record.iter());
+}
+
+/// Drain every queued page flip on one process's open card0 fds into
+/// each fd's `event_ring` as `DRM_EVENT_FLIP_COMPLETE` records.
+///
+/// Exposed at process granularity so kernel unit tests can drive the
+/// drain against a locally-constructed `Process` without going through
+/// the global process table.
+pub fn drain_pending_flips_for_process(
+    proc: &mut crate::process::Process,
+    seq: u32,
+    tv_sec: u32,
+    tv_usec: u32,
+) {
+    for (_idx, ofd) in proc.ofd_table.iter_mut() {
+        let Some(kms) = ofd.kms_mut() else { continue };
+        if kms.pending_flips.is_empty() {
+            continue;
+        }
+        // `pending_flips` and `event_ring` share the same `&mut kms`
+        // borrow; take the flips first so iterating them doesn't hold
+        // a live borrow on the queue while we write the ring.
+        let flips = core::mem::take(&mut kms.pending_flips);
+        for flip in &flips {
+            write_flip_complete_event(&mut kms.event_ring, flip, seq, tv_sec, tv_usec);
+        }
+    }
+}
+
+/// Walk every live process and drain any queued page flips into the
+/// per-fd `event_ring`s at vblank cadence. Called from `kernel_vblank`
+/// on every host vblank tick (16.67 ms). Pushing the gate down here
+/// means `drmModePageFlip → poll → drmHandleEvent` returns at real
+/// monitor-refresh rate, not at ioctl rate.
+pub fn drain_pending_flips(seq: u32, tv_sec: u32, tv_usec: u32) {
+    crate::process_table::with_processes(|procs| {
+        for proc in procs {
+            drain_pending_flips_for_process(proc, seq, tv_sec, tv_usec);
+        }
+    });
 }
 
 // crtc_id=1 is the only crtc the KMS surface supports today

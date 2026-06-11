@@ -1367,46 +1367,31 @@ fn handle_dri_card_ioctl(
                     return Err(Errno::EBUSY);
                 }
             }
-            // Best-effort stats: a clock-read failure leaves the flip
-            // queued and just skips the counter bump. The host reads
-            // the running totals via the kernel_kms_* exports.
-            let (tv_sec, tv_usec) = match host.host_clock_gettime(
+            // Best-effort commit stats: a clock-read failure leaves
+            // the flip queued and just skips the per-crtc counter
+            // bump. The host reads the running totals via the
+            // kernel_kms_* exports.
+            if let Ok((sec, nsec)) = host.host_clock_gettime(
                 wasm_posix_shared::clock::CLOCK_MONOTONIC,
             ) {
-                Ok((sec, nsec)) => {
-                    let now_us = (sec as u64)
-                        .wrapping_mul(1_000_000)
-                        + (nsec as u64) / 1000;
-                    crate::dri::record_kms_commit(req.crtc_id, now_us);
-                    (sec as u32, (nsec / 1000) as u32)
-                }
-                Err(_) => (0u32, 0u32),
-            };
-            let sequence = crate::dri::vblank_tick();
+                let now_us = (sec as u64).wrapping_mul(1_000_000)
+                    + (nsec as u64) / 1000;
+                crate::dri::record_kms_commit(req.crtc_id, now_us);
+            }
+            // Queue the flip but do NOT synthesize the completion
+            // event here. `dri::drain_pending_flips`, called from
+            // `kernel_vblank` on each host vblank tick (16.67 ms),
+            // retires every queued flip into the per-fd `event_ring`
+            // as a DRM_EVENT_FLIP_COMPLETE record stamped with the
+            // new sequence and host monotonic time. Result: libdrm's
+            // `drmModePageFlip → poll → drmHandleEvent` loop returns
+            // at monitor-refresh rate instead of ioctl rate.
             let kms_mut = kms_state_mut(proc, ofd_idx)?;
             kms_mut.pending_flips.push(crate::ofd::PendingFlip {
                 crtc_id: req.crtc_id,
                 fb_id: req.fb_id,
                 user_data: req.user_data,
             });
-            // v1 simplification: the host vblank pump exists only to
-            // refresh canvases + counters, so the test-bench can run
-            // PAGE_FLIP → drmHandleEvent without a real 60 Hz tick
-            // driving event delivery. Retire each queued flip into
-            // the per-fd event_ring as a DRM_EVENT_FLIP_COMPLETE
-            // record immediately, matching what a real DRM vblank IRQ
-            // would do before the next ioctl.
-            if let Some(flip) = kms_mut.pending_flips.pop() {
-                let mut record = [0u8; 32];
-                record[0..4].copy_from_slice(&2u32.to_le_bytes());
-                record[4..8].copy_from_slice(&32u32.to_le_bytes());
-                record[8..16].copy_from_slice(&flip.user_data.to_le_bytes());
-                record[16..20].copy_from_slice(&tv_sec.to_le_bytes());
-                record[20..24].copy_from_slice(&tv_usec.to_le_bytes());
-                record[24..28].copy_from_slice(&sequence.to_le_bytes());
-                record[28..32].copy_from_slice(&flip.crtc_id.to_le_bytes());
-                kms_mut.event_ring.extend(record.iter());
-            }
             Ok(())
         }
         DRM_IOCTL_WAIT_VBLANK => {
@@ -8017,6 +8002,24 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                     if pollfd.events & POLLOUT != 0 {
                         revents |= POLLOUT;
                     }
+                } else if ofd.file_type == FileType::CharDevice
+                    && VirtualDevice::from_host_handle(ofd.host_handle)
+                        == Some(VirtualDevice::DriCard0)
+                {
+                    // /dev/dri/card0 gates POLLIN on the per-fd
+                    // `event_ring` actually holding a DRM event.
+                    // sys_read returns Ok(0) on an empty ring rather
+                    // than blocking, so reporting always-ready POLLIN
+                    // would race the vblank pump: poll → read → 0 →
+                    // drmHandleEvent reports a short read and fails.
+                    if pollfd.events & POLLIN != 0 {
+                        if let Some(kms) = ofd.kms() {
+                            if !kms.event_ring.is_empty() {
+                                revents |= POLLIN;
+                            }
+                        }
+                    }
+                    // card0 doesn't accept writes — never report POLLOUT.
                 } else {
                     // Regular files and char devices are always ready
                     if pollfd.events & POLLIN != 0 {
@@ -21739,22 +21742,39 @@ mod tests {
 
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
-        // The v1 PAGE_FLIP path drains synchronously into event_ring, so
-        // pending_flips is left empty and a 32-byte DRM_EVENT_FLIP_COMPLETE
-        // record sits in event_ring waiting for read(card0).
+        // Post-Q4: PAGE_FLIP only queues into `pending_flips`. The
+        // event_ring stays empty until the next vblank tick.
+        assert_eq!(kms.pending_flips.len(), 1);
+        assert!(kms.event_ring.is_empty());
+
+        // Simulate one vblank tick. `drain_pending_flips_for_process`
+        // is the per-process variant the global vblank pump invokes
+        // for every live process; calling it here keeps the test free
+        // of GLOBAL_PROCESS_TABLE side effects.
+        let seq = crate::dri::vblank_tick();
+        crate::dri::drain_pending_flips_for_process(&mut proc, seq, 0, 0);
+
+        let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 32);
         let event: Vec<u8> = kms.event_ring.iter().copied().collect();
         assert_eq!(u32::from_le_bytes(event[0..4].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(event[4..8].try_into().unwrap()), 32);
         assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x42);
+        assert_eq!(u32::from_le_bytes(event[24..28].try_into().unwrap()), seq);
         assert_eq!(u32::from_le_bytes(event[28..32].try_into().unwrap()), 1);
 
-        // A back-to-back second PAGE_FLIP succeeds (the previous flip
-        // already retired synchronously) and appends another 32-byte
-        // record to the event_ring.
+        // A back-to-back second PAGE_FLIP must wait for its own
+        // vblank tick. Reading event_ring still returns only the
+        // first event until the next drain runs.
         unsafe { core::ptr::write_unaligned(flipbuf.as_mut_ptr() as *mut WpkDrmModeCrtcPageFlip, flip) };
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flipbuf).unwrap();
+        let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        assert_eq!(kms.pending_flips.len(), 1);
+        assert_eq!(kms.event_ring.len(), 32);
+
+        let seq2 = crate::dri::vblank_tick();
+        crate::dri::drain_pending_flips_for_process(&mut proc, seq2, 0, 0);
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 64);

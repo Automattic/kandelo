@@ -1025,6 +1025,15 @@ export class CentralizedKernelWorker {
     this.lockTable = SharedLockTable.create();
     this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
 
+    // Start the vblank pump unconditionally. kernel_vblank now drains
+    // queued DRM_IOCTL_MODE_PAGE_FLIP requests into the per-fd
+    // event_ring at monitor-refresh rate; without an always-on tick
+    // any card0 client would block forever on poll(POLLIN). On Node
+    // the interval is `.unref()`'d (see startVblankPump) so tests
+    // still exit cleanly. tickVblank no-ops gracefully if no canvas
+    // or stats SAB is attached.
+    this.startVblankPump();
+
     this.initialized = true;
   }
 

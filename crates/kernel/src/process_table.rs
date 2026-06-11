@@ -971,6 +971,18 @@ pub fn current_pid() -> u32 {
     unsafe { (*GLOBAL_PROCESS_TABLE.0.get()).current_pid() }
 }
 
+/// Invoke `f` with a mutable iterator over every live process in the
+/// global table. Used by background-tick kernel paths (e.g.
+/// `dri::vblank_tick`) that need to walk every process's open fds
+/// without a `current_pid` to anchor them.
+pub fn with_processes<F>(f: F)
+where
+    F: FnOnce(alloc::collections::btree_map::ValuesMut<'_, u32, Process>),
+{
+    let table = unsafe { &mut *GLOBAL_PROCESS_TABLE.0.get() };
+    f(table.processes.values_mut());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

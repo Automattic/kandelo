@@ -10456,14 +10456,31 @@ pub extern "C" fn kernel_drain_wakeup_events(
 // DRI / KMS
 // ---------------------------------------------------------------------------
 
-/// Tick the global vblank sequence counter and return the new value.
+/// Tick the global vblank sequence counter, drain every queued page
+/// flip on every open card0 fd into the per-fd `event_ring`, and
+/// return the new sequence value.
 ///
-/// The host runs this on a 16.67 ms RAF / setInterval pump in the
-/// kernel worker; user programs that posted `DRM_IOCTL_WAIT_VBLANK`
-/// observe the new sequence on the next syscall round-trip.
+/// The host runs this on a 16.67 ms `setInterval` pump in the kernel
+/// worker. Each tick: (1) bumps the global vblank seq so user
+/// programs that posted `DRM_IOCTL_WAIT_VBLANK` observe the new value
+/// on the next syscall round-trip; (2) walks every live process and
+/// retires queued `DRM_IOCTL_MODE_PAGE_FLIP` requests as
+/// `DRM_EVENT_FLIP_COMPLETE` records stamped with the new sequence
+/// and the host's monotonic time. The drain is what makes libdrm's
+/// `drmModePageFlip → poll → drmHandleEvent` loop return at monitor-
+/// refresh rate instead of ioctl rate.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_vblank() -> u32 {
-    crate::dri::vblank_tick()
+    let seq = crate::dri::vblank_tick();
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_usec) = match host.host_clock_gettime(
+        wasm_posix_shared::clock::CLOCK_MONOTONIC,
+    ) {
+        Ok((sec, nsec)) => (sec as u32, (nsec / 1000) as u32),
+        Err(_) => (0u32, 0u32),
+    };
+    crate::dri::drain_pending_flips(seq, tv_sec, tv_usec);
+    seq
 }
 
 /// Number of successful page-flip commits on the given crtc.
