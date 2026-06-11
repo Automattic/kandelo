@@ -1656,6 +1656,26 @@ pub(crate) fn dri_release_ofd_state(
     }
 }
 
+/// Run input-specific cleanup for a freshly-freed OFD: drop the per-fd
+/// event ring + grab flag.
+///
+/// Called from `sys_close` after `dec_ref` has freed the OFD slot. v1
+/// has no host-side per-OFD state to release — the host's `InputSource`
+/// is a single producer and the kernel owns every per-OFD ring — so
+/// the body is just an explicit drop of the boxed state. The signature
+/// mirrors `dri_release_ofd_state` to leave room for plan 9
+/// (wpkcompositor), which will wire a `host.input_grab_released(pid,
+/// device)` notification here so a focus-routed compositor can re-
+/// grant ownership when a grab-holding OFD closes.
+pub(crate) fn input_release_ofd_state(
+    _pid: i32,
+    _host: &mut dyn HostIO,
+    _ofd_idx: usize,
+    state: Option<alloc::boxed::Box<crate::ofd::InputFdState>>,
+) {
+    let _ = state;
+}
+
 /// Build a synthetic WasmStat for a virtual device.
 fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     use wasm_posix_shared::mode::S_IFCHR;
@@ -2050,6 +2070,21 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         }
     };
 
+    // Same dance for the evdev sidecar: take the boxed `InputFdState`
+    // off the OFD on last-ref so the close-time helper can drop the
+    // per-OFD ring + grab flag (and, eventually, notify the
+    // compositor that the grab has been released).
+    let input_state_for_release = {
+        let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
+        if ofd.ref_count == 1 {
+            proc.ofd_table
+                .get_mut(idx)
+                .and_then(|ofd| ofd.input_state.take())
+        } else {
+            None
+        }
+    };
+
     // POSIX: closing any fd for a file releases all advisory locks on that file
     // held by this process, regardless of which fd acquired the lock.
     if host_handle >= 0
@@ -2073,6 +2108,10 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         // KMS master, and prime-bo cookies so close-time bo destroy is
         // observed before any FileType-specific release path runs.
         dri_release_ofd_state(proc.pid as i32, host, idx, dri_state_for_release);
+        // evdev per-fd cleanup: drop the per-OFD event ring + grab
+        // flag. Order doesn't matter wrt DRI (disjoint state); placed
+        // here for parity with the dri_state release call.
+        input_release_ofd_state(proc.pid as i32, host, idx, input_state_for_release);
         match file_type {
             FileType::Pipe => {
                 if host_handle >= 0 {
@@ -22929,6 +22968,87 @@ mod tests {
         let mut off = 0i32.to_le_bytes();
         // Never grabbed; release returns 0, not an error.
         sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off).unwrap();
+    }
+
+    #[test]
+    fn close_releases_grab_so_next_open_can_grab() {
+        use wasm_posix_shared::input::EVIOCGRAB;
+        // Open event0, grab it, then close. The OFD slot must drop —
+        // and a fresh open on the same node must come up clean
+        // (no leftover grab flag, no stale ring) and be re-grabbable.
+        // v1 doesn't enforce cross-OFD EBUSY anyway, so this mostly
+        // exercises that close-time input cleanup runs without panicking
+        // and the OFD slot is actually freed.
+        let (mut proc, mut host, fd_a) = open_evdev(616, b"/dev/input/event0");
+        let idx_a = proc.fd_table.get(fd_a).unwrap().ofd_ref.0;
+        let mut on = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd_a, EVIOCGRAB, &mut on).unwrap();
+        assert!(proc.ofd_table.get(idx_a).unwrap().input().unwrap().grabbed);
+
+        sys_close(&mut proc, &mut host, fd_a).unwrap();
+        // dec_ref freed the OFD slot — entries[idx_a] is now None.
+        assert!(proc.ofd_table.get(idx_a).is_none());
+
+        let fd_b = sys_open(
+            &mut proc,
+            &mut host,
+            b"/dev/input/event0",
+            O_RDWR,
+            0,
+        )
+        .unwrap();
+        let idx_b = proc.fd_table.get(fd_b).unwrap().ofd_ref.0;
+        // Fresh OFD: ring empty, dropped clear, grab clear.
+        let input = proc.ofd_table.get(idx_b).unwrap().input().unwrap();
+        assert!(input.event_ring.is_empty());
+        assert!(!input.dropped);
+        assert!(!input.grabbed);
+        let mut on2 = 1i32.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd_b, EVIOCGRAB, &mut on2).unwrap();
+        assert!(proc.ofd_table.get(idx_b).unwrap().input().unwrap().grabbed);
+    }
+
+    #[test]
+    fn fork_then_close_in_child_keeps_grab_on_parent() {
+        use wasm_posix_shared::input::{
+            EVIOCGRAB, EV_KEY, EV_SYN, KEY_A, SYN_REPORT,
+        };
+        let (mut parent, mut host, parent_fd) =
+            open_evdev(617, b"/dev/input/event0");
+        let ofd_idx = parent.fd_table.get(parent_fd).unwrap().ofd_ref.0;
+        // Parent grabs + queues two events to verify serialisation
+        // round-trips both the grab flag and the ring contents.
+        let mut on = 1i32.to_le_bytes();
+        sys_ioctl(&mut parent, &mut host, parent_fd, EVIOCGRAB, &mut on)
+            .unwrap();
+        push_event_into_ofd(&mut parent, ofd_idx, EV_KEY, KEY_A, 1);
+        push_event_into_ofd(&mut parent, ofd_idx, EV_SYN, SYN_REPORT, 0);
+
+        // "Fork": serialise the parent and reconstruct as the child.
+        // After this, parent and child each own an independent copy of
+        // the OFD (and its InputFdState) — mirrors the dri_state fork
+        // tests in fork.rs.
+        let mut buf = alloc::vec![0u8; 64 * 1024];
+        let written =
+            crate::fork::serialize_fork_state(&parent, &mut buf).unwrap();
+        let mut child =
+            crate::fork::deserialize_fork_state(&buf[..written], 717).unwrap();
+
+        // Child carries the grab + the ring contents.
+        let child_input = child.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert_eq!(child_input.device, 0);
+        assert!(child_input.grabbed);
+        assert_eq!(child_input.event_ring.len(), 48); // 2 × 24
+
+        // Closing the child's copy of the fd drops the child's OFD slot.
+        sys_close(&mut child, &mut host, parent_fd).unwrap();
+        assert!(child.ofd_table.get(ofd_idx).is_none());
+
+        // Parent is untouched — separate Process structs after fork.
+        let parent_input =
+            parent.ofd_table.get(ofd_idx).unwrap().input().unwrap();
+        assert!(parent_input.grabbed);
+        assert_eq!(parent_input.event_ring.len(), 48);
     }
 
     #[test]

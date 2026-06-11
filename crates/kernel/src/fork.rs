@@ -280,6 +280,9 @@ const DRI_TAG_RENDER_NODE: u8 = 1;
 const DRI_TAG_CARD: u8 = 2;
 const DRI_TAG_PRIME_BO: u8 = 3;
 
+const INPUT_TAG_NONE: u8 = 0;
+const INPUT_TAG_SOME: u8 = 1;
+
 fn write_dri_fd_state(
     w: &mut Writer<'_>,
     dri: &crate::ofd::DriFdState,
@@ -348,6 +351,30 @@ fn write_dri_state(
             w.write_u64(p.cookie)
         }
     }
+}
+
+/// Serialise the evdev sidecar across a fork/exec. The ring is copied
+/// byte-for-byte; the child inherits the parent's grab + dropped flag.
+/// `EVIOCGRAB` is per-OFD in Linux, so an OFD shared by fork preserves
+/// its grab — this matches our refcounted-OFD model where parent +
+/// child each end up with their own copy of the InputFdState.
+fn write_input_state(
+    w: &mut Writer<'_>,
+    state: Option<&crate::ofd::InputFdState>,
+) -> Result<(), Errno> {
+    let Some(input) = state else {
+        return w.write_u8(INPUT_TAG_NONE);
+    };
+    w.write_u8(INPUT_TAG_SOME)?;
+    w.write_u8(input.device)?;
+    w.write_u8(input.grabbed as u8)?;
+    w.write_u8(input.dropped as u8)?;
+    w.write_u32(input.ring_high_water)?;
+    w.write_u32(input.event_ring.len() as u32)?;
+    for &b in input.event_ring.iter() {
+        w.write_u8(b)?;
+    }
+    Ok(())
 }
 
 /// Read a `DriFdState` from the wire and incref every referenced bo
@@ -430,6 +457,45 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
         pending_flips,
         event_ring: VecDeque::new(),
     })
+}
+
+fn read_input_state(
+    r: &mut Reader<'_>,
+) -> Result<Option<alloc::boxed::Box<crate::ofd::InputFdState>>, Errno> {
+    use alloc::collections::VecDeque;
+    let tag = r.read_u8()?;
+    match tag {
+        INPUT_TAG_NONE => Ok(None),
+        INPUT_TAG_SOME => {
+            let device = r.read_u8()?;
+            let grabbed = r.read_u8()? != 0;
+            let dropped = r.read_u8()? != 0;
+            let ring_high_water = r.read_u32()?;
+            let ring_len = r.read_u32()? as usize;
+            // The ring is always whole 24-byte records and bounded
+            // at INPUT_RING_MAX_BYTES; reject anything else as a
+            // corrupted/forged fork stream.
+            if ring_len > crate::ofd::INPUT_RING_MAX_BYTES
+                || ring_len % core::mem::size_of::<
+                    wasm_posix_shared::input::WpkInputEvent,
+                >() != 0
+            {
+                return Err(Errno::EINVAL);
+            }
+            let mut event_ring = VecDeque::with_capacity(ring_len);
+            for _ in 0..ring_len {
+                event_ring.push_back(r.read_u8()?);
+            }
+            Ok(Some(alloc::boxed::Box::new(crate::ofd::InputFdState {
+                device,
+                event_ring,
+                grabbed,
+                dropped,
+                ring_high_water,
+            })))
+        }
+        _ => Err(Errno::EINVAL),
+    }
 }
 
 fn read_dri_state(
@@ -557,6 +623,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // DRI sidecar — `preserve_master = false` because the master
         // lease must drop on fork (only one process may hold it).
         write_dri_state(&mut w, ofd.dri_state.as_deref(), false)?;
+        // evdev sidecar — child inherits the per-OFD ring + grab.
+        write_input_state(&mut w, ofd.input_state.as_deref())?;
     }
 
     // ── Environment ──
@@ -858,6 +926,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             ofd_entries.push(None);
         }
         let dri_state = read_dri_state(&mut r)?;
+        let input_state = read_input_state(&mut r)?;
         ofd_entries[index] = Some(OpenFileDesc {
             file_type,
             status_flags,
@@ -870,11 +939,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             dir_synth_state: 0,
             dir_entry_offset: 0,
             dri_state,
-            // TODO(plan-5 A4/A5): once the host produces events and
-            // sys_read drains the ring, serialise input_state through
-            // fork the same way dri_state is. A2 leaves it None
-            // because no consumer exists yet.
-            input_state: None,
+            input_state,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -1331,6 +1396,10 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // the same process identity and any inherited card0 OFD
         // legitimately retains its KMS lease across the image swap.
         write_dri_state(&mut w, ofd.dri_state.as_deref(), true)?;
+        // evdev sidecar — exec keeps the per-OFD ring + grab (the OFD
+        // survives the image swap; CLOEXEC is handled by the fd table,
+        // not the OFD).
+        write_input_state(&mut w, ofd.input_state.as_deref())?;
     }
 
     // ── Environment ──
@@ -1474,6 +1543,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ofd_entries.push(None);
         }
         let dri_state = read_dri_state(&mut r)?;
+        let input_state = read_input_state(&mut r)?;
         ofd_entries[index] = Some(OpenFileDesc {
             file_type,
             status_flags,
@@ -1486,9 +1556,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_synth_state: 0,
             dir_entry_offset: 0,
             dri_state,
-            // TODO(plan-5 A4/A5): see same TODO in the other
-            // OpenFileDesc reconstruction site above.
-            input_state: None,
+            input_state,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
