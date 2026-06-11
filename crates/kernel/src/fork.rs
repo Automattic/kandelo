@@ -870,6 +870,11 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
             dir_synth_state: 0,
             dir_entry_offset: 0,
             dri_state,
+            // TODO(plan-5 A4/A5): once the host produces events and
+            // sys_read drains the ring, serialise input_state through
+            // fork the same way dri_state is. A2 leaves it None
+            // because no consumer exists yet.
+            input_state: None,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);
@@ -1481,6 +1486,9 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             dir_synth_state: 0,
             dir_entry_offset: 0,
             dri_state,
+            // TODO(plan-5 A4/A5): see same TODO in the other
+            // OpenFileDesc reconstruction site above.
+            input_state: None,
         });
     }
     let ofd_table = OfdTable::from_raw(ofd_entries);

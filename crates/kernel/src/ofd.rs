@@ -184,6 +184,52 @@ pub enum DriOfdState {
     Card { dri: DriFdState, kms: KmsFdState },
 }
 
+/// Per-OFD ring cap: 1024 `struct input_event` records (24 KiB).
+pub const INPUT_RING_MAX_RECORDS: usize = 1024;
+/// Per-OFD ring cap in bytes — `INPUT_RING_MAX_RECORDS * size_of::<WpkInputEvent>()`.
+pub const INPUT_RING_MAX_BYTES: usize = INPUT_RING_MAX_RECORDS * 24;
+
+/// Per-fd state for `/dev/input/event{0,1}` opens.
+///
+/// Disjoint from [`DriOfdState`] — input fds carry no DRI bo state.
+/// We keep `input_state` as a separate `Option<Box<…>>` field on the
+/// OFD rather than folding it into `DriOfdState` because the two
+/// state machines have no shared invariants.
+///
+/// Linux semantics replicated:
+/// * The ring is per-OFD, not per-process. `dup` / fork-inherit share
+///   one ring; a fresh `open()` gets a new one.
+/// * On overflow, the **new** event is discarded and `dropped` is set
+///   (mirrors `drivers/input/evdev.c::evdev_pass_values`). The next
+///   `read()` synthesises a `SYN_DROPPED` record at the head of the
+///   returned buffer and clears `dropped`; userspace is expected to
+///   resynchronise by re-querying state via `EVIOCG*`.
+/// * `grabbed` is recorded but NOT enforced in v1 — plan 9
+///   (wpkcompositor) adds the cross-OFD focus-routing layer.
+#[derive(Default, Clone, Debug)]
+pub struct InputFdState {
+    /// Which device this fd is bound to (0 = kbd, 1 = ptr). Cached
+    /// to avoid a second `VirtualDevice` lookup on read / poll.
+    pub device: u8,
+
+    /// Ring of 24-byte `WpkInputEvent` records. Bounded at
+    /// [`INPUT_RING_MAX_BYTES`].
+    pub event_ring: VecDeque<u8>,
+
+    /// `EVIOCGRAB` ownership flag. v1 records the flag but doesn't
+    /// gate event delivery on it.
+    pub grabbed: bool,
+
+    /// Set when an event push found the ring full; cleared on the
+    /// next `read()` *after* a `SYN_DROPPED` synthetic record is
+    /// delivered at the head of that read's output.
+    pub dropped: bool,
+
+    /// Peak record count seen on this ring — debug-only, not exposed
+    /// to userspace.
+    pub ring_high_water: u32,
+}
+
 #[derive(Clone)]
 pub struct OpenFileDesc {
     pub file_type: FileType,
@@ -203,6 +249,10 @@ pub struct OpenFileDesc {
     /// DRI sidecar; see [`DriOfdState`]. Boxed so non-DRI OFDs pay
     /// only one pointer slot.
     pub dri_state: Option<Box<DriOfdState>>,
+    /// evdev sidecar for `/dev/input/event{0,1}` OFDs; see
+    /// [`InputFdState`]. Boxed so non-evdev OFDs pay only one pointer
+    /// slot. Parallel to [`Self::dri_state`] (disjoint state machines).
+    pub input_state: Option<Box<InputFdState>>,
 }
 
 impl OpenFileDesc {
@@ -254,6 +304,16 @@ impl OpenFileDesc {
             _ => None,
         }
     }
+
+    /// Borrow the `InputFdState` for `/dev/input/event{0,1}` OFDs.
+    /// Returns `None` for any other OFD.
+    pub fn input(&self) -> Option<&InputFdState> {
+        self.input_state.as_deref()
+    }
+
+    pub fn input_mut(&mut self) -> Option<&mut InputFdState> {
+        self.input_state.as_deref_mut()
+    }
 }
 
 #[derive(Clone)]
@@ -289,6 +349,7 @@ impl OfdTable {
             dir_synth_state: 0,
             dir_entry_offset: 0,
             dri_state: None,
+            input_state: None,
         };
 
         // Search for a free (None) slot to reuse.
@@ -529,6 +590,7 @@ mod tests {
                 dir_synth_state: 0,
                 dir_entry_offset: 0,
                 dri_state: None,
+                input_state: None,
             });
         }
 
@@ -634,6 +696,45 @@ mod tests {
         assert!(table.get_mut(render).unwrap().take_prime_bo().is_none());
         // dri_state must NOT have been cleared.
         assert!(table.get(render).unwrap().dri_state.is_some());
+    }
+
+    #[test]
+    fn ofd_default_has_no_input_state() {
+        let mut table = OfdTable::new();
+        let idx = table.create(FileType::CharDevice, O_RDONLY, -10, b"/dev/input/event0".to_vec());
+        let ofd = table.get(idx).unwrap();
+        assert!(ofd.input_state.is_none());
+        assert!(ofd.input().is_none());
+    }
+
+    #[test]
+    fn input_accessors_route_to_attached_state() {
+        let mut table = OfdTable::new();
+        let idx = table.create(FileType::CharDevice, O_RDONLY, -10, b"/dev/input/event0".to_vec());
+        table.get_mut(idx).unwrap().input_state = Some(Box::new(InputFdState {
+            device: 0,
+            ..Default::default()
+        }));
+
+        let st = table.get(idx).unwrap().input().unwrap();
+        assert_eq!(st.device, 0);
+        assert!(!st.grabbed);
+        assert!(!st.dropped);
+        assert_eq!(st.ring_high_water, 0);
+        assert!(st.event_ring.is_empty());
+
+        // input_mut lets us mutate the ring.
+        let st = table.get_mut(idx).unwrap().input_mut().unwrap();
+        st.event_ring.push_back(0xab);
+        assert_eq!(table.get(idx).unwrap().input().unwrap().event_ring.len(), 1);
+    }
+
+    #[test]
+    fn input_ring_cap_bytes_is_24_kib() {
+        // Lock the ring cap so the per-fd memory budget cannot drift
+        // without a deliberate edit + review.
+        assert_eq!(INPUT_RING_MAX_RECORDS, 1024);
+        assert_eq!(INPUT_RING_MAX_BYTES, 24 * 1024);
     }
 
     #[test]

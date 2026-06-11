@@ -67,6 +67,10 @@ pub enum VirtualDevice {
     Dsp,     // /dev/dsp          host_handle = -7
     DriRenderD128, // /dev/dri/renderD128  host_handle = -8
     DriCard0,      // /dev/dri/card0       host_handle = -9
+    /// `/dev/input/event{0,1}`. `device = 0` → kbd (host_handle -10),
+    /// `device = 1` → ptr (host_handle -11). v1 exposes exactly these
+    /// two; `/dev/input/eventN` for N≥2 is not synthesised.
+    InputEvent { device: u8 },
 }
 
 impl VirtualDevice {
@@ -82,6 +86,11 @@ impl VirtualDevice {
             VirtualDevice::Dsp => -7,
             VirtualDevice::DriRenderD128 => -8,
             VirtualDevice::DriCard0 => -9,
+            VirtualDevice::InputEvent { device: 0 } => -10,
+            VirtualDevice::InputEvent { device: 1 } => -11,
+            // Any other device byte is unreachable — match_virtual_device
+            // only constructs InputEvent{0} or InputEvent{1}.
+            VirtualDevice::InputEvent { .. } => -10,
         }
     }
 
@@ -97,6 +106,8 @@ impl VirtualDevice {
             -7 => Some(VirtualDevice::Dsp),
             -8 => Some(VirtualDevice::DriRenderD128),
             -9 => Some(VirtualDevice::DriCard0),
+            -10 => Some(VirtualDevice::InputEvent { device: 0 }),
+            -11 => Some(VirtualDevice::InputEvent { device: 1 }),
             _ => None,
         }
     }
@@ -113,6 +124,7 @@ impl VirtualDevice {
             VirtualDevice::Dsp => 7,
             VirtualDevice::DriRenderD128 => 8,
             VirtualDevice::DriCard0 => 9,
+            VirtualDevice::InputEvent { device } => 10 + device as u64,
         }
     }
 }
@@ -134,6 +146,8 @@ fn match_virtual_device(path: &[u8]) -> Option<VirtualDevice> {
         b"/dev/dsp" => Some(VirtualDevice::Dsp),
         b"/dev/dri/renderD128" => Some(VirtualDevice::DriRenderD128),
         b"/dev/dri/card0" => Some(VirtualDevice::DriCard0),
+        b"/dev/input/event0" => Some(VirtualDevice::InputEvent { device: 0 }),
+        b"/dev/input/event1" => Some(VirtualDevice::InputEvent { device: 1 }),
         _ => None,
     }
 }
@@ -557,6 +571,19 @@ fn install_dri_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDev
     if let Some(s) = state {
         if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
             ofd.dri_state = Some(alloc::boxed::Box::new(s));
+        }
+    }
+}
+
+/// Install the evdev sidecar on a freshly-allocated OFD for a
+/// `/dev/input/event{0,1}` open. No-op for any other virtual device.
+fn install_input_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDevice) {
+    if let VirtualDevice::InputEvent { device } = dev {
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.input_state = Some(alloc::boxed::Box::new(crate::ofd::InputFdState {
+                device,
+                ..Default::default()
+            }));
         }
     }
 }
@@ -1703,6 +1730,7 @@ pub fn sys_open(
             resolved,
         );
         install_dri_state_on_open(proc, ofd_idx, dev);
+        install_input_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
@@ -2465,6 +2493,12 @@ pub fn sys_read(
                         | VirtualDevice::Fb0
                         | VirtualDevice::Dsp
                         | VirtualDevice::DriRenderD128 => 0,
+                        // A2 placeholder — A5 replaces with the ring
+                        // drain. Returning 0 here is "no events
+                        // pending", which is what reads against a
+                        // freshly-opened evdev fd see before any
+                        // host-pushed events arrive.
+                        VirtualDevice::InputEvent { .. } => 0,
                         VirtualDevice::DriCard0 => {
                             // Drain queued DRM events (DRM_EVENT_FLIP_COMPLETE)
                             // into the caller buffer, one byte at a time so a
@@ -8342,6 +8376,7 @@ pub fn sys_openat(
             resolved,
         );
         install_dri_state_on_open(proc, ofd_idx, dev);
+        install_input_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
         let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
         return Ok(fd);
@@ -17635,6 +17670,8 @@ mod tests {
             VirtualDevice::Dsp,
             VirtualDevice::DriRenderD128,
             VirtualDevice::DriCard0,
+            VirtualDevice::InputEvent { device: 0 },
+            VirtualDevice::InputEvent { device: 1 },
         ] {
             assert_eq!(
                 VirtualDevice::from_host_handle(dev.host_handle()),
@@ -17643,7 +17680,8 @@ mod tests {
         }
         assert_eq!(VirtualDevice::from_host_handle(0), None);
         // First sentinel past the allocated range — must not roundtrip.
-        assert_eq!(VirtualDevice::from_host_handle(-10), None);
+        // -10 and -11 are now allocated for InputEvent{0,1}.
+        assert_eq!(VirtualDevice::from_host_handle(-12), None);
     }
 
     // ===== Loopback socket tests =====
@@ -20580,8 +20618,6 @@ mod tests {
             match_virtual_device(b"/dev/input/mice"),
             Some(VirtualDevice::Mice)
         );
-        // No /dev/input/event0 — evdev is out of scope for v1.
-        assert_eq!(match_virtual_device(b"/dev/input/event0"), None);
     }
 
     #[test]
@@ -22367,5 +22403,93 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err2, Errno::EINVAL);
+    }
+
+    // -----------------------------------------------------------------
+    // /dev/input/event{0,1} tests — A2 surface (open + OFD wiring).
+    // Read/poll drain semantics land in A5; ioctl dispatch in A3.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn match_virtual_device_recognizes_evdev_nodes() {
+        assert_eq!(
+            match_virtual_device(b"/dev/input/event0"),
+            Some(VirtualDevice::InputEvent { device: 0 })
+        );
+        assert_eq!(
+            match_virtual_device(b"/dev/input/event1"),
+            Some(VirtualDevice::InputEvent { device: 1 })
+        );
+        // event2+ deliberately not synthesised.
+        assert_eq!(match_virtual_device(b"/dev/input/event2"), None);
+        assert_eq!(match_virtual_device(b"/dev/input/event10"), None);
+    }
+
+    #[test]
+    fn open_event0_yields_input_state_with_device_zero() {
+        let mut proc = Process::new(101);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDWR, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
+        let st = ofd.input().expect("input_state should be installed");
+        assert_eq!(st.device, 0);
+        assert!(!st.grabbed);
+        assert!(!st.dropped);
+        assert!(st.event_ring.is_empty());
+        // dri_state must NOT be installed on an evdev fd (disjoint
+        // sidecars).
+        assert!(ofd.dri_state.is_none());
+    }
+
+    #[test]
+    fn open_event1_yields_input_state_with_device_one() {
+        let mut proc = Process::new(102);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event1", O_RDWR, 0).unwrap();
+        let entry = proc.fd_table.get(fd).unwrap();
+        let st = proc
+            .ofd_table
+            .get(entry.ofd_ref.0)
+            .and_then(|o| o.input())
+            .expect("input_state should be installed");
+        assert_eq!(st.device, 1);
+    }
+
+    #[test]
+    fn open_event0_is_multi_process_no_busy() {
+        // Unlike /dev/fb0 + /dev/input/mice + /dev/dsp (single-owner),
+        // evdev nodes accept multiple opens — every process can
+        // attach its own ring.
+        let mut proc1 = Process::new(201);
+        let mut proc2 = Process::new(202);
+        let mut host = MockHostIO::new();
+        assert!(sys_open(&mut proc1, &mut host, b"/dev/input/event0", O_RDONLY, 0).is_ok());
+        assert!(sys_open(&mut proc2, &mut host, b"/dev/input/event0", O_RDONLY, 0).is_ok());
+    }
+
+    #[test]
+    fn open_nonexistent_event_path_returns_enoent() {
+        // /dev/input/event2 isn't a virtual device + isn't on the host
+        // FS in tests, so it lands in the file-not-found path. Either
+        // ENOENT or whatever MockHostIO returns for an unknown path;
+        // the contract for v1 is "not a virtual device".
+        let mut proc = Process::new(301);
+        let mut host = MockHostIO::new();
+        let r = sys_open(&mut proc, &mut host, b"/dev/input/event2", O_RDONLY, 0);
+        assert!(r.is_err(), "/dev/input/event2 must NOT open as a virtual device");
+    }
+
+    #[test]
+    fn read_eventN_returns_zero_before_any_event() {
+        // A2 placeholder: the ring is empty; read returns 0 (no
+        // events). A5 replaces this with the actual ring drain +
+        // SYN_DROPPED resync semantics.
+        let mut proc = Process::new(401);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
+        let mut buf = [0u8; 24];
+        let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
+        assert_eq!(n, 0);
     }
 }
