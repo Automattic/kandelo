@@ -10483,6 +10483,62 @@ pub extern "C" fn kernel_vblank() -> u32 {
     seq
 }
 
+/// Push one translated DOM input event onto every open OFD bound to
+/// the matching `/dev/input/event{0,1}` node.
+///
+/// The host calls this once per DOM keyboard / pointer event after
+/// translating the browser-side code to evdev's KEY_* / BTN_* /
+/// REL_* / ABS_*. The kernel timestamps each record with
+/// CLOCK_MONOTONIC (same source as `kernel_vblank`) so user-side
+/// libinput / SDL2 see a single monotonic timeline across vblank +
+/// input streams.
+///
+/// `device`: 0 = `event0` (kbd), 1 = `event1` (ptr); other values
+///   are dropped.
+/// `ev_type`: EV_SYN / EV_KEY / EV_REL / EV_ABS.
+/// `code`: KEY_* / BTN_* / REL_* / ABS_* / SYN_*.
+/// `value`: press(1) / release(0) / repeat(2) for KEY; delta for REL;
+///   absolute position for ABS; 0 for SYN_REPORT.
+///
+/// Convention: the host emits the type-specific record first
+/// (EV_KEY, EV_REL, …) then a matching `EV_SYN(SYN_REPORT, 0)` to
+/// close the logical event. SDL2 + libinput coalesce on SYN_REPORT.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_input_event(
+    device: u32,
+    ev_type: u32,
+    code: u32,
+    value: i32,
+) {
+    let mut host = WasmHostIO;
+    let (tv_sec, tv_usec) = match host.host_clock_gettime(
+        wasm_posix_shared::clock::CLOCK_MONOTONIC,
+    ) {
+        Ok((sec, nsec)) => (sec, (nsec / 1000) as i32),
+        Err(_) => (0i64, 0i32),
+    };
+    crate::input::dispatch::push_event(
+        device as u8,
+        ev_type as u16,
+        code as u16,
+        value,
+        tv_sec,
+        tv_usec,
+    );
+}
+
+/// Cache the canvas pixel dimensions used by `EVIOCGABS(ABS_X/ABS_Y)`
+/// on `/dev/input/event1`. The host calls this once at boot, before
+/// it starts the DOM `InputSource`, so the first SDL2 / libinput
+/// probe sees the real axis range instead of the 1280×720 fallback.
+///
+/// Additive export; ABI-safe. See the boot-ordering contract in plan
+/// 5 §A4 step 3.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
+    crate::input::set_canvas_dims(width, height);
+}
+
 /// Number of successful page-flip commits on the given crtc.
 ///
 /// Useful for the host-side stats UI ("how many frames has the
