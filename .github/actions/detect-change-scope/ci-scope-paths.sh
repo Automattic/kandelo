@@ -18,6 +18,7 @@ package_archive_changed_files() {
     -e '^images/vfs/' \
     -e '^examples/lsof\.c$' \
     -e '^\.github/actions/(package-archive-build|package-toolchain|fetch-submodules|download-run-artifacts)/' \
+    -e '^\.github/scripts/download-dependency-artifacts\.sh$' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules|package(-lock)?\.json|host/package(-lock)?\.json|sdk/package(-lock)?\.json|tools/mkrootfs/package(-lock)?\.json)$' \
     -e '^scripts/(build-fork-instrument-tool|build-musl|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
     | grep -vE \
@@ -45,7 +46,7 @@ kernel_runtime_changed_files() {
   grep -E \
     -e '^(crates|libc|tests/libc|tests/posix|tests/sortix|host|programs|abi)/' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
-    -e '^scripts/(build-musl|build-libcxx|build-programs|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
+    -e '^scripts/(build-musl|build-libcxx|build-programs|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests|check-abi-version)\.sh$' \
     -e '^examples/run-example\.ts$' \
     || true
 }

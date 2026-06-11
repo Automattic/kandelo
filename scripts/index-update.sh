@@ -388,7 +388,7 @@ fi
 if [ "$STATUS" = "repair" ]; then
   export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-index repair}"
 else
-  export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-${PACKAGE}, ${ARCH}}"
+  export STATE_LOCK_OWNER_DETAIL="${STATE_LOCK_OWNER_DETAIL:-${ARCH}, ${PACKAGE}}"
 fi
 
 case "$STATUS" in
