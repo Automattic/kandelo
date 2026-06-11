@@ -850,6 +850,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_input_event",
+      "signature": "(i32,i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
       "name": "kernel_ioctl",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -1307,6 +1312,11 @@
       "kind": "func",
       "name": "kernel_set_fork_fd_action",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_input_canvas_dims",
+      "signature": "(i32,i32) -> ()"
     },
     {
       "kind": "func",
