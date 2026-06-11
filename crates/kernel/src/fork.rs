@@ -355,9 +355,8 @@ fn write_dri_state(
 
 /// Serialise the evdev sidecar across a fork/exec. The ring is copied
 /// byte-for-byte; the child inherits the parent's grab + dropped flag.
-/// `EVIOCGRAB` is per-OFD in Linux, so an OFD shared by fork preserves
-/// its grab — this matches our refcounted-OFD model where parent +
-/// child each end up with their own copy of the InputFdState.
+/// `EVIOCGRAB` is per-OFD in Linux, so each side of the fork ends up
+/// with its own copy of the InputFdState.
 fn write_input_state(
     w: &mut Writer<'_>,
     state: Option<&crate::ofd::InputFdState>,
@@ -369,7 +368,6 @@ fn write_input_state(
     w.write_u8(input.device)?;
     w.write_u8(input.grabbed as u8)?;
     w.write_u8(input.dropped as u8)?;
-    w.write_u32(input.ring_high_water)?;
     w.write_u32(input.event_ring.len() as u32)?;
     for &b in input.event_ring.iter() {
         w.write_u8(b)?;
@@ -470,10 +468,9 @@ fn read_input_state(
             let device = r.read_u8()?;
             let grabbed = r.read_u8()? != 0;
             let dropped = r.read_u8()? != 0;
-            let ring_high_water = r.read_u32()?;
             let ring_len = r.read_u32()? as usize;
-            // The ring is always whole 24-byte records and bounded
-            // at INPUT_RING_MAX_BYTES; reject anything else as a
+            // The ring is always whole 24-byte records and bounded at
+            // INPUT_RING_MAX_BYTES — reject anything else as a
             // corrupted/forged fork stream.
             if ring_len > crate::ofd::INPUT_RING_MAX_BYTES
                 || ring_len % core::mem::size_of::<
@@ -491,7 +488,6 @@ fn read_input_state(
                 event_ring,
                 grabbed,
                 dropped,
-                ring_high_water,
             })))
         }
         _ => Err(Errno::EINVAL),

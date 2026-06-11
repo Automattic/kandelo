@@ -86,11 +86,7 @@ impl VirtualDevice {
             VirtualDevice::Dsp => -7,
             VirtualDevice::DriRenderD128 => -8,
             VirtualDevice::DriCard0 => -9,
-            VirtualDevice::InputEvent { device: 0 } => -10,
-            VirtualDevice::InputEvent { device: 1 } => -11,
-            // Any other device byte is unreachable — match_virtual_device
-            // only constructs InputEvent{0} or InputEvent{1}.
-            VirtualDevice::InputEvent { .. } => -10,
+            VirtualDevice::InputEvent { device } => -10 - device as i64,
         }
     }
 
@@ -1656,26 +1652,6 @@ pub(crate) fn dri_release_ofd_state(
     }
 }
 
-/// Run input-specific cleanup for a freshly-freed OFD: drop the per-fd
-/// event ring + grab flag.
-///
-/// Called from `sys_close` after `dec_ref` has freed the OFD slot. v1
-/// has no host-side per-OFD state to release — the host's `InputSource`
-/// is a single producer and the kernel owns every per-OFD ring — so
-/// the body is just an explicit drop of the boxed state. The signature
-/// mirrors `dri_release_ofd_state` to leave room for plan 9
-/// (wpkcompositor), which will wire a `host.input_grab_released(pid,
-/// device)` notification here so a focus-routed compositor can re-
-/// grant ownership when a grab-holding OFD closes.
-pub(crate) fn input_release_ofd_state(
-    _pid: i32,
-    _host: &mut dyn HostIO,
-    _ofd_idx: usize,
-    state: Option<alloc::boxed::Box<crate::ofd::InputFdState>>,
-) {
-    let _ = state;
-}
-
 /// Build a synthetic WasmStat for a virtual device.
 fn virtual_device_stat(dev: VirtualDevice, uid: u32, gid: u32) -> WasmStat {
     use wasm_posix_shared::mode::S_IFCHR;
@@ -2070,21 +2046,6 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         }
     };
 
-    // Same dance for the evdev sidecar: take the boxed `InputFdState`
-    // off the OFD on last-ref so the close-time helper can drop the
-    // per-OFD ring + grab flag (and, eventually, notify the
-    // compositor that the grab has been released).
-    let input_state_for_release = {
-        let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
-        if ofd.ref_count == 1 {
-            proc.ofd_table
-                .get_mut(idx)
-                .and_then(|ofd| ofd.input_state.take())
-        } else {
-            None
-        }
-    };
-
     // POSIX: closing any fd for a file releases all advisory locks on that file
     // held by this process, regardless of which fd acquired the lock.
     if host_handle >= 0
@@ -2108,10 +2069,6 @@ pub fn sys_close(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
         // KMS master, and prime-bo cookies so close-time bo destroy is
         // observed before any FileType-specific release path runs.
         dri_release_ofd_state(proc.pid as i32, host, idx, dri_state_for_release);
-        // evdev per-fd cleanup: drop the per-OFD event ring + grab
-        // flag. Order doesn't matter wrt DRI (disjoint state); placed
-        // here for parity with the dri_state release call.
-        input_release_ofd_state(proc.pid as i32, host, idx, input_state_for_release);
         match file_type {
             FileType::Pipe => {
                 if host_handle >= 0 {
@@ -2708,13 +2665,10 @@ pub fn sys_read(
                                 return Err(Errno::EINVAL);
                             }
                             let input = input_state_mut(proc, ofd_idx)?;
-                            // Nothing queued and no overflow latch
-                            // outstanding: match DriCard0's
-                            // non-blocking behaviour. The kernel
-                            // doesn't actually park the reader here;
-                            // host JS retries poll on a timer until
-                            // wake_event_reader gets real routing in
-                            // Phase B.
+                            // Match DriCard0: the kernel never parks
+                            // the reader; the host polls on a retry
+                            // timer until Phase B wires targeted
+                            // wake-ups.
                             if input.event_ring.is_empty() && !input.dropped {
                                 if status_flags & O_NONBLOCK != 0 {
                                     return Err(Errno::EAGAIN);
@@ -22774,11 +22728,9 @@ mod tests {
 
     #[test]
     fn read_eventN_returns_zero_before_any_event() {
-        // Empty ring + no dropped latch + caller didn't request
-        // O_NONBLOCK → Ok(0). Matches DriCard0's read semantics
-        // (the kernel doesn't park readers; host JS retries poll
-        // on a timer until wake_event_reader gets real routing in
-        // Phase B).
+        // Blocking read on an empty ring with no dropped latch
+        // returns Ok(0) — mirrors DriCard0 (kernel never parks the
+        // reader; host retries on poll timeout).
         let mut proc = Process::new(401);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();

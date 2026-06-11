@@ -224,10 +224,6 @@ pub struct InputFdState {
     /// next `read()` *after* a `SYN_DROPPED` synthetic record is
     /// delivered at the head of that read's output.
     pub dropped: bool,
-
-    /// Peak record count seen on this ring — debug-only, not exposed
-    /// to userspace.
-    pub ring_high_water: u32,
 }
 
 #[derive(Clone)]
@@ -720,7 +716,6 @@ mod tests {
         assert_eq!(st.device, 0);
         assert!(!st.grabbed);
         assert!(!st.dropped);
-        assert_eq!(st.ring_high_water, 0);
         assert!(st.event_ring.is_empty());
 
         // input_mut lets us mutate the ring.
