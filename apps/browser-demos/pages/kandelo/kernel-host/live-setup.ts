@@ -231,10 +231,13 @@ const LIVE_DEMO_IDS = [
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
 
-async function settleAfterKernelDestroy(): Promise<void> {
+function isWebKitLikeBrowser(): boolean {
   const ua = navigator.userAgent;
-  const isWebKitLikeBrowser = /AppleWebKit/i.test(ua)
+  return /AppleWebKit/i.test(ua)
     && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
+}
+
+async function settleAfterKernelDestroy(): Promise<void> {
   if (!isWebKitLikeBrowser()) return;
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
