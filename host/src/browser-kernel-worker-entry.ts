@@ -64,6 +64,7 @@ import { CentralizedKernelWorker } from "./kernel-worker";
 import type {
   ForkFromThreadContext,
   ResolvedSpawnProgram,
+  SpawnProgramResolution,
 } from "./kernel-worker";
 import type { KernelPointer } from "./kernel";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
@@ -78,7 +79,7 @@ import {
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
-import { detectPtrWidth, extractHeapBase } from "./constants";
+import { detectPtrWidth, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import {
   classifiedSignalOrFallback,
@@ -116,6 +117,7 @@ let io: VirtualPlatformIO;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let defaultEnv: string[] = [];
+const ENOEXEC = 8;
 
 // Process tracking
 interface ProcessInfo {
@@ -165,14 +167,17 @@ async function resolveExecutableForLaunch(
   path: string,
   argv: string[],
   depth = 0,
-): Promise<ResolvedSpawnProgram | null> {
+): Promise<ResolvedSpawnProgram | { errno: number } | null> {
   if (depth > MAX_SHEBANG_DEPTH) return null;
   await memfs.ensureMaterialized(path);
   const bytes = readFileFromFs(path);
   if (!bytes) return null;
 
   const shebang = parseShebang(bytes);
-  if (!shebang) return { programBytes: bytes, argv };
+  if (!shebang) {
+    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
+    return { programBytes: bytes, argv };
+  }
 
   const scriptArgv = [
     shebang.interpreter,
@@ -645,6 +650,11 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       return;
     }
 
+    if (!isWasmModuleBytes(programBytes)) {
+      respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
+      return;
+    }
+
     // Pid: if the caller pre-picked one, honor it (legacy spawn() callers
     // still do); otherwise the worker is the source of truth and allocates.
     const pid = msg.pid ?? kernelWorker.allocatePid();
@@ -889,6 +899,7 @@ async function handleExec(
 ): Promise<number> {
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
+  if ("errno" in resolved) return -resolved.errno;
   const { programBytes: bytes, argv: launchArgv } = resolved;
 
   // Program found — run kernel exec setup
@@ -1004,7 +1015,7 @@ async function handleExec(
 async function handlePosixSpawnResolve(
   path: string,
   argv: string[],
-): Promise<ResolvedSpawnProgram | null> {
+): Promise<SpawnProgramResolution | null> {
   return resolveExecutableForLaunch(path, argv);
 }
 

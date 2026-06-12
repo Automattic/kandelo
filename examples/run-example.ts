@@ -59,6 +59,7 @@ const nanoWasm = tryResolveBinary("programs/nano.wasm");
 const tclshWasm = tryResolveBinary("programs/tcl.wasm");
 const testfixtureWasm = tryResolveBinary("programs/sqlite/testfixture.wasm");
 const mysqltestWasm = tryResolveBinary("programs/mariadb/mysqltest.wasm");
+const echoWasm = tryResolveBinary("programs/echo.wasm") ?? resolve(repoRoot, "examples/echo.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -73,9 +74,9 @@ const coreutilsNames = [
 // Values may be null when a program isn't fetched/built locally.
 // Consumers filter out null entries before use.
 const builtinPrograms: Record<string, string | null> = {
-    "echo": resolve(repoRoot, "examples/echo.wasm"),
-    "/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
-    "/usr/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
+    "echo": echoWasm,
+    "/bin/echo": echoWasm,
+    "/usr/bin/echo": echoWasm,
     "sh": dashWasm,
     "/bin/sh": dashWasm,
     "dash": dashWasm,
@@ -257,12 +258,6 @@ function resolveProgram(path: string): ArrayBuffer | null {
     if (mapped) {
         return loadBytes(mapped);
     }
-    // execlp() searches the inherited host/dev-shell PATH. In CI that can
-    // resolve tools like gencat to /nix/store/.../bin/gencat; never load that
-    // host ELF as a guest program.
-    if (path.endsWith("/gencat")) {
-        return loadBytes(resolve(repoRoot, "examples/gencat.wasm"));
-    }
     const kernelCwd = process.env.KERNEL_CWD || process.cwd();
     const candidates = [
         path,
@@ -278,6 +273,14 @@ function resolveProgram(path: string): ArrayBuffer | null {
         }
     }
     return null;
+}
+
+function guestEnv(): string[] {
+    const kernelPath = process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin";
+    const inherited = Object.entries(process.env)
+        .filter(([k, v]) => v !== undefined && k !== "PATH")
+        .map(([k, v]) => `${k}=${v}`);
+    return [...inherited, `PATH=${kernelPath}`];
 }
 
 async function main() {
@@ -340,9 +343,7 @@ async function main() {
     const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
     const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
         env: [
-            ...Object.entries(process.env)
-                .filter(([, v]) => v !== undefined)
-                .map(([k, v]) => `${k}=${v}`),
+            ...guestEnv(),
             ...gitEnv,
         ],
         cwd: process.env.KERNEL_CWD || process.cwd(),

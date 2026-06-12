@@ -241,6 +241,21 @@ build_math-relaxed() {
     instrument_wasm "$wasm"
 }
 
+build_example_program() {
+    local name="$1"
+    local src="$REPO_ROOT/examples/${name}.c"
+    local wasm="$REPO_ROOT/examples/${name}.wasm"
+
+    [ -f "$src" ] || return 0
+    if [ -f "$wasm" ] && [ "$wasm" -nt "$src" ]; then
+        return 0
+    fi
+
+    "$CC" "${CFLAGS[@]}" \
+        "$src" "${LINK_FLAGS[@]}" \
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+}
+
 # ── Run a single test ───────────────────────────────────────
 
 run_test() {
@@ -370,6 +385,12 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
 fi
 if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
+    exit 1
+fi
+if ! build_example_program echo; then
+    err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
+    echo "Error: failed to build examples/echo.wasm" >&2
+    echo "$err" | head -3 | sed 's/^/  /' >&2
     exit 1
 fi
 

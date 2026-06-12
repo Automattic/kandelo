@@ -19,7 +19,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "./kernel-worker";
-import type { ForkFromThreadContext, ResolvedSpawnProgram } from "./kernel-worker";
+import type {
+  ForkFromThreadContext,
+  ResolvedSpawnProgram,
+  SpawnProgramResolution,
+} from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import {
   VirtualPlatformIO,
@@ -37,7 +41,7 @@ import { NodeWorkerAdapter } from "./worker-adapter";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
-import { detectPtrWidth, extractHeapBase } from "./constants";
+import { detectPtrWidth, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
   classifiedSignalOrFallback,
@@ -85,6 +89,7 @@ let rootfsMemfs: MemoryFileSystem | null = null;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
+const ENOEXEC = 8;
 
 // Process tracking
 interface ProcessInfo {
@@ -464,13 +469,16 @@ async function resolveExecutableForLaunch(
   path: string,
   argv: string[],
   depth = 0,
-): Promise<ResolvedSpawnProgram | null> {
+): Promise<ResolvedSpawnProgram | { errno: number } | null> {
   if (depth > MAX_SHEBANG_DEPTH) return null;
   const bytes = await resolveExec(path);
   if (!bytes) return null;
 
   const shebang = parseShebang(bytes);
-  if (!shebang) return { programBytes: bytes, argv };
+  if (!shebang) {
+    if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
+    return { programBytes: bytes, argv };
+  }
 
   const scriptArgv = [
     shebang.interpreter,
@@ -602,6 +610,11 @@ function handleSpawn(msg: SpawnMessage) {
       nextSpawnPid++;
     }
     const pid = nextSpawnPid++;
+
+    if (!isWasmModuleBytes(msg.programBytes)) {
+      respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
+      return;
+    }
 
     const ptrWidth = detectPtrWidth(msg.programBytes);
     const {
@@ -794,6 +807,7 @@ async function handleExec(
 ): Promise<number> {
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
+  if ("errno" in resolved) return -resolved.errno;
   const { programBytes, argv: launchArgv } = resolved;
 
   const newPtrWidth = detectPtrWidth(programBytes);
@@ -902,7 +916,7 @@ async function handleExec(
 async function handlePosixSpawnResolve(
   path: string,
   argv: string[],
-): Promise<ResolvedSpawnProgram | null> {
+): Promise<SpawnProgramResolution | null> {
   return resolveExecutableForLaunch(path, argv);
 }
 

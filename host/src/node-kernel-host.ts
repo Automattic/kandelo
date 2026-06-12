@@ -12,7 +12,7 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
@@ -553,10 +553,10 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
   const distJs = entryTs.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js");
 
   // Check for compiled .js version first (much faster startup)
-  if (existsSync(distJs)) {
+  if (compiledEntryIsCurrent(entryTs, distJs)) {
     return new NodeThreadWorker(distJs);
   }
-  if (existsSync(entryJs)) {
+  if (compiledEntryIsCurrent(entryTs, entryJs)) {
     return new NodeThreadWorker(entryJs);
   }
 
@@ -571,4 +571,10 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
     `await import('${entryUrl}');`,
   ].join("\n");
   return new NodeThreadWorker(bootstrap, { eval: true });
+}
+
+function compiledEntryIsCurrent(sourcePath: string, compiledPath: string): boolean {
+  if (!existsSync(compiledPath)) return false;
+  if (!existsSync(sourcePath)) return true;
+  return statSync(compiledPath).mtimeMs >= statSync(sourcePath).mtimeMs;
 }
