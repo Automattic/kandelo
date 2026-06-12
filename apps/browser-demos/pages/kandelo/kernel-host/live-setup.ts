@@ -195,6 +195,7 @@ interface LiveProfileSpec {
   maxVfsByteLength?: number;
   network?: boolean;
   features?: string[];
+  autoCommand?: string;
   init?: {
     argv: string[];
     env?: InitEnvProfile;
@@ -227,6 +228,9 @@ const LIVE_DEMO_IDS = [
   "wordpress-sqlite",
   "wordpress-mariadb",
   "doom",
+  "love",
+  "bytepath",
+  "snkrx",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -303,6 +307,18 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     },
   },
   doom: {
+    image: "shell",
+    features: ["framebuffer"],
+  },
+  love: {
+    image: "shell",
+    features: ["framebuffer"],
+  },
+  bytepath: {
+    image: "shell",
+    features: ["framebuffer"],
+  },
+  snkrx: {
     image: "shell",
     features: ["framebuffer"],
   },

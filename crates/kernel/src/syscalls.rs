@@ -443,8 +443,8 @@ fn handle_dsp_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
 
 /// Fixed framebuffer geometry. fbDOOM is happy with whatever the device
 /// reports; pinning a single mode keeps the implementation small.
-const FB_WIDTH: u32 = 640;
-const FB_HEIGHT: u32 = 400;
+const FB_WIDTH: u32 = 960;
+const FB_HEIGHT: u32 = 540;
 const FB_BYTES_PER_PIXEL: u32 = 4;
 const FB_LINE_LENGTH: u32 = FB_WIDTH * FB_BYTES_PER_PIXEL;
 const FB_SMEM_LEN: u32 = FB_LINE_LENGTH * FB_HEIGHT;
@@ -18716,7 +18716,7 @@ mod tests {
     }
 
     #[test]
-    fn fbioget_vscreeninfo_returns_640x400_bgra32() {
+    fn fbioget_vscreeninfo_returns_fixed_bgra32() {
         use core::sync::atomic::Ordering;
         use wasm_posix_shared::fbdev::*;
         crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
@@ -18727,8 +18727,8 @@ mod tests {
         let mut buf = [0u8; 160];
         sys_ioctl(&mut proc, fd, FBIOGET_VSCREENINFO, &mut buf).unwrap();
         let v: FbVarScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-        assert_eq!(v.xres, 640);
-        assert_eq!(v.yres, 400);
+        assert_eq!(v.xres, FB_WIDTH);
+        assert_eq!(v.yres, FB_HEIGHT);
         assert_eq!(v.bits_per_pixel, 32);
         assert_eq!(v.blue.offset, 0);
         assert_eq!(v.blue.length, 8);
@@ -18755,8 +18755,8 @@ mod tests {
         sys_ioctl(&mut proc, fd, FBIOGET_FSCREENINFO, &mut buf).unwrap();
         let f: FbFixScreenInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
         assert_eq!(&f.id[..6], b"wasmfb");
-        assert_eq!(f.smem_len, 640 * 400 * 4);
-        assert_eq!(f.line_length, 640 * 4);
+        assert_eq!(f.smem_len, FB_SMEM_LEN);
+        assert_eq!(f.line_length, FB_LINE_LENGTH);
         assert_eq!(f.fb_type, FB_TYPE_PACKED_PIXELS);
         assert_eq!(f.visual, FB_VISUAL_TRUECOLOR);
 
@@ -18799,8 +18799,8 @@ mod tests {
 
         // Matching geometry succeeds.
         let mut v = FbVarScreenInfo::default();
-        v.xres = 640;
-        v.yres = 400;
+        v.xres = FB_WIDTH;
+        v.yres = FB_HEIGHT;
         v.bits_per_pixel = 32;
         unsafe {
             core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, v);
@@ -18835,7 +18835,7 @@ mod tests {
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
 
         // Seek to a known offset.
-        let off = 640 * 4 * 10; // start of row 10
+        let off = (FB_LINE_LENGTH * 10) as usize; // start of row 10
         let new_off = sys_lseek(&mut proc, &mut host, fd, off as i64, 0).unwrap();
         assert_eq!(new_off, off as i64);
 
@@ -18849,7 +18849,7 @@ mod tests {
         let b = &host.bind_framebuffer_calls[0];
         assert_eq!(
             (b.pid, b.addr, b.len, b.w, b.h, b.stride),
-            (proc.pid as i32, 0, 0, 640, 400, 640 * 4)
+            (proc.pid as i32, 0, 0, FB_WIDTH, FB_HEIGHT, FB_LINE_LENGTH)
         );
 
         // fb_write fired with the right offset and length.
@@ -18880,7 +18880,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
-        let len = (640 * 400 * 4) as usize;
+        let len = FB_SMEM_LEN as usize;
         let addr = sys_mmap(
             &mut proc,
             &mut host,
@@ -18898,17 +18898,17 @@ mod tests {
             .expect("fb_binding should be Some after mmap");
         assert_eq!(b.addr, addr);
         assert_eq!(b.len, len);
-        assert_eq!(b.w, 640);
-        assert_eq!(b.h, 400);
-        assert_eq!(b.stride, 640 * 4);
+        assert_eq!(b.w, FB_WIDTH);
+        assert_eq!(b.h, FB_HEIGHT);
+        assert_eq!(b.stride, FB_LINE_LENGTH);
         assert_eq!(host.bind_framebuffer_calls.len(), 1);
         let call = &host.bind_framebuffer_calls[0];
         assert_eq!(call.pid, proc.pid as i32);
         assert_eq!(call.addr, addr);
         assert_eq!(call.len, len);
-        assert_eq!(call.w, 640);
-        assert_eq!(call.h, 400);
-        assert_eq!(call.stride, 640 * 4);
+        assert_eq!(call.w, FB_WIDTH);
+        assert_eq!(call.h, FB_HEIGHT);
+        assert_eq!(call.stride, FB_LINE_LENGTH);
 
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
@@ -18923,7 +18923,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
-        let len = (640 * 400 * 4) as usize;
+        let len = FB_SMEM_LEN as usize;
         let _ = sys_mmap(
             &mut proc,
             &mut host,
@@ -18990,7 +18990,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
-        let len = (640 * 400 * 4) as usize;
+        let len = FB_SMEM_LEN as usize;
         let addr = sys_mmap(
             &mut proc,
             &mut host,
@@ -19021,7 +19021,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
-        let len = (640 * 400 * 4) as usize;
+        let len = FB_SMEM_LEN as usize;
         let _ = sys_mmap(
             &mut proc,
             &mut host,
