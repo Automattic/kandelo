@@ -163,6 +163,11 @@ const DEMO_GID = 1000;
 const DEMO_USER = "user";
 const DEMO_HOME = "/home/user";
 const NODE_WORKDIR = "/work";
+const DINITCTL_PATH = "/sbin/dinitctl";
+const DINITCTL_SOCKET_PATH = "/tmp/dinitctl";
+const DINIT_STARTING_POLL_INTERVAL_MS = 350;
+const DINIT_STARTING_POLL_TIMEOUT_MS = 180_000;
+const DINITCTL_LIST_TIMEOUT_MS = 2_000;
 
 class BootSuperseded extends Error {
   constructor() {
@@ -512,12 +517,14 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
       await settleAfterKernelDestroy();
     }
     h.detachKernel();
+    const bootStartedAt = performance.now();
 
     try {
       const kernel = await bootProfile(
         h,
         profile,
         descriptor,
+        bootStartedAt,
         () => seq === bootSeq,
         requireServiceWorker,
       );
@@ -530,7 +537,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
       if (err instanceof BootSuperseded || seq !== bootSeq) return;
       currentKernel = null;
       h.detachKernel();
-      showBootError(h, descriptor, err);
+      showBootError(h, descriptor, err, bootStartedAt);
     }
   }
 }
@@ -539,6 +546,7 @@ function showBootError(
   host: LiveKernelHost,
   descriptor: BootDescriptor,
   err: unknown,
+  bootStartedAt: number,
 ): void {
   const message = err instanceof Error ? err.message : String(err);
   host.clearDmesg();
@@ -552,26 +560,30 @@ function showBootError(
     internalsAccess: "drawer",
   });
   host.pushDmesg({
-    t: 50,
+    t: bootElapsedMs(bootStartedAt),
     level: "err",
     facility: "kandelo",
     msg: `Failed to boot ${descriptor.title || descriptor.id}`,
   });
   host.pushDmesg({
-    t: 100,
+    t: bootElapsedMs(bootStartedAt),
     level: "err",
     facility: "kandelo",
     msg: message,
   });
   if (SOFTWARE_PROFILES.has(descriptor.id)) {
     host.pushDmesg({
-      t: 150,
+      t: bootElapsedMs(bootStartedAt),
       level: "warn",
       facility: "kandelo-software",
       msg: "The third-party gallery entry may be temporarily unavailable or its release artifact may have been deleted.",
     });
   }
   host.setStatus("error");
+}
+
+function bootElapsedMs(bootStartedAt: number): number {
+  return Math.max(0, performance.now() - bootStartedAt);
 }
 
 function descriptorForBootQuery(
@@ -782,10 +794,151 @@ function reportInitError(
   host.setStatus("error");
 }
 
+class DinitBootStatusTracker {
+  private completedServices = new Set<string>();
+  private startingServices = new Set<string>();
+  private outputTails = new Map<string, string>();
+
+  constructor(private tick: (msg: string) => void) {}
+
+  observeProcessOutput(text: string, stream: string): void {
+    if (!text) return;
+    const normalized = `${this.outputTails.get(stream) ?? ""}${text}`.replace(/\r/g, "");
+    const lines = normalized.split("\n");
+    this.outputTails.set(stream, text.endsWith("\n") ? "" : lines.pop() ?? "");
+    for (const line of lines) {
+      const serviceName = parseDinitCompletionLine(line);
+      if (!serviceName) continue;
+      this.emitStarting(serviceName);
+      this.completedServices.add(serviceName);
+    }
+  }
+
+  emitStartingFromList(output: string): void {
+    for (const serviceName of parseDinitStartingServices(output)) {
+      this.emitStarting(serviceName);
+    }
+  }
+
+  private emitStarting(serviceName: string): void {
+    if (this.completedServices.has(serviceName)) return;
+    if (this.startingServices.has(serviceName)) return;
+    this.startingServices.add(serviceName);
+    this.tick(`Starting ${serviceName}...`);
+  }
+}
+
+function parseDinitCompletionLine(line: string): string | null {
+  const match = stripAnsi(line).trim().match(/^\[(?:\s*OK\s*|FAILED)\]\s+(.+)$/);
+  return match?.[1]?.trim() || null;
+}
+
+function parseDinitStartingServices(output: string): string[] {
+  const services: string[] = [];
+  for (const line of stripAnsi(output).replace(/\r/g, "").split("\n")) {
+    const match = line.match(/^\[[^\]]*<<[^\]]*\]\s+(\S+)/);
+    if (match?.[1]) services.push(match[1]);
+  }
+  return services;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function startDinitStartingPoller(options: {
+  kernel: BrowserKernel;
+  memfs: MemoryFileSystem;
+  tracker: DinitBootStatusTracker;
+  isCurrent: () => boolean;
+  shouldStop?: () => boolean;
+}): () => void {
+  if (!vfsPathExists(options.memfs, DINITCTL_PATH)) return () => {};
+
+  let stopped = false;
+  void (async () => {
+    const deadline = Date.now() + DINIT_STARTING_POLL_TIMEOUT_MS;
+    while (!stopped && options.isCurrent() && Date.now() < deadline) {
+      if (options.shouldStop?.()) break;
+      if (!vfsPathExists(options.memfs, DINITCTL_SOCKET_PATH)) {
+        await delay(DINIT_STARTING_POLL_INTERVAL_MS);
+        continue;
+      }
+      const output = await readDinitctlList(options.kernel).catch(() => null);
+      if (stopped || !options.isCurrent()) break;
+      if (output !== null) options.tracker.emitStartingFromList(output);
+      await delay(DINIT_STARTING_POLL_INTERVAL_MS);
+    }
+  })();
+
+  return () => {
+    stopped = true;
+  };
+}
+
+async function readDinitctlList(kernel: BrowserKernel): Promise<string | null> {
+  const chunks: Uint8Array[] = [];
+  const { pid, exit } = await kernel.spawnFromVfs(DINITCTL_PATH, [
+    DINITCTL_PATH,
+    "-p",
+    DINITCTL_SOCKET_PATH,
+    "list",
+  ], {
+    cwd: "/",
+    uid: ROOT_UID,
+    gid: ROOT_GID,
+    pty: true,
+  });
+  kernel.onPtyOutput(pid, (data) => {
+    chunks.push(data.slice());
+  });
+
+  try {
+    const code = await Promise.race([
+      exit,
+      delay(DINITCTL_LIST_TIMEOUT_MS).then(() => null),
+    ]);
+    if (code === null) {
+      await kernel.terminateProcess(pid).catch(() => {});
+      return null;
+    }
+    await delay(0);
+    if (code !== 0 || chunks.length === 0) return null;
+    return decodeChunks(chunks);
+  } finally {
+    kernel.clearPtyOutput(pid);
+  }
+}
+
+function decodeChunks(chunks: Uint8Array[]): string {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
+  try {
+    fs.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 async function bootProfile(
   host: LiveKernelHost,
   profile: LiveProfile,
   requestedDescriptor: BootDescriptor,
+  bootStartedAt: number,
   isCurrent: () => boolean,
   requireServiceWorker: (tick?: (msg: string) => void) => Promise<ServiceWorker>,
 ): Promise<BrowserKernel> {
@@ -817,10 +970,15 @@ async function bootProfile(
   host.setPresentation(genericPresentation);
   host.setStatus("booting");
 
-  let t = 0;
   const tick = (msg: string) => {
     if (!isCurrent()) return;
-    host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
+    host.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "info", facility: "kandelo", msg });
+  };
+  const dinitBootTracker = new DinitBootStatusTracker(tick);
+  const recordProcessOutput = (data: Uint8Array, fallback: string) => {
+    const text = new TextDecoder().decode(data);
+    dinitBootTracker.observeProcessOutput(text, fallback);
+    tick(text.trimEnd() || fallback);
   };
 
   await requireServiceWorker(tick);
@@ -894,19 +1052,22 @@ async function bootProfile(
   let bridgeSent = false;
   const webReadiness: WebReadinessState = { ready: false, probing: false };
   let kernel: BrowserKernel | null = null;
+  let stopDinitStartingPoller = () => {};
   try {
     kernel = new BrowserKernel({
       memfs,
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages: profile.init?.maxMemoryPages,
-      onStdout: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stdout"),
-      onStderr: (data) => tick(new TextDecoder().decode(data).trimEnd() || "stderr"),
+      onStdout: (data) => recordProcessOutput(data, "stdout"),
+      onStderr: (data) => recordProcessOutput(data, "stderr"),
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
-      onListenTcp: (_pid, _fd, port) => {
+      onListenTcp: (pid, _fd, port) => {
         if (!isCurrent()) return;
         seenPorts.add(port);
-        tick(`service listening on :${port}`);
-        maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
+        void reportTcpListener(kernel!, pid, port, tick, isCurrent)
+          .finally(() => {
+            maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
+          });
       },
     });
     await kernel.init(kernelBytes);
@@ -960,8 +1121,19 @@ async function bootProfile(
         cwd: effectiveBoot.cwd || profile.init.cwd || ROOT_HOME,
         uid: effectiveBoot.uid ?? profile.init.uid ?? ROOT_UID,
         gid: effectiveBoot.gid ?? profile.init.gid ?? ROOT_GID,
+        onStarted: () => {
+          stopDinitStartingPoller = startDinitStartingPoller({
+            kernel: kernel!,
+            memfs,
+            tracker: dinitBootTracker,
+            isCurrent,
+            shouldStop: () => webReadiness.ready,
+          });
+        },
       }).then(
         (code) => {
+          stopDinitStartingPoller();
+          stopDinitStartingPoller = () => {};
           if (!isCurrent()) return;
           reportInitError(
             host,
@@ -971,6 +1143,8 @@ async function bootProfile(
           );
         },
         (err) => {
+          stopDinitStartingPoller();
+          stopDinitStartingPoller = () => {};
           if (!isCurrent()) return;
           reportInitError(
             host,
@@ -1006,6 +1180,7 @@ async function bootProfile(
     host.setStatus("running");
     return kernel;
   } catch (err) {
+    stopDinitStartingPoller();
     if (kernel && !isCurrent()) {
       await kernel.destroy().catch(() => {});
     }
@@ -1196,6 +1371,33 @@ function stageSoftwareBinaries(
 function dirname(path: string): string {
   const idx = path.lastIndexOf("/");
   return idx <= 0 ? "/" : path.slice(0, idx);
+}
+
+async function reportTcpListener(
+  kernel: BrowserKernel,
+  pid: number,
+  port: number,
+  tick: (msg: string) => void,
+  isCurrent: () => boolean,
+): Promise<void> {
+  const processName = await processNameForPid(kernel, pid).catch(() => null);
+  if (!isCurrent()) return;
+  tick(`${processName ?? "service"} listening on :${port}`);
+}
+
+async function processNameForPid(kernel: BrowserKernel, pid: number): Promise<string | null> {
+  if (pid <= 0) return null;
+  const proc = (await kernel.enumProcs()).find((entry) => entry.pid === pid);
+  if (!proc) return null;
+  const comm = proc.comm.trim();
+  if (comm && !comm.startsWith("[")) return comm;
+  const arg0 = basename(proc.cmdline.trim().split(/\s+/)[0] ?? "").trim();
+  return arg0 && !arg0.startsWith("[") ? arg0 : null;
+}
+
+function basename(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx < 0 ? path : path.slice(idx + 1);
 }
 
 async function loadArchiveArtifact(archiveUrl: string, artifactPath: string): Promise<Uint8Array> {

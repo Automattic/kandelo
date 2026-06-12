@@ -245,9 +245,10 @@ export async function createLiveSpiderMonkeyNodeHost(
       await previousKernel.destroy().catch(() => {});
     }
     h.detachKernel();
+    const bootStartedAt = performance.now();
 
     try {
-      const kernel = await boot(h, nextDescriptor, () => seq === bootSeq);
+      const kernel = await boot(h, nextDescriptor, bootStartedAt, () => seq === bootSeq);
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
         return;
@@ -258,7 +259,7 @@ export async function createLiveSpiderMonkeyNodeHost(
       currentKernel = null;
       h.detachKernel();
       const message = err instanceof Error ? err.message : String(err);
-      h.pushDmesg({ t: 50, level: "err", facility: "kandelo", msg: message });
+      h.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "err", facility: "kandelo", msg: message });
       h.setStatus("error");
     }
   }
@@ -267,6 +268,7 @@ export async function createLiveSpiderMonkeyNodeHost(
 async function boot(
   host: LiveKernelHost,
   descriptor: BootDescriptor,
+  bootStartedAt: number,
   isCurrent: () => boolean,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
@@ -280,10 +282,9 @@ async function boot(
   host.setDemoGuide(null);
   host.setStatus("booting");
 
-  let t = 0;
   const tick = (msg: string) => {
     if (!isCurrent()) return;
-    host.pushDmesg({ t: (t += 50), level: "info", facility: "kandelo", msg });
+    host.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "info", facility: "kandelo", msg });
   };
   let kernel: BrowserKernel | null = null;
 
@@ -362,6 +363,10 @@ async function boot(
     }
     throw err;
   }
+}
+
+function bootElapsedMs(bootStartedAt: number): number {
+  return Math.max(0, performance.now() - bootStartedAt);
 }
 
 function rewriteNodeLazyFileUrl(fs: MemoryFileSystem): void {

@@ -153,7 +153,7 @@ export interface RunProgramResult {
 }
 
 /**
- * Run a Wasm program using the centralized kernel architecture.
+ * Run a Wasm program using the shared-kernel architecture.
  *
  * By default, spawns the kernel in a dedicated worker_thread for optimal
  * syscall throughput. Falls back to main-thread mode when `options.io` is

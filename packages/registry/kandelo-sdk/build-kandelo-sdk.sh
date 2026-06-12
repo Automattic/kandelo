@@ -21,11 +21,12 @@ if [[ -n "$LIBCXX_DIR" ]]; then
     local src="$1"
     local dst="$2"
 
-    if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    if [[ -e "$dst" && ! -L "$dst" ]] && cmp -s "$src" "$dst"; then
       return
     fi
 
-    cp -f "$src" "$dst"
+    rm -f "$dst"
+    cp "$src" "$dst"
   }
 
   mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"

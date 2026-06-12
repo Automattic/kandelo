@@ -1,9 +1,8 @@
-//! Process table for centralized kernel mode.
+//! Process table for the kernel.
 //!
-//! In centralized mode (mode=1), a single kernel instance manages multiple
-//! processes. The `ProcessTable` maps PIDs to `Process` structs, allowing
-//! the kernel to service syscalls for any process based on the PID passed
-//! via `kernel_handle_channel`.
+//! A single kernel instance manages all processes. The `ProcessTable` maps
+//! PIDs to `Process` structs, allowing the kernel to service syscalls for
+//! any process based on the PID passed via `kernel_handle_channel`.
 //!
 //! Operations:
 //! - `create_process` — create a new empty process
@@ -32,9 +31,8 @@ use crate::process::{Process, ProcessState};
 /// framebuffer region, or exits.
 pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
 
-/// Table of all processes managed by the centralized kernel.
+/// Table of all processes managed by the kernel.
 ///
-/// In centralized mode (mode=1), the kernel manages multiple processes.
 /// Each process is identified by its pid. The `current_pid` field tracks
 /// which process is currently being serviced (set by the JS host before
 /// calling `kernel_handle_channel`).
@@ -415,6 +413,16 @@ impl ProcessTable {
         // so peers aren't wedged on mutexes or waiter queues.
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
+
+        // Release kernel fallback advisory locks. Host-backed locks are owned
+        // by the host shared lock table; fallback locks for non-host files are
+        // coordinated by the kernel.
+        let fallback_locks = unsafe { crate::lock::global_fallback_lock_table() };
+        fallback_locks.remove_all_for_pid(pid);
+        for (ofd_idx, ofd) in proc.ofd_table.iter() {
+            let ofd_lock_owner = (ofd_idx as u32) | 0x80000000;
+            fallback_locks.remove_for_handle(ofd.host_handle, ofd_lock_owner);
+        }
 
         if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {
             self.processes.insert(pid, Self::limbo_process_from(&proc));
@@ -971,14 +979,14 @@ mod wait_tests {
 /// Global process table wrapper for static storage.
 pub struct GlobalProcessTable(pub UnsafeCell<ProcessTable>);
 
-/// SAFETY: Access is serialized — the centralized kernel services one syscall
-/// at a time from the JS event loop (no concurrent Wasm execution).
+/// SAFETY: Access is serialized — the kernel services one syscall at a time
+/// from the JS event loop (no concurrent Wasm execution).
 unsafe impl Sync for GlobalProcessTable {}
 
-/// Single global `ProcessTable` instance used by the centralized kernel.
-/// Lives here (rather than inside `wasm_api.rs`) so other modules can read
-/// the currently-serviced `pid`/`tid` without a back-reference through the
-/// export layer.
+/// Single global `ProcessTable` instance used by the kernel. Lives here
+/// (rather than inside `wasm_api.rs`) so other modules can read the
+/// currently-serviced `pid`/`tid` without a back-reference through the export
+/// layer.
 pub static GLOBAL_PROCESS_TABLE: GlobalProcessTable =
     GlobalProcessTable(UnsafeCell::new(ProcessTable::new()));
 
@@ -1063,5 +1071,72 @@ mod tests {
             table.poll_waitable_child(10, -30).unwrap(),
             Some((12, 1 << 8))
         );
+    }
+
+    #[test]
+    fn remove_process_releases_global_fallback_locks() {
+        let _guard = crate::lock::FALLBACK_LOCK_TEST_LOCK.lock().unwrap();
+        unsafe { crate::lock::global_fallback_lock_table().clear() };
+
+        let mut table = ProcessTable::new();
+        table.create_process(20).unwrap();
+        let proc = table.processes.get_mut(&20).unwrap();
+        let host_handle = -900;
+        let ofd_idx = proc.ofd_table.create(
+            FileType::Pipe,
+            wasm_posix_shared::flags::O_RDWR,
+            host_handle,
+            b"/dev/pipe".to_vec(),
+        );
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let ofd_owner = (ofd_idx as u32) | 0x80000000;
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            crate::lock::FileLock {
+                pid: 20,
+                lock_type: wasm_posix_shared::lock_type::F_WRLCK,
+                start: 0,
+                len: 100,
+            },
+        );
+        unsafe { crate::lock::global_fallback_lock_table() }.set_lock(
+            host_handle,
+            crate::lock::FileLock {
+                pid: ofd_owner,
+                lock_type: wasm_posix_shared::lock_type::F_WRLCK,
+                start: 200,
+                len: 100,
+            },
+        );
+
+        table.remove_process(20).expect("process removed");
+
+        let locks = unsafe { crate::lock::global_fallback_lock_table() };
+        assert!(
+            locks
+                .get_blocking_lock(
+                    host_handle,
+                    wasm_posix_shared::lock_type::F_WRLCK,
+                    0,
+                    100,
+                    99
+                )
+                .is_none()
+        );
+        assert!(
+            locks
+                .get_blocking_lock(
+                    host_handle,
+                    wasm_posix_shared::lock_type::F_WRLCK,
+                    200,
+                    100,
+                    99
+                )
+                .is_none()
+        );
+        locks.clear();
     }
 }

@@ -244,7 +244,7 @@ describe.skipIf(!hasSysroot || !hasKernel)("fork replays parent dlopens into chi
 Run: `cd host && npx vitest run fork-dlopen-replay-e2e --no-coverage`
 
 Expected: FAIL. Either:
-- `Centralized worker failed: table index is out of bounds` in stderr (the production bug), OR
+- `Kernel worker failed: table index is out of bounds` in stderr (the production bug), OR
 - `child exited badly` in stderr.
 
 If it passes already, the bug is masked. Most likely cause: `wasm-opt` is not on `$PATH`, so the binary lacks asyncify and `fork()` returns ENOSYS instead of taking the asyncify-fork path that exhibits the bug. Confirm with `which wasm-opt` and, if missing, install via the nix dev-shell (`scripts/dev-shell.sh bash`) or `brew install binaryen`. If `wasm-opt` IS present and the test still passes, the bug genuinely doesn't reproduce — investigate which fork branch is being taken before proceeding.

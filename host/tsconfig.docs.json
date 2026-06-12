@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "files": [
+    "src/index.ts",
+    "src/browser.ts"
+  ],
+  "include": []
+}

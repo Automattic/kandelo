@@ -48,7 +48,7 @@ All run in both Node.js and the browser with no source modifications.
 
 ## Architecture
 
-A centralized kernel serves all processes via channel IPC (SharedArrayBuffer + Atomics):
+A single shared kernel serves all processes via channel IPC (SharedArrayBuffer + Atomics):
 
 ```
 ┌─────────────────────────────────────────┐
