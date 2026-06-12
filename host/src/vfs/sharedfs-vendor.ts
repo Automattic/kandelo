@@ -6,7 +6,10 @@
  * message passing.
  *
  * Layout (same as the C implementation):
- *   Block 0: Superblock (0..255) + FD table (256..1791)
+ *   Block 0:
+ *     0..255: Superblock
+ *     256..4095: FD table (24-byte entries, capacity derived from the
+ *                 remaining block-0 space)
  *   Inode bitmap blocks
  *   Block bitmap blocks
  *   Inode table blocks
@@ -19,13 +22,16 @@ export const BLOCK_SIZE = 4096;
 export const INODE_SIZE = 128;
 export const INODES_PER_BLOCK = BLOCK_SIZE / INODE_SIZE; // 32
 export const MAX_NAME = 255;
-export const MAX_FDS = 64;
 export const MAX_SYMLINK_HOPS = 8;
 export const DIRECT_BLOCKS = 10;
 export const PTRS_PER_BLOCK = BLOCK_SIZE / 4; // 1024
 export const INLINE_SYMLINK_SIZE = DIRECT_BLOCKS * 4; // 40
 export const ROOT_INO = 1;
 export const FD_TABLE_OFFSET = 256;
+export const FD_ENTRY_SIZE = 24;
+export const MAX_FDS = Math.floor(
+  (BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE,
+);
 
 export const MAGIC = 0x53464653; // "SFFS"
 export const VERSION = 1;
@@ -109,7 +115,6 @@ const FD_INO = 4;
 const FD_OFFSET = 8; // uint64
 const FD_FLAGS = 16;
 const FD_IS_DIR = 20;
-const FD_ENTRY_SIZE = 24;
 
 // Lock bits
 const WRITER_BIT = 0x80000000 | 0; // -2147483648 as int32
