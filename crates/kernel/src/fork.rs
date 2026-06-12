@@ -682,6 +682,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                     SocketDomain::Unix => 0,
                     SocketDomain::Inet => 1,
                     SocketDomain::Inet6 => 2,
+                    SocketDomain::Netlink => 3,
                 })?;
                 w.write_u32(match sock.sock_type {
                     SocketType::Stream => 0,
@@ -1046,6 +1047,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
                 0 => SocketDomain::Unix,
                 1 => SocketDomain::Inet,
                 2 => SocketDomain::Inet6,
+                3 => SocketDomain::Netlink,
                 _ => return Err(Errno::EINVAL),
             };
             let sock_type = match r.read_u32()? {
@@ -1496,6 +1498,85 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
 
     // ── Program break ──
     w.write_u32(proc.memory.get_brk() as u32)?;
+
+    // ── Socket table ──
+    //
+    // POSIX exec replaces the program image, not the process's open file
+    // descriptions. Any socket fd that survives FD_CLOEXEC must still refer to
+    // its socket object after exec, including listener accept queues/options.
+    // Use the same wire shape as fork so socket indices encoded in socket OFDs
+    // (host_handle = -(idx + 1)) remain valid.
+    {
+        use crate::socket::{SocketDomain, SocketState, SocketType};
+        let mut sock_count = 0u32;
+        for idx in 0..proc.sockets.len() {
+            if proc.sockets.get(idx).is_some() {
+                sock_count += 1;
+            }
+        }
+        w.write_u32(proc.sockets.len() as u32)?;
+        w.write_u32(sock_count)?;
+        for idx in 0..proc.sockets.len() {
+            if let Some(sock) = proc.sockets.get(idx) {
+                w.write_u32(idx as u32)?;
+                w.write_u32(match sock.domain {
+                    SocketDomain::Unix => 0,
+                    SocketDomain::Inet => 1,
+                    SocketDomain::Inet6 => 2,
+                    SocketDomain::Netlink => 3,
+                })?;
+                w.write_u32(match sock.sock_type {
+                    SocketType::Stream => 0,
+                    SocketType::Dgram => 1,
+                })?;
+                w.write_u32(sock.protocol)?;
+                w.write_u32(match sock.state {
+                    SocketState::Unbound => 0,
+                    SocketState::Bound => 1,
+                    SocketState::Listening => 2,
+                    SocketState::Connected => 3,
+                    SocketState::Closed => 4,
+                    SocketState::Connecting => 4,
+                })?;
+                w.write_u32(sock.peer_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.recv_buf_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.send_buf_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(if sock.shut_rd { 1 } else { 0 })?;
+                w.write_u32(if sock.shut_wr { 1 } else { 0 })?;
+                w.write_u32(sock.host_net_handle.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.options.len() as u32)?;
+                for &(level, optname, value) in &sock.options {
+                    w.write_u32(level)?;
+                    w.write_u32(optname)?;
+                    w.write_u32(value)?;
+                }
+                w.write_bytes(&sock.bind_addr)?;
+                w.write_u32(sock.bind_port as u32)?;
+                w.write_bytes(&sock.peer_addr)?;
+                w.write_u32(sock.peer_port as u32)?;
+                // Legacy per-process accept backlog is consume-once state.
+                // Shared listener backlog indices below preserve the actual
+                // POSIX accept queue for current stream listeners.
+                w.write_u32(0u32)?;
+                w.write_u32(if sock.global_pipes { 1 } else { 0 })?;
+                w.write_u32(
+                    sock.shared_backlog_idx
+                        .map(|v| v as u32)
+                        .unwrap_or(0xFFFFFFFF),
+                )?;
+                match &sock.bind_path {
+                    Some(p) => {
+                        w.write_u32(p.len() as u32)?;
+                        w.write_bytes(p)?;
+                    }
+                    None => {
+                        w.write_u32(0xFFFFFFFF)?;
+                    }
+                }
+                w.write_u32(sock.accept_wake_idx.unwrap_or(0xFFFFFFFF))?;
+            }
+        }
+    }
 
     // ── Patch total_size ──
     let total = w.pos as u32;

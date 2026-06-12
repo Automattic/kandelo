@@ -2307,6 +2307,7 @@ pub fn sys_read(
                         return Err(Errno::EAGAIN);
                     }
                 }
+                SocketDomain::Netlink => return sys_recv(proc, host, fd, buf, 0),
             }
         }
         FileType::TimerFd => {
@@ -2708,6 +2709,7 @@ pub fn sys_write(
                         return Err(Errno::EAGAIN);
                     }
                 }
+                SocketDomain::Netlink => return sys_send(proc, host, fd, buf, 0),
             }
         }
         FileType::EventFd => {
@@ -6006,6 +6008,117 @@ pub fn sys_mprotect(_proc: &Process, _addr: usize, _len: usize, _prot: u32) -> R
     Ok(())
 }
 
+const AF_NETLINK: u32 = 16;
+const SOCK_RAW: u32 = 3;
+const NETLINK_ROUTE: u32 = 0;
+
+const NLMSG_DONE: u16 = 3;
+const NLM_F_MULTI: u16 = 2;
+const RTM_NEWLINK: u16 = 16;
+const RTM_GETLINK: u16 = 18;
+const RTM_NEWADDR: u16 = 20;
+const RTM_GETADDR: u16 = 22;
+
+const IFI_LOOPBACK_INDEX: u32 = 1;
+const IFI_LOOPBACK_FLAGS: u32 = 0x1 | 0x8 | 0x40; // IFF_UP | IFF_LOOPBACK | IFF_RUNNING
+const ARPHRD_LOOPBACK: u16 = 772;
+
+const IFLA_IFNAME: u16 = 3;
+const IFA_ADDRESS: u16 = 1;
+const IFA_LOCAL: u16 = 2;
+const IFA_LABEL: u16 = 3;
+
+#[inline]
+fn align4_len(len: usize) -> usize {
+    (len + 3) & !3
+}
+
+#[inline]
+fn push_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+#[inline]
+fn push_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn push_rtattr(out: &mut Vec<u8>, attr_type: u16, data: &[u8]) {
+    let attr_len = 4 + data.len();
+    push_u16(out, attr_len as u16);
+    push_u16(out, attr_type);
+    out.extend_from_slice(data);
+    while out.len() % 4 != 0 {
+        out.push(0);
+    }
+}
+
+fn push_netlink_msg(out: &mut Vec<u8>, msg_type: u16, flags: u16, seq: u32, payload: &[u8]) {
+    let len = 16 + payload.len();
+    push_u32(out, len as u32);
+    push_u16(out, msg_type);
+    push_u16(out, flags);
+    push_u32(out, seq);
+    push_u32(out, 0); // kernel port id
+    out.extend_from_slice(payload);
+    while out.len() % 4 != 0 {
+        out.push(0);
+    }
+}
+
+fn push_loopback_link_msg(out: &mut Vec<u8>, seq: u32) {
+    let mut payload = Vec::new();
+    payload.push(0); // AF_UNSPEC
+    payload.push(0); // pad
+    push_u16(&mut payload, ARPHRD_LOOPBACK);
+    push_u32(&mut payload, IFI_LOOPBACK_INDEX);
+    push_u32(&mut payload, IFI_LOOPBACK_FLAGS);
+    push_u32(&mut payload, 0xFFFF_FFFF);
+    push_rtattr(&mut payload, IFLA_IFNAME, b"lo\0");
+    push_netlink_msg(out, RTM_NEWLINK, NLM_F_MULTI, seq, &payload);
+}
+
+fn push_loopback_addr_msg(out: &mut Vec<u8>, seq: u32) {
+    let mut payload = Vec::new();
+    payload.push(2); // AF_INET
+    payload.push(8); // /8 loopback route
+    payload.push(0);
+    payload.push(254); // RT_SCOPE_HOST
+    push_u32(&mut payload, IFI_LOOPBACK_INDEX);
+    push_rtattr(&mut payload, IFA_ADDRESS, &[127, 0, 0, 1]);
+    push_rtattr(&mut payload, IFA_LOCAL, &[127, 0, 0, 1]);
+    push_rtattr(&mut payload, IFA_LABEL, b"lo\0");
+    push_netlink_msg(out, RTM_NEWADDR, NLM_F_MULTI, seq, &payload);
+}
+
+fn netlink_done_msg(seq: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    push_netlink_msg(&mut out, NLMSG_DONE, NLM_F_MULTI, seq, &[]);
+    out
+}
+
+fn netlink_route_response(request: &[u8]) -> Result<Vec<u8>, Errno> {
+    if request.len() < 16 {
+        return Err(Errno::EINVAL);
+    }
+    let nlmsg_len = u32::from_le_bytes([request[0], request[1], request[2], request[3]]) as usize;
+    if nlmsg_len < 16 || nlmsg_len > request.len() {
+        return Err(Errno::EINVAL);
+    }
+    let msg_type = u16::from_le_bytes([request[4], request[5]]);
+    let seq = u32::from_le_bytes([request[8], request[9], request[10], request[11]]);
+    let mut out = Vec::new();
+    match msg_type {
+        RTM_GETLINK => push_loopback_link_msg(&mut out, seq),
+        RTM_GETADDR => push_loopback_addr_msg(&mut out, seq),
+        _ => return Err(Errno::EOPNOTSUPP),
+    }
+    out.extend_from_slice(&netlink_done_msg(seq));
+    let aligned = align4_len(out.len());
+    out.resize(aligned, 0);
+    Ok(out)
+}
+
 /// Create a socket, returning the new fd.
 pub fn sys_socket(
     proc: &mut Process,
@@ -6021,6 +6134,7 @@ pub fn sys_socket(
         AF_UNIX => SocketDomain::Unix,
         AF_INET => SocketDomain::Inet,
         AF_INET6 => SocketDomain::Inet6,
+        AF_NETLINK => SocketDomain::Netlink,
         _ => return Err(Errno::EAFNOSUPPORT),
     };
 
@@ -6028,6 +6142,7 @@ pub fn sys_socket(
     let stype = match base_type {
         SOCK_STREAM => SocketType::Stream,
         SOCK_DGRAM => SocketType::Dgram,
+        SOCK_RAW if dom == SocketDomain::Netlink && protocol == NETLINK_ROUTE => SocketType::Dgram,
         _ => return Err(Errno::EPROTOTYPE),
     };
 
@@ -7046,6 +7161,18 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                 Ok(2)
             }
         }
+        SocketDomain::Netlink => {
+            let total_len = 12usize; // struct sockaddr_nl
+            let n = buf.len().min(total_len);
+            if n >= 2 {
+                buf[0] = AF_NETLINK as u8;
+                buf[1] = 0;
+            }
+            for b in buf.iter_mut().take(n).skip(2) {
+                *b = 0;
+            }
+            Ok(total_len)
+        }
     }
 }
 
@@ -7075,6 +7202,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                 return Err(Errno::ENOTCONN);
             }
         }
+        SocketDomain::Netlink => return Err(Errno::ENOTCONN),
     }
     match sock.domain {
         SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.peer_addr, sock.peer_port)),
@@ -7086,6 +7214,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
             }
             Ok(2)
         }
+        SocketDomain::Netlink => Err(Errno::ENOTCONN),
     }
 }
 
@@ -7168,6 +7297,15 @@ pub fn sys_send(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.domain == SocketDomain::Netlink {
+        if sock.protocol != NETLINK_ROUTE {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        let response = netlink_route_response(buf)?;
+        let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+        sock.netlink_queue.push(response);
+        return Ok(buf.len());
+    }
     if sock.sock_type == SocketType::Dgram {
         match sock.domain {
             SocketDomain::Inet => {
@@ -7194,6 +7332,7 @@ pub fn sys_send(
                 return Ok(buf.len());
             }
             SocketDomain::Unix => {}
+            SocketDomain::Netlink => unreachable!(),
         }
     }
     if sock.state != SocketState::Connected {
@@ -7240,6 +7379,7 @@ pub fn sys_send(
             }
             result
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -7265,6 +7405,20 @@ pub fn sys_recv(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if sock.domain == SocketDomain::Netlink {
+        let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+        let Some(packet) = sock.netlink_queue.first() else {
+            return Err(Errno::EAGAIN);
+        };
+        let n = buf.len().min(packet.len());
+        buf[..n].copy_from_slice(&packet[..n]);
+        if n == packet.len() {
+            sock.netlink_queue.remove(0);
+        } else {
+            sock.netlink_queue[0].drain(..n);
+        }
+        return Ok(n);
+    }
     if sock.sock_type == SocketType::Dgram
         && matches!(
             sock.domain,
@@ -7357,6 +7511,7 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
                 SocketDomain::Unix => AF_UNIX,
                 SocketDomain::Inet => AF_INET,
                 SocketDomain::Inet6 => AF_INET6,
+                SocketDomain::Netlink => AF_NETLINK,
             }),
             // Linux semantics: return cached errno and clear it.
             SO_ERROR => {
@@ -7866,6 +8021,11 @@ pub fn sys_bind(
 
             let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
             sock.bind_path = Some(resolved);
+            sock.state = SocketState::Bound;
+            Ok(())
+        }
+        SocketDomain::Netlink => {
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
             sock.state = SocketState::Bound;
             Ok(())
         }
@@ -8603,6 +8763,7 @@ pub fn sys_connect(
 
             Ok(())
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -8643,6 +8804,10 @@ pub fn sys_sendto(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+
+    if sock.domain == SocketDomain::Netlink {
+        return sys_send(proc, _host, fd, buf, _flags);
+    }
 
     if addr.is_empty() {
         if sock.state == SocketState::Connected {
@@ -8691,6 +8856,7 @@ pub fn sys_sendto(
                 .ok_or(Errno::ECONNREFUSED)?;
             unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf)
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -8715,6 +8881,11 @@ pub fn sys_recvfrom(
     }
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+
+    if sock.domain == SocketDomain::Netlink {
+        let n = sys_recv(proc, _host, fd, buf, _flags)?;
+        return Ok((n, 0));
+    }
 
     // For STREAM sockets, delegate to sys_recv (musl routes recv→recvfrom)
     if sock.sock_type == SocketType::Stream {
@@ -8742,6 +8913,7 @@ pub fn sys_recvfrom(
                 d.src_addr6 == sock.peer_addr6 && d.src_port == sock.peer_port
             }
             SocketDomain::Unix => sock.peer_idx.map_or(true, |peer| d.src_sock_idx == Some(peer)),
+            SocketDomain::Netlink => false,
         }
     });
     if datagram_idx.is_none() {
@@ -8778,6 +8950,7 @@ pub fn sys_recvfrom(
                 }
                 2
             }
+            SocketDomain::Netlink => 0,
         };
     }
 
@@ -17686,6 +17859,137 @@ mod tests {
 
         // Clean up
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_unix_stream_inherited_listener_accepts_parent_connection() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{FileAction, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let parent_pid = 9101;
+        table.create_process(parent_pid).unwrap();
+
+        let path = b"/tmp/inherited_listener_9101.sock";
+        let resolved = {
+            let parent = table.get(parent_pid).unwrap();
+            crate::path::resolve_path(path, &parent.cwd)
+        };
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+
+        let server_fd = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let fd = sys_socket(parent, &mut host, 1, 1, 0).unwrap();
+            sys_bind(parent, &mut host, fd, &addr[..addrlen]).unwrap();
+            sys_listen(parent, &mut host, fd, 5).unwrap();
+            fd
+        };
+
+        let dup_fd = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let fd = sys_dup(parent, server_fd).unwrap();
+            parent.fd_table.get_mut(server_fd).unwrap().fd_flags |= FD_CLOEXEC;
+            parent.fd_table.get_mut(fd).unwrap().fd_flags |= FD_CLOEXEC;
+            fd
+        };
+
+        let child_pid = table
+            .spawn_child(
+                parent_pid,
+                &[b"child".as_slice()],
+                &[],
+                &[FileAction::Dup2 {
+                    srcfd: dup_fd,
+                    fd: 0,
+                }],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        let client_fd = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let fd = sys_socket(parent, &mut host, 1, 1, 0).unwrap();
+            sys_connect(parent, &mut host, fd, &addr[..addrlen]).unwrap();
+            fd
+        };
+
+        let accepted_fd = {
+            let child = table.get_mut(child_pid).unwrap();
+            let mut pollfd = WasmPollFd {
+                fd: 0,
+                events: POLLIN,
+                revents: 0,
+            };
+            assert_eq!(
+                sys_poll(child, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap(),
+                1
+            );
+            assert_ne!(pollfd.revents & POLLIN, 0);
+            sys_accept(child, &mut host, 0).unwrap()
+        };
+
+        {
+            let parent = table.get_mut(parent_pid).unwrap();
+            assert_eq!(sys_write(parent, &mut host, client_fd, b"ping").unwrap(), 4);
+        }
+        {
+            let child = table.get_mut(child_pid).unwrap();
+            let mut buf = [0u8; 4];
+            assert_eq!(
+                sys_read(child, &mut host, accepted_fd, &mut buf).unwrap(),
+                4
+            );
+            assert_eq!(&buf, b"ping");
+        }
+
+        // Clean up
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_netlink_route_reports_loopback_interface() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(
+            &mut proc,
+            &mut host,
+            AF_NETLINK,
+            SOCK_RAW | wasm_posix_shared::socket::SOCK_CLOEXEC,
+            NETLINK_ROUTE,
+        )
+        .unwrap();
+
+        let mut req = Vec::new();
+        push_u32(&mut req, 20);
+        push_u16(&mut req, RTM_GETLINK);
+        push_u16(&mut req, 0x301); // NLM_F_REQUEST | NLM_F_DUMP
+        push_u32(&mut req, 123);
+        push_u32(&mut req, 0);
+        req.push(0); // rtgenmsg.rtgen_family = AF_UNSPEC
+        req.extend_from_slice(&[0, 0, 0]);
+        assert_eq!(sys_send(&mut proc, &mut host, fd, &req, 0).unwrap(), req.len());
+
+        let mut buf = [0u8; 512];
+        let n = sys_recv(&mut proc, &mut host, fd, &mut buf, 0).unwrap();
+        assert!(n >= 16);
+        assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), RTM_NEWLINK);
+        assert!(buf[..n].windows(3).any(|w| w == b"lo\0"));
+
+        req[4..6].copy_from_slice(&RTM_GETADDR.to_le_bytes());
+        req[8..12].copy_from_slice(&124u32.to_le_bytes());
+        assert_eq!(sys_send(&mut proc, &mut host, fd, &req, 0).unwrap(), req.len());
+        let n = sys_recv(&mut proc, &mut host, fd, &mut buf, 0).unwrap();
+        assert!(n >= 16);
+        assert_eq!(u16::from_le_bytes([buf[4], buf[5]]), RTM_NEWADDR);
+        assert!(buf[..n].windows(4).any(|w| w == [127, 0, 0, 1]));
     }
 
     #[test]
