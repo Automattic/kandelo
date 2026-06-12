@@ -204,8 +204,6 @@ interface LiveProfileSpec {
     gid?: number;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    ordinaryProcessMaxMemoryPages?: number;
-    highMemoryProcessBasenames?: string[];
     web?: { requiredPorts: number[] };
   };
 }
@@ -301,11 +299,6 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
       programUrl: dinitWasmUrl,
       maxWorkers: 24,
       maxMemoryPages: 16384,
-      // Only mariadbd needs the larger cap. Keeping dinit, shells, PHP, and
-      // service helpers at 4096 avoids exhausting Chrome's shared Wasm memory
-      // reservations during the service fan-out.
-      ordinaryProcessMaxMemoryPages: 4096,
-      highMemoryProcessBasenames: ["mariadbd"],
       web: { requiredPorts: [HTTP_PORT, PHP_FPM_PORT, MARIADB_PORT] },
     },
   },
@@ -348,8 +341,6 @@ interface LiveProfile {
     gid?: number;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    ordinaryProcessMaxMemoryPages?: number;
-    highMemoryProcessBasenames?: string[];
     web?: { label: string; requiredPorts: number[] };
   };
   framebufferTest: boolean;
@@ -690,8 +681,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       gid: spec.init.gid,
       maxWorkers: spec.init.maxWorkers,
       maxMemoryPages: spec.init.maxMemoryPages,
-      ordinaryProcessMaxMemoryPages: spec.init.ordinaryProcessMaxMemoryPages,
-      highMemoryProcessBasenames: spec.init.highMemoryProcessBasenames?.slice(),
       web: spec.init.web && {
         label: desc.title,
         requiredPorts: spec.init.web.requiredPorts.slice(),
@@ -1065,8 +1054,6 @@ async function bootProfile(
       memfs,
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages: profile.init?.maxMemoryPages,
-      ordinaryProcessMaxMemoryPages: profile.init?.ordinaryProcessMaxMemoryPages,
-      highMemoryProcessBasenames: profile.init?.highMemoryProcessBasenames,
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },

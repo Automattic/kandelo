@@ -48,12 +48,6 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxMemoryPages: number;
-    /**
-     * Optional lower max for ordinary browser processes. Executable basenames
-     * listed in highMemoryProcessBasenames keep maxMemoryPages.
-     */
-    ordinaryProcessMaxMemoryPages?: number;
-    highMemoryProcessBasenames?: string[];
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     env: string[];
