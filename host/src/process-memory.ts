@@ -80,6 +80,20 @@ export interface ProcessMemoryLayoutOptions {
   brkReservePages?: number;
 }
 
+export interface ProcessMaxPagesOptions {
+  /** The profile-wide maximum page count. */
+  configuredMaxPages: number;
+  /** The argv for the process being spawned or exec'd. */
+  argv?: readonly string[];
+  /**
+   * Optional lower page cap for ordinary processes. Processes whose argv[0]
+   * basename appears in highMemoryProcessBasenames keep configuredMaxPages.
+   */
+  ordinaryProcessMaxPages?: number;
+  /** Executable basenames allowed to keep configuredMaxPages. */
+  highMemoryProcessBasenames?: ReadonlySet<string> | readonly string[];
+}
+
 function readULEB(buf: Uint8Array, off: number): [bigint, number] {
   let result = 0n;
   let shift = 0n;
@@ -198,6 +212,42 @@ function validateThreadSlotCount(threadSlotCount: number, label: string): number
     throw new Error(`invalid ${label}: ${threadSlotCount}`);
   }
   return threadSlotCount;
+}
+
+function basename(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
+function hasProcessBasename(
+  names: ReadonlySet<string> | readonly string[] | undefined,
+  name: string,
+): boolean {
+  if (!names) return false;
+  const maybeSet = names as ReadonlySet<string>;
+  if (typeof maybeSet.has === "function") return maybeSet.has(name);
+  return (names as readonly string[]).includes(name);
+}
+
+export function resolveProcessMaxPages(options: ProcessMaxPagesOptions): number {
+  const {
+    argv,
+    configuredMaxPages,
+    ordinaryProcessMaxPages,
+    highMemoryProcessBasenames,
+  } = options;
+
+  if (ordinaryProcessMaxPages == null || ordinaryProcessMaxPages >= configuredMaxPages) {
+    return configuredMaxPages;
+  }
+  if (!Number.isInteger(ordinaryProcessMaxPages) || ordinaryProcessMaxPages <= CHANNEL_PAGES) {
+    throw new Error(`invalid ordinary process maximum pages: ${ordinaryProcessMaxPages}`);
+  }
+
+  const executable = basename(argv?.[0] ?? "");
+  return hasProcessBasename(highMemoryProcessBasenames, executable)
+    ? configuredMaxPages
+    : ordinaryProcessMaxPages;
 }
 
 export function resolveProcessThreadSlotCount(

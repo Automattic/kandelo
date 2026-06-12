@@ -7,6 +7,7 @@ import {
   PROCESS_THREAD_SLOTS_USE_HOST_DEFAULT,
   computeProcessMemoryLayout,
   createProcessMemory,
+  resolveProcessMaxPages,
 } from "../src/process-memory";
 import { WASM_PAGE_SIZE, DEFAULT_MAX_PAGES, CH_TOTAL_SIZE, PAGES_PER_THREAD } from "../src/constants";
 
@@ -161,5 +162,39 @@ describe("process memory layout", () => {
       expect(layout.threadSlotCount).toBe(expected);
       expect(layout.threadArenaEndPage).toBe(layout.firstThreadSlotPage);
     }
+  });
+});
+
+describe("process max page policy", () => {
+  it("keeps the high cap only for configured executable basenames", () => {
+    const highMemoryNames = new Set(["mariadbd"]);
+
+    expect(resolveProcessMaxPages({
+      configuredMaxPages: 16384,
+      ordinaryProcessMaxPages: 4096,
+      highMemoryProcessBasenames: highMemoryNames,
+      argv: ["/usr/sbin/mariadbd", "--no-defaults"],
+    })).toBe(16384);
+
+    expect(resolveProcessMaxPages({
+      configuredMaxPages: 16384,
+      ordinaryProcessMaxPages: 4096,
+      highMemoryProcessBasenames: highMemoryNames,
+      argv: ["/bin/sh", "/etc/mariadb/bootstrap.sh"],
+    })).toBe(4096);
+  });
+
+  it("leaves configured caps alone when the ordinary cap is not lower", () => {
+    expect(resolveProcessMaxPages({
+      configuredMaxPages: 2048,
+      ordinaryProcessMaxPages: 4096,
+      highMemoryProcessBasenames: ["mariadbd"],
+      argv: ["/bin/sh"],
+    })).toBe(2048);
+
+    expect(resolveProcessMaxPages({
+      configuredMaxPages: 16384,
+      argv: ["/bin/sh"],
+    })).toBe(16384);
   });
 });

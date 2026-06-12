@@ -92,6 +92,7 @@ import {
   createProcessMemory,
   DEFAULT_PROCESS_THREAD_SLOTS,
   FORK_SAVE_BUFFER_SIZE,
+  resolveProcessMaxPages,
   type ProcessMemoryLayout,
 } from "./process-memory";
 import type {
@@ -108,6 +109,8 @@ let workerAdapter: BrowserWorkerAdapter;
 let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
 let maxPages: number = DEFAULT_MAX_PAGES;
+let ordinaryProcessMaxPages: number | undefined;
+let highMemoryProcessBasenames = new Set<string>();
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let defaultEnv: string[] = [];
 
@@ -207,6 +210,18 @@ function processWorkerTerminationSettleMs(argv: readonly string[] | undefined): 
   return name === "node" || name === "spidermonkey-node" || name === "spidermonkey-node.wasm"
     ? NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS
     : 0;
+}
+
+function processMaxPagesForArgv(
+  argv: readonly string[] | undefined,
+  configuredMaxPages = maxPages,
+): number {
+  return resolveProcessMaxPages({
+    argv,
+    configuredMaxPages,
+    ordinaryProcessMaxPages,
+    highMemoryProcessBasenames,
+  });
 }
 
 async function waitForProcessTeardowns(): Promise<void> {
@@ -407,6 +422,8 @@ function resolveLazyUrl(base: string, url: string): string {
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   maxPages = msg.config.maxMemoryPages;
+  ordinaryProcessMaxPages = msg.config.ordinaryProcessMaxMemoryPages;
+  highMemoryProcessBasenames = new Set(msg.config.highMemoryProcessBasenames ?? []);
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
 
@@ -642,7 +659,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     // Pid: if the caller pre-picked one, honor it (legacy spawn() callers
     // still do); otherwise the worker is the source of truth and allocates.
     const pid = msg.pid ?? kernelWorker.allocatePid();
-    const pages = msg.maxPages ?? maxPages;
+    const pages = processMaxPagesForArgv(msg.argv, msg.maxPages ?? maxPages);
     const ptrWidth = detectPtrWidth(programBytes);
     const {
       memory,
@@ -910,11 +927,12 @@ async function handleExec(
   // Create fresh memory sized for the new binary's arch (exec across
   // wasm32↔wasm64 replaces the process image — memory type must match).
   const ptrWidth = detectPtrWidth(bytes);
+  const processMaxPages = processMaxPagesForArgv(launchArgv);
   const {
     memory: newMemory,
     layout: newLayout,
     threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(pid, bytes, ptrWidth);
+  } = createFreshProcessMemory(pid, bytes, ptrWidth, processMaxPages);
   const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
@@ -1016,11 +1034,12 @@ async function handlePosixSpawn(
   post({ type: "proc_event", kind: "spawn", pid: childPid });
 
   const ptrWidth = detectPtrWidth(programBytes);
+  const processMaxPages = processMaxPagesForArgv(argv);
   const {
     memory: newMemory,
     layout: newLayout,
     threadAllocator,
-  } = createFreshProcessMemory(childPid, programBytes, ptrWidth);
+  } = createFreshProcessMemory(childPid, programBytes, ptrWidth, processMaxPages);
   const newChannelOffset = newLayout.channelOffset;
 
   // Kernel already created the child via kernel_spawn_process.

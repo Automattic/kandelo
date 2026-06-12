@@ -34,6 +34,10 @@ export interface BrowserKernelOptions {
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). This caps
    *  guest brk/mmap growth; initial process memory is computed separately. */
   maxMemoryPages?: number;
+  /** Optional lower max for ordinary browser processes. */
+  ordinaryProcessMaxMemoryPages?: number;
+  /** Executable basenames that keep maxMemoryPages when an ordinary cap exists. */
+  highMemoryProcessBasenames?: string[];
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Additional VFS mount points */
@@ -369,6 +373,8 @@ export class BrowserKernel {
         config: {
           maxWorkers: this.options.maxWorkers,
           maxMemoryPages: this.maxPages,
+          ordinaryProcessMaxMemoryPages: this.options.ordinaryProcessMaxMemoryPages,
+          highMemoryProcessBasenames: this.options.highMemoryProcessBasenames?.slice(),
           defaultThreadSlots: this.options.defaultThreadSlots,
           env: this.options.env,
           enableSyscallLog: this.options.enableSyscallLog,
