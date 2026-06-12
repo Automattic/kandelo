@@ -1,15 +1,7 @@
-//! Event producer for `/dev/input/event{0,1}`.
-//!
-//! `kernel_input_event` feeds [`push_event`] here, which fans the
-//! record out to every open OFD bound to the matching device.
-//!
-//! Overflow handling mirrors Linux `drivers/input/evdev.c::
-//! evdev_pass_values`: when an OFD's ring is full we set `dropped =
-//! true` and discard the **incoming** record. The next `read()`
-//! synthesises a `SYN_DROPPED` marker at the head of its output and
-//! clears the flag, so userspace can resynchronise via `EVIOCG*`.
-//! Pushes-while-dropped are no-ops, so the ring never grows past
-//! [`INPUT_RING_MAX_BYTES`].
+//! Event producer for `/dev/input/event{0,1}`. Mirrors Linux
+//! `drivers/input/evdev.c::evdev_pass_values`: a full ring discards
+//! the incoming record and latches `dropped`; the next read prepends
+//! a synthetic `SYN_DROPPED` so userspace can resync via `EVIOCG*`.
 
 use alloc::collections::VecDeque;
 

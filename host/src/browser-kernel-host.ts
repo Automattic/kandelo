@@ -853,10 +853,6 @@ export class BrowserKernel {
    * emitted record through `injectInputEvent`. Mirrors
    * `NodeKernelHost.attachInputSource` — dual-host parity per
    * CLAUDE.md §"Two hosts".
-   *
-   * The browser caller is responsible for instantiating the source
-   * with the right DOM target + canvas: typically
-   * `new BrowserInputSource(window, canvas)`.
    */
   attachInputSource(
     source: InputSource,

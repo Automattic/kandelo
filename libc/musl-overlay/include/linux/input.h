@@ -1,15 +1,8 @@
 /*
- * Minimal <linux/input.h> for kandelo.
- *
- * The real Linux header carries a lot of Linux-specific details
- * (force-feedback, autorepeat, MT slots, etc.) we don't implement and
- * don't expose to user-space programs. This subset matches the structs
- * and ioctls that the kernel marshals via crates/shared/src/lib.rs::input.
- *
- * Programs using `<linux/input.h>` against our `/dev/input/event{0,1}`
- * see the same `struct input_event` layout (24 bytes; trailing 8-byte
- * `struct timeval` + `__u16 type` + `__u16 code` + `__s32 value`) and
- * EVIOC* ioctl numbers as on real Linux.
+ * Subset of <linux/input.h> matching what crates/shared/src/lib.rs::input
+ * marshals. Force-feedback, autorepeat, MT slots, and the rest of the
+ * Linux UAPI surface are intentionally omitted — kandelo doesn't
+ * implement them.
  *
  * Any change here is part of the kernel ABI — bump ABI_VERSION.
  */

@@ -718,7 +718,6 @@ mod tests {
         assert!(!st.dropped);
         assert!(st.event_ring.is_empty());
 
-        // input_mut lets us mutate the ring.
         let st = table.get_mut(idx).unwrap().input_mut().unwrap();
         st.event_ring.push_back(0xab);
         assert_eq!(table.get(idx).unwrap().input().unwrap().event_ring.len(), 1);
@@ -726,8 +725,7 @@ mod tests {
 
     #[test]
     fn input_ring_cap_bytes_is_24_kib() {
-        // Lock the ring cap so the per-fd memory budget cannot drift
-        // without a deliberate edit + review.
+        // Lock the per-fd memory budget so it cannot drift silently.
         assert_eq!(INPUT_RING_MAX_RECORDS, 1024);
         assert_eq!(INPUT_RING_MAX_BYTES, 24 * 1024);
     }

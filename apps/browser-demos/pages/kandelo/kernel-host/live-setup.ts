@@ -1059,12 +1059,9 @@ async function bootProfile(
       ], "modeset.wasm");
       void spawnLazy(kernel, "/usr/local/bin/modeset", modesetWasmUrl, ["modeset"], tick);
     } else if (profile.evdevDemo) {
-      // Stage evdev_demo into the VFS so bash can exec it, attach a
-      // BrowserInputSource to window so DOM keyboard/pointer events flow
-      // into `/dev/input/event{0,1}`, then run the binary through bash so
-      // its stdout streams to the user's Shell pane. autoCommand isn't
-      // used here because the staging has to happen before exec, and we
-      // want the InputSource attached before the program starts polling.
+      // autoCommand can't run this: the InputSource must be attached
+      // before the binary starts polling /dev/input/event{0,1}, and
+      // the binary itself has to be staged into the VFS first.
       const kernelForEvdev = kernel;
       void (async () => {
         try {

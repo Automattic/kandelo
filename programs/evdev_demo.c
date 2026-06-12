@@ -1,23 +1,10 @@
 /*
- * evdev_demo — interactive keystroke + pointer log for the Kandelo
- * `/dev/input/event*` evdev backend.
+ * evdev_demo — C1 compile proof and runtime backing for `/?demo=evdev`.
  *
- * Companion to the kandelo browser demo `/?demo=evdev`. Opens
- * `/dev/input/event0` (keyboard) and `/dev/input/event1` (pointer),
- * prints each device's EVIOCGNAME, then polls both forever and logs
- * every key press / release / pointer-axis event to stdout. The pane
- * surfaces the log lines.
- *
- * Also serves as the C1 compile proof: this program is the only thing
- * in tree that does `#include <linux/input.h>`. If the vendored headers
- * ever drift (e.g. `struct input_event` grows to 32 bytes), the
- * trailing _Static_assert here fires at build time before runtime.
- *
- * Re-use of input-evdev-smoke.c was considered. That fixture is
- * stdin-barrier-gated (the three-phase test harness) which doesn't
- * work for free-running interactive use, and it inlines structs the
- * vendored header now provides. Keeping the two programs separate
- * lets each be optimised for its purpose without coupling.
+ * Only in-tree consumer of `<linux/input.h>`: the _Static_assert below
+ * fires at build time if the vendored header drifts away from the
+ * kernel-side WpkInputEvent layout. input-evdev-smoke.c stays inline
+ * on purpose so the B5 fixture's ABI check is independent of C1.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -79,7 +66,7 @@ int main(void) {
     };
 
     for (;;) {
-        int n = poll(pfds, 2, -1 /* block until any fd is ready */);
+        int n = poll(pfds, 2, -1);
         if (n < 0) {
             if (errno == EINTR) continue;
             perror("poll"); return 1;

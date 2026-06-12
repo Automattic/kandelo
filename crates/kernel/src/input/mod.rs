@@ -44,7 +44,6 @@ fn set_bit(buf: &mut [u8], bit: u16) {
 /// truncates to whatever buffer length the caller passed.
 pub fn populate_evbit(device: u8, ev_type: u16, buf: &mut [u8]) {
     match (device, ev_type) {
-        // ev_type = 0 — "which EV_* types does this device produce?"
         (_, 0) => {
             set_bit(buf, EV_SYN);
             set_bit(buf, EV_KEY);
@@ -53,16 +52,14 @@ pub fn populate_evbit(device: u8, ev_type: u16, buf: &mut [u8]) {
                 set_bit(buf, EV_ABS);
             }
         }
-        // Keyboard advertises every KEY_* in the kbd surface range
-        // (A1 picked 1..=KEY_MICMUTE precisely so this is a single
-        // loop instead of a 248-entry table). KEY_RESERVED (0) is
-        // deliberately excluded — Linux doesn't advertise it either.
+        // A1 picked 1..=KEY_MICMUTE precisely so this is a single
+        // loop instead of a 248-entry table. KEY_RESERVED (0) is
+        // skipped so the bitmap matches Linux byte-for-byte.
         (0, t) if t == EV_KEY => {
             for k in 1..=KEY_MICMUTE {
                 set_bit(buf, k);
             }
         }
-        // Pointer advertises only the five mouse buttons.
         (1, t) if t == EV_KEY => {
             for &b in &[BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA] {
                 set_bit(buf, b);
@@ -156,8 +153,6 @@ mod tests {
 
     #[test]
     fn evbit_kbd_abs_query_is_empty() {
-        // Keyboard has no absolute axes — populate_evbit leaves the
-        // caller-zeroed buffer alone.
         let mut buf = [0u8; 4];
         populate_evbit(0, EV_ABS, &mut buf);
         assert_eq!(buf, [0; 4]);
@@ -165,10 +160,9 @@ mod tests {
 
     #[test]
     fn evbit_truncates_silently_when_buf_too_small() {
+        // KEY_ESC fits in bit 1; KEY_A (30) falls off — no panic.
         let mut buf = [0u8; 1];
         populate_evbit(0, EV_KEY, &mut buf);
-        // KEY_ESC (1) fits in bit 1; KEY_A (30) fell off the end —
-        // no panic.
         assert_ne!(buf[0] & (1 << KEY_ESC), 0);
     }
 }

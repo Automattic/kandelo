@@ -373,7 +373,6 @@ mod tests {
         assert!(names.iter().any(|n| *n == b"event1"), "event1 missing: {:?}", names);
         // event2 deliberately NOT synthesised.
         assert!(!names.iter().any(|n| *n == b"event2"));
-        // Both must be char devices.
         for (name, dtype, _) in entries.iter() {
             if name.as_slice() == b"event0" || name.as_slice() == b"event1" {
                 assert_eq!(*dtype, DT_CHR);

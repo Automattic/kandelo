@@ -10484,16 +10484,8 @@ pub extern "C" fn kernel_vblank() -> u32 {
 }
 
 /// Fan one translated DOM input event out to every open OFD bound to
-/// `/dev/input/event{0,1}`. Records are timestamped with
-/// CLOCK_MONOTONIC so libinput / SDL2 see a single monotonic timeline
-/// across vblank + input streams.
-///
-/// `device`: 0 = kbd (event0), 1 = ptr (event1); other values are
-///   dropped.
-/// `ev_type`: EV_SYN / EV_KEY / EV_REL / EV_ABS.
-/// `code`: KEY_* / BTN_* / REL_* / ABS_* / SYN_*.
-/// `value`: press(1) / release(0) / repeat(2) for KEY; delta for REL;
-///   absolute position for ABS; 0 for SYN_REPORT.
+/// `/dev/input/event{0,1}`. Stamped with CLOCK_MONOTONIC so libinput /
+/// SDL2 see a single monotonic timeline across vblank + input streams.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_input_event(
     device: u32,
@@ -10518,10 +10510,9 @@ pub extern "C" fn kernel_input_event(
     );
 }
 
-/// Cache the canvas pixel dimensions used by `EVIOCGABS(ABS_X/ABS_Y)`
-/// on `/dev/input/event1`. The host calls this once at boot so the
-/// first SDL2 / libinput probe sees the real axis range instead of
-/// the 1280×720 fallback.
+/// Cache the canvas pixel dimensions advertised by
+/// `EVIOCGABS(ABS_X/ABS_Y)` on `/dev/input/event1`. Without this the
+/// first SDL2 / libinput probe sees the 1280×720 fallback.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
     crate::input::set_canvas_dims(width, height);

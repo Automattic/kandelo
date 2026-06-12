@@ -1457,13 +1457,9 @@ fn handle_dri_card_ioctl(
     }
 }
 
-/// `EVIOCG*` ioctl surface for `/dev/input/event{0,1}`.
-///
-/// Unknown requests return `ENOTTY` rather than `EINVAL` so SDL2's
-/// evdev probe (which greps the errno) keeps walking instead of
-/// fataling on the first unsupported call. EVIOCGRAB records the
-/// per-OFD grab flag but does not enforce cross-fd exclusivity in
-/// v1 — that lands with plan 9's compositor.
+/// `EVIOCG*` ioctl surface for `/dev/input/event{0,1}`. Unknown
+/// requests return `ENOTTY` (not `EINVAL`) so SDL2's evdev probe keeps
+/// walking instead of fataling on the first unsupported call.
 fn handle_input_ioctl(
     proc: &mut Process,
     ofd_idx: usize,
@@ -1472,24 +1468,16 @@ fn handle_input_ioctl(
 ) -> Result<(), Errno> {
     use wasm_posix_shared::input::*;
 
-    // Decode (dir, magic, nr, size) per asm-generic/ioctl.h. The
-    // size sub-field is informational for variable-length ioctls
-    // (EVIOCGNAME, EVIOCGBIT) — Linux matches on (dir, magic, nr)
-    // only and uses _IOC_SIZE(request) to learn the caller's buffer
-    // length, which we mirror here.
     let dir = (request >> 30) & 0x3;
     let magic = (request >> 8) & 0xff;
     let nr = request & 0xff;
     let size = ((request >> 16) & 0x3fff) as usize;
 
-    // Foreign magic — not an evdev ioctl. ENOTTY keeps probing loops
-    // moving (EINVAL would fatal SDL2's evdev detection).
     if magic != b'E' as u32 {
         return Err(Errno::ENOTTY);
     }
 
     match nr {
-        // EVIOCGVERSION — read u32
         0x01 if dir == 2 => {
             if buf.len() < 4 {
                 return Err(Errno::EINVAL);
@@ -1498,7 +1486,6 @@ fn handle_input_ioctl(
             buf[0..4].copy_from_slice(&version.to_le_bytes());
             Ok(())
         }
-        // EVIOCGID — read WpkInputId
         0x02 if dir == 2 => {
             if buf.len() < core::mem::size_of::<WpkInputId>() {
                 return Err(Errno::EINVAL);
@@ -1515,7 +1502,6 @@ fn handle_input_ioctl(
             }
             Ok(())
         }
-        // EVIOCGNAME(len) — variable size; nr fixed at EVIOCGNAME_NR.
         n if n == EVIOCGNAME_NR && dir == 2 => {
             let device = input_state(proc, ofd_idx)?.device;
             let name: &[u8] = if device == 0 {
@@ -1527,8 +1513,6 @@ fn handle_input_ioctl(
             buf[..copy_len].copy_from_slice(&name[..copy_len]);
             Ok(())
         }
-        // EVIOCGBIT(ev_type, len) — nr = EVIOCGBIT_NR_BASE + ev_type;
-        // 32 EV_* slots reserved.
         n if (EVIOCGBIT_NR_BASE..EVIOCGBIT_NR_BASE + 32).contains(&n) && dir == 2 => {
             let ev_type = (n - EVIOCGBIT_NR_BASE) as u16;
             let device = input_state(proc, ofd_idx)?.device;
@@ -1540,16 +1524,12 @@ fn handle_input_ioctl(
             crate::input::populate_evbit(device, ev_type, slice);
             Ok(())
         }
-        // EVIOCGABS(axis) — pointer device only; nr = EVIOCGABS_NR_BASE
-        // + axis; 64 ABS_* slots reserved.
         n if (EVIOCGABS_NR_BASE..EVIOCGABS_NR_BASE + 64).contains(&n) && dir == 2 => {
             if buf.len() < core::mem::size_of::<WpkInputAbsinfo>() {
                 return Err(Errno::EINVAL);
             }
             let axis = (n - EVIOCGABS_NR_BASE) as u16;
             let device = input_state(proc, ofd_idx)?.device;
-            // Keyboard has no absolute axes — ENOTTY (not EINVAL) so
-            // SDL2 keeps probing.
             if device != 1 {
                 return Err(Errno::ENOTTY);
             }
@@ -1581,9 +1561,6 @@ fn handle_input_ioctl(
             }
             Ok(())
         }
-        // EVIOCGRAB — write i32 (value != 0 grabs, 0 releases). Per-fd
-        // idempotent (Linux semantics in drivers/input/evdev.c); cross-
-        // fd EBUSY enforcement is the plan 9 follow-up.
         0x90 if dir == 1 => {
             if buf.len() < 4 {
                 return Err(Errno::EINVAL);
@@ -2649,13 +2626,6 @@ pub fn sys_read(
                         | VirtualDevice::Dsp
                         | VirtualDevice::DriRenderD128 => 0,
                         VirtualDevice::InputEvent { .. } => {
-                            // Drain the per-OFD evdev ring into the
-                            // caller buffer. Linux evdev semantics:
-                            // the buffer is floored to a whole
-                            // 24-byte `struct input_event` boundary
-                            // and we never return a partial record.
-                            // A sub-record buffer is a protocol bug
-                            // and returns EINVAL.
                             use wasm_posix_shared::clock::CLOCK_MONOTONIC;
                             use wasm_posix_shared::input::{
                                 EV_SYN, SYN_DROPPED, WpkInputEvent,
@@ -2665,10 +2635,9 @@ pub fn sys_read(
                                 return Err(Errno::EINVAL);
                             }
                             let input = input_state_mut(proc, ofd_idx)?;
-                            // Match DriCard0: the kernel never parks
-                            // the reader; the host polls on a retry
-                            // timer until Phase B wires targeted
-                            // wake-ups.
+                            // Blocking read returns Ok(0) (not park)
+                            // so the host can retry on a poll timer
+                            // — matches DriCard0.
                             if input.event_ring.is_empty() && !input.dropped {
                                 if status_flags & O_NONBLOCK != 0 {
                                     return Err(Errno::EAGAIN);
@@ -2676,13 +2645,9 @@ pub fn sys_read(
                                 return Ok(0);
                             }
                             let mut written = 0;
-                            // Producer overflowed: synthesise a
-                            // SYN_DROPPED marker at the head of this
-                            // read so userspace can resync state via
-                            // EVIOCG* before resuming the event
-                            // stream. CLOCK_MONOTONIC stamp matches
-                            // real records; fallback (0,0) is fine
-                            // because readers select on type/code.
+                            // Producer overflowed: prepend SYN_DROPPED
+                            // so userspace resyncs via EVIOCG* before
+                            // consuming the next real record.
                             if input.dropped {
                                 let (sec, nsec) = host
                                     .host_clock_gettime(CLOCK_MONOTONIC)
@@ -8274,12 +8239,9 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                         Some(VirtualDevice::InputEvent { .. })
                     )
                 {
-                    // /dev/input/event{0,1} gates POLLIN on the per-OFD
-                    // ring holding a record OR the SYN_DROPPED latch
-                    // being set. Either condition means the next read
-                    // returns >0 bytes — sys_read returns Ok(0) on an
-                    // empty/no-latch ring, so reporting always-ready
-                    // POLLIN would spin libinput.
+                    // Gate POLLIN on the ring or the SYN_DROPPED latch:
+                    // always-ready would spin libinput against an empty
+                    // ring (sys_read returns Ok(0), not a record).
                     if pollfd.events & POLLIN != 0 {
                         if let Some(input) = ofd.input() {
                             if !input.event_ring.is_empty() || input.dropped {
@@ -8287,7 +8249,6 @@ fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd])
                             }
                         }
                     }
-                    // evdev is read-only — never report POLLOUT.
                 } else {
                     // Regular files and char devices are always ready
                     if pollfd.events & POLLIN != 0 {
@@ -22651,11 +22612,6 @@ mod tests {
         assert_eq!(err2, Errno::EINVAL);
     }
 
-    // -----------------------------------------------------------------
-    // /dev/input/event{0,1} tests — A2 surface (open + OFD wiring).
-    // Read/poll drain semantics land in A5; ioctl dispatch in A3.
-    // -----------------------------------------------------------------
-
     #[test]
     fn match_virtual_device_recognizes_evdev_nodes() {
         assert_eq!(
@@ -22683,8 +22639,7 @@ mod tests {
         assert!(!st.grabbed);
         assert!(!st.dropped);
         assert!(st.event_ring.is_empty());
-        // dri_state must NOT be installed on an evdev fd (disjoint
-        // sidecars).
+        // input + dri sidecars are disjoint state machines.
         assert!(ofd.dri_state.is_none());
     }
 
@@ -22716,10 +22671,6 @@ mod tests {
 
     #[test]
     fn open_nonexistent_event_path_returns_enoent() {
-        // /dev/input/event2 isn't a virtual device + isn't on the host
-        // FS in tests, so it lands in the file-not-found path. Either
-        // ENOENT or whatever MockHostIO returns for an unknown path;
-        // the contract for v1 is "not a virtual device".
         let mut proc = Process::new(301);
         let mut host = MockHostIO::new();
         let r = sys_open(&mut proc, &mut host, b"/dev/input/event2", O_RDONLY, 0);
@@ -22728,9 +22679,6 @@ mod tests {
 
     #[test]
     fn read_eventN_returns_zero_before_any_event() {
-        // Blocking read on an empty ring with no dropped latch
-        // returns Ok(0) — mirrors DriCard0 (kernel never parks the
-        // reader; host retries on poll timeout).
         let mut proc = Process::new(401);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/input/event0", O_RDONLY, 0).unwrap();
@@ -22739,12 +22687,6 @@ mod tests {
         assert_eq!(n, 0);
     }
 
-    // -----------------------------------------------------------------
-    // EVIOCG* ioctl dispatch (A3).
-    // -----------------------------------------------------------------
-
-    /// `_IOC(dir, magic, nr, size)` — mirrors include/uapi/asm-generic/ioctl.h
-    /// (dir 2 = read / dir 1 = write — Linux's `_IOC_READ` / `_IOC_WRITE`).
     const fn evioc(dir: u32, nr: u32, size: u32) -> u32 {
         (dir << 30) | (size << 16) | ((b'E' as u32) << 8) | nr
     }
@@ -22810,10 +22752,9 @@ mod tests {
     fn evioc_gname_truncates_to_caller_buffer() {
         use wasm_posix_shared::input::EVIOCGNAME_NR;
         let (mut proc, mut host, fd) = open_evdev(605, b"/dev/input/event0");
+        // "wpk virtual keyboard" is 20 chars; a 5-byte buffer fills with
+        // the prefix and no NUL terminator — caller handles the cut-off.
         let mut buf = [0xffu8; 5];
-        // Caller asks for 5 bytes; "wpk virtual keyboard" is 20 chars,
-        // so we should fill all 5 with the first 5 bytes (no terminator
-        // — caller is expected to handle the cut-off case).
         let req = evioc(2, EVIOCGNAME_NR, buf.len() as u32);
         sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
         assert_eq!(&buf, b"wpk v");
@@ -22824,7 +22765,6 @@ mod tests {
         use wasm_posix_shared::input::{EVIOCGBIT_NR_BASE, EV_KEY, EV_REL, EV_SYN};
         let (mut proc, mut host, fd) = open_evdev(606, b"/dev/input/event0");
         let mut buf = [0u8; 4];
-        // EVIOCGBIT(ev_type = 0, len = 4) — nr = base + 0.
         let req = evioc(2, EVIOCGBIT_NR_BASE, buf.len() as u32);
         sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
         assert_ne!(buf[0] & (1 << EV_SYN), 0);
@@ -22848,7 +22788,6 @@ mod tests {
         use wasm_posix_shared::input::{EVIOCGBIT_NR_BASE, EV_KEY, KEY_A};
         let (mut proc, mut host, fd) = open_evdev(608, b"/dev/input/event0");
         let mut buf = [0u8; 32];
-        // EVIOCGBIT(EV_KEY, 32) — nr = base + EV_KEY.
         let req = evioc(2, EVIOCGBIT_NR_BASE + EV_KEY as u32, buf.len() as u32);
         sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
         let byte = (KEY_A >> 3) as usize;
@@ -22882,8 +22821,8 @@ mod tests {
         sys_ioctl(&mut proc, &mut host, fd, req_y, &mut buf).unwrap();
         let aby: WpkInputAbsinfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
         assert_eq!(aby.maximum, 599);
-        // Restore the default — other tests in this module may run in
-        // parallel and expect the boot value.
+        // Restore the default so other tests running in parallel see
+        // the boot value.
         crate::input::set_canvas_dims(1280, 720);
     }
 
@@ -22906,9 +22845,6 @@ mod tests {
         let (mut proc, mut host, fd) = open_evdev(612, b"/dev/input/event0");
         let mut on = 1i32.to_le_bytes();
         sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on).unwrap();
-        // Re-grab from the same fd must succeed (Linux semantics in
-        // drivers/input/evdev.c). The cross-fd EBUSY case lands with
-        // plan 9.
         let mut on2 = 1i32.to_le_bytes();
         sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut on2).unwrap();
     }
@@ -22918,19 +22854,12 @@ mod tests {
         use wasm_posix_shared::input::EVIOCGRAB;
         let (mut proc, mut host, fd) = open_evdev(613, b"/dev/input/event0");
         let mut off = 0i32.to_le_bytes();
-        // Never grabbed; release returns 0, not an error.
         sys_ioctl(&mut proc, &mut host, fd, EVIOCGRAB, &mut off).unwrap();
     }
 
     #[test]
     fn close_releases_grab_so_next_open_can_grab() {
         use wasm_posix_shared::input::EVIOCGRAB;
-        // Open event0, grab it, then close. The OFD slot must drop —
-        // and a fresh open on the same node must come up clean
-        // (no leftover grab flag, no stale ring) and be re-grabbable.
-        // v1 doesn't enforce cross-OFD EBUSY anyway, so this mostly
-        // exercises that close-time input cleanup runs without panicking
-        // and the OFD slot is actually freed.
         let (mut proc, mut host, fd_a) = open_evdev(616, b"/dev/input/event0");
         let idx_a = proc.fd_table.get(fd_a).unwrap().ofd_ref.0;
         let mut on = 1i32.to_le_bytes();
@@ -22938,7 +22867,6 @@ mod tests {
         assert!(proc.ofd_table.get(idx_a).unwrap().input().unwrap().grabbed);
 
         sys_close(&mut proc, &mut host, fd_a).unwrap();
-        // dec_ref freed the OFD slot — entries[idx_a] is now None.
         assert!(proc.ofd_table.get(idx_a).is_none());
 
         let fd_b = sys_open(
@@ -22950,7 +22878,6 @@ mod tests {
         )
         .unwrap();
         let idx_b = proc.fd_table.get(fd_b).unwrap().ofd_ref.0;
-        // Fresh OFD: ring empty, dropped clear, grab clear.
         let input = proc.ofd_table.get(idx_b).unwrap().input().unwrap();
         assert!(input.event_ring.is_empty());
         assert!(!input.dropped);
@@ -22968,35 +22895,26 @@ mod tests {
         let (mut parent, mut host, parent_fd) =
             open_evdev(617, b"/dev/input/event0");
         let ofd_idx = parent.fd_table.get(parent_fd).unwrap().ofd_ref.0;
-        // Parent grabs + queues two events to verify serialisation
-        // round-trips both the grab flag and the ring contents.
         let mut on = 1i32.to_le_bytes();
         sys_ioctl(&mut parent, &mut host, parent_fd, EVIOCGRAB, &mut on)
             .unwrap();
         push_event_into_ofd(&mut parent, ofd_idx, EV_KEY, KEY_A, 1);
         push_event_into_ofd(&mut parent, ofd_idx, EV_SYN, SYN_REPORT, 0);
 
-        // "Fork": serialise the parent and reconstruct as the child.
-        // After this, parent and child each own an independent copy of
-        // the OFD (and its InputFdState) — mirrors the dri_state fork
-        // tests in fork.rs.
         let mut buf = alloc::vec![0u8; 64 * 1024];
         let written =
             crate::fork::serialize_fork_state(&parent, &mut buf).unwrap();
         let mut child =
             crate::fork::deserialize_fork_state(&buf[..written], 717).unwrap();
 
-        // Child carries the grab + the ring contents.
         let child_input = child.ofd_table.get(ofd_idx).unwrap().input().unwrap();
         assert_eq!(child_input.device, 0);
         assert!(child_input.grabbed);
-        assert_eq!(child_input.event_ring.len(), 48); // 2 × 24
+        assert_eq!(child_input.event_ring.len(), 48);
 
-        // Closing the child's copy of the fd drops the child's OFD slot.
         sys_close(&mut child, &mut host, parent_fd).unwrap();
         assert!(child.ofd_table.get(ofd_idx).is_none());
 
-        // Parent is untouched — separate Process structs after fork.
         let parent_input =
             parent.ofd_table.get(ofd_idx).unwrap().input().unwrap();
         assert!(parent_input.grabbed);
@@ -23005,11 +22923,8 @@ mod tests {
 
     #[test]
     fn evioc_unknown_request_returns_enotty_not_einval() {
-        // SDL2's evdev probe greps the errno from EVIOCG* calls; EINVAL
-        // fatals it. Every unhandled request on an evdev fd must come
-        // back as ENOTTY.
+        // SDL2's evdev probe greps the errno; EINVAL fatals it.
         let (mut proc, mut host, fd) = open_evdev(614, b"/dev/input/event0");
-        // 'E' magic, dir = 2 (read), nr = 0xfe (never assigned), size = 0.
         let bogus = evioc(2, 0xfe, 0);
         let mut buf = [0u8; 4];
         let err = sys_ioctl(&mut proc, &mut host, fd, bogus, &mut buf).unwrap_err();
@@ -23018,24 +22933,18 @@ mod tests {
 
     #[test]
     fn evioc_foreign_magic_on_evdev_fd_returns_enotty() {
-        // Non-'E' magic — caller probed something foreign on the fd.
-        // ENOTTY (not EINVAL) so probing loops keep moving.
+        // ENOTTY (not EINVAL) so probing loops keep moving past a
+        // foreign-subsystem ioctl issued on an evdev fd.
         let (mut proc, mut host, fd) = open_evdev(615, b"/dev/input/event0");
-        // dir = 2, magic = 'X', nr = 0x01, size = 4 — looks like a read
-        // ioctl for some other subsystem.
         let foreign = (2u32 << 30) | (4u32 << 16) | ((b'X' as u32) << 8) | 0x01;
         let mut buf = [0u8; 4];
         let err = sys_ioctl(&mut proc, &mut host, fd, foreign, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOTTY);
     }
 
-    // -----------------------------------------------------------------
-    // sys_read drain + sys_poll(POLLIN) + SYN_DROPPED resync (A5).
-    // -----------------------------------------------------------------
-
     /// Inject one `WpkInputEvent` into an OFD's ring without going
-    /// through `dispatch::push_event` (avoids registering the test
-    /// process in GLOBAL_PROCESS_TABLE).
+    /// through `dispatch::push_event` — avoids registering the test
+    /// process in GLOBAL_PROCESS_TABLE.
     fn push_event_into_ofd(
         proc: &mut Process,
         ofd_idx: usize,
@@ -23077,9 +22986,8 @@ mod tests {
 
     #[test]
     fn read_returns_einval_for_buffer_shorter_than_one_record() {
-        // Linux evdev semantics: reads must be sized to at least one
-        // `struct input_event`. A 12-byte buffer would force a
-        // partial record return, which the protocol forbids.
+        // Linux evdev rejects sub-record reads — partial returns would
+        // break the input_event boundary contract.
         let (mut proc, mut host, fd) = open_evdev(701, b"/dev/input/event0");
         let mut buf = [0u8; 12];
         let err = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap_err();
@@ -23115,8 +23023,7 @@ mod tests {
         for v in 0..3 {
             push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, v);
         }
-        // 50 bytes: floors to 48 (= 2 whole records); one stays in
-        // the ring.
+        // 50 floors to 48 (= 2 records); one stays in the ring.
         let mut buf = [0u8; 50];
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
         assert_eq!(n, 48);
@@ -23126,7 +23033,6 @@ mod tests {
         assert_eq!(r1.value, 1);
         let input = proc.ofd_table.get(ofd_idx).unwrap().input().unwrap();
         assert_eq!(input.event_ring.len(), 24);
-        // The remaining record is value=2; drain via a second read.
         let mut buf2 = [0u8; 24];
         let n2 = sys_read(&mut proc, &mut host, fd, &mut buf2).unwrap();
         assert_eq!(n2, 24);
@@ -23162,9 +23068,8 @@ mod tests {
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 100);
         push_event_into_ofd(&mut proc, ofd_idx, EV_KEY, KEY_A, 101);
-        // Latch the overflow flag as if the producer hit a full ring
-        // after pushing those two records — dispatch::push_event sets
-        // this exact field on the OFD.
+        // dispatch::push_event would latch `dropped` on a full ring —
+        // simulate that here without running the producer.
         proc.ofd_table
             .get_mut(ofd_idx)
             .unwrap()
@@ -23187,8 +23092,6 @@ mod tests {
 
     #[test]
     fn read_empty_ring_with_nonblock_returns_eagain() {
-        // Matches DriCard0: O_NONBLOCK + no data ready → EAGAIN.
-        // Blocking-mode reads still return Ok(0) (covered above).
         let mut proc = Process::new(706);
         let mut host = MockHostIO::new();
         let fd = sys_open(
@@ -23224,8 +23127,8 @@ mod tests {
 
     #[test]
     fn poll_pollin_ready_when_only_dropped_flag_is_set() {
-        // The SYN_DROPPED marker alone is a readable record — the
-        // ring is empty but read() will still return 24 bytes.
+        // The SYN_DROPPED marker alone is a readable 24-byte record;
+        // poll must fire even with an empty ring.
         use wasm_posix_shared::WasmPollFd;
         use wasm_posix_shared::poll::POLLIN;
         let (mut proc, mut host, fd) = open_evdev(708, b"/dev/input/event0");
@@ -23244,8 +23147,6 @@ mod tests {
 
     #[test]
     fn poll_never_reports_pollout_for_evdev_fd() {
-        // Input devices are read-only — POLLOUT must never fire,
-        // even with an empty ring and POLLOUT requested.
         use wasm_posix_shared::WasmPollFd;
         use wasm_posix_shared::poll::{POLLIN, POLLOUT};
         let (mut proc, mut host, fd) = open_evdev(709, b"/dev/input/event0");
