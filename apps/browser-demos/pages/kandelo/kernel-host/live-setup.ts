@@ -1,11 +1,8 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
-import {
-  ensureServiceWorkerReady,
-  initServiceWorkerBridge,
-} from "../../../lib/init/service-worker-bridge";
-import { HttpBridgeHost } from "../../../lib/http-bridge";
+import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
+import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { rewriteShellLazyFileUrls } from "../../../lib/init/shell-lazy-files";
 import { resolveShellLazyArchiveUrl } from "../../../lib/init/lazy-archives";
 import {
@@ -150,7 +147,9 @@ const SOFTWARE_PROFILES = new Map<string, SoftwareProfile>();
 const tarDecoder = new TextDecoder();
 const HTTP_PORT = 8080;
 const PHP_FPM_PORT = 9000;
-const MARIADB_PORT = 3306;
+const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
+const MARIADB_READY_SERVICE = "mariadb-ready";
+const MARIADB_READY_SCRIPT_PATH = "/usr/local/bin/mariadb-ready";
 const ROOT_UID = 0;
 const ROOT_GID = 0;
 const ROOT_HOME = "/root";
@@ -204,7 +203,11 @@ interface LiveProfileSpec {
     gid?: number;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    web?: { requiredPorts: number[] };
+    web?: {
+      requiredPorts: number[];
+      requiredServices?: string[];
+      probeHttp?: boolean;
+    };
   };
 }
 
@@ -235,7 +238,7 @@ async function settleAfterKernelDestroy(): Promise<void> {
   const ua = navigator.userAgent;
   const isWebKitLikeBrowser = /AppleWebKit/i.test(ua)
     && !/(Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS)/i.test(ua);
-  if (!isWebKitLikeBrowser()) return;
+  if (!isWebKitLikeBrowser) return;
   await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await new Promise<void>((resolve) => window.setTimeout(resolve, 1_000));
 }
@@ -299,7 +302,11 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
       programUrl: dinitWasmUrl,
       maxWorkers: 24,
       maxMemoryPages: 16384,
-      web: { requiredPorts: [HTTP_PORT, PHP_FPM_PORT, MARIADB_PORT] },
+      web: {
+        requiredPorts: [HTTP_PORT, PHP_FPM_PORT],
+        requiredServices: ["mariadb-ready", "php-fpm", "nginx"],
+        probeHttp: false,
+      },
     },
   },
   doom: {
@@ -341,7 +348,12 @@ interface LiveProfile {
     gid?: number;
     maxWorkers?: number;
     maxMemoryPages?: number;
-    web?: { label: string; requiredPorts: number[] };
+    web?: {
+      label: string;
+      requiredPorts: number[];
+      requiredServices?: string[];
+      probeHttp: boolean;
+    };
   };
   framebufferTest: boolean;
 }
@@ -358,7 +370,6 @@ const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
 const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
-const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const PATCHED_PHP_FPM_CONF = `[global]
 daemonize = no
 error_log = /dev/stderr
@@ -684,6 +695,8 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       web: spec.init.web && {
         label: desc.title,
         requiredPorts: spec.init.web.requiredPorts.slice(),
+        requiredServices: spec.init.web.requiredServices?.slice(),
+        probeHttp: spec.init.web.probeHttp ?? true,
       },
     },
     framebufferTest: fb === "test",
@@ -799,7 +812,10 @@ class DinitBootStatusTracker {
   private startingServices = new Set<string>();
   private outputTails = new Map<string, string>();
 
-  constructor(private tick: (msg: string) => void) {}
+  constructor(
+    private tick: (msg: string) => void,
+    private onServiceCompleted?: (serviceName: string) => void,
+  ) {}
 
   observeProcessOutput(text: string, stream: string): void {
     if (!text) return;
@@ -809,8 +825,10 @@ class DinitBootStatusTracker {
     for (const line of lines) {
       const serviceName = parseDinitCompletionLine(line);
       if (!serviceName) continue;
+      if (this.completedServices.has(serviceName)) continue;
       this.emitStarting(serviceName);
       this.completedServices.add(serviceName);
+      this.onServiceCompleted?.(serviceName);
     }
   }
 
@@ -818,6 +836,10 @@ class DinitBootStatusTracker {
     for (const serviceName of parseDinitStartingServices(output)) {
       this.emitStarting(serviceName);
     }
+  }
+
+  hasCompleted(serviceName: string): boolean {
+    return this.completedServices.has(serviceName);
   }
 
   private emitStarting(serviceName: string): void {
@@ -974,7 +996,10 @@ async function bootProfile(
     if (!isCurrent()) return;
     host.pushDmesg({ t: bootElapsedMs(bootStartedAt), level: "info", facility: "kandelo", msg });
   };
-  const dinitBootTracker = new DinitBootStatusTracker(tick);
+  let maybeUpdateWebReadiness = () => {};
+  const dinitBootTracker = new DinitBootStatusTracker(tick, () => {
+    maybeUpdateWebReadiness();
+  });
   const recordProcessOutput = (data: Uint8Array, fallback: string) => {
     const text = new TextDecoder().decode(data);
     dinitBootTracker.observeProcessOutput(text, fallback);
@@ -1051,6 +1076,18 @@ async function bootProfile(
   const seenPorts = new Set<number>();
   let bridgeSent = false;
   const webReadiness: WebReadinessState = { ready: false, probing: false };
+  maybeUpdateWebReadiness = () => {
+    maybeMarkWebReady(
+      host,
+      profile,
+      seenPorts,
+      bridgeSent,
+      webReadiness,
+      dinitBootTracker,
+      tick,
+      isCurrent,
+    );
+  };
   let kernel: BrowserKernel | null = null;
   let stopDinitStartingPoller = () => {};
   try {
@@ -1066,7 +1103,7 @@ async function bootProfile(
         seenPorts.add(port);
         void reportTcpListener(kernel!, pid, port, tick, isCurrent)
           .finally(() => {
-            maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
+            maybeUpdateWebReadiness();
           });
       },
     });
@@ -1094,21 +1131,26 @@ async function bootProfile(
         label: profile.init.web.label,
         url: APP_PREFIX,
         status: "starting",
-        message: "Waiting for service ports",
+        message: "Waiting for services",
       });
-      const swBridge = await initServiceWorkerBridge(SW_URL, APP_PREFIX);
-      assertCurrent();
-      if (!swBridge) {
+      try {
+        await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
+          timeoutMs: 90_000,
+          debugLog: (line) => tick(line),
+        });
+        assertCurrent();
+        bridgeSent = true;
+        maybeUpdateWebReadiness();
+      } catch (err) {
+        if (!isCurrent()) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        tick(`HTTP bridge failed: ${message}`);
         host.setWebPreview({
           label: profile.init.web.label,
           url: APP_PREFIX,
           status: "error",
-          message: "Service workers unavailable",
+          message: "HTTP bridge unavailable",
         });
-      } else {
-        kernel.sendBridgePort(swBridge.detachHostPort(), HTTP_PORT);
-        bridgeSent = true;
-        setupBridgeRestoreListener(kernel, HTTP_PORT, tick);
       }
     }
 
@@ -1156,7 +1198,7 @@ async function bootProfile(
       );
     }
 
-    maybeMarkWebReady(host, profile, seenPorts, bridgeSent, webReadiness, tick, isCurrent);
+    maybeUpdateWebReadiness();
 
     if (profile.framebufferTest) {
       const fbtestWasmUrl = await optionalBinaryUrl([
@@ -1266,7 +1308,7 @@ function patchWordPressRuntimeConfig(
 function dinitServicesForProfile(profileId: string): string[] {
   switch (profileId) {
     case "wordpress-mariadb":
-      return ["mariadb-bootstrap", "mariadb", "wp-config-init", "php-fpm", "nginx"];
+      return ["mariadb", MARIADB_READY_SERVICE, "wp-config-init", "php-fpm", "nginx"];
     case "wordpress-sqlite":
       return ["wp-config-init", "php-fpm", "nginx"];
     case "nginx-php":
@@ -1316,6 +1358,55 @@ function patchMariaDbUnixSocketConfig(fs: MemoryFileSystem): void {
       .replace(/--socket=(?:\S*)?/g, `--socket=${MARIADB_SOCKET_PATH}`)
       .replace(/\s*--thread-handling=no-threads\b/g, "");
     if (patched !== mariadbService) writeVfsFile(fs, mariadbServicePath, patched);
+  }
+
+  ensureMariaDbReadyService(fs);
+  patchPhpFpmMariaDbDependency(fs);
+}
+
+function ensureMariaDbReadyService(fs: MemoryFileSystem): void {
+  ensureDirRecursive(fs, dirname(MARIADB_READY_SCRIPT_PATH));
+  writeVfsFile(fs, MARIADB_READY_SCRIPT_PATH, `#!/bin/sh
+set -u
+
+i=0
+while [ "$i" -lt 60 ]; do
+    if [ -S "${MARIADB_SOCKET_PATH}" ] || [ -e "${MARIADB_SOCKET_PATH}" ]; then
+        exit 0
+    fi
+    sleep 1
+    i=$((i + 1))
+done
+
+echo "MariaDB readiness timed out waiting for ${MARIADB_SOCKET_PATH}" >&2
+exit 1
+`, 0o755);
+  writeVfsFile(fs, `/etc/dinit.d/${MARIADB_READY_SERVICE}`, `type = scripted
+command = /bin/sh ${MARIADB_READY_SCRIPT_PATH}
+depends-on = mariadb
+restart = false
+`);
+}
+
+function patchPhpFpmMariaDbDependency(fs: MemoryFileSystem): void {
+  const phpFpmServicePath = "/etc/dinit.d/php-fpm";
+  const phpFpmService = readOptionalVfsText(fs, phpFpmServicePath);
+  if (phpFpmService === null) return;
+  if (new RegExp(`^depends-on\\s*=\\s*${MARIADB_READY_SERVICE}$`, "m").test(phpFpmService)) {
+    return;
+  }
+  const patched = phpFpmService.replace(
+    /^depends-on\s*=\s*mariadb\s*$/m,
+    `depends-on = ${MARIADB_READY_SERVICE}`,
+  );
+  if (patched !== phpFpmService) {
+    writeVfsFile(fs, phpFpmServicePath, patched);
+  } else {
+    writeVfsFile(
+      fs,
+      phpFpmServicePath,
+      `${phpFpmService}${phpFpmService.endsWith("\n") ? "" : "\n"}depends-on = ${MARIADB_READY_SERVICE}\n`,
+    );
   }
 }
 
@@ -1501,20 +1592,35 @@ function maybeMarkWebReady(
   seenPorts: Set<number>,
   bridgeSent: boolean,
   readiness: WebReadinessState,
+  dinitBootTracker: DinitBootStatusTracker,
   tick: (msg: string) => void,
   isCurrent: () => boolean,
 ): void {
   const web = profile.init?.web;
   if (!web) return;
   const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
-  if (!portsReady || !bridgeSent) return;
+  const servicesReady = (web.requiredServices ?? [])
+    .every((serviceName) => dinitBootTracker.hasCompleted(serviceName));
+  if (!portsReady || !servicesReady || !bridgeSent) return;
+  const readyMessage = web.probeHttp ? "HTTP bridge ready" : "Service stack ready";
   if (readiness.ready) {
     if (!isCurrent()) return;
     host.setWebPreview({
       label: web.label,
       url: APP_PREFIX,
       status: "running",
-      message: "HTTP bridge ready",
+      message: readyMessage,
+    });
+    return;
+  }
+  if (!web.probeHttp) {
+    readiness.ready = true;
+    tick("Web preview ready");
+    host.setWebPreview({
+      label: web.label,
+      url: APP_PREFIX,
+      status: "running",
+      message: readyMessage,
     });
     return;
   }
@@ -1591,26 +1697,6 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function setupBridgeRestoreListener(
-  kernel: BrowserKernel,
-  httpPort: number,
-  tick: (msg: string) => void,
-): void {
-  if (!("serviceWorker" in navigator)) return;
-  navigator.serviceWorker.addEventListener("message", (event) => {
-    if (event.data?.type !== "need-bridge") return;
-    const replyPort = event.ports[0];
-    if (!replyPort) return;
-    const bridge = new HttpBridgeHost();
-    replyPort.postMessage(
-      { type: "bridge-restored", appPrefix: APP_PREFIX },
-      [bridge.getSwPort()],
-    );
-    kernel.sendBridgePort(bridge.detachHostPort(), httpPort);
-    tick("HTTP bridge restored");
-  });
 }
 
 function descriptorBootIdentity(

@@ -57,66 +57,19 @@ function webFrame(page: Page, title: string): FrameLocator {
   return page.frameLocator(`iframe[title="${title}"]`);
 }
 
-async function runWordPressInstall(page: Page, demo: string, title: string) {
-  test.setTimeout(600_000);
+async function runWordPressPreinstalledLogin(page: Page, demo: string, title: string) {
+  test.setTimeout(420_000);
 
   await gotoOrSkip(page, `/?demo=${demo}`);
   await page.waitForSelector(`iframe[title="${title}"]`, { timeout: 240_000 });
   const frame = webFrame(page, title);
 
-  await expect(
-    frame.locator("form#setup, form#language-chooser, .wp-core-ui").first(),
-  ).toBeVisible({ timeout: 240_000 });
+  await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, {
+    timeout: 240_000,
+  });
+  await expect(frame.locator("form#setup, form#language-chooser")).toHaveCount(0);
 
-  if ((await frame.locator("form#language-chooser").count()) > 0) {
-    await frame.locator("form#language-chooser [type='submit']").click();
-    await expect(frame.locator("form#setup")).toBeVisible({ timeout: 60_000 });
-  }
-
-  const username = "admin";
-  const password = "Testpass123!Testpass123!";
-
-  await frame.locator("#weblog_title").fill(`Kandelo ${demo} E2E`);
-  await frame.locator("#user_login").fill(username);
-
-  const passField = frame.locator("#pass1");
-  if ((await passField.count()) > 0) {
-    await passField.fill(password);
-  }
-  const pass2Field = frame.locator("#pass2");
-  if ((await pass2Field.count()) > 0 && await pass2Field.isVisible()) {
-    await pass2Field.fill(password);
-  }
-
-  const weakPw = frame.locator("#pw_weak, .pw-weak input[type='checkbox']");
-  if ((await weakPw.count()) > 0) {
-    try {
-      await weakPw.check({ timeout: 5_000 });
-    } catch {
-      // WordPress may hide this when it accepts the generated password.
-    }
-  }
-
-  await frame.locator("#admin_email").fill("admin@example.com");
-  await frame.locator("#submit, [name='Submit']").click();
-
-  await expect(
-    frame.locator(".step, .install-success, h1").filter({ hasText: /success|installed|log in/i }).first(),
-  ).toBeVisible({ timeout: 360_000 });
-
-  const loginLink = frame.locator("a").filter({ hasText: /log in/i }).first();
-  if ((await loginLink.count()) > 0) {
-    await loginLink.click();
-  } else {
-    await frame.locator("body").evaluate(() => {
-      window.location.href = "/app/wp-login.php";
-    });
-  }
-
-  await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
-  await frame.locator("#user_login").fill(username);
-  await frame.locator("#user_pass").fill(password);
-  await frame.locator("#wp-submit").click();
+  await page.getByRole("button", { name: /Log in as admin/i }).click();
 
   await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
     timeout: 180_000,
@@ -198,12 +151,12 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   );
 });
 
-test("Kandelo WordPress SQLite demo installs and logs into wp-admin", async ({ page }) => {
-  await runWordPressInstall(page, "wordpress-sqlite", "WordPress SQLite");
+test("Kandelo WordPress SQLite demo is preinstalled and logs into wp-admin", async ({ page }) => {
+  await runWordPressPreinstalledLogin(page, "wordpress-sqlite", "WordPress SQLite");
 });
 
-test("Kandelo WordPress MariaDB demo installs and logs into wp-admin", async ({ page }) => {
-  await runWordPressInstall(page, "wordpress-mariadb", "WordPress MariaDB");
+test("Kandelo WordPress MariaDB demo is preinstalled and logs into wp-admin", async ({ page }) => {
+  await runWordPressPreinstalledLogin(page, "wordpress-mariadb", "WordPress MariaDB");
 });
 
 test("Kandelo fbDOOM demo renders to the framebuffer", async ({ page }) => {

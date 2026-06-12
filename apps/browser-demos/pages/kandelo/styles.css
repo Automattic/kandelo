@@ -461,11 +461,37 @@
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 8px var(--kmachine-demo-guide-width, 300px);
+  gap: 0;
 }
 .kmachine-workspace.no-demo-guide {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.kmachine-guide-resizer {
+  width: 8px;
+  min-width: 8px;
+  align-self: stretch;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.kmachine-guide-resizer::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 3px;
+  width: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.kmachine-guide-resizer:hover::after,
+.kmachine-guide-resizer:focus-visible::after,
+.kmachine-guide-resizer.dragging::after {
+  background: color-mix(in oklch, var(--k-accent) 36%, transparent);
 }
 
 .kmachine-primary {
@@ -646,6 +672,10 @@
   gap: 6px;
 }
 
+.kdemo-actions.single {
+  grid-template-columns: 1fr;
+}
+
 .kdemo-action {
   min-width: 0;
   min-height: 70px;
@@ -766,6 +796,10 @@
   .kmachine-workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(320px, 1fr) minmax(240px, 36vh);
+    gap: 8px;
+  }
+  .kmachine-guide-resizer {
+    display: none;
   }
 }
 

@@ -112,7 +112,8 @@ export class NodeKernelHost {
   private worker!: NodeThreadWorker;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private exitResolvers = new Map<number, (status: number) => void>();
-  private unclaimedExitStatuses = new Map<number, number>();
+  private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
+  private exitSequence = 0;
   private _nextRequestId = 1;
   private options: NodeKernelHostOptions;
 
@@ -195,6 +196,7 @@ export class NodeKernelHost {
     options?: SpawnOptions,
   ): Promise<number> {
     const requestId = this._nextRequestId++;
+    const spawnStartedBeforeExitSequence = this.exitSequence;
 
     const pid = await this.request(requestId, {
       type: "spawn",
@@ -219,11 +221,20 @@ export class NodeKernelHost {
     }) as number;
 
     const unclaimedExitStatus = this.unclaimedExitStatuses.get(pid);
-    if (unclaimedExitStatus !== undefined) {
+    if (
+      unclaimedExitStatus !== undefined &&
+      unclaimedExitStatus.sequence > spawnStartedBeforeExitSequence
+    ) {
+      this.unclaimedExitStatuses.delete(pid);
+    } else if (unclaimedExitStatus !== undefined) {
+      // PIDs can be reused. An older unclaimed exit for the same numeric PID
+      // must not satisfy this new spawn, or callers observe an immediate
+      // success while the new process is still running.
       this.unclaimedExitStatuses.delete(pid);
     }
-    const exitPromise = unclaimedExitStatus !== undefined
-      ? Promise.resolve(unclaimedExitStatus)
+    const exitPromise = unclaimedExitStatus !== undefined &&
+      unclaimedExitStatus.sequence > spawnStartedBeforeExitSequence
+      ? Promise.resolve(unclaimedExitStatus.status)
       : new Promise<number>((resolve) => {
           this.exitResolvers.set(pid, resolve);
         });
@@ -451,7 +462,10 @@ export class NodeKernelHost {
           this.exitResolvers.delete(msg.pid);
           resolver(msg.status);
         } else {
-          this.unclaimedExitStatuses.set(msg.pid, msg.status);
+          this.unclaimedExitStatuses.set(msg.pid, {
+            status: msg.status,
+            sequence: ++this.exitSequence,
+          });
           while (this.unclaimedExitStatuses.size > 256) {
             const oldest = this.unclaimedExitStatuses.keys().next().value;
             if (oldest === undefined) break;
