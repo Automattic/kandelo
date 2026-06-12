@@ -1,0 +1,18 @@
+started_at=2026-06-12T23:48:50Z
+kandelo dev shell — LLVM 21, Rust (pinned via rust-toolchain.toml), Node 24, Erlang 28 (minimal), SDK on PATH
+fts5optimize2-1.0... Ok
+fts5optimize2-1.1... Ok
+fts5optimize2-1.2... Ok
+SQLite 2025-02-18 13:38:58 873d4e274b4988d260ba8354a9718324a1c26187a4ab4c1cc0227c03d0f10e70
+0 errors out of 4 tests on   32-bit
+WARNING: Multi-threaded tests skipped: Linked against a non-threadsafe Tcl build
+All memory allocations freed - no leaks
+Memory used:          now          0  max     427176  max-size      65540
+Allocation count:     now          0  max        659
+Page-cache used:      now          0  max          0  max-size       1192
+Page-cache overflow:  now          0  max     321176
+Maximum memory usage: 427176 bytes
+Current memory usage: 0 bytes
+Number of malloc()  : -1 calls
+finished_at=2026-06-12T23:49:15Z
+exit_status=0

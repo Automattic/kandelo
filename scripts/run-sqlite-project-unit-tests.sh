@@ -139,7 +139,12 @@ for host in "${HOSTS[@]}"; do
   fi
 done
 
-python3 - "$RESULTS_ROOT" "$PERMUTATION" "$JOBS" "$TIMEOUT_MS" "${EXTRA_ARGS[@]}" <<'PY'
+python_args=("$RESULTS_ROOT" "$PERMUTATION" "$JOBS" "$TIMEOUT_MS")
+if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
+  python_args+=("${EXTRA_ARGS[@]}")
+fi
+
+python3 - "${python_args[@]}" <<'PY'
 import csv
 import os
 import sqlite3
