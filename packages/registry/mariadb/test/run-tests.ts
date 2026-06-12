@@ -1,5 +1,5 @@
 /**
- * MariaDB mysql-test suite runner for kandelo.
+ * MariaDB mysql-test suite runner for Kandelo.
  *
  * Manages the full lifecycle:
  *   1. Bootstrap mariadbd (system tables) if needed
@@ -20,7 +20,7 @@ import { CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { NodeWorkerAdapter } from "../../../../host/src/worker-adapter";
 import { patchWasmForThread } from "../../../../host/src/worker-main";
-import { resolveBinary, tryResolveBinary } from "../../../../host/src/binary-resolver";
+import { resolveBinary } from "../../../../host/src/binary-resolver";
 import type {
     CentralizedWorkerInitMessage,
     CentralizedThreadInitMessage,
@@ -30,6 +30,8 @@ import { ThreadPageAllocator } from "../../../../host/src/thread-allocator";
 
 const CH_TOTAL_SIZE = 72 + 65536;
 const MAX_PAGES = 16384;
+const SERVER_PID = 100;
+const FIRST_CLIENT_PID = 1000;
 
 const scriptDir = dirname(new URL(import.meta.url).pathname);
 const repoRoot = resolve(scriptDir, "../../../..");
@@ -113,8 +115,9 @@ function patchIncludeFiles(testDir: string) {
 // Module-level state
 let serverStderr = "";
 let tmpTestDir = "/tmp";
+let mysqlTestDataDir = "";
 const clientExitResolvers = new Map<number, (status: number) => void>();
-let _nextPid = 10;
+let _nextPid = FIRST_CLIENT_PID;
 function nextPid(): number { return _nextPid++; }
 
 // Server mid-test restart state
@@ -128,13 +131,12 @@ let currentTestWorker: ReturnType<NodeWorkerAdapter["createWorker"]> | null = nu
 let needsRestart = false;
 
 async function main() {
-    const mysqldPath = tryResolveBinary("programs/mariadb/mariadbd.wasm")
-        ?? resolve(installDir, "bin/mariadbd.wasm");
+    const mysqldPath = resolve(installDir, "bin/mariadbd");
     const mysqlTestPath = resolveBinary("programs/mariadb/mysqltest.wasm");
     const kernelPath = resolveBinary("kernel.wasm");
 
     for (const [label, path] of [
-        ["mariadbd.wasm", mysqldPath],
+        ["mariadbd", mysqldPath],
         ["mysqltest.wasm", mysqlTestPath],
         ["kernel wasm", kernelPath],
         ["mysql-test dir", mysqlTestDir],
@@ -181,7 +183,8 @@ async function main() {
     console.error(`Thread module ready.`);
 
     // Create data directory
-    const dataDir = resolve(scriptDir, "test-data");
+    const dataDir = resolve(process.env.MARIADB_TEST_DATA_DIR ?? resolve(scriptDir, "test-data"));
+    mysqlTestDataDir = dataDir;
     mkdirSync(resolve(dataDir, "mysql"), { recursive: true });
     mkdirSync(resolve(dataDir, "tmp"), { recursive: true });
     tmpTestDir = resolve(dataDir, "tmp", "mysqltest");
@@ -283,7 +286,7 @@ async function main() {
             onExec: async () => -38, // ENOSYS
 
             onExit: (exitPid, exitStatus) => {
-                if (exitPid === 1) {
+                if (exitPid === SERVER_PID) {
                     kernelWorker.unregisterProcess(exitPid);
                     workers.delete(exitPid);
                     if (autoRestartOnServerExit) {
@@ -433,7 +436,8 @@ async function main() {
             }
         }
         restartFailCount++;
-        throw new Error("MariaDB did not become ready within 60s");
+        const tail = serverStderr.slice(-4000).trim();
+        throw new Error(`MariaDB did not become ready within 60s${tail ? `\n\nServer stderr tail:\n${tail}` : ""}`);
     }
 
     /** Run the setup SQL to create mtr database. */
@@ -723,10 +727,10 @@ async function runBootstrap(
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    const pid = 1;
+    const pid = SERVER_PID;
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, dataDir);
-    kernelWorker.setNextChildPid(2);
+    kernelWorker.setNextChildPid(SERVER_PID + 1);
 
     const shareDir = resolve(installDir, "share/mysql");
     const systemTables = readFileSync(resolve(shareDir, "mysql_system_tables.sql"), "utf-8");
@@ -735,7 +739,7 @@ async function runBootstrap(
     kernelWorker.setStdinData(pid, new TextEncoder().encode(bootstrapSql));
 
     const argv = [
-        "mariadbd", "--no-defaults",
+        "mariadbd", "--no-defaults", "--user=root",
         `--datadir=${dataDir}`, `--tmpdir=${resolve(dataDir, "tmp")}`,
         "--default-storage-engine=Aria", "--skip-grant-tables",
         "--key-buffer-size=1048576", "--table-open-cache=10",
@@ -800,13 +804,13 @@ function startServer(
     memory.grow(MAX_PAGES - 17);
     new Uint8Array(memory.buffer, channelOffset, CH_TOTAL_SIZE).fill(0);
 
-    const pid = 1;
+    const pid = SERVER_PID;
     kernelWorker.registerProcess(pid, memory, [channelOffset]);
     kernelWorker.setCwd(pid, dataDir);
-    kernelWorker.setNextChildPid(2);
+    kernelWorker.setNextChildPid(SERVER_PID + 1);
 
     const argv = [
-        "mariadbd", "--no-defaults",
+        "mariadbd", "--no-defaults", "--user=root",
         `--datadir=${dataDir}`, `--tmpdir=${resolve(dataDir, "tmp")}`,
         "--default-storage-engine=Aria", "--skip-grant-tables",
         "--key-buffer-size=1048576", "--table-open-cache=10",
@@ -898,13 +902,18 @@ async function runMysqlTest(
         env: [
             "HOME=/tmp", "PATH=/usr/bin", "TMPDIR=/tmp",
             `MYSQL_TEST_DIR=${mysqlTestDir}`,
-            `MYSQLTEST_VARDIR=${resolve(scriptDir, "test-data")}`,
+            // Keep mysqltest's vardir/datadir variables aligned with the
+            // per-run datadir.  Several upstream tests copy files into
+            // $MYSQLTEST_VARDIR/tmp or inspect $MYSQLD_DATADIR directly; using
+            // the package-level default leaked state across chunks/runs and
+            // produced false EEXIST/stale-file failures.
+            `MYSQLTEST_VARDIR=${mysqlTestDataDir}`,
             `MYSQL_TMP_DIR=${tmpTestDir}`,
             // Standard MTR environment variables expected by test scripts
             `MASTER_MYPORT=${port}`,
             `MASTER_MYPORT1=${port}`,
             `MASTER_MYSOCK=/tmp/mysql.sock`,
-            `MYSQLD_DATADIR=${resolve(scriptDir, "test-data")}`,
+            `MYSQLD_DATADIR=${mysqlTestDataDir}`,
             `MYSQL_BINDIR=${resolve(installDir, "bin")}`,
             `MYSQL_SHAREDIR=${resolve(installDir, "share")}`,
             `MYSQL_LIBDIR=${resolve(installDir, "lib")}`,

@@ -1434,9 +1434,6 @@ export class CentralizedKernelWorker {
    * it from the kernel's process table.
    */
   unregisterProcess(pid: number): void {
-    const registration = this.processes.get(pid);
-    if (!registration) return;
-
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
 
@@ -1468,7 +1465,12 @@ export class CentralizedKernelWorker {
 
     this.releaseAdvisoryLocksForPid(pid);
 
-    // Remove from kernel process table
+    // Remove from kernel process table. A clean exit deactivates the host-side
+    // channel registration before the host observes the exit callback, leaving
+    // the pid as a kernel zombie for waitpid(). Explicit host cleanup
+    // (destroy, test harness teardown, externally terminating a top-level
+    // process) must still be able to discard that zombie so the numeric pid
+    // can be reused.
     this.removeFromKernelProcessTable(pid);
 
     this.processes.delete(pid);
@@ -1602,7 +1604,10 @@ export class CentralizedKernelWorker {
    * Called when a zombie is reaped by wait/waitpid.
    */
   removeFromKernelProcessTable(pid: number): void {
-    const removeProcess = this.kernelInstance!.exports.kernel_remove_process as (pid: number) => number;
+    if (!this.initialized || !this.kernelInstance) return;
+    const removeProcess = this.kernelInstance.exports.kernel_remove_process as
+      ((pid: number) => number) | undefined;
+    if (!removeProcess) return;
     removeProcess(pid);
   }
 

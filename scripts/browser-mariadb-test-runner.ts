@@ -14,7 +14,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
-const VITE_PORT = 5198; // Different from test-runner's 5199
+const VITE_BIN = resolve(REPO_ROOT, "node_modules/vite/bin/vite.js");
+const VITE_HOST = "127.0.0.1";
+const VITE_PORT = Number(process.env.MARIADB_TEST_VITE_PORT ?? 5198); // Different from test-runner's 5199
 const DEFAULT_TIMEOUT = 60_000;
 const BOOT_TIMEOUT = 180_000; // MariaDB boot can take a while in browser
 
@@ -28,15 +30,36 @@ interface TestResult {
 
 let viteAlive = false;
 
+async function launchChromium(): Promise<Browser> {
+  return chromium.launch({
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+    args: ["--enable-features=SharedArrayBuffer"],
+  });
+}
+
 async function startViteServer(): Promise<ChildProcess> {
   return new Promise((resolvePromise, reject) => {
+    let outputTail = "";
+    const appendOutput = (prefix: string, data: Buffer) => {
+      outputTail = `${outputTail}${prefix}${data.toString()}`.slice(-8000);
+    };
     const proc = spawn(
-      "npx",
-      ["vite", "--config", resolve(BROWSER_DIR, "vite.config.ts"), "--port", String(VITE_PORT)],
+      process.execPath,
+      [
+        VITE_BIN,
+        "--config", resolve(BROWSER_DIR, "vite.config.ts"),
+        "--host", VITE_HOST,
+        "--port", String(VITE_PORT),
+        "--strictPort",
+      ],
       {
         cwd: BROWSER_DIR,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env },
+        env: {
+          ...process.env,
+          KANDELO_BROWSER_DEMO_INPUTS: "mariadb-test",
+          KANDELO_BROWSER_TEST_NO_HMR: "1",
+        },
       },
     );
 
@@ -50,6 +73,7 @@ async function startViteServer(): Promise<ChildProcess> {
 
     proc.stdout!.on("data", (data: Buffer) => {
       const text = data.toString();
+      appendOutput("[vite] ", data);
       if (!started && text.includes("Local:")) {
         started = true;
         viteAlive = true;
@@ -58,25 +82,39 @@ async function startViteServer(): Promise<ChildProcess> {
       }
     });
 
-    proc.stderr!.on("data", () => {});
+    proc.stderr!.on("data", (data: Buffer) => appendOutput("[vite:stderr] ", data));
 
     proc.on("exit", (code) => {
       viteAlive = false;
       if (!started) {
         clearTimeout(timeout);
-        reject(new Error(`Vite exited with code ${code}`));
+        reject(new Error(`Vite exited with code ${code}${outputTail ? `\n${outputTail}` : ""}`));
       }
     });
   });
 }
 
 async function waitForMariadbReady(page: Page, timeout = BOOT_TIMEOUT): Promise<void> {
-  await page.goto(`http://localhost:${VITE_PORT}/pages/mariadb-test/`);
-  await page.waitForFunction(
-    () => (window as any).__mariadbTestReady === true,
-    {},
-    { timeout },
-  );
+  await page.goto(`http://${VITE_HOST}:${VITE_PORT}/pages/mariadb-test/`);
+  try {
+    await page.waitForFunction(
+      () => (window as any).__mariadbTestReady === true,
+      {},
+      { timeout },
+    );
+  } catch (err) {
+    const diagnostics = await page.evaluate(() => ({
+      status: document.getElementById("status")?.textContent ?? "",
+      log: document.getElementById("log")?.textContent?.slice(-4000) ?? "",
+    })).catch((diagErr) => ({
+      status: "<unavailable>",
+      log: `Failed to read page diagnostics: ${diagErr}`,
+    }));
+    console.error("MariaDB browser page did not become ready.");
+    console.error(`Status: ${diagnostics.status}`);
+    if (diagnostics.log) console.error(`Log tail:\n${diagnostics.log}`);
+    throw err;
+  }
 }
 
 async function runTest(page: Page, testName: string, testTimeout: number): Promise<TestResult> {
@@ -114,11 +152,28 @@ async function runTest(page: Page, testName: string, testTimeout: number): Promi
   }
 }
 
+async function isMariadbReady(page: Page, timeoutMs = 5_000): Promise<boolean> {
+  try {
+    return await Promise.race([
+      page.evaluate(async (timeout) => {
+        if ((window as any).__mariadbTestReady !== true) return false;
+        const probe = (window as any).__probeMariadb;
+        if (typeof probe !== "function") return true;
+        return await probe(timeout);
+      }, timeoutMs),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+    ]);
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   let testTimeout = DEFAULT_TIMEOUT;
   let jsonOutput = false;
   const testNames: string[] = [];
+  const rebootAfterFail = process.env.MARIADB_BROWSER_REBOOT_AFTER_FAIL !== "0";
 
   let batchSize = 0; // 0 = no batching
 
@@ -156,25 +211,60 @@ async function main() {
     }
 
     // Launch browser
-    browser = await chromium.launch({
-      args: ["--enable-features=SharedArrayBuffer"],
-    });
+    browser = await launchChromium();
 
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    let context: BrowserContext | null = null;
+    let page: Page | null = null;
 
-    // Forward browser console errors for debugging
-    page.on("console", (msg) => {
-      if (msg.type() === "error") {
-        console.error(`[browser] ${msg.text()}`);
+    const openReadyPage = async (): Promise<Page> => {
+      let lastErr: unknown;
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        // A MariaDB timeout or a test that kills mysqld can leave browser
+        // Workers busy even after navigation. Use a fresh context/page for a
+        // real reboot so the kernel worker, VFS image, and dinit tree are all
+        // reconstructed. Intermittent browser boots can also reach port-ready
+        // but fail setup SQL; retry those from a clean Chromium process before
+        // marking a whole chunk as zero-results.
+        await context?.close().catch(() => {});
+        context = null;
+        page = null;
+        // Browser process state can remain unhealthy after a wasm worker
+        // timeout. Close Chromium itself before rebooting the MariaDB page so
+        // the next test starts from a clean JS worker/process tree.
+        await browser?.close().catch(() => {});
+        browser = await launchChromium();
+
+        context = await browser!.newContext();
+        const nextPage = await context.newPage();
+
+        // Forward browser console errors for debugging
+        nextPage.on("console", (msg) => {
+          if (msg.type() === "error") {
+            console.error(`[browser] ${msg.text()}`);
+          }
+        });
+
+        try {
+          await waitForMariadbReady(nextPage);
+          page = nextPage;
+          return nextPage;
+        } catch (err) {
+          lastErr = err;
+          if (!jsonOutput && attempt < 3) {
+            process.stderr.write(`  Browser MariaDB boot failed; retrying (${attempt}/3)...\n`);
+          }
+        }
       }
-    });
+
+      throw lastErr;
+    };
 
     // Navigate and wait for MariaDB to boot
     if (!jsonOutput) {
       console.error("Waiting for MariaDB to boot in browser...");
     }
-    await waitForMariadbReady(page);
+    await openReadyPage();
     if (!jsonOutput) {
       console.error("MariaDB ready. Running tests...\n");
     }
@@ -189,7 +279,7 @@ async function main() {
           process.stderr.write(`  Batch reload (${batchSize} tests done)...\n`);
         }
         try {
-          await waitForMariadbReady(page);
+          await openReadyPage();
           testsSinceBoot = 0;
         } catch {
           // If reload fails, abort remaining
@@ -203,7 +293,7 @@ async function main() {
       }
 
       const testName = testNames[i];
-      const result = await runTest(page, testName, testTimeout);
+      const result = await runTest(page!, testName, testTimeout);
       results.push(result);
       testsSinceBoot++;
 
@@ -224,25 +314,23 @@ async function main() {
         );
       }
 
-      // Detect timeout/hang — reload immediately
+      // Detect timeout/hang — reload immediately, but only when there are
+      // more tests to run. A post-test readiness probe can itself block if
+      // the just-finished mysqltest left the browser worker busy; probing
+      // after the last test only delays process teardown.
+      const hasMoreTests = i + 1 < testNames.length;
       const isTimeout = result.error === "TIMEOUT" || result.time_ms > testTimeout * 1.3;
-      let needsReload = isTimeout;
-
-      if (!needsReload) {
-        try {
-          const ready = await page.evaluate(() => (window as any).__mariadbTestReady);
-          if (!ready) needsReload = true;
-        } catch {
-          needsReload = true;
-        }
-      }
+      const shouldProbe = result.status === "fail" || isTimeout;
+      const needsReload = rebootAfterFail && hasMoreTests && (
+        isTimeout || (shouldProbe && !(await isMariadbReady(page!)))
+      );
 
       if (needsReload) {
         if (!jsonOutput) {
           process.stderr.write("  Rebooting MariaDB...\n");
         }
         try {
-          await waitForMariadbReady(page);
+          await openReadyPage();
           testsSinceBoot = 0;
         } catch {
           for (let j = i + 1; j < testNames.length; j++) {
