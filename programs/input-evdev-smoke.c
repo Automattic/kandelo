@@ -1,21 +1,7 @@
 /*
- * input-evdev-smoke — end-to-end fixture for host/test/input-evdev.test.ts.
- *
- * Three phases gated by stdin barriers so the test can inject events
- * AFTER the program has opened the matching device (push_event fans
- * out at injection time, so an OFD must exist).
- *
- *   1. open /dev/input/event0, EVIOCGNAME, then "READY:kbd\n"; on the
- *      next stdin byte, read 48 bytes (two records) and print both.
- *   2. open /dev/input/event1, EVIOCGABS(ABS_X), then "READY:ptr\n";
- *      on the next stdin byte, read 48 bytes and print both.
- *   3. "READY:overflow\n"; on the next stdin byte, drain event0 to
- *      empty (kernel returns 0 on empty + blocking), printing each
- *      record's (type, code). First record must be SYN_DROPPED.
- *
- * Linux <linux/input.h> isn't in the wasm sysroot until Phase C, so
- * the evdev structs/ioctl numbers are spelled inline — same pattern
- * as programs/kms-pageflip-smoke.c.
+ * Three-phase fixture driven by host/test/input-evdev.test.ts. Structs
+ * and ioctl numbers are inlined (not <linux/input.h>) so the B5 ABI
+ * check stays independent of the C1 sysroot header land.
  */
 #include <fcntl.h>
 #include <stdint.h>
@@ -30,11 +16,6 @@
 #define SYN_REPORT   0x00
 #define SYN_DROPPED  0x03
 
-/* Linux ioctl encoding: (dir << 30) | (size << 16) | (magic << 8) | nr.
- * EVIOCGNAME bakes the caller-supplied buffer size into the size field;
- * the kernel A3 dispatch reads back (dir, magic, nr) and re-derives the
- * buffer length from size. ABS_X / ABS_Y land at nr = 0x40 + axis,
- * size = sizeof(struct input_absinfo) = 24. */
 #define EVIOC_DIR_READ   (2u << 30)
 #define EVIOC_MAGIC      (0x45u << 8)      /* 'E' */
 #define EVIOCGNAME(len)  (EVIOC_DIR_READ | (((unsigned)(len) & 0x3fffu) << 16) | EVIOC_MAGIC | 0x06u)
@@ -57,7 +38,6 @@ _Static_assert(sizeof(struct wpk_event) == 24, "WpkInputEvent must be 24 bytes")
 _Static_assert(sizeof(struct wpk_absinfo) == 24, "WpkInputAbsinfo must be 24 bytes");
 
 static void wait_sync(void) {
-    /* Block until the host writes one byte via appendStdinData. */
     char c;
     while (read(0, &c, 1) <= 0) { }
 }
@@ -120,12 +100,7 @@ int main(void) {
     fflush(stdout);
     wait_sync();
 
-    /* The kernel ring caps at 1024 records (24 KiB); on overflow the
-     * `dropped` flag latches, the incoming record is discarded, and
-     * the next read prepends a synthesised SYN_DROPPED to the drain.
-     * Read one record at a time so we can count exactly. Blocking
-     * read on an empty+clean ring returns 0 — that's our drain
-     * terminator. */
+    /* Blocking read on an empty+clean ring returns 0 — drain terminator. */
     int count = 0, syn_dropped_at = -1, non_syn_dropped = 0;
     struct wpk_event last = {0};
     for (;;) {

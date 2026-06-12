@@ -34,14 +34,7 @@ export class BrowserInputSource implements InputSource {
   private dispatch: ((ev: InputEvent) => void) | null = null;
   private bindings: Array<[EventTarget, string, EventListener]> = [];
 
-  constructor(
-    private target: EventTarget = window,
-    // Stashed for B4 — `kernel_set_input_canvas_dims` reads w/h off it.
-    // Unused inside this module; intentionally kept on `this`.
-    private canvas?: HTMLCanvasElement | OffscreenCanvas,
-  ) {
-    void this.canvas;
-  }
+  constructor(private target: EventTarget = window) {}
 
   start(dispatch: (ev: InputEvent) => void): void {
     this.dispatch = dispatch;
