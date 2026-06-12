@@ -293,9 +293,33 @@ let kernelMemory: WebAssembly.Memory | null = null;
 // HTTP bridge port (transferred from main thread → service worker comms)
 let bridgePort: MessagePort | null = null;
 let bridgeTargetPort: number | null = null; // The specific HTTP port to route bridge requests to
+let nextBridgeActivityId = 1;
+const activeBridgeRequests = new Set<number>();
 
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   (globalThis as any).postMessage(msg, transfer ?? []);
+}
+
+function reportBridgePendingRequests(): void {
+  post({ type: "http_bridge_pending", count: activeBridgeRequests.size });
+}
+
+function beginBridgeRequest(): number {
+  const activityId = nextBridgeActivityId++;
+  activeBridgeRequests.add(activityId);
+  reportBridgePendingRequests();
+  return activityId;
+}
+
+function endBridgeRequest(activityId: number): void {
+  if (!activeBridgeRequests.delete(activityId)) return;
+  reportBridgePendingRequests();
+}
+
+function resetBridgePendingRequests(): void {
+  if (activeBridgeRequests.size === 0) return;
+  activeBridgeRequests.clear();
+  reportBridgePendingRequests();
 }
 
 function formatError(err: unknown): string {
@@ -718,6 +742,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // Accept bridge port for HTTP request handling
   if (msg.bridgePort) {
     bridgePort = msg.bridgePort;
+    resetBridgePendingRequests();
   }
 
   post({ type: "ready" });
@@ -1637,30 +1662,32 @@ function handleRegisterPtyOutput(msg: Extract<MainToKernelMessage, { type: "regi
 
 async function handleHttpRequest(requestId: number, request: any) {
   if (!kernelInstance || !bridgePort) return;
+  const portRef = bridgePort;
+  const activityId = beginBridgeRequest();
   const url = request.url || "?";
 
-  // Resolve the port to dispatch to. The SW bridge configures one
-  // bridgeTargetPort per page; if not set, fall back to the first
-  // registered listener (matches earlier behavior).
-  let port = bridgeTargetPort;
-  if (port == null) {
-    const ports: number[] = Array.from(
-      (kernelWorker as any).tcpListenerTargets?.keys() ?? [],
-    );
-    port = ports[0] ?? null;
-  }
-  if (port == null) {
-    console.warn(`[bridge] no listener target for req#${requestId} ${url}`);
-    bridgePort.postMessage({
-      type: "http-error",
-      requestId,
-      error: "No listener target available",
-    });
-    return;
-  }
-
-  console.log(`[bridge] req#${requestId} ${request.method} ${url} → port=${port}`);
   try {
+    // Resolve the port to dispatch to. The SW bridge configures one
+    // bridgeTargetPort per page; if not set, fall back to the first
+    // registered listener (matches earlier behavior).
+    let port = bridgeTargetPort;
+    if (port == null) {
+      const ports: number[] = Array.from(
+        (kernelWorker as any).tcpListenerTargets?.keys() ?? [],
+      );
+      port = ports[0] ?? null;
+    }
+    if (port == null) {
+      console.warn(`[bridge] no listener target for req#${requestId} ${url}`);
+      portRef.postMessage({
+        type: "http-error",
+        requestId,
+        error: "No listener target available",
+      });
+      return;
+    }
+
+    console.debug(`[bridge] req#${requestId} ${request.method} ${url} -> port=${port}`);
     const response = await kernelWorker.sendHttpRequest(
       port,
       {
@@ -1671,7 +1698,7 @@ async function handleHttpRequest(requestId: number, request: any) {
       },
       { debugLabel: `req#${requestId}` },
     );
-    bridgePort.postMessage({
+    portRef.postMessage({
       type: "http-response",
       requestId,
       status: response.status,
@@ -1680,11 +1707,13 @@ async function handleHttpRequest(requestId: number, request: any) {
     });
   } catch (e) {
     console.warn(`[bridge] req#${requestId} ${url} failed:`, e);
-    bridgePort.postMessage({
+    portRef.postMessage({
       type: "http-error",
       requestId,
       error: e instanceof Error ? e.message : String(e),
     });
+  } finally {
+    endBridgeRequest(activityId);
   }
 }
 
@@ -1867,6 +1896,7 @@ sw.onmessage = (e: MessageEvent) => {
         (globalThis as { __sysprof?: boolean }).__sysprof = false;
       } else if (raw?.type === "set_bridge_port" && raw.bridgePort) {
         bridgePort = raw.bridgePort;
+        resetBridgePendingRequests();
         if (typeof raw.httpPort === "number") {
           bridgeTargetPort = raw.httpPort;
         }

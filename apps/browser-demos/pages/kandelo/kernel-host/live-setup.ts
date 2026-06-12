@@ -1102,6 +1102,9 @@ async function bootProfile(
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
+      onHttpBridgePendingRequests: (count) => {
+        if (isCurrent()) host.setWebPreviewPendingRequests(count);
+      },
       onListenTcp: (pid, _fd, port) => {
         if (!isCurrent()) return;
         seenPorts.add(port);
@@ -1142,6 +1145,9 @@ async function bootProfile(
         await setupServiceWorkerFetchBridge(SW_URL, APP_PREFIX, kernel, HTTP_PORT, {
           timeoutMs: 90_000,
           debugLog: (line) => tick(line),
+          onPendingRequests: (count) => {
+            if (isCurrent()) host.setWebPreviewPendingRequests(count);
+          },
         });
         assertCurrent();
         bridgeSent = true;

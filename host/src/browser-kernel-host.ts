@@ -46,6 +46,8 @@ export interface BrowserKernelOptions {
   onStderr?: (data: Uint8Array) => void;
   /** Called when a process requests a TCP listener (for service worker bridging) */
   onListenTcp?: (pid: number, fd: number, port: number) => void;
+  /** Called when the service-worker HTTP bridge gains or completes preview requests. */
+  onHttpBridgePendingRequests?: (count: number) => void;
   /** Called when a process is spawned, execs a new program, or exits.
    *  Used by Inspector-style UIs to refresh their process table without
    *  polling. Source feeds:
@@ -317,6 +319,7 @@ export class BrowserKernel {
         reject(err);
       }
       this.pendingRequests.clear();
+      this.options.onHttpBridgePendingRequests?.(0);
     };
 
     await new Promise<void>((resolve, reject) => {
@@ -905,6 +908,7 @@ export class BrowserKernel {
     this.exitResolvers.clear();
     this.pendingRequests.clear();
     this.ptyOutputCallbacks.clear();
+    this.options.onHttpBridgePendingRequests?.(0);
   }
 
   // ── Private helpers ──
@@ -979,6 +983,9 @@ export class BrowserKernel {
         this.options.onProcessEvent?.({ kind: msg.kind, pid: msg.pid, ppid: msg.ppid });
         break;
       }
+      case "http_bridge_pending":
+        this.options.onHttpBridgePendingRequests?.(msg.count);
+        break;
       case "stdout":
         this.options.onStdout?.(msg.data);
         break;

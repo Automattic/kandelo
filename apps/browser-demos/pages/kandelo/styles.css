@@ -1084,6 +1084,35 @@
   border-color: var(--k-border-strong);
 }
 
+.kweb-request-indicator {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+
+.kweb-request-indicator.active {
+  opacity: 1;
+}
+
+.kweb-request-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in oklch, var(--k-accent) 22%, var(--k-border));
+  border-top-color: var(--k-accent);
+  animation: kweb-spin 0.8s linear infinite;
+}
+
+.kweb-request-indicator:not(.active) .kweb-request-spinner {
+  animation-play-state: paused;
+}
+
 /* ── Shell pane ─────────────────────────────────────────────────────────── */
 
 .kshell-body {
@@ -2304,4 +2333,7 @@
 }
 @keyframes k-blink {
   50% { opacity: 0; }
+}
+@keyframes kweb-spin {
+  to { transform: rotate(360deg); }
 }
