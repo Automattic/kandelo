@@ -158,9 +158,11 @@ const CACERT_PEM: &[u8] = include_bytes!("../../../packages/registry/openssl/cac
 /// The OpenSSL build used by wasm programs has `--openssldir=/etc/ssl`.
 /// OpenSSL attempts to load this file during context setup. A missing config
 /// leaves errors on the OpenSSL error queue and can make otherwise valid TLS
-/// server setup fail before the handshake. Providing the standard path is a
-/// platform baseline, just like `/etc/ssl/cert.pem` above.
-const OPENSSL_CNF: &[u8] = b"openssl_conf = openssl_init\n\n[openssl_init]\n";
+/// server setup fail before the handshake. Programs also rely on the default
+/// request stanza for ordinary key/CSR generation when they do not pass an
+/// application-specific config. Providing the standard path is a platform
+/// baseline, just like `/etc/ssl/cert.pem` above.
+const OPENSSL_CNF: &[u8] = include_bytes!("openssl.cnf");
 
 /// Return static content for synthetic files that are not owned by rootfs.vfs.
 ///
@@ -19914,11 +19916,13 @@ mod tests {
             0,
         )
         .unwrap();
-        let mut buf = [0u8; 128];
+        let mut buf = [0u8; 512];
         let n = sys_read(&mut proc, &mut host, fd, &mut buf).unwrap();
         let content = core::str::from_utf8(&buf[..n]).unwrap();
         assert!(content.contains("openssl_conf = openssl_init"));
         assert!(content.contains("[openssl_init]"));
+        assert!(content.contains("default_bits = 2048"));
+        assert!(content.contains("[v3_ca]"));
 
         let st = sys_stat(&mut proc, &mut host, b"/etc/ssl/openssl.cnf").unwrap();
         assert_eq!(st.st_mode & S_IFMT, S_IFREG);
