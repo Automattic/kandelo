@@ -1372,6 +1372,84 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Program break ──
     w.write_u32(proc.memory.get_brk() as u32)?;
 
+    // ── Socket table ──
+    //
+    // POSIX exec replaces the program image, not the process's open file
+    // descriptions. Any socket fd that survives FD_CLOEXEC must still refer to
+    // its socket object after exec, including listener accept queues/options.
+    // Use the same wire shape as fork so socket indices encoded in socket OFDs
+    // (host_handle = -(idx + 1)) remain valid.
+    {
+        use crate::socket::{SocketDomain, SocketState, SocketType};
+        let mut sock_count = 0u32;
+        for idx in 0..proc.sockets.len() {
+            if proc.sockets.get(idx).is_some() {
+                sock_count += 1;
+            }
+        }
+        w.write_u32(proc.sockets.len() as u32)?;
+        w.write_u32(sock_count)?;
+        for idx in 0..proc.sockets.len() {
+            if let Some(sock) = proc.sockets.get(idx) {
+                w.write_u32(idx as u32)?;
+                w.write_u32(match sock.domain {
+                    SocketDomain::Unix => 0,
+                    SocketDomain::Inet => 1,
+                    SocketDomain::Inet6 => 2,
+                })?;
+                w.write_u32(match sock.sock_type {
+                    SocketType::Stream => 0,
+                    SocketType::Dgram => 1,
+                })?;
+                w.write_u32(sock.protocol)?;
+                w.write_u32(match sock.state {
+                    SocketState::Unbound => 0,
+                    SocketState::Bound => 1,
+                    SocketState::Listening => 2,
+                    SocketState::Connected => 3,
+                    SocketState::Closed => 4,
+                    SocketState::Connecting => 4,
+                })?;
+                w.write_u32(sock.peer_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.recv_buf_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.send_buf_idx.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(if sock.shut_rd { 1 } else { 0 })?;
+                w.write_u32(if sock.shut_wr { 1 } else { 0 })?;
+                w.write_u32(sock.host_net_handle.map(|v| v as u32).unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.options.len() as u32)?;
+                for &(level, optname, value) in &sock.options {
+                    w.write_u32(level)?;
+                    w.write_u32(optname)?;
+                    w.write_u32(value)?;
+                }
+                w.write_bytes(&sock.bind_addr)?;
+                w.write_u32(sock.bind_port as u32)?;
+                w.write_bytes(&sock.peer_addr)?;
+                w.write_u32(sock.peer_port as u32)?;
+                // Legacy per-process accept backlog is consume-once state.
+                // Shared listener backlog indices below preserve the actual
+                // POSIX accept queue for current stream listeners.
+                w.write_u32(0u32)?;
+                w.write_u32(if sock.global_pipes { 1 } else { 0 })?;
+                w.write_u32(
+                    sock.shared_backlog_idx
+                        .map(|v| v as u32)
+                        .unwrap_or(0xFFFFFFFF),
+                )?;
+                match &sock.bind_path {
+                    Some(p) => {
+                        w.write_u32(p.len() as u32)?;
+                        w.write_bytes(p)?;
+                    }
+                    None => {
+                        w.write_u32(0xFFFFFFFF)?;
+                    }
+                }
+                w.write_u32(sock.accept_wake_idx.unwrap_or(0xFFFFFFFF))?;
+            }
+        }
+    }
+
     // ── Patch total_size ──
     let total = w.pos as u32;
     w.patch_u32(total_size_offset, total);
@@ -1571,6 +1649,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     // (e.g. /bin/sh exec'ing mariadbd).
     let _program_break = r.read_u32()?;
     let memory = MemoryManager::new();
+    let sockets = read_fork_socket_table(&mut r)?;
 
     Ok(Process {
         pid,
@@ -1589,7 +1668,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         ofd_table,
         lock_table: LockTable::new(),
         pipes: Vec::new(),
-        sockets: SocketTable::new(),
+        sockets,
         cwd,
         dir_streams: Vec::new(),
         signals,
@@ -1872,6 +1951,40 @@ mod tests {
         let restored = deserialize_exec_state(&buf[..written], 5).unwrap();
 
         assert_eq!(restored.ppid, 3); // ppid preserved
+    }
+
+    #[test]
+    fn test_exec_preserves_surviving_socket_state() {
+        use crate::fd::OpenFileDescRef;
+        use crate::ofd::FileType;
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+
+        let mut proc = Process::new(7);
+        let mut sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+        sock.state = SocketState::Listening;
+        sock.shared_backlog_idx = Some(123);
+        sock.accept_wake_idx = Some(456);
+        let sock_idx = proc.sockets.alloc(sock);
+        let ofd_idx =
+            proc.ofd_table
+                .create(FileType::Socket, 0, -((sock_idx as i64) + 1), Vec::new());
+        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_exec_state(&proc, &mut buf).unwrap();
+        let restored = deserialize_exec_state(&buf[..written], 7).unwrap();
+
+        let restored_ofd_idx = restored.fd_table.get(fd).unwrap().ofd_ref.0;
+        let restored_ofd = restored.ofd_table.get(restored_ofd_idx).unwrap();
+        assert_eq!(restored_ofd.file_type, FileType::Socket);
+        assert_eq!(restored_ofd.host_handle, -((sock_idx as i64) + 1));
+
+        let restored_sock = restored.sockets.get(sock_idx).expect("socket survives exec");
+        assert_eq!(restored_sock.domain, SocketDomain::Unix);
+        assert_eq!(restored_sock.sock_type, SocketType::Stream);
+        assert_eq!(restored_sock.state, SocketState::Listening);
+        assert_eq!(restored_sock.shared_backlog_idx, Some(123));
+        assert_eq!(restored_sock.accept_wake_idx, Some(456));
     }
 
     #[test]

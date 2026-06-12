@@ -7499,11 +7499,14 @@ pub fn sys_listen(
         sock.accept_wake_idx = Some(crate::wakeup::alloc_accept_wake_idx());
     }
 
-    // For AF_INET listeners, allocate a shared accept queue that fork
-    // children will inherit. This way every process sharing this listener
-    // pulls from the same queue (POSIX semantics) — see socket.rs.
+    // For stream listeners whose fd can be inherited by another process,
+    // allocate a shared accept queue. POSIX sockets have one accept queue per
+    // listening socket object, not one per process, so every fork/spawn
+    // inheritor of this fd must pull from the same queue.
     let domain = sock.domain;
-    if domain == SocketDomain::Inet && sock.shared_backlog_idx.is_none() {
+    if matches!(domain, SocketDomain::Inet | SocketDomain::Unix)
+        && sock.shared_backlog_idx.is_none()
+    {
         let backlog_idx = unsafe { crate::socket::shared_listener_backlog_table().alloc() };
         sock.shared_backlog_idx = Some(backlog_idx);
     }
@@ -7544,22 +7547,38 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
         return Err(Errno::EINVAL);
     }
 
-    // AF_INET listeners use a shared cross-process accept queue. Try
+    // Stream listeners can use a shared cross-process accept queue. Try
     // popping from there first; the accepted SocketInfo is created
     // lazily here in the accepting process. See socket.rs.
     if let Some(shared_idx) = sock.shared_backlog_idx {
+        let domain = sock.domain;
         let bind_addr = sock.bind_addr;
+        let bind_addr6 = sock.bind_addr6;
         let bind_port = sock.bind_port;
+        let bind_path = sock.bind_path.clone();
         let pending = unsafe { crate::socket::shared_listener_backlog_table().pop(shared_idx) };
         if let Some(pc) = pending {
-            let mut accepted = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
+            let mut accepted = SocketInfo::new(domain, SocketType::Stream, 0);
             accepted.state = SocketState::Connected;
             accepted.recv_buf_idx = Some(pc.recv_pipe_idx);
             accepted.send_buf_idx = Some(pc.send_pipe_idx);
-            accepted.bind_addr = bind_addr;
-            accepted.bind_port = bind_port;
-            accepted.peer_addr = pc.peer_addr;
-            accepted.peer_port = pc.peer_port;
+            match domain {
+                SocketDomain::Inet => {
+                    accepted.bind_addr = bind_addr;
+                    accepted.bind_port = bind_port;
+                    accepted.peer_addr = pc.peer_addr;
+                    accepted.peer_port = pc.peer_port;
+                }
+                SocketDomain::Inet6 => {
+                    accepted.bind_addr6 = bind_addr6;
+                    accepted.bind_port = bind_port;
+                    accepted.peer_addr = pc.peer_addr;
+                    accepted.peer_port = pc.peer_port;
+                }
+                SocketDomain::Unix => {
+                    accepted.bind_path = bind_path;
+                }
+            }
             accepted.global_pipes = true;
             let accepted_sock_idx = proc.sockets.alloc(accepted);
             let host_handle = -((accepted_sock_idx as i64) + 1);
@@ -7572,8 +7591,8 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
             let new_fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0)?;
             return Ok(new_fd);
         }
-        // Shared queue empty — fall through to per-process backlog
-        // for AF_UNIX-style entries (none for INET listeners). We return
+        // Shared queue empty — fall through to the legacy per-process backlog
+        // for any pre-existing entries. We return
         // EAGAIN below if both queues are empty.
         let _ = SocketType::Stream; // silence unused-import warning if path unused
         let _ = SocketDomain::Inet;
@@ -8012,38 +8031,71 @@ pub fn sys_connect(
                 return Err(Errno::ECONNREFUSED);
             }
 
-            // Create pipe pair for bidirectional communication (in global table for fork safety)
+            // Create a global pipe pair for bidirectional communication:
+            //   pipe_a: client writes → server reads
+            //   pipe_b: server writes → client reads
+            //
+            // AF_UNIX listeners use the same shared accept-queue model as
+            // TCP listeners. This is required for POSIX inheritance semantics:
+            // if a child inherits a listening socket fd, connections accepted
+            // through either process are drawn from the same socket queue.
             let pipe_table = unsafe { crate::pipe::global_pipe_table() };
             let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
             let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
 
-            // Create accepted socket (server side)
-            let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
-            accepted_sock.state = SocketState::Connected;
-            accepted_sock.recv_buf_idx = Some(pipe_a_idx); // reads client's writes
-            accepted_sock.send_buf_idx = Some(pipe_b_idx); // writes to client's reads
-            accepted_sock.global_pipes = true;
-            let accepted_idx = proc.sockets.alloc(accepted_sock);
-
-            // Push to listener's backlog
             let listener = proc
                 .sockets
-                .get_mut(listener_sock_idx)
+                .get(listener_sock_idx)
                 .ok_or(Errno::EBADF)?;
-            listener.listen_backlog.push(accepted_idx);
             let accept_wake_idx = listener.accept_wake_idx;
 
-            // Set up client socket
-            let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
-            client.send_buf_idx = Some(pipe_a_idx); // writes to pipe_a (server's reads)
-            client.recv_buf_idx = Some(pipe_b_idx); // reads from pipe_b (server's writes)
-            client.state = SocketState::Connected;
-            client.peer_idx = Some(accepted_idx);
-            client.global_pipes = true;
+            if let Some(shared_idx) = listener.shared_backlog_idx {
+                let pc = crate::socket::PendingConnection {
+                    peer_addr: [0, 0, 0, 0],
+                    peer_port: 0,
+                    recv_pipe_idx: pipe_a_idx, // server reads client's writes
+                    send_pipe_idx: pipe_b_idx, // server writes to client's reads
+                };
+                if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) }
+                {
+                    return Err(Errno::ECONNREFUSED);
+                }
 
-            // Set peer_idx on accepted socket
-            let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
-            accepted.peer_idx = Some(sock_idx);
+                // Set up client socket. The accepted peer socket will be
+                // materialized lazily in whichever process calls accept().
+                let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                client.send_buf_idx = Some(pipe_a_idx);
+                client.recv_buf_idx = Some(pipe_b_idx);
+                client.state = SocketState::Connected;
+                client.global_pipes = true;
+            } else {
+                // Legacy fallback for any listener created before shared
+                // backlogs were assigned: pre-create the accepted socket in
+                // this process's socket table.
+                let mut accepted_sock =
+                    SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+                accepted_sock.state = SocketState::Connected;
+                accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+                accepted_sock.send_buf_idx = Some(pipe_b_idx);
+                accepted_sock.global_pipes = true;
+                let accepted_idx = proc.sockets.alloc(accepted_sock);
+
+                let listener = proc
+                    .sockets
+                    .get_mut(listener_sock_idx)
+                    .ok_or(Errno::EBADF)?;
+                listener.listen_backlog.push(accepted_idx);
+
+                let client = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+                client.send_buf_idx = Some(pipe_a_idx);
+                client.recv_buf_idx = Some(pipe_b_idx);
+                client.state = SocketState::Connected;
+                client.peer_idx = Some(accepted_idx);
+                client.global_pipes = true;
+
+                let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
+                accepted.peer_idx = Some(sock_idx);
+            }
 
             if let Some(idx) = accept_wake_idx {
                 crate::wakeup::push_accept(idx);
@@ -17174,6 +17226,99 @@ mod tests {
         // Server should have a pending connection
         let accepted_fd = sys_accept(&mut proc, &mut host, server_fd).unwrap();
         assert!(accepted_fd >= 0);
+
+        // Clean up
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+    }
+
+    #[test]
+    fn test_unix_stream_inherited_listener_accepts_parent_connection() {
+        let _lock = UNIX_REGISTRY_LOCK.lock().unwrap();
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{FileAction, SpawnAttrs};
+
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let parent_pid = 9101;
+        table.create_process(parent_pid).unwrap();
+
+        let path = b"/tmp/inherited_listener_9101.sock";
+        let resolved = {
+            let parent = table.get(parent_pid).unwrap();
+            crate::path::resolve_path(path, &parent.cwd)
+        };
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);
+
+        let mut addr = [0u8; 110];
+        addr[0] = 1; // AF_UNIX
+        addr[2..2 + path.len()].copy_from_slice(path);
+        let addrlen = 2 + path.len() + 1;
+
+        let server_fd = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let fd = sys_socket(parent, &mut host, 1, 1, 0).unwrap();
+            sys_bind(parent, &mut host, fd, &addr[..addrlen]).unwrap();
+            sys_listen(parent, &mut host, fd, 5).unwrap();
+            fd
+        };
+
+        let dup_fd = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let fd = sys_dup(parent, server_fd).unwrap();
+            parent.fd_table.get_mut(server_fd).unwrap().fd_flags |= FD_CLOEXEC;
+            parent.fd_table.get_mut(fd).unwrap().fd_flags |= FD_CLOEXEC;
+            fd
+        };
+
+        let child_pid = table
+            .spawn_child(
+                parent_pid,
+                &[b"child".as_slice()],
+                &[],
+                &[FileAction::Dup2 {
+                    srcfd: dup_fd,
+                    fd: 0,
+                }],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+
+        let client_fd = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let fd = sys_socket(parent, &mut host, 1, 1, 0).unwrap();
+            sys_connect(parent, &mut host, fd, &addr[..addrlen]).unwrap();
+            fd
+        };
+
+        let accepted_fd = {
+            let child = table.get_mut(child_pid).unwrap();
+            let mut pollfd = WasmPollFd {
+                fd: 0,
+                events: POLLIN,
+                revents: 0,
+            };
+            assert_eq!(
+                sys_poll(child, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap(),
+                1
+            );
+            assert_ne!(pollfd.revents & POLLIN, 0);
+            sys_accept(child, &mut host, 0).unwrap()
+        };
+
+        {
+            let parent = table.get_mut(parent_pid).unwrap();
+            assert_eq!(sys_write(parent, &mut host, client_fd, b"ping").unwrap(), 4);
+        }
+        {
+            let child = table.get_mut(child_pid).unwrap();
+            let mut buf = [0u8; 4];
+            assert_eq!(
+                sys_read(child, &mut host, accepted_fd, &mut buf).unwrap(),
+                4
+            );
+            assert_eq!(&buf, b"ping");
+        }
 
         // Clean up
         unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(&resolved);

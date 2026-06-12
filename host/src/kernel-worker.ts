@@ -2018,6 +2018,13 @@ export class CentralizedKernelWorker {
         return `[${pid}${tidSuffix}] clone(0x${(args[0] >>> 0).toString(16)})`;
       case ABI_SYSCALLS.Exit: return `[${pid}${tidSuffix}] exit(${args[0]})`;
       case ABI_SYSCALLS.Poll: // poll(fds, nfds, timeout)
+        if (args[0] && args[1] > 0) {
+          const view = new DataView(channel.memory.buffer);
+          const fd = view.getInt32(args[0], true);
+          const events = view.getInt16(args[0] + 4, true);
+          const revents = view.getInt16(args[0] + 6, true);
+          return `[${pid}${tidSuffix}] poll(nfds=${args[1]}, timeout=${args[2]}, first={fd=${fd}, events=0x${(events & 0xffff).toString(16)}, revents=0x${(revents & 0xffff).toString(16)}})`;
+        }
         return `[${pid}${tidSuffix}] poll(${args[1]}, ${args[2]})`;
       case ABI_SYSCALLS.Ioctl: // ioctl(fd, cmd, arg)
         return `[${pid}${tidSuffix}] ioctl(${args[0]}, 0x${(args[1] >>> 0).toString(16)})`;

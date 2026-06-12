@@ -7483,21 +7483,40 @@ fn cross_process_unix_connect(proc: &mut Process, fd: i32, addr: &[u8]) -> Resul
         return Err(Errno::ECONNREFUSED);
     }
 
-    // Create accepted socket in the listener's process
-    let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
-    accepted_sock.state = SocketState::Connected;
-    accepted_sock.recv_buf_idx = Some(pipe_a_idx);
-    accepted_sock.send_buf_idx = Some(pipe_b_idx);
-    accepted_sock.global_pipes = true;
-    let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
-
-    // Push to listener's backlog
+    // Queue the connection on the listener's shared accept queue when
+    // available. POSIX listener fds inherited across fork/spawn share the same
+    // underlying socket queue, so the accepted socket must be materialized in
+    // whichever process actually calls accept().
     let listener = listener_proc
         .sockets
-        .get_mut(listener_sock_idx)
+        .get(listener_sock_idx)
         .ok_or(Errno::EBADF)?;
-    listener.listen_backlog.push(accepted_idx);
     let accept_wake_idx = listener.accept_wake_idx;
+    if let Some(shared_idx) = listener.shared_backlog_idx {
+        let pc = crate::socket::PendingConnection {
+            peer_addr: [0, 0, 0, 0],
+            peer_port: 0,
+            recv_pipe_idx: pipe_a_idx,
+            send_pipe_idx: pipe_b_idx,
+        };
+        if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) } {
+            return Err(Errno::ECONNREFUSED);
+        }
+    } else {
+        // Legacy fallback for listeners without a shared queue.
+        let mut accepted_sock = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+        accepted_sock.state = SocketState::Connected;
+        accepted_sock.recv_buf_idx = Some(pipe_a_idx);
+        accepted_sock.send_buf_idx = Some(pipe_b_idx);
+        accepted_sock.global_pipes = true;
+        let accepted_idx = listener_proc.sockets.alloc(accepted_sock);
+
+        let listener = listener_proc
+            .sockets
+            .get_mut(listener_sock_idx)
+            .ok_or(Errno::EBADF)?;
+        listener.listen_backlog.push(accepted_idx);
+    }
 
     // Set up client socket (in current process)
     let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
