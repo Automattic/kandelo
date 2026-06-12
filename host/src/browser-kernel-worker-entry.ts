@@ -308,11 +308,66 @@ function threadAllocatorForLayout(
   });
 }
 
+interface ProcessMemoryAllocationContext {
+  operation: "spawn" | "exec" | "posix_spawn";
+  path?: string;
+  argv?: readonly string[];
+}
+
+function processMemoryAllocationDiagnostics(
+  pid: number,
+  ptrWidth: 4 | 8,
+  layout: ProcessMemoryLayout,
+  heapBase: bigint | number | null,
+  context?: ProcessMemoryAllocationContext,
+) {
+  let totalLiveBufferBytes = 0;
+  const liveProcesses = Array.from(processes.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([livePid, info]) => {
+      const bufferBytes = info.memory.buffer.byteLength;
+      totalLiveBufferBytes += bufferBytes;
+      return {
+        pid: livePid,
+        argv: info.argv.slice(0, 8),
+        ptrWidth: info.ptrWidth,
+        currentPages: Math.ceil(bufferBytes / PAGE_SIZE),
+        maximumPages: info.layout.maximumPages,
+        bufferBytes,
+      };
+    });
+
+  return {
+    operation: context?.operation,
+    pid,
+    path: context?.path,
+    argv: context?.argv,
+    ptrWidth,
+    heapBase: heapBase == null ? null : heapBase.toString(),
+    requestedLayout: {
+      initialPages: layout.initialPages,
+      maximumPages: layout.maximumPages,
+      controlBase: layout.controlBase,
+      brkBase: layout.brkBase,
+      mmapBase: layout.mmapBase,
+      maxAddr: layout.maxAddr,
+      threadSlotCount: layout.threadSlotCount,
+      threadArenaEndPage: layout.threadArenaEndPage,
+    },
+    liveProcessCount: processes.size,
+    pendingProcessTeardowns: processTeardowns.size,
+    pendingWorkerTeardowns: workerTeardowns.size,
+    totalLiveBufferBytes,
+    liveProcesses,
+  };
+}
+
 function createFreshProcessMemory(
   pid: number,
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
   processMaxPages = maxPages,
+  context?: ProcessMemoryAllocationContext,
 ): {
   memory: WebAssembly.Memory;
   layout: ProcessMemoryLayout;
@@ -326,7 +381,18 @@ function createFreshProcessMemory(
     programBytes,
     heapBase,
   });
-  const memory = createProcessMemory(ptrWidth, layout);
+  let memory: WebAssembly.Memory;
+  try {
+    memory = createProcessMemory(ptrWidth, layout);
+  } catch (e) {
+    console.error(
+      "[kernel-worker] process memory allocation failed",
+      JSON.stringify(
+        processMemoryAllocationDiagnostics(pid, ptrWidth, layout, heapBase, context),
+      ),
+    );
+    throw e;
+  }
   new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
   return {
     memory,
@@ -648,7 +714,11 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       memory,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(pid, programBytes, ptrWidth, pages);
+    } = createFreshProcessMemory(pid, programBytes, ptrWidth, pages, {
+      operation: "spawn",
+      path: msg.programPath ?? msg.argv[0],
+      argv: msg.argv,
+    });
     const channelOffset = layout.channelOffset;
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
@@ -914,7 +984,11 @@ async function handleExec(
     memory: newMemory,
     layout: newLayout,
     threadAllocator: newThreadAllocator,
-  } = createFreshProcessMemory(pid, bytes, ptrWidth);
+  } = createFreshProcessMemory(pid, bytes, ptrWidth, maxPages, {
+    operation: "exec",
+    path,
+    argv: launchArgv,
+  });
   const newChannelOffset = newLayout.channelOffset;
 
   kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
@@ -1020,7 +1094,11 @@ async function handlePosixSpawn(
     memory: newMemory,
     layout: newLayout,
     threadAllocator,
-  } = createFreshProcessMemory(childPid, programBytes, ptrWidth);
+  } = createFreshProcessMemory(childPid, programBytes, ptrWidth, maxPages, {
+    operation: "posix_spawn",
+    path: argv[0],
+    argv,
+  });
   const newChannelOffset = newLayout.channelOffset;
 
   // Kernel already created the child via kernel_spawn_process.
