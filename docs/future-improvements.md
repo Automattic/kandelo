@@ -72,8 +72,8 @@ the injected TCP connection to a worker). That path appears to have
 regressed: with the same config, nginx accepts the connection
 (`sawWriteOpen=true` from the bridge) but never produces a response
 and the bridge times out after 60s. The standalone demo has been
-switched to single-process for now; LAMP/WordPress/nginx-php were
-already single-process and aren't affected.
+switched to a single nginx worker for now; LAMP/WordPress/nginx-php were
+already using a single nginx worker and aren't affected.
 
 The bug is likely in either: (a) connection-injection target selection
 when the listener fd is shared across pids via `dup`-on-fork, or (b)

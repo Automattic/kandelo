@@ -22,7 +22,9 @@ pub mod host_abi;
 /// 13: process memory layout ABI is Rust-declared; per-pthread slots
 ///     use explicit TLS/control, fork-save, channel, and spill pages,
 ///     with a wasm-declared reserved thread-slot count.
-pub const ABI_VERSION: u32 = 14;
+/// 15: remove the obsolete `kernel_set_mode` export; the kernel is always
+///     the shared point of contact for all programs.
+pub const ABI_VERSION: u32 = 15;
 
 /// Syscall numbers for the POSIX kernel interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1094,7 +1096,6 @@ pub mod abi {
         "kernel_mark_process_signaled",
         "kernel_reap_exited_child",
         "kernel_remove_process",
-        "kernel_set_mode",
         "kernel_wait4_poll",
     ];
 

@@ -36,7 +36,6 @@ wasm_require_exports "$OUT" \
     kernel_mark_process_signaled \
     kernel_reap_exited_child \
     kernel_remove_process \
-    kernel_set_mode \
     kernel_wait4_poll
 
 mkdir -p "$REPO_ROOT/local-binaries"

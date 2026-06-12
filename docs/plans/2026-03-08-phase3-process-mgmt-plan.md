@@ -2,7 +2,7 @@
 
 **Goal:** Add basic process identity and lifecycle APIs. Defer fork/exec/waitpid to Phase 3b.
 
-**Architecture:** Process struct extended with identity fields (ppid, uid, gid) and lifecycle state. Exit cleans up all resources. No multi-process support yet — the kernel still manages a single process per Wasm instance.
+**Architecture:** Process struct extended with identity fields (ppid, uid, gid) and lifecycle state. Exit cleans up all resources. This phase predates the shared process table used by the current kernel.
 
 ---
 

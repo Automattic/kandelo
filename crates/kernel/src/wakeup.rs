@@ -47,11 +47,7 @@ pub fn alloc_accept_wake_idx() -> u32 {
 }
 
 /// Push a wakeup event into the global buffer.
-/// Only generates events in centralized mode (host drains after each syscall).
 pub fn push(idx: u32, wake_type: u8) {
-    if !crate::is_centralized_mode() {
-        return;
-    }
     let events = unsafe { &mut *WAKEUP_BUFFER.events.get() };
     events.push(WakeupEvent { idx, wake_type });
 }
@@ -101,8 +97,6 @@ mod tests {
     #[test]
     fn test_push_and_drain() {
         reset();
-        // Enable centralized mode for test
-        crate::set_kernel_mode(1);
 
         push(5, WAKE_READABLE);
         push(10, WAKE_WRITABLE);
@@ -127,26 +121,24 @@ mod tests {
         // Buffer should be empty now
         let count2 = drain(&mut buf, 10);
         assert_eq!(count2, 0);
-
-        crate::set_kernel_mode(0);
     }
 
     #[test]
-    fn test_no_events_in_non_centralized_mode() {
+    fn test_push_always_records_events() {
         reset();
-        crate::set_kernel_mode(0);
 
         push(1, WAKE_READABLE);
 
         let mut buf = [0u8; 10];
         let count = drain(&mut buf, 10);
-        assert_eq!(count, 0);
+        assert_eq!(count, 1);
+        assert_eq!(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 1);
+        assert_eq!(buf[4], WAKE_READABLE);
     }
 
     #[test]
     fn test_drain_respects_max() {
         reset();
-        crate::set_kernel_mode(1);
 
         push(1, WAKE_READABLE);
         push(2, WAKE_WRITABLE);
@@ -159,7 +151,5 @@ mod tests {
         // drain clears all, even if not all were written
         let count2 = drain(&mut buf, 10);
         assert_eq!(count2, 0);
-
-        crate::set_kernel_mode(0);
     }
 }

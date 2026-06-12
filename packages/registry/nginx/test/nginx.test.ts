@@ -1,7 +1,7 @@
 /**
  * Regression test — nginx serving static HTML via kandelo.
  *
- * Starts nginx.wasm in centralized mode with master_process on + 2 workers,
+ * Starts nginx.wasm with master_process on + 2 workers,
  * sends HTTP requests through the TCP bridge, verifies responses, and tears down.
  */
 import { describe, it, expect } from "vitest";

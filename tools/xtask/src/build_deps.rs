@@ -978,8 +978,8 @@ pub struct ResolveOpts<'a> {
     /// `None` means "no force rebuild" (the default for every consumer
     /// other than the manual workflow). `local_libs` still wins over
     /// force_source_build (a hand-patched override is always honored).
-    /// The single-process resolver assumes no concurrent peers during
-    /// a force rebuild — see `build_into_cache`'s atomic-install comment.
+    /// A force rebuild assumes no concurrent resolver invocation for
+    /// the same package -- see `build_into_cache`'s atomic-install comment.
     pub force_source_build: Option<&'a BTreeSet<String>>,
     /// Refuse any source build or source fetch fallback. Used by CI
     /// binary-materialization gates, where package bytes must come from
