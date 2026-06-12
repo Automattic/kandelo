@@ -11,6 +11,8 @@ inputs = [
   "images/vfs/scripts/smtp-capture-helpers.ts",
   "images/vfs/scripts/source-extract-helper.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/vfs/scripts/wordpress-preinstall.ts",
+  "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
   "host/src/binary-resolver.ts",
   "host/src/constants.ts",
   "host/src/statfs.ts",
@@ -23,7 +25,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 6
+revision    = 7
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

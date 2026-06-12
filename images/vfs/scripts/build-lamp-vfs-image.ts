@@ -2,14 +2,12 @@
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
  * browser demo. dinit (PID 1) brings up the full stack:
  *
- *   mariadb-bootstrap (scripted) — wraps `mariadbd --bootstrap < SQL`
- *                                  with a sleep+kill timeout because
- *                                  mariadbd doesn't exit at stdin EOF.
- *   mariadb           (process)  — depends-on mariadb-bootstrap
+ *   mariadb           (process)  — starts from a build-time-initialized /data
  *   wp-config-init    (internal) — dependency marker. The browser host writes
  *                                  runtime wp-config.php before dinit starts.
  *   smtp-capture      (process)  — local SMTP sink storing mail under /var/mail
- *   php-fpm           (process)  — depends-on mariadb, wp-config-init, smtp-capture
+ *   mariadb-ready     (scripted) — waits for the MariaDB socket
+ *   php-fpm           (process)  — depends-on mariadb-ready, wp-config-init, smtp-capture
  *   nginx             (process)  — depends-on php-fpm
  *
  * Produces: apps/browser-demos/public/lamp.vfs
@@ -25,7 +23,11 @@ import {
   walkAndWrite,
   saveImage,
 } from "./vfs-image-helpers";
-import { addDinitInit, type DinitService } from "./dinit-image-helpers";
+import {
+  addDinitInit,
+  addPathReadinessService,
+  type DinitService,
+} from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
 import { prewarmOpcache } from "./opcache-prewarm";
 import {
@@ -44,6 +46,7 @@ import {
   wordpressSmtpCaptureMuPlugin,
 } from "./smtp-capture-helpers";
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
+import { preinstallWordPressMariaDb } from "./wordpress-preinstall";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
@@ -316,7 +319,10 @@ while [ $i -lt 60 ]; do
         # Marker present — give mariadbd a moment to flush its writes,
         # then tear it down. The persistent mariadb daemon will start
         # fresh on the populated /data and serve normal requests.
-        sleep 1
+        # In build-time preinstall this is the source of the runtime /data
+        # image, so prefer the old conservative bootstrap delay over
+        # fast-but-dirty crash recovery on the next daemon start.
+        sleep 60
         break
     fi
     sleep 1
@@ -328,29 +334,24 @@ kill -KILL $PID 2>/dev/null
 exit 0
 `;
 
-function buildServices(): DinitService[] {
+function buildServices(fs: MemoryFileSystem): DinitService[] {
+  const mariadbReady = addPathReadinessService(fs, {
+    name: "mariadb-ready",
+    path: MARIADB_SOCKET_PATH,
+    dependsOn: ["mariadb"],
+    label: "MariaDB",
+  });
+
   return [
-    {
-      name: "mariadb-bootstrap",
-      type: "scripted",
-      command: "/bin/sh /etc/mariadb/bootstrap.sh",
-      logfile: "/var/log/mariadb-bootstrap.log",
-      restart: false,
-    },
     {
       name: "mariadb",
       type: "process",
       command: "/usr/sbin/mariadbd --no-defaults --user=mysql " +
         "--datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria " +
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
-        "--sort-buffer-size=262144 --skip-networking=0 --port=3306 " +
-        `--bind-address=0.0.0.0 --socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
-        "--log-error=/data/error.log " +
-        // --init-file runs after the daemon is ready — guarantees the
-        // wordpress DB exists even if the bootstrap timeout-and-kill
-        // truncated the original CREATE DATABASE.
-        "--init-file=/etc/mariadb/init.sql",
-      dependsOn: ["mariadb-bootstrap"],
+        "--sort-buffer-size=262144 --skip-networking " +
+        `--socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
+        "--log-error=/data/error.log",
       logfile: "/var/log/mariadb.log",
       restart: false,
     },
@@ -360,11 +361,12 @@ function buildServices(): DinitService[] {
       restart: false,
     },
     smtpCaptureService(),
+    mariadbReady,
     {
       name: "php-fpm",
       type: "process",
       command: "/usr/sbin/php-fpm -y /etc/php-fpm.conf -c /etc/php.ini --nodaemonize",
-      dependsOn: ["mariadb", "wp-config-init", "smtp-capture"],
+      dependsOn: ["mariadb-ready", "wp-config-init", "smtp-capture"],
       logfile: "/var/log/php-fpm.log",
       restart: false,
     },
@@ -445,14 +447,9 @@ async function main() {
   populatePhpFpmConfig(fs);
   populateSmtpCaptureConfig(fs);
 
-  // Bootstrap scripts + default wp-config. The browser host overwrites
-  // wp-config.php with the current page prefix/protocol before dinit starts.
+  // Build-time MariaDB bootstrap script + default wp-config. The browser host
+  // overwrites wp-config.php with the current page prefix/protocol before dinit starts.
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sh", MARIADB_BOOTSTRAP_SCRIPT);
-  // mariadbd --init-file runs at server startup — used as a belt-and-
-  // suspenders guarantee that the wordpress DB exists, since the
-  // bootstrap timeout-and-kill might truncate the original
-  // CREATE DATABASE during system-table replay.
-  writeVfsFile(fs, "/etc/mariadb/init.sql", "CREATE DATABASE IF NOT EXISTS wordpress;\n");
   writeVfsFile(fs, "/etc/wp-config-template.php", wordpressConfigTemplate("mariadb"));
   writeVfsFile(fs, "/etc/wp-config-init.sh", WORDPRESS_CONFIG_INIT_SCRIPT);
   ensureDirRecursive(fs, "/var/www/html");
@@ -475,7 +472,9 @@ async function main() {
   console.log(`  WordPress core: ${wpCount} files`);
 
   // Service tree
-  addDinitInit(fs, buildServices());
+  addDinitInit(fs, buildServices(fs));
+
+  await preinstallWordPressMariaDb(fs);
 
   // Prewarm opcache: see build-wp-vfs-image.ts for context.
   await prewarmOpcache(fs, {
