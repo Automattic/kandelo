@@ -1,0 +1,1 @@
+var a="/kandelo/assets/fbtest-M6ZpYcTI.wasm";export{a as default};
