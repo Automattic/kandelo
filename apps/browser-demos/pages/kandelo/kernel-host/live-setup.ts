@@ -1,6 +1,7 @@
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
 import {
   ensureServiceWorkerReady,
   initServiceWorkerBridge,
@@ -86,6 +87,12 @@ const OPTIONAL_BINARY_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/modeset.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/evdev_demo.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/evdev_demo.wasm", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -229,6 +236,7 @@ const LIVE_DEMO_IDS = [
   "wordpress-mariadb",
   "doom",
   "modeset",
+  "evdev",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -333,6 +341,9 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  evdev: {
+    image: "shell",
+  },
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
@@ -377,6 +388,13 @@ interface LiveProfile {
    * `framebufferTest` path for /dev/fb0 demos.
    */
   modesetDemo: boolean;
+  /**
+   * Stage `evdev_demo` into `/usr/local/bin`, attach a `BrowserInputSource`
+   * to the window so keyboard/pointer events flow into the kernel's
+   * `/dev/input/event{0,1}`, and run the binary from bash so its event
+   * log streams to the user's Shell pane. The C1 sysroot vendoring proof.
+   */
+  evdevDemo: boolean;
 }
 
 interface WebReadinessState {
@@ -666,6 +684,7 @@ function customVfsProfile(
     maxVfsByteLength: 256 * 1024 * 1024,
     framebufferTest: fb === "test",
     modesetDemo: false,
+    evdevDemo: false,
   };
 }
 
@@ -686,6 +705,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       init: software.init,
       framebufferTest: false,
       modesetDemo: false,
+      evdevDemo: false,
     };
   }
 
@@ -716,6 +736,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     },
     framebufferTest: fb === "test",
     modesetDemo: normalized === "modeset",
+    evdevDemo: normalized === "evdev",
   };
 }
 
@@ -1037,6 +1058,51 @@ async function bootProfile(
         "../../../../../binaries/programs/wasm32/modeset.wasm",
       ], "modeset.wasm");
       void spawnLazy(kernel, "/usr/local/bin/modeset", modesetWasmUrl, ["modeset"], tick);
+    } else if (profile.evdevDemo) {
+      // Stage evdev_demo into the VFS so bash can exec it, attach a
+      // BrowserInputSource to window so DOM keyboard/pointer events flow
+      // into `/dev/input/event{0,1}`, then run the binary through bash so
+      // its stdout streams to the user's Shell pane. autoCommand isn't
+      // used here because the staging has to happen before exec, and we
+      // want the InputSource attached before the program starts polling.
+      const kernelForEvdev = kernel;
+      void (async () => {
+        try {
+          const evdevDemoWasmUrl = await optionalBinaryUrl([
+            "../../../../../local-binaries/programs/wasm32/evdev_demo.wasm",
+            "../../../../../binaries/programs/wasm32/evdev_demo.wasm",
+          ], "evdev_demo.wasm");
+          tick("staging evdev_demo binary...");
+          const bytes = await fetch(evdevDemoWasmUrl)
+            .then(failOn("evdev_demo.wasm"))
+            .then((r) => r.arrayBuffer());
+          ensureDirRecursive(kernelForEvdev.fs, "/usr/local/bin");
+          writeVfsBinary(
+            kernelForEvdev.fs,
+            "/usr/local/bin/evdev_demo",
+            new Uint8Array(bytes),
+            0o755,
+          );
+          tick("attaching input source...");
+          kernelForEvdev.attachInputSource(new BrowserInputSource(window), {
+            width: window.innerWidth,
+            height: window.innerHeight,
+          });
+          tick("running evdev_demo...");
+          // evdev_demo runs forever; runShellCommand resolves when the
+          // bash prompt reappears (it never will) or rejects after its
+          // internal 5-minute timeout. Both are expected — log neutrally.
+          await host.runShellCommand("/usr/local/bin/evdev_demo");
+          tick("evdev_demo exited");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/timed out waiting for PTY prompt/.test(msg)) {
+            tick("evdev_demo running (long-tail; no further status updates)");
+          } else {
+            tick(`evdev_demo failed: ${msg}`);
+          }
+        }
+      })();
     } else if (presentation?.autoCommand) {
       tick("starting configured command from bash...");
       void host.runShellCommand(presentation.autoCommand).catch((err) => {

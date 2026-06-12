@@ -187,6 +187,34 @@ echo "==> Building sigsetjmp helpers..."
 echo "==> Installing override headers..."
 bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$SYSROOT"
 
+# ---------------------------------------------------------------
+# 10. Build libdrm static archive (DRI user-space shim).
+#     Implementation: libc/glue/libdrm_stub.c.
+#     Headers:        libc/musl-overlay/include/{xf86drm.h,drm/*.h}.
+#     Consumers link with -ldrm; the archive sits beside libc.a.
+# ---------------------------------------------------------------
+echo "==> Building libdrm static archive..."
+"$CC" --target=$TARGET -O2 \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "$REPO_ROOT/libc/glue/libdrm_stub.c" \
+    -o "$SYSROOT/lib/libdrm_stub.o"
+"$AR" rcs "$SYSROOT/lib/libdrm.a" "$SYSROOT/lib/libdrm_stub.o"
+
+# ---------------------------------------------------------------
+# 11. Build libgbm static archive (DRI buffer-object shim).
+#     Implementation: libc/glue/libgbm_stub.c.
+#     Header:         libc/musl-overlay/include/gbm.h.
+#     Consumers link with -lgbm -ldrm (gbm wraps drm ioctls).
+# ---------------------------------------------------------------
+echo "==> Building libgbm static archive..."
+"$CC" --target=$TARGET -O2 \
+    -matomics -mbulk-memory \
+    -I"$SYSROOT/include" \
+    -c "$REPO_ROOT/libc/glue/libgbm_stub.c" \
+    -o "$SYSROOT/lib/libgbm_stub.o"
+"$AR" rcs "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libgbm_stub.o"
+
 echo ""
 echo "==> musl build complete!"
 echo "    Sysroot: $SYSROOT"

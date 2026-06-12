@@ -128,4 +128,15 @@ export const PRESET_LIBRARY: Preset[] = [
     bootCommand: ["bash", "-l", "-i"],
     estimatedUrlBytes: 612,
   },
+  {
+    id: "evdev",
+    title: "Evdev input log",
+    summary: "Keystrokes + pointer motion captured from the DOM and replayed through /dev/input/event{0,1}.",
+    base: SHELL_BASE,
+    packages: ["bash@local", "coreutils@local"],
+    accent: "#7e57c2",
+    glyph: "E",
+    bootCommand: ["bash", "-l", "-i"],
+    estimatedUrlBytes: 612,
+  },
 ];
