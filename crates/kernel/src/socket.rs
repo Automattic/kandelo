@@ -65,6 +65,7 @@ pub enum SocketDomain {
     Unix,
     Inet,
     Inet6,
+    Netlink,
 }
 
 /// Socket type.
@@ -293,6 +294,9 @@ pub struct SocketInfo {
     pub accept_wake_idx: Option<u32>,
     /// Received UDP datagrams (for DGRAM sockets).
     pub dgram_queue: Vec<Datagram>,
+    /// Received netlink datagrams. Netlink sockets are datagram-like and are
+    /// used by musl for route/interface enumeration.
+    pub netlink_queue: Vec<Vec<u8>>,
     /// Whether recv/send pipe indices refer to the global pipe table. Kept in
     /// serialized state for compatibility; runtime socket buffers are global.
     pub global_pipes: bool,
@@ -334,7 +338,8 @@ impl SocketInfo {
             shared_backlog_idx: None,
             accept_wake_idx: None,
             dgram_queue: Vec::new(),
-            global_pipes: true,
+            netlink_queue: Vec::new(),
+            global_pipes: false,
             oob_byte: None,
             recv_timeout_us: 0,
             send_timeout_us: 0,
@@ -374,6 +379,7 @@ impl SocketInfo {
 ///
 /// Discarded in the child:
 ///   * `dgram_queue` — buffered UDP datagrams.
+///   * `netlink_queue` — buffered netlink replies.
 ///   * `oob_byte` — pending TCP out-of-band byte.
 ///   * `listen_backlog` — legacy per-process pre-accepted connections.
 ///     Indices reference other entries in this process's SocketTable; if
@@ -408,6 +414,7 @@ impl Clone for SocketInfo {
             shared_backlog_idx: self.shared_backlog_idx,
             accept_wake_idx: self.accept_wake_idx,
             dgram_queue: Vec::new(), // consume-once: don't double-deliver
+            netlink_queue: Vec::new(), // consume-once: don't double-deliver
             global_pipes: self.global_pipes,
             oob_byte: None, // consume-once: don't double-deliver
             recv_timeout_us: self.recv_timeout_us,

@@ -680,6 +680,7 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                     SocketDomain::Unix => 0,
                     SocketDomain::Inet => 1,
                     SocketDomain::Inet6 => 2,
+                    SocketDomain::Netlink => 3,
                 })?;
                 w.write_u32(match sock.sock_type {
                     SocketType::Stream => 0,
@@ -1044,6 +1045,7 @@ pub fn deserialize_fork_state(buf: &[u8], child_pid: u32) -> Result<Process, Err
                 0 => SocketDomain::Unix,
                 1 => SocketDomain::Inet,
                 2 => SocketDomain::Inet6,
+                3 => SocketDomain::Netlink,
                 _ => return Err(Errno::EINVAL),
             };
             let sock_type = match r.read_u32()? {
@@ -1396,6 +1398,7 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                     SocketDomain::Unix => 0,
                     SocketDomain::Inet => 1,
                     SocketDomain::Inet6 => 2,
+                    SocketDomain::Netlink => 3,
                 })?;
                 w.write_u32(match sock.sock_type {
                     SocketType::Stream => 0,

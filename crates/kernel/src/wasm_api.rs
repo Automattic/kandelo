@@ -6415,6 +6415,7 @@ fn extract_scm_rights(
                                         SocketDomain::Unix => 0,
                                         SocketDomain::Inet => 1,
                                         SocketDomain::Inet6 => 2,
+                                        SocketDomain::Netlink => 3,
                                     },
                                     sock_type: match sock.sock_type {
                                         SocketType::Stream => 0,
@@ -6566,7 +6567,8 @@ fn install_scm_rights_fds(
                     let domain = match sock_data.domain {
                         0 => SocketDomain::Unix,
                         1 => SocketDomain::Inet,
-                        _ => SocketDomain::Inet6,
+                        2 => SocketDomain::Inet6,
+                        _ => SocketDomain::Netlink,
                     };
                     let sock_type = match sock_data.sock_type {
                         0 => SocketType::Stream,
@@ -7232,6 +7234,9 @@ pub extern "C" fn kernel_accept4(
                                         unsafe { slice::from_raw_parts_mut(addr_ptr, n) };
                                     addr_buf.copy_from_slice(&sa[..n]);
                                     addrlen_buf.copy_from_slice(&28u32.to_le_bytes());
+                                }
+                                crate::socket::SocketDomain::Netlink => {
+                                    addrlen_buf.copy_from_slice(&0u32.to_le_bytes());
                                 }
                             }
                         }
