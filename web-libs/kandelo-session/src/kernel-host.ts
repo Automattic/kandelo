@@ -268,6 +268,7 @@ export interface WebPreviewState {
   url: string;
   status: WebPreviewStatus;
   message?: string;
+  pendingRequests?: number;
 }
 
 // ── Presentation intent ──────────────────────────────────────────────────
@@ -496,6 +497,10 @@ class ListenerSet<T> {
   size(): number {
     return this.listeners.size;
   }
+}
+
+function clampPendingRequestCount(count: number): number {
+  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
 
 function ptyBufferEndsWithPrompt(buffer: string): boolean {
@@ -812,9 +817,28 @@ export class LiveKernelHost implements KernelHost {
   }
 
   setWebPreview(state: WebPreviewState | null): void {
-    this.webPreview = state ? { ...state } : null;
+    if (!state) {
+      this.webPreview = null;
+      this.webPreviewListeners.emit(this.getWebPreview());
+      this.refreshWebAvailability();
+      return;
+    }
+    this.webPreview = {
+      ...state,
+      pendingRequests: clampPendingRequestCount(
+        state.pendingRequests ?? this.webPreview?.pendingRequests ?? 0,
+      ),
+    };
     this.webPreviewListeners.emit(this.getWebPreview());
     this.refreshWebAvailability();
+  }
+
+  setWebPreviewPendingRequests(count: number): void {
+    if (!this.webPreview) return;
+    const pendingRequests = clampPendingRequestCount(count);
+    if ((this.webPreview.pendingRequests ?? 0) === pendingRequests) return;
+    this.webPreview = { ...this.webPreview, pendingRequests };
+    this.webPreviewListeners.emit(this.getWebPreview());
   }
 
   private setSurfaceAvailability(patch: Partial<SurfaceAvailability>): void {

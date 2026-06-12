@@ -1098,6 +1098,9 @@ async function bootProfile(
       onStdout: (data) => recordProcessOutput(data, "stdout"),
       onStderr: (data) => recordProcessOutput(data, "stderr"),
       onProcessEvent: (event) => { if (isCurrent()) host.emitProcessEvent(event); },
+      onHttpBridgePendingRequests: (count) => {
+        if (isCurrent()) host.setWebPreviewPendingRequests(count);
+      },
       onListenTcp: (pid, _fd, port) => {
         if (!isCurrent()) return;
         seenPorts.add(port);

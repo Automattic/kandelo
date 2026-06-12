@@ -444,6 +444,15 @@ export interface ProcEventMessage {
   ppid?: number;
 }
 
+/**
+ * Number of service-worker preview requests currently being served through
+ * the transferred HTTP bridge.
+ */
+export interface HttpBridgePendingMessage {
+  type: "http_bridge_pending";
+  count: number;
+}
+
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
@@ -457,4 +466,5 @@ export type KernelToMainMessage =
   | FbUnbindMessage
   | FbRebindMemoryMessage
   | FbWriteMessage
-  | ProcEventMessage;
+  | ProcEventMessage
+  | HttpBridgePendingMessage;
