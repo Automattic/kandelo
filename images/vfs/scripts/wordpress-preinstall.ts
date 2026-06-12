@@ -59,7 +59,6 @@ const DUMP_END = "===WPDB_DUMP_END===";
 interface KernelSession {
   host: NodeKernelHost;
   dashBytes: ArrayBuffer;
-  mariadbBytes: ArrayBuffer;
   hostDataDir?: string;
   runPhp: (phase: string, script: string, opts?: RunPhpOptions) => Promise<Uint8Array>;
   runPhpToHostFile: (
@@ -127,9 +126,10 @@ export async function preinstallWordPressMariaDb(fs: MemoryFileSystem): Promise<
   console.log("[wp-preinstall:mariadb] initializing MariaDB /data and installing WordPress...");
   const hostDataDir = mkdtempSync(join(tmpdir(), "wp-preinstall-data-"));
   try {
+    const mariadbBytes = loadProgram("programs/mariadb/mariadbd.wasm");
     prepareHostMariaDbDataDir(hostDataDir);
     await withKernelSession(fs, async (session) => {
-    await bootstrapMariaDbSystemTables(session, fs);
+      await bootstrapMariaDbSystemTables(session, fs, mariadbBytes);
     }, {
       maxWorkers: 16,
       dataBufferSize: 256 * 1024,
@@ -139,59 +139,59 @@ export async function preinstallWordPressMariaDb(fs: MemoryFileSystem): Promise<
     makeHostMariaDbDataWritable(hostDataDir);
 
     await withKernelSession(fs, async (session) => {
-    if (!session.hostDataDir) {
-      throw new Error("MariaDB preinstall requires a host-mounted /data directory");
-    }
-    let mariadbPid = 0;
-    let resolveStarted!: (pid: number) => void;
-    const started = new Promise<number>((resolve) => { resolveStarted = resolve; });
-    const serverExit = session.host.spawn(
-      session.mariadbBytes,
-      ["mariadbd", ...mariadbServerArgs()],
-      {
-        env: BASE_ENV,
-        cwd: "/data",
-        onStarted: (pid) => {
-          mariadbPid = pid;
-          resolveStarted(pid);
-        },
-      },
-    );
-    serverExit.catch(() => {});
-    await withTimeout(started, 10_000, "mariadbd did not start");
-
-    try {
-      await Promise.race([
-        waitForHostPath(join(session.hostDataDir, "mysql.sock"), 180_000),
-        serverExit.then((code) => {
-          throw new Error(`mariadbd exited before readiness check completed with code ${code}`);
-        }),
-      ]);
-      await session.runPhp("install", wordpressInstallScript(), {
-        cwd: "/var/www/html",
-        timeoutMs: 240_000,
-      });
-      await session.runPhp("shutdown MariaDB", shutdownMariaDbScript(), {
-        cwd: "/var/www/html",
-        timeoutMs: 30_000,
-      });
-      await Promise.race([serverExit, delay(10_000)]);
-    } catch (err) {
-      const diagnostics = collectHostMariaDbDiagnostics(session.hostDataDir);
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`${message}\n${diagnostics}`);
-    } finally {
-      if (mariadbPid !== 0 && await isProcessLive(session.host, mariadbPid)) {
-        await session.host.terminateProcess(mariadbPid, 0).catch(() => {});
-        await Promise.race([serverExit, delay(2_000)]).catch(() => {});
+      if (!session.hostDataDir) {
+        throw new Error("MariaDB preinstall requires a host-mounted /data directory");
       }
-    }
+      let mariadbPid = 0;
+      let resolveStarted!: (pid: number) => void;
+      const started = new Promise<number>((resolve) => { resolveStarted = resolve; });
+      const serverExit = session.host.spawn(
+        mariadbBytes,
+        ["mariadbd", ...mariadbServerArgs()],
+        {
+          env: BASE_ENV,
+          cwd: "/data",
+          onStarted: (pid) => {
+            mariadbPid = pid;
+            resolveStarted(pid);
+          },
+        },
+      );
+      serverExit.catch(() => {});
+      await withTimeout(started, 10_000, "mariadbd did not start");
 
-    const written = ingestHostDirectory(session.hostDataDir, fs, "/data");
-    assertVfsPath(fs, "/data/mysql");
-    assertVfsPath(fs, "/data/wordpress");
-    ensureMariaDbDataOwnership(fs);
-    console.log(`[wp-preinstall:mariadb] wrote ${written} /data entries`);
+      try {
+        await Promise.race([
+          waitForHostPath(join(session.hostDataDir, "mysql.sock"), 180_000),
+          serverExit.then((code) => {
+            throw new Error(`mariadbd exited before readiness check completed with code ${code}`);
+          }),
+        ]);
+        await session.runPhp("install", wordpressInstallScript(), {
+          cwd: "/var/www/html",
+          timeoutMs: 240_000,
+        });
+        await session.runPhp("shutdown MariaDB", shutdownMariaDbScript(), {
+          cwd: "/var/www/html",
+          timeoutMs: 30_000,
+        });
+        await Promise.race([serverExit, delay(10_000)]);
+      } catch (err) {
+        const diagnostics = collectHostMariaDbDiagnostics(session.hostDataDir);
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`${message}\n${diagnostics}`);
+      } finally {
+        if (mariadbPid !== 0 && await isProcessLive(session.host, mariadbPid)) {
+          await session.host.terminateProcess(mariadbPid, 0).catch(() => {});
+          await Promise.race([serverExit, delay(2_000)]).catch(() => {});
+        }
+      }
+
+      const written = ingestHostDirectory(session.hostDataDir, fs, "/data");
+      assertVfsPath(fs, "/data/mysql");
+      assertVfsPath(fs, "/data/wordpress");
+      ensureMariaDbDataOwnership(fs);
+      console.log(`[wp-preinstall:mariadb] wrote ${written} /data entries`);
     }, {
       maxWorkers: 16,
       dataBufferSize: 256 * 1024,
@@ -244,11 +244,9 @@ async function withKernelSession(
     await host.init();
     const phpBytes = loadProgram("programs/php/php.wasm");
     const dashBytes = loadProgram("programs/dash.wasm");
-    const mariadbBytes = loadProgram("programs/mariadb/mariadbd.wasm");
     const session: KernelSession = {
       host,
       dashBytes,
-      mariadbBytes,
       hostDataDir,
       runPhp: async (phase, script, opts = {}) => {
         const chunks: Uint8Array[] = [];
@@ -381,6 +379,7 @@ function makeHostMariaDbDataWritable(hostDataDir: string): void {
 async function bootstrapMariaDbSystemTables(
   session: KernelSession,
   fs: MemoryFileSystem,
+  mariadbBytes: ArrayBuffer,
 ): Promise<void> {
   if (!session.hostDataDir) {
     throw new Error("MariaDB bootstrap requires hostDataDir");
@@ -390,7 +389,7 @@ async function bootstrapMariaDbSystemTables(
   let resolveStarted!: (pid: number) => void;
   const started = new Promise<number>((resolve) => { resolveStarted = resolve; });
   const bootstrapExit = session.host.spawn(
-    session.mariadbBytes,
+    mariadbBytes,
     ["mariadbd", ...mariadbBootstrapArgs()],
     {
       env: BASE_ENV,
