@@ -41,8 +41,9 @@ NEXT_KNOWN_SKIP_FILES=()
 
 # Kandelo's wasm32 SpiderMonkey build does not provide native 64-bit atomic
 # operations, so BigInt64Array/BigUint64Array atomics crash the browser-hosted
-# shell with MOZ_CRASH("No 64-bit atomics"). Keep this browser-only and
-# file-scoped so the rest of the atomics directory continues to run.
+# shell with MOZ_CRASH("No 64-bit atomics"). Keep these browser-only and
+# file-scoped so the rest of the atomics directories continue to run.
+FILTERED_JSTEST_SELECTORS=()
 KANDELO_BROWSER_WASM32_KNOWN_JIT_SKIP_FILES=(
   "atomics/bigint-add-for-effect.js"
   "atomics/bigint-add.js"
@@ -249,6 +250,60 @@ rel_jit_test_path() {
   printf '%s\n' "${file#$SM_SOURCE/js/src/jit-test/tests/}"
 }
 
+rel_jstest_path() {
+  local file="$1"
+  printf '%s\n' "${file#$SM_SOURCE/js/src/tests/}"
+}
+
+rel_suite_test_path() {
+  local suite="$1"
+  local file="$2"
+  case "$suite" in
+    jstests)
+      rel_jstest_path "$file"
+      ;;
+    jit-tests)
+      rel_jit_test_path "$file"
+      ;;
+    *)
+      printf '%s\n' "$file"
+      ;;
+  esac
+}
+
+is_kandelo_browser_wasm32_known_jstest_skip() {
+  local host="$1"
+  local file="$2"
+  local rel
+  if [ "$host" != "browser" ]; then
+    return 1
+  fi
+  rel="$(rel_jstest_path "$file")"
+  case "$rel" in
+    test262/built-ins/Atomics/*/bigint/*.js)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+is_kandelo_browser_wasm32_known_jstest_skip_dir() {
+  local host="$1"
+  local dir="$2"
+  local rel
+  if [ "$host" != "browser" ]; then
+    return 1
+  fi
+  rel="${dir#$SM_SOURCE/js/src/tests/}"
+  rel="${rel%/}"
+  case "$rel" in
+    test262/built-ins/Atomics/*/bigint)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 is_kandelo_browser_wasm32_known_jit_skip() {
   local host="$1"
   local file="$2"
@@ -281,6 +336,22 @@ filter_kandelo_known_jit_skips() {
   done
 }
 
+filter_kandelo_known_jstest_skips() {
+  local host="$1"
+  shift
+  FILTERED_JSTEST_SELECTORS=()
+  KANDELO_KNOWN_SKIP_FILES=()
+  local selector file
+  for selector in "$@"; do
+    file="$SM_SOURCE/js/src/tests/$selector"
+    if [ -f "$file" ] && is_kandelo_browser_wasm32_known_jstest_skip "$host" "$file"; then
+      KANDELO_KNOWN_SKIP_FILES+=("$file")
+    else
+      FILTERED_JSTEST_SELECTORS+=("$selector")
+    fi
+  done
+}
+
 queue_known_skip_entries() {
   NEXT_KNOWN_SKIP_FILES=("$@")
 }
@@ -297,8 +368,27 @@ jitflag_variant_count() {
   esac
 }
 
+expected_jstest_variant_count() {
+  case "$JSTEST_JITFLAGS" in
+    all|jstests) printf '4\n' ;;
+    ion) printf '2\n' ;;
+    debug) printf '3\n' ;;
+    baseline|interp|none) printf '1\n' ;;
+    *) printf '1\n' ;;
+  esac
+}
+
 known_skip_entry_count() {
-  local file="$1"
+  local suite="$1"
+  local file="$2"
+  if [ "$suite" = "jstests" ]; then
+    expected_jstest_variant_count
+    return 0
+  fi
+  if [ "$suite" != "jit-tests" ]; then
+    printf '1\n'
+    return 0
+  fi
   local count joins
   count="$(jitflag_variant_count)"
   joins="$({ head -n 1 "$file" | grep -o 'test-join=' || true; } | wc -l | tr -d ' ')"
@@ -310,10 +400,12 @@ known_skip_entry_count() {
 }
 
 write_known_skip_entries() {
+  local suite="$1"
+  shift
   local file rel count index
   for file in "$@"; do
-    rel="$(rel_jit_test_path "$file")"
-    count="$(known_skip_entry_count "$file")"
+    rel="$(rel_suite_test_path "$suite" "$file")"
+    count="$(known_skip_entry_count "$suite" "$file")"
     index=1
     while [ "$index" -le "$count" ]; do
       printf 'TEST-KNOWN-FAIL | %s | skipped: Kandelo wasm32 SpiderMonkey lacks 64-bit atomic operations (variant %s/%s)\n' \
@@ -480,7 +572,7 @@ run_chunk() {
   echo "===== $(date -u +%FT%TZ) $host $suite $chunk =====" | tee -a "$RESULTS_DIR/progress.log"
   set +e
   if [ "${#known_skip_files[@]}" -gt 0 ]; then
-    write_known_skip_entries "${known_skip_files[@]}" > "$log"
+    write_known_skip_entries "$suite" "${known_skip_files[@]}" > "$log"
     run_upstream_chunk "$suite" "$@" >> "$log" 2>&1
   else
     run_upstream_chunk "$suite" "$@" > "$log" 2>&1
@@ -507,7 +599,7 @@ record_known_skip_only_chunk() {
   fi
 
   echo "===== $(date -u +%FT%TZ) $host $suite $chunk =====" | tee -a "$RESULTS_DIR/progress.log"
-  write_known_skip_entries "$@" > "$log"
+  write_known_skip_entries "$suite" "$@" > "$log"
   record_result "$host" "$suite" "$chunk" 0 "$log"
 }
 
@@ -575,7 +667,13 @@ run_jstest_selector_group() {
   if [ "$#" -eq 0 ]; then
     return 0
   fi
-  run_chunk "$host" jstests "$chunk" "$@"
+  filter_kandelo_known_jstest_skips "$host" "$@"
+  if [ "${#FILTERED_JSTEST_SELECTORS[@]}" -gt 0 ]; then
+    queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+    run_chunk "$host" jstests "$chunk" "${FILTERED_JSTEST_SELECTORS[@]}"
+  else
+    record_known_skip_only_chunk "$host" jstests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+  fi
 }
 
 run_jstest_file_groups() {
@@ -600,7 +698,7 @@ run_jstest_dir_recursive() {
   local host="$1"
   local dir="$2"
   local chunk="$3"
-  local count child child_chunk direct_files=()
+  local count child child_chunk direct_files=() known_skip_files=() selectors=()
 
   count="$(count_runnable_jstest_files "$dir")"
   if [ "$count" -eq 0 ]; then
@@ -608,7 +706,30 @@ run_jstest_dir_recursive() {
     return 0
   fi
 
+  if is_kandelo_browser_wasm32_known_jstest_skip_dir "$host" "$dir"; then
+    while IFS= read -r -d '' child; do
+      known_skip_files+=("$child")
+    done < <(find "$dir" -type f -name '*.js' ! -name 'shell.js' ! -name 'browser.js' ! -name 'template.js' ! -name 'user.js' ! -name 'js-test-driver-begin.js' ! -name 'js-test-driver-end.js' -print0 | sort -z)
+    record_known_skip_only_chunk "$host" jstests "$chunk" "${known_skip_files[@]}"
+    return 0
+  fi
+
   if [ "$count" -le "$JSTEST_CHUNK_SIZE" ]; then
+    if [ "$host" = "browser" ]; then
+      while IFS= read -r -d '' child; do
+        selectors+=("${child#$SM_SOURCE/js/src/tests/}")
+      done < <(find "$dir" -type f -name '*.js' ! -name 'shell.js' ! -name 'browser.js' ! -name 'template.js' ! -name 'user.js' ! -name 'js-test-driver-begin.js' ! -name 'js-test-driver-end.js' -print0 | sort -z)
+      filter_kandelo_known_jstest_skips "$host" "${selectors[@]}"
+      if [ "${#KANDELO_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
+        if [ "${#FILTERED_JSTEST_SELECTORS[@]}" -gt 0 ]; then
+          queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+          run_chunk "$host" jstests "$chunk" "${FILTERED_JSTEST_SELECTORS[@]}"
+        else
+          record_known_skip_only_chunk "$host" jstests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        fi
+        return 0
+      fi
+    fi
     run_chunk "$host" jstests "$chunk" "$chunk/"
     return 0
   fi
