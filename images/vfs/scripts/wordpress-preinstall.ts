@@ -60,7 +60,6 @@ const DUMP_END = "===WPDB_DUMP_END===";
 
 interface KernelSession {
   host: NodeKernelHost;
-  dashBytes: ArrayBuffer;
   hostDataDir?: string;
   runPhp: (phase: string, script: string, opts?: RunPhpOptions) => Promise<Uint8Array>;
   runPhpToHostFile: (
@@ -245,10 +244,8 @@ async function withKernelSession(
   try {
     await host.init();
     const phpBytes = loadProgram("programs/php/php.wasm");
-    const dashBytes = loadProgram("programs/dash.wasm");
     const session: KernelSession = {
       host,
-      dashBytes,
       hostDataDir,
       runPhp: async (phase, script, opts = {}) => {
         const chunks: Uint8Array[] = [];
