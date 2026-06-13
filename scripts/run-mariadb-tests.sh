@@ -551,6 +551,7 @@ EXPECTED_PASS=(
     group_min_max
     group_min_max_innodb
     group_min_max_notembedded
+    grant_lowercase
     huge_frm-6224
     index_intersect_innodb
     information_schema_chmod
@@ -567,6 +568,8 @@ EXPECTED_PASS=(
     lock_kill
     lock_tables_lost_commit
     locked_temporary-5955
+    lowercase_table_qcache
+    lowercase_view
     long_unique_bugs_no_sp_protocol
     long_unique_delayed
 )
