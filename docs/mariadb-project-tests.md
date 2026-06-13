@@ -85,6 +85,43 @@ container, Chromium also needs:
 export LD_LIBRARY_PATH=/tmp/pwdeps/root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 ```
 
+## Current Node full-suite status (2026-06-13)
+
+The `kad-qun.4` Node full-suite artifact is
+`test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/`. The primary run
+covered chunks 1-119 with 60s per-test timeouts, but chunk 56 hit the known
+zero-result harness path (`kad-lf9`): the MariaDB server selected an in-use TCP
+port, the chunk reported `TOTAL: 0`, and the wrapper continued.
+
+The literal primary wrapper counts are 596 PASS, 27 FAIL, 311 XFAIL, 0 XPASS,
+239 SKIP, 1173 TOTAL, exit 1. Exact reruns on the current integration branch
+refreshed the chunks affected by in-flight fixes and the zero-result chunk:
+
+| Chunk | Reason | PASS | FAIL | XFAIL | XPASS | SKIP | TOTAL |
+|-------|--------|------|------|-------|-------|------|-------|
+| 54 | `lowercase_fs_on` current classification | 3 | 0 | 5 | 0 | 2 | 10 |
+| 55 | `lowercase_table2` grant-table check | 5 | 1 | 1 | 0 | 3 | 10 |
+| 56 | `kad-lf9` zero-result rerun | 5 | 0 | 4 | 0 | 1 | 10 |
+| 92 | stored-procedure OOM isolation | 8 | 0 | 2 | 0 | 0 | 10 |
+
+With those reruns substituted, the current Node status is 608 PASS, 18 FAIL,
+317 XFAIL, 0 XPASS, 240 SKIP, 1183 TOTAL, exit 1. The unexpected failures are:
+`check`, `count_distinct2`, `cte_recursive`, `derived_opt`, `huge_frm-6224`,
+`lowercase_table2`, `mrr_icp_extra`, `precedence`, `range`, `range_aria_dbt3`,
+`range_mrr_icp`, `selectivity`, `sp_stress_case`, `subselect_mat`,
+`subselect_sj`, `subselect_sj_jcl6`, `subselect_sj_mat`, and
+`win_big-mdev-11697`. No XPASS items were observed.
+
+Root-cause direction: most unexpected failures are long-running optimizer,
+range, subselect, or window-function tests timing out under the current 60s
+Node budget; `range_aria_dbt3` and `range_mrr_icp` hit the harness hard timeout
+after restart overhead. `sp_stress_case` still trips MariaDB OOM, but the
+current harness re-bootstraps afterward so later stored-procedure tests no
+longer cascade through `mysql.proc` corruption. `lowercase_table2` still fails
+on this integration branch because the grant-table bootstrap fix exists on
+`origin/polecat/capable/kad-qun.14@mqccw6g2` but is not yet in
+`integration/kad-qun-mariadb-tests`.
+
 ## Historical PR #3 status (2026-06-05)
 
 The following numbers came from the reference PR #3 branch and are preserved
