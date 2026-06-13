@@ -44,6 +44,18 @@ let kernelBytes: ArrayBuffer | null = null;
 let vfsImageBytes: Uint8Array | null = null;
 let testfixtureBytes: ArrayBuffer | null = null;
 
+const DEFAULT_SQLITE_MAX_MEMORY_PAGES = 4096;
+
+function sqliteMaxMemoryPages(): number {
+  const raw = import.meta.env.VITE_SQLITE_BROWSER_MAX_MEMORY_PAGES;
+  if (raw == null || raw === "") return DEFAULT_SQLITE_MAX_MEMORY_PAGES;
+  const pages = Number(raw);
+  if (!Number.isInteger(pages) || pages <= 0) {
+    throw new Error(`Invalid VITE_SQLITE_BROWSER_MAX_MEMORY_PAGES: ${raw}`);
+  }
+  return pages;
+}
+
 function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
@@ -137,6 +149,7 @@ async function init() {
   const fixture = readVfsFile(fs, "/usr/bin/testfixture");
   testfixtureBytes = new ArrayBuffer(fixture.byteLength);
   new Uint8Array(testfixtureBytes).set(fixture);
+  const maxMemoryPages = sqliteMaxMemoryPages();
 
   async function runSqlite(argv: string[], label: string, timeoutMs = 180_000, options: SqliteRunOptions = {}): Promise<SqliteTestResult> {
     const start = performance.now();
@@ -175,6 +188,11 @@ async function init() {
     const kernel = new BrowserKernel({
       memfs: fs,
       maxWorkers: 4,
+      // The official SQLite testrunner starts hundreds of short-lived
+      // testfixture workers in one browser page. Chromium reserves each
+      // shared Wasm memory up to its maximum, and the 1 GiB host default can
+      // exhaust renderer address space before the full suite completes.
+      maxMemoryPages,
       enableSyscallLog: import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG === "1",
       syscallLogPtrWidth: sqliteSyscallLogPtrWidth(),
       onStdout: (data) => { appendStdout(new TextDecoder().decode(data)); },
