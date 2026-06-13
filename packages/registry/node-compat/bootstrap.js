@@ -415,7 +415,7 @@ const events = (() => {
         }
 
         eventNames() {
-            return Object.keys(this._events).filter(k => this._events[k].length > 0);
+            return Reflect.ownKeys(this._events).filter(k => this._events[k].length > 0);
         }
 
         prependListener(event, fn) {
@@ -2034,15 +2034,29 @@ const util = (() => {
         };
     }
 
+    function enumerableOwnKeys(value) {
+        const keys = Object.keys(value);
+        for (const symbol of Object.getOwnPropertySymbols(value)) {
+            if (Object.prototype.propertyIsEnumerable.call(value, symbol)) {
+                keys.push(symbol);
+            }
+        }
+        return keys;
+    }
+
     function isDeepStrictEqual(a, b) {
         if (a === b) return true;
         if (typeof a !== typeof b) return false;
         if (a === null || b === null) return false;
         if (typeof a !== 'object') return false;
         if (Array.isArray(a) !== Array.isArray(b)) return false;
-        const keysA = Object.keys(a);
-        const keysB = Object.keys(b);
+        if (Array.isArray(a) && a.length !== b.length) return false;
+        const keysA = enumerableOwnKeys(a);
+        const keysB = enumerableOwnKeys(b);
         if (keysA.length !== keysB.length) return false;
+        for (const key of keysA) {
+            if (!Object.prototype.propertyIsEnumerable.call(b, key)) return false;
+        }
         for (const key of keysA) {
             if (!isDeepStrictEqual(a[key], b[key])) return false;
         }
@@ -2117,7 +2131,7 @@ const util = (() => {
 const assert = (() => {
     class AssertionError extends Error {
         constructor(options) {
-            super(options.message || `${options.actual} ${options.operator} ${options.expected}`);
+            super(options.message || `${util.inspect(options.actual)} ${options.operator} ${util.inspect(options.expected)}`);
             this.name = 'AssertionError';
             this.actual = options.actual;
             this.expected = options.expected;

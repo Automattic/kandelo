@@ -44,5 +44,4 @@ default, or under `--results-dir`. Each run preserves `summary.txt`,
 As of the initial smoke diagnosis, browser mode reaches Kandelo execution. The
 remaining smoke failures also reproduce on the Node host and are tracked as
 shared `spidermonkey-node` compatibility gaps: missing `vm.runInNewContext`,
-path API `ERR_INVALID_ARG_TYPE` validation, and Symbol handling in
-`assert.deepStrictEqual`.
+and path API `ERR_INVALID_ARG_TYPE` validation.

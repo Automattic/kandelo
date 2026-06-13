@@ -404,6 +404,33 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("ok");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("supports Symbol values in eventNames and assert.deepStrictEqual", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const { EventEmitter } = require('events')",
+        "const emitter = new EventEmitter()",
+        "const event = Symbol('event')",
+        "const key = Symbol('key')",
+        "emitter.on('foo', () => {})",
+        "emitter.on(event, () => {})",
+        "assert.deepStrictEqual(emitter.eventNames(), ['foo', event])",
+        "assert.deepStrictEqual({ [key]: [event] }, { [key]: [event] })",
+        "let failure = 'missing'",
+        "try {",
+        "  assert.deepStrictEqual([Symbol('value')], [Symbol('value')])",
+        "} catch (err) {",
+        "  failure = `${err.code}:${err instanceof assert.AssertionError}:${/Symbol\\(value\\)/.test(err.message)}`",
+        "}",
+        "console.log(failure)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ERR_ASSERTION:true:true");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("resolves events.once for streams that replay cached events from on()", async () => {
     const result = await runNode(
       [
