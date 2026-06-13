@@ -161,8 +161,12 @@ ensure_kernel() {
 
 resolve_js_wasm() {
   local candidate
+  if [ -n "${SPIDERMONKEY_WASM:-}" ] && [ -f "$SPIDERMONKEY_WASM" ]; then
+    printf '%s\n' "$SPIDERMONKEY_WASM"
+    return 0
+  fi
+
   for candidate in \
-    "${SPIDERMONKEY_WASM:-}" \
     "$("$REPO_ROOT/scripts/resolve-binary.sh" programs/js.wasm 2>/dev/null || true)" \
     "$("$REPO_ROOT/scripts/resolve-binary.sh" programs/spidermonkey.wasm 2>/dev/null || true)" \
     "$REPO_ROOT/packages/registry/spidermonkey/bin/js.wasm"; do
@@ -561,7 +565,7 @@ run_chunk() {
   local chunk="$3"
   shift 3
   local log="$RESULTS_DIR/$(safe_name "$host-$suite-$chunk").log"
-  local known_skip_files=("${NEXT_KNOWN_SKIP_FILES[@]}")
+  local known_skip_files=("${NEXT_KNOWN_SKIP_FILES[@]+"${NEXT_KNOWN_SKIP_FILES[@]}"}")
   NEXT_KNOWN_SKIP_FILES=()
 
   if should_skip_chunk "$host" "$suite" "$chunk"; then
