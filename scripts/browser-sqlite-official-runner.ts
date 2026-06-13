@@ -13,6 +13,26 @@ const VITE_BASE_PORT = Number(process.env.SQLITE_TEST_VITE_PORT ?? 5200);
 const SQLITE_TEST_UID = Number(process.env.SQLITE_TEST_UID ?? 1000);
 const SQLITE_TEST_GID = Number(process.env.SQLITE_TEST_GID ?? 1000);
 
+interface BrowserArtifact {
+  path: string;
+  base64: string;
+}
+
+interface BrowserSqliteResult {
+  test: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+  durationMs: number;
+  artifacts?: BrowserArtifact[];
+}
+
+interface BrowserArtifactSnapshot {
+  durationMs: number;
+  artifacts?: BrowserArtifact[];
+}
+
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolvePromise) => {
     const server = createServer();
@@ -78,6 +98,16 @@ async function startViteServer(port: number): Promise<ChildProcess> {
   });
 }
 
+function writeArtifacts(resultsDir: string, artifacts: BrowserArtifact[] | undefined): void {
+  if (!resultsDir || !artifacts) return;
+  mkdirSync(resultsDir, { recursive: true });
+  for (const artifact of artifacts) {
+    const basename = artifact.path.split("/").pop();
+    if (!basename) continue;
+    writeFileSync(resolve(resultsDir, basename), Buffer.from(artifact.base64, "base64"));
+  }
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   let timeoutMs = 600_000;
@@ -110,12 +140,16 @@ async function main() {
 
   let vite: ChildProcess | null = null;
   let browser: Browser | null = null;
+  let latestArtifacts: BrowserArtifact[] | undefined;
   try {
     const vitePort = await findVitePort();
     vite = await startViteServer(vitePort);
     browser = await chromium.launch({ args: ["--enable-features=SharedArrayBuffer"] });
     const context = await browser.newContext();
     const page = await context.newPage();
+    await page.exposeFunction("__sqliteArtifactSnapshot", (snapshot: BrowserArtifactSnapshot) => {
+      if (snapshot.artifacts?.length) latestArtifacts = snapshot.artifacts;
+    });
     page.on("console", (msg) => {
       if (msg.text().startsWith("[sqlite-progress]")) {
         console.error(`[browser] ${msg.text()}`);
@@ -143,18 +177,18 @@ async function main() {
     });
     await page.goto(`http://${VITE_HOST}:${vitePort}/pages/sqlite-test/`);
     await page.waitForFunction(() => (window as any).__sqliteTestReady === true, {}, { timeout: 180_000 });
-    const result = await page.evaluate(
-      ({ command, timeoutMs, uid, gid }) => (window as any).__runSqliteCommand(command, timeoutMs, { uid, gid }),
-      { command, timeoutMs, uid: SQLITE_TEST_UID, gid: SQLITE_TEST_GID },
-    );
-    if (resultsDir) {
-      mkdirSync(resultsDir, { recursive: true });
-      for (const artifact of result.artifacts ?? []) {
-        const basename = artifact.path.split("/").pop();
-        if (!basename) continue;
-        writeFileSync(resolve(resultsDir, basename), Buffer.from(artifact.base64, "base64"));
-      }
+    let result: BrowserSqliteResult;
+    try {
+      result = await page.evaluate(
+        ({ command, timeoutMs, uid, gid }) => (window as any).__runSqliteCommand(command, timeoutMs, { uid, gid }),
+        { command, timeoutMs, uid: SQLITE_TEST_UID, gid: SQLITE_TEST_GID },
+      );
+    } catch (err) {
+      writeArtifacts(resultsDir, latestArtifacts);
+      throw err;
     }
+    if (!result.artifacts && latestArtifacts) result.artifacts = latestArtifacts;
+    writeArtifacts(resultsDir, result.artifacts);
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) process.stderr.write(`${result.error}\n`);
