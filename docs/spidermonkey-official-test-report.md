@@ -31,6 +31,12 @@ The exhaustive runner writes `inventory.tsv`, `summary.tsv`, per-chunk logs, and
 `--results-dir DIR` to put artifacts somewhere else, and `--start-at CHUNK` to
 resume after an interrupted run.
 
+On the browser host, the exhaustive jit-test runner classifies
+`atomics/bigint-*.js` as known skips. Kandelo's current wasm32 SpiderMonkey
+build lacks native 64-bit atomic operations, and those tests otherwise crash
+the shell with `MOZ_CRASH("No 64-bit atomics")`; the rest of the atomics
+directory still runs normally.
+
 ## Harness Shape
 
 The Node host path starts `scripts/kandelo-node-js-shell-server.ts`, which keeps

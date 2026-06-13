@@ -35,6 +35,30 @@ RESTART_BRIDGE_PER_CHUNK="${SPIDERMONKEY_OFFICIAL_RESTART_BRIDGE_PER_CHUNK:-0}"
 JS_SHELL_WRAPPER="$NODE_WRAPPER"
 NODE_SERVER_PID=""
 BROWSER_SERVER_PID=""
+FILTERED_JIT_FILES=()
+KANDELO_KNOWN_SKIP_FILES=()
+NEXT_KNOWN_SKIP_FILES=()
+
+# Kandelo's wasm32 SpiderMonkey build does not provide native 64-bit atomic
+# operations, so BigInt64Array/BigUint64Array atomics crash the browser-hosted
+# shell with MOZ_CRASH("No 64-bit atomics"). Keep this browser-only and
+# file-scoped so the rest of the atomics directory continues to run.
+KANDELO_BROWSER_WASM32_KNOWN_JIT_SKIP_FILES=(
+  "atomics/bigint-add-for-effect.js"
+  "atomics/bigint-add.js"
+  "atomics/bigint-and-for-effect.js"
+  "atomics/bigint-and.js"
+  "atomics/bigint-compareExchange.js"
+  "atomics/bigint-exchange.js"
+  "atomics/bigint-load.js"
+  "atomics/bigint-or-for-effect.js"
+  "atomics/bigint-or.js"
+  "atomics/bigint-store.js"
+  "atomics/bigint-sub-for-effect.js"
+  "atomics/bigint-sub.js"
+  "atomics/bigint-xor-for-effect.js"
+  "atomics/bigint-xor.js"
+)
 
 usage() {
   cat <<EOF
@@ -220,6 +244,85 @@ record_result() {
     | tee -a "$SUMMARY"
 }
 
+rel_jit_test_path() {
+  local file="$1"
+  printf '%s\n' "${file#$SM_SOURCE/js/src/jit-test/tests/}"
+}
+
+is_kandelo_browser_wasm32_known_jit_skip() {
+  local host="$1"
+  local file="$2"
+  local rel
+  if [ "$host" != "browser" ]; then
+    return 1
+  fi
+  rel="$(rel_jit_test_path "$file")"
+  local known
+  for known in "${KANDELO_BROWSER_WASM32_KNOWN_JIT_SKIP_FILES[@]}"; do
+    if [ "$rel" = "$known" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+filter_kandelo_known_jit_skips() {
+  local host="$1"
+  shift
+  FILTERED_JIT_FILES=()
+  KANDELO_KNOWN_SKIP_FILES=()
+  local file
+  for file in "$@"; do
+    if is_kandelo_browser_wasm32_known_jit_skip "$host" "$file"; then
+      KANDELO_KNOWN_SKIP_FILES+=("$file")
+    else
+      FILTERED_JIT_FILES+=("$file")
+    fi
+  done
+}
+
+queue_known_skip_entries() {
+  NEXT_KNOWN_SKIP_FILES=("$@")
+}
+
+jitflag_variant_count() {
+  case "$JITFLAGS" in
+    all) printf '6\n' ;;
+    jstests) printf '4\n' ;;
+    ion) printf '2\n' ;;
+    debug) printf '3\n' ;;
+    tsan) printf '3\n' ;;
+    baseline|interp|none) printf '1\n' ;;
+    *) printf '1\n' ;;
+  esac
+}
+
+known_skip_entry_count() {
+  local file="$1"
+  local count joins
+  count="$(jitflag_variant_count)"
+  joins="$({ head -n 1 "$file" | grep -o 'test-join=' || true; } | wc -l | tr -d ' ')"
+  while [ "$joins" -gt 0 ]; do
+    count=$((count * 2))
+    joins=$((joins - 1))
+  done
+  printf '%s\n' "$count"
+}
+
+write_known_skip_entries() {
+  local file rel count index
+  for file in "$@"; do
+    rel="$(rel_jit_test_path "$file")"
+    count="$(known_skip_entry_count "$file")"
+    index=1
+    while [ "$index" -le "$count" ]; do
+      printf 'TEST-KNOWN-FAIL | %s | skipped: Kandelo wasm32 SpiderMonkey lacks 64-bit atomic operations (variant %s/%s)\n' \
+        "$rel" "$index" "$count"
+      index=$((index + 1))
+    done
+  done
+}
+
 should_skip_chunk() {
   local host="$1"
   local suite="$2"
@@ -366,6 +469,8 @@ run_chunk() {
   local chunk="$3"
   shift 3
   local log="$RESULTS_DIR/$(safe_name "$host-$suite-$chunk").log"
+  local known_skip_files=("${NEXT_KNOWN_SKIP_FILES[@]}")
+  NEXT_KNOWN_SKIP_FILES=()
 
   if should_skip_chunk "$host" "$suite" "$chunk"; then
     return 0
@@ -374,7 +479,12 @@ run_chunk() {
 
   echo "===== $(date -u +%FT%TZ) $host $suite $chunk =====" | tee -a "$RESULTS_DIR/progress.log"
   set +e
-  run_upstream_chunk "$suite" "$@" > "$log" 2>&1
+  if [ "${#known_skip_files[@]}" -gt 0 ]; then
+    write_known_skip_entries "${known_skip_files[@]}" > "$log"
+    run_upstream_chunk "$suite" "$@" >> "$log" 2>&1
+  else
+    run_upstream_chunk "$suite" "$@" > "$log" 2>&1
+  fi
   local status=$?
   set -e
 
@@ -383,6 +493,22 @@ run_chunk() {
     echo "Stopping after failing chunk $host/$suite/$chunk" >&2
     exit "$status"
   fi
+}
+
+record_known_skip_only_chunk() {
+  local host="$1"
+  local suite="$2"
+  local chunk="$3"
+  shift 3
+  local log="$RESULTS_DIR/$(safe_name "$host-$suite-$chunk").log"
+
+  if should_skip_chunk "$host" "$suite" "$chunk"; then
+    return 0
+  fi
+
+  echo "===== $(date -u +%FT%TZ) $host $suite $chunk =====" | tee -a "$RESULTS_DIR/progress.log"
+  write_known_skip_entries "$@" > "$log"
+  record_result "$host" "$suite" "$chunk" 0 "$log"
 }
 
 run_upstream_chunk() {
@@ -532,8 +658,15 @@ run_jit_tests_for_host() {
         chunk="_files#part-$(printf '%04d' "$part")"
       fi
       list_file="$RESULTS_DIR/jit-$(safe_name "$chunk").txt"
-      printf '%s\n' "${group[@]}" > "$list_file"
-      run_chunk "$host" jit-tests "$chunk" --read-tests "$list_file"
+      filter_kandelo_known_jit_skips "$host" "${group[@]}"
+      if [ "${#FILTERED_JIT_FILES[@]}" -gt 0 ]; then
+        printf '%s\n' "${FILTERED_JIT_FILES[@]}" > "$list_file"
+        queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        run_chunk "$host" jit-tests "$chunk" --read-tests "$list_file"
+      else
+        : > "$list_file"
+        record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+      fi
       index=$((index + JIT_CHUNK_SIZE))
       part=$((part + 1))
     done
@@ -559,8 +692,15 @@ run_jit_tests_for_host() {
         chunk="$(basename "$dir")#part-$(printf '%04d' "$part")"
       fi
       list_file="$RESULTS_DIR/jit-$(safe_name "$chunk").txt"
-      printf '%s\n' "${group[@]}" > "$list_file"
-      run_chunk "$host" jit-tests "$chunk" --read-tests "$list_file"
+      filter_kandelo_known_jit_skips "$host" "${group[@]}"
+      if [ "${#FILTERED_JIT_FILES[@]}" -gt 0 ]; then
+        printf '%s\n' "${FILTERED_JIT_FILES[@]}" > "$list_file"
+        queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        run_chunk "$host" jit-tests "$chunk" --read-tests "$list_file"
+      else
+        : > "$list_file"
+        record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+      fi
       index=$((index + JIT_CHUNK_SIZE))
       part=$((part + 1))
     done
