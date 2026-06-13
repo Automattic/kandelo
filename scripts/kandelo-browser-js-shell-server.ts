@@ -31,6 +31,7 @@ interface RunResult {
   processReaped?: boolean;
   bridgeRetries?: number;
   guestTimeoutRetries?: number;
+  memoryPressureRetries?: number;
 }
 
 function readPageEvaluateRetries(): number {
@@ -43,8 +44,20 @@ function readGuestTimeoutRetries(): number {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 1;
 }
 
+function readMemoryPressureRetries(): number {
+  const value = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_MEMORY_RETRIES ?? 1);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 1;
+}
+
+function readPageRecycleInterval(): number {
+  const value = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_RECYCLE_INTERVAL ?? 25);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 25;
+}
+
 const PAGE_EVALUATE_RETRIES = readPageEvaluateRetries();
 const GUEST_TIMEOUT_RETRIES = readGuestTimeoutRetries();
+const MEMORY_PRESSURE_RETRIES = readMemoryPressureRetries();
+const PAGE_RECYCLE_INTERVAL = readPageRecycleInterval();
 
 let viteProcess: ChildProcess | null = null;
 let browserInstance: Browser | null = null;
@@ -57,6 +70,15 @@ function isPageContextLoss(message: string): boolean {
 
 function isGuestTimeoutResult(result: RunResult): boolean {
   return result.error === "TIMEOUT";
+}
+
+function isBrowserMemoryPressureMessage(message: string | undefined): boolean {
+  return /WebAssembly\.Memory\(\): could not allocate memory|could not allocate memory|Out of Memory/i.test(message ?? "");
+}
+
+function isBrowserMemoryPressureResult(result: RunResult): boolean {
+  return isBrowserMemoryPressureMessage(result.error) ||
+    (result.exitCode < 0 && isBrowserMemoryPressureMessage(result.stderr));
 }
 
 function requestTimeoutMs(body: RunRequest): number {
@@ -302,12 +324,20 @@ async function main() {
     args: ["--enable-features=SharedArrayBuffer"],
   });
   let page = await openPage(browserInstance);
+  let runsSincePageOpen = 0;
   let queue = Promise.resolve();
 
   async function reopenPage(reason: string): Promise<void> {
     console.error(`[browser js shell bridge] reopening page after ${reason}`);
     await page.context().close().catch(() => {});
     page = await openPage(browserInstance!);
+    runsSincePageOpen = 0;
+  }
+
+  async function recyclePageIfNeeded(): Promise<void> {
+    if (PAGE_RECYCLE_INTERVAL === 0) return;
+    if (runsSincePageOpen < PAGE_RECYCLE_INTERVAL) return;
+    await reopenPage(`${runsSincePageOpen} shell invocations`);
   }
 
   async function runInPage(body: RunRequest): Promise<RunResult> {
@@ -315,7 +345,10 @@ async function main() {
     const timeoutMs = requestTimeoutMs(body);
     let pageRetries = 0;
     let guestTimeoutRetries = 0;
+    let memoryPressureRetries = 0;
     for (;;) {
+      await recyclePageIfNeeded();
+      runsSincePageOpen++;
       const evaluation = page.evaluate(
         (request) => (window as any).__runSpiderMonkeyScript(request),
         { argv: body.argv, timeoutMs: body.timeoutMs },
@@ -331,8 +364,19 @@ async function main() {
             continue;
           }
         }
+        if (isBrowserMemoryPressureResult(result)) {
+          await reopenPage(
+            `browser WebAssembly memory pressure ` +
+            `(${memoryPressureRetries}/${MEMORY_PRESSURE_RETRIES})`,
+          );
+          if (memoryPressureRetries < MEMORY_PRESSURE_RETRIES) {
+            memoryPressureRetries++;
+            continue;
+          }
+        }
         if (pageRetries > 0) result.bridgeRetries = pageRetries;
         if (guestTimeoutRetries > 0) result.guestTimeoutRetries = guestTimeoutRetries;
+        if (memoryPressureRetries > 0) result.memoryPressureRetries = memoryPressureRetries;
         return result;
       } catch (err: any) {
         const message = err?.message || String(err);
@@ -353,6 +397,7 @@ async function main() {
             durationMs: Date.now() - startedAt,
             ...(pageRetries > 0 ? { bridgeRetries: pageRetries } : {}),
             ...(guestTimeoutRetries > 0 ? { guestTimeoutRetries } : {}),
+            ...(memoryPressureRetries > 0 ? { memoryPressureRetries } : {}),
           };
         }
 

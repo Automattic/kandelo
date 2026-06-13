@@ -62,6 +62,14 @@ soon enough for the upstream harness. On a browser guest timeout, the bridge
 closes the page context to discard the persistent `BrowserKernel`, opens a fresh
 page, and retries the invocation once by default. Set
 `SPIDERMONKEY_BROWSER_JS_SHELL_TIMEOUT_RETRIES=0` to disable that retry.
+The bridge also recycles the browser page every 25 shell invocations by default
+to release Chromium WebAssembly address space used by exited process workers.
+Set `SPIDERMONKEY_BROWSER_JS_SHELL_RECYCLE_INTERVAL=0` to disable periodic
+recycling or another positive integer to tune it. If a shell invocation reports
+`WebAssembly.Memory(): could not allocate memory`, the bridge treats that as
+browser memory pressure, opens a fresh page context, and retries the invocation
+once by default. Set `SPIDERMONKEY_BROWSER_JS_SHELL_MEMORY_RETRIES=0` to disable
+that retry.
 
 `scripts/ensure-spidermonkey-source.sh` locates or downloads the Firefox ESR
 source tree pinned by the SpiderMonkey package manifest. The browser VFS builder
