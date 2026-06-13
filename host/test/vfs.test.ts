@@ -5,6 +5,18 @@ import { join } from "node:path";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  BLOCK_SIZE,
+  EMFILE,
+  FD_ENTRY_SIZE,
+  FD_TABLE_OFFSET,
+  MAX_FDS,
+  O_CREAT,
+  O_RDONLY,
+  O_RDWR,
+  O_TRUNC,
+  SFSError,
+} from "../src/vfs/sharedfs-vendor";
 import { NodeTimeProvider } from "../src/vfs/time";
 import type { FileSystemBackend, MountConfig } from "../src/vfs/types";
 import type { StatResult, StatfsResult } from "../src/types";
@@ -372,6 +384,63 @@ describe("MemoryFileSystem", () => {
       "hello world",
     );
     mfs.close(fd);
+  });
+
+  it("opens more than the old 64-descriptor SharedFS table limit", () => {
+    expect(MAX_FDS).toBe(
+      Math.floor((BLOCK_SIZE - FD_TABLE_OFFSET) / FD_ENTRY_SIZE),
+    );
+    expect(MAX_FDS).toBeGreaterThan(64);
+
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const createFd = mfs.open(
+      "/many-fds.txt",
+      O_CREAT | O_RDWR | O_TRUNC,
+      0o644,
+    );
+    mfs.close(createFd);
+
+    const fds: number[] = [];
+    try {
+      for (let i = 0; i < 65; i++) {
+        fds.push(mfs.open("/many-fds.txt", O_RDONLY, 0o644));
+      }
+      expect(new Set(fds).size).toBe(65);
+      expect(Math.max(...fds)).toBeGreaterThanOrEqual(64);
+    } finally {
+      for (const fd of fds) mfs.close(fd);
+    }
+  });
+
+  it("throws EMFILE when the derived SharedFS fd table is full", () => {
+    expect(MAX_FDS).toBeLessThanOrEqual(160);
+
+    const sab = new SharedArrayBuffer(4 * 1024 * 1024);
+    const mfs = MemoryFileSystem.create(sab);
+    const createFd = mfs.open(
+      "/fd-limit.txt",
+      O_CREAT | O_RDWR | O_TRUNC,
+      0o644,
+    );
+    mfs.close(createFd);
+
+    const fds: number[] = [];
+    let error: unknown;
+    try {
+      for (let i = 0; i < MAX_FDS; i++) {
+        fds.push(mfs.open("/fd-limit.txt", O_RDONLY, 0o644));
+      }
+      const unexpectedFd = mfs.open("/fd-limit.txt", O_RDONLY, 0o644);
+      fds.push(unexpectedFd);
+    } catch (err) {
+      error = err;
+    } finally {
+      for (const fd of fds) mfs.close(fd);
+    }
+
+    expect(error).toBeInstanceOf(SFSError);
+    expect((error as SFSError).code).toBe(EMFILE);
   });
 
   it("creates and lists directories", () => {

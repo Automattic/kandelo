@@ -119,7 +119,7 @@ const SYS_RT_SIGTIMEDWAIT = ABI_SYSCALLS.RtSigtimedwait;
 /**
  * Grace period for signal-mask-swapping ppoll/pselect wakeups after a pipe
  * event. This gives the writer's immediately-following signal syscall a
- * chance to reach the centralized kernel before ppoll restores its mask.
+ * chance to reach the kernel before ppoll restores its mask.
  */
 const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
 
@@ -505,9 +505,21 @@ export interface ResolvedSpawnProgram {
   argv: string[];
 }
 
-export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram;
+export interface SpawnResolveError {
+  errno: number;
+}
 
-/** Callbacks for fork/exec/exit handling in centralized mode. */
+export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram | SpawnResolveError;
+
+function isSpawnResolveError(
+  resolution: SpawnProgramResolution,
+): resolution is SpawnResolveError {
+  return !(resolution instanceof ArrayBuffer) &&
+    "errno" in resolution &&
+    typeof resolution.errno === "number";
+}
+
+/** Callbacks for fork/exec/exit handling. */
 export interface CentralizedKernelCallbacks {
   /**
    * Called when a process forks. The kernel has already cloned the Process
@@ -548,7 +560,8 @@ export interface CentralizedKernelCallbacks {
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
    * for `path` (or `{ programBytes, argv }` when resolution rewrites argv,
-   * e.g. a shebang script), or `null` for ENOENT. **Must NOT have side effects** —
+   * e.g. a shebang script), `{ errno }` for a located but unlaunchable
+   * program, or `null` for ENOENT. **Must NOT have side effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -805,8 +818,8 @@ export class CentralizedKernelWorker {
     private callbacks: CentralizedKernelCallbacks = {},
   ) {
     this.kernel = new WasmPosixKernel(config, io, {
-      // In centralized mode, callbacks like onKill/onFork are handled
-      // differently — the kernel returns EAGAIN and JS handles them.
+      // Process-lifecycle callbacks are handled by the kernel worker: the
+      // kernel returns EAGAIN and JS performs the host-side action.
       onStdin: (maxLen: number): Uint8Array | null => {
         const pid = this.currentHandlePid;
         const buf = this.stdinBuffers.get(pid);
@@ -948,8 +961,8 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Initialize the centralized kernel.
-   * Loads kernel Wasm, sets mode to centralized (1).
+   * Initialize the kernel.
+   * Loads kernel Wasm and validates the host adapter ABI.
    */
   async init(kernelWasmBytes: BufferSource): Promise<void> {
     await this.kernel.init(kernelWasmBytes);
@@ -972,10 +985,6 @@ export class CentralizedKernelWorker {
     }
     this.kernelAbiVersion = abiVersionFn();
     validateKernelHostAdapterManifest(this.kernelInstance, this.kernelMemory);
-
-    // Set centralized mode (existing call below)
-    const setMode = this.kernelInstance.exports.kernel_set_mode as (mode: number) => void;
-    setMode(1);
 
     // Allocate scratch area from the kernel's own heap allocator.
     // IMPORTANT: Do NOT use this.kernelMemory.grow() — the kernel's
@@ -1007,7 +1016,7 @@ export class CentralizedKernelWorker {
     }
 
     // Register a SharedLockTable so host_fcntl_lock can handle advisory locks
-    // (including OFD locks) within the centralized kernel.
+    // (including OFD locks) within the kernel.
     this.lockTable = SharedLockTable.create();
     this.kernel.registerSharedLockTable(this.lockTable.getBuffer());
 
@@ -1470,14 +1479,7 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Release all advisory file locks held by this process.
-    // Force-reset the spinlock first: a terminated worker may have been holding it,
-    // and Atomics.wait is not allowed on the browser main thread.
-    if (this.lockTable) {
-      const lockBuf = this.lockTable.getBuffer();
-      Atomics.store(new Int32Array(lockBuf), 0, 0); // force-release spinlock
-      this.lockTable.removeLocksByPid(pid);
-    }
+    this.releaseAdvisoryLocksForPid(pid);
 
     // Remove from kernel process table
     this.removeFromKernelProcessTable(pid);
@@ -1524,11 +1526,22 @@ export class CentralizedKernelWorker {
     removeProcess(pid);
   }
 
+  private releaseAdvisoryLocksForPid(pid: number): void {
+    if (!this.lockTable) return;
+
+    // Force-reset the spinlock first: a terminated worker may have been
+    // holding it, and Atomics.wait is not allowed on the browser main thread.
+    const lockBuf = this.lockTable.getBuffer();
+    Atomics.store(new Int32Array(lockBuf), 0, 0);
+    this.lockTable.removeLocksByPid(pid);
+  }
+
   deactivateProcess(pid: number): void {
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.processes.delete(pid);
     this.stdinFinite.delete(pid);
     this.stdinBuffers.delete(pid);
+    this.releaseAdvisoryLocksForPid(pid);
     // Cancel any pending alarm timer for this process
     const alarmTimer = this.alarmTimers.get(pid);
     if (alarmTimer) {
@@ -1997,9 +2010,8 @@ export class CentralizedKernelWorker {
     }
 
     // --- Futex: must operate on process memory, not kernel memory ---
-    // The kernel's host_futex_wake/wait imports use kernel memory, but in
-    // centralized mode the futex address is in process memory. Intercept
-    // here and handle directly.
+    // The kernel's host_futex_wake/wait imports use kernel memory, but futex
+    // addresses are in process memory. Intercept here and handle directly.
     if (syscallNr === SYS_FUTEX) {
       if (logging) {
         // Futex args: (uaddr, op, val, timeout, uaddr2, val3). Decode the op
@@ -2149,8 +2161,8 @@ export class CentralizedKernelWorker {
     // (sec, usec) and no sigmask. musl's select.c routes here on wasm64
     // because `__NR_pselect6_time64` isn't defined for that arch (unlike
     // wasm32, which aliases it to __NR_pselect6). Without this intercept,
-    // sys_select returns EAGAIN unconditionally in centralized mode and
-    // the generic blocking-retry has no select-timeout awareness — every
+    // sys_select returns EAGAIN when it needs host-managed waiting, and the
+    // generic blocking-retry has no select-timeout awareness — every
     // `select(0,0,0,0,&tv)` (= my_sleep) becomes an infinite loop. That
     // surfaced as the wasm64 mariadbd boot hang at
     // wait_for_signal_thread_to_end's kill+my_sleep loop.
@@ -2331,8 +2343,8 @@ export class CentralizedKernelWorker {
     const errVal = kernelView.getUint32(CH_ERRNO, true);
 
     // --- Process memory growth for brk/mmap/mremap ---
-    // In centralized mode, the kernel's ensure_memory_covers() grows the
-    // KERNEL's Wasm memory, not the process's. We must grow the process's
+    // The kernel's ensure_memory_covers() grows the KERNEL's Wasm memory, not
+    // the process's. We must grow the process's
     // WebAssembly.Memory here so the process can access the new addresses.
     if (retVal > 0) {
       this.ensureProcessMemoryCovers(channel.pid, channel.memory, syscallNr, retVal, origArgs);
@@ -2392,7 +2404,7 @@ export class CentralizedKernelWorker {
       this.cleanupSharedMappings(channel.pid, origArgs[0] >>> 0, origArgs[1] >>> 0);
     }
 
-    // --- Signal-death check (centralized mode) ---
+    // --- Signal-death check ---
     // If deliver_pending_signals marked this process as Exited (e.g., abort()
     // raises SIGABRT with default action Terminate), don't complete the channel.
     // Instead, record signal-death wait status and terminate the worker.
@@ -2406,14 +2418,14 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // --- POSIX mqueue notification (centralized mode) ---
+    // --- POSIX mqueue notification ---
     // After mq_timedsend, the kernel may have a pending notification (signal
     // to deliver when a message arrives on a previously empty queue).
     if (syscallNr === SYS_MQ_TIMEDSEND && retVal === 0) {
       this.drainMqueueNotification();
     }
 
-    // --- Signal delivery (centralized mode) ---
+    // --- Signal delivery ---
     // After each syscall, check if the kernel has a pending Handler signal.
     // If so, dequeue it and write delivery info to the process channel.
     // The glue code (channel_syscall.c) will invoke the handler after waking.
@@ -3041,7 +3053,7 @@ export class CentralizedKernelWorker {
     // a blocked ppoll in the reader to observe BOTH events atomically.
     // On a real kernel that works because X's two syscalls execute
     // before the scheduler runs the reader. In our retry-based
-    // centralized kernel, the pipe wakeup can fire a ppoll retry BEFORE
+    // shared kernel, the pipe wakeup can fire a ppoll retry BEFORE
     // X's follow-up kill is even sent by X's worker (Atomics.notify →
     // uv_async round-trip takes 1–5ms). If the retry fires first, ppoll
     // returns POLLIN and restores its sigmask; the late signal is then
@@ -3589,8 +3601,8 @@ export class CentralizedKernelWorker {
     // (epoll_pwait is now handled entirely on the host side by handleEpollPwait)
 
     // sigtimedwait: kernel returned EAGAIN because no signal is pending.
-    // Instead of retrying (signal won't arrive in single-process mode),
-    // delay for the requested timeout then complete with -1/EAGAIN.
+    // Instead of busy-retrying, delay for the requested timeout then complete
+    // with -1/EAGAIN.
     if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
       const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
       if (timeoutPtr === 0) {
@@ -3944,6 +3956,16 @@ export class CentralizedKernelWorker {
     if (flockPtr !== 0 && retVal >= 0) {
       const freshProcessMem = new Uint8Array(channel.memory.buffer);
       freshProcessMem.set(kernelMem.subarray(dataStart, dataStart + FLOCK_SIZE), flockPtr);
+    }
+
+    const cmd = origArgs[1];
+    if (
+      retVal === -1 &&
+      errVal === EAGAIN &&
+      (cmd === F_SETLKW || cmd === F_SETLKW64 || cmd === F_OFD_SETLKW)
+    ) {
+      this.handleBlockingRetry(channel, SYS_FCNTL, origArgs);
+      return;
     }
 
     this.completeChannel(channel, SYS_FCNTL, origArgs, undefined, retVal, errVal);
@@ -5762,6 +5784,10 @@ export class CentralizedKernelWorker {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
         return;
       }
+      if (isSpawnResolveError(resolved)) {
+        this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, resolved.errno >>> 0);
+        return;
+      }
       const programBytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;
       const launchArgv = resolved instanceof ArrayBuffer ? argv : resolved.argv;
       this.handleSpawnAfterResolve(
@@ -6022,8 +6048,8 @@ export class CentralizedKernelWorker {
   private handleClone(channel: ChannelInfo, origArgs: number[]): void {
     // Channel args from musl's __clone override which calls kernel_clone directly:
     //   kernel_clone(fn_ptr, stack_ptr, flags, arg, ptid_ptr, tls_ptr, ctid_ptr)
-    // But in centralized mode, __clone goes through channel_syscall which
-    // dispatches SYS_CLONE with Linux syscall convention:
+    // The channel syscall path dispatches SYS_CLONE with Linux syscall
+    // convention:
     //   a1=flags, a2=stack, a3=ptid, a4=tls, a5=ctid
     // The kernel dispatch remaps: kernel_clone(0, a2, a1, 0, a3, a4, a5)
     //
@@ -6068,8 +6094,8 @@ export class CentralizedKernelWorker {
     const tid = retVal;
 
     // CLONE_PARENT_SETTID: write TID to ptid_ptr in process memory.
-    // The kernel skips this in centralized mode since ptid_ptr is in
-    // process memory, not kernel memory.
+    // The host writes this because ptid_ptr is in process memory, not kernel
+    // memory.
     const CLONE_PARENT_SETTID = 0x00100000;
     const flags = origArgs[0];
     const ptidPtr = origArgs[2];
@@ -6579,9 +6605,9 @@ export class CentralizedKernelWorker {
   /**
    * Handle SYS_FUTEX directly on process memory.
    *
-   * In centralized mode, the kernel's host_futex_wake/wait imports operate on
-   * kernel memory, but futex addresses are in process memory. We bypass the
-   * kernel entirely and implement the futex ops here.
+   * The kernel's host_futex_wake/wait imports operate on kernel memory, but
+   * futex addresses are in process memory. We bypass the kernel entirely and
+   * implement the futex ops here.
    *
    * FUTEX_WAIT: compare-and-block. If the value at addr matches expected,
    * use Atomics.waitAsync to wait for a change, then return 0. If it doesn't
@@ -6828,8 +6854,8 @@ export class CentralizedKernelWorker {
   // -----------------------------------------------------------------------
   // Process memory management
   //
-  // In centralized mode, the kernel's ensure_memory_covers() grows the
-  // KERNEL's Wasm memory (memory index 0 in the kernel module). But the
+  // The kernel's ensure_memory_covers() grows the KERNEL's Wasm memory
+  // (memory index 0 in the kernel module). But the
   // process runs in a different WebAssembly.Memory. After brk/mmap/mremap
   // syscalls, we must grow the process's memory to cover the returned
   // addresses — otherwise the process gets "memory access out of bounds".
@@ -7719,10 +7745,9 @@ export class CentralizedKernelWorker {
 
     // The injected pipes live in the global pipe table (see
     // kernel_inject_connection in crates/kernel/src/wasm_api.rs). Pass
-    // pid=0 to the kernel pipe APIs as a sentinel meaning "use the
-    // global pipe table" — needed because any process sharing the
-    // listener can accept this connection, so the pipes can't live in
-    // a single process's per-pid pipe table.
+    // pid=0 to the legacy kernel pipe APIs as a compatibility sentinel.
+    // The APIs now always resolve pipe indexes through the global pipe table,
+    // which lets any process sharing the listener accept this connection.
     const GLOBAL_PIPE_PID = 0;
     const pipeWrite = this.kernelInstance!.exports.kernel_pipe_write as
       (pid: number, pipeIdx: number, bufPtr: KernelPointer, bufLen: number) => number;

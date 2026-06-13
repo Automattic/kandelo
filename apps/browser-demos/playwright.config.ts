@@ -28,12 +28,16 @@ export default defineConfig({
     },
     {
       name: "firefox",
-      testMatch: "coi.spec.ts",
+      testMatch: ["coi.spec.ts", "wasm-trap-signal.spec.ts"],
       use: { browserName: "firefox" },
     },
     {
       name: "webkit",
-      testMatch: ["coi.spec.ts", "kandelo-webkit-smoke.spec.ts"],
+      testMatch: [
+        "coi.spec.ts",
+        "kandelo-webkit-smoke.spec.ts",
+        "wasm-trap-signal.spec.ts",
+      ],
       use: { browserName: "webkit" },
     },
   ],

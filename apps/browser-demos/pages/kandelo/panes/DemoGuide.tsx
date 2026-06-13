@@ -4,9 +4,10 @@ import { useDemoGuide, useKernelHost, useStatus, useWebPreview } from "../kernel
 
 export interface DemoGuideProps {
   onOpenTerminal: () => void;
+  onRunWebAction: (action: DemoActionConfig) => Promise<string | void>;
 }
 
-export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal }) => {
+export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal, onRunWebAction }) => {
   const host = useKernelHost();
   const status = useStatus();
   const webPreview = useWebPreview();
@@ -29,16 +30,21 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal }) => {
     if (status !== "running") return;
     setRunningId(action.id);
     setMessage(null);
-    onOpenTerminal();
     try {
       if (action.kind === "terminal.run") {
+        onOpenTerminal();
         await host.runShellCommand(action.payload);
-      } else {
+        setMessage(`Sent ${action.label}`);
+      } else if (action.kind === "terminal.write") {
+        onOpenTerminal();
         const pty = await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
         pty.write(action.payload);
         pty.close();
+        setMessage(`Sent ${action.label}`);
+      } else {
+        const result = await onRunWebAction(action);
+        setMessage(result ?? `Ran ${action.label}`);
       }
-      setMessage(`Sent ${action.label}`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {
@@ -97,7 +103,7 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal }) => {
           {groups.map((group) => (
             <section className="kdemo-section" key={group.title}>
               <div className="kdemo-section-title">{group.title}</div>
-              <div className="kdemo-actions">
+              <div className={`kdemo-actions${group.actions.length === 1 ? " single" : ""}`}>
                 {group.actions.map((action) => (
                   <button
                     type="button"
@@ -106,7 +112,7 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onOpenTerminal }) => {
                     disabled={disabled || runningId !== null}
                     onClick={() => void runAction(action)}
                   >
-                    <span>{runningId === action.id ? "Sending..." : action.label}</span>
+                    <span>{runningId === action.id ? "Running..." : action.label}</span>
                     {action.description && <small>{action.description}</small>}
                   </button>
                 ))}

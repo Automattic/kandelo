@@ -6,7 +6,7 @@ shippable.
 
 ## Design reconsiderations
 
-### Re-examine "fold a computer into a URL"
+### Re-examine the shareable-computer URL dream
 
 The current URL is a *boot descriptor* — a pointer to signed package
 refs + a small inline overlay slot. The session that built this branch

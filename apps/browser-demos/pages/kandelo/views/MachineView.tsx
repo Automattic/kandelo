@@ -8,10 +8,16 @@
 import * as React from "react";
 import { useDemoGuide, usePresentation, useStatus, useSurfaceAvailability, useWebPreview } from "../kernel-host/react";
 import { Inspector } from "../panes/Inspector";
-import { Display } from "../panes/Display";
+import { Display, type DisplayHandle, type WordPressLoginOptions } from "../panes/Display";
 import { Shell, type ShellTerminal } from "../panes/Shell";
 import { DemoGuide } from "../panes/DemoGuide";
+import type { DemoActionConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import type { PrimarySurface, SurfaceAvailability } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+
+const DEMO_GUIDE_DEFAULT_WIDTH = 300;
+const DEMO_GUIDE_MIN_WIDTH = 220;
+const DEMO_GUIDE_MAX_WIDTH = 480;
+const DEMO_GUIDE_PRIMARY_MIN_WIDTH = 480;
 
 export interface MachineViewProps {
   focusInternals?: boolean;
@@ -42,12 +48,14 @@ export const MachineView: React.FC<MachineViewProps> = ({
   }), [rawAvailability, webPreview?.status]);
   const demoGuide = useDemoGuide();
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const displayRef = React.useRef<DisplayHandle | null>(null);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
   const [terminalOpen, setTerminalOpen] = React.useState(false);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
   const [terminalDrawerHeight, setTerminalDrawerHeight] = React.useState(320);
   const [internalsDrawerHeight, setInternalsDrawerHeight] = React.useState(320);
+  const [demoGuideWidth, setDemoGuideWidth] = React.useState(DEMO_GUIDE_DEFAULT_WIDTH);
   const previousAvailability = React.useRef(availability);
   const canUseTerminal = status === "running" && availability.terminal;
 
@@ -102,6 +110,23 @@ export const MachineView: React.FC<MachineViewProps> = ({
     setPrimaryMode(surface === defaultPrimary ? "following-demo" : "pinned");
   };
 
+  const primaryLabel = surfaceLabel(activePrimary);
+  const demoSurface = resolveDemoSurface(presentation.runningPrimary);
+
+  const runWebAction = React.useCallback(async (action: DemoActionConfig): Promise<string | void> => {
+    if (action.kind === "web.wordpressLogin") {
+      if (demoSurface) {
+        setActivePrimary(demoSurface);
+        setPrimaryMode("following-demo");
+      }
+      const preview = displayRef.current;
+      if (!preview) throw new Error("Web preview is not available");
+      await preview.loginToWordPress(parseWordPressLoginPayload(action.payload));
+      return "Logged into WordPress";
+    }
+    throw new Error(`Unsupported web action: ${action.kind}`);
+  }, [demoSurface]);
+
   const shellProps = {
     terminals,
     activeTerminalId,
@@ -109,8 +134,6 @@ export const MachineView: React.FC<MachineViewProps> = ({
     onAddTerminal,
   };
 
-  const primaryLabel = surfaceLabel(activePrimary);
-  const demoSurface = resolveDemoSurface(presentation.runningPrimary);
   const canOpenDemo =
     demoSurface !== null &&
     isSurfaceAvailable(demoSurface, availability) &&
@@ -151,6 +174,63 @@ export const MachineView: React.FC<MachineViewProps> = ({
     window.addEventListener("pointercancel", onDone);
   };
 
+  const demoGuideBounds = React.useCallback(() => {
+    const rootWidth = rootRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+    return {
+      min: DEMO_GUIDE_MIN_WIDTH,
+      max: Math.max(
+        DEMO_GUIDE_MIN_WIDTH,
+        Math.min(DEMO_GUIDE_MAX_WIDTH, rootWidth - DEMO_GUIDE_PRIMARY_MIN_WIDTH),
+      ),
+    };
+  }, []);
+
+  const setClampedDemoGuideWidth = React.useCallback((next: number) => {
+    const bounds = demoGuideBounds();
+    setDemoGuideWidth(clamp(next, bounds.min, bounds.max));
+  }, [demoGuideBounds]);
+
+  const beginDemoGuideResize = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = demoGuideWidth;
+    const bounds = demoGuideBounds();
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    target.classList.add("dragging");
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = startX - moveEvent.clientX;
+      setDemoGuideWidth(clamp(startWidth + delta, bounds.min, bounds.max));
+    };
+    const onDone = () => {
+      target.classList.remove("dragging");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onDone);
+      window.removeEventListener("pointercancel", onDone);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onDone);
+    window.addEventListener("pointercancel", onDone);
+  }, [demoGuideBounds, demoGuideWidth]);
+
+  const onDemoGuideResizeKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setClampedDemoGuideWidth(demoGuideWidth + 20);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setClampedDemoGuideWidth(demoGuideWidth - 20);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setClampedDemoGuideWidth(DEMO_GUIDE_MIN_WIDTH);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setClampedDemoGuideWidth(DEMO_GUIDE_MAX_WIDTH);
+    }
+  }, [demoGuideWidth, setClampedDemoGuideWidth]);
+
   return (
     <div className="kmachine" ref={rootRef}>
       <div className="kmachine-toolbar">
@@ -178,11 +258,16 @@ export const MachineView: React.FC<MachineViewProps> = ({
         <div className="kmachine-current">{primaryLabel}</div>
       </div>
 
-      <div className={`kmachine-workspace${showDemoGuide ? "" : " no-demo-guide"}`}>
+      <div
+        className={`kmachine-workspace${showDemoGuide ? "" : " no-demo-guide"}`}
+        style={showDemoGuide
+          ? { "--kmachine-demo-guide-width": `${demoGuideWidth}px` } as React.CSSProperties
+          : undefined}
+      >
         <div className="kmachine-primary">
           {shouldMountDemoSurface && (
             <PrimarySurfaceSlot active={activePrimary === demoSurface}>
-              <Display autoFocus={activePrimary === demoSurface} />
+              <Display ref={displayRef} autoFocus={activePrimary === demoSurface} />
             </PrimarySurfaceSlot>
           )}
           {activePrimary === "terminal" && canUseTerminal && (
@@ -197,10 +282,18 @@ export const MachineView: React.FC<MachineViewProps> = ({
           )}
         </div>
         {showDemoGuide && (
+          <DemoGuideResizer
+            width={demoGuideWidth}
+            onPointerDown={beginDemoGuideResize}
+            onKeyDown={onDemoGuideResizeKeyDown}
+          />
+        )}
+        {showDemoGuide && (
           <DemoGuide
             onOpenTerminal={() => {
               if (canUseTerminal) setTerminalOpen(true);
             }}
+            onRunWebAction={runWebAction}
           />
         )}
       </div>
@@ -235,6 +328,43 @@ export const MachineView: React.FC<MachineViewProps> = ({
     </div>
   );
 };
+
+const DemoGuideResizer: React.FC<{
+  width: number;
+  onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+}> = ({ width, onPointerDown, onKeyDown }) => (
+  <div
+    className="kmachine-guide-resizer"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Resize demo actions"
+    aria-valuemin={DEMO_GUIDE_MIN_WIDTH}
+    aria-valuemax={DEMO_GUIDE_MAX_WIDTH}
+    aria-valuenow={width}
+    tabIndex={0}
+    onPointerDown={onPointerDown}
+    onKeyDown={onKeyDown}
+  />
+);
+
+function parseWordPressLoginPayload(payload: string): WordPressLoginOptions {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    parsed = {};
+  }
+  const value = typeof parsed === "object" && parsed !== null
+    ? parsed as Record<string, unknown>
+    : {};
+  return {
+    username: typeof value.username === "string" ? value.username : "admin",
+    password: typeof value.password === "string" ? value.password : "password",
+    loginPath: typeof value.loginPath === "string" ? value.loginPath : "/wp-login.php",
+    adminPath: typeof value.adminPath === "string" ? value.adminPath : "/wp-admin/",
+  };
+}
 
 const SurfaceButton: React.FC<{
   label: string;

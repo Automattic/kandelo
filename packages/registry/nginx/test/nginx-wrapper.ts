@@ -3,7 +3,7 @@
  *
  * The upstream nginx test suite (Test::Nginx) expects to exec() an nginx
  * binary. This wrapper accepts the same command-line interface but runs
- * nginx inside a CentralizedKernelWorker.
+ * nginx through the kernel worker.
  *
  * Supported flags:
  *   -V              Print version and configure arguments
