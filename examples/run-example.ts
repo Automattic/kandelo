@@ -24,6 +24,7 @@ const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 // need the path must handle null explicitly.
 const coreutilsWasm = tryResolveBinary("programs/coreutils.wasm");
 const dashWasm = tryResolveBinary("programs/dash.wasm");
+const shWasm = dashWasm ?? tryResolveBinary("programs/sh.wasm");
 const grepWasm = tryResolveBinary("programs/grep.wasm");
 const sedWasm = tryResolveBinary("programs/sed.wasm");
 const gitWasm = tryResolveBinary("programs/git/git.wasm");
@@ -76,8 +77,9 @@ const builtinPrograms: Record<string, string | null> = {
     "echo": resolve(repoRoot, "examples/echo.wasm"),
     "/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
     "/usr/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
-    "sh": dashWasm,
-    "/bin/sh": dashWasm,
+    "sh": shWasm,
+    "/bin/sh": shWasm,
+    "/usr/bin/sh": shWasm,
     "dash": dashWasm,
     "/bin/dash": dashWasm,
     "grep": grepWasm,
@@ -264,12 +266,16 @@ function resolveProgram(path: string): ArrayBuffer | null {
         return loadBytes(resolve(repoRoot, "examples/gencat.wasm"));
     }
     const kernelCwd = process.env.KERNEL_CWD || process.cwd();
+    const isAbsolute = path.startsWith("/");
     const candidates = [
-        path,
+        // Never treat host absolute binaries like /bin/sh as guest Wasm.
+        // Absolute paths are only direct host paths when they explicitly name
+        // a .wasm file; otherwise they must resolve through builtinPrograms.
+        ...(!isAbsolute || path.endsWith(".wasm") ? [path] : []),
         path.endsWith(".wasm") ? path : `${path}.wasm`,
         resolve(repoRoot, `examples/${path}.wasm`),
         // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
-        resolve(kernelCwd, path),
+        ...(!isAbsolute || path.endsWith(".wasm") ? [resolve(kernelCwd, path)] : []),
         resolve(kernelCwd, path.endsWith(".wasm") ? path : `${path}.wasm`),
     ];
     for (const c of candidates) {
