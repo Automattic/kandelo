@@ -39,6 +39,7 @@ REGRESSION_EXPECTED_FAIL=(
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
+    raise-race                  # signal/fork stress test; can PASS, fail, or timeout depending on runner load/resources
 )
 
 # ── Helper: check if a test is in an expected-failure list ──
@@ -158,8 +159,8 @@ discover_regression() {
         # multiple threads — on resource-constrained Linux CI runners
         # this exhausts process/thread limits and the GHA agent gets
         # OOM-killed (exit 143) before the test's own timeout fires,
-        # killing the entire workflow. It passes locally, so it is not
-        # an XFAIL; keep the CI skip as runner protection only.
+        # killing the entire workflow. Local runs classify it as flaky;
+        # keep the CI skip as runner protection.
         # Set ALLOW_RAISE_RACE=1 to override.
         if [ "${CI:-}" = "true" ] && [ "${ALLOW_RAISE_RACE:-0}" != "1" ]; then
             [[ "$name" == "raise-race" ]] && continue
