@@ -50,6 +50,9 @@ const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/
 const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
   ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
   : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
+const TEST_DB_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_test_db.sql"))
+  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_test_db.sql")
+  : join(MARIADB_SOURCE, "scripts/mysql_test_db.sql");
 const DASH_PATH = resolveBinary("programs/dash.wasm");
 const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
 
@@ -302,7 +305,8 @@ async function main() {
   ensureDirRecursive(fs, "/etc/mariadb");
   const systemTables = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
   const systemData = readFileSync(SYSTEM_DATA_PATH, "utf-8");
-  const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\nCREATE DATABASE IF NOT EXISTS test;\n`;
+  const testDb = readFileSync(TEST_DB_PATH, "utf-8");
+  const bootstrapSql = `use mysql;\n${systemTables}\n${systemData}\n${testDb}\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 
   // bootstrap-runner: backgrounds mariadbd --bootstrap, sleeps to let

@@ -65,6 +65,12 @@ mysqltest with `MYSQLTEST_VARDIR=/data`, the server datadir under
 `/data/master-data`, and recreates `/data/tmp` before each invocation because
 upstream tests may create/drop a database named `tmp`.
 
+Both hosts bootstrap MariaDB with `mysql_system_tables.sql`,
+`mysql_system_tables_data.sql`, and `mysql_test_db.sql`, matching
+`mysql_install_db`'s default test-database grant baseline. Tests that create
+temporary users can therefore connect to the default `test` database the same
+way they do under the native MTR environment.
+
 ## Prerequisites
 
 Either fetch release binaries for the active ABI or build them locally:
