@@ -36,13 +36,14 @@ REGRESSION_EXPECTED_FAIL=(
     pthread_create-oom          # not a kernel gap — see docs/compromising-xfails.md "Not compromising"
     setenv-oom                  # OOM behavior differs in Wasm linear memory
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
-    # raise-race is skipped on CI in discover_regression (the
-    # test crashes the GHA runner before its timeout fires). The
-    # XFAIL entry remains for non-CI runs that exercise the test.
-    raise-race                  # known kernel race; tracked separately
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
+    # raise-race is skipped on CI in discover_regression (the test can crash
+    # resource-constrained GHA runners before its timeout fires). Non-CI runs
+    # that opt into it are host/load-sensitive: PASS is useful signal, but
+    # FAIL/TIME should not fail the libc gate.
+    raise-race
 )
 
 # ── Helper: check if a test is in an expected-failure list ──

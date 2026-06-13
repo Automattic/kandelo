@@ -1063,13 +1063,13 @@ export class CentralizedKernelWorker {
 
     // Cap mmap address space. New hosts pass the process memory maximum here
     // because syscall channels live below PROCESS_MMAP_BASE in a reserved
-    // control arena. Legacy callers without maxAddr still cap at the lowest
-    // channel offset, preserving the old high-channel layout behavior.
+    // control arena. Legacy callers without maxAddr still cap below the first
+    // high-address host control page, not at the channel header itself.
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: KernelPointer) => number) | undefined;
     if (setMaxAddr) {
       const maxAddr = options?.maxAddr ?? (
-        channelOffsets.length > 0 ? Math.min(...channelOffsets) : undefined
+        this.legacyMaxAddrForChannels(channelOffsets)
       );
       if (maxAddr !== undefined) {
         setMaxAddr(pid, this.toKernelPtr(maxAddr));
@@ -1655,7 +1655,7 @@ export class CentralizedKernelWorker {
     const setMaxAddr = this.kernelInstance!.exports.kernel_set_max_addr as
       ((pid: number, maxAddr: KernelPointer) => number) | undefined;
     if (setMaxAddr && !registration.explicitMaxAddr) {
-      const tlsPageAddr = channelOffset - 2 * WASM_PAGE_SIZE;
+      const tlsPageAddr = this.legacyHighControlFloorForChannel(channelOffset);
       if (tlsPageAddr >= PROCESS_MMAP_BASE) {
         setMaxAddr(pid, this.toKernelPtr(tlsPageAddr));
       }
@@ -7222,14 +7222,32 @@ export class CentralizedKernelWorker {
     const registration = this.processes.get(pid);
     if (!registration) return null;
     if (registration.explicitMaxAddr) return null;
-    let floor: number | null = null;
-    for (const ch of registration.channels) {
-      const tlsPageAddr = ch.channelOffset - 2 * WASM_PAGE_SIZE;
-      if (tlsPageAddr >= PROCESS_MMAP_BASE) {
-        floor = floor === null ? tlsPageAddr : Math.min(floor, tlsPageAddr);
+    return this.legacyHighControlFloorForChannels(
+      registration.channels.map((ch) => ch.channelOffset),
+    ) ?? null;
+  }
+
+  private legacyMaxAddrForChannels(channelOffsets: number[]): number | undefined {
+    const highControlFloor = this.legacyHighControlFloorForChannels(channelOffsets);
+    if (highControlFloor !== undefined) {
+      return highControlFloor;
+    }
+    return channelOffsets.length > 0 ? Math.min(...channelOffsets) : undefined;
+  }
+
+  private legacyHighControlFloorForChannels(channelOffsets: number[]): number | undefined {
+    let floor: number | undefined;
+    for (const channelOffset of channelOffsets) {
+      const controlFloor = this.legacyHighControlFloorForChannel(channelOffset);
+      if (controlFloor >= PROCESS_MMAP_BASE) {
+        floor = floor === undefined ? controlFloor : Math.min(floor, controlFloor);
       }
     }
     return floor;
+  }
+
+  private legacyHighControlFloorForChannel(channelOffset: number): number {
+    return channelOffset - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
   }
 
   /**

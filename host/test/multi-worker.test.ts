@@ -320,6 +320,40 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(setMaxAddr).toHaveBeenCalledWith(321, maxAddr);
   });
 
+  it("caps legacy high-channel process memory below host control pages", () => {
+    const setMaxAddr = vi.fn(() => 0);
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      initialized: true,
+      hostReaped: new Set(),
+      processes: new Map(),
+      activeChannels: [],
+      usePolling: true,
+      kernel: {
+        toKernelPtr(value: number | bigint): number {
+          return Number(value);
+        },
+      },
+      kernelInstance: {
+        exports: {
+          kernel_create_process: vi.fn(() => 0),
+          kernel_set_max_addr: setMaxAddr,
+        },
+      },
+    }) as CentralizedKernelWorker;
+    const maxPages = 2048;
+    const channelOffset = (maxPages - 2) * WASM_PAGE_SIZE;
+    const memory = new WebAssembly.Memory({
+      initial: maxPages,
+      maximum: maxPages,
+      shared: true,
+    });
+
+    kw.registerProcess(322, memory, [channelOffset]);
+
+    expect(setMaxAddr).toHaveBeenCalledTimes(1);
+    expect(setMaxAddr).toHaveBeenCalledWith(322, channelOffset - 2 * WASM_PAGE_SIZE);
+  });
+
   it("should register and unregister processes", async () => {
     const kw = new CentralizedKernelWorker(
       { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },

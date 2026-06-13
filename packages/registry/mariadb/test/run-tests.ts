@@ -330,6 +330,19 @@ async function main() {
     // .expect file path for MTR restart protocol
     const expectFilePath = resolve(dataDir, "tmp", "tmp.expect");
 
+    async function stopAllWorkers(): Promise<void> {
+        for (const tw of serverThreadWorkers) {
+            await tw.terminate().catch(() => {});
+        }
+        serverThreadWorkers.clear();
+        for (const [pid, w] of workers) {
+            await w.terminate().catch(() => {});
+            try { kernelWorker.unregisterProcess(pid); } catch {}
+        }
+        workers.clear();
+        threadAllocator = new ThreadPageAllocator(MAX_PAGES);
+    }
+
     /** Perform mid-test server restart (called from onExit when server shuts down). */
     async function performMidTestRestart(
         kw: CentralizedKernelWorker,
@@ -388,16 +401,7 @@ async function main() {
     /** Kill all workers and start a fresh server instance. */
     async function restartServer(): Promise<void> {
         // Terminate all workers (including server threads)
-        for (const tw of serverThreadWorkers) {
-            await tw.terminate().catch(() => {});
-        }
-        serverThreadWorkers.clear();
-        for (const [pid, w] of workers) {
-            await w.terminate().catch(() => {});
-            try { kernelWorker.unregisterProcess(pid); } catch {}
-        }
-        workers.clear();
-        threadAllocator = new ThreadPageAllocator(MAX_PAGES);
+        await stopAllWorkers();
 
         // Clean Aria control/log files to prevent checksum mismatch on restart
         const { unlinkSync, readdirSync: readdir } = await import("fs");
@@ -551,6 +555,27 @@ CREATE DATABASE test;
     // Hard per-iteration timeout: test timeout + 120s for reset/restart overhead
     const iterationTimeout = testTimeout + 120000;
 
+    async function recoverServerFromScratch(reason: string): Promise<void> {
+        console.error(`Server unrecoverable (${reason}) — re-bootstrapping from scratch...`);
+        const { rmSync, mkdirSync: mkd } = await import("fs");
+        await stopAllWorkers();
+        rmSync(dataDir, { recursive: true, force: true });
+        mkd(resolve(dataDir, "mysql"), { recursive: true });
+        mkd(resolve(dataDir, "tmp"), { recursive: true });
+        tmpTestDir = resolve(dataDir, "tmp", "mysqltest");
+        mkd(tmpTestDir, { recursive: true });
+
+        serverStderr = "";
+        await kernelWorker.init(kernelBytes);
+        restartFailCount = 0;
+        await runBootstrap(kernelWorker, workerAdapter, workers, mysqldBytes, dataDir);
+        await restartServer();
+        await runSetup();
+        needsRestart = false;
+        consecutiveRestartFailures = 0;
+        console.error("Re-bootstrap complete.");
+    }
+
     for (const testName of testNames) {
         // Run GC before each test to keep memory pressure low
         if (typeof globalThis.gc === "function") {
@@ -589,24 +614,8 @@ CREATE DATABASE test;
         // Restart server if previous test caused issues
         if (needsRestart) {
             if (consecutiveRestartFailures >= MAX_CONSECUTIVE_RESTART_FAILURES) {
-                // Nuclear recovery: re-bootstrap from scratch
-                console.error("Server unrecoverable — re-bootstrapping from scratch...");
                 try {
-                    // Clean data directory
-                    const { rmSync, mkdirSync: mkd } = await import("fs");
-                    rmSync(dataDir, { recursive: true, force: true });
-                    mkd(resolve(dataDir, "mysql"), { recursive: true });
-                    mkd(resolve(dataDir, "tmp"), { recursive: true });
-                    tmpTestDir = resolve(dataDir, "tmp", "mysqltest");
-                    mkd(tmpTestDir, { recursive: true });
-                    // Reinit kernel and re-bootstrap
-                    await kernelWorker.init(kernelBytes);
-                    await runBootstrap(kernelWorker, workerAdapter, workers, mysqldBytes, dataDir);
-                    await restartServer();
-                    await runSetup();
-                    needsRestart = false;
-                    consecutiveRestartFailures = 0;
-                    console.error("Re-bootstrap complete.");
+                    await recoverServerFromScratch("repeated restart failures");
                 } catch (e) {
                     console.error("Re-bootstrap failed:", e);
                     return { test: testName, status: "fail", time_ms: 0, stderr: "re-bootstrap failed" };
@@ -621,7 +630,12 @@ CREATE DATABASE test;
                 } catch (e) {
                     consecutiveRestartFailures++;
                     console.error(`Server restart failed (${consecutiveRestartFailures}/${MAX_CONSECUTIVE_RESTART_FAILURES}):`, e);
-                    return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
+                    try {
+                        await recoverServerFromScratch("restart/setup failure");
+                    } catch (recoveryError) {
+                        console.error("Re-bootstrap failed:", recoveryError);
+                        return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
+                    }
                 }
             }
         }
@@ -659,7 +673,13 @@ CREATE DATABASE test;
                     );
                 } catch {}
             } catch (e) {
-                return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
+                console.error(`Server restart before ${testName} failed:`, e);
+                try {
+                    await recoverServerFromScratch("pre-test restart failure");
+                } catch (recoveryError) {
+                    console.error("Re-bootstrap failed:", recoveryError);
+                    return { test: testName, status: "fail", time_ms: 0, stderr: "server restart failed" };
+                }
             }
         }
 
