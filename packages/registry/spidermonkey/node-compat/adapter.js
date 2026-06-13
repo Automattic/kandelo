@@ -5,6 +5,15 @@
 // std, os, and native surfaces that bootstrap expects, backed by the
 // SpiderMonkey shell and Kandelo POSIX helpers.
 (function () {
+    const _adapterOwnGlobals = Object.getOwnPropertyNames(globalThis);
+    for (const name of _adapterOwnGlobals) {
+        if (name === 'globalThis') continue;
+        const desc = Object.getOwnPropertyDescriptor(globalThis, name);
+        if (desc && desc.enumerable && desc.configurable) {
+            try { Object.defineProperty(globalThis, name, { ...desc, enumerable: false }); } catch (_) {}
+        }
+    }
+
     if (typeof globalThis.queueMicrotask !== 'function') {
         globalThis.queueMicrotask = function queueMicrotask(callback) {
             Promise.resolve().then(() => callback());

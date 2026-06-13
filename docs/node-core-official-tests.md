@@ -41,7 +41,7 @@ default, or under `--results-dir`. Each run preserves `summary.txt`,
 `stdout/*.log` and `stderr/*.log`; browser runs also preserve
 `browser-console.log`.
 
-As of the initial smoke diagnosis, browser mode reaches Kandelo execution. The
-remaining smoke failures also reproduce on the Node host and are tracked as
-shared `spidermonkey-node` compatibility gaps: missing `vm.runInNewContext`,
-and path API `ERR_INVALID_ARG_TYPE` validation.
+The manifest is intentionally small and public-API focused. Tests that require
+Node's private `--expose-internals` hooks, such as `internal/test/binding`, must
+be marked as an explicit support-boundary `SKIP` with a reason instead of being
+reported as runtime parity failures.

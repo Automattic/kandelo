@@ -64,8 +64,8 @@
     {
       "path": "test/parallel/test-util-inspect.js",
       "area": "util",
-      "expected": "PASS",
-      "reason": "Representative util.inspect formatting coverage."
+      "expected": "SKIP",
+      "reason": "Requires Node's --expose-internals support boundary and internal/test/binding native hooks, which the Kandelo compatibility runtime does not expose."
     },
     {
       "path": "test/parallel/test-console-count.js",
