@@ -189,6 +189,7 @@ interface ThreadWorkerInfo {
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
+const reportedNonzeroProcessExits = new Set<number>();
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -207,6 +208,34 @@ function processWorkerTerminationSettleMs(argv: readonly string[] | undefined): 
   return name === "node" || name === "spidermonkey-node" || name === "spidermonkey-node.wasm"
     ? NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS
     : 0;
+}
+
+function reportNonzeroProcessExitDiagnostic(
+  pid: number,
+  status: number,
+  source: string,
+): void {
+  if (status === 0 || reportedNonzeroProcessExits.has(pid)) return;
+  reportedNonzeroProcessExits.add(pid);
+  const info = processes.get(pid);
+  const syscalls = kernelWorker.dumpLastSyscalls(pid) || "<none>";
+  const serviceLog = readServiceLogForProcess(info?.argv);
+  const diagnostic =
+    `[kernel-worker] nonzero process exit pid=${pid} status=${status} source=${source} argv=${JSON.stringify(info?.argv ?? [])}` +
+    (serviceLog ? `\n${serviceLog}` : "") +
+    `\n${syscalls}`;
+  console.warn(diagnostic);
+  post({ type: "stderr", pid, data: new TextEncoder().encode(`${diagnostic}\n`) });
+}
+
+function readServiceLogForProcess(argv: readonly string[] | undefined): string | null {
+  const name = basename(argv?.[0] ?? "");
+  const logPath = name === "nginx" ? "/var/log/nginx.log" : null;
+  if (!logPath) return null;
+  const bytes = readFileFromFs(logPath);
+  if (!bytes || bytes.byteLength === 0) return `${logPath}: <empty>`;
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).trimEnd();
+  return `${logPath}:\n${text || "<empty>"}`;
 }
 
 async function waitForProcessTeardowns(): Promise<void> {
@@ -708,6 +737,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     // Pid: if the caller pre-picked one, honor it (legacy spawn() callers
     // still do); otherwise the worker is the source of truth and allocates.
     const pid = msg.pid ?? kernelWorker.allocatePid();
+    const path = msg.programPath ?? msg.argv[0];
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
     const {
@@ -716,7 +746,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       threadAllocator,
     } = createFreshProcessMemory(pid, programBytes, ptrWidth, pages, {
       operation: "spawn",
-      path: msg.programPath ?? msg.argv[0],
+      path,
       argv: msg.argv,
     });
     const channelOffset = layout.channelOffset;
@@ -817,6 +847,7 @@ function installProcessWorkerListeners(
     } else {
       console.warn(message);
     }
+    reportNonzeroProcessExitDiagnostic(pid, status, source);
     handleExit(pid, status);
   };
 
@@ -1275,6 +1306,7 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
   if (processTeardowns.has(pid)) return;
 
   const info = processes.get(pid);
+  reportNonzeroProcessExitDiagnostic(pid, exitStatus, "kernel process exit");
   const threadedSettleMs = threadedProcessPids.has(pid)
     ? THREADED_WORKER_TERMINATION_SETTLE_MS
     : 0;

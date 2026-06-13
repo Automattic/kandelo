@@ -72,7 +72,16 @@ export function resolveVfsArtifact(relPath: string, depName?: string): string {
 export function loadShellBaseFileSystem(maxByteLength: number): MemoryFileSystem {
   const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
   const shellImage = new Uint8Array(readFileSync(shellImagePath));
-  return MemoryFileSystem.fromImage(shellImage, { maxByteLength });
+  const fs = MemoryFileSystem.fromImage(shellImage, { maxByteLength });
+  const stats = fs.statfs("/");
+  const effectiveMaxByteLength = stats.blocks * stats.bsize;
+  if (effectiveMaxByteLength >= maxByteLength) return fs;
+
+  console.log(
+    `Rebasing shell base VFS capacity from ${Math.round(effectiveMaxByteLength / 1024 / 1024)} MiB ` +
+      `to ${Math.round(maxByteLength / 1024 / 1024)} MiB...`,
+  );
+  return fs.rebaseToNewFileSystem(maxByteLength);
 }
 
 export interface ShellVfsOptions {

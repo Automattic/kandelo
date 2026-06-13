@@ -77,7 +77,9 @@ const PHP_FPM_WORKERS = 6;
 const MYSQL_UID = 101;
 const MYSQL_GID = 101;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
-const LAMP_IMAGE_MAX_BYTES = 512 * 1024 * 1024;
+const LAMP_IMAGE_MAX_BYTES = 768 * 1024 * 1024;
+const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
+const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
 
 // LAMP-specific data dirs that mariadbd writes to at runtime. The image
 // starts from the full shell demo VFS, so the bootstrap script gets the same
@@ -105,7 +107,7 @@ function populateMariadb(fs: MemoryFileSystem): void {
 function populateNginxConfig(fs: MemoryFileSystem): void {
   for (const dir of [
     "/etc/nginx", "/var/www/html", "/var/log/nginx",
-    "/tmp/nginx_client_temp", "/tmp/nginx_fastcgi_temp",
+    "/tmp/nginx_client_temp", "/tmp/nginx_fastcgi_temp", "/tmp/nginx_proxy_temp",
   ]) ensureDirRecursive(fs, dir);
 
   const fastcgiParams = `fastcgi_pass 127.0.0.1:9000;
@@ -138,6 +140,7 @@ events {
 http {
     client_body_temp_path /tmp/nginx_client_temp;
     fastcgi_temp_path     /tmp/nginx_fastcgi_temp;
+    proxy_temp_path       /tmp/nginx_proxy_temp;
     types {
         text/html  html htm;
         text/css   css;
@@ -295,6 +298,8 @@ const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin E
 # rest of dinit's chain runs concurrently with bootstrap.
 /usr/sbin/mariadbd --no-defaults --user=mysql --datadir=/data --tmpdir=/data/tmp \\
     --default-storage-engine=Aria --skip-grant-tables \\
+    --aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE} \\
+    --aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE} \\
     --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 \\
     --bootstrap --skip-networking --log-warnings=0 \\
     --log-error=/data/bootstrap.log < /etc/mariadb/bootstrap.sql &
@@ -325,12 +330,15 @@ function buildServices(): DinitService[] {
       command: "/bin/sh /etc/mariadb/bootstrap.sh",
       logfile: "/var/log/mariadb-bootstrap.log",
       restart: false,
+      startTimeout: 0,
     },
     {
       name: "mariadb",
       type: "process",
       command: "/usr/sbin/mariadbd --no-defaults --user=mysql " +
         "--datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria " +
+        `--aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE} ` +
+        `--aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE} ` +
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
         "--sort-buffer-size=262144 --skip-networking=0 --port=3306 " +
         `--bind-address=0.0.0.0 --socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
