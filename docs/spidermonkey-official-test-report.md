@@ -48,6 +48,14 @@ a shell invocation is in flight, the bridge reopens the page and retries that
 same invocation a bounded number of times before reporting an infrastructure
 failure to the upstream harness.
 
+The browser bridge also watches each Playwright `page.evaluate` from the Node
+side using the wrapper timeout. This is separate from the page-local guest
+timeout because a wedged browser execution can prevent page timers from firing
+soon enough for the upstream harness. On a browser guest timeout, the bridge
+closes the page context to discard the persistent `BrowserKernel`, opens a fresh
+page, and retries the invocation once by default. Set
+`SPIDERMONKEY_BROWSER_JS_SHELL_TIMEOUT_RETRIES=0` to disable that retry.
+
 `scripts/ensure-spidermonkey-source.sh` locates or downloads the Firefox ESR
 source tree pinned by the SpiderMonkey package manifest. The browser VFS builder
 uses the same source tree so absolute upstream test paths stay valid inside the

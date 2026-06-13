@@ -13,6 +13,7 @@ const VITE_HOST = "127.0.0.1";
 const VITE_PORT = Number(process.env.SPIDERMONKEY_TEST_VITE_PORT ?? 5202);
 const SERVER_HOST = "127.0.0.1";
 const SERVER_PORT = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_PORT ?? 5312);
+const DEFAULT_TIMEOUT_MS = Number(process.env.SPIDERMONKEY_WRAPPER_TIMEOUT_MS ?? 600_000);
 
 interface RunRequest {
   argv: string[];
@@ -27,6 +28,7 @@ interface RunResult {
   durationMs: number;
   processReaped?: boolean;
   bridgeRetries?: number;
+  guestTimeoutRetries?: number;
 }
 
 function readPageEvaluateRetries(): number {
@@ -34,10 +36,32 @@ function readPageEvaluateRetries(): number {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 2;
 }
 
+function readGuestTimeoutRetries(): number {
+  const value = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_TIMEOUT_RETRIES ?? 1);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 1;
+}
+
 const PAGE_EVALUATE_RETRIES = readPageEvaluateRetries();
+const GUEST_TIMEOUT_RETRIES = readGuestTimeoutRetries();
 
 function isPageContextLoss(message: string): boolean {
   return /Target page|Execution context|closed|detached|navigation/i.test(message);
+}
+
+function isGuestTimeoutResult(result: RunResult): boolean {
+  return result.error === "TIMEOUT";
+}
+
+function requestTimeoutMs(body: RunRequest): number {
+  const value = Number(body.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_TIMEOUT_MS;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolvePromise, reject) => {
+    const timer = setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs);
+    promise.then(resolvePromise, reject).finally(() => clearTimeout(timer));
+  });
 }
 
 async function waitForProcess(proc: ChildProcess, description: string): Promise<void> {
@@ -160,23 +184,57 @@ async function main() {
   }
 
   async function runInPage(body: RunRequest): Promise<RunResult> {
-    let retries = 0;
+    const startedAt = Date.now();
+    const timeoutMs = requestTimeoutMs(body);
+    let pageRetries = 0;
+    let guestTimeoutRetries = 0;
     for (;;) {
+      const evaluation = page.evaluate(
+        (request) => (window as any).__runSpiderMonkeyScript(request),
+        { argv: body.argv, timeoutMs: body.timeoutMs },
+      ) as Promise<RunResult>;
+      evaluation.catch(() => {});
+
       try {
-        const result = await page.evaluate(
-          (request) => (window as any).__runSpiderMonkeyScript(request),
-          { argv: body.argv, timeoutMs: body.timeoutMs },
-        ) as RunResult;
-        if (retries > 0) result.bridgeRetries = retries;
+        const result = await withTimeout(evaluation, timeoutMs);
+        if (isGuestTimeoutResult(result)) {
+          await reopenPage(`guest timeout result (${guestTimeoutRetries}/${GUEST_TIMEOUT_RETRIES})`);
+          if (guestTimeoutRetries < GUEST_TIMEOUT_RETRIES) {
+            guestTimeoutRetries++;
+            continue;
+          }
+        }
+        if (pageRetries > 0) result.bridgeRetries = pageRetries;
+        if (guestTimeoutRetries > 0) result.guestTimeoutRetries = guestTimeoutRetries;
         return result;
       } catch (err: any) {
         const message = err?.message || String(err);
-        if (!isPageContextLoss(message) || retries >= PAGE_EVALUATE_RETRIES) {
+        if (message.includes("TIMEOUT")) {
+          await reopenPage(
+            `host-side guest timeout after ${timeoutMs}ms ` +
+            `(${guestTimeoutRetries}/${GUEST_TIMEOUT_RETRIES})`,
+          );
+          if (guestTimeoutRetries < GUEST_TIMEOUT_RETRIES) {
+            guestTimeoutRetries++;
+            continue;
+          }
+          return {
+            exitCode: -1,
+            stdout: "",
+            stderr: "",
+            error: "TIMEOUT",
+            durationMs: Date.now() - startedAt,
+            ...(pageRetries > 0 ? { bridgeRetries: pageRetries } : {}),
+            ...(guestTimeoutRetries > 0 ? { guestTimeoutRetries } : {}),
+          };
+        }
+
+        if (!isPageContextLoss(message) || pageRetries >= PAGE_EVALUATE_RETRIES) {
           throw err;
         }
-        retries++;
+        pageRetries++;
         await reopenPage(
-          `Playwright context loss (${retries}/${PAGE_EVALUATE_RETRIES}): ${message}`,
+          `Playwright context loss (${pageRetries}/${PAGE_EVALUATE_RETRIES}): ${message}`,
         );
       }
     }
