@@ -18,4 +18,3 @@ Results root: `test-runs/gastown-sqlite-browser-full-pr5-snapshot`
 ## Artifacts
 
 - `browser`: `test-runs/gastown-sqlite-browser-full-pr5-snapshot/browser`
-

@@ -13067,7 +13067,7 @@ like-13.2... Ok
 like-13.3... Ok
 like-13.4... Ok
 like-14.1... (0 ms - want less than 1000.0)  Ok
-like-14.2... (1000 ms - want less than 1000.0) 
+like-14.2... (1000 ms - want less than 1000.0)
 ! like-14.2 expected: [1]
 ! like-14.2 got:      [0]
 like-15.100... Ok

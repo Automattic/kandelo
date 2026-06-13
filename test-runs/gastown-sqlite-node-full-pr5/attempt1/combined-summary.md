@@ -18,4 +18,3 @@ Results root: `test-runs/gastown-sqlite-node-full-pr5`
 ## Artifacts
 
 - `node`: `test-runs/gastown-sqlite-node-full-pr5/node`
-
