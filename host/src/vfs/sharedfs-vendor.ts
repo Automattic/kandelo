@@ -1365,6 +1365,19 @@ export class SharedFS {
     }
   }
 
+  pread(fd: number, buffer: Uint8Array, offset: number): number {
+    const entry = this.fdGet(fd);
+    if (!entry) throw new SFSError(EBADF);
+    if (offset < 0) throw new SFSError(EINVAL);
+
+    this.inodeReadLock(entry.ino);
+    try {
+      return this.inodeReadData(entry.ino, offset, buffer, buffer.length);
+    } finally {
+      this.inodeReadUnlock(entry.ino);
+    }
+  }
+
   write(fd: number, data: Uint8Array): number {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
@@ -1390,6 +1403,33 @@ export class SharedFS {
       const base = FD_TABLE_OFFSET + fd * FD_ENTRY_SIZE;
       this.w64(base + FD_OFFSET, offset + nwritten);
       return nwritten;
+    } finally {
+      this.inodeWriteUnlock(entry.ino);
+    }
+  }
+
+  pwrite(fd: number, data: Uint8Array, offset: number): number {
+    const entry = this.fdGet(fd);
+    if (!entry) throw new SFSError(EBADF);
+    if (offset < 0) throw new SFSError(EINVAL);
+
+    const accMode = entry.flags & O_ACCMODE;
+    if (accMode === O_RDONLY) throw new SFSError(EBADF);
+
+    this.inodeWriteLock(entry.ino);
+    try {
+      let writeOffset = offset;
+      if (entry.flags & O_APPEND) {
+        const inoOff = this.inodeOffset(entry.ino);
+        writeOffset = this.r64(inoOff + INO_SIZE);
+      }
+
+      return this.inodeWriteData(
+        entry.ino,
+        writeOffset,
+        data,
+        data.length,
+      );
     } finally {
       this.inodeWriteUnlock(entry.ino);
     }

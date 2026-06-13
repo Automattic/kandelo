@@ -810,12 +810,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     length: number,
   ): number {
     if (offset !== null) {
-      // pread semantics: read at offset without changing file position
-      const savedPos = this.fs.lseek(handle, 0, 1); // SEEK_CUR
-      this.fs.lseek(handle, offset, 0); // SEEK_SET
-      const n = this.fs.read(handle, buffer.subarray(0, length));
-      this.fs.lseek(handle, savedPos, 0); // restore position
-      return n;
+      return this.fs.pread(handle, buffer.subarray(0, length), offset);
     }
     return this.fs.read(handle, buffer.subarray(0, length));
   }
@@ -827,12 +822,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     length: number,
   ): number {
     if (offset !== null) {
-      // pwrite semantics: write at offset without changing file position
-      const savedPos = this.fs.lseek(handle, 0, 1); // SEEK_CUR
-      this.fs.lseek(handle, offset, 0); // SEEK_SET
-      const n = this.fs.write(handle, buffer.subarray(0, length));
-      this.fs.lseek(handle, savedPos, 0); // restore position
-      return n;
+      return this.fs.pwrite(handle, buffer.subarray(0, length), offset);
     }
     return this.fs.write(handle, buffer.subarray(0, length));
   }
