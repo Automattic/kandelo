@@ -196,6 +196,22 @@ function _makeNodeError(message, code, errno, syscall, path) {
     return err;
 }
 
+function _makeInvalidArgTypeError(name, expected, value) {
+    const actual = value === null ? 'null' :
+                   Array.isArray(value) ? 'an instance of Array' :
+                   typeof value === 'object' ? `an instance of ${value.constructor && value.constructor.name || 'Object'}` :
+                   `type ${typeof value}`;
+    const err = new TypeError(`The "${name}" argument must be of type ${expected}. Received ${actual}`);
+    err.code = 'ERR_INVALID_ARG_TYPE';
+    return err;
+}
+
+function _validateString(value, name) {
+    if (typeof value !== 'string') {
+        throw _makeInvalidArgTypeError(name, 'string', value);
+    }
+}
+
 function _throwErrno(errno, syscall, path) {
     const code = _errnoToCode(errno);
     const msg = `${code}: ${syscall}` + (path ? ` '${path}'` : '');
@@ -216,7 +232,7 @@ const path = (() => {
     const delimiter = ':';
 
     function normalize(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
         if (p.length === 0) return '.';
         const isAbsolute = p.charCodeAt(0) === 47; // '/'
         const parts = p.split('/');
@@ -242,7 +258,7 @@ const path = (() => {
         if (args.length === 0) return '.';
         let joined = '';
         for (const arg of args) {
-            if (typeof arg !== 'string') throw new TypeError('Arguments must be strings');
+            _validateString(arg, 'path');
             if (arg.length > 0) {
                 joined = joined ? joined + '/' + arg : arg;
             }
@@ -254,7 +270,7 @@ const path = (() => {
         let resolved = '';
         for (let i = args.length - 1; i >= 0; i--) {
             const p = args[i];
-            if (typeof p !== 'string') throw new TypeError('Arguments must be strings');
+            _validateString(p, `paths[${i}]`);
             if (p.length === 0) continue;
             resolved = p + (resolved ? '/' + resolved : '');
             if (p.charCodeAt(0) === 47) break;
@@ -267,7 +283,7 @@ const path = (() => {
     }
 
     function dirname(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
         if (p.length === 0) return '.';
         const idx = p.lastIndexOf('/');
         if (idx === -1) return '.';
@@ -276,7 +292,8 @@ const path = (() => {
     }
 
     function basename(p, ext) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
+        if (ext !== undefined) _validateString(ext, 'suffix');
         let base = p;
         const idx = p.lastIndexOf('/');
         if (idx !== -1) base = p.slice(idx + 1);
@@ -285,7 +302,7 @@ const path = (() => {
     }
 
     function extname(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
         const base = basename(p);
         const idx = base.lastIndexOf('.');
         if (idx <= 0) return '';
@@ -293,7 +310,7 @@ const path = (() => {
     }
 
     function isAbsolute(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
         return p.length > 0 && p.charCodeAt(0) === 47;
     }
 
@@ -338,7 +355,7 @@ const path = (() => {
 })();
 path.posix = path;
 // tar/cacache/minimatch read `path.win32.{sep,parse,isAbsolute}` at module init.
-path.win32 = { ...path, sep: '\\' };
+path.win32 = { ...path, sep: '\\', delimiter: ';' };
 
 // ============================================================
 // events module (EventEmitter)
