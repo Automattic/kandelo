@@ -29,8 +29,20 @@ Useful controls:
   each test creates a fresh kernel and SharedArrayBuffer-backed process memory.
 - `--area NAME`, `--test PATH`, and `--smoke` filter the manifest.
 
+Browser runs start the Vite test-runner page with `KANDELO_BROWSER_DEMO_INPUTS`
+set to `test-runner` and serve the pinned Node source, generated prelude, and
+runtime wasm through an env-gated same-origin route. This avoids serializing the
+large source fixture tree and runtime wasm through Playwright's `page.evaluate`
+payload.
+
 Artifacts are written under `test-runs/node-core-official-<host>-<mode>/` by
 default, or under `--results-dir`. Each run preserves `summary.txt`,
 `summary.json`, `results.ndjson`, `manifest.used.json`, and per-test
 `stdout/*.log` and `stderr/*.log`; browser runs also preserve
 `browser-console.log`.
+
+As of the initial smoke diagnosis, browser mode reaches Kandelo execution. The
+remaining smoke failures also reproduce on the Node host and are tracked as
+shared `spidermonkey-node` compatibility gaps: missing `vm.runInNewContext`,
+path API `ERR_INVALID_ARG_TYPE` validation, and Symbol handling in
+`assert.deepStrictEqual`.

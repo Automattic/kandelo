@@ -536,14 +536,14 @@ async function runBrowserTests(
   const { chromium } = await import("playwright");
   const consoleLog = join(resultsDir, "browser-console.log");
   writeFileSync(consoleLog, "");
-  const baseFiles = collectBrowserDataFiles(sourceDir, preludePath);
-  const runtimeBytes = readFileSync(runtimePath);
+  const baseFiles = collectBrowserDataFiles(sourceDir, preludePath, resultsDir);
+  const runtimeUrl = nodeCoreOfficialUrl("runtime");
   let viteProc: ChildProcess | null = null;
   let browser: Browser | null = null;
   const results = new Map<string, RawRunResult>();
 
   try {
-    viteProc = await startViteServer(consoleLog);
+    viteProc = await startViteServer(consoleLog, { sourceDir, resultsDir, runtimePath });
     browser = await chromium.launch({
       args: ["--enable-features=SharedArrayBuffer"],
     });
@@ -555,6 +555,13 @@ async function runBrowserTests(
     page.on("pageerror", (err) => {
       appendText(consoleLog, `[pageerror] ${err.stack || err.message}\n`);
     });
+    page.on("crash", () => {
+      appendText(consoleLog, "[pagecrash] page crashed\n");
+    });
+    page.on("requestfailed", (request) => {
+      const failure = request.failure();
+      appendText(consoleLog, `[requestfailed] ${request.url()} ${failure?.errorText ?? ""}\n`);
+    });
     await waitForTestRunner(page);
 
     for (const test of tests) {
@@ -562,20 +569,20 @@ async function runBrowserTests(
       const testHostPath = join(sourceDir, test.spec.path);
       const dataFiles = [
         ...baseFiles,
-        dataFileFromHost(testHostPath, `/node-v22.0.0/${test.spec.path}`),
+        dataFileFromSourceUrl(sourceDir, testHostPath, `/node-v22.0.0/${test.spec.path}`),
       ];
       try {
         const result = await page.evaluate(
-          async ({ bytes, argv, timeoutMs, dataFiles: files, env }) => {
-            return await (window as any).__runTest(
-              new Uint8Array(bytes).buffer,
+          async ({ wasmUrl, argv, timeoutMs, dataFiles: files, env }) => {
+            return await (window as any).__runTestFromUrl(
+              wasmUrl,
               argv,
               timeoutMs,
               { dataFiles: files, cwd: "/node-v22.0.0", env },
             );
           },
           {
-            bytes: Array.from(runtimeBytes),
+            wasmUrl: runtimeUrl,
             argv: [
               "node",
               "/node-v22.0.0/kandelo-node-core-prelude.js",
@@ -621,24 +628,39 @@ async function runBrowserTests(
 
 interface BrowserDataFile {
   path: string;
-  data: number[];
+  data?: number[];
+  url?: string;
 }
 
-function collectBrowserDataFiles(sourceDir: string, preludePath: string): BrowserDataFile[] {
+function collectBrowserDataFiles(sourceDir: string, preludePath: string, resultsDir: string): BrowserDataFile[] {
   const files: BrowserDataFile[] = [
-    dataFileFromHost(preludePath, "/node-v22.0.0/kandelo-node-core-prelude.js"),
+    dataFileFromResultsUrl(resultsDir, preludePath, "/node-v22.0.0/kandelo-node-core-prelude.js"),
   ];
   for (const relDir of ["test/common", "test/fixtures"]) {
     const absDir = join(sourceDir, relDir);
     for (const file of walkFiles(absDir)) {
-      files.push(dataFileFromHost(file, `/node-v22.0.0/${relative(sourceDir, file).replace(/\\/g, "/")}`));
+      files.push(dataFileFromSourceUrl(sourceDir, file, `/node-v22.0.0/${relative(sourceDir, file).replace(/\\/g, "/")}`));
     }
   }
   return files;
 }
 
-function dataFileFromHost(hostPath: string, vfsPath: string): BrowserDataFile {
-  return { path: vfsPath, data: Array.from(readFileSync(hostPath)) };
+function dataFileFromSourceUrl(sourceDir: string, hostPath: string, vfsPath: string): BrowserDataFile {
+  return { path: vfsPath, url: nodeCoreOfficialUrl("source", relative(sourceDir, hostPath)) };
+}
+
+function dataFileFromResultsUrl(resultsDir: string, hostPath: string, vfsPath: string): BrowserDataFile {
+  return { path: vfsPath, url: nodeCoreOfficialUrl("results", relative(resultsDir, hostPath)) };
+}
+
+function nodeCoreOfficialUrl(kind: "runtime" | "source" | "results", relPath = ""): string {
+  const prefix = "/__kandelo_node_core_official__";
+  if (kind === "runtime") return `${prefix}/runtime`;
+  return `${prefix}/${kind}/${encodeUrlPath(relPath)}`;
+}
+
+function encodeUrlPath(path: string): string {
+  return path.replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/");
 }
 
 function walkFiles(root: string): string[] {
@@ -656,7 +678,10 @@ function walkFiles(root: string): string[] {
   return out.sort();
 }
 
-async function startViteServer(consoleLog: string): Promise<ChildProcess> {
+async function startViteServer(
+  consoleLog: string,
+  nodeCoreFiles?: { sourceDir: string; resultsDir: string; runtimePath: string },
+): Promise<ChildProcess> {
   const browserDir = join(repoRoot, "apps/browser-demos");
   const port = 5199;
   return new Promise((resolveStart, reject) => {
@@ -669,7 +694,15 @@ async function startViteServer(consoleLog: string): Promise<ChildProcess> {
     ], {
       cwd: browserDir,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        KANDELO_BROWSER_DEMO_INPUTS: "test-runner",
+        ...(nodeCoreFiles ? {
+          KANDELO_NODE_CORE_OFFICIAL_SOURCE_DIR: nodeCoreFiles.sourceDir,
+          KANDELO_NODE_CORE_OFFICIAL_RESULTS_DIR: nodeCoreFiles.resultsDir,
+          KANDELO_NODE_CORE_OFFICIAL_RUNTIME_PATH: nodeCoreFiles.runtimePath,
+        } : {}),
+      },
     });
 
     let started = false;

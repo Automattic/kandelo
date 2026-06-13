@@ -16,6 +16,7 @@ import genCatWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/gencat.was
 interface DataFile {
   path: string;
   data?: number[]; // byte array (transferred as JSON-safe array)
+  url?: string; // same-origin URL fetched by the browser page
   useWasmBytes?: boolean; // if true, use the wasmBytes as file content
 }
 
@@ -24,6 +25,17 @@ declare global {
     __testRunnerReady: boolean;
     __runTest: (
       wasmBytes: ArrayBuffer,
+      argv?: string[],
+      timeoutMs?: number,
+      options?: { dataFiles?: DataFile[]; cwd?: string; env?: string[] },
+    ) => Promise<{
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+      combined: string;
+    }>;
+    __runTestFromUrl: (
+      wasmUrl: string,
       argv?: string[],
       timeoutMs?: number,
       options?: { dataFiles?: DataFile[]; cwd?: string; env?: string[] },
@@ -113,6 +125,21 @@ function populateExecBinaries(fs: import("@host/browser-kernel-host").BrowserKer
   }
 }
 
+async function fetchBytes(url: string): Promise<ArrayBuffer> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`fetch ${url} failed: ${response.status} ${response.statusText}`);
+  }
+  return response.arrayBuffer();
+}
+
+async function dataFileBytes(file: DataFile, wasmBytes: ArrayBuffer): Promise<Uint8Array> {
+  if (file.useWasmBytes) return new Uint8Array(wasmBytes);
+  if (file.url) return new Uint8Array(await fetchBytes(file.url));
+  if (file.data !== undefined) return new Uint8Array(file.data);
+  throw new Error(`Data file ${file.path} has neither data nor url`);
+}
+
 async function init() {
   // Fetch kernel wasm and tool binaries in parallel
   const fetches = await Promise.allSettled([
@@ -178,9 +205,7 @@ async function init() {
             }
           }
           // Write the file — use wasmBytes if flagged, otherwise use provided data
-          const fileData = file.useWasmBytes
-            ? new Uint8Array(wasmBytes)
-            : new Uint8Array(file.data!);
+          const fileData = await dataFileBytes(file, wasmBytes);
           const fd = kernel.fs.open(file.path, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0o755);
           kernel.fs.write(fd, fileData, null, fileData.length);
           kernel.fs.close(fd);
@@ -205,6 +230,16 @@ async function init() {
       await kernel.destroy();
       window.__testCount++;
     }
+  };
+
+  window.__runTestFromUrl = async (
+    wasmUrl: string,
+    argv?: string[],
+    timeoutMs = 30_000,
+    options?: { dataFiles?: DataFile[]; cwd?: string; env?: string[] },
+  ) => {
+    const wasmBytes = await fetchBytes(wasmUrl);
+    return window.__runTest(wasmBytes, argv, timeoutMs, options);
   };
 
   document.getElementById("status")!.textContent = "Ready";
