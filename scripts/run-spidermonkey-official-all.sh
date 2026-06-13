@@ -368,7 +368,10 @@ filter_kandelo_known_jstest_skips() {
 }
 
 queue_known_skip_entries() {
-  NEXT_KNOWN_SKIP_FILES=("$@")
+  NEXT_KNOWN_SKIP_FILES=()
+  if [ "$#" -gt 0 ]; then
+    NEXT_KNOWN_SKIP_FILES=("$@")
+  fi
 }
 
 jitflag_variant_count() {
