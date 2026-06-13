@@ -382,6 +382,28 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("node:5");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("provides vm.runInNewContext for foreign objects and sandbox globals", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const vm = require('node:vm')",
+        "const foreign = vm.runInNewContext('({ foo: [\"bar\", \"baz\"] })')",
+        "assert.strictEqual(foreign.foo.join(','), 'bar,baz')",
+        "assert.strictEqual(foreign instanceof Object, false)",
+        "const sandbox = { value: 7 }",
+        "assert.strictEqual(vm.runInNewContext('value += 5; created = value * 2; value', sandbox), 12)",
+        "assert.strictEqual(sandbox.value, 12)",
+        "assert.strictEqual(sandbox.created, 24)",
+        "const script = new vm.Script('answer + 1')",
+        "assert.strictEqual(script.runInNewContext({ answer: 41 }), 42)",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("resolves events.once for streams that replay cached events from on()", async () => {
     const result = await runNode(
       [

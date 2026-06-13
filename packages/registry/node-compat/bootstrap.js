@@ -3827,6 +3827,89 @@ const https = makeHttpModule({
 });
 
 // ============================================================
+// vm module
+// ============================================================
+
+const vm = (() => {
+    function assertContextObject(sandbox) {
+        if (sandbox == null) return {};
+        const type = typeof sandbox;
+        if (type !== 'object' && type !== 'function') {
+            throw new TypeError('The "contextObject" argument must be an object');
+        }
+        return sandbox;
+    }
+
+    function runInFreshGlobal(code, sandbox) {
+        const cx = newGlobal();
+        const initialKeys = new Set(Reflect.ownKeys(cx));
+        for (const key of Reflect.ownKeys(sandbox)) {
+            Object.defineProperty(cx, key, Object.getOwnPropertyDescriptor(sandbox, key));
+        }
+        const result = evalcx(String(code), cx);
+        for (const key of Reflect.ownKeys(cx)) {
+            if (initialKeys.has(key)) continue;
+            Object.defineProperty(sandbox, key, Object.getOwnPropertyDescriptor(cx, key));
+        }
+        return result;
+    }
+
+    function runInObjectScope(code, sandbox) {
+        const scope = new Proxy(sandbox, {
+            has(target, key) {
+                if (key === Symbol.unscopables) return false;
+                return key in target || !(key in globalThis);
+            },
+            get(target, key) {
+                if (key === Symbol.unscopables) return undefined;
+                return target[key];
+            },
+            set(target, key, value) {
+                target[key] = value;
+                return true;
+            },
+        });
+        const runner = Function(
+            'sandbox',
+            'code',
+            'with (sandbox) { return eval(code); }',
+        );
+        return runner(scope, String(code));
+    }
+
+    function runInNewContext(code, contextObject) {
+        const sandbox = assertContextObject(contextObject);
+        if (typeof newGlobal === 'function' && typeof evalcx === 'function') {
+            return runInFreshGlobal(code, sandbox);
+        }
+        return runInObjectScope(code, sandbox);
+    }
+
+    class Script {
+        constructor(code) {
+            this.code = String(code);
+        }
+        runInThisContext() {
+            return eval(this.code);
+        }
+        runInNewContext(contextObject) {
+            return runInNewContext(this.code, contextObject);
+        }
+    }
+
+    return {
+        runInThisContext(code) { return eval(String(code)); },
+        runInNewContext,
+        createContext: assertContextObject,
+        isContext(contextObject) {
+            const type = typeof contextObject;
+            return contextObject != null && (type === 'object' || type === 'function');
+        },
+        Script,
+    };
+})();
+
+// ============================================================
 // Module system (require/module)
 // ============================================================
 
@@ -4098,11 +4181,7 @@ const _builtinModules = {
             return { heap_size_limit: 256 * 1024 * 1024 };
         },
     },
-    'vm': {
-        runInThisContext(code) { return eval(code); },
-        createContext(sandbox) { return sandbox || {}; },
-        Script: class Script { constructor(code) { this.code = code; } runInThisContext() { return eval(this.code); } },
-    },
+    'vm': vm,
     // Minimal stubs — undici/file-type/anthropic-sdk import these at module
     // init even when their stream code paths aren't exercised by the agent's
     // actual HTTP transport (which goes through our native socket/tls shim).
