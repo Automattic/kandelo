@@ -360,6 +360,38 @@ describe("LiveKernelHost: surface availability", () => {
 
     expect(host.getSurfaceAvailability().web).toBe(false);
   });
+
+  it("tracks web preview pending requests without affecting availability", () => {
+    const host = new LiveKernelHost();
+    const seen: number[] = [];
+    host.setWebPreview({
+      label: "WordPress",
+      url: "/app/",
+      status: "running",
+    });
+    host.subscribeWebPreview((state) => {
+      seen.push(state?.pendingRequests ?? 0);
+    });
+
+    host.setWebPreviewPendingRequests(2);
+
+    expect(host.getWebPreview()?.pendingRequests).toBe(2);
+    expect(host.getSurfaceAvailability().web).toBe(true);
+    expect(seen).toEqual([2]);
+
+    host.setWebPreview({
+      label: "WordPress",
+      url: "/app/",
+      status: "running",
+      message: "HTTP bridge ready",
+    });
+
+    expect(host.getWebPreview()?.pendingRequests).toBe(2);
+
+    host.setWebPreviewPendingRequests(-1);
+
+    expect(host.getWebPreview()?.pendingRequests).toBe(0);
+  });
 });
 
 describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
