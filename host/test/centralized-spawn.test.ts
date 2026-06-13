@@ -10,6 +10,8 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCentralizedProgram } from "./centralized-test-helper";
@@ -45,6 +47,30 @@ describe("non-forking posix_spawn", () => {
     // GUARDRAIL: spawn must not increment the parent's fork counter.
     // A non-zero value here means SYS_SPAWN silently fell back to fork.
     expect(result.forkCount).toBe(0n);
+  });
+
+  it("returns ENOEXEC when posix_spawn resolves non-Wasm bytes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kandelo-invalid-spawn-"));
+    const invalidProgram = join(dir, "mysql");
+    writeFileSync(invalidProgram, new Uint8Array([0x69, 0x0e, 0x00, 0x00]));
+
+    try {
+      const result = await runCentralizedProgram({
+        programPath: spawnSmokeWasm,
+        argv: ["spawn-smoke", "/usr/bin/mysql"],
+        execPrograms: new Map([
+          ["/usr/bin/mysql", invalidProgram],
+        ]),
+        timeout: 30_000,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("posix_spawn(/usr/bin/mysql): Exec format error");
+      expect(result.stderr).not.toContain("WebAssembly.compile");
+      expect(result.stderr).not.toContain("expected magic word");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("covers spawnp / file actions / SETPGROUP", async () => {
