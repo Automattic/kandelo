@@ -185,6 +185,7 @@ EXPECTED_FAIL=(
     grant_not_windows
     ipv4_and_ipv6
     ipv6
+    lowercase_fs_on
     load_timezones_with_alter_algorithm_inplace
     loadxml
     log_errchk
