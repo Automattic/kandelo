@@ -673,10 +673,10 @@ run_jstest_selector_group() {
   fi
   filter_kandelo_known_jstest_skips "$host" "$@"
   if [ "${#FILTERED_JSTEST_SELECTORS[@]}" -gt 0 ]; then
-    queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+    queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]+"${KANDELO_KNOWN_SKIP_FILES[@]}"}"
     run_chunk "$host" jstests "$chunk" "${FILTERED_JSTEST_SELECTORS[@]}"
   else
-    record_known_skip_only_chunk "$host" jstests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+    record_known_skip_only_chunk "$host" jstests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]+"${KANDELO_KNOWN_SKIP_FILES[@]}"}"
   fi
 }
 
@@ -714,7 +714,7 @@ run_jstest_dir_recursive() {
     while IFS= read -r -d '' child; do
       known_skip_files+=("$child")
     done < <(find "$dir" -type f -name '*.js' ! -name 'shell.js' ! -name 'browser.js' ! -name 'template.js' ! -name 'user.js' ! -name 'js-test-driver-begin.js' ! -name 'js-test-driver-end.js' -print0 | sort -z)
-    record_known_skip_only_chunk "$host" jstests "$chunk" "${known_skip_files[@]}"
+    record_known_skip_only_chunk "$host" jstests "$chunk" "${known_skip_files[@]+"${known_skip_files[@]}"}"
     return 0
   fi
 
@@ -726,10 +726,10 @@ run_jstest_dir_recursive() {
       filter_kandelo_known_jstest_skips "$host" "${selectors[@]}"
       if [ "${#KANDELO_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
         if [ "${#FILTERED_JSTEST_SELECTORS[@]}" -gt 0 ]; then
-          queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+          queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]+"${KANDELO_KNOWN_SKIP_FILES[@]}"}"
           run_chunk "$host" jstests "$chunk" "${FILTERED_JSTEST_SELECTORS[@]}"
         else
-          record_known_skip_only_chunk "$host" jstests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+          record_known_skip_only_chunk "$host" jstests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]+"${KANDELO_KNOWN_SKIP_FILES[@]}"}"
         fi
         return 0
       fi
@@ -786,11 +786,11 @@ run_jit_tests_for_host() {
       filter_kandelo_known_jit_skips "$host" "${group[@]}"
       if [ "${#FILTERED_JIT_FILES[@]}" -gt 0 ]; then
         printf '%s\n' "${FILTERED_JIT_FILES[@]}" > "$list_file"
-        queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]+"${KANDELO_KNOWN_SKIP_FILES[@]}"}"
         run_chunk "$host" jit-tests "$chunk" --read-tests "$list_file"
       else
         : > "$list_file"
-        record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]+"${KANDELO_KNOWN_SKIP_FILES[@]}"}"
       fi
       index=$((index + JIT_CHUNK_SIZE))
       part=$((part + 1))
@@ -820,11 +820,11 @@ run_jit_tests_for_host() {
       filter_kandelo_known_jit_skips "$host" "${group[@]}"
       if [ "${#FILTERED_JIT_FILES[@]}" -gt 0 ]; then
         printf '%s\n' "${FILTERED_JIT_FILES[@]}" > "$list_file"
-        queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]+"${KANDELO_KNOWN_SKIP_FILES[@]}"}"
         run_chunk "$host" jit-tests "$chunk" --read-tests "$list_file"
       else
         : > "$list_file"
-        record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]+"${KANDELO_KNOWN_SKIP_FILES[@]}"}"
       fi
       index=$((index + JIT_CHUNK_SIZE))
       part=$((part + 1))
