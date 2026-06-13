@@ -202,7 +202,7 @@ async function main() {
         res.end(JSON.stringify(result));
       } catch (err: any) {
         const message = err?.message || String(err);
-        if (/Target page|Execution context|closed/i.test(message)) {
+        if (isPageContextLoss(message)) {
           await reopenPage(`unrecovered Playwright error: ${message}`).catch(() => {});
         }
         res.writeHead(200, { "content-type": "application/json" });
