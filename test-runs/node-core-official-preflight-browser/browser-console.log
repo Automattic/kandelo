@@ -1,0 +1,23 @@
+[vite:stderr] vite.config.ts (6:18) [33m[UNRESOLVED_IMPORT] [0mCould not resolve '@vitejs/plugin-react' in vite.config.ts
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m vite.config.ts:6:19 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m6 │[0m [38;5;249mi[0m[38;5;249mm[0m[38;5;249mp[0m[38;5;249mo[0m[38;5;249mr[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249mr[0m[38;5;249me[0m[38;5;249ma[0m[38;5;249mc[0m[38;5;249mt[0m[38;5;249m [0m[38;5;249mf[0m[38;5;249mr[0m[38;5;249mo[0m[38;5;249mm[0m[38;5;249m [0m"@vitejs/plugin-react"[38;5;249m;[0m
+ [38;5;240m  │[0m                   ───────────┬──────────  
+ [38;5;240m  │[0m                              ╰──────────── Module not found, treating it as an external dependency
+[38;5;246m───╯[0m
+
+[vite:stderr] failed to load config from /Users/brandon/gt/kandelo/polecats/cheedo/kandelo/apps/browser-demos/vite.config.ts
+[vite:stderr] error when starting dev server:
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@vitejs/plugin-react' imported from /Users/brandon/gt/kandelo/polecats/cheedo/kandelo/node_modules/.vite-temp/vite.config.ts.timestamp-1781311776504-ebf8b347e545c8.mjs
+    at Object.getPackageJSONURL (node:internal/modules/package_json_reader:301:9)
+    at packageResolve (node:internal/modules/esm/resolve:764:81)
+    at moduleResolve (node:internal/modules/esm/resolve:855:18)
+    at defaultResolve (node:internal/modules/esm/resolve:988:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:697:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:714:38)
+    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:746:52)
+    at #resolve (node:internal/modules/esm/loader:679:17)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:599:35)
+    at ModuleJob.syncLink (node:internal/modules/esm/module_job:162:33) {
+  code: 'ERR_MODULE_NOT_FOUND'
+}

@@ -1,0 +1,20 @@
+Official Node.js core JS module summary
+host=node
+source_tag=v22.0.0
+source_commit=12fb157f79da8c094a54bc99370994941c28c235
+source_dir=/Users/brandon/gt/kandelo/polecats/cheedo/kandelo/.cache/node-core-official/node-v22.0.0
+runtime=/Users/brandon/gt/kandelo/polecats/cheedo/kandelo/binaries/programs/wasm32/spidermonkey-node.wasm
+results_dir=/Users/brandon/gt/kandelo/polecats/cheedo/kandelo/test-runs/node-core-official-preflight-node-kad-nct3
+
+Totals:
+  FAIL: 3
+
+By area:
+  events: FAIL=1
+  path: FAIL=1
+  querystring: FAIL=1
+
+Unexpected results:
+  FAIL test/parallel/test-path.js expected=PASS
+  FAIL test/parallel/test-querystring.js expected=PASS
+  FAIL test/parallel/test-events-list.js expected=PASS
