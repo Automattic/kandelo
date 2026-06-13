@@ -36,6 +36,20 @@ unsafe extern "C" {
     fn host_read(handle: i64, buf_ptr: *mut u8, buf_len: u32) -> i32;
     fn host_write(handle: i64, buf_ptr: *const u8, buf_len: u32) -> i32;
     fn host_seek(handle: i64, offset_lo: u32, offset_hi: i32, whence: u32) -> i64;
+    fn host_pread(
+        handle: i64,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+        offset_lo: u32,
+        offset_hi: i32,
+    ) -> i32;
+    fn host_pwrite(
+        handle: i64,
+        buf_ptr: *const u8,
+        buf_len: u32,
+        offset_lo: u32,
+        offset_hi: i32,
+    ) -> i32;
     fn host_fstat(handle: i64, stat_ptr: *mut u8) -> i32;
     fn host_stat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
     fn host_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i32;
@@ -238,6 +252,43 @@ impl HostIO for WasmHostIO {
             }
         } else {
             Ok(result)
+        }
+    }
+
+    fn host_pread(&mut self, handle: i64, buf: &mut [u8], offset: i64) -> Result<usize, Errno> {
+        let offset_lo = offset as u32;
+        let offset_hi = (offset >> 32) as i32;
+        let result = unsafe {
+            host_pread(
+                handle,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                offset_lo,
+                offset_hi,
+            )
+        };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
+        }
+    }
+
+    fn host_pwrite(&mut self, handle: i64, buf: &[u8], offset: i64) -> Result<usize, Errno> {
+        let offset_lo = offset as u32;
+        let offset_hi = (offset >> 32) as i32;
+        let result =
+            unsafe { host_pwrite(handle, buf.as_ptr(), buf.len() as u32, offset_lo, offset_hi) };
+        if result < 0 {
+            match Errno::from_u32((-result) as u32) {
+                Some(e) => Err(e),
+                None => Err(Errno::EIO),
+            }
+        } else {
+            Ok(result as usize)
         }
     }
 

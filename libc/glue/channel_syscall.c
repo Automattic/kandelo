@@ -139,6 +139,13 @@ uintptr_t __get_channel_base_addr(void) {
 /* SYS_EXIT needs special handling */
 #define SYS_EXIT 34
 
+/*
+ * SYS_exit is non-returning. After the channel notification is posted, park on
+ * a process-global word that is never notified so a terminated pthread cannot
+ * wake later through a recycled per-thread channel slot.
+ */
+static _Atomic int32_t exit_parking_lot;
+
 /* SYS_FORK/VFORK — kernel_fork import is the fork-continuation boundary.
  * wasm-fork-instrument rewrites the call graph around kernel.kernel_fork, enabling
  * the host to save/restore the call stack across fork — so the child
@@ -344,6 +351,13 @@ static long __do_syscall(long n, long long a1, long long a2, long long a3,
                            CH_PENDING, __ATOMIC_SEQ_CST);
         __builtin_wasm_memory_atomic_notify(
             (int32_t *)(uintptr_t)(addr + CH_STATUS), 1);
+    }
+
+    if (n == SYS_EXIT) {
+        for (;;) {
+            __builtin_wasm_memory_atomic_wait32(
+                (int32_t *)&exit_parking_lot, 0, -1);
+        }
     }
 
     /* Block until the kernel sets status to COMPLETE or ERROR.

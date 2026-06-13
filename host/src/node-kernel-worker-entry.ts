@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CentralizedKernelWorker } from "./kernel-worker";
 import type {
+  CloneStartGate,
   ForkFromThreadContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
@@ -104,6 +105,7 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<number, Promise<void>>();
+const exitGroupPids = new Set<number>();
 const reportedExits = new Set<number>();
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
@@ -583,6 +585,7 @@ async function handleInit(msg: InitMessage) {
       onSpawn: handlePosixSpawn,
       onClone: handleClone,
       onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
+      onExitGroup: (pid) => exitGroupPids.add(pid),
       onExit: handleExit,
     },
   );
@@ -1002,7 +1005,7 @@ async function handleClone(
   tlsPtr: number,
   ctidPtr: number,
   memory: WebAssembly.Memory,
-): Promise<number> {
+): Promise<CloneStartGate> {
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
 
@@ -1061,6 +1064,7 @@ async function handleClone(
   threadWorkers.get(pid)!.push(threadEntry);
 
   let reclaimed = false;
+  let terminatingThread = false;
   const reclaimThread = () => {
     if (reclaimed) return;
     reclaimed = true;
@@ -1073,6 +1077,7 @@ async function handleClone(
     }
   };
   const terminateThreadEntry = (): Promise<void> => {
+    terminatingThread = true;
     if (!threadEntry.termination) {
       threadEntry.termination = terminateTrackedWorker(threadWorker).finally(reclaimThread);
     }
@@ -1080,24 +1085,81 @@ async function handleClone(
   };
   threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
+  let startupSettled = false;
+  let sawThreadExit = false;
+  let failed = false;
+  let settleStartup: (gate: CloneStartGate) => void = () => {};
+  let rejectStartup: (err: Error) => void = () => {};
+  const startup = new Promise<CloneStartGate>((resolve, reject) => {
+    settleStartup = resolve;
+    rejectStartup = reject;
+  });
+
+  const isThreadTerminationExpected = () =>
+    exitGroupPids.has(pid) ||
+    processTeardowns.has(pid) ||
+    !processes.has(pid) ||
+    intentionallyTerminated.has(threadWorker as object);
+
   const failThread = (reason: string) => {
+    if (failed) return;
+    if (isThreadTerminationExpected()) {
+      void terminateThreadEntry();
+      return;
+    }
+    failed = true;
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
+    if (ctidPtr !== 0) {
+      const i32 = new Int32Array(memory.buffer);
+      Atomics.store(i32, ctidPtr >>> 2, 0);
+      Atomics.notify(i32, ctidPtr >>> 2, 1);
+    }
     kernelWorker.notifyThreadExit(pid, tid);
     kernelWorker.removeChannel(pid, alloc.channelOffset);
+    if (!startupSettled) {
+      startupSettled = true;
+      rejectStartup(new Error(reason));
+    }
     void terminateThreadEntry();
   };
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
-    if (m.type === "thread_exit") {
+    if (m.type === "ready" && !startupSettled) {
+      startupSettled = true;
+      settleStartup({
+        tid,
+        start: () => {
+          if (!failed && !sawThreadExit && !terminatingThread) {
+            threadWorker.postMessage({ type: "start_thread" });
+          }
+        },
+      });
+    } else if (m.type === "thread_exit") {
+      sawThreadExit = true;
       void terminateThreadEntry();
+      if (!startupSettled) {
+        startupSettled = true;
+        rejectStartup(new Error("thread exited before startup completed"));
+      }
     } else if (m.type === "error") {
+      if (isThreadTerminationExpected()) {
+        void terminateThreadEntry();
+        return;
+      }
       failThread(m.message);
     }
   });
   threadWorker.on("error", (err: Error) => failThread(`worker error: ${err.message ?? err}`));
+  threadWorker.on("exit", (code: number) => {
+    setTimeout(() => {
+      if (!sawThreadExit && !failed && !terminatingThread && !isThreadTerminationExpected()) {
+        failThread(`worker exited before thread_exit (code=${code})`);
+      }
+    }, 0);
+  });
 
-  return tid;
+  return startup;
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {
@@ -1141,6 +1203,7 @@ async function finishProcessExit(pid: number, exitStatus: number): Promise<void>
   try {
     await teardown;
   } finally {
+    exitGroupPids.delete(pid);
     processTeardowns.delete(pid);
   }
 }

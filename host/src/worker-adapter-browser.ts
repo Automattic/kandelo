@@ -28,6 +28,7 @@ class BrowserWorkerHandle implements WorkerHandle {
   private worker: Worker;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handlers = new Map<string, Set<(...args: any[]) => void>>();
+  private pendingMessages = new Map<string, unknown[]>();
   private terminated = false;
   private terminationPromise: Promise<number> | null = null;
   private shutdownAckResolver: (() => void) | null = null;
@@ -44,16 +45,16 @@ class BrowserWorkerHandle implements WorkerHandle {
         this.shutdownAckResolver = null;
         return;
       }
-      for (const h of this.handlers.get("message") ?? []) h(e.data);
+      this.dispatchOrBuffer("message", e.data);
     };
     worker.onerror = (e: ErrorEvent) => {
-      for (const h of this.handlers.get("error") ?? []) h(new Error(e.message));
+      this.dispatchOrBuffer("error", new Error(e.message));
       // Worker errors are unrecoverable — synthesize an exit event
       if (!this.terminated) {
         this.terminated = true;
         this.shutdownAckResolver?.();
         this.shutdownAckResolver = null;
-        for (const h of this.handlers.get("exit") ?? []) h(1);
+        this.dispatchOrBuffer("exit", 1);
       }
     };
   }
@@ -73,11 +74,34 @@ class BrowserWorkerHandle implements WorkerHandle {
       this.handlers.set(event, set);
     }
     set.add(handler);
+
+    const pending = this.pendingMessages.get(event);
+    if (pending && pending.length > 0) {
+      this.pendingMessages.delete(event);
+      for (const message of pending) {
+        handler(message);
+      }
+    }
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   off(event: string, handler: (...args: any[]) => void): void {
     this.handlers.get(event)?.delete(handler);
+  }
+
+  private dispatchOrBuffer(event: string, message: unknown): void {
+    const handlers = this.handlers.get(event);
+    if (!handlers || handlers.size === 0) {
+      const pending = this.pendingMessages.get(event);
+      if (pending) {
+        pending.push(message);
+      } else {
+        this.pendingMessages.set(event, [message]);
+      }
+      return;
+    }
+
+    for (const h of handlers) h(message);
   }
 
   async terminate(): Promise<number> {
@@ -111,7 +135,7 @@ class BrowserWorkerHandle implements WorkerHandle {
     this.worker.terminate();
     if (!this.terminated) {
       this.terminated = true;
-      for (const h of this.handlers.get("exit") ?? []) h(0);
+      this.dispatchOrBuffer("exit", 0);
     }
     return 0;
   }
