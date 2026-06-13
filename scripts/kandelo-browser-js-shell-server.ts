@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -8,12 +8,14 @@ import { findRepoRoot } from "../host/src/binary-resolver";
 
 const REPO_ROOT = findRepoRoot();
 const BROWSER_DIR = join(REPO_ROOT, "apps/browser-demos");
+const VITE_CLI = join(BROWSER_DIR, "node_modules/vite/bin/vite.js");
 const VFS_IMAGE = join(BROWSER_DIR, "public/spidermonkey-test.vfs.zst");
 const VITE_HOST = "127.0.0.1";
 const VITE_PORT = Number(process.env.SPIDERMONKEY_TEST_VITE_PORT ?? 5202);
 const SERVER_HOST = "127.0.0.1";
 const SERVER_PORT = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_PORT ?? 5312);
 const DEFAULT_TIMEOUT_MS = Number(process.env.SPIDERMONKEY_WRAPPER_TIMEOUT_MS ?? 600_000);
+const SHUTDOWN_TIMEOUT_MS = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_SHUTDOWN_TIMEOUT_MS ?? 10_000);
 
 interface RunRequest {
   argv: string[];
@@ -44,6 +46,11 @@ function readGuestTimeoutRetries(): number {
 const PAGE_EVALUATE_RETRIES = readPageEvaluateRetries();
 const GUEST_TIMEOUT_RETRIES = readGuestTimeoutRetries();
 
+let viteProcess: ChildProcess | null = null;
+let browserInstance: Browser | null = null;
+let httpServer: Server | null = null;
+let shutdownPromise: Promise<void> | null = null;
+
 function isPageContextLoss(message: string): boolean {
   return /Target page|Execution context|closed|detached|navigation/i.test(message);
 }
@@ -64,6 +71,108 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function childExited(proc: ChildProcess): boolean {
+  return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+async function waitForChildExit(proc: ChildProcess): Promise<void> {
+  if (childExited(proc)) return;
+  await new Promise<void>((resolveExit) => {
+    proc.once("exit", () => resolveExit());
+  });
+}
+
+function signalChild(proc: ChildProcess, signal: NodeJS.Signals): boolean {
+  if (proc.pid && process.platform !== "win32") {
+    try {
+      process.kill(-proc.pid, signal);
+      return true;
+    } catch (err: any) {
+      if (err?.code !== "ESRCH") {
+        console.error(`[browser js shell bridge] failed to signal child group ${proc.pid}: ${err?.message || String(err)}`);
+      }
+    }
+  }
+  return proc.kill(signal);
+}
+
+async function terminateChild(proc: ChildProcess, description: string): Promise<void> {
+  if (childExited(proc)) return;
+
+  if (!signalChild(proc, "SIGTERM")) return;
+  const exited = await Promise.race([
+    waitForChildExit(proc).then(() => true),
+    delay(SHUTDOWN_TIMEOUT_MS).then(() => false),
+  ]);
+  if (exited || childExited(proc)) return;
+
+  console.error(`[browser js shell bridge] ${description} did not exit after SIGTERM; sending SIGKILL`);
+  signalChild(proc, "SIGKILL");
+  await Promise.race([
+    waitForChildExit(proc),
+    delay(SHUTDOWN_TIMEOUT_MS),
+  ]);
+}
+
+async function closeHttpServer(server: Server): Promise<void> {
+  if (!server.listening) return;
+  await Promise.race([
+    new Promise<void>((resolveClose) => {
+      server.close((err?: Error) => {
+        if (err) console.error(`[browser js shell bridge] HTTP server close failed: ${err.message}`);
+        resolveClose();
+      });
+    }),
+    delay(SHUTDOWN_TIMEOUT_MS),
+  ]);
+}
+
+async function shutdown(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    if (httpServer) {
+      await closeHttpServer(httpServer);
+      httpServer = null;
+    }
+    if (browserInstance) {
+      await Promise.race([
+        browserInstance.close().catch((err: any) => {
+          console.error(`[browser js shell bridge] browser close failed: ${err?.message || String(err)}`);
+        }),
+        delay(SHUTDOWN_TIMEOUT_MS),
+      ]);
+      browserInstance = null;
+    }
+    if (viteProcess) {
+      await terminateChild(viteProcess, "Vite server");
+      viteProcess = null;
+    }
+  })();
+  return shutdownPromise;
+}
+
+function installShutdownHandlers(): void {
+  process.once("SIGTERM", () => { void shutdown().finally(() => process.exit(0)); });
+  process.once("SIGINT", () => { void shutdown().finally(() => process.exit(130)); });
+  process.once("uncaughtException", (err) => {
+    console.error(err?.stack || err?.message || String(err));
+    void shutdown().finally(() => process.exit(1));
+  });
+  process.once("unhandledRejection", (reason: any) => {
+    console.error(reason?.stack || reason?.message || String(reason));
+    void shutdown().finally(() => process.exit(1));
+  });
+  process.once("exit", () => {
+    if (viteProcess && !childExited(viteProcess)) {
+      signalChild(viteProcess, "SIGTERM");
+    }
+  });
+}
+
 async function waitForProcess(proc: ChildProcess, description: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     proc.on("exit", (code) => {
@@ -75,26 +184,28 @@ async function waitForProcess(proc: ChildProcess, description: string): Promise<
 
 async function startViteServer(): Promise<ChildProcess> {
   return new Promise((resolvePromise, reject) => {
+    const viteArgs = [
+      "--config", join(BROWSER_DIR, "vite.config.ts"),
+      "--host", VITE_HOST,
+      "--port", String(VITE_PORT),
+      "--strictPort",
+    ];
+    const hasLocalVite = existsSync(VITE_CLI);
     const proc = spawn(
-      "npx",
-      [
-        "vite",
-        "--config", join(BROWSER_DIR, "vite.config.ts"),
-        "--host", VITE_HOST,
-        "--port", String(VITE_PORT),
-        "--strictPort",
-      ],
+      hasLocalVite ? process.execPath : "npx",
+      hasLocalVite ? [VITE_CLI, ...viteArgs] : ["vite", ...viteArgs],
       {
         cwd: BROWSER_DIR,
         stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
         env: { ...process.env, KANDELO_BROWSER_DEMO_INPUTS: "spidermonkey-test" },
       },
     );
     let started = false;
     const timeout = setTimeout(() => {
       if (!started) {
-        proc.kill();
-        reject(new Error("Vite server did not start within 30s"));
+        void terminateChild(proc, "Vite server after startup timeout")
+          .finally(() => reject(new Error("Vite server did not start within 30s")));
       }
     }, 30_000);
     proc.stdout!.on("data", (data: Buffer) => {
@@ -114,6 +225,20 @@ async function startViteServer(): Promise<ChildProcess> {
         clearTimeout(timeout);
         reject(new Error(`Vite exited with code ${code}`));
       }
+    });
+  });
+}
+
+async function listenServer(server: Server): Promise<void> {
+  await new Promise<void>((resolveListen, reject) => {
+    const onError = (err: Error) => {
+      server.off("error", onError);
+      reject(err);
+    };
+    server.once("error", onError);
+    server.listen(SERVER_PORT, SERVER_HOST, () => {
+      server.off("error", onError);
+      resolveListen();
     });
   });
 }
@@ -157,6 +282,8 @@ function readJsonBody(req: IncomingMessage): Promise<RunRequest> {
 }
 
 async function main() {
+  installShutdownHandlers();
+
   if (!existsSync(VFS_IMAGE) || process.env.SPIDERMONKEY_OFFICIAL_REBUILD_VFS === "1") {
     const proc = spawn(
       "bash",
@@ -170,17 +297,17 @@ async function main() {
     await waitForProcess(proc, "SpiderMonkey test VFS build");
   }
 
-  const vite = await startViteServer();
-  const browser = await chromium.launch({
+  viteProcess = await startViteServer();
+  browserInstance = await chromium.launch({
     args: ["--enable-features=SharedArrayBuffer"],
   });
-  let page = await openPage(browser);
+  let page = await openPage(browserInstance);
   let queue = Promise.resolve();
 
   async function reopenPage(reason: string): Promise<void> {
     console.error(`[browser js shell bridge] reopening page after ${reason}`);
     await page.context().close().catch(() => {});
-    page = await openPage(browser);
+    page = await openPage(browserInstance!);
   }
 
   async function runInPage(body: RunRequest): Promise<RunResult> {
@@ -240,7 +367,7 @@ async function main() {
     }
   }
 
-  const server = createServer((req, res) => {
+  httpServer = createServer((req, res) => {
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "content-type": "text/plain" });
       res.end("ok");
@@ -275,21 +402,11 @@ async function main() {
     });
   });
 
-  await new Promise<void>((resolveListen) => {
-    server.listen(SERVER_PORT, SERVER_HOST, resolveListen);
-  });
+  await listenServer(httpServer);
   console.error(`browser js shell bridge listening on http://${SERVER_HOST}:${SERVER_PORT}/run`);
-
-  const shutdown = async () => {
-    server.close();
-    await browser.close().catch(() => {});
-    vite.kill();
-  };
-  process.on("SIGTERM", () => { void shutdown().finally(() => process.exit(0)); });
-  process.on("SIGINT", () => { void shutdown().finally(() => process.exit(130)); });
 }
 
 main().catch((err) => {
   console.error(err?.stack || err?.message || String(err));
-  process.exit(1);
+  void shutdown().finally(() => process.exit(1));
 });
