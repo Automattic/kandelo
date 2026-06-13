@@ -62,6 +62,7 @@ if (typeof globalThis.setImmediate === "undefined") {
 
 import { CentralizedKernelWorker } from "./kernel-worker";
 import type {
+  CloneStartGate,
   ForkFromThreadContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
@@ -133,6 +134,7 @@ interface ProcessInfo {
 }
 const processes = new Map<number, ProcessInfo>();
 const processTeardowns = new Map<number, Promise<void>>();
+const exitGroupPids = new Set<number>();
 // Includes standalone thread-worker teardown promises that may outlive the
 // process map entry they came from.
 const workerTeardowns = new Set<Promise<void>>();
@@ -535,18 +537,15 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       onClone: (pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory) =>
         handleClone(pid, tid, fnPtr, argPtr, stackPtr, tlsPtr, ctidPtr, memory),
       onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
+      onExitGroup: (pid) => exitGroupPids.add(pid),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
     },
   );
 
-  // In a dedicated worker, use Atomics.waitAsync directly — no V8 microtask
-  // chain freeze bug (that's main-thread-only).
-  kernelWorker.usePolling = false;
-  // Process a small batch of syscalls via microtask before yielding to the
-  // event loop via setImmediate. Batch size 8 is a good balance: it gives
-  // ~8x throughput vs batch-1 while still yielding frequently enough for
-  // pump timers, message handlers, and rendering to interleave.
-  (kernelWorker as any).relistenBatchSize = 8;
+  // Browser worker channels can be registered while cloned pthread workers
+  // and the shared Wasm memory are still settling. Polling the channel status
+  // avoids stranding a PENDING syscall behind a stale/missed waitAsync waiter.
+  kernelWorker.usePolling = true;
 
   // Inject stdout/stderr/listen callbacks
   const kw = kernelWorker as any;
@@ -1091,7 +1090,7 @@ async function handleClone(
   tlsPtr: number,
   ctidPtr: number,
   memory: WebAssembly.Memory,
-): Promise<number> {
+): Promise<CloneStartGate> {
   const processInfo = processes.get(pid);
   if (!processInfo) throw new Error(`Unknown pid ${pid} for clone`);
   threadedProcessPids.add(pid);
@@ -1156,6 +1155,7 @@ async function handleClone(
   threadWorkers.get(pid)!.push(threadEntry);
 
   let reclaimed = false;
+  let terminatingThread = false;
   const reclaimThread = () => {
     if (reclaimed) return;
     reclaimed = true;
@@ -1168,6 +1168,7 @@ async function handleClone(
     }
   };
   const terminateThreadEntry = (): Promise<void> => {
+    terminatingThread = true;
     if (!threadEntry.termination) {
       threadEntry.termination = terminateTrackedWorker(
         threadWorker,
@@ -1178,30 +1179,91 @@ async function handleClone(
   };
   threadExits.register(pid, alloc.channelOffset, terminateThreadEntry);
 
+  let startupSettled = false;
+  let sawThreadExit = false;
+  let failed = false;
+  let settleStartup: (gate: CloneStartGate) => void = () => {};
+  let rejectStartup: (err: Error) => void = () => {};
+  const startup = new Promise<CloneStartGate>((resolve, reject) => {
+    settleStartup = resolve;
+    rejectStartup = reject;
+  });
+
+  const isThreadTerminationExpected = () =>
+    exitGroupPids.has(pid) ||
+    processTeardowns.has(pid) ||
+    !processes.has(pid) ||
+    intentionallyTerminated.has(threadWorker as object);
+
   const failThread = (reason: string) => {
+    if (failed) return;
+    if (isThreadTerminationExpected()) {
+      void terminateThreadEntry();
+      return;
+    }
+    failed = true;
     const text = `[kernel-worker] pid=${pid} tid=${tid}: ${reason}\n`;
     post({ type: "stderr", pid, data: new TextEncoder().encode(text) });
+    if (ctidPtr !== 0) {
+      const i32 = new Int32Array(memory.buffer);
+      Atomics.store(i32, ctidPtr >>> 2, 0);
+      Atomics.notify(i32, ctidPtr >>> 2, 1);
+    }
     kernelWorker.notifyThreadExit(pid, tid);
     kernelWorker.removeChannel(pid, alloc.channelOffset);
+    if (!startupSettled) {
+      startupSettled = true;
+      rejectStartup(new Error(reason));
+    }
     void terminateThreadEntry();
   };
 
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
-    if (m.type === "thread_exit") {
+    if (m.type === "ready" && !startupSettled) {
+      startupSettled = true;
+      settleStartup({
+        tid,
+        start: () => {
+          if (!failed && !sawThreadExit && !terminatingThread) {
+            threadWorker.postMessage({ type: "start_thread" });
+          }
+        },
+      });
+    } else if (m.type === "thread_exit") {
+      sawThreadExit = true;
       void terminateThreadEntry();
+      if (!startupSettled) {
+        startupSettled = true;
+        rejectStartup(new Error("thread exited before startup completed"));
+      }
     } else if ((m as { type?: string }).type === "error") {
       // worker-main posted {type:"error"} — instantiation failure, top-level
       // throw, etc. Without this the parent's pthread_join blocks forever.
+      if (isThreadTerminationExpected()) {
+        void terminateThreadEntry();
+        return;
+      }
       failThread((m as { message?: string }).message ?? "thread error");
     }
   });
   threadWorker.on("error", (err: Error) => {
+    if (isThreadTerminationExpected()) {
+      void terminateThreadEntry();
+      return;
+    }
     console.error(`[kernel-worker] thread worker error pid=${pid} tid=${tid}:`, err.message);
     failThread(`worker error: ${err.message ?? err}`);
   });
+  threadWorker.on("exit", (code: number) => {
+    setTimeout(() => {
+      if (!sawThreadExit && !failed && !terminatingThread && !isThreadTerminationExpected()) {
+        failThread(`worker exited before thread_exit (code=${code})`);
+      }
+    }, 0);
+  });
 
-  return tid;
+  return startup;
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {
@@ -1269,6 +1331,7 @@ async function finishProcessExit(
   try {
     await teardown;
   } finally {
+    exitGroupPids.delete(pid);
     processTeardowns.delete(pid);
   }
 }

@@ -256,6 +256,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       activeChannels: [],
       channelTids: new Map(),
       threadForkContexts: new Map(),
+      syscallRing: new Map(),
       usePolling: true,
       kernel: {
         toKernelPtr(value: number | bigint): number {
