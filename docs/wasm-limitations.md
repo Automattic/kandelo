@@ -81,11 +81,10 @@ Until one of those ships, this remains a fundamental wasm limitation. The kernel
 | Threads via `clone()` | Host-managed Web Workers, MariaDB runs 5 threads (PR #88) |
 | OPFS filesystem | `host/src/vfs/opfs.ts` (browser persistence) |
 
-## Current libc-test Results (2026-04-05)
+## Current libc-test Results (2026-06-13)
 
-0 unexpected failures, 22 expected failures (XFAIL):
+0 unexpected failures, 20 expected failures (XFAIL):
 - 14 math precision (musl ULP issues)
-- 3 OOM behavior (malloc-brk-fail, malloc-oom, setenv-oom)
-- 3 threading (pthread_create-oom, raise-race, pthread_cond_wait-cancel_ignored)
+- 4 OOM / Wasm memory behavior (malloc-brk-fail, malloc-oom, pthread_create-oom, setenv-oom)
 - 1 cancellation (pthread_cancel)
 - 1 dynamic TLS (tls_get_new-dtv)
