@@ -257,7 +257,13 @@ try:
     print(d['status'])
     print(d.get('time_ms', 0))
     import base64
-    print(base64.b64encode((d.get('stderr') or d.get('error') or '').encode()).decode())
+    error = d.get('error') or ''
+    stderr = d.get('stderr') or ''
+    if error and stderr and error not in stderr:
+        detail = f'{error}: {stderr}'
+    else:
+        detail = error or stderr
+    print(base64.b64encode(detail.encode()).decode())
 except: pass
 " 2>/dev/null) || continue
 

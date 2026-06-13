@@ -26,9 +26,31 @@ interface TestResult {
   time_ms: number;
   error?: string;
   stderr?: string;
+  runtimeFailure?: string;
 }
 
 let viteAlive = false;
+const browserConsoleErrors: string[] = [];
+const MAX_BROWSER_CONSOLE_ERRORS = 100;
+
+function recordBrowserConsoleError(text: string): void {
+  browserConsoleErrors.push(text);
+  if (browserConsoleErrors.length > MAX_BROWSER_CONSOLE_ERRORS) {
+    browserConsoleErrors.splice(0, browserConsoleErrors.length - MAX_BROWSER_CONSOLE_ERRORS);
+  }
+  console.error(`[browser] ${text}`);
+}
+
+function classifyRuntimeFailure(stderr: string | undefined, browserErrors: readonly string[]): string | undefined {
+  const text = `${stderr ?? ""}\n${browserErrors.join("\n")}`;
+  if (/out of memory|cannot allocate memory|RangeError:.*memory/i.test(text)) {
+    return "browser resource failure: mysqltest out of memory";
+  }
+  if (/Kernel worker failed|kernel threw|RuntimeError: unreachable|\[process-worker\]/i.test(text)) {
+    return "browser runtime failure: kernel worker trap";
+  }
+  return undefined;
+}
 
 async function launchChromium(): Promise<Browser> {
   return chromium.launch({
@@ -119,6 +141,7 @@ async function waitForMariadbReady(page: Page, timeout = BOOT_TIMEOUT): Promise<
 
 async function runTest(page: Page, testName: string, testTimeout: number): Promise<TestResult> {
   const start = performance.now();
+  const browserErrorStart = browserConsoleErrors.length;
 
   try {
     const result = await page.evaluate(
@@ -135,19 +158,26 @@ async function runTest(page: Page, testName: string, testTimeout: number): Promi
     else if (result.exitCode === 62) status = "skip";
     else status = "fail";
 
+    const recentBrowserErrors = browserConsoleErrors.slice(browserErrorStart);
+    const runtimeFailure = classifyRuntimeFailure(result.stderr || undefined, recentBrowserErrors);
+
     return {
       test: testName,
       status,
       time_ms: elapsed,
       stderr: result.stderr || undefined,
-      error: result.exitCode === -1 ? result.stderr : undefined,
+      error: runtimeFailure ?? (result.exitCode === -1 ? result.stderr : undefined),
+      runtimeFailure,
     };
   } catch (err: any) {
+    const recentBrowserErrors = browserConsoleErrors.slice(browserErrorStart);
+    const runtimeFailure = classifyRuntimeFailure(err.message || String(err), recentBrowserErrors);
     return {
       test: testName,
       status: "fail",
       time_ms: Math.round(performance.now() - start),
-      error: err.message || String(err),
+      error: runtimeFailure ?? (err.message || String(err)),
+      runtimeFailure,
     };
   }
 }
@@ -251,7 +281,7 @@ async function main() {
         // Forward browser console errors for debugging
         nextPage.on("console", (msg) => {
           if (msg.type() === "error") {
-            console.error(`[browser] ${msg.text()}`);
+            recordBrowserConsoleError(msg.text());
           }
         });
 
@@ -331,9 +361,10 @@ async function main() {
       const hasMoreTests = i + 1 < testNames.length;
       const isTimeout = result.error === "TIMEOUT" || result.time_ms > testTimeout * 1.3;
       const needsCleanReboot = failureRequiresCleanReboot(result);
+      const isRuntimeFailure = result.runtimeFailure !== undefined;
       const shouldProbe = result.status === "fail" || isTimeout;
       const needsReload = rebootAfterFail && hasMoreTests && (
-        needsCleanReboot || isTimeout || (shouldProbe && !(await isMariadbReady(page!)))
+        needsCleanReboot || isRuntimeFailure || isTimeout || (shouldProbe && !(await isMariadbReady(page!)))
       );
 
       if (needsReload) {

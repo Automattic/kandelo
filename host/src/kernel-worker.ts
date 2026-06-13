@@ -2294,12 +2294,8 @@ export class CentralizedKernelWorker {
     try {
       handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
     } catch (err) {
-      // If the kernel throws (e.g., invalid memory access), complete the
-      // channel with -EIO to unblock the process rather than deadlocking.
       if (logging) console.error(logEntry + " = KERNEL THROW");
-      console.error(`[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr} args=[${origArgs}]:`, err);
-      this.completeChannelRaw(channel, -5, 5); // -EIO
-      this.relistenChannel(channel);
+      this.handleFatalKernelTrap(channel, "handleSyscall", err, syscallNr, origArgs);
       return;
     } finally {
       this.currentHandlePid = 0;
@@ -2755,6 +2751,28 @@ export class CentralizedKernelWorker {
     channel.handling = false;
     this.clearSocketTimeout(channel);
     this.pendingCancels.delete(channel.channelOffset);
+  }
+
+  private handleFatalKernelTrap(
+    channel: ChannelInfo,
+    source: string,
+    err: unknown,
+    syscallNr?: number,
+    origArgs?: readonly number[],
+  ): void {
+    const syscallContext = syscallNr === undefined
+      ? ""
+      : ` syscall=${syscallNr} args=[${origArgs?.join(",") ?? ""}]`;
+    console.error(`[${source}] kernel threw for pid=${channel.pid}${syscallContext}:`, err);
+
+    // A trap from kernel_handle_channel means the kernel rejected this process
+    // path catastrophically. Resuming the guest with a synthetic errno lets it
+    // loop through more syscalls against damaged state, producing repeated
+    // "unreachable" spam and contaminating later harness results. Mark the
+    // process as host-crashed and let the host entry terminate its worker.
+    this.abandonChannel(channel);
+    this.notifyHostProcessCrashed(channel.pid, 11);
+    this.callbacks.onExit?.(channel.pid, 128 + 11);
   }
 
   /**
@@ -4916,13 +4934,7 @@ export class CentralizedKernelWorker {
       try {
         handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
       } catch (err) {
-        console.error(`[handleLargeWrite] kernel threw for pid=${channel.pid}:`, err);
-        if (totalWritten > 0) {
-          this.completeChannelRaw(channel, totalWritten, 0);
-        } else {
-          this.completeChannelRaw(channel, -5, 5); // -EIO
-        }
-        this.relistenChannel(channel);
+        this.handleFatalKernelTrap(channel, "handleLargeWrite", err, syscallNr, origArgs);
         return;
       } finally {
         this.currentHandlePid = 0;
@@ -5003,13 +5015,7 @@ export class CentralizedKernelWorker {
       try {
         handleChannel(this.toKernelPtr(this.scratchOffset), channel.pid);
       } catch (err) {
-        console.error(`[handleLargeRead] kernel threw for pid=${channel.pid}:`, err);
-        if (totalRead > 0) {
-          this.completeChannelRaw(channel, totalRead, 0);
-        } else {
-          this.completeChannelRaw(channel, -5, 5); // -EIO
-        }
-        this.relistenChannel(channel);
+        this.handleFatalKernelTrap(channel, "handleLargeRead", err, syscallNr, origArgs);
         return;
       } finally {
         this.currentHandlePid = 0;
