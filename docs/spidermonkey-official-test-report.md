@@ -43,7 +43,10 @@ launches Chromium through Playwright, serves the `spidermonkey-test` Vite page,
 and forwards each harness invocation to `window.__runSpiderMonkeyScript`. The
 browser page restores `apps/browser-demos/public/spidermonkey-test.vfs.zst`,
 where `/usr/bin/js` and the upstream `js/src/tests` and `js/src/jit-test` trees
-are staged.
+are staged. If Playwright reports that the page execution context was lost while
+a shell invocation is in flight, the bridge reopens the page and retries that
+same invocation a bounded number of times before reporting an infrastructure
+failure to the upstream harness.
 
 `scripts/ensure-spidermonkey-source.sh` locates or downloads the Firefox ESR
 source tree pinned by the SpiderMonkey package manifest. The browser VFS builder

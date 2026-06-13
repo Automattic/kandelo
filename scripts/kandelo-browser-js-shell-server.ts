@@ -19,6 +19,27 @@ interface RunRequest {
   timeoutMs?: number;
 }
 
+interface RunResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+  durationMs: number;
+  processReaped?: boolean;
+  bridgeRetries?: number;
+}
+
+function readPageEvaluateRetries(): number {
+  const value = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_PAGE_RETRIES ?? 2);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 2;
+}
+
+const PAGE_EVALUATE_RETRIES = readPageEvaluateRetries();
+
+function isPageContextLoss(message: string): boolean {
+  return /Target page|Execution context|closed|detached|navigation/i.test(message);
+}
+
 async function waitForProcess(proc: ChildProcess, description: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     proc.on("exit", (code) => {
@@ -132,6 +153,35 @@ async function main() {
   let page = await openPage(browser);
   let queue = Promise.resolve();
 
+  async function reopenPage(reason: string): Promise<void> {
+    console.error(`[browser js shell bridge] reopening page after ${reason}`);
+    await page.context().close().catch(() => {});
+    page = await openPage(browser);
+  }
+
+  async function runInPage(body: RunRequest): Promise<RunResult> {
+    let retries = 0;
+    for (;;) {
+      try {
+        const result = await page.evaluate(
+          (request) => (window as any).__runSpiderMonkeyScript(request),
+          { argv: body.argv, timeoutMs: body.timeoutMs },
+        ) as RunResult;
+        if (retries > 0) result.bridgeRetries = retries;
+        return result;
+      } catch (err: any) {
+        const message = err?.message || String(err);
+        if (!isPageContextLoss(message) || retries >= PAGE_EVALUATE_RETRIES) {
+          throw err;
+        }
+        retries++;
+        await reopenPage(
+          `Playwright context loss (${retries}/${PAGE_EVALUATE_RETRIES}): ${message}`,
+        );
+      }
+    }
+  }
+
   const server = createServer((req, res) => {
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { "content-type": "text/plain" });
@@ -147,17 +197,13 @@ async function main() {
     queue = queue.then(async () => {
       try {
         const body = await readJsonBody(req);
-        const result = await page.evaluate(
-          (request) => (window as any).__runSpiderMonkeyScript(request),
-          { argv: body.argv, timeoutMs: body.timeoutMs },
-        );
+        const result = await runInPage(body);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(result));
       } catch (err: any) {
         const message = err?.message || String(err);
         if (/Target page|Execution context|closed/i.test(message)) {
-          await page.context().close().catch(() => {});
-          page = await openPage(browser);
+          await reopenPage(`unrecovered Playwright error: ${message}`).catch(() => {});
         }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
