@@ -123,10 +123,81 @@ range, subselect, or window-function tests timing out under the current 60s
 Node budget; `range_aria_dbt3` and `range_mrr_icp` hit the harness hard timeout
 after restart overhead. `sp_stress_case` still trips MariaDB OOM, but the
 current harness re-bootstraps afterward so later stored-procedure tests no
-longer cascade through `mysql.proc` corruption. `lowercase_table2` still fails
-on this integration branch because the grant-table bootstrap fix exists on
-`origin/polecat/capable/kad-qun.14@mqccw6g2` but is not yet in
-`integration/kad-qun-mariadb-tests`.
+longer cascade through `mysql.proc` corruption. `lowercase_table2` is included
+in the hard artifact counts above, but the follow-up grant bootstrap fix
+(`kad-qun.14`, commit `4c39e727`) landed on the integration branch after those
+counts were recorded. Do not change the hard totals unless a later rerun or
+focused replacement result records the updated chunk 55 counts.
+
+## Current browser full-suite status (2026-06-13)
+
+The `kad-qun.6` browser full-suite artifact is
+`test-runs/gastown-mariadb-browser-full-pr3/`, with `browser.log`,
+`chunk-status.tsv`, `summary.md`, and `summary.json`. The run invoked all 1183
+`mysql-test/main` tests with 60s per-test timeouts, chunk size 10, and
+`MARIADB_BROWSER_RUNNER_RETRIES=3`; no broad browser-only skip list was added.
+
+The hard browser artifact counts are 559 PASS, 371 FAIL, 0 XFAIL, 0 XPASS,
+253 SKIP, 1183 TOTAL, exit 1, across 119 chunk result blocks. Chunks 1-49 came
+from the existing checkpoint before the worker rebased. Chunks 50-119 were
+resumed after rebasing to `origin/integration/kad-qun-mariadb-tests` at
+`2cdc918b23c59d4d672b98de582b7512fdbc1c46`. The branch was later
+fast-forwarded for handoff, and the current integration branch includes later
+targeted fixes, but the full browser suite has not been rerun after those
+post-artifact merges.
+
+The browser FAIL count is therefore a full-suite coverage signal, not 371
+independent SQL-result regressions. The current classified failure groups are:
+
+| Group | Status | Tracking |
+|-------|--------|----------|
+| Timeout/page-death isolation and contaminated follow-on results | Open | `kad-qun.10` |
+| Fetch-only/resolver artifact prerequisites for the browser wrapper | Open | `kad-qun.9` |
+| `huge_frm-6224` mysqltest OOM causing kernel `unreachable` noise | Landed after artifact | `kad-qun.16`, commit `926225ac` |
+| Tests that exec a missing or non-Wasm `mysql` client | Landed after artifact | `kad-qun.17`, commit `d2493661` |
+| `selectivity` exhausting the test VFS image capacity | Landed after artifact | `kad-qun.18`, commit `811ba5e4` |
+
+The longest resumed interval was chunk 116 at about 29m45s: the runner produced
+zero JSON results on the first attempt, then saw repeated 180s
+`waitForMariadbReady` timeouts before a later attempt recovered and emitted a
+result block. That is tracked as harness/resource isolation work in
+`kad-qun.10`.
+
+## Both-host synthesis for the epic PR
+
+The project target is full `mysql-test/main` execution on both hosts with
+expected MariaDB build, resource-envelope, and MTR-harness limitations
+classified. This synthesis does not identify a separate excluded-suite or
+external-tool epic that must block the PR. External-tool cases surfaced as
+ordinary mysql-test harness/runtime classification work; the raw non-Wasm exec
+failure is fixed by `kad-qun.17`, while any tests that require unsupported
+native tools should remain explicit expected limitations.
+
+Use the following hard numbers in the final epic status unless `kad-qun.19`
+records a superseding rerun:
+
+| Host | Artifact | PASS | FAIL | XFAIL | XPASS | SKIP | TOTAL | Exit |
+|------|----------|------|------|-------|-------|------|-------|------|
+| Node | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/` plus focused chunk reruns | 608 | 18 | 317 | 0 | 240 | 1183 | 1 |
+| Browser | `test-runs/gastown-mariadb-browser-full-pr3/` | 559 | 371 | 0 | 0 | 253 | 1183 | 1 |
+
+Remaining actionable work is represented by narrow beads:
+
+- `kad-lf9`: Node wrapper must fail loudly when a child harness run produces
+  zero result rows.
+- `kad-qun.9`: browser wrapper should run from resolver-fetched artifacts in a
+  fetch-only worktree.
+- `kad-qun.10`: browser all-suite runner needs stronger isolation after
+  timeouts, page death, or contaminated MariaDB state.
+- `kad-qun.20`: Node optimizer/range/subselect/window failures need root-cause
+  classification or timeout/resource-envelope treatment.
+- `kad-qun.21`: Node `sp_stress_case` still needs isolated memory-envelope
+  classification after the mysql.proc recovery fix.
+
+The final GitHub PR should be opened by `kad-qun.8` from
+`integration/kad-qun-mariadb-tests` to `main`. It should present the full-suite
+coverage, the hard counts above, and the open follow-up beads, without directly
+landing the integration branch.
 
 ## Historical PR #3 status (2026-06-05)
 
@@ -142,9 +213,16 @@ are treated as current project status.
   that passed are override-listed as expected passes. A classification smoke
   run exits 0: `1st aborted_clients alter_table_errors bad_frm_crash_5029
   ctype_gbk_export_import` => 2 PASS, 2 XFAIL.
-- Browser smoke: `1st` passes. The current browser all-suite triage run (`test-runs/mariadb-project/browser-all-noreboot-20s-c20`) has completed the first 100/1183 tests at 20s timeout with 26 PASS, 48 FAIL, 26 SKIP. Failures are release-build debug variables, long-running tests, storage-engine/MTR expectation differences, missing external mysql client tools, grant-table limitations, and browser memory exhaustion after repeated transient mysqltest workers.
-- Browser full all-suite triage is not green yet. The durable harness now invokes
-  all 1183 tests, but the browser host currently exhausts Chromium/WebAssembly
-  memory in larger chunks and intermittent boots can time out before setup SQL.
-  Current triage runs use `MARIADB_BROWSER_REBOOT_AFTER_FAIL=0` plus chunking to
-  keep collecting coverage while this host-resource blocker is isolated.
+- Browser smoke: `1st` passed. The historical browser all-suite triage run
+  (`test-runs/mariadb-project/browser-all-noreboot-20s-c20`) completed the
+  first 100/1183 tests at 20s timeout with 26 PASS, 48 FAIL, and 26 SKIP.
+  Failures were release-build debug variables, long-running tests,
+  storage-engine/MTR expectation differences, missing external mysql client
+  tools, grant-table limitations, and browser memory exhaustion after repeated
+  transient mysqltest workers.
+- Browser full all-suite triage was not green in the reference snapshot. The
+  durable harness already invoked all 1183 tests, but the browser host could
+  exhaust Chromium/WebAssembly memory in larger chunks and intermittent boots
+  could time out before setup SQL. Triage runs used
+  `MARIADB_BROWSER_REBOOT_AFTER_FAIL=0` plus chunking to keep collecting
+  coverage while this host-resource blocker was isolated.
