@@ -12,8 +12,8 @@
  *   npx tsx examples/run-example.ts /path/to/test.wasm
  */
 
-import { readFileSync, existsSync } from "fs";
-import { resolve, dirname } from "path";
+import { readFileSync, existsSync, statSync } from "fs";
+import { resolve, dirname, isAbsolute, relative } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
 
@@ -253,24 +253,47 @@ function loadBytes(path: string): ArrayBuffer {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+function isWithinDirectory(parent: string, candidate: string): boolean {
+    const rel = relative(resolve(parent), resolve(candidate));
+    return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffer | null {
+    const resolved = resolve(candidate);
+    if (!existsSync(resolved)) return null;
+
+    // Guest exec resolution may read scripts and test binaries staged under
+    // KERNEL_CWD. Outside that guest workdir, only explicit .wasm paths are
+    // valid candidates; never treat host /usr/bin tools as guest programs.
+    if (!isWithinDirectory(kernelCwd, resolved) && !resolved.endsWith(".wasm")) {
+        return null;
+    }
+
+    try {
+        if (!statSync(resolved).isFile()) return null;
+        return loadBytes(resolved);
+    } catch {
+        return null;
+    }
+}
+
 function resolveProgram(path: string): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
     if (mapped) {
         return loadBytes(mapped);
     }
-    const kernelCwd = process.env.KERNEL_CWD || process.cwd();
+    const kernelCwd = resolve(process.env.KERNEL_CWD || process.cwd());
     const candidates = [
-        path,
-        path.endsWith(".wasm") ? path : `${path}.wasm`,
-        resolve(repoRoot, `examples/${path}.wasm`),
         // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
-        resolve(kernelCwd, path),
-        resolve(kernelCwd, path.endsWith(".wasm") ? path : `${path}.wasm`),
+        isAbsolute(path) ? path : resolve(kernelCwd, path),
+        path.endsWith(".wasm")
+            ? (isAbsolute(path) ? path : resolve(kernelCwd, path))
+            : (isAbsolute(path) ? `${path}.wasm` : resolve(kernelCwd, `${path}.wasm`)),
+        resolve(repoRoot, `examples/${path}.wasm`),
     ];
     for (const c of candidates) {
-        if (existsSync(c)) {
-            return loadBytes(c);
-        }
+        const bytes = tryLoadGuestCandidate(c, kernelCwd);
+        if (bytes) return bytes;
     }
     return null;
 }
