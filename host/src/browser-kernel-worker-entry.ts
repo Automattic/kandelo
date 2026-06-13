@@ -60,10 +60,10 @@ if (typeof globalThis.setImmediate === "undefined") {
   };
 }
 
-import { CentralizedKernelWorker } from "./kernel-worker";
+import { CentralizedKernelWorker, isFailedSpawnProgramResolution } from "./kernel-worker";
 import type {
   ForkFromThreadContext,
-  ResolvedSpawnProgram,
+  SpawnProgramResolution,
 } from "./kernel-worker";
 import type { KernelPointer } from "./kernel";
 import { BrowserWorkerAdapter } from "./worker-adapter-browser";
@@ -79,6 +79,12 @@ import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
 import { patchWasmForThread } from "./worker-main";
 import { detectPtrWidth, extractHeapBase } from "./constants";
+import {
+  executableFormatFailure,
+  isWasmBinary,
+  MAX_SHEBANG_DEPTH,
+  parseShebang,
+} from "./executable-format";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import type {
   CentralizedWorkerInitMessage,
@@ -141,32 +147,22 @@ const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
  */
 const intentionallyTerminated = new WeakSet<object>();
 
-const MAX_SHEBANG_DEPTH = 4;
-
-function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
-  const view = new Uint8Array(bytes);
-  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
-  let end = 2;
-  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
-  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
-  if (!line) return null;
-  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  return { interpreter: match[1], arg: match[2] };
-}
-
 async function resolveExecutableForLaunch(
   path: string,
   argv: string[],
   depth = 0,
-): Promise<ResolvedSpawnProgram | null> {
-  if (depth > MAX_SHEBANG_DEPTH) return null;
+): Promise<SpawnProgramResolution | null> {
+  if (depth > MAX_SHEBANG_DEPTH) return executableFormatFailure(path, new ArrayBuffer(0));
   await memfs.ensureMaterialized(path);
   const bytes = readFileFromFs(path);
   if (!bytes) return null;
 
   const shebang = parseShebang(bytes);
-  if (!shebang) return { programBytes: bytes, argv };
+  if (!shebang) {
+    return isWasmBinary(bytes)
+      ? { programBytes: bytes, argv }
+      : executableFormatFailure(path, bytes);
+  }
 
   const scriptArgv = [
     shebang.interpreter,
@@ -624,16 +620,25 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     await waitForProcessTeardowns();
 
     let programBytes: ArrayBuffer;
+    let launchArgv = msg.argv;
     if (msg.programBytes) {
+      if (!isWasmBinary(msg.programBytes)) {
+        respondError(msg.requestId, "ENOEXEC: programBytes are not a WebAssembly module");
+        return;
+      }
       programBytes = msg.programBytes;
     } else if (msg.programPath) {
-      // Read from shared filesystem
-      const bytes = await readExecFileFromFs(msg.programPath);
-      if (!bytes) {
+      const resolved = await resolveExecutableForLaunch(msg.programPath, msg.argv);
+      if (!resolved) {
         respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
         return;
       }
-      programBytes = bytes;
+      if (isFailedSpawnProgramResolution(resolved)) {
+        respondError(msg.requestId, `ENOEXEC: ${resolved.error}`);
+        return;
+      }
+      programBytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;
+      launchArgv = resolved instanceof ArrayBuffer ? msg.argv : resolved.argv;
     } else {
       respondError(msg.requestId, "No programBytes or programPath");
       return;
@@ -653,7 +658,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
       ptrWidth,
-      argv: msg.argv,
+      argv: launchArgv,
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
@@ -687,7 +692,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       memory,
       channelOffset,
       env: msg.env ?? defaultEnv,
-      argv: msg.argv,
+      argv: launchArgv,
       cwd: msg.cwd,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
@@ -881,7 +886,9 @@ async function handleExec(
 ): Promise<number> {
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
-  const { programBytes: bytes, argv: launchArgv } = resolved;
+  if (isFailedSpawnProgramResolution(resolved)) return -resolved.errno;
+  const bytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;
+  const launchArgv = resolved instanceof ArrayBuffer ? argv : resolved.argv;
 
   // Program found — run kernel exec setup
   const setupResult = kernelWorker.kernelExecSetup(pid);
@@ -996,7 +1003,7 @@ async function handleExec(
 async function handlePosixSpawnResolve(
   path: string,
   argv: string[],
-): Promise<ResolvedSpawnProgram | null> {
+): Promise<SpawnProgramResolution | null> {
   return resolveExecutableForLaunch(path, argv);
 }
 
@@ -1597,11 +1604,6 @@ function readFileFromFs(path: string): ArrayBuffer | null {
   } catch {
     return null;
   }
-}
-
-async function readExecFileFromFs(path: string): Promise<ArrayBuffer | null> {
-  await memfs.ensureMaterialized(path);
-  return readFileFromFs(path);
 }
 
 // ── Message dispatch ──

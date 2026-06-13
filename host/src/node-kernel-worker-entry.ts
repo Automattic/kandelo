@@ -18,8 +18,8 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CentralizedKernelWorker } from "./kernel-worker";
-import type { ForkFromThreadContext, ResolvedSpawnProgram } from "./kernel-worker";
+import { CentralizedKernelWorker, isFailedSpawnProgramResolution } from "./kernel-worker";
+import type { ForkFromThreadContext, SpawnProgramResolution } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import {
   VirtualPlatformIO,
@@ -38,6 +38,12 @@ import { ThreadPageAllocator } from "./thread-allocator";
 import { patchWasmForThread } from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import { detectPtrWidth, extractHeapBase } from "./constants";
+import {
+  executableFormatFailure,
+  isWasmBinary,
+  MAX_SHEBANG_DEPTH,
+  parseShebang,
+} from "./executable-format";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import {
   computeProcessMemoryLayout,
@@ -393,31 +399,21 @@ async function resolveExec(path: string): Promise<ArrayBuffer | null> {
   });
 }
 
-const MAX_SHEBANG_DEPTH = 4;
-
-function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
-  const view = new Uint8Array(bytes);
-  if (view.length < 2 || view[0] !== 0x23 || view[1] !== 0x21) return null;
-  let end = 2;
-  while (end < view.length && view[end] !== 0x0a && end < 4096) end++;
-  const line = new TextDecoder().decode(view.subarray(2, end)).replace(/\r$/, "").trim();
-  if (!line) return null;
-  const match = line.match(/^(\S+)(?:\s+(.*))?$/);
-  if (!match) return null;
-  return { interpreter: match[1], arg: match[2] };
-}
-
 async function resolveExecutableForLaunch(
   path: string,
   argv: string[],
   depth = 0,
-): Promise<ResolvedSpawnProgram | null> {
-  if (depth > MAX_SHEBANG_DEPTH) return null;
+): Promise<SpawnProgramResolution | null> {
+  if (depth > MAX_SHEBANG_DEPTH) return executableFormatFailure(path, new ArrayBuffer(0));
   const bytes = await resolveExec(path);
   if (!bytes) return null;
 
   const shebang = parseShebang(bytes);
-  if (!shebang) return { programBytes: bytes, argv };
+  if (!shebang) {
+    return isWasmBinary(bytes)
+      ? { programBytes: bytes, argv }
+      : executableFormatFailure(path, bytes);
+  }
 
   const scriptArgv = [
     shebang.interpreter,
@@ -558,6 +554,11 @@ function failProcess(pid: number, reason: string) {
 
 function handleSpawn(msg: SpawnMessage) {
   try {
+    if (!isWasmBinary(msg.programBytes)) {
+      respondError(msg.requestId, "ENOEXEC: programBytes are not a WebAssembly module");
+      return;
+    }
+
     // Allocate PID internally — skip any PIDs already occupied by fork children
     while (processes.has(nextSpawnPid)) {
       nextSpawnPid++;
@@ -767,7 +768,9 @@ async function handleExec(
 ): Promise<number> {
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
-  const { programBytes, argv: launchArgv } = resolved;
+  if (isFailedSpawnProgramResolution(resolved)) return -resolved.errno;
+  const programBytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;
+  const launchArgv = resolved instanceof ArrayBuffer ? argv : resolved.argv;
 
   const newPtrWidth = detectPtrWidth(programBytes);
   const setupResult = kernelWorker.kernelExecSetup(pid);
@@ -881,7 +884,7 @@ async function handleExec(
 async function handlePosixSpawnResolve(
   path: string,
   argv: string[],
-): Promise<ResolvedSpawnProgram | null> {
+): Promise<SpawnProgramResolution | null> {
   return resolveExecutableForLaunch(path, argv);
 }
 
