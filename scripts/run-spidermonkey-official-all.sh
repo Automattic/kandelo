@@ -405,7 +405,7 @@ run_upstream_chunk() {
         --wpt "$WPT_MODE" \
         --format "$FORMAT" \
         --jitflags "$JSTEST_JITFLAGS" \
-        "${jstest_slow_args[@]}" \
+        ${jstest_slow_args[@]+"${jstest_slow_args[@]}"} \
         --worker-count "$JOBS" \
         --timeout "$TIMEOUT" \
         "$JS_SHELL_WRAPPER" \
@@ -420,7 +420,7 @@ run_upstream_chunk() {
         --timeout "$TIMEOUT" \
         --format "$FORMAT" \
         --jitflags "$JITFLAGS" \
-        "${jit_slow_args[@]}" \
+        ${jit_slow_args[@]+"${jit_slow_args[@]}"} \
         "$@" \
         "$JS_SHELL_WRAPPER"
       ;;
