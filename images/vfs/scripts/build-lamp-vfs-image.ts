@@ -83,6 +83,9 @@ const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const LAMP_IMAGE_MAX_BYTES = 768 * 1024 * 1024;
 const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
 const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
+const MARIADB_INNODB_LOG_FILE_SIZE = 16 * 1024 * 1024;
+const MARIADB_INNODB_LOG_BUFFER_SIZE = 1024 * 1024;
+const MARIADB_INNODB_BUFFER_POOL_SIZE = 8 * 1024 * 1024;
 
 // LAMP-specific data dirs that mariadbd writes to at runtime. The image
 // starts from the full shell demo VFS, so the bootstrap script gets the same
@@ -303,6 +306,9 @@ const MARIADB_BOOTSTRAP_SCRIPT = `# mariadbd --bootstrap doesn't exit at stdin E
     --default-storage-engine=Aria --skip-grant-tables \\
     --aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE} \\
     --aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE} \\
+    --innodb-log-file-size=${MARIADB_INNODB_LOG_FILE_SIZE} \\
+    --innodb-log-buffer-size=${MARIADB_INNODB_LOG_BUFFER_SIZE} \\
+    --innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE} \\
     --key-buffer-size=1048576 --table-open-cache=10 --sort-buffer-size=262144 \\
     --bootstrap --skip-networking --log-warnings=0 \\
     --log-error=/data/bootstrap.log < /etc/mariadb/bootstrap.sql &
@@ -344,6 +350,9 @@ function buildServices(fs: MemoryFileSystem): DinitService[] {
         "--datadir=/data --tmpdir=/data/tmp --default-storage-engine=Aria " +
         `--aria-log-file-size=${MARIADB_ARIA_LOG_FILE_SIZE} ` +
         `--aria-pagecache-buffer-size=${MARIADB_ARIA_PAGECACHE_SIZE} ` +
+        `--innodb-log-file-size=${MARIADB_INNODB_LOG_FILE_SIZE} ` +
+        `--innodb-log-buffer-size=${MARIADB_INNODB_LOG_BUFFER_SIZE} ` +
+        `--innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE} ` +
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
         "--sort-buffer-size=262144 --skip-networking " +
         `--socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
