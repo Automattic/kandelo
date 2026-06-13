@@ -469,7 +469,10 @@ run_chunk() {
   local chunk="$3"
   shift 3
   local log="$RESULTS_DIR/$(safe_name "$host-$suite-$chunk").log"
-  local known_skip_files=("${NEXT_KNOWN_SKIP_FILES[@]}")
+  local known_skip_files=()
+  if [ "${#NEXT_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
+    known_skip_files=("${NEXT_KNOWN_SKIP_FILES[@]}")
+  fi
   NEXT_KNOWN_SKIP_FILES=()
 
   if should_skip_chunk "$host" "$suite" "$chunk"; then
@@ -661,11 +664,19 @@ run_jit_tests_for_host() {
       filter_kandelo_known_jit_skips "$host" "${group[@]}"
       if [ "${#FILTERED_JIT_FILES[@]}" -gt 0 ]; then
         printf '%s\n' "${FILTERED_JIT_FILES[@]}" > "$list_file"
-        queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        if [ "${#KANDELO_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
+          queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        else
+          queue_known_skip_entries
+        fi
         run_chunk "$host" jit-tests "$chunk" --read-tests "$list_file"
       else
         : > "$list_file"
-        record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        if [ "${#KANDELO_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
+          record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        else
+          record_known_skip_only_chunk "$host" jit-tests "$chunk"
+        fi
       fi
       index=$((index + JIT_CHUNK_SIZE))
       part=$((part + 1))
@@ -695,11 +706,19 @@ run_jit_tests_for_host() {
       filter_kandelo_known_jit_skips "$host" "${group[@]}"
       if [ "${#FILTERED_JIT_FILES[@]}" -gt 0 ]; then
         printf '%s\n' "${FILTERED_JIT_FILES[@]}" > "$list_file"
-        queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        if [ "${#KANDELO_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
+          queue_known_skip_entries "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        else
+          queue_known_skip_entries
+        fi
         run_chunk "$host" jit-tests "$chunk" --read-tests "$list_file"
       else
         : > "$list_file"
-        record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        if [ "${#KANDELO_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
+          record_known_skip_only_chunk "$host" jit-tests "$chunk" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+        else
+          record_known_skip_only_chunk "$host" jit-tests "$chunk"
+        fi
       fi
       index=$((index + JIT_CHUNK_SIZE))
       part=$((part + 1))
