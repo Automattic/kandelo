@@ -1,0 +1,12 @@
+kandelo:spidermonkey-node-bootstrap:2648:13 AssertionError: 'a=a&a=1&a=true&a=undefined&a=null&a=%ED%A0%BD&a=%ED%B8%80&a=%F0%9F%98%80&a=%ED%B8%80%ED%A0%BD&a=%5Bobject+Object%5D' === 'a=a&a=1&a=true&a=undefined&a=null&a=%EF%BF%BD&a=%EF%BF%BD&a=%F0%9F%98%80&a=%EF%BF%BD%EF%BF%BD&a=%5Bobject+Object%5D'
+Stack:
+  AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+  _assert.strictEqual@kandelo:spidermonkey-node-bootstrap:2680:19
+  @/node-v22.0.0/test/parallel/test-whatwg-url-custom-searchparams.js:43:8
+  require@kandelo:spidermonkey-node-bootstrap:5300:22
+  @/node-v22.0.0/kandelo-node-core-prelude.js:44:8
+  require@kandelo:spidermonkey-node-bootstrap:5300:22
+  _runCommonJsMain@kandelo:spidermonkey-node-bootstrap:5407:16
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5473:25
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

@@ -36,48 +36,52 @@ Pinned source:
 - Tag object: `ec49bec48284ab642db1d109d917c6ae3b695c13`
 - Peeled commit: `12fb157f79da8c094a54bc99370994941c28c235`
 
-Recorded comparison artifacts:
+Final authoritative artifacts:
 
 - Node host:
-  `test-runs/node-core-official-node-kad-nct6-integration-rev7/`
+  `test-runs/node-core-official-node-final/`
 - Browser host:
-  `test-runs/node-core-official-browser-kad-nct6-integration-rev7/`
+  `test-runs/node-core-official-browser-final/`
 
-Both hosts completed the same 10-test manifest and returned per-test results.
-No browser test timed out, no browser result was missing, and
-`browser-console.log` contains only Vite startup/client messages. The recorded
-rev7 run reported `FAIL=10` on both hosts, which classifies the failures as
-shared Node-compat/runtime gaps rather than browser harness blockers.
-
-The shared failures were root-caused as:
-
-| Area | Tests | Classification | Tracking |
-| --- | --- | --- | --- |
-| Process global surface | `test-path.js`, `test-events-list.js`, `test-timers-clear-null-does-not-throw-error.js` | Runtime bug: SpiderMonkey shell helpers leak as unexpected globals under Node's `test/common` global-leak check. | `kad-nct.9`, MR `kad-wisp-fkf` |
-| Buffer | `test-buffer-alloc.js` | Runtime bug: `buffer.kMaxLength` does not match the actual typed-array allocation limit. | `kad-nct.9`, MR `kad-wisp-fkf` |
-| Console | `test-console-count.js` | Runtime bug: `console.count()` bypasses a test override of `process.stdout.write`. | `kad-nct.9`, MR `kad-wisp-fkf` |
-| Query string | `test-querystring.js` | Runtime bug: `querystring.parse()` returns an object that is still `instanceof Object`; Node expects a null-prototype result. | `kad-nct.9`, MR `kad-wisp-fkf` |
-| String decoder | `test-string-decoder.js` | Runtime bug: `StringDecoder.call(obj)` throws because the shim is class-only. | `kad-nct.9`, MR `kad-wisp-fkf` |
-| URL | `test-whatwg-url-custom-searchparams.js`, `test-url-parse-query.js` | Runtime bug: `URLSearchParams.append()`/`getAll()` duplicate handling and legacy `url.Url` constructor parity are missing. | `kad-nct.9`, MR `kad-wisp-fkf` |
-| Util internals | `test-util-inspect.js` | Support-boundary SKIP: selected official test requires Node's private `--expose-internals` path and `internal/test/binding` native hooks. | `kad-nct.9`, MR `kad-wisp-fkf` |
-
-`kad-nct.9` is closed and has MR `kad-wisp-fkf` targeting
-`integration/kad-nct-node-core-tests` at commit
-`74d7ec5d8ae295763490155a273a6129df60be88`. That MR updates the runtime parity
-layer for the public API gaps and marks the internal-only `util.inspect` case as
-an explicit manifest `SKIP`.
-
-Before opening this PR, confirm `kad-wisp-fkf` has landed in
-`integration/kad-nct-node-core-tests`, then rerun:
+Final commands:
 
 ```bash
 scripts/run-node-core-official-tests.sh --fetch-source --host node --results-dir test-runs/node-core-official-node-final
 scripts/run-node-core-official-tests.sh --fetch-source --host browser --results-dir test-runs/node-core-official-browser-final
 ```
 
-Expected post-`kad-nct.9` manifest status is `PASS=9`, `SKIP=1` on both hosts:
-the nine public API tests should pass, and `test-util-inspect.js` should be
-skipped with the documented `internal/test/binding` support-boundary reason.
+Both final runs used the same selected 10-test manifest, upstream Node
+`v22.0.0` peeled commit `12fb157f79da8c094a54bc99370994941c28c235`, and the
+current integration runtime staged at
+`local-binaries/programs/wasm32/spidermonkey-node.wasm` from package
+`spidermonkey-node` revision 8. Both hosts completed all executable selected
+tests and recorded the explicit manifest skip. No test timed out. No browser
+result was missing. `test-runs/node-core-official-browser-final/browser-console.log`
+contains only Vite startup/client messages.
+
+Final counts:
+
+| Host | Selected | PASS | FAIL / unexpected | SKIP / support boundary | Timeout | Harness / resource failure |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Node | 10 | 0 | 9 | 1 | 0 | 0 |
+| Browser | 10 | 0 | 9 | 1 | 0 | 0 |
+
+Superseded artifacts are retained for history but are not the final status:
+`test-runs/node-core-official-node-kad-nct6-integration-rev7/` and
+`test-runs/node-core-official-browser-kad-nct6-integration-rev7/` were recorded
+against the pre-`kad-nct.9` rev7 runtime and reported `FAIL=10` on both hosts.
+They are excluded from the final counts above.
+
+The final shared failures are:
+
+| Area | Tests | Classification | Tracking |
+| --- | --- | --- | --- |
+| Process global surface | `test-path.js`, `test-events-list.js`, `test-console-count.js`, `test-url-parse-query.js`, `test-timers-clear-null-does-not-throw-error.js` | Runtime bug: DOM/Web and Kandelo helper globals still leak into Node's `test/common` global-leak check: `__kandeloRunDueTimers`, `__kandeloNextTimerDelay`, `__kandeloCreateWorkerThreads`, `argv0`, `execArgv`, `TextEncoder`, `TextDecoder`, `btoa`, `atob`, `Blob`, `File`, `FormData`, `MessagePort`, `MessageChannel`, `BroadcastChannel`, `Event`, `EventTarget`, `MessageEvent`, `CloseEvent`, `ErrorEvent`, `DOMException`, `AbortSignal`. | `kad-nct.11` |
+| Buffer | `test-buffer-alloc.js` | Runtime bug: `buffer.kMaxLength` still does not match the actual typed-array allocation limit; the test expected allocation past `kMaxLength` to throw. | `kad-nct.12` |
+| Query string | `test-querystring.js` | Runtime bug: `querystring.stringify()` still throws `TypeError: can't convert undefined to object` for an official-test input. | `kad-nct.13` |
+| String decoder | `test-string-decoder.js` | Runtime bug: UTF-8 replacement handling differs from Node for invalid byte sequence `c9 b5 a9 41`. | `kad-nct.14` |
+| URL | `test-whatwg-url-custom-searchparams.js` | Runtime bug: `URLSearchParams` percent-encodes unpaired surrogate values differently from Node, preserving `%ED...` instead of replacement-character `%EF%BF%BD`. | `kad-nct.15` |
+| Util internals | `test-util-inspect.js` | Support-boundary SKIP: selected official test requires Node's private `--expose-internals` path and `internal/test/binding` native hooks. | Manifest skip |
 
 ## Unsupported And Excluded Scope
 
