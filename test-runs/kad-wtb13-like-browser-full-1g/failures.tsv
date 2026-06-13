@@ -1,0 +1,2 @@
+jobid	state	displaytype	displayname	cases	errors	ms
+1	failed	tcl	test/like.test	159	1	1395
