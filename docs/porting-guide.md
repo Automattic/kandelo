@@ -751,7 +751,11 @@ Use `--explain` to ask SQLite's testrunner to print the planned jobs without
 starting a full permutation run. Browser runs launch the SQLite-only demo page
 through Vite with `KANDELO_BROWSER_DEMO_INPUTS=sqlite-test` and disable HMR
 with `KANDELO_BROWSER_TEST_NO_HMR=1` so long test runs do not churn on
-artifact writes.
+artifact writes. Browser runs also cap each Wasm process at 4096 64KiB pages
+(256MiB) by default to keep Chromium from reserving the host default 1GiB for
+each short-lived SQLite testfixture worker. Override with
+`SQLITE_BROWSER_MAX_MEMORY_PAGES=<pages>` when investigating memory-sensitive
+SQLite cases.
 
 ## Troubleshooting
 

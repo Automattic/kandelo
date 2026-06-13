@@ -12,6 +12,7 @@ const VITE_HOST = "127.0.0.1";
 const VITE_BASE_PORT = Number(process.env.SQLITE_TEST_VITE_PORT ?? 5200);
 const SQLITE_TEST_UID = Number(process.env.SQLITE_TEST_UID ?? 1000);
 const SQLITE_TEST_GID = Number(process.env.SQLITE_TEST_GID ?? 1000);
+const SQLITE_BROWSER_MAX_MEMORY_PAGES = process.env.SQLITE_BROWSER_MAX_MEMORY_PAGES ?? "4096";
 
 interface BrowserArtifact {
   path: string;
@@ -69,6 +70,7 @@ async function startViteServer(port: number): Promise<ChildProcess> {
           ...process.env,
           KANDELO_BROWSER_DEMO_INPUTS: "sqlite-test",
           KANDELO_BROWSER_TEST_NO_HMR: "1",
+          VITE_SQLITE_BROWSER_MAX_MEMORY_PAGES: SQLITE_BROWSER_MAX_MEMORY_PAGES,
         },
       },
     );
