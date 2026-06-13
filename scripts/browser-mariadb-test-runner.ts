@@ -168,6 +168,16 @@ async function isMariadbReady(page: Page, timeoutMs = 5_000): Promise<boolean> {
   }
 }
 
+function failureRequiresCleanReboot(result: TestResult): boolean {
+  const text = `${result.error ?? ""}\n${result.stderr ?? ""}`;
+  return text.includes("Out of memory") ||
+    text.includes("out of memory") ||
+    text.includes("Column count of mysql.proc is wrong") ||
+    text.includes("Incorrect definition of table mysql.proc") ||
+    text.includes("Cannot load from mysql.proc") ||
+    (text.includes("mysql.proc") && text.includes("table is probably corrupted"));
+}
+
 async function main() {
   const args = process.argv.slice(2);
   let testTimeout = DEFAULT_TIMEOUT;
@@ -320,9 +330,10 @@ async function main() {
       // after the last test only delays process teardown.
       const hasMoreTests = i + 1 < testNames.length;
       const isTimeout = result.error === "TIMEOUT" || result.time_ms > testTimeout * 1.3;
+      const needsCleanReboot = failureRequiresCleanReboot(result);
       const shouldProbe = result.status === "fail" || isTimeout;
       const needsReload = rebootAfterFail && hasMoreTests && (
-        isTimeout || (shouldProbe && !(await isMariadbReady(page!)))
+        needsCleanReboot || isTimeout || (shouldProbe && !(await isMariadbReady(page!)))
       );
 
       if (needsReload) {

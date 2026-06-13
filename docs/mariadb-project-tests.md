@@ -51,6 +51,14 @@ level runner now propagates that directory into `MYSQLTEST_VARDIR` and
 `MYSQLD_DATADIR`, so upstream tests do not share stale datadir/tmp state across
 chunks.
 
+Within a Node chunk, the lower-level runner keeps one MariaDB server for speed
+but treats MariaDB OOM and `mysql.proc` system-table corruption as datadir
+poisoning events. The failing test is still reported, then the runner
+terminates all workers, removes the chunk datadir, runs bootstrap/setup again,
+and continues with the next test from a clean system-table state. Browser runs
+use the same classification to force a clean page/kernel reboot after those
+failures instead of relying on a successful TCP probe.
+
 For the browser host, the all-test VFS contains the full `mysql-test/main` file
 set, `include/`, `std_data/`, and MariaDB `share/` files. The browser page runs
 mysqltest with `MYSQLTEST_VARDIR=/data`, the server datadir under

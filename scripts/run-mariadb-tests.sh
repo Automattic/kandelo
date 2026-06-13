@@ -39,6 +39,7 @@ CURATED_TESTS=()
 # locale         — locale error message files (errmsg.sys) read failure
 # event          — event scheduler disabled or table schema mismatch
 # timeout        — test too slow for wasm (>300s)
+# memory         — exceeds current wasm MariaDB memory envelope
 # aria           — Aria storage engine corruption/limitations
 # key_length     — Aria max key length (2000) vs InnoDB (3072)
 # behavior       — behavioral differences in Aria-only wasm build
@@ -252,6 +253,9 @@ EXPECTED_FAIL=(
     gis-rt-precise
     huge_frm-6224
     key_cache
+
+    # memory — exceeds current wasm MariaDB memory envelope (1 test)
+    sp-cursor
 
     # aria — table corruption or I/O issues (6 tests)
     create
