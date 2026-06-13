@@ -1,0 +1,21 @@
+SQLite official testrunner summary
+host=node
+permutation=full
+jobs=1
+workdir=/tmp/kandelo-sqlite-official.xiyxJN
+results_dir=test-runs/kad-wtb13-like-node-full
+
+total_jobs  done_jobs  failed_jobs  omitted_jobs  running_jobs  ready_jobs  total_cases  total_case_errors
+----------  ---------  -----------  ------------  ------------  ----------  -----------  -----------------
+1           1          0            0             0             0           159          0
+
+state  jobs  cases  case_errors
+-----  ----  -----  -----------
+done   1     159    0
+
+Jobs by SQLite testrunner config:
+config  jobs  cases  case_errors
+------  ----  -----  -----------
+full    1     159    0
+
+Failed, running, and omitted jobs:
