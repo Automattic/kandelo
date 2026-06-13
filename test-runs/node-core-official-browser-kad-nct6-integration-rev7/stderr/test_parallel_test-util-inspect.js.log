@@ -1,0 +1,11 @@
+kandelo:spidermonkey-node-bootstrap:4842:25 Error: Cannot find module 'internal/test/binding'
+Stack:
+  require@kandelo:spidermonkey-node-bootstrap:4842:25
+  @/node-v22.0.0/test/parallel/test-util-inspect.js:26:36
+  require@kandelo:spidermonkey-node-bootstrap:4894:22
+  @/node-v22.0.0/kandelo-node-core-prelude.js:44:8
+  require@kandelo:spidermonkey-node-bootstrap:4894:22
+  _runCommonJsMain@kandelo:spidermonkey-node-bootstrap:5001:16
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5067:25
+  @kandelo:spidermonkey-node-bootstrap:5779:1
+  @kandelo:spidermonkey-node-bootstrap:5780:3

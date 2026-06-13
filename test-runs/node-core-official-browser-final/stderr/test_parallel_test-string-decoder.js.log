@@ -1,0 +1,17 @@
+kandelo:spidermonkey-node-bootstrap:2648:13 AssertionError: Expected "\u275\ufffd\u41", but got "\uc9\ub5\ua9\u41"
+kandelo:spidermonkey-node-bootstrap:2648:13 input: c9,b5,a9,41
+kandelo:spidermonkey-node-bootstrap:2648:13 Write sequence: [[0,4]]
+kandelo:spidermonkey-node-bootstrap:2648:13 Full Decoder State: { encoding: 'utf8', lastChar: <BufferFactory 0 0 0 0>, lastNeed: 0, lastTotal: 0, _pending: <Uint8Array >, _decoder: { _encoding: 'utf-8' } }
+Stack:
+  AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+  _assert.fail@kandelo:spidermonkey-node-bootstrap:2711:15
+  test/<@/node-v22.0.0/test/parallel/test-string-decoder.js:248:14
+  test@/node-v22.0.0/test/parallel/test-string-decoder.js:234:13
+  @/node-v22.0.0/test/parallel/test-string-decoder.js:66:5
+  require@kandelo:spidermonkey-node-bootstrap:5300:22
+  @/node-v22.0.0/kandelo-node-core-prelude.js:44:8
+  require@kandelo:spidermonkey-node-bootstrap:5300:22
+  _runCommonJsMain@kandelo:spidermonkey-node-bootstrap:5407:16
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5473:25
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

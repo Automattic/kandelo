@@ -2,6 +2,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { execSync } from "child_process";
+import type { ServerResponse } from "http";
 import { defineConfig, type Plugin, type PreviewServer, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { tryResolveBinary } from "../../host/src/binary-resolver";
@@ -395,15 +396,100 @@ function devCorsProxyMiddleware(): Plugin {
   };
 }
 
+function nodeCoreOfficialFilesMiddleware(): Plugin {
+  const routePrefix = "/__kandelo_node_core_official__/";
+  const sourceDir = process.env.KANDELO_NODE_CORE_OFFICIAL_SOURCE_DIR;
+  const resultsDir = process.env.KANDELO_NODE_CORE_OFFICIAL_RESULTS_DIR;
+  const runtimePath = process.env.KANDELO_NODE_CORE_OFFICIAL_RUNTIME_PATH;
+
+  function safeResolve(root: string, relPath: string): string | null {
+    const resolved = path.resolve(root, relPath);
+    const normalizedRoot = path.resolve(root);
+    if (resolved !== normalizedRoot && !resolved.startsWith(`${normalizedRoot}${path.sep}`)) {
+      return null;
+    }
+    return resolved;
+  }
+
+  function serveFile(res: ServerResponse, file: string): void {
+    fs.readFile(file, (err, bytes) => {
+      if (err) {
+        res.statusCode = err.code === "ENOENT" ? 404 : 500;
+        res.end(err.message);
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+      res.setHeader("Content-Length", String(bytes.byteLength));
+      res.setHeader("Content-Type", file.endsWith(".js") ? "application/javascript; charset=utf-8" : "application/octet-stream");
+      res.end(bytes);
+    });
+  }
+
+  function attachMiddleware(
+    middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+  ): void {
+    if (!sourceDir || !resultsDir || !runtimePath) return;
+    middlewares.use((req, res, next) => {
+      if (!req.url) {
+        next();
+        return;
+      }
+      const requestUrl = new URL(req.url, "http://localhost");
+      if (!requestUrl.pathname.startsWith(routePrefix)) {
+        next();
+        return;
+      }
+
+      const rest = requestUrl.pathname.slice(routePrefix.length);
+      if (rest === "runtime") {
+        serveFile(res, runtimePath);
+        return;
+      }
+
+      const slash = rest.indexOf("/");
+      const kind = slash === -1 ? rest : rest.slice(0, slash);
+      const rel = slash === -1 ? "" : decodeURIComponent(rest.slice(slash + 1));
+      const root = kind === "source" ? sourceDir : kind === "results" ? resultsDir : null;
+      const file = root ? safeResolve(root, rel) : null;
+      if (!file) {
+        res.statusCode = 403;
+        res.end("Forbidden");
+        return;
+      }
+      serveFile(res, file);
+    });
+  }
+
+  return {
+    name: "node-core-official-files-middleware",
+    configureServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      attachMiddleware(server.middlewares);
+    },
+  };
+}
+
+function pageInput(name: string): string {
+  return path.resolve(__dirname, "pages", name, "index.html");
+}
+
 const defaultDemoInputs = {
   main: path.resolve(__dirname, "index.html"),
-  kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
-  network: path.resolve(__dirname, "pages/network/index.html"),
+  kandelo: pageInput("kandelo"),
+  network: pageInput("network"),
 };
 
 const demoInputs = {
   ...defaultDemoInputs,
-  "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
+  "test-runner": pageInput("test-runner"),
+  "sqlite-test": pageInput("sqlite-test"),
+  "mariadb-test": pageInput("mariadb-test"),
+  "git-test": pageInput("git-test"),
+  benchmark: pageInput("benchmark"),
   // The perl, python, ruby, erlang, texlive, and redis package entries
   // are not bundled into this static build while their slow builds
   // live in kandelo-software. The root gallery fetches that
@@ -446,6 +532,7 @@ export default defineConfig({
     injectCoiServiceWorker(),
     injectCorsProxyUrl(),
     devCorsProxyMiddleware(),
+    nodeCoreOfficialFilesMiddleware(),
   ],
   server: {
     host: "127.0.0.1",

@@ -81,7 +81,7 @@ Until one of those ships, this remains a fundamental wasm limitation. The kernel
 | Threads via `clone()` | Host-managed Web Workers, MariaDB runs 5 threads (PR #88) |
 | OPFS filesystem | `host/src/vfs/opfs.ts` (browser persistence) |
 
-## Current libc-test Results (2026-04-05)
+## Current libc-test Results (2026-06-13)
 
 0 unexpected failures, 20 expected failures (XFAIL):
 - 14 math precision (musl ULP issues)

@@ -172,6 +172,15 @@ if (typeof globalThis.atob === 'undefined') {
 const _SLASH = '/';
 const _DOT = '.';
 
+function _defineGlobal(name, value) {
+    Object.defineProperty(globalThis, name, {
+        value,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+    });
+}
+
 function _errnoToCode(errno) {
     const map = {
         1: 'EPERM', 2: 'ENOENT', 3: 'ESRCH', 4: 'EINTR',
@@ -196,6 +205,22 @@ function _makeNodeError(message, code, errno, syscall, path) {
     return err;
 }
 
+function _makeInvalidArgTypeError(name, expected, value) {
+    const actual = value === null ? 'null' :
+                   Array.isArray(value) ? 'an instance of Array' :
+                   typeof value === 'object' ? `an instance of ${value.constructor && value.constructor.name || 'Object'}` :
+                   `type ${typeof value}`;
+    const err = new TypeError(`The "${name}" argument must be of type ${expected}. Received ${actual}`);
+    err.code = 'ERR_INVALID_ARG_TYPE';
+    return err;
+}
+
+function _validateString(value, name) {
+    if (typeof value !== 'string') {
+        throw _makeInvalidArgTypeError(name, 'string', value);
+    }
+}
+
 function _throwErrno(errno, syscall, path) {
     const code = _errnoToCode(errno);
     const msg = `${code}: ${syscall}` + (path ? ` '${path}'` : '');
@@ -216,7 +241,7 @@ const path = (() => {
     const delimiter = ':';
 
     function normalize(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
         if (p.length === 0) return '.';
         const isAbsolute = p.charCodeAt(0) === 47; // '/'
         const parts = p.split('/');
@@ -242,7 +267,7 @@ const path = (() => {
         if (args.length === 0) return '.';
         let joined = '';
         for (const arg of args) {
-            if (typeof arg !== 'string') throw new TypeError('Arguments must be strings');
+            _validateString(arg, 'path');
             if (arg.length > 0) {
                 joined = joined ? joined + '/' + arg : arg;
             }
@@ -254,7 +279,7 @@ const path = (() => {
         let resolved = '';
         for (let i = args.length - 1; i >= 0; i--) {
             const p = args[i];
-            if (typeof p !== 'string') throw new TypeError('Arguments must be strings');
+            _validateString(p, `paths[${i}]`);
             if (p.length === 0) continue;
             resolved = p + (resolved ? '/' + resolved : '');
             if (p.charCodeAt(0) === 47) break;
@@ -267,7 +292,7 @@ const path = (() => {
     }
 
     function dirname(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
         if (p.length === 0) return '.';
         const idx = p.lastIndexOf('/');
         if (idx === -1) return '.';
@@ -276,7 +301,8 @@ const path = (() => {
     }
 
     function basename(p, ext) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
+        if (ext !== undefined) _validateString(ext, 'suffix');
         let base = p;
         const idx = p.lastIndexOf('/');
         if (idx !== -1) base = p.slice(idx + 1);
@@ -285,7 +311,7 @@ const path = (() => {
     }
 
     function extname(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
         const base = basename(p);
         const idx = base.lastIndexOf('.');
         if (idx <= 0) return '';
@@ -293,7 +319,7 @@ const path = (() => {
     }
 
     function isAbsolute(p) {
-        if (typeof p !== 'string') throw new TypeError('Path must be a string');
+        _validateString(p, 'path');
         return p.length > 0 && p.charCodeAt(0) === 47;
     }
 
@@ -338,7 +364,7 @@ const path = (() => {
 })();
 path.posix = path;
 // tar/cacache/minimatch read `path.win32.{sep,parse,isAbsolute}` at module init.
-path.win32 = { ...path, sep: '\\' };
+path.win32 = { ...path, sep: '\\', delimiter: ';' };
 
 // ============================================================
 // events module (EventEmitter)
@@ -415,7 +441,7 @@ const events = (() => {
         }
 
         eventNames() {
-            return Object.keys(this._events).filter(k => this._events[k].length > 0);
+            return Reflect.ownKeys(this._events).filter(k => this._events[k].length > 0);
         }
 
         prependListener(event, fn) {
@@ -479,16 +505,82 @@ const events = (() => {
 const Buffer = (() => {
     const _encoder = new TextEncoder();
     const _decoder = new TextDecoder();
+    const kMaxLength = Number.MAX_SAFE_INTEGER;
+
+    function _normalizeEncodingName(encoding) {
+        const enc = String(encoding || 'utf8').toLowerCase();
+        if (enc === 'utf-8') return 'utf8';
+        if (enc === 'binary') return 'latin1';
+        if (enc === 'ucs-2') return 'ucs2';
+        if (enc === 'utf-16le') return 'utf16le';
+        return enc;
+    }
+
+    function _assertEncoding(encoding) {
+        const enc = _normalizeEncodingName(encoding);
+        if (!Buffer.isEncoding(enc)) {
+            throw new TypeError(`Unknown encoding: ${encoding}`);
+        }
+        return enc;
+    }
+
+    function _rangeError(name, min, max, value) {
+        const err = new RangeError(`The value of "${name}" is out of range. It must be >= ${min} and <= ${max}. Received ${value}`);
+        err.code = 'ERR_OUT_OF_RANGE';
+        return err;
+    }
+
+    function _checkSize(size) {
+        size = Number(size);
+        if (!Number.isFinite(size) || size < 0 || size > kMaxLength) {
+            throw _rangeError('size', 0, kMaxLength, size);
+        }
+        return Math.floor(size);
+    }
+
+    function _encodeString(value, encoding) {
+        const enc = _assertEncoding(encoding);
+        value = String(value);
+        if (enc === 'hex') {
+            const bytes = [];
+            for (let i = 0; i + 1 < value.length; i += 2) {
+                bytes.push(parseInt(value.substr(i, 2), 16) || 0);
+            }
+            return new Uint8Array(bytes);
+        }
+        if (enc === 'base64') {
+            const binary = atob(value);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes;
+        }
+        if (enc === 'latin1' || enc === 'ascii') {
+            const bytes = new Uint8Array(value.length);
+            for (let i = 0; i < value.length; i++) bytes[i] = value.charCodeAt(i) & 0xff;
+            return bytes;
+        }
+        if (enc === 'ucs2' || enc === 'utf16le') {
+            const bytes = new Uint8Array(value.length * 2);
+            for (let i = 0; i < value.length; i++) {
+                const c = value.charCodeAt(i);
+                bytes[i * 2] = c & 0xff;
+                bytes[i * 2 + 1] = c >> 8;
+            }
+            return bytes;
+        }
+        return _encoder.encode(value);
+    }
 
     class Buffer extends Uint8Array {
         // Static factory methods
         static alloc(size, fill, encoding) {
+            size = _checkSize(size);
             const buf = new Buffer(size);
             if (fill !== undefined) {
                 if (typeof fill === 'number') {
                     buf.fill(fill);
                 } else if (typeof fill === 'string') {
-                    const bytes = _encoder.encode(fill);
+                    const bytes = _encodeString(fill, encoding);
                     for (let i = 0; i < size; i++) buf[i] = bytes[i % bytes.length];
                 }
             }
@@ -496,32 +588,18 @@ const Buffer = (() => {
         }
 
         static allocUnsafe(size) {
-            return new Buffer(size);
+            return new Buffer(_checkSize(size));
         }
 
         static from(value, encodingOrOffset, length) {
             if (typeof value === 'string') {
-                const encoding = encodingOrOffset || 'utf8';
-                if (encoding === 'hex') {
-                    const bytes = [];
-                    for (let i = 0; i < value.length; i += 2) {
-                        bytes.push(parseInt(value.substr(i, 2), 16));
-                    }
-                    return new Buffer(bytes);
-                }
-                if (encoding === 'base64') {
-                    const binary = atob(value);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                    return new Buffer(bytes.buffer);
-                }
-                // utf8 or ascii or latin1
-                return new Buffer(_encoder.encode(value));
+                return new Buffer(_encodeString(value, encodingOrOffset));
             }
             if (value instanceof ArrayBuffer || value instanceof SharedArrayBuffer) {
                 return new Buffer(value, encodingOrOffset, length);
             }
             if (ArrayBuffer.isView(value)) {
+                if (!(value instanceof Uint8Array)) return new Buffer(Array.from(value));
                 return new Buffer(value.buffer, value.byteOffset, value.byteLength);
             }
             if (Array.isArray(value)) {
@@ -554,14 +632,13 @@ const Buffer = (() => {
         }
 
         static isEncoding(encoding) {
-            return ['utf8', 'utf-8', 'ascii', 'latin1', 'binary',
-                    'hex', 'base64', 'ucs2', 'ucs-2', 'utf16le', 'utf-16le']
-                   .includes(String(encoding).toLowerCase());
+            return ['utf8', 'ascii', 'latin1', 'hex', 'base64', 'ucs2', 'utf16le']
+                   .includes(_normalizeEncodingName(String(encoding)));
         }
 
         static byteLength(string, encoding) {
             if (typeof string !== 'string') return string.length;
-            return _encoder.encode(string).length;
+            return _encodeString(string, encoding).length;
         }
 
         static compare(a, b) {
@@ -576,7 +653,7 @@ const Buffer = (() => {
         }
 
         toString(encoding, start, end) {
-            encoding = (encoding || 'utf8').toLowerCase();
+            encoding = _assertEncoding(encoding);
             start = start || 0;
             end = end === undefined ? this.length : end;
             const slice = this.subarray(start, end);
@@ -593,19 +670,40 @@ const Buffer = (() => {
                 for (let i = 0; i < slice.length; i++) binary += String.fromCharCode(slice[i]);
                 return btoa(binary);
             }
+            if (encoding === 'latin1' || encoding === 'ascii') {
+                let out = '';
+                for (let i = 0; i < slice.length; i++) out += String.fromCharCode(slice[i]);
+                return out;
+            }
+            if (encoding === 'ucs2' || encoding === 'utf16le') {
+                let out = '';
+                for (let i = 0; i + 1 < slice.length; i += 2) {
+                    out += String.fromCharCode(slice[i] | (slice[i + 1] << 8));
+                }
+                return out;
+            }
             return _decoder.decode(slice);
         }
 
         write(string, offset, length, encoding) {
             if (typeof offset === 'string') { encoding = offset; offset = 0; length = this.length; }
             else if (typeof length === 'string') { encoding = length; length = this.length - (offset || 0); }
+            else if (typeof offset !== 'number' && offset !== undefined) {
+                throw _makeInvalidArgTypeError('offset', 'number', offset);
+            }
             offset = offset || 0;
+            if (offset < 0 || offset > this.length) throw _rangeError('offset', 0, this.length, offset);
             length = length === undefined ? this.length - offset : length;
-            const bytes = _encoder.encode(string);
+            if (length < 0 || offset + Math.min(1, length) > this.length) {
+                throw _rangeError('offset', 0, this.length, offset);
+            }
+            const bytes = _encodeString(string, encoding);
             const toWrite = Math.min(bytes.length, length, this.length - offset);
             for (let i = 0; i < toWrite; i++) this[offset + i] = bytes[i];
             return toWrite;
         }
+
+        get offset() { return this.byteOffset; }
 
         toJSON() {
             return { type: 'Buffer', data: Array.from(this) };
@@ -698,7 +796,21 @@ const Buffer = (() => {
         writeDoubleBE(value, offset) { new DataView(this.buffer, this.byteOffset).setFloat64(offset, value, false); return offset + 8; }
     }
 
-    return Buffer;
+    const BufferClass = Buffer;
+    function BufferFactory(value, encodingOrOffset, length) {
+        if (value === undefined) return BufferClass.alloc(0);
+        if (typeof value === 'number') return BufferClass.allocUnsafe(value);
+        return BufferClass.from(value, encodingOrOffset, length);
+    }
+    Object.setPrototypeOf(BufferFactory, BufferClass);
+    BufferFactory.prototype = BufferClass.prototype;
+    Object.defineProperty(BufferFactory.prototype, 'constructor', {
+        value: BufferFactory,
+        writable: true,
+        configurable: true,
+    });
+    BufferFactory.kMaxLength = kMaxLength;
+    return BufferFactory;
 })();
 
 // ============================================================
@@ -2034,15 +2146,29 @@ const util = (() => {
         };
     }
 
+    function enumerableOwnKeys(value) {
+        const keys = Object.keys(value);
+        for (const symbol of Object.getOwnPropertySymbols(value)) {
+            if (Object.prototype.propertyIsEnumerable.call(value, symbol)) {
+                keys.push(symbol);
+            }
+        }
+        return keys;
+    }
+
     function isDeepStrictEqual(a, b) {
         if (a === b) return true;
         if (typeof a !== typeof b) return false;
         if (a === null || b === null) return false;
         if (typeof a !== 'object') return false;
         if (Array.isArray(a) !== Array.isArray(b)) return false;
-        const keysA = Object.keys(a);
-        const keysB = Object.keys(b);
+        if (Array.isArray(a) && a.length !== b.length) return false;
+        const keysA = enumerableOwnKeys(a);
+        const keysB = enumerableOwnKeys(b);
         if (keysA.length !== keysB.length) return false;
+        for (const key of keysA) {
+            if (!Object.prototype.propertyIsEnumerable.call(b, key)) return false;
+        }
         for (const key of keysA) {
             if (!isDeepStrictEqual(a[key], b[key])) return false;
         }
@@ -2117,7 +2243,7 @@ const util = (() => {
 const assert = (() => {
     class AssertionError extends Error {
         constructor(options) {
-            super(options.message || `${options.actual} ${options.operator} ${options.expected}`);
+            super(options.message || `${util.inspect(options.actual)} ${options.operator} ${util.inspect(options.expected)}`);
             this.name = 'AssertionError';
             this.actual = options.actual;
             this.expected = options.expected;
@@ -2354,16 +2480,30 @@ const stream = (() => {
 // ============================================================
 
 const url = (() => {
+    class Url {
+        constructor() {
+            this.protocol = null;
+            this.slashes = null;
+            this.auth = null;
+            this.host = null;
+            this.port = null;
+            this.hostname = null;
+            this.hash = null;
+            this.search = null;
+            this.query = null;
+            this.pathname = null;
+            this.path = null;
+            this.href = '';
+        }
+    }
+
     function parse(urlStr, parseQueryString) {
         // `new URL(URL_instance)` is valid in WHATWG; coerce to string so the
         // regex-based scanner doesn't throw "match is not a function".
         if (typeof urlStr !== 'string') urlStr = String(urlStr);
         // Simple URL parser
-        const result = {
-            protocol: null, slashes: false, auth: null, host: null,
-            port: null, hostname: null, hash: null, search: null,
-            query: null, pathname: null, path: null, href: urlStr,
-        };
+        const result = new Url();
+        result.href = urlStr;
 
         let rest = urlStr;
         // Protocol
@@ -2423,10 +2563,12 @@ const url = (() => {
             result.pathname = rest;
         }
 
+        if (result.pathname === '' && result.host) result.pathname = '/';
         result.path = result.pathname + (result.search || '');
+        result.href = format(result);
 
-        if (parseQueryString && result.query) {
-            result.query = querystring.parse(result.query);
+        if (parseQueryString) {
+            result.query = querystring.parse(result.query || '');
         }
 
         return result;
@@ -2436,9 +2578,10 @@ const url = (() => {
         let result = '';
         if (urlObj.protocol) result += urlObj.protocol + '//';
         if (urlObj.auth) result += urlObj.auth + '@';
-        if (urlObj.hostname) result += urlObj.hostname;
+        if (urlObj.host && !urlObj.hostname) result += urlObj.host;
+        else if (urlObj.hostname) result += urlObj.hostname;
         if (urlObj.port) result += ':' + urlObj.port;
-        result += urlObj.pathname || '/';
+        result += urlObj.pathname || (urlObj.host ? '/' : '');
         if (urlObj.search) result += urlObj.search;
         if (urlObj.hash) result += urlObj.hash;
         return result;
@@ -2462,37 +2605,114 @@ const url = (() => {
         return format(result);
     }
 
-    const SearchParamsClass = class URLSearchParams {
-        constructor(init) {
-            this._params = {};
-            if (typeof init === 'string') {
-                const qs = init.startsWith('?') ? init.slice(1) : init;
-                if (qs) {
-                    for (const pair of qs.split('&')) {
-                        const [k, v] = pair.split('=').map(decodeURIComponent);
-                        this._params[k] = v;
-                    }
-                }
+    function _formEncode(value) {
+        const bytes = new TextEncoder().encode(String(value));
+        let out = '';
+        for (const b of bytes) {
+            if ((b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a) ||
+                (b >= 0x30 && b <= 0x39) || b === 0x2a || b === 0x2d ||
+                b === 0x2e || b === 0x5f) {
+                out += String.fromCharCode(b);
+            } else if (b === 0x20) {
+                out += '+';
+            } else {
+                out += '%' + b.toString(16).toUpperCase().padStart(2, '0');
             }
         }
-        get(key) { return this._params[key]; }
-        set(key, val) { this._params[key] = String(val); }
-        has(key) { return key in this._params; }
-        append(key, val) { if (!(key in this._params)) this._params[key] = String(val); }
-        delete(key) { delete this._params[key]; }
-        getAll(key) { return key in this._params ? [this._params[key]] : []; }
-        *entries() {
-            for (const k of Object.keys(this._params)) yield [k, this._params[k]];
+        return out;
+    }
+
+    function _safeDecodeComponent(value, plusAsSpace) {
+        value = String(value);
+        if (plusAsSpace) value = value.replace(/\+/g, ' ');
+        try { return decodeURIComponent(value); }
+        catch (_) {
+            return value.replace(/%([0-9a-fA-F]{2})/g, (_, h) =>
+                String.fromCharCode(parseInt(h, 16)));
         }
-        *keys() { for (const k of Object.keys(this._params)) yield k; }
-        *values() { for (const k of Object.keys(this._params)) yield this._params[k]; }
-        [Symbol.iterator]() { return this.entries(); }
+    }
+
+    const SearchParamsClass = class URLSearchParams {
+        constructor(init, onUpdate) {
+            this._pairs = [];
+            this._onUpdate = typeof onUpdate === 'function' ? onUpdate : null;
+            if (typeof init === 'string') {
+                this._replaceFromString(init);
+            } else if (init && typeof init[Symbol.iterator] === 'function') {
+                for (const pair of init) this.append(pair[0], pair[1]);
+            } else if (init && typeof init === 'object') {
+                for (const key of Object.keys(init)) this.append(key, init[key]);
+            }
+        }
+        get size() { return this._pairs.length; }
+        _replaceFromString(input) {
+            this._pairs = [];
+            const qs = String(input).startsWith('?') ? String(input).slice(1) : String(input);
+            if (!qs) return;
+            for (const pair of qs.split('&')) {
+                if (pair === '') continue;
+                const idx = pair.indexOf('=');
+                const key = idx >= 0 ? pair.slice(0, idx) : pair;
+                const val = idx >= 0 ? pair.slice(idx + 1) : '';
+                this._pairs.push([
+                    _safeDecodeComponent(key, true),
+                    _safeDecodeComponent(val, true),
+                ]);
+            }
+        }
+        _updated() { if (this._onUpdate) this._onUpdate(this.toString()); }
+        get(key) {
+            key = String(key);
+            for (const pair of this._pairs) if (pair[0] === key) return pair[1];
+            return null;
+        }
+        set(key, val) {
+            key = String(key);
+            val = String(val);
+            let seen = false;
+            const next = [];
+            for (const pair of this._pairs) {
+                if (pair[0] === key) {
+                    if (!seen) next.push([key, val]);
+                    seen = true;
+                } else {
+                    next.push(pair);
+                }
+            }
+            if (!seen) next.push([key, val]);
+            this._pairs = next;
+            this._updated();
+        }
+        has(key) {
+            key = String(key);
+            return this._pairs.some((pair) => pair[0] === key);
+        }
+        append(key, val) {
+            this._pairs.push([String(key), String(val)]);
+            this._updated();
+        }
+        delete(key) {
+            key = String(key);
+            this._pairs = this._pairs.filter((pair) => pair[0] !== key);
+            this._updated();
+        }
+        getAll(key) {
+            key = String(key);
+            return this._pairs.filter((pair) => pair[0] === key).map((pair) => pair[1]);
+        }
+        *entries() {
+            for (const pair of this._pairs) yield [pair[0], pair[1]];
+        }
+        *keys() { for (const pair of this._pairs) yield pair[0]; }
+        *values() { for (const pair of this._pairs) yield pair[1]; }
+        get [Symbol.iterator]() { return this.entries; }
         forEach(cb, thisArg) {
-            for (const k of Object.keys(this._params)) cb.call(thisArg, this._params[k], k, this);
+            if (typeof cb !== 'function') throw _makeInvalidArgTypeError('callback', 'function', cb);
+            for (const pair of this._pairs) cb.call(thisArg, pair[1], pair[0], this);
         }
         toString() {
-            return Object.entries(this._params)
-                .map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(v))
+            return this._pairs
+                .map(([k, v]) => _formEncode(k) + '=' + _formEncode(v))
                 .join('&');
         }
     };
@@ -2504,16 +2724,62 @@ const url = (() => {
             // protocol, the fallback never runs and downstream code reads a
             // null hostname.
             if (!parsed.protocol) throw new TypeError(`Invalid URL: ${input}`);
-            Object.assign(this, parsed);
-            // WHATWG URL: missing components are '' not null. minipass-fetch
-            // builds `path = pathname + search` via template literal, which
-            // turns null into the literal string "null".
-            for (const k of ['search', 'port', 'hostname', 'host']) {
-                if (this[k] == null) this[k] = '';
-            }
-            this.searchParams = new SearchParamsClass(this.search ? this.search.slice(1) : '');
+            this._searchParams = new SearchParamsClass('', (qs) => {
+                this._search = qs ? `?${qs}` : '';
+                this.query = qs || null;
+                this.path = this.pathname + this._search;
+            });
+            this._assign(parsed);
         }
-        toString() { return format(this); }
+        _assign(parsed) {
+            this.protocol = parsed.protocol;
+            this.slashes = parsed.slashes;
+            this.auth = parsed.auth;
+            this.host = parsed.host || '';
+            this.port = parsed.port || '';
+            this.hostname = parsed.hostname || '';
+            this.hash = parsed.hash || '';
+            this._search = parsed.search || '';
+            this.query = parsed.query || null;
+            this.pathname = parsed.pathname || '/';
+            this.path = this.pathname + this._search;
+            this._searchParams._replaceFromString(this._search);
+        }
+        get href() { return format(this); }
+        set href(value) {
+            const parsed = parse(value);
+            if (!parsed.protocol) throw new TypeError(`Invalid URL: ${value}`);
+            if (!this._searchParams) {
+                this._searchParams = new SearchParamsClass('', (qs) => {
+                    this._search = qs ? `?${qs}` : '';
+                    this.query = qs || null;
+                    this.path = this.pathname + this._search;
+                });
+            }
+            this._assign(parsed);
+        }
+        get search() { return this._search; }
+        set search(value) {
+            value = String(value || '');
+            this._search = value && value[0] !== '?' ? `?${value}` : value;
+            this.query = this._search ? this._search.slice(1) : null;
+            this.path = this.pathname + this._search;
+            this._searchParams._replaceFromString(this._search);
+        }
+        get searchParams() { return this._searchParams; }
+        set pathname(value) {
+            this._pathname = String(value || '/');
+            if (this._pathname[0] !== '/') this._pathname = '/' + this._pathname;
+            this.path = this._pathname + (this._search || '');
+        }
+        get pathname() { return this._pathname; }
+        set hash(value) {
+            value = String(value || '');
+            this._hash = value && value[0] !== '#' ? `#${value}` : value;
+        }
+        get hash() { return this._hash; }
+        toString() { return this.href; }
+        toJSON() { return this.href; }
     };
     function fileURLToPath(u) {
         // Accept URL instance or string. Strip "file://", decode %XX.
@@ -2537,7 +2803,7 @@ const url = (() => {
         return new URLClass('file://' + encodeURI(p));
     }
     return {
-        parse, format, resolve,
+        parse, format, resolve, Url,
         URL: URLClass,
         URLSearchParams: SearchParamsClass,
         fileURLToPath, pathToFileURL,
@@ -2549,17 +2815,34 @@ const url = (() => {
 // ============================================================
 
 const querystring = (() => {
+    function safeDecode(str) {
+        str = String(str).replace(/\+/g, ' ');
+        try { return decodeURIComponent(str); }
+        catch (_) {
+            return str.replace(/%([0-9a-fA-F]{2})/g, (_, h) =>
+                String.fromCharCode(parseInt(h, 16)));
+        }
+    }
+
+    function scalarString(value) {
+        if (typeof value === 'string') return value;
+        if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+        if (typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+        return '';
+    }
+
     function parse(qs, sep, eq) {
         sep = sep || '&';
         eq = eq || '=';
-        const result = {};
+        const result = Object.create(null);
         if (!qs) return result;
-        const pairs = qs.split(sep);
+        const pairs = String(qs).split(sep);
         for (const pair of pairs) {
+            if (pair === '') continue;
             const idx = pair.indexOf(eq);
-            const key = idx >= 0 ? decodeURIComponent(pair.slice(0, idx)) : decodeURIComponent(pair);
-            const val = idx >= 0 ? decodeURIComponent(pair.slice(idx + 1)) : '';
-            if (key in result) {
+            const key = idx >= 0 ? safeDecode(pair.slice(0, idx)) : safeDecode(pair);
+            const val = idx >= 0 ? safeDecode(pair.slice(idx + eq.length)) : '';
+            if (Object.prototype.hasOwnProperty.call(result, key)) {
                 if (Array.isArray(result[key])) result[key].push(val);
                 else result[key] = [result[key], val];
             } else {
@@ -2576,16 +2859,16 @@ const querystring = (() => {
         for (const key of Object.keys(obj)) {
             const val = obj[key];
             if (Array.isArray(val)) {
-                for (const v of val) pairs.push(encodeURIComponent(key) + eq + encodeURIComponent(v));
+                for (const v of val) pairs.push(encodeURIComponent(key) + eq + encodeURIComponent(scalarString(v)));
             } else {
-                pairs.push(encodeURIComponent(key) + eq + encodeURIComponent(val));
+                pairs.push(encodeURIComponent(key) + eq + encodeURIComponent(scalarString(val)));
             }
         }
         return pairs.join(sep);
     }
 
     function escape(str) { return encodeURIComponent(str); }
-    function unescape(str) { return decodeURIComponent(str); }
+    function unescape(str) { return safeDecode(str); }
 
     return { parse, stringify, escape, unescape, decode: parse, encode: stringify };
 })();
@@ -2595,19 +2878,132 @@ const querystring = (() => {
 // ============================================================
 
 const string_decoder = (() => {
-    class StringDecoder {
-        constructor(encoding) {
-            this.encoding = (encoding || 'utf8').toLowerCase();
-            this._decoder = new TextDecoder(this.encoding === 'utf-8' ? 'utf-8' : this.encoding);
+    function normalizeEncoding(encoding) {
+        const enc = encoding === undefined ? 'utf8' : String(encoding).toLowerCase();
+        if (enc === 'utf-8') return 'utf8';
+        if (enc === 'ucs2' || enc === 'ucs-2') return 'utf16le';
+        if (enc === 'utf16le' || enc === 'utf-16le') return 'utf16le';
+        if (enc === 'latin1' || enc === 'binary' || enc === 'ascii' || enc === 'base64' || enc === 'hex') return enc;
+        if (enc === 'utf8') return enc;
+        const err = new TypeError(`Unknown encoding: ${encoding}`);
+        err.code = 'ERR_UNKNOWN_ENCODING';
+        throw err;
+    }
+
+    function toBytes(buf) {
+        if (buf instanceof Uint8Array) return buf;
+        if (buf instanceof ArrayBuffer) return new Uint8Array(buf);
+        if (ArrayBuffer.isView(buf)) return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+        throw _makeInvalidArgTypeError('buf', 'Buffer, TypedArray, or DataView', buf);
+    }
+
+    function concatBytes(a, b) {
+        if (!a || a.length === 0) return b;
+        const out = new Uint8Array(a.length + b.length);
+        out.set(a, 0);
+        out.set(b, a.length);
+        return out;
+    }
+
+    function utf8Tail(bytes) {
+        const len = bytes.length;
+        if (len === 0) return { cut: 0, pending: new Uint8Array(0), need: 0, total: 0 };
+        let cont = 0;
+        for (let i = len - 1; i >= 0 && cont < 3; i--) {
+            if ((bytes[i] & 0xc0) === 0x80) cont++;
+            else break;
         }
-        write(buf) {
-            if (typeof buf === 'string') return buf;
-            return this._decoder.decode(buf, { stream: true });
+        const lead = len - cont - 1;
+        if (lead < 0) return { cut: len, pending: new Uint8Array(0), need: 0, total: 0 };
+        const b = bytes[lead];
+        let total = 0;
+        if (b >= 0xc2 && b <= 0xdf) total = 2;
+        else if (b >= 0xe0 && b <= 0xef) total = 3;
+        else if (b >= 0xf0 && b <= 0xf4) total = 4;
+        else return { cut: len, pending: new Uint8Array(0), need: 0, total: 0 };
+
+        const have = len - lead;
+        if (have >= total) return { cut: len, pending: new Uint8Array(0), need: 0, total: 0 };
+        if (have > 1) {
+            const c = bytes[lead + 1];
+            const ok =
+                (total === 2 && c >= 0x80 && c <= 0xbf) ||
+                (total === 3 && ((b === 0xe0 && c >= 0xa0 && c <= 0xbf) ||
+                    (b >= 0xe1 && b <= 0xec && c >= 0x80 && c <= 0xbf) ||
+                    (b === 0xed && c >= 0x80 && c <= 0x9f) ||
+                    (b >= 0xee && b <= 0xef && c >= 0x80 && c <= 0xbf))) ||
+                (total === 4 && ((b === 0xf0 && c >= 0x90 && c <= 0xbf) ||
+                    (b >= 0xf1 && b <= 0xf3 && c >= 0x80 && c <= 0xbf) ||
+                    (b === 0xf4 && c >= 0x80 && c <= 0x8f)));
+            if (!ok) return { cut: len, pending: new Uint8Array(0), need: 0, total: 0 };
         }
-        end(buf) {
-            if (buf) return this.write(buf);
-            return '';
+        return { cut: lead, pending: bytes.slice(lead), need: total - have, total };
+    }
+
+    function decodeUtf16le(bytes) {
+        let out = '';
+        for (let i = 0; i + 1 < bytes.length; i += 2) {
+            out += String.fromCharCode(bytes[i] | (bytes[i + 1] << 8));
         }
+        return out;
+    }
+
+    function StringDecoder(encoding) {
+        this.encoding = normalizeEncoding(encoding);
+        this.lastChar = Buffer.alloc(4);
+        this.lastNeed = 0;
+        this.lastTotal = 0;
+        this._pending = new Uint8Array(0);
+        this._decoder = this.encoding === 'utf8' ? new TextDecoder('utf-8') : null;
+    }
+
+    StringDecoder.prototype._setPending = function(pending, need, total) {
+        this._pending = pending;
+        this.lastChar.fill(0);
+        for (let i = 0; i < pending.length && i < 4; i++) this.lastChar[i] = pending[i];
+        this.lastNeed = need;
+        this.lastTotal = total;
+    };
+
+    StringDecoder.prototype.write = function write(buf) {
+        if (typeof buf === 'string') return buf;
+        const input = concatBytes(this._pending, toBytes(buf));
+        if (this.encoding === 'utf8') {
+            const tail = utf8Tail(input);
+            const complete = input.subarray(0, tail.cut);
+            this._setPending(tail.pending, tail.need, tail.total);
+            return complete.length ? this._decoder.decode(complete) : '';
+        }
+        if (this.encoding === 'utf16le') {
+            let cut = input.length - (input.length % 2);
+            if (cut >= 2) {
+                const last = input[cut - 2] | (input[cut - 1] << 8);
+                if (last >= 0xd800 && last <= 0xdbff) cut -= 2;
+            }
+            const pending = input.slice(cut);
+            this._setPending(pending, pending.length ? 2 - pending.length : 0, pending.length ? 2 : 0);
+            return decodeUtf16le(input.subarray(0, cut));
+        }
+        const full = concatBytes(this._pending, input);
+        this._setPending(new Uint8Array(0), 0, 0);
+        return Buffer.from(full).toString(this.encoding);
+    };
+
+    StringDecoder.prototype.end = function end(buf) {
+        let out = '';
+        if (buf !== undefined) out = this.write(buf);
+        if (this._pending.length) {
+            if (this.encoding === 'utf8') out += this._decoder.decode(this._pending);
+            else if (this.encoding === 'utf16le') out += decodeUtf16le(this._pending);
+            else out += Buffer.from(this._pending).toString(this.encoding);
+            this._setPending(new Uint8Array(0), 0, 0);
+        }
+        return out;
+    };
+
+    StringDecoder.prototype.text = function text(buf, offset) {
+        this._setPending(new Uint8Array(0), 0, 0);
+        return this.write(toBytes(buf).subarray(offset));
     }
     return { StringDecoder };
 })();
@@ -3827,13 +4223,101 @@ const https = makeHttpModule({
 });
 
 // ============================================================
+// vm module
+// ============================================================
+
+const vm = (() => {
+    function assertContextObject(sandbox) {
+        if (sandbox == null) return {};
+        const type = typeof sandbox;
+        if (type !== 'object' && type !== 'function') {
+            throw new TypeError('The "contextObject" argument must be an object');
+        }
+        return sandbox;
+    }
+
+    function runInFreshGlobal(code, sandbox) {
+        const cx = newGlobal();
+        const initialKeys = new Set(Reflect.ownKeys(cx));
+        for (const key of Reflect.ownKeys(sandbox)) {
+            Object.defineProperty(cx, key, Object.getOwnPropertyDescriptor(sandbox, key));
+        }
+        const result = evalcx(String(code), cx);
+        for (const key of Reflect.ownKeys(cx)) {
+            if (initialKeys.has(key)) continue;
+            Object.defineProperty(sandbox, key, Object.getOwnPropertyDescriptor(cx, key));
+        }
+        return result;
+    }
+
+    function runInObjectScope(code, sandbox) {
+        const scope = new Proxy(sandbox, {
+            has(target, key) {
+                if (key === Symbol.unscopables) return false;
+                return key in target || !(key in globalThis);
+            },
+            get(target, key) {
+                if (key === Symbol.unscopables) return undefined;
+                return target[key];
+            },
+            set(target, key, value) {
+                target[key] = value;
+                return true;
+            },
+        });
+        const runner = Function(
+            'sandbox',
+            'code',
+            'with (sandbox) { return eval(code); }',
+        );
+        return runner(scope, String(code));
+    }
+
+    function runInNewContext(code, contextObject) {
+        const sandbox = assertContextObject(contextObject);
+        if (typeof newGlobal === 'function' && typeof evalcx === 'function') {
+            return runInFreshGlobal(code, sandbox);
+        }
+        return runInObjectScope(code, sandbox);
+    }
+
+    class Script {
+        constructor(code) {
+            this.code = String(code);
+        }
+        runInThisContext() {
+            return eval(this.code);
+        }
+        runInNewContext(contextObject) {
+            return runInNewContext(this.code, contextObject);
+        }
+    }
+
+    return {
+        runInThisContext(code) { return eval(String(code)); },
+        runInNewContext,
+        createContext: assertContextObject,
+        isContext(contextObject) {
+            const type = typeof contextObject;
+            return contextObject != null && (type === 'object' || type === 'function');
+        },
+        Script,
+    };
+})();
+
+// ============================================================
 // Module system (require/module)
 // ============================================================
 
 const _builtinModules = {
     'path': path,
     'events': events,
-    'buffer': { Buffer },
+    'buffer': {
+        Buffer,
+        SlowBuffer(size) { return Buffer.alloc(size); },
+        kMaxLength: Buffer.kMaxLength,
+        constants: { MAX_LENGTH: Buffer.kMaxLength, MAX_STRING_LENGTH: 0x1fffffe8 },
+    },
     'fs': fs,
     'fs/promises': fs.promises,
     'os': nodeOs,
@@ -3990,6 +4474,7 @@ const _builtinModules = {
                 opts = opts || {};
                 this._out = opts.stdout || process.stdout;
                 this._err = opts.stderr || opts.stdout || process.stderr;
+                this._counts = Object.create(null);
             }
             log(...args) { writeLine(this._out, args); }
             info(...args) { writeLine(this._out, args); }
@@ -4002,9 +4487,35 @@ const _builtinModules = {
             assert(cond, ...args) {
                 if (!cond) writeLine(this._err, ['Assertion failed:', ...args]);
             }
-            count() {} countReset() {}
-            group() {} groupCollapsed() {} groupEnd() {}
-            time() {} timeEnd() {} timeLog() {}
+            count(label) {
+                if (typeof label === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
+                label = label === undefined ? 'default' : String(label);
+                this._counts[label] = (this._counts[label] || 0) + 1;
+                writeLine(this._out, [`${label}: ${this._counts[label]}`]);
+            }
+            countReset(label) {
+                if (typeof label === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
+                label = label === undefined ? 'default' : String(label);
+                this._counts[label] = 0;
+            }
+            group(...args) { if (args.length) this.log(...args); }
+            groupCollapsed(...args) { if (args.length) this.log(...args); }
+            groupEnd() {}
+            time(label) {
+                if (!this._timers) this._timers = Object.create(null);
+                this._timers[label || 'default'] = Date.now();
+            }
+            timeEnd(label) {
+                label = label || 'default';
+                const start = this._timers && this._timers[label] || Date.now();
+                if (this._timers) delete this._timers[label];
+                this.log(`${label}: ${Date.now() - start}ms`);
+            }
+            timeLog(label) {
+                label = label || 'default';
+                const start = this._timers && this._timers[label] || Date.now();
+                this.log(`${label}: ${Date.now() - start}ms`);
+            }
             clear() {}
         }
         return { Console, default: Console };
@@ -4098,11 +4609,7 @@ const _builtinModules = {
             return { heap_size_limit: 256 * 1024 * 1024 };
         },
     },
-    'vm': {
-        runInThisContext(code) { return eval(code); },
-        createContext(sandbox) { return sandbox || {}; },
-        Script: class Script { constructor(code) { this.code = code; } runInThisContext() { return eval(this.code); } },
-    },
+    'vm': vm,
     // Minimal stubs — undici/file-type/anthropic-sdk import these at module
     // init even when their stream code paths aren't exercised by the agent's
     // actual HTTP transport (which goes through our native socket/tls shim).
@@ -4579,31 +5086,31 @@ if (typeof execArgv !== 'undefined') {
 // so its top-level relative requires resolve against itself, matching Node's
 // per-file require semantics. For -e/-p/REPL (no script in argv), basedir
 // falls back to cwd.
-globalThis.require = _makeRequire(
+_defineGlobal('require', _makeRequire(
     (process.argv && process.argv.length > 1 && process.argv[1] && process.argv[1][0] === '/')
         ? process.argv[1]
         : process.cwd() + '/repl'
-);
+));
 
 // Node.js globals
-globalThis.process = process;
-globalThis.Buffer = Buffer;
-globalThis.global = globalThis;
-globalThis.GLOBAL = globalThis; // deprecated alias
+_defineGlobal('process', process);
+_defineGlobal('Buffer', Buffer);
+_defineGlobal('global', globalThis);
+_defineGlobal('GLOBAL', globalThis); // deprecated alias
 
 // Timer globals — overwrite the js_std_add_helpers stubs that return a
 // raw int64 with the wrapped-id objects from `timers` above.
-globalThis.setTimeout = timers.setTimeout;
-globalThis.clearTimeout = timers.clearTimeout;
-globalThis.setInterval = timers.setInterval;
-globalThis.clearInterval = timers.clearInterval;
-globalThis.setImmediate = timers.setImmediate;
-globalThis.clearImmediate = timers.clearImmediate;
+_defineGlobal('setTimeout', timers.setTimeout);
+_defineGlobal('clearTimeout', timers.clearTimeout);
+_defineGlobal('setInterval', timers.setInterval);
+_defineGlobal('clearInterval', timers.clearInterval);
+_defineGlobal('setImmediate', timers.setImmediate);
+_defineGlobal('clearImmediate', timers.clearImmediate);
 
 // npm and hosted-git-info instantiate URL/URLSearchParams directly without
 // `require('url')`. Expose the bootstrap shims when the engine does not ship them.
-globalThis.URL = url.URL;
-globalThis.URLSearchParams = url.URLSearchParams;
+_defineGlobal('URL', url.URL);
+_defineGlobal('URLSearchParams', url.URLSearchParams);
 
 // Web platform globals that modern Node exposes by default. undici/whatwg-
 // fetch reach for these at module init (e.g. `webidl.is.ReadableStream =
@@ -4853,55 +5360,28 @@ const _mainScriptArg =
         ? process.argv[1]
         : '';
 const _mainScriptPath = _mainScriptArg ? _moduleRealpath(_mainScriptArg) : '';
-globalThis.__filename = _mainScriptPath;
-globalThis.__dirname = _mainScriptPath ? path.dirname(_mainScriptPath) : '';
+_defineGlobal('__filename', _mainScriptPath);
+_defineGlobal('__dirname', _mainScriptPath ? path.dirname(_mainScriptPath) : '');
 
 // Module reference
-globalThis.module = { exports: {} };
-globalThis.exports = globalThis.module.exports;
+_defineGlobal('module', { exports: {} });
+_defineGlobal('exports', globalThis.module.exports);
 
-// console may already exist, but ensure it has all methods.
-// Some engine helpers ship only console.log; npm and most Node
-// code expect .error/.warn to land on stderr.
-if (!console.error) {
-    console.error = (...args) => {
-        process.stderr.write(args.map((a) => typeof a === 'string' ? a : util.inspect(a)).join(' ') + '\n');
-    };
-}
-if (!console.warn) console.warn = console.error;
-if (!console.debug) console.debug = console.log;
-if (!console.info) console.info = console.log;
-if (!console.dir) console.dir = (obj) => console.log(util.inspect(obj));
-if (!console.time) {
-    const _timers = {};
-    console.time = (label) => { _timers[label || 'default'] = Date.now(); };
-    console.timeEnd = (label) => {
-        label = label || 'default';
-        const ms = Date.now() - (_timers[label] || Date.now());
-        delete _timers[label];
-        console.log(`${label}: ${ms}ms`);
-    };
-    console.timeLog = (label) => {
-        label = label || 'default';
-        const ms = Date.now() - (_timers[label] || Date.now());
-        console.log(`${label}: ${ms}ms`);
-    };
-}
-if (!console.assert) {
-    console.assert = (cond, ...args) => { if (!cond) console.error('Assertion failed:', ...args); };
-}
-if (!console.count) {
-    const _counts = {};
-    console.count = (label) => { label = label || 'default'; _counts[label] = (_counts[label] || 0) + 1; console.log(`${label}: ${_counts[label]}`); };
-    console.countReset = (label) => { _counts[label || 'default'] = 0; };
-}
-if (!console.table) {
-    console.table = (data) => console.log(data);
-}
-if (!console.group) {
-    let _depth = 0;
-    console.group = (...args) => { if (args.length) console.log(...args); _depth++; };
-    console.groupEnd = () => { if (_depth > 0) _depth--; };
+// Bind the global console to process stdout/stderr. SpiderMonkey's shell
+// console writes directly to the host stream, which bypasses tests and callers
+// that temporarily replace process.stdout.write.
+if (typeof globalThis.console === 'undefined') _defineGlobal('console', {});
+else _defineGlobal('console', globalThis.console);
+const _globalConsole = new _builtinModules['console'].Console({
+    stdout: process.stdout,
+    stderr: process.stderr,
+});
+for (const method of [
+    'log', 'info', 'debug', 'warn', 'error', 'trace', 'dir', 'table',
+    'assert', 'count', 'countReset', 'group', 'groupCollapsed', 'groupEnd',
+    'time', 'timeEnd', 'timeLog', 'clear',
+]) {
+    globalThis.console[method] = _globalConsole[method].bind(_globalConsole);
 }
 
 // ============================================================
@@ -5257,11 +5737,11 @@ if (!console.group) {
         });
     }
 
-    globalThis.fetch = fetch;
-    globalThis.Headers = FetchHeaders;
-    globalThis.Response = FetchResponse;
-    globalThis.Request = FetchRequest;
-    globalThis.ReadableStream = MinReadableStream;
+    _defineGlobal('fetch', fetch);
+    _defineGlobal('Headers', FetchHeaders);
+    _defineGlobal('Response', FetchResponse);
+    _defineGlobal('Request', FetchRequest);
+    _defineGlobal('ReadableStream', MinReadableStream);
     // The `node:stream/web` pseudo-module also surfaces ReadableStream;
     // some libraries import from there instead of the global. Replace the
     // stub class with the real one.
@@ -5271,6 +5751,6 @@ if (!console.group) {
 })();
 
 // Export for the C entry point to detect successful bootstrap
-globalThis.__nodeBootstrapReady = true;
+_defineGlobal('__nodeBootstrapReady', true);
 
 _runMainScriptIfPresent();

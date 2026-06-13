@@ -1,0 +1,83 @@
+{
+  "source": {
+    "repo": "https://github.com/nodejs/node.git",
+    "tag": "v22.0.0",
+    "tagObject": "ec49bec48284ab642db1d109d917c6ae3b695c13",
+    "commit": "12fb157f79da8c094a54bc99370994941c28c235",
+    "sparsePaths": [
+      "test/parallel",
+      "test/common",
+      "test/fixtures",
+      "lib"
+    ]
+  },
+  "defaults": {
+    "timeoutMs": 30000,
+    "jobs": 1
+  },
+  "tests": [
+    {
+      "path": "test/parallel/test-path.js",
+      "area": "path",
+      "expected": "PASS",
+      "smoke": true,
+      "reason": "Small public path-module coverage with no native addon dependency."
+    },
+    {
+      "path": "test/parallel/test-querystring.js",
+      "area": "querystring",
+      "expected": "PASS",
+      "smoke": true,
+      "reason": "Pure JavaScript querystring compatibility surface."
+    },
+    {
+      "path": "test/parallel/test-events-list.js",
+      "area": "events",
+      "expected": "PASS",
+      "smoke": true,
+      "reason": "Basic EventEmitter public API coverage."
+    },
+    {
+      "path": "test/parallel/test-buffer-alloc.js",
+      "area": "buffer",
+      "expected": "PASS",
+      "reason": "Representative Buffer allocation and encoding behavior."
+    },
+    {
+      "path": "test/parallel/test-string-decoder.js",
+      "area": "string_decoder",
+      "expected": "PASS",
+      "reason": "Pure JavaScript string_decoder behavior."
+    },
+    {
+      "path": "test/parallel/test-whatwg-url-custom-searchparams.js",
+      "area": "url",
+      "expected": "PASS",
+      "reason": "WHATWG URLSearchParams public API behavior."
+    },
+    {
+      "path": "test/parallel/test-url-parse-query.js",
+      "area": "url",
+      "expected": "PASS",
+      "reason": "Legacy url.parse query handling."
+    },
+    {
+      "path": "test/parallel/test-util-inspect.js",
+      "area": "util",
+      "expected": "SKIP",
+      "reason": "Requires Node's --expose-internals support boundary and internal/test/binding native hooks, which the Kandelo compatibility runtime does not expose."
+    },
+    {
+      "path": "test/parallel/test-console-count.js",
+      "area": "console",
+      "expected": "PASS",
+      "reason": "Small console API behavior check."
+    },
+    {
+      "path": "test/parallel/test-timers-clear-null-does-not-throw-error.js",
+      "area": "timers",
+      "expected": "PASS",
+      "reason": "Tiny timers API smoke case."
+    }
+  ]
+}

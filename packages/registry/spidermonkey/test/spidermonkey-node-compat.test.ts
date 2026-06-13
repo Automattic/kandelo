@@ -374,12 +374,72 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "assert.strictEqual(Buffer.isBuffer(b), true)",
         "assert.strictEqual(b.toString('hex'), '68656c6c6f')",
         "assert.strictEqual(path.join('/usr', 'bin', 'node'), '/usr/bin/node')",
+        "assert.strictEqual(path.win32.delimiter, ';')",
+        "const invalidPathValues = [true, false, 7, null, {}, undefined, [], NaN]",
+        "const pathMethods = ['join', 'resolve', 'normalize', 'isAbsolute', 'parse', 'dirname', 'basename', 'extname']",
+        "for (const namespace of [path.posix, path.win32]) {",
+        "  for (const value of invalidPathValues) {",
+        "    for (const method of pathMethods) assert.throws(() => namespace[method](value), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "    assert.throws(() => namespace.relative(value, 'foo'), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "    assert.throws(() => namespace.relative('foo', value), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "    if (value !== undefined) assert.throws(() => namespace.basename('foo', value), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "  }",
+        "}",
         "console.log(util.format('%s:%d', path.basename('/usr/bin/node'), b.length))",
       ].join(";"),
     );
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("node:5");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("provides vm.runInNewContext for foreign objects and sandbox globals", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const vm = require('node:vm')",
+        "const foreign = vm.runInNewContext('({ foo: [\"bar\", \"baz\"] })')",
+        "assert.strictEqual(foreign.foo.join(','), 'bar,baz')",
+        "assert.strictEqual(foreign instanceof Object, false)",
+        "const sandbox = { value: 7 }",
+        "assert.strictEqual(vm.runInNewContext('value += 5; created = value * 2; value', sandbox), 12)",
+        "assert.strictEqual(sandbox.value, 12)",
+        "assert.strictEqual(sandbox.created, 24)",
+        "const script = new vm.Script('answer + 1')",
+        "assert.strictEqual(script.runInNewContext({ answer: 41 }), 42)",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("supports Symbol values in eventNames and assert.deepStrictEqual", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const { EventEmitter } = require('events')",
+        "const emitter = new EventEmitter()",
+        "const event = Symbol('event')",
+        "const key = Symbol('key')",
+        "emitter.on('foo', () => {})",
+        "emitter.on(event, () => {})",
+        "assert.deepStrictEqual(emitter.eventNames(), ['foo', event])",
+        "assert.deepStrictEqual({ [key]: [event] }, { [key]: [event] })",
+        "let failure = 'missing'",
+        "try {",
+        "  assert.deepStrictEqual([Symbol('value')], [Symbol('value')])",
+        "} catch (err) {",
+        "  failure = `${err.code}:${err instanceof assert.AssertionError}:${/Symbol\\(value\\)/.test(err.message)}`",
+        "}",
+        "console.log(failure)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ERR_ASSERTION:true:true");
   }, DEFAULT_TEST_TIMEOUT);
 
   it("resolves events.once for streams that replay cached events from on()", async () => {
