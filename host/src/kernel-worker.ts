@@ -770,7 +770,6 @@ export class CentralizedKernelWorker {
    * by firing Atomics.notify on the address it is waiting on. The waitAsync
    * Promise in handleFutex then resolves and writes the channel result. */
   private pendingFutexWaits = new Map<number, { channel: ChannelInfo; futexIndex: number }>();
-  private nextSyscallHooks = new Map<string, Array<() => void>>();
   /** Channel offsets with a cancellation request pending. Set by
    * SYS_THREAD_CANCEL.  Checked at the entry of every blocking syscall
    * path (futex wait, pipe retry, poll retry) so a cancel that arrives
@@ -1698,31 +1697,6 @@ export class CentralizedKernelWorker {
     );
     this.channelTids.delete(`${pid}:${channelOffset}`);
     this.threadForkContexts.delete(`${pid}:${channelOffset}`);
-    this.nextSyscallHooks.delete(`${pid}:${channelOffset}`);
-  }
-
-  private channelKey(channel: ChannelInfo): string {
-    return `${channel.pid}:${channel.channelOffset}`;
-  }
-
-  private afterNextSyscall(channel: ChannelInfo, hook: () => void): void {
-    const key = this.channelKey(channel);
-    const hooks = this.nextSyscallHooks.get(key);
-    if (hooks) {
-      hooks.push(hook);
-    } else {
-      this.nextSyscallHooks.set(key, [hook]);
-    }
-  }
-
-  private fireNextSyscallHooks(channel: ChannelInfo): void {
-    const key = this.channelKey(channel);
-    const hooks = this.nextSyscallHooks.get(key);
-    if (!hooks) return;
-    this.nextSyscallHooks.delete(key);
-    for (const hook of hooks) {
-      setTimeout(hook, 0);
-    }
   }
 
   /**
@@ -1952,7 +1926,6 @@ export class CentralizedKernelWorker {
     for (let i = 0; i < CH_ARGS_COUNT; i++) {
       origArgs.push(Number(processView.getBigInt64(CH_ARGS + i * CH_ARG_SIZE, true)));
     }
-    this.fireNextSyscallHooks(channel);
 
     // Track last 30 syscalls per channel for crash diagnostics
     const ringKey = channel.pid;
@@ -6156,10 +6129,10 @@ export class CentralizedKernelWorker {
         this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
         this.threadCtidPtrs.set(`${channel.pid}:${assignedTid}`, ctidPtr);
       }
-      if (typeof cloneResult !== "number") {
-        this.afterNextSyscall(channel, cloneResult.start);
-      }
       this.completeChannel(channel, SYS_CLONE, origArgs, undefined, assignedTid, 0);
+      if (typeof cloneResult !== "number") {
+        cloneResult.start();
+      }
     }).catch((err) => {
       if (ctidPtr !== 0) {
         this.threadCtidPtrs.delete(`${channel.pid}:${tid}`);
