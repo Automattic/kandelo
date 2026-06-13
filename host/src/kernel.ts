@@ -8,6 +8,8 @@
  *   env.host_read(handle: i64, buf_ptr, buf_len) -> i32
  *   env.host_write(handle: i64, buf_ptr, buf_len) -> i32
  *   env.host_seek(handle: i64, offset_lo, offset_hi, whence) -> i64
+ *   env.host_pread(handle: i64, buf_ptr, buf_len, offset_lo, offset_hi) -> i32
+ *   env.host_pwrite(handle: i64, buf_ptr, buf_len, offset_lo, offset_hi) -> i32
  *   env.host_fstat(handle: i64, stat_ptr) -> i32
  *   env.host_statfs(path_ptr, path_len, statfs_ptr) -> i32
  *
@@ -371,6 +373,24 @@ export class WasmPosixKernel {
         },
         host_seek: (handle: bigint, offsetLo: number, offsetHi: number, whence: number): bigint => {
           return this.hostSeek(handle, offsetLo, offsetHi, whence);
+        },
+        host_pread: (
+          handle: bigint,
+          bufPtr: bigint,
+          bufLen: number,
+          offsetLo: number,
+          offsetHi: number,
+        ): number => {
+          return this.hostPread(handle, Number(bufPtr), bufLen, offsetLo, offsetHi);
+        },
+        host_pwrite: (
+          handle: bigint,
+          bufPtr: bigint,
+          bufLen: number,
+          offsetLo: number,
+          offsetHi: number,
+        ): number => {
+          return this.hostPwrite(handle, Number(bufPtr), bufLen, offsetLo, offsetHi);
         },
         host_fstat: (handle: bigint, statPtr: bigint): number => {
           return this.hostFstat(handle, Number(statPtr));
@@ -813,14 +833,61 @@ export class WasmPosixKernel {
     whence: number,
   ): bigint {
     const h = Number(handle);
-    // Reconstruct 64-bit signed offset from two 32-bit parts.
-    // JS bitwise operators are 32-bit, so we use multiplication for the high word.
-    const offset = offsetHi * 0x100000000 + (offsetLo >>> 0);
+    const offset = this.decodeI64(offsetLo, offsetHi);
 
     try {
       return BigInt(this.io.seek(h, offset, whence));
     } catch (e) {
       return BigInt(negErrno(e));
+    }
+  }
+
+  private decodeI64(lo: number, hi: number): number {
+    // JS bitwise operators are 32-bit, so use multiplication for the high word.
+    return hi * 0x100000000 + (lo >>> 0);
+  }
+
+  /**
+   * host_pread(handle: i64, buf_ptr, buf_len, offset_lo, offset_hi) -> i32
+   */
+  private hostPread(
+    handle: bigint,
+    bufPtr: number,
+    bufLen: number,
+    offsetLo: number,
+    offsetHi: number,
+  ): number {
+    const h = Number(handle);
+    const offset = this.decodeI64(offsetLo, offsetHi);
+
+    try {
+      const mem = this.getMemoryBuffer();
+      const buf = mem.subarray(bufPtr, bufPtr + bufLen);
+      return this.io.read(h, buf, offset, bufLen);
+    } catch (e) {
+      return negErrno(e);
+    }
+  }
+
+  /**
+   * host_pwrite(handle: i64, buf_ptr, buf_len, offset_lo, offset_hi) -> i32
+   */
+  private hostPwrite(
+    handle: bigint,
+    bufPtr: number,
+    bufLen: number,
+    offsetLo: number,
+    offsetHi: number,
+  ): number {
+    const h = Number(handle);
+    const offset = this.decodeI64(offsetLo, offsetHi);
+    const mem = this.getMemoryBuffer();
+    const data = mem.slice(bufPtr, bufPtr + bufLen);
+
+    try {
+      return this.io.write(h, data, offset, bufLen);
+    } catch (e) {
+      return negErrno(e);
     }
   }
 

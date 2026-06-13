@@ -28,6 +28,36 @@ pub trait HostIO {
     fn host_read(&mut self, handle: i64, buf: &mut [u8]) -> Result<usize, Errno>;
     fn host_write(&mut self, handle: i64, buf: &[u8]) -> Result<usize, Errno>;
     fn host_seek(&mut self, handle: i64, offset: i64, whence: u32) -> Result<i64, Errno>;
+    fn host_pread(&mut self, handle: i64, buf: &mut [u8], offset: i64) -> Result<usize, Errno> {
+        if offset < 0 {
+            return Err(Errno::EINVAL);
+        }
+        let saved_offset = self.host_seek(handle, 0, 1)?;
+        let result = self
+            .host_seek(handle, offset, 0)
+            .and_then(|_| self.host_read(handle, buf));
+        let restore_result = self.host_seek(handle, saved_offset, 0);
+        match (result, restore_result) {
+            (Ok(n), Ok(_)) => Ok(n),
+            (Err(e), _) => Err(e),
+            (Ok(_), Err(e)) => Err(e),
+        }
+    }
+    fn host_pwrite(&mut self, handle: i64, buf: &[u8], offset: i64) -> Result<usize, Errno> {
+        if offset < 0 {
+            return Err(Errno::EINVAL);
+        }
+        let saved_offset = self.host_seek(handle, 0, 1)?;
+        let result = self
+            .host_seek(handle, offset, 0)
+            .and_then(|_| self.host_write(handle, buf));
+        let restore_result = self.host_seek(handle, saved_offset, 0);
+        match (result, restore_result) {
+            (Ok(n), Ok(_)) => Ok(n),
+            (Err(e), _) => Err(e),
+            (Ok(_), Err(e)) => Err(e),
+        }
+    }
     fn host_fstat(&mut self, handle: i64) -> Result<WasmStat, Errno>;
     fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;
     fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno>;

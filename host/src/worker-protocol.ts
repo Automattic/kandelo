@@ -3,6 +3,7 @@
 export type HostToWorkerMessage =
   | CentralizedWorkerInitMessage
   | CentralizedThreadInitMessage
+  | StartThreadMessage
   | WorkerTerminateMessage
   | DeliverSignalMessage
   | ExecReplyMessage;
@@ -88,6 +89,10 @@ export interface CentralizedThreadInitMessage {
 
 export interface WorkerTerminateMessage {
   type: "terminate";
+}
+
+export interface StartThreadMessage {
+  type: "start_thread";
 }
 
 // --- Worker → Host messages ---

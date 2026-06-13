@@ -8,6 +8,7 @@
 import type {
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
+  HostToWorkerMessage,
   WorkerToHostMessage,
 } from "./worker-protocol";
 import { DynamicLinker, type LoadedSharedLibrary } from "./dylink";
@@ -59,6 +60,79 @@ type KernelImports = Record<string, WebAssembly.ExportValue> & {
   kernel_exit: (status: number) => void;
   kernel_fork: (...args: unknown[]) => number;
 };
+
+function waitForThreadStart(port: MessagePort, pid: number, tid: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    port.on("message", (raw: unknown) => {
+      if (settled) return;
+      const msg = raw as HostToWorkerMessage;
+      if (msg.type === "start_thread") {
+        settled = true;
+        resolve();
+      } else if (msg.type === "terminate") {
+        settled = true;
+        reject(new Error(`Thread worker terminated before start pid=${pid} tid=${tid}`));
+      }
+    });
+  });
+}
+
+function delayThreadStartTick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitForPthreadListInsertion(
+  memory: WebAssembly.Memory,
+  tlsPtr: number,
+  ptrWidth: 4 | 8,
+  expectedTid: number,
+  ctidPtr: number,
+): Promise<void> {
+  const ptrSize = ptrWidth === 8 ? 8 : 4;
+  const prevOffset = 2 * ptrSize;
+  const nextOffset = 3 * ptrSize;
+  const tidOffset = 6 * ptrSize;
+  const readPtr = (view: DataView, addr: number): number =>
+    ptrWidth === 8 ? Number(view.getBigUint64(addr, true)) : view.getUint32(addr, true);
+  const inBounds = (view: DataView, addr: number, len = ptrSize): boolean =>
+    Number.isSafeInteger(addr) && addr >= 0 && addr + len <= view.byteLength;
+
+  const deadline = performance.now() + 5000;
+  while (performance.now() < deadline) {
+    const view = new DataView(memory.buffer);
+    const i32View = new Int32Array(memory.buffer);
+    if (
+      inBounds(view, tlsPtr + tidOffset, 4) &&
+      inBounds(view, tlsPtr + prevOffset) &&
+      inBounds(view, tlsPtr + nextOffset) &&
+      (ctidPtr === 0 || inBounds(view, ctidPtr, 4))
+    ) {
+      const tid = Atomics.load(i32View, (tlsPtr + tidOffset) >>> 2);
+      const clearTidReady =
+        ctidPtr === 0 ||
+        ctidPtr === tlsPtr + tidOffset ||
+        Atomics.load(i32View, ctidPtr >>> 2) === 0;
+      const prev = readPtr(view, tlsPtr + prevOffset);
+      const next = readPtr(view, tlsPtr + nextOffset);
+      if (
+        tid === expectedTid &&
+        clearTidReady &&
+        prev !== 0 &&
+        next !== 0 &&
+        prev !== tlsPtr &&
+        next !== tlsPtr &&
+        inBounds(view, prev + nextOffset) &&
+        inBounds(view, next + prevOffset) &&
+        readPtr(view, prev + nextOffset) === tlsPtr &&
+        readPtr(view, next + prevOffset) === tlsPtr
+      ) {
+        return;
+      }
+    }
+    await delayThreadStartTick();
+  }
+}
 
 function buildKernelImports(
   memory: WebAssembly.Memory,
@@ -1800,7 +1874,11 @@ export async function centralizedThreadWorkerMain(
     }
 
     const threadArg = ptrWidth === 8 ? BigInt(argPtr) : argPtr;
-    let result = 0;
+
+    port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
+    await waitForThreadStart(port, pid, tid);
+    await waitForPthreadListInsertion(memory, tlsPtr, ptrWidth, tid, ctidPtr);
+
     if (hasForkInstrumentation) {
       const getState = instance.exports.wpk_fork_state as () => number;
       const unwindEnd = instance.exports.wpk_fork_unwind_end as () => void;
@@ -1814,17 +1892,8 @@ export async function centralizedThreadWorkerMain(
         }
 
         try {
-          const raw = threadFn(threadArg);
-          result = Number(raw);
+          threadFn(threadArg);
         } catch (e) {
-          if (e instanceof Error && e.message.includes("unreachable")) {
-            result = 0;
-            break;
-          }
-          if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-            result = 0;
-            break;
-          }
           throw e;
         }
 
@@ -1839,51 +1908,17 @@ export async function centralizedThreadWorkerMain(
           needsRewind = true;
           continue;
         }
-        break;
+        throw new Error(`pthread start function returned unexpectedly pid=${pid} tid=${tid}`);
       }
     } else {
-      try {
-        const raw = threadFn(threadArg);
-        result = Number(raw);
-      } catch (e) {
-        if (e instanceof Error && e.message.includes("unreachable")) {
-          // Thread exited via kernel_exit → unreachable trap
-          result = 0;
-        } else if (e instanceof Error && e.message.includes("null function or function signature mismatch")) {
-          // call_indirect type mismatch — treat as thread crash but don't abort
-          result = 0;
-        } else {
-          throw e;
-        }
-      }
+      threadFn(threadArg);
+      throw new Error(`pthread start function returned unexpectedly pid=${pid} tid=${tid}`);
     }
-
-    // Send SYS_EXIT through the channel. The kernel worker performs
-    // CLONE_CHILD_CLEARTID after it observes SYS_EXIT; doing it here would
-    // let pthread_join reclaim the stack while this Worker is still running.
-    {
-      const view = new DataView(memory.buffer);
-      const base = channelOffset;
-      view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
-      view.setInt32(base + CH_ARGS, result ?? 0, true);
-      const i32 = new Int32Array(memory.buffer);
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
-      Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      // Wait for kernel to process the exit
-      while (Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok") { /* */ }
-      Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
-    }
-
-    port.postMessage({
-      type: "thread_exit",
-      pid,
-      tid,
-    } satisfies WorkerToHostMessage);
   } catch (err) {
     port.postMessage({
-      type: "thread_exit",
+      type: "error",
       pid,
-      tid,
+      message: `Thread worker failed pid=${pid} tid=${tid}: ${err instanceof Error ? `${err.message}\n${err.stack}` : String(err)}`,
     } satisfies WorkerToHostMessage);
   }
 }

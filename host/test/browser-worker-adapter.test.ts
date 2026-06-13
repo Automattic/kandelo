@@ -154,6 +154,17 @@ describe("BrowserWorkerAdapter", () => {
       // No handlers registered -- should not throw
       expect(() => lastMockWorker!.simulateMessage("orphan")).not.toThrow();
     });
+
+    it("should buffer worker messages until a handler is registered", () => {
+      const adapter = new BrowserWorkerAdapter("worker.js");
+      const handle = adapter.createWorker({});
+      const received: unknown[] = [];
+
+      lastMockWorker!.simulateMessage({ type: "error", pid: 1, message: "early" });
+      handle.on("message", (msg) => received.push(msg));
+
+      expect(received).toEqual([{ type: "error", pid: 1, message: "early" }]);
+    });
   });
 
   // ---- BrowserWorkerHandle error routing ----------------------------------
@@ -179,6 +190,18 @@ describe("BrowserWorkerAdapter", () => {
       expect(() =>
         lastMockWorker!.simulateError("unhandled"),
       ).not.toThrow();
+    });
+
+    it("should buffer worker errors until a handler is registered", () => {
+      const adapter = new BrowserWorkerAdapter("worker.js");
+      const handle = adapter.createWorker({});
+      const errors: Error[] = [];
+
+      lastMockWorker!.simulateError("early failure");
+      handle.on("error", (err) => errors.push(err));
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toBe("early failure");
     });
   });
 
