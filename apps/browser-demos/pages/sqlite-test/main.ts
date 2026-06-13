@@ -99,6 +99,13 @@ function createFs(): MemoryFileSystem {
   return fs;
 }
 
+function sqliteSyscallLogPtrWidth(): 4 | 8 | undefined {
+  const value = import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG_PTR_WIDTH;
+  if (value === "4") return 4;
+  if (value === "8") return 8;
+  return undefined;
+}
+
 async function init() {
   const [kernelBuf, imageBuf] = await Promise.all([
     fetch(kernelWasmUrl).then((r) => {
@@ -150,7 +157,7 @@ async function init() {
       memfs: fs,
       maxWorkers: 4,
       enableSyscallLog: import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG === "1",
-      syscallLogPtrWidth: import.meta.env.VITE_SQLITE_BROWSER_SYSCALL_LOG_PTR_WIDTH === "8" ? 8 : 4,
+      syscallLogPtrWidth: sqliteSyscallLogPtrWidth(),
       onStdout: (data) => { appendStdout(new TextDecoder().decode(data)); },
       onStderr: (data) => { stderr += new TextDecoder().decode(data); },
     });
