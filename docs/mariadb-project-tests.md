@@ -137,6 +137,14 @@ The `kad-qun.6` browser full-suite artifact is
 `mysql-test/main` tests with 60s per-test timeouts, chunk size 10, and
 `MARIADB_BROWSER_RUNNER_RETRIES=3`; no broad browser-only skip list was added.
 
+The equivalent wrapper invocation was:
+
+```bash
+LD_LIBRARY_PATH=/tmp/pwdeps/root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
+  MARIADB_BROWSER_RUNNER_RETRIES=3 \
+  scripts/run-mariadb-project-tests.sh --host browser --all --chunk-size 10 --timeout-ms 60000
+```
+
 The hard browser artifact counts are 559 PASS, 371 FAIL, 0 XFAIL, 0 XPASS,
 253 SKIP, 1183 TOTAL, exit 1, across 119 chunk result blocks. Chunks 1-49 came
 from the existing checkpoint before the worker rebased. Chunks 50-119 were
@@ -161,7 +169,8 @@ The longest resumed interval was chunk 116 at about 29m45s: the runner produced
 zero JSON results on the first attempt, then saw repeated 180s
 `waitForMariadbReady` timeouts before a later attempt recovered and emitted a
 result block. That is tracked as harness/resource isolation work in
-`kad-qun.10`.
+`kad-qun.10`. The artifact does not provide a separate numeric timeout or
+resource-failure subtotal beyond the 371 FAIL count.
 
 ## Both-host synthesis for the epic PR
 
@@ -180,6 +189,35 @@ records a superseding rerun:
 |------|----------|------|------|-------|-------|------|-------|------|
 | Node | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/` plus focused chunk reruns | 608 | 18 | 317 | 0 | 240 | 1183 | 1 |
 | Browser | `test-runs/gastown-mariadb-browser-full-pr3/` | 559 | 371 | 0 | 0 | 253 | 1183 | 1 |
+
+PR body replacement text:
+
+```markdown
+### MariaDB mysql-test/main final status
+
+Full-suite artifacts now cover all 1183 upstream `mysql-test/main` tests on
+both supported hosts. Node used
+`scripts/run-mariadb-project-tests.sh --host node --all --chunk-size 10 --timeout-ms 60000`;
+browser used
+`LD_LIBRARY_PATH=/tmp/pwdeps/root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} MARIADB_BROWSER_RUNNER_RETRIES=3 scripts/run-mariadb-project-tests.sh --host browser --all --chunk-size 10 --timeout-ms 60000`.
+
+| Host | Artifact | PASS | FAIL | XFAIL | XPASS | SKIP | TOTAL | Exit |
+|------|----------|------|------|-------|-------|------|-------|------|
+| Node | `test-runs/mariadb-project/kad-qun.4-node-20260613T112749Z/` plus focused reruns for chunks 54/55/56/92 | 608 | 18 | 317 | 0 | 240 | 1183 | 1 |
+| Browser | `test-runs/gastown-mariadb-browser-full-pr3/` | 559 | 371 | 0 | 0 | 253 | 1183 | 1 |
+
+The Node artifact's raw primary-wrapper count of 596 PASS / 27 FAIL / 311
+XFAIL / 0 XPASS / 239 SKIP / 1173 TOTAL is superseded by the reconciled total
+above because chunk 56 hit the known zero-result harness path (`kad-lf9`) and
+chunks 54, 55, 56, and 92 have authoritative focused reruns. The browser
+artifact already folds its pre-rebase chunks 1-49 and post-rebase resumed chunks
+50-119 into one final total.
+
+Post-artifact fixes already landed on the integration branch but are not folded
+into these hard totals without a rerun: `kad-qun.14`, `kad-qun.16`,
+`kad-qun.17`, and `kad-qun.18`. Remaining tracked follow-ups are `kad-lf9`,
+`kad-qun.9`, `kad-qun.10`, `kad-qun.20`, and `kad-qun.21`.
+```
 
 Remaining actionable work is represented by narrow beads:
 
