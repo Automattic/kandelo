@@ -505,7 +505,19 @@ export interface ResolvedSpawnProgram {
   argv: string[];
 }
 
-export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram;
+export interface SpawnResolveError {
+  errno: number;
+}
+
+export type SpawnProgramResolution = ArrayBuffer | ResolvedSpawnProgram | SpawnResolveError;
+
+function isSpawnResolveError(
+  resolution: SpawnProgramResolution,
+): resolution is SpawnResolveError {
+  return !(resolution instanceof ArrayBuffer) &&
+    "errno" in resolution &&
+    typeof resolution.errno === "number";
+}
 
 /** Callbacks for fork/exec/exit handling. */
 export interface CentralizedKernelCallbacks {
@@ -548,7 +560,8 @@ export interface CentralizedKernelCallbacks {
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
    * for `path` (or `{ programBytes, argv }` when resolution rewrites argv,
-   * e.g. a shebang script), or `null` for ENOENT. **Must NOT have side effects** —
+   * e.g. a shebang script), `{ errno }` for a located but unlaunchable
+   * program, or `null` for ENOENT. **Must NOT have side effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -5759,6 +5772,10 @@ export class CentralizedKernelWorker {
     resolveSpawnProgram().then((resolved) => {
       if (!resolved) {
         this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, 2); // ENOENT
+        return;
+      }
+      if (isSpawnResolveError(resolved)) {
+        this.completeChannel(channel, SYS_SPAWN, origArgs, undefined, -1, resolved.errno >>> 0);
         return;
       }
       const programBytes = resolved instanceof ArrayBuffer ? resolved : resolved.programBytes;

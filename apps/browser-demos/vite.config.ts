@@ -477,34 +477,44 @@ function pageInput(name: string): string {
   return path.resolve(__dirname, "pages", name, "index.html");
 }
 
-function browserDemoInputs(): Record<string, string> {
-  const allInputs: Record<string, string> = {
-    main: path.resolve(__dirname, "index.html"),
-    kandelo: pageInput("kandelo"),
-    network: pageInput("network"),
-    "test-runner": pageInput("test-runner"),
-    "sqlite-test": pageInput("sqlite-test"),
-    "mariadb-test": pageInput("mariadb-test"),
-    "git-test": pageInput("git-test"),
-    benchmark: pageInput("benchmark"),
-  };
-  const selected = process.env.KANDELO_BROWSER_DEMO_INPUTS
+const defaultDemoInputs = {
+  main: path.resolve(__dirname, "index.html"),
+  kandelo: pageInput("kandelo"),
+  network: pageInput("network"),
+};
+
+const demoInputs = {
+  ...defaultDemoInputs,
+  "test-runner": pageInput("test-runner"),
+  "sqlite-test": pageInput("sqlite-test"),
+  "mariadb-test": pageInput("mariadb-test"),
+  "git-test": pageInput("git-test"),
+  benchmark: pageInput("benchmark"),
+  // The perl, python, ruby, erlang, texlive, and redis package entries
+  // are not bundled into this static build while their slow builds
+  // live in kandelo-software. The root gallery fetches that
+  // repo's gallery.json and index.toml at runtime to expose
+  // available third-party VFS builds without adding page inputs.
+};
+
+function selectedDemoInputs(): typeof demoInputs | Record<string, string> {
+  const requested = process.env.KANDELO_BROWSER_DEMO_INPUTS
     ?.split(",")
     .map((name) => name.trim())
     .filter(Boolean);
-  const names = selected && selected.length > 0
-    ? selected
-    : ["main", "kandelo", "network"];
-  const inputs: Record<string, string> = {};
-  for (const name of names) {
-    const input = allInputs[name];
-    if (!input) {
+  if (!requested || requested.length === 0) return defaultDemoInputs;
+
+  const selected: Record<string, string> = {};
+  for (const name of requested) {
+    if (!(name in demoInputs)) {
       throw new Error(`Unknown KANDELO_BROWSER_DEMO_INPUTS entry: ${name}`);
     }
-    inputs[name] = input;
+    selected[name] = demoInputs[name as keyof typeof demoInputs];
   }
-  return inputs;
+  return selected;
 }
+
+const disableBrowserTestHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR === "1";
 
 export default defineConfig({
   base: process.env.VITE_BASE || "/",
@@ -528,6 +538,13 @@ export default defineConfig({
     host: "127.0.0.1",
     port: preferredLocalPort,
     headers: crossOriginIsolationHeaders,
+    hmr: disableBrowserTestHmr ? false : undefined,
+    watch: disableBrowserTestHmr ? {
+      ignored: [
+        "**/test-runs/**",
+        "**/host/dist/**",
+      ],
+    } : undefined,
     fs: {
       allow: [repoRoot],
     },
@@ -545,12 +562,7 @@ export default defineConfig({
     // (Firefox).
     minify: "terser",
     rollupOptions: {
-      // The perl, python, ruby, erlang, texlive, and redis package entries
-      // are not bundled into this static build while their slow builds live in
-      // kandelo-software. The root gallery fetches that repo's gallery.json
-      // and index.toml at runtime to expose available third-party VFS builds
-      // without adding page inputs.
-      input: browserDemoInputs(),
+      input: selectedDemoInputs(),
     },
   },
   worker: {

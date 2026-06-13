@@ -1,0 +1,31 @@
+SQLite official testrunner summary
+host=browser
+permutation=full
+jobs=2
+results_dir=test-runs/gastown-sqlite-browser-full-pr5-snapshot/browser
+
+total_jobs  done_jobs  failed_jobs  omitted_jobs  running_jobs  ready_jobs  total_cases  total_case_errors
+----------  ---------  -----------  ------------  ------------  ----------  -----------  -----------------
+1393        58         4            0             2             1329        20066        1004
+
+state    jobs  cases  case_errors
+-------  ----  -----  -----------
+done     58    15202  0
+failed   4     4864   1004
+ready    1329  0      0
+running  2     0      0
+
+Jobs by SQLite testrunner config:
+config  jobs  cases  case_errors
+------  ----  -----  -----------
+full    1393  20066  1004
+
+Failed, running, and omitted jobs:
+jobid  state    displaytype  displayname           cases  errors  ms
+-----  -------  -----------  --------------------  -----  ------  -----
+3      failed   tcl          test/sysfault.test    1360   2       8907
+4      failed   tcl          test/writecrash.test  20     1       7888
+48     failed   tcl          test/like.test        159    1       1747
+50     failed   tcl          test/savepoint6.test  3325   1000    56592
+63     running  tcl          test/walfault.test    0      0       0
+727    running  tcl          test/sort4.test       0      0       0

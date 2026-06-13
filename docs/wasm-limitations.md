@@ -85,6 +85,7 @@ Until one of those ships, this remains a fundamental wasm limitation. The kernel
 
 0 unexpected failures, 20 expected failures (XFAIL):
 - 14 math precision (musl ULP issues)
-- 4 OOM / Wasm memory behavior (malloc-brk-fail, malloc-oom, pthread_create-oom, setenv-oom)
+- 3 OOM behavior (malloc-brk-fail, malloc-oom, setenv-oom)
+- 1 threading (pthread_create-oom)
 - 1 cancellation (pthread_cancel)
 - 1 dynamic TLS (tls_get_new-dtv)
