@@ -59,6 +59,8 @@ const OUT_FILE = process.env.MARIADB_TEST_VFS_OUT
 const includeAll = process.argv.includes("--all");
 const MYSQL_UID = 101;
 const MYSQL_GID = 101;
+const MARIADB_TEST_VFS_INITIAL_BYTES = 64 * 1024 * 1024;
+const MARIADB_TEST_VFS_MAX_BYTES = 1024 * 1024 * 1024;
 
 const COREUTILS_SYMLINK_NAMES = [
   "ls", "cat", "cp", "mv", "rm", "echo", "mkdir", "rmdir", "touch", "pwd",
@@ -240,8 +242,10 @@ async function main() {
 
   console.log("==> Building MariaDB test-runner VFS image");
 
-  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 256 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 256 * 1024 * 1024);
+  const sab = new SharedArrayBuffer(MARIADB_TEST_VFS_INITIAL_BYTES, {
+    maxByteLength: MARIADB_TEST_VFS_MAX_BYTES,
+  });
+  const fs = MemoryFileSystem.create(sab, MARIADB_TEST_VFS_MAX_BYTES);
 
   for (const dir of [
     "/tmp", "/home", "/dev", "/etc", "/bin", "/usr", "/usr/bin", "/log", "/run",

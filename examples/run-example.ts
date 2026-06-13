@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, existsSync } from "fs";
-import { resolve, dirname } from "path";
+import { basename, resolve, dirname } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
 
@@ -259,6 +259,16 @@ function resolveProgram(path: string): ArrayBuffer | null {
     if (mapped) {
         return loadBytes(mapped);
     }
+    const isAbsolute = path.startsWith("/");
+    if (isAbsolute) {
+        const base = basename(path);
+        const mappedBasename = builtinPrograms[base];
+        const hostPathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
+        const isHostPathLookup = hostPathDirs.some((dir) => resolve(dir, base) === path);
+        if (mappedBasename && isHostPathLookup) {
+            return loadBytes(mappedBasename);
+        }
+    }
     // execlp() searches the inherited host/dev-shell PATH. In CI that can
     // resolve tools like gencat to /nix/store/.../bin/gencat; never load that
     // host ELF as a guest program.
@@ -266,7 +276,6 @@ function resolveProgram(path: string): ArrayBuffer | null {
         return loadBytes(resolve(repoRoot, "examples/gencat.wasm"));
     }
     const kernelCwd = process.env.KERNEL_CWD || process.cwd();
-    const isAbsolute = path.startsWith("/");
     const candidates = [
         // Never treat host absolute binaries like /bin/sh as guest Wasm.
         // Absolute paths are only direct host paths when they explicitly name
@@ -332,6 +341,8 @@ async function main() {
         stdinData = new Uint8Array(Buffer.concat(chunks));
     }
 
+    const guestPath = process.env.KERNEL_PATH || "/bin:/usr/bin";
+
     const host = new NodeKernelHost({
         maxWorkers: 4,
         onStdout: (_pid, data) => process.stdout.write(data),
@@ -347,8 +358,9 @@ async function main() {
     const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
         env: [
             ...Object.entries(process.env)
-                .filter(([, v]) => v !== undefined)
+                .filter(([k, v]) => v !== undefined && k !== "PATH")
                 .map(([k, v]) => `${k}=${v}`),
+            `PATH=${guestPath}`,
             ...gitEnv,
         ],
         cwd: process.env.KERNEL_CWD || process.cwd(),

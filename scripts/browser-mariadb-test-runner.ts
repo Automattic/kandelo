@@ -202,6 +202,9 @@ function failureRequiresCleanReboot(result: TestResult): boolean {
   const text = `${result.error ?? ""}\n${result.stderr ?? ""}`;
   return text.includes("Out of memory") ||
     text.includes("out of memory") ||
+    text.includes("ENOSPC") ||
+    text.includes("Errcode: 28") ||
+    text.includes("No space left on device") ||
     text.includes("Column count of mysql.proc is wrong") ||
     text.includes("Incorrect definition of table mysql.proc") ||
     text.includes("Cannot load from mysql.proc") ||
