@@ -36,10 +36,6 @@ REGRESSION_EXPECTED_FAIL=(
     pthread_create-oom          # not a kernel gap — see docs/compromising-xfails.md "Not compromising"
     setenv-oom                  # OOM behavior differs in Wasm linear memory
     tls_get_new-dtv             # requires dlopen TLS (dynamic TLS not supported)
-    # raise-race is skipped on CI in discover_regression (the
-    # test crashes the GHA runner before its timeout fires). The
-    # XFAIL entry remains for non-CI runs that exercise the test.
-    raise-race                  # known kernel race; tracked separately
 )
 REGRESSION_FLAKY=(
     pthread_cond-smasher        # CI timing-sensitive pthread_cond stress test; can PASS or fail on slow runners
@@ -159,12 +155,12 @@ discover_regression() {
         # Skip _dso helper files (they're not standalone tests)
         [[ "$name" == *_dso ]] && continue
         # raise-race forks inside a signal handler 1000× across
-        # multiple threads — on resource-constrained Linux CI runners
-        # this exhausts process/thread limits and the GHA agent gets
-        # OOM-killed (exit 143) before the test's own timeout fires,
-        # killing the entire workflow. The test is documented as a
-        # known kernel race; skip on CI to keep the suite usable.
-        # Set ALLOW_RAISE_RACE=1 to override (Mac dev hosts).
+        # multiple threads. It now passes on dev hosts after per-thread
+        # signal routing landed, but on resource-constrained Linux CI
+        # runners it can still exhaust process/thread limits and kill
+        # the GHA agent before the test's own timeout fires. Skip on CI
+        # unless explicitly requested; local PASS or TIME is acceptable.
+        # Set ALLOW_RAISE_RACE=1 to override.
         if [ "${CI:-}" = "true" ] && [ "${ALLOW_RAISE_RACE:-0}" != "1" ]; then
             [[ "$name" == "raise-race" ]] && continue
         fi
