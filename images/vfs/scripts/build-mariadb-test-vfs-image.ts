@@ -176,16 +176,17 @@ CREATE DATABASE test;
 function commonMariadbArgs(): string[] {
   return [
     "/usr/sbin/mariadbd", "--no-defaults",
-    // mariadbd refuses to run as root by default; the bootstrap SQL
-    // populates mysql.user / global_priv so root@127.0.0.1 has full
-    // access. The daemon itself runs as the mysql user (uid 101).
-    "--user=mysql",
+    // Match the Node mysql-test harness: mysqltest's copy_file/system helpers
+    // mutate datadir files directly, so the server and helpers need the same
+    // VFS owner to avoid false read-only MyISAM/MERGE tables.
+    "--user=root",
     // Keep the server tmpdir outside the datadir.  Upstream tests commonly
     // create/drop a database named `tmp`; if tmpdir is `/data/tmp`, resetting
     // that database deletes the directory MariaDB later needs for internal
     // temporary tables.
     "--datadir=" + MARIADB_DATA_DIR, "--tmpdir=/tmp",
     "--default-storage-engine=Aria",
+    "--myisam-recover-options=force",
     "--skip-grant-tables",
     "--key-buffer-size=1048576", "--table-open-cache=10",
     "--sort-buffer-size=262144",

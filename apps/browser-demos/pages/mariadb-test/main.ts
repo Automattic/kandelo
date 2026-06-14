@@ -32,6 +32,7 @@ declare global {
     __mariadbTestReady: boolean;
     __runMariadbTest: (testName: string, timeoutMs?: number) => Promise<TestResult>;
     __probeMariadb: (timeoutMs?: number) => Promise<boolean>;
+    __readMariadbFile: (path: string, timeoutMs?: number) => Promise<string>;
   }
 }
 
@@ -221,6 +222,26 @@ async function init() {
   window.__probeMariadb = async (timeoutMs = 5000): Promise<boolean> => {
     const result = await runMysqlTestCommand("__probe", "/mysql-test/main/__probe.test", timeoutMs);
     return result.exitCode === 0;
+  };
+
+  const runDiagnosticCommand = async (command: string, timeoutMs: number): Promise<string> => {
+    if (!kernel) return "";
+    testStderr = "";
+    const { exit } = await kernel.spawnFromVfs(
+      "/bin/sh",
+      ["sh", "-c", `{ ${command}; } >&2`],
+      { env: ["PATH=/bin:/usr/bin"], cwd: "/" },
+    );
+    const code = await Promise.race([
+      exit,
+      new Promise<number>((resolve) => setTimeout(() => resolve(-1), timeoutMs)),
+    ]);
+    return `${command} exit=${code}\n${testStderr}`;
+  };
+
+  window.__readMariadbFile = async (path: string, timeoutMs = 5000): Promise<string> => {
+    const quotedPath = `'${path.replace(/'/g, "'\\''")}'`;
+    return runDiagnosticCommand(`cat ${quotedPath}`, timeoutMs);
   };
 
   window.__runMariadbTest = async (testName: string, timeoutMs = 60000): Promise<TestResult> => {
