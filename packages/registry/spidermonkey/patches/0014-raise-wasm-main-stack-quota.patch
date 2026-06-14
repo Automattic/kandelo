@@ -1,0 +1,19 @@
+diff --git a/js/src/vm/JSContext.cpp b/js/src/vm/JSContext.cpp
+--- a/js/src/vm/JSContext.cpp
++++ b/js/src/vm/JSContext.cpp
+@@ -149,7 +149,14 @@ static void InitDefaultStackQuota(JSContext* cx) {
+ #if defined(MOZ_ASAN) || (defined(DEBUG) && !defined(XP_WIN))
+   static constexpr JS::NativeStackSize MaxStackSize =
+       2 * 128 * sizeof(size_t) * 1024;
+-#else
++#elif defined(__wasi__) || (defined(__wasm32__) && !defined(__EMSCRIPTEN__))
++  // The wasm shell links a 1 MiB stack, but SpiderMonkey's generic release
++  // default only grants script a 512 KiB quota on wasm32. The Kandelo Node
++  // compatibility layer implements async scope switching in JS, so official
++  // async_hooks deep-stack tests need a little more headroom.
++  static constexpr JS::NativeStackSize MaxStackSize =
++      192 * sizeof(size_t) * 1024;
++#else
+   static constexpr JS::NativeStackSize MaxStackSize =
+       128 * sizeof(size_t) * 1024;
+ #endif

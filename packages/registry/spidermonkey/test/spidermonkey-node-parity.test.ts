@@ -238,6 +238,243 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility parity", () => {
     });
   });
 
+  describe("async_hooks", () => {
+    it("validates hook callbacks and returns chainable hook controls", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const async_hooks = require('async_hooks');
+        assert.throws(() => async_hooks.createHook({ init: 1 }), {
+          code: 'ERR_ASYNC_CALLBACK',
+          name: 'TypeError',
+          message: 'hook.init must be a function',
+        });
+        const seen = [];
+        const hook = async_hooks.createHook({
+          init(id, type, triggerId) {
+            if (type === 'Immediate') seen.push(['init', id > 1, triggerId]);
+          },
+          before(id) { seen.push(['before', id]); },
+          after(id) { seen.push(['after', id]); },
+          destroy(id) { seen.push(['destroy', id]); },
+        });
+        assert.strictEqual(hook.enable(), hook);
+        assert.strictEqual(hook.disable(), hook);
+        hook.enable();
+        setImmediate(() => {
+          setImmediate(() => {
+            hook.disable();
+            process.stdout.write(JSON.stringify({
+              hasInit: seen.some((entry) => entry[0] === 'init' && entry[1] === true && entry[2] === 1),
+              hasBefore: seen.some((entry) => entry[0] === 'before'),
+              hasAfter: seen.some((entry) => entry[0] === 'after'),
+            }));
+          });
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        hasInit: true,
+        hasBefore: true,
+        hasAfter: true,
+      });
+    });
+
+    it("tracks AsyncResource scope, bind metadata, and AsyncLocalStorage snapshots", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const { AsyncLocalStorage, AsyncResource, executionAsyncId, triggerAsyncId } = require('async_hooks');
+        const als = new AsyncLocalStorage();
+        const resource = new AsyncResource('test-resource');
+        const bound = resource.bind(function(a, b) {
+          assert.strictEqual(this.label, 'ctx');
+          assert.strictEqual(executionAsyncId(), resource.asyncId());
+          assert.strictEqual(triggerAsyncId(), 1);
+          return [a, b, als.getStore()];
+        }, { label: 'ctx' });
+        assert.strictEqual(bound.asyncResource, resource);
+        assert.strictEqual(bound.length, 2);
+        const sync = als.run('outer', () => {
+          const snapshot = AsyncLocalStorage.snapshot();
+          return als.run('inner', () => snapshot(() => als.getStore()));
+        });
+        assert.strictEqual(sync, 'outer');
+        als.run('timer-store', () => {
+          setTimeout(() => {
+            Promise.resolve('promise-store').then(() => {
+              const boundResult = bound(1, 2);
+              process.stdout.write(JSON.stringify({
+                timerStore: als.getStore(),
+                boundResult,
+              }));
+            });
+          }, 0);
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        timerStore: "timer-store",
+        boundResult: [1, 2, null],
+      });
+    });
+
+    it("exposes v8.promiseHooks for resolve and then lifecycle events", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const { promiseHooks } = require('v8');
+        const seen = [];
+        const stop = promiseHooks.createHook({
+          init(promise, parent) { seen.push(['init', !!promise, parent === undefined ? 'root' : 'child']); },
+          before(promise) { seen.push(['before', !!promise]); },
+          after(promise) { seen.push(['after', !!promise]); },
+          settled(promise) { seen.push(['settled', !!promise]); },
+        });
+        const parent = Promise.resolve(1);
+        const child = parent.then((value) => value + 1);
+        child.then((value) => {
+          stop();
+          assert.strictEqual(value, 2);
+          process.stdout.write(JSON.stringify({
+            rootInit: seen.some((entry) => entry[0] === 'init' && entry[2] === 'root'),
+            childInit: seen.some((entry) => entry[0] === 'init' && entry[2] === 'child'),
+            before: seen.some((entry) => entry[0] === 'before'),
+            after: seen.some((entry) => entry[0] === 'after'),
+            settled: seen.filter((entry) => entry[0] === 'settled').length >= 2,
+          }));
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        rootInit: true,
+        childInit: true,
+        before: true,
+        after: true,
+        settled: true,
+      });
+    });
+
+    it("runs EventEmitterAsyncResource emits inside its async resource", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const { EventEmitterAsyncResource } = require('events');
+        const { createHook, executionAsyncId } = require('async_hooks');
+        const events = [];
+        const hook = createHook({
+          init(id, type, triggerId, resource) {
+            if (type === 'ResourceName') events.push(['init', id, triggerId, resource.eventEmitter instanceof EventEmitterAsyncResource]);
+          },
+          before(id) { events.push(['before', id]); },
+          after(id) { events.push(['after', id]); },
+          destroy(id) { events.push(['destroy', id]); },
+        }).enable();
+        const rootId = executionAsyncId();
+        const emitter = new EventEmitterAsyncResource('ResourceName');
+        let listenerAsyncId = 0;
+        emitter.on('value', () => { listenerAsyncId = executionAsyncId(); });
+        emitter.emit('value');
+        emitter.emitDestroy();
+        hook.disable();
+        process.stdout.write(JSON.stringify({
+          asyncId: emitter.asyncId,
+          triggerAsyncId: emitter.triggerAsyncId,
+          rootId,
+          listenerAsyncId,
+          sawResource: events.some((entry) => entry[0] === 'init' && entry[3]),
+          sawBefore: events.some((entry) => entry[0] === 'before' && entry[1] === emitter.asyncId),
+          sawAfter: events.some((entry) => entry[0] === 'after' && entry[1] === emitter.asyncId),
+          sawDestroy: events.some((entry) => entry[0] === 'destroy' && entry[1] === emitter.asyncId),
+        }));
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        asyncId: expect.any(Number),
+        triggerAsyncId: 1,
+        rootId: 1,
+        listenerAsyncId: expect.any(Number),
+        sawResource: true,
+        sawBefore: true,
+        sawAfter: true,
+        sawDestroy: true,
+      });
+    });
+
+    it("supports deep AsyncResource and AsyncLocalStorage scopes", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const async_hooks = require('async_hooks');
+        const { AsyncLocalStorage, AsyncResource } = async_hooks;
+
+        function resourceRecurse(n) {
+          const resource = new AsyncResource('deep-resource');
+          resource.runInAsyncScope(() => {
+            assert.strictEqual(resource.asyncId(), async_hooks.executionAsyncId());
+            assert.strictEqual(resource.triggerAsyncId(), async_hooks.triggerAsyncId());
+            if (n !== 0) resourceRecurse(n - 1);
+            assert.strictEqual(resource.asyncId(), async_hooks.executionAsyncId());
+            assert.strictEqual(resource.triggerAsyncId(), async_hooks.triggerAsyncId());
+          });
+        }
+
+        const als = new AsyncLocalStorage();
+        function alsRecurse(n) {
+          if (n !== 0) return als.run(n, alsRecurse, n - 1);
+          assert.strictEqual(als.getStore(), 1);
+        }
+
+        resourceRecurse(1000);
+        alsRecurse(1000);
+        process.stdout.write('ok');
+      `, { timeout: 60_000 });
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("ok");
+    });
+
+    it("emits destroy when GC collects userland AsyncResource", async () => {
+      const result = await runNodeScript(`
+        const { AsyncResource, createHook } = require('async_hooks');
+        const destroyed = [];
+        const hook = createHook({
+          destroy(id) { destroyed.push(id); },
+        }).enable();
+        let asyncId = 0;
+        (function allocateResource() {
+          const resource = new AsyncResource('gc-resource');
+          asyncId = resource.asyncId();
+        })();
+        let attempts = 0;
+        function checkCollected() {
+          if (typeof global.gc === 'function') global.gc();
+          if (destroyed.includes(asyncId) || ++attempts >= 10) {
+            hook.disable();
+            process.stdout.write(JSON.stringify({
+              hasGc: typeof global.gc === 'function',
+              destroyed: destroyed.includes(asyncId),
+            }));
+            return;
+          }
+          setImmediate(checkCollected);
+        }
+        setImmediate(checkCollected);
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        hasGc: true,
+        destroyed: true,
+      });
+    });
+  });
+
   describe.skipIf(!hasNpm)("npm-oriented CommonJS compatibility", () => {
     it("supports EventEmitter class extension and proc-log output events", async () => {
       const result = await runNodeScriptOnHostFs(`
