@@ -3,7 +3,11 @@ repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
 # Revision 4: libcxx + libcxxabi + libunwind rebuilt with
 # `-mllvm -wasm-use-legacy-eh=false` explicitly set.
-revision    = 4
+# Revision 5: headers installed hermetically from the vendored LLVM
+# source build instead of the floating host $LLVM_PREFIX, so the header
+# set can no longer drift from the built library (was producing
+# host-LLVM-22 headers glued to a vendored-LLVM-21 __config_site).
+revision    = 5
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"
