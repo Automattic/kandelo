@@ -1,0 +1,1147 @@
+===== Official SpiderMonkey jit-tests on Kandelo browser host =====
+TEST-PASS | js/src/jit-test/tests/gc/bug-1515993.js | Success (code 0, args "") [1.3 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1515993.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1515993.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1515993.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1515993.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1515993.js | Success (code 0, args "--blinterp-eager") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1517158.js | Success (code 0, args "") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1517158.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1517158.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1517158.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1517158.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1517158.js | Success (code 0, args "--blinterp-eager") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1520778.js | Success (code 3, args "") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1520778.js | Success (code 3, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1520778.js | Success (code 3, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1520778.js | Success (code 3, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1520778.js | Success (code 3, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1520778.js | Success (code 3, args "--blinterp-eager") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1530643.js | Success (code 59, args "") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1530643.js | Success (code 59, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1530643.js | Success (code 59, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1530643.js | Success (code 59, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1530643.js | Success (code 59, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1530643.js | Success (code 59, args "--blinterp-eager") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531018.js | Success (code 0, args "") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531018.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531018.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531018.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531018.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531018.js | Success (code 0, args "--blinterp-eager") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531626.js | Success (code 0, args "") [1.8 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531626.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.8 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531626.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.7 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531626.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531626.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.8 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1531626.js | Success (code 0, args "--blinterp-eager") [1.7 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1532376.js | Success (code 0, args "") [2.0 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1532376.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [2.1 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1532376.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [2.0 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1532376.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1532376.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [2.0 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1532376.js | Success (code 0, args "--blinterp-eager") [2.0 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1540670.js | Success (code 0, args "") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1540670.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1540670.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1540670.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1540670.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1540670.js | Success (code 0, args "--blinterp-eager") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542279.js | Success (code 0, args "") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542279.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542279.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542279.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542279.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542279.js | Success (code 0, args "--blinterp-eager") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542982.js | Success (code 0, args "") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542982.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542982.js | Success (code 0, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542982.js | Success (code 0, args "--baseline-eager --write-protect-code=off") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542982.js | Success (code 0, args "--no-blinterp --no-baseline --no-ion --more-compartments") [1.6 s]
+TEST-PASS | js/src/jit-test/tests/gc/bug-1542982.js | Success (code 0, args "--blinterp-eager") [1.6 s]
+Exit code: -6
+TIMEOUT - gc/bug-1543014.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543014.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006728
+Exit code: -6
+TIMEOUT - gc/bug-1543014.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543014.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003612
+Exit code: -6
+TIMEOUT - gc/bug-1543014.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543014.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001006
+Exit code: -6
+TIMEOUT - gc/bug-1543014.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543014.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.008157
+Exit code: -6
+TIMEOUT - gc/bug-1543014.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543014.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002057
+Exit code: -6
+TIMEOUT - gc/bug-1543014.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543014.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000321
+Exit code: -6
+TIMEOUT - gc/bug-1543589.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543589.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000274
+Exit code: -6
+TIMEOUT - gc/bug-1543589.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543589.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000835
+Exit code: -6
+TIMEOUT - gc/bug-1543589.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543589.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005534
+Exit code: -6
+TIMEOUT - gc/bug-1543589.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543589.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.009599
+Exit code: -6
+TIMEOUT - gc/bug-1543589.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543589.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.010901
+Exit code: -6
+TIMEOUT - gc/bug-1543589.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1543589.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.007008
+Exit code: -6
+TIMEOUT - gc/bug-1556155.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1556155.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002412
+Exit code: -6
+TIMEOUT - gc/bug-1556155.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1556155.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001074
+Exit code: -6
+TIMEOUT - gc/bug-1556155.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1556155.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006438
+Exit code: -6
+TIMEOUT - gc/bug-1556155.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1556155.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004505
+Exit code: -6
+TIMEOUT - gc/bug-1556155.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1556155.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.009596
+Exit code: -6
+TIMEOUT - gc/bug-1556155.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1556155.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003434
+Exit code: -6
+TIMEOUT - gc/bug-1557928.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1557928.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.007239
+Exit code: -6
+TIMEOUT - gc/bug-1557928.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1557928.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.008028
+Exit code: -6
+TIMEOUT - gc/bug-1557928.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1557928.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.008272
+Exit code: -6
+TIMEOUT - gc/bug-1557928.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1557928.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.008780
+Exit code: -6
+TIMEOUT - gc/bug-1557928.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1557928.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001267
+Exit code: -6
+TIMEOUT - gc/bug-1557928.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1557928.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002322
+Exit code: -6
+TIMEOUT - gc/bug-1565272.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1565272.js | Timeout (code -6, args "--fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004157
+Exit code: -6
+TIMEOUT - gc/bug-1565272.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1565272.js | Timeout (code -6, args "--fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000270
+Exit code: -6
+TIMEOUT - gc/bug-1565272.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1565272.js | Timeout (code -6, args "--fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005381
+Exit code: -6
+TIMEOUT - gc/bug-1565272.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1565272.js | Timeout (code -6, args "--fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.009875
+Exit code: -6
+TIMEOUT - gc/bug-1565272.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1565272.js | Timeout (code -6, args "--fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001427
+Exit code: -6
+TIMEOUT - gc/bug-1565272.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1565272.js | Timeout (code -6, args "--fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003798
+Exit code: -6
+TIMEOUT - gc/bug-1568119.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568119.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002461
+Exit code: -6
+TIMEOUT - gc/bug-1568119.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568119.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000255
+Exit code: -6
+TIMEOUT - gc/bug-1568119.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568119.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002091
+Exit code: -6
+TIMEOUT - gc/bug-1568119.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568119.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.009984
+Exit code: -6
+TIMEOUT - gc/bug-1568119.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568119.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002893
+Exit code: -6
+TIMEOUT - gc/bug-1568119.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568119.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.022597
+Exit code: -6
+TIMEOUT - gc/bug-1568740.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568740.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000308
+Exit code: -6
+TIMEOUT - gc/bug-1568740.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568740.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000472
+Exit code: -6
+TIMEOUT - gc/bug-1568740.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568740.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000396
+Exit code: -6
+TIMEOUT - gc/bug-1568740.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568740.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000477
+Exit code: -6
+TIMEOUT - gc/bug-1568740.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568740.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004712
+Exit code: -6
+TIMEOUT - gc/bug-1568740.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1568740.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.010372
+Exit code: -6
+TIMEOUT - gc/bug-1569840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1569840.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006380
+Exit code: -6
+TIMEOUT - gc/bug-1569840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1569840.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000319
+Exit code: -6
+TIMEOUT - gc/bug-1569840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1569840.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005322
+Exit code: -6
+TIMEOUT - gc/bug-1569840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1569840.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002489
+Exit code: -6
+TIMEOUT - gc/bug-1569840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1569840.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000963
+Exit code: -6
+TIMEOUT - gc/bug-1569840.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1569840.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000720
+Exit code: -6
+TIMEOUT - gc/bug-1571439.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1571439.js | Timeout (code -6, args "--ion-offthread-compile=off --blinterp-warmup-threshold=1") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002481
+Exit code: -6
+TIMEOUT - gc/bug-1571439.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1571439.js | Timeout (code -6, args "--ion-offthread-compile=off --blinterp-warmup-threshold=1 --ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002705
+Exit code: -6
+TIMEOUT - gc/bug-1571439.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1571439.js | Timeout (code -6, args "--ion-offthread-compile=off --blinterp-warmup-threshold=1 --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000817
+Exit code: -6
+TIMEOUT - gc/bug-1571439.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1571439.js | Timeout (code -6, args "--ion-offthread-compile=off --blinterp-warmup-threshold=1 --baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000669
+Exit code: -6
+TIMEOUT - gc/bug-1571439.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1571439.js | Timeout (code -6, args "--ion-offthread-compile=off --blinterp-warmup-threshold=1 --no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001307
+Exit code: -6
+TIMEOUT - gc/bug-1571439.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1571439.js | Timeout (code -6, args "--ion-offthread-compile=off --blinterp-warmup-threshold=1 --blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006833
+Exit code: -6
+TIMEOUT - gc/bug-1573458.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1573458.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005713
+Exit code: -6
+TIMEOUT - gc/bug-1573458.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1573458.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003546
+Exit code: -6
+TIMEOUT - gc/bug-1573458.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1573458.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000394
+Exit code: -6
+TIMEOUT - gc/bug-1573458.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1573458.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003914
+Exit code: -6
+TIMEOUT - gc/bug-1573458.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1573458.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000544
+Exit code: -6
+TIMEOUT - gc/bug-1573458.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1573458.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001724
+Exit code: -6
+TIMEOUT - gc/bug-1574877.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1574877.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.007854
+Exit code: -6
+TIMEOUT - gc/bug-1574877.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1574877.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003444
+Exit code: -6
+TIMEOUT - gc/bug-1574877.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1574877.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003017
+Exit code: -6
+TIMEOUT - gc/bug-1574877.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1574877.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000642
+Exit code: -6
+TIMEOUT - gc/bug-1574877.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1574877.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000557
+Exit code: -6
+TIMEOUT - gc/bug-1574877.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1574877.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006755
+Exit code: -6
+TIMEOUT - gc/bug-1578462.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1578462.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004603
+Exit code: -6
+TIMEOUT - gc/bug-1578462.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1578462.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001562
+Exit code: -6
+TIMEOUT - gc/bug-1578462.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1578462.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004679
+Exit code: -6
+TIMEOUT - gc/bug-1578462.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1578462.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006474
+Exit code: -6
+TIMEOUT - gc/bug-1578462.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1578462.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005702
+Exit code: -6
+TIMEOUT - gc/bug-1578462.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1578462.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005516
+Exit code: -6
+TIMEOUT - gc/bug-1579025.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1579025.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006901
+Exit code: -6
+TIMEOUT - gc/bug-1579025.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1579025.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001287
+Exit code: -6
+TIMEOUT - gc/bug-1579025.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1579025.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003075
+Exit code: -6
+TIMEOUT - gc/bug-1579025.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1579025.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006291
+Exit code: -6
+TIMEOUT - gc/bug-1579025.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1579025.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000346
+Exit code: -6
+TIMEOUT - gc/bug-1579025.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1579025.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002995
+Exit code: -6
+TIMEOUT - gc/bug-1585159.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1585159.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005015
+Exit code: -6
+TIMEOUT - gc/bug-1585159.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1585159.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003281
+Exit code: -6
+TIMEOUT - gc/bug-1585159.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1585159.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000306
+Exit code: -6
+TIMEOUT - gc/bug-1585159.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1585159.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006870
+Exit code: -6
+TIMEOUT - gc/bug-1585159.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1585159.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.009199
+Exit code: -6
+TIMEOUT - gc/bug-1585159.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1585159.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.009315
+Exit code: -6
+TIMEOUT - gc/bug-1590176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590176.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000937
+Exit code: -6
+TIMEOUT - gc/bug-1590176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590176.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.007633
+Exit code: -6
+TIMEOUT - gc/bug-1590176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590176.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002455
+Exit code: -6
+TIMEOUT - gc/bug-1590176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590176.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002379
+Exit code: -6
+TIMEOUT - gc/bug-1590176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590176.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005129
+Exit code: -6
+TIMEOUT - gc/bug-1590176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590176.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.007777
+Exit code: -6
+TIMEOUT - gc/bug-1590904.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590904.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.007844
+Exit code: -6
+TIMEOUT - gc/bug-1590904.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590904.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006395
+Exit code: -6
+TIMEOUT - gc/bug-1590904.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590904.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.010023
+Exit code: -6
+TIMEOUT - gc/bug-1590904.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590904.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000231
+Exit code: -6
+TIMEOUT - gc/bug-1590904.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590904.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000563
+Exit code: -6
+TIMEOUT - gc/bug-1590904.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1590904.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001953
+Exit code: -6
+TIMEOUT - gc/bug-1592487.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1592487.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005738
+Exit code: -6
+TIMEOUT - gc/bug-1592487.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1592487.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000201
+Exit code: -6
+TIMEOUT - gc/bug-1592487.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1592487.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002412
+Exit code: -6
+TIMEOUT - gc/bug-1592487.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1592487.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000233
+Exit code: -6
+TIMEOUT - gc/bug-1592487.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1592487.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001656
+Exit code: -6
+TIMEOUT - gc/bug-1592487.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1592487.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001321
+Exit code: -6
+TIMEOUT - gc/bug-1593975.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1593975.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003743
+Exit code: -6
+TIMEOUT - gc/bug-1593975.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1593975.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.007963
+Exit code: -6
+TIMEOUT - gc/bug-1593975.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1593975.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004134
+Exit code: -6
+TIMEOUT - gc/bug-1593975.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1593975.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001651
+Exit code: -6
+TIMEOUT - gc/bug-1593975.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1593975.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001288
+Exit code: -6
+TIMEOUT - gc/bug-1593975.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1593975.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001157
+Exit code: -6
+TIMEOUT - gc/bug-1597970.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1597970.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000397
+Exit code: -6
+TIMEOUT - gc/bug-1597970.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1597970.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000238
+Exit code: -6
+TIMEOUT - gc/bug-1597970.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1597970.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006323
+Exit code: -6
+TIMEOUT - gc/bug-1597970.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1597970.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002025
+Exit code: -6
+TIMEOUT - gc/bug-1597970.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1597970.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000244
+Exit code: -6
+TIMEOUT - gc/bug-1597970.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1597970.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000340
+Exit code: -6
+TIMEOUT - gc/bug-1600238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1600238.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.010210
+Exit code: -6
+TIMEOUT - gc/bug-1600238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1600238.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003258
+Exit code: -6
+TIMEOUT - gc/bug-1600238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1600238.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000697
+Exit code: -6
+TIMEOUT - gc/bug-1600238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1600238.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000288
+Exit code: -6
+TIMEOUT - gc/bug-1600238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1600238.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002506
+Exit code: -6
+TIMEOUT - gc/bug-1600238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1600238.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000689
+Exit code: -6
+TIMEOUT - gc/bug-1602741.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1602741.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000806
+Exit code: -6
+TIMEOUT - gc/bug-1602741.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1602741.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000439
+Exit code: -6
+TIMEOUT - gc/bug-1602741.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1602741.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002567
+Exit code: -6
+TIMEOUT - gc/bug-1602741.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1602741.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000243
+Exit code: -6
+TIMEOUT - gc/bug-1602741.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1602741.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000701
+Exit code: -6
+TIMEOUT - gc/bug-1602741.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1602741.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006424
+Exit code: -6
+TIMEOUT - gc/bug-1603330.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603330.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.009383
+Exit code: -6
+TIMEOUT - gc/bug-1603330.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603330.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.007227
+Exit code: -6
+TIMEOUT - gc/bug-1603330.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603330.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.008819
+Exit code: -6
+TIMEOUT - gc/bug-1603330.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603330.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000508
+Exit code: -6
+TIMEOUT - gc/bug-1603330.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603330.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.010413
+Exit code: -6
+TIMEOUT - gc/bug-1603330.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603330.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.010122
+Exit code: -6
+TIMEOUT - gc/bug-1603917.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603917.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000206
+Exit code: -6
+TIMEOUT - gc/bug-1603917.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603917.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001012
+Exit code: -6
+TIMEOUT - gc/bug-1603917.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603917.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000259
+Exit code: -6
+TIMEOUT - gc/bug-1603917.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603917.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003626
+Exit code: -6
+TIMEOUT - gc/bug-1603917.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603917.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000657
+Exit code: -6
+TIMEOUT - gc/bug-1603917.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1603917.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002490
+Exit code: -6
+TIMEOUT - gc/bug-1605348.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605348.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.010258
+Exit code: -6
+TIMEOUT - gc/bug-1605348.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605348.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003257
+Exit code: -6
+TIMEOUT - gc/bug-1605348.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605348.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000224
+Exit code: -6
+TIMEOUT - gc/bug-1605348.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605348.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000404
+Exit code: -6
+TIMEOUT - gc/bug-1605348.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605348.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000263
+Exit code: -6
+TIMEOUT - gc/bug-1605348.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605348.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000484
+Exit code: -6
+TIMEOUT - gc/bug-1605633.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605633.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000247
+Exit code: -6
+TIMEOUT - gc/bug-1605633.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605633.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003301
+Exit code: -6
+TIMEOUT - gc/bug-1605633.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605633.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003845
+Exit code: -6
+TIMEOUT - gc/bug-1605633.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605633.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000239
+Exit code: -6
+TIMEOUT - gc/bug-1605633.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605633.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000401
+Exit code: -6
+TIMEOUT - gc/bug-1605633.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1605633.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000383
+Exit code: -6
+TIMEOUT - gc/bug-1607665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607665.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002756
+Exit code: -6
+TIMEOUT - gc/bug-1607665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607665.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002754
+Exit code: -6
+TIMEOUT - gc/bug-1607665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607665.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005648
+Exit code: -6
+TIMEOUT - gc/bug-1607665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607665.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004152
+Exit code: -6
+TIMEOUT - gc/bug-1607665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607665.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.006657
+Exit code: -6
+TIMEOUT - gc/bug-1607665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607665.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000321
+Exit code: -6
+TIMEOUT - gc/bug-1607687.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607687.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.010214
+Exit code: -6
+TIMEOUT - gc/bug-1607687.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607687.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004977
+Exit code: -6
+TIMEOUT - gc/bug-1607687.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607687.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000835
+Exit code: -6
+TIMEOUT - gc/bug-1607687.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607687.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.008660
+Exit code: -6
+TIMEOUT - gc/bug-1607687.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607687.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002862
+Exit code: -9
+TIMEOUT - gc/bug-1607687.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1607687.js | Timeout (code -9, args "--blinterp-eager") [501.9 s]
+INFO exit-status     : -9
+INFO timed-out       : 0:06:21.873996
+Exit code: -9
+TIMEOUT - gc/bug-1608355.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1608355.js | Timeout (code -9, args "") [1039.0 s]
+INFO exit-status     : -9
+INFO timed-out       : 0:15:19.004985
+Exit code: -9
+TIMEOUT - gc/bug-1608355.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1608355.js | Timeout (code -9, args "--ion-eager --ion-offthread-compile=off --more-compartments") [385.4 s]
+INFO exit-status     : -9
+INFO timed-out       : 0:04:25.366556
+Exit code: -6
+TIMEOUT - gc/bug-1608355.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1608355.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004655
+Exit code: -6
+TIMEOUT - gc/bug-1608355.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1608355.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004982
+Exit code: -6
+TIMEOUT - gc/bug-1608355.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1608355.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.003292
+Exit code: -6
+TIMEOUT - gc/bug-1608355.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1608355.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001278
+Exit code: -6
+TIMEOUT - gc/bug-1610621.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1610621.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001373
+Exit code: -6
+TIMEOUT - gc/bug-1610621.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1610621.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000320
+Exit code: -6
+TIMEOUT - gc/bug-1610621.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1610621.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000343
+Exit code: -6
+TIMEOUT - gc/bug-1610621.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1610621.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.005287
+Exit code: -6
+TIMEOUT - gc/bug-1610621.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1610621.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000803
+Exit code: -6
+TIMEOUT - gc/bug-1610621.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1610621.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000443
+Exit code: -6
+TIMEOUT - gc/bug-1620195.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1620195.js | Timeout (code -6, args "") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001758
+Exit code: -6
+TIMEOUT - gc/bug-1620195.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1620195.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000428
+Exit code: -6
+TIMEOUT - gc/bug-1620195.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1620195.js | Timeout (code -6, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.002631
+Exit code: -6
+TIMEOUT - gc/bug-1620195.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1620195.js | Timeout (code -6, args "--baseline-eager --write-protect-code=off") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.004303
+Exit code: -6
+TIMEOUT - gc/bug-1620195.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1620195.js | Timeout (code -6, args "--no-blinterp --no-baseline --no-ion --more-compartments") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.001578
+Exit code: -6
+TIMEOUT - gc/bug-1620195.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/gc/bug-1620195.js | Timeout (code -6, args "--blinterp-eager") [120.0 s]
+INFO exit-status     : -6
+INFO timed-out       : 0:00:00.000318
+TEST-UNEXPECTED-FAIL | jit_test.py : Test execution interrupted by user
+FAILURES:
+TIMEOUTS:
+    gc/bug-1543014.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1543014.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1543014.js
+    --baseline-eager --write-protect-code=off gc/bug-1543014.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1543014.js
+    --blinterp-eager gc/bug-1543014.js
+    gc/bug-1543589.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1543589.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1543589.js
+    --baseline-eager --write-protect-code=off gc/bug-1543589.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1543589.js
+    --blinterp-eager gc/bug-1543589.js
+    gc/bug-1556155.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1556155.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1556155.js
+    --baseline-eager --write-protect-code=off gc/bug-1556155.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1556155.js
+    --blinterp-eager gc/bug-1556155.js
+    gc/bug-1557928.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1557928.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1557928.js
+    --baseline-eager --write-protect-code=off gc/bug-1557928.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1557928.js
+    --blinterp-eager gc/bug-1557928.js
+    --fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 gc/bug-1565272.js
+    --fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1565272.js
+    --fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1565272.js
+    --fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --baseline-eager --write-protect-code=off gc/bug-1565272.js
+    --fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1565272.js
+    --fuzzing-safe --ion-offthread-compile=off --ion-warmup-threshold=10 --blinterp-eager gc/bug-1565272.js
+    gc/bug-1568119.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1568119.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1568119.js
+    --baseline-eager --write-protect-code=off gc/bug-1568119.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1568119.js
+    --blinterp-eager gc/bug-1568119.js
+    gc/bug-1568740.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1568740.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1568740.js
+    --baseline-eager --write-protect-code=off gc/bug-1568740.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1568740.js
+    --blinterp-eager gc/bug-1568740.js
+    gc/bug-1569840.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1569840.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1569840.js
+    --baseline-eager --write-protect-code=off gc/bug-1569840.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1569840.js
+    --blinterp-eager gc/bug-1569840.js
+    --ion-offthread-compile=off --blinterp-warmup-threshold=1 gc/bug-1571439.js
+    --ion-offthread-compile=off --blinterp-warmup-threshold=1 --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1571439.js
+    --ion-offthread-compile=off --blinterp-warmup-threshold=1 --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1571439.js
+    --ion-offthread-compile=off --blinterp-warmup-threshold=1 --baseline-eager --write-protect-code=off gc/bug-1571439.js
+    --ion-offthread-compile=off --blinterp-warmup-threshold=1 --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1571439.js
+    --ion-offthread-compile=off --blinterp-warmup-threshold=1 --blinterp-eager gc/bug-1571439.js
+    gc/bug-1573458.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1573458.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1573458.js
+    --baseline-eager --write-protect-code=off gc/bug-1573458.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1573458.js
+    --blinterp-eager gc/bug-1573458.js
+    gc/bug-1574877.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1574877.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1574877.js
+    --baseline-eager --write-protect-code=off gc/bug-1574877.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1574877.js
+    --blinterp-eager gc/bug-1574877.js
+    gc/bug-1578462.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1578462.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1578462.js
+    --baseline-eager --write-protect-code=off gc/bug-1578462.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1578462.js
+    --blinterp-eager gc/bug-1578462.js
+    gc/bug-1579025.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1579025.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1579025.js
+    --baseline-eager --write-protect-code=off gc/bug-1579025.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1579025.js
+    --blinterp-eager gc/bug-1579025.js
+    gc/bug-1585159.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1585159.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1585159.js
+    --baseline-eager --write-protect-code=off gc/bug-1585159.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1585159.js
+    --blinterp-eager gc/bug-1585159.js
+    gc/bug-1590176.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1590176.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1590176.js
+    --baseline-eager --write-protect-code=off gc/bug-1590176.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1590176.js
+    --blinterp-eager gc/bug-1590176.js
+    gc/bug-1590904.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1590904.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1590904.js
+    --baseline-eager --write-protect-code=off gc/bug-1590904.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1590904.js
+    --blinterp-eager gc/bug-1590904.js
+    gc/bug-1592487.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1592487.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1592487.js
+    --baseline-eager --write-protect-code=off gc/bug-1592487.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1592487.js
+    --blinterp-eager gc/bug-1592487.js
+    gc/bug-1593975.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1593975.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1593975.js
+    --baseline-eager --write-protect-code=off gc/bug-1593975.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1593975.js
+    --blinterp-eager gc/bug-1593975.js
+    gc/bug-1597970.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1597970.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1597970.js
+    --baseline-eager --write-protect-code=off gc/bug-1597970.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1597970.js
+    --blinterp-eager gc/bug-1597970.js
+    gc/bug-1600238.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1600238.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1600238.js
+    --baseline-eager --write-protect-code=off gc/bug-1600238.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1600238.js
+    --blinterp-eager gc/bug-1600238.js
+    gc/bug-1602741.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1602741.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1602741.js
+    --baseline-eager --write-protect-code=off gc/bug-1602741.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1602741.js
+    --blinterp-eager gc/bug-1602741.js
+    gc/bug-1603330.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1603330.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1603330.js
+    --baseline-eager --write-protect-code=off gc/bug-1603330.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1603330.js
+    --blinterp-eager gc/bug-1603330.js
+    gc/bug-1603917.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1603917.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1603917.js
+    --baseline-eager --write-protect-code=off gc/bug-1603917.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1603917.js
+    --blinterp-eager gc/bug-1603917.js
+    gc/bug-1605348.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1605348.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1605348.js
+    --baseline-eager --write-protect-code=off gc/bug-1605348.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1605348.js
+    --blinterp-eager gc/bug-1605348.js
+    gc/bug-1605633.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1605633.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1605633.js
+    --baseline-eager --write-protect-code=off gc/bug-1605633.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1605633.js
+    --blinterp-eager gc/bug-1605633.js
+    gc/bug-1607665.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1607665.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1607665.js
+    --baseline-eager --write-protect-code=off gc/bug-1607665.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1607665.js
+    --blinterp-eager gc/bug-1607665.js
+    gc/bug-1607687.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1607687.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1607687.js
+    --baseline-eager --write-protect-code=off gc/bug-1607687.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1607687.js
+    --blinterp-eager gc/bug-1607687.js
+    gc/bug-1608355.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1608355.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1608355.js
+    --baseline-eager --write-protect-code=off gc/bug-1608355.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1608355.js
+    --blinterp-eager gc/bug-1608355.js
+    gc/bug-1610621.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1610621.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1610621.js
+    --baseline-eager --write-protect-code=off gc/bug-1610621.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1610621.js
+    --blinterp-eager gc/bug-1610621.js
+    gc/bug-1620195.js
+    --ion-eager --ion-offthread-compile=off --more-compartments gc/bug-1620195.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads gc/bug-1620195.js
+    --baseline-eager --write-protect-code=off gc/bug-1620195.js
+    --no-blinterp --no-baseline --no-ion --more-compartments gc/bug-1620195.js
+    --blinterp-eager gc/bug-1620195.js
+Result summary:
+Passed: 108
+Failed: 180
