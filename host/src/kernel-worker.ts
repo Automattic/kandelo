@@ -507,7 +507,7 @@ export interface ResolvedSpawnProgram {
 
 export interface FailedSpawnProgramResolution {
   errno: number;
-  error: string;
+  error?: string;
 }
 
 export type SpawnProgramResolution =
@@ -519,6 +519,7 @@ export function isFailedSpawnProgramResolution(
   resolved: SpawnProgramResolution,
 ): resolved is FailedSpawnProgramResolution {
   return !(resolved instanceof ArrayBuffer) &&
+    "errno" in resolved &&
     typeof (resolved as FailedSpawnProgramResolution).errno === "number";
 }
 
@@ -563,8 +564,9 @@ export interface CentralizedKernelCallbacks {
   /**
    * Pre-flight resolution step for SYS_SPAWN. Returns the program bytes
    * for `path` (or `{ programBytes, argv }` when resolution rewrites argv,
-   * e.g. a shebang script), `{ errno, error }` for a found-but-invalid
-   * executable, or `null` for ENOENT. **Must NOT have side effects** —
+   * e.g. a shebang script), `{ errno, error? }` for a located but
+   * unlaunchable program, or `null` for ENOENT. **Must NOT have side
+   * effects** —
    * `handleSpawn` calls this BEFORE `kernel_spawn_process` so that file
    * actions never run on a doomed PATH-iteration. POSIX requires
    * file_actions to run "exactly once," and `posix_spawnp`'s PATH-walk
@@ -1800,6 +1802,16 @@ export class CentralizedKernelWorker {
     return new TextDecoder().decode(copy);
   }
 
+  private readBytesPreview(memory: WebAssembly.Memory, ptr: number, len: number, maxLen = 160): string {
+    if (ptr === 0 || len <= 0) return "";
+    const mem = new Uint8Array(memory.buffer);
+    const capped = Math.max(0, Math.min(len, maxLen, mem.length - ptr));
+    if (capped <= 0) return "";
+    const copy = new Uint8Array(capped);
+    copy.set(mem.subarray(ptr, ptr + capped));
+    return new TextDecoder("utf-8", { fatal: false }).decode(copy);
+  }
+
   /** Format a syscall for logging, decoding path/string args from process memory */
   private formatSyscallEntry(channel: ChannelInfo, syscallNr: number, args: number[]): string {
     const name = SYSCALL_NAMES[syscallNr] ?? `syscall_${syscallNr}`;
@@ -1836,7 +1848,7 @@ export class CentralizedKernelWorker {
       case ABI_SYSCALLS.Read: // read(fd, buf, count)
         return `[${pid}${tidSuffix}] read(${args[0]}, ${args[2]})`;
       case ABI_SYSCALLS.Write: // write(fd, buf, count)
-        return `[${pid}${tidSuffix}] write(${args[0]}, ${args[2]})`;
+        return `[${pid}${tidSuffix}] write(${args[0]}, ${args[2]}, ${JSON.stringify(this.readBytesPreview(channel.memory, args[1], args[2]))})`;
       case ABI_SYSCALLS.Close: // close(fd)
         return `[${pid}${tidSuffix}] close(${args[0]})`;
       case ABI_SYSCALLS.Fstat: // fstat(fd, buf)
@@ -1919,10 +1931,10 @@ export class CentralizedKernelWorker {
     }
 
     // Track last 30 syscalls per channel for crash diagnostics
-    const ringKey = channel.channelOffset;
+    const ringKey = channel.pid;
     let ring = this.syscallRing.get(ringKey);
     if (!ring) { ring = []; this.syscallRing.set(ringKey, ring); }
-    ring.push(`  syscall=${syscallNr} args=[${origArgs.join(',')}]`);
+    ring.push(`  ${this.formatSyscallEntry(channel, syscallNr, origArgs)}`);
     if (ring.length > 30) ring.shift();
 
     // Opt-in live trace ring. enableSyscallTrace() flips the flag; the

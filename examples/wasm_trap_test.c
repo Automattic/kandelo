@@ -13,8 +13,8 @@
  * promise never resolves and tests time out.
  *
  * With the fix, this program terminates promptly and `spawn()`
- * resolves. Expected exit code is 0 because worker-main treats
- * `unreachable` as the normal `_Exit` exit pattern.
+ * resolves. An arbitrary user-space `unreachable` is classified as
+ * SIGILL; only the known kernel_exit path is treated as normal exit.
  */
 #include <stdio.h>
 

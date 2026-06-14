@@ -12,8 +12,8 @@
  *   npx tsx examples/run-example.ts /path/to/test.wasm
  */
 
-import { readFileSync, existsSync } from "fs";
-import { basename, resolve, dirname } from "path";
+import { readFileSync, existsSync, statSync } from "fs";
+import { basename, resolve, dirname, isAbsolute, relative } from "path";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
 
@@ -60,6 +60,7 @@ const nanoWasm = tryResolveBinary("programs/nano.wasm");
 const tclshWasm = tryResolveBinary("programs/tcl.wasm");
 const testfixtureWasm = tryResolveBinary("programs/sqlite/testfixture.wasm");
 const mysqltestWasm = tryResolveBinary("programs/mariadb/mysqltest.wasm");
+const echoWasm = tryResolveBinary("programs/echo.wasm") ?? resolve(repoRoot, "examples/echo.wasm");
 
 // GNU coreutils multi-call binary supports all of these as argv[0]
 const coreutilsNames = [
@@ -74,9 +75,9 @@ const coreutilsNames = [
 // Values may be null when a program isn't fetched/built locally.
 // Consumers filter out null entries before use.
 const builtinPrograms: Record<string, string | null> = {
-    "echo": resolve(repoRoot, "examples/echo.wasm"),
-    "/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
-    "/usr/bin/echo": resolve(repoRoot, "examples/echo.wasm"),
+    "echo": echoWasm,
+    "/bin/echo": echoWasm,
+    "/usr/bin/echo": echoWasm,
     "sh": shWasm,
     "/bin/sh": shWasm,
     "/usr/bin/sh": shWasm,
@@ -254,13 +255,36 @@ function loadBytes(path: string): ArrayBuffer {
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+function isWithinDirectory(parent: string, candidate: string): boolean {
+    const rel = relative(resolve(parent), resolve(candidate));
+    return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffer | null {
+    const resolved = resolve(candidate);
+    if (!existsSync(resolved)) return null;
+
+    // Guest exec resolution may read scripts and test binaries staged under
+    // KERNEL_CWD. Outside that guest workdir, only explicit .wasm paths are
+    // valid candidates; never treat host /usr/bin tools as guest programs.
+    if (!isWithinDirectory(kernelCwd, resolved) && !resolved.endsWith(".wasm")) {
+        return null;
+    }
+
+    try {
+        if (!statSync(resolved).isFile()) return null;
+        return loadBytes(resolved);
+    } catch {
+        return null;
+    }
+}
+
 function resolveProgram(path: string): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
     if (mapped) {
         return loadBytes(mapped);
     }
-    const isAbsolute = path.startsWith("/");
-    if (isAbsolute) {
+    if (isAbsolute(path)) {
         const base = basename(path);
         const mappedBasename = builtinPrograms[base];
         const hostPathDirs = (process.env.PATH ?? "").split(":").filter(Boolean);
@@ -275,24 +299,28 @@ function resolveProgram(path: string): ArrayBuffer | null {
     if (path.endsWith("/gencat")) {
         return loadBytes(resolve(repoRoot, "examples/gencat.wasm"));
     }
-    const kernelCwd = process.env.KERNEL_CWD || process.cwd();
+    const kernelCwd = resolve(process.env.KERNEL_CWD || process.cwd());
     const candidates = [
-        // Never treat host absolute binaries like /bin/sh as guest Wasm.
-        // Absolute paths are only direct host paths when they explicitly name
-        // a .wasm file; otherwise they must resolve through builtinPrograms.
-        ...(!isAbsolute || path.endsWith(".wasm") ? [path] : []),
-        path.endsWith(".wasm") ? path : `${path}.wasm`,
-        resolve(repoRoot, `examples/${path}.wasm`),
         // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
-        ...(!isAbsolute || path.endsWith(".wasm") ? [resolve(kernelCwd, path)] : []),
-        resolve(kernelCwd, path.endsWith(".wasm") ? path : `${path}.wasm`),
+        isAbsolute(path) ? path : resolve(kernelCwd, path),
+        path.endsWith(".wasm")
+            ? (isAbsolute(path) ? path : resolve(kernelCwd, path))
+            : (isAbsolute(path) ? `${path}.wasm` : resolve(kernelCwd, `${path}.wasm`)),
+        resolve(repoRoot, `examples/${path}.wasm`),
     ];
     for (const c of candidates) {
-        if (existsSync(c)) {
-            return loadBytes(c);
-        }
+        const bytes = tryLoadGuestCandidate(c, kernelCwd);
+        if (bytes) return bytes;
     }
     return null;
+}
+
+function guestEnv(): string[] {
+    const kernelPath = process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin";
+    const inherited = Object.entries(process.env)
+        .filter(([k, v]) => v !== undefined && k !== "PATH")
+        .map(([k, v]) => `${k}=${v}`);
+    return [...inherited, `PATH=${kernelPath}`];
 }
 
 async function main() {
@@ -341,8 +369,6 @@ async function main() {
         stdinData = new Uint8Array(Buffer.concat(chunks));
     }
 
-    const guestPath = process.env.KERNEL_PATH || "/bin:/usr/bin";
-
     const host = new NodeKernelHost({
         maxWorkers: 4,
         onStdout: (_pid, data) => process.stdout.write(data),
@@ -357,10 +383,7 @@ async function main() {
     const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
     const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
         env: [
-            ...Object.entries(process.env)
-                .filter(([k, v]) => v !== undefined && k !== "PATH")
-                .map(([k, v]) => `${k}=${v}`),
-            `PATH=${guestPath}`,
+            ...guestEnv(),
             ...gitEnv,
         ],
         cwd: process.env.KERNEL_CWD || process.cwd(),

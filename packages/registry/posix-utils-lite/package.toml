@@ -136,14 +136,6 @@ name = "strip"
 wasm = "strip.wasm"
 
 [[outputs]]
-name = "tabs"
-wasm = "tabs.wasm"
-
-[[outputs]]
-name = "tput"
-wasm = "tput.wasm"
-
-[[outputs]]
 name = "uncompress"
 wasm = "uncompress.wasm"
 
