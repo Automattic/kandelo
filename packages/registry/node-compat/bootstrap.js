@@ -9084,63 +9084,320 @@ const _builtinModules = {
     },
     'zlib': (() => {
         const z = _nodeNative;
+        const constants = Object.freeze({
+            Z_NO_FLUSH: 0,
+            Z_PARTIAL_FLUSH: 1,
+            Z_SYNC_FLUSH: 2,
+            Z_FULL_FLUSH: 3,
+            Z_FINISH: 4,
+            Z_BLOCK: 5,
+            Z_OK: 0,
+            Z_STREAM_END: 1,
+            Z_NEED_DICT: 2,
+            Z_ERRNO: -1,
+            Z_STREAM_ERROR: -2,
+            Z_DATA_ERROR: -3,
+            Z_MEM_ERROR: -4,
+            Z_BUF_ERROR: -5,
+            Z_VERSION_ERROR: -6,
+            Z_NO_COMPRESSION: 0,
+            Z_BEST_SPEED: 1,
+            Z_BEST_COMPRESSION: 9,
+            Z_DEFAULT_COMPRESSION: -1,
+            Z_DEFAULT_LEVEL: -1,
+            Z_FILTERED: 1,
+            Z_HUFFMAN_ONLY: 2,
+            Z_RLE: 3,
+            Z_FIXED: 4,
+            Z_DEFAULT_STRATEGY: 0,
+            Z_DEFAULT_WINDOWBITS: 15,
+            Z_MIN_WINDOWBITS: 8,
+            Z_MAX_WINDOWBITS: 15,
+            Z_DEFAULT_MEMLEVEL: 8,
+            Z_MIN_MEMLEVEL: 1,
+            Z_MAX_MEMLEVEL: 9,
+            Z_DEFAULT_CHUNK: 16 * 1024,
+            Z_MIN_CHUNK: 64,
+            Z_MAX_CHUNK: Infinity,
+            Z_MAX_LEVEL: 9,
+            Z_MIN_LEVEL: -1,
+            ZLIB_VERNUM: 0x1310,
+            DEFLATE: 1,
+            INFLATE: 2,
+            GZIP: 3,
+            GUNZIP: 4,
+            DEFLATERAW: 5,
+            INFLATERAW: 6,
+            UNZIP: 7,
+            BROTLI_DECODE: 8,
+            BROTLI_ENCODE: 9,
+            BROTLI_OPERATION_PROCESS: 0,
+            BROTLI_OPERATION_FLUSH: 1,
+            BROTLI_OPERATION_FINISH: 2,
+            BROTLI_OPERATION_EMIT_METADATA: 3,
+            BROTLI_PARAM_MODE: 0,
+            BROTLI_PARAM_QUALITY: 1,
+            BROTLI_PARAM_LGWIN: 2,
+            BROTLI_PARAM_LGBLOCK: 3,
+            BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING: 4,
+            BROTLI_PARAM_SIZE_HINT: 5,
+            BROTLI_PARAM_LARGE_WINDOW: 6,
+            BROTLI_PARAM_NPOSTFIX: 7,
+            BROTLI_PARAM_NDIRECT: 8,
+            BROTLI_MODE_GENERIC: 0,
+            BROTLI_MODE_TEXT: 1,
+            BROTLI_MODE_FONT: 2,
+            BROTLI_DEFAULT_MODE: 0,
+            BROTLI_MIN_QUALITY: 0,
+            BROTLI_MAX_QUALITY: 11,
+            BROTLI_DEFAULT_QUALITY: 11,
+            BROTLI_MIN_WINDOW_BITS: 10,
+            BROTLI_MAX_WINDOW_BITS: 24,
+            BROTLI_LARGE_MAX_WINDOW_BITS: 30,
+            BROTLI_DEFAULT_WINDOW: 22,
+            BROTLI_MIN_INPUT_BLOCK_BITS: 16,
+            BROTLI_MAX_INPUT_BLOCK_BITS: 24,
+            BROTLI_DECODER_RESULT_ERROR: 0,
+            BROTLI_DECODER_RESULT_SUCCESS: 1,
+            BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT: 2,
+            BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT: 3,
+            BROTLI_DECODER_NO_ERROR: 0,
+            BROTLI_DECODER_SUCCESS: 1,
+            BROTLI_DECODER_NEEDS_MORE_INPUT: 2,
+            BROTLI_DECODER_NEEDS_MORE_OUTPUT: 3,
+            BROTLI_DECODER_ERROR_FORMAT_EXUBERANT_NIBBLE: -1,
+            BROTLI_DECODER_ERROR_FORMAT_RESERVED: -2,
+            BROTLI_DECODER_ERROR_FORMAT_EXUBERANT_META_NIBBLE: -3,
+            BROTLI_DECODER_ERROR_FORMAT_SIMPLE_HUFFMAN_ALPHABET: -4,
+            BROTLI_DECODER_ERROR_FORMAT_SIMPLE_HUFFMAN_SAME: -5,
+            BROTLI_DECODER_ERROR_FORMAT_CL_SPACE: -6,
+            BROTLI_DECODER_ERROR_FORMAT_HUFFMAN_SPACE: -7,
+            BROTLI_DECODER_ERROR_FORMAT_CONTEXT_MAP_REPEAT: -8,
+            BROTLI_DECODER_ERROR_FORMAT_BLOCK_LENGTH_1: -9,
+            BROTLI_DECODER_ERROR_FORMAT_BLOCK_LENGTH_2: -10,
+            BROTLI_DECODER_ERROR_FORMAT_TRANSFORM: -11,
+            BROTLI_DECODER_ERROR_FORMAT_DICTIONARY: -12,
+            BROTLI_DECODER_ERROR_FORMAT_WINDOW_BITS: -13,
+            BROTLI_DECODER_ERROR_FORMAT_PADDING_1: -14,
+            BROTLI_DECODER_ERROR_FORMAT_PADDING_2: -15,
+            BROTLI_DECODER_ERROR_FORMAT_DISTANCE: -16,
+            BROTLI_DECODER_ERROR_DICTIONARY_NOT_SET: -19,
+            BROTLI_DECODER_ERROR_INVALID_ARGUMENTS: -20,
+            BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MODES: -21,
+            BROTLI_DECODER_ERROR_ALLOC_TREE_GROUPS: -22,
+            BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MAP: -25,
+            BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_1: -26,
+            BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_2: -27,
+            BROTLI_DECODER_ERROR_ALLOC_BLOCK_TYPE_TREES: -30,
+            BROTLI_DECODER_ERROR_UNREACHABLE: -31,
+            BROTLI_DECODER_PARAM_DISABLE_RING_BUFFER_REALLOCATION: 0,
+            BROTLI_DECODER_PARAM_LARGE_WINDOW: 1,
+        });
+        const codes = Object.freeze({
+            Z_OK: constants.Z_OK,
+            Z_STREAM_END: constants.Z_STREAM_END,
+            Z_NEED_DICT: constants.Z_NEED_DICT,
+            Z_ERRNO: constants.Z_ERRNO,
+            Z_STREAM_ERROR: constants.Z_STREAM_ERROR,
+            Z_DATA_ERROR: constants.Z_DATA_ERROR,
+            Z_MEM_ERROR: constants.Z_MEM_ERROR,
+            Z_BUF_ERROR: constants.Z_BUF_ERROR,
+            Z_VERSION_ERROR: constants.Z_VERSION_ERROR,
+        });
         const toU8 = (b) => {
             if (b instanceof Uint8Array) return b;
             if (b instanceof ArrayBuffer) return new Uint8Array(b);
+            if (ArrayBuffer.isView(b)) return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
             if (typeof b === 'string') return Buffer.from(b, 'utf8');
-            throw new TypeError('zlib: input must be Buffer, Uint8Array, ArrayBuffer, or string');
+            throw _makeInvalidArgTypeError('chunk', 'Buffer, TypedArray, DataView, ArrayBuffer, or string', b);
         };
-        // end() override: base Transform.end() never flushes — we have to
-        // feed Z_FINISH to libz ourselves and push(null) for end-of-stream.
-        class ZlibTransform extends stream.Transform {
-            constructor(inner, opts) {
-                super(opts);
-                this._inner = inner;
-                // minizlib (vendored by minipass-fetch) treats our zlib as
-                // Node's native handle and pokes _handle/_processChunk/close.
-                this._handle = { close: () => {} };
+        const levelFromOptions = (opts) => opts && typeof opts === 'object' ? opts.level : undefined;
+        const zlibRangeError = (name, min, max, value) => {
+            const err = new RangeError(`The value of "options.${name}" is out of range. It must be >= ${min} and <= ${max}. Received ${value}`);
+            err.code = 'ERR_OUT_OF_RANGE';
+            return err;
+        };
+        const validateZlibOptions = (kind, opts) => {
+            if (!opts || typeof opts !== 'object') return;
+            if (opts.windowBits !== undefined) {
+                if (typeof opts.windowBits !== 'number') {
+                    throw _makeInvalidArgTypeError('options.windowBits', 'number', opts.windowBits);
+                }
+                if (!Number.isFinite(opts.windowBits)) {
+                    const err = new RangeError(`The value of "options.windowBits" is out of range. It must be a finite number. Received ${opts.windowBits}`);
+                    err.code = 'ERR_OUT_OF_RANGE';
+                    throw err;
+                }
+                const allowZeroWindowBits = kind === 'inflate' || kind === 'gunzip' || kind === 'unzip';
+                const minWindowBits = kind === 'gzip' ? 9 : 8;
+                if (!(allowZeroWindowBits && opts.windowBits === 0) &&
+                    (opts.windowBits < minWindowBits || opts.windowBits > 15)) {
+                    throw zlibRangeError('windowBits', minWindowBits, 15, opts.windowBits);
+                }
             }
-            close() {}
-            _processChunk(chunk, _flushFlag) {
-                const u8 = toU8(chunk);
-                const out = this._inner.write(u8, _flushFlag === 4 /* Z_FINISH */);
-                return out.byteLength ? Buffer.from(out) : Buffer.alloc(0);
+        };
+        const unsupportedBrotli = () => {
+            const err = _makeNodeError('brotli is not available in this Kandelo SpiderMonkey build', 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM');
+            throw err;
+        };
+        const nativeMethod = (name) => {
+            if (typeof z[name] !== 'function') {
+                const err = _makeNodeError(`zlib native method ${name} is not available`, 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM');
+                throw err;
             }
-            _transform(chunk, _enc, cb) {
-                try {
-                    const out = this._inner.write(toU8(chunk), false);
-                    cb(null, out.byteLength ? Buffer.from(out) : null);
-                } catch (e) { cb(e); }
+            return z[name].bind(z);
+        };
+        const createInner = (kind, opts) => {
+            validateZlibOptions(kind, opts);
+            switch (kind) {
+                case 'deflate': return nativeMethod('createDeflate')(levelFromOptions(opts));
+                case 'inflate': return nativeMethod('createInflate')();
+                case 'gzip': return nativeMethod('createGzip')(levelFromOptions(opts));
+                case 'gunzip': return nativeMethod('createGunzip')();
+                case 'unzip': return (typeof z.createUnzip === 'function' ? z.createUnzip : nativeMethod('createGunzip')).call(z);
+                case 'deflateRaw': return nativeMethod('createDeflateRaw')(levelFromOptions(opts));
+                case 'inflateRaw': return nativeMethod('createInflateRaw')();
+                case 'brotliCompress':
+                case 'brotliDecompress':
+                    unsupportedBrotli();
+                    break;
             }
-            end(chunk, encoding, cb) {
-                if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
-                if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-                if (chunk != null) this.write(chunk, encoding);
-                try {
-                    const out = this._inner.write(new Uint8Array(0), true);
-                    if (out.byteLength) this.push(Buffer.from(out));
-                } catch (e) { this.emit('error', e); }
-                this.push(null);
-                this._writableState.ended = true;
-                this.emit('finish');
-                if (cb) cb();
-                return this;
-            }
+        };
+        function ZlibTransform(kind, opts) {
+            stream.Transform.call(this, opts);
+            this._kind = kind;
+            this._opts = opts || {};
+            this._inner = createInner(kind, this._opts);
+            this.bytesWritten = 0;
+            this.bytesRead = 0;
+            this._handle = {
+                close: () => this.close(),
+                reset: () => this.reset(),
+                _processChunk: (chunk, flushFlag) => this._processChunk(chunk, flushFlag),
+            };
         }
-        // minipass-fetch / tar instantiate via `new zlib.Gunzip()` / `new zlib.Unzip()`.
-        class Gunzip extends ZlibTransform { constructor(opts) { super(z.createGunzip(), opts); } }
-        class Unzip extends ZlibTransform { constructor(opts) { super(z.createGunzip(), opts); } }
-        return {
-            createGzip:    (opts) => new ZlibTransform(z.createGzip(opts?.level), opts),
-            createGunzip:  (opts) => new Gunzip(opts),
-            createDeflate: (opts) => new ZlibTransform(z.createDeflate(opts?.level), opts),
-            createInflate: (opts) => new ZlibTransform(z.createInflate(), opts),
-            gzipSync:    (b, opts) => Buffer.from(z.gzipSync(toU8(b), opts?.level)),
-            gunzipSync:  (b)       => Buffer.from(z.gunzipSync(toU8(b))),
-            deflateSync: (b, opts) => Buffer.from(z.deflateSync(toU8(b), opts?.level)),
-            inflateSync: (b)       => Buffer.from(z.inflateSync(toU8(b))),
-            Gunzip, Unzip,
+        Object.setPrototypeOf(ZlibTransform, stream.Transform);
+        ZlibTransform.prototype = Object.create(stream.Transform.prototype, {
+            constructor: { value: ZlibTransform, writable: true, configurable: true },
+        });
+        ZlibTransform.prototype._writeNative = function(chunk, finish) {
+            const u8 = toU8(chunk);
+            this.bytesWritten += u8.byteLength;
+            this.bytesRead = this.bytesWritten;
+            const out = this._inner.write(u8, !!finish);
+            return out.byteLength ? Buffer.from(out) : Buffer.alloc(0);
         };
+        ZlibTransform.prototype._processChunk = function(chunk, flushFlag) {
+            return this._writeNative(chunk, flushFlag === constants.Z_FINISH);
+        };
+        ZlibTransform.prototype._transform = function(chunk, _enc, cb) {
+            try {
+                const out = this._writeNative(chunk, false);
+                cb(null, out.byteLength ? out : null);
+            } catch (e) { cb(e); }
+        };
+        ZlibTransform.prototype._flush = function(cb) {
+            try {
+                const out = this._inner.write(new Uint8Array(0), true);
+                cb(null, out.byteLength ? Buffer.from(out) : null);
+            } catch (e) { cb(e); }
+        };
+        ZlibTransform.prototype.flush = function(kind, cb) {
+            if (typeof kind === 'function') { cb = kind; kind = constants.Z_FULL_FLUSH; }
+            try {
+                const finish = kind === constants.Z_FINISH;
+                const out = this._inner.write(new Uint8Array(0), finish);
+                if (out.byteLength) this.push(Buffer.from(out));
+                if (typeof cb === 'function') queueMicrotask(() => cb());
+            } catch (e) {
+                if (typeof cb === 'function') queueMicrotask(() => cb(e));
+                else this.emit('error', e);
+            }
+            return this;
+        };
+        ZlibTransform.prototype.params = function(_level, _strategy, cb) {
+            if (typeof cb === 'function') queueMicrotask(() => cb());
+            return this;
+        };
+        ZlibTransform.prototype.reset = function() {
+            this._inner = createInner(this._kind, this._opts);
+        };
+        ZlibTransform.prototype.close = function(cb) {
+            this.destroy();
+            if (typeof cb === 'function') queueMicrotask(cb);
+        };
+        const makeZlibCtor = (name, kind) => {
+            const Ctor = { [name]: function(opts) {
+                if (!(this instanceof Ctor)) return new Ctor(opts);
+                ZlibTransform.call(this, kind, opts);
+            } }[name];
+            Object.setPrototypeOf(Ctor, ZlibTransform);
+            Ctor.prototype = Object.create(ZlibTransform.prototype, {
+                constructor: { value: Ctor, writable: true, configurable: true },
+            });
+            return Ctor;
+        };
+        const Deflate = makeZlibCtor('Deflate', 'deflate');
+        const Inflate = makeZlibCtor('Inflate', 'inflate');
+        const Gzip = makeZlibCtor('Gzip', 'gzip');
+        const Gunzip = makeZlibCtor('Gunzip', 'gunzip');
+        const Unzip = makeZlibCtor('Unzip', 'unzip');
+        const DeflateRaw = makeZlibCtor('DeflateRaw', 'deflateRaw');
+        const InflateRaw = makeZlibCtor('InflateRaw', 'inflateRaw');
+        const BrotliCompress = makeZlibCtor('BrotliCompress', 'brotliCompress');
+        const BrotliDecompress = makeZlibCtor('BrotliDecompress', 'brotliDecompress');
+        const syncBuffer = (kind, b, opts, Ctor) => {
+            validateZlibOptions(kind, opts);
+            if (kind === 'brotliCompress' || kind === 'brotliDecompress') unsupportedBrotli();
+            const method = nativeMethod(`${kind}Sync`);
+            const buffer = Buffer.from(method(toU8(b), levelFromOptions(opts)));
+            if (opts && opts.info) return { buffer, engine: new Ctor(opts) };
+            return buffer;
+        };
+        const asyncBuffer = (kind, b, opts, cb, Ctor) => {
+            if (typeof opts === 'function') { cb = opts; opts = undefined; }
+            if (typeof cb !== 'function') throw _makeInvalidArgTypeError('callback', 'function', cb);
+            queueMicrotask(() => {
+                try { cb(null, syncBuffer(kind, b, opts, Ctor)); }
+                catch (err) { cb(err); }
+            });
+        };
+        const api = {
+            createDeflate: (opts) => new Deflate(opts),
+            createInflate: (opts) => new Inflate(opts),
+            createGzip: (opts) => new Gzip(opts),
+            createGunzip: (opts) => new Gunzip(opts),
+            createUnzip: (opts) => new Unzip(opts),
+            createDeflateRaw: (opts) => new DeflateRaw(opts),
+            createInflateRaw: (opts) => new InflateRaw(opts),
+            createBrotliCompress: (opts) => new BrotliCompress(opts),
+            createBrotliDecompress: (opts) => new BrotliDecompress(opts),
+            deflateSync: (b, opts) => syncBuffer('deflate', b, opts, Deflate),
+            inflateSync: (b, opts) => syncBuffer('inflate', b, opts, Inflate),
+            gzipSync: (b, opts) => syncBuffer('gzip', b, opts, Gzip),
+            gunzipSync: (b, opts) => syncBuffer('gunzip', b, opts, Gunzip),
+            unzipSync: (b, opts) => syncBuffer('unzip', b, opts, Unzip),
+            deflateRawSync: (b, opts) => syncBuffer('deflateRaw', b, opts, DeflateRaw),
+            inflateRawSync: (b, opts) => syncBuffer('inflateRaw', b, opts, InflateRaw),
+            brotliCompressSync: (b, opts) => syncBuffer('brotliCompress', b, opts, BrotliCompress),
+            brotliDecompressSync: (b, opts) => syncBuffer('brotliDecompress', b, opts, BrotliDecompress),
+            deflate: (b, opts, cb) => asyncBuffer('deflate', b, opts, cb, Deflate),
+            inflate: (b, opts, cb) => asyncBuffer('inflate', b, opts, cb, Inflate),
+            gzip: (b, opts, cb) => asyncBuffer('gzip', b, opts, cb, Gzip),
+            gunzip: (b, opts, cb) => asyncBuffer('gunzip', b, opts, cb, Gunzip),
+            unzip: (b, opts, cb) => asyncBuffer('unzip', b, opts, cb, Unzip),
+            deflateRaw: (b, opts, cb) => asyncBuffer('deflateRaw', b, opts, cb, DeflateRaw),
+            inflateRaw: (b, opts, cb) => asyncBuffer('inflateRaw', b, opts, cb, InflateRaw),
+            brotliCompress: (b, opts, cb) => asyncBuffer('brotliCompress', b, opts, cb, BrotliCompress),
+            brotliDecompress: (b, opts, cb) => asyncBuffer('brotliDecompress', b, opts, cb, BrotliDecompress),
+            Deflate, Inflate, Gzip, Gunzip, Unzip, DeflateRaw, InflateRaw, BrotliCompress, BrotliDecompress,
+        };
+        Object.defineProperty(api, 'constants', { value: constants, writable: false, enumerable: true, configurable: false });
+        Object.defineProperty(api, 'codes', { value: codes, writable: false, enumerable: true, configurable: false });
+        for (const key of Object.keys(constants)) {
+            Object.defineProperty(api, key, { value: constants[key], writable: false, enumerable: true, configurable: false });
+        }
+        return api;
     })(),
     'tty': {
         isatty: os.isatty,

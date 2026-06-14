@@ -1160,6 +1160,9 @@
 +struct KandeloZlibState {
 +  z_stream stream{};
 +  bool deflate = false;
++  bool multistream = false;
++  bool resetBeforeNextInput = false;
++  int windowBits = 0;
 +};
 +
 +static void KandeloZlibDestroy(KandeloZlibState* state) {
@@ -1188,6 +1191,14 @@
 +static bool KandeloZlibRun(JSContext* cx, KandeloZlibState* state,
 +                           const uint8_t* input, size_t inputLen, bool finish,
 +                           MutableHandleValue rval) {
++  if (state->resetBeforeNextInput && inputLen > 0) {
++    int rc = inflateReset2(&state->stream, state->windowBits);
++    if (rc != Z_OK) {
++      JS_ReportErrorASCII(cx, "zlib reset failed");
++      return false;
++    }
++    state->resetBeforeNextInput = false;
++  }
 +  state->stream.next_in = const_cast<Bytef*>(input);
 +  state->stream.avail_in = uInt(inputLen);
 +  const int flush = finish ? Z_FINISH : Z_NO_FLUSH;
@@ -1200,7 +1211,20 @@
 +                            : inflate(&state->stream, flush);
 +    size_t produced = sizeof(chunk) - state->stream.avail_out;
 +    out.insert(out.end(), chunk, chunk + produced);
-+    if (rc == Z_STREAM_END) break;
++    if (rc == Z_STREAM_END) {
++      if (state->multistream) {
++        if (state->stream.avail_in > 0) {
++          rc = inflateReset2(&state->stream, state->windowBits);
++          if (rc != Z_OK) {
++            JS_ReportErrorASCII(cx, "zlib reset failed");
++            return false;
++          }
++          continue;
++        }
++        state->resetBeforeNextInput = true;
++      }
++      break;
++    }
 +    if (rc == Z_BUF_ERROR && state->stream.avail_in == 0 && produced == 0) break;
 +    if (rc != Z_OK) {
 +      JS_ReportErrorASCII(cx, "%s", state->stream.msg ? state->stream.msg : "zlib error");
@@ -1263,6 +1287,8 @@
 +    return false;
 +  }
 +  state->deflate = deflateMode;
++  state->windowBits = windowBits;
++  state->multistream = !deflateMode && (windowBits == 31 || windowBits == 47);
 +  int rc = deflateMode
 +               ? deflateInit2(&state->stream, level, Z_DEFLATED, windowBits, 8,
 +                              Z_DEFAULT_STRATEGY)
@@ -1320,6 +1346,25 @@
 +  return KandeloMakeZlib(cx, false, 31, 0, args.rval());
 +}
 +
++static bool KandeloNativeCreateUnzip(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloMakeZlib(cx, false, 47, 0, args.rval());
++}
++
++static bool KandeloNativeCreateDeflateRaw(JSContext* cx, unsigned argc,
++                                          Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int level = args.length() ? KandeloNormalizeZlibLevel(cx, args[0])
++                            : Z_DEFAULT_COMPRESSION;
++  return KandeloMakeZlib(cx, true, -15, level, args.rval());
++}
++
++static bool KandeloNativeCreateInflateRaw(JSContext* cx, unsigned argc,
++                                          Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloMakeZlib(cx, false, -15, 0, args.rval());
++}
++
 +static bool KandeloZlibOneShot(JSContext* cx, const CallArgs& args,
 +                               bool deflateMode, int windowBits, int level) {
 +  if (args.length() < 1) {
@@ -1362,6 +1407,25 @@
 +static bool KandeloNativeGunzipSync(JSContext* cx, unsigned argc, Value* vp) {
 +  CallArgs args = CallArgsFromVp(argc, vp);
 +  return KandeloZlibOneShot(cx, args, false, 31, 0);
++}
++
++static bool KandeloNativeUnzipSync(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloZlibOneShot(cx, args, false, 47, 0);
++}
++
++static bool KandeloNativeDeflateRawSync(JSContext* cx, unsigned argc,
++                                        Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int level = args.length() >= 2 ? KandeloNormalizeZlibLevel(cx, args[1])
++                                 : Z_DEFAULT_COMPRESSION;
++  return KandeloZlibOneShot(cx, args, true, -15, level);
++}
++
++static bool KandeloNativeInflateRawSync(JSContext* cx, unsigned argc,
++                                        Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  return KandeloZlibOneShot(cx, args, false, -15, 0);
 +}
 +
 +static int KandeloResolveHost(const char* host, struct in_addr* out) {
@@ -1903,10 +1967,16 @@
 +      JS_FN("createInflate", KandeloNativeCreateInflate, 0, 0),
 +      JS_FN("createGzip", KandeloNativeCreateGzip, 1, 0),
 +      JS_FN("createGunzip", KandeloNativeCreateGunzip, 0, 0),
++      JS_FN("createUnzip", KandeloNativeCreateUnzip, 0, 0),
++      JS_FN("createDeflateRaw", KandeloNativeCreateDeflateRaw, 1, 0),
++      JS_FN("createInflateRaw", KandeloNativeCreateInflateRaw, 0, 0),
 +      JS_FN("deflateSync", KandeloNativeDeflateSync, 2, 0),
 +      JS_FN("inflateSync", KandeloNativeInflateSync, 1, 0),
 +      JS_FN("gzipSync", KandeloNativeGzipSync, 2, 0),
 +      JS_FN("gunzipSync", KandeloNativeGunzipSync, 1, 0),
++      JS_FN("unzipSync", KandeloNativeUnzipSync, 1, 0),
++      JS_FN("deflateRawSync", KandeloNativeDeflateRawSync, 2, 0),
++      JS_FN("inflateRawSync", KandeloNativeInflateRawSync, 1, 0),
 +      JS_FN("socketConnect", KandeloNativeSocketConnect, 2, 0),
 +      JS_FN("socketRead", KandeloNativeSocketRead, 2, 0),
 +      JS_FN("socketWrite", KandeloNativeSocketWrite, 2, 0),
