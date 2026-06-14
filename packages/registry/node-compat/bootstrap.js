@@ -215,6 +215,12 @@ function _makeInvalidArgTypeError(name, expected, value) {
     return err;
 }
 
+function _makeInvalidArgValueError(name, value) {
+    const err = new TypeError(`The "${name}" argument is invalid. Received ${util.inspect(value)}`);
+    err.code = 'ERR_INVALID_ARG_VALUE';
+    return err;
+}
+
 function _validateString(value, name) {
     if (typeof value !== 'string') {
         throw _makeInvalidArgTypeError(name, 'string', value);
@@ -817,10 +823,30 @@ const Buffer = (() => {
 // process module
 // ============================================================
 
+const _activeResources = new Map();
+let _nextActiveResourceId = 1;
+
+function _trackActiveResource(type) {
+    const id = _nextActiveResourceId++;
+    _activeResources.set(id, type);
+    return id;
+}
+
+function _untrackActiveResource(id) {
+    if (id) _activeResources.delete(id);
+}
+
 const process = (() => {
     const [cwd_val] = os.getcwd();
     let _cwd = cwd_val || '/';
     const _env = {};
+    let _uid = 0;
+    let _gid = 0;
+    let _euid = 0;
+    let _egid = 0;
+    let _groups = [0];
+    let _umask = 0o022;
+    let _uncaughtExceptionCaptureCallback = null;
 
     // Populate env from /proc/self/environ or common vars
     for (const key of ['HOME', 'USER', 'PATH', 'SHELL', 'TERM', 'LANG', 'PWD',
@@ -863,8 +889,134 @@ const process = (() => {
         },
     });
 
-    // Create process as an EventEmitter instance without calling the class constructor
-    const proc = new events.EventEmitter();
+    function _actualArgType(value) {
+        if (value === null) return 'null';
+        if (value === undefined) return 'undefined';
+        if (Array.isArray(value)) return 'an instance of Array';
+        if (typeof value === 'object') return `an instance of ${value.constructor && value.constructor.name || 'Object'}`;
+        if (typeof value === 'function') return 'type function';
+        return `type ${typeof value}${typeof value === 'number' ? ` (${value})` : ''}`;
+    }
+
+    function _makeOneOfTypeError(name, expected, value) {
+        const err = new TypeError(`The "${name}" argument must be one of type ${expected}. Received ${_actualArgType(value)}`);
+        err.code = 'ERR_INVALID_ARG_TYPE';
+        return err;
+    }
+
+    function _unknownCredential(kind, value) {
+        const err = new Error(`${kind} identifier does not exist: ${value}`);
+        err.code = 'ERR_UNKNOWN_CREDENTIAL';
+        return err;
+    }
+
+    function _credentialValue(kind, value, name) {
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value) || value < 0 || value > 0xffffffff) {
+                const err = new RangeError(`The value of "${name}" is out of range. It must be >= 0 && <= 4294967295. Received ${value}`);
+                err.code = 'ERR_OUT_OF_RANGE';
+                throw err;
+            }
+            return value >>> 0;
+        }
+        if (typeof value === 'string') {
+            if (/^(?:0|[1-9]\d*)$/.test(value)) return Number(value) >>> 0;
+            if (kind === 'User' && value === 'nobody') return 65534;
+            if (kind === 'Group' && (value === 'nogroup' || value === 'nobody')) return 65534;
+            throw _unknownCredential(kind, value);
+        }
+        throw _makeOneOfTypeError(name, 'number or string', value);
+    }
+
+    function _validateCredentialInput(name, value) {
+        if (typeof value !== 'number' && typeof value !== 'string') {
+            throw _makeOneOfTypeError(name, 'number or string', value);
+        }
+    }
+
+    function _parseUmask(mask) {
+        if (typeof mask === 'number') {
+            if (!Number.isFinite(mask)) throw _makeInvalidArgValueError('mask', mask);
+            return (mask >>> 0) & 0o777;
+        }
+        if (typeof mask === 'string') {
+            if (!/^[0-7]+$/.test(mask)) throw _makeInvalidArgValueError('mask', mask);
+            return parseInt(mask, 8) & 0o777;
+        }
+        throw _makeInvalidArgTypeError('mask', 'number or string', mask);
+    }
+
+    function _rssMemory() {
+        return 16 * 1024 * 1024;
+    }
+
+    function memoryUsage() {
+        const rss = _rssMemory();
+        return {
+            rss,
+            heapTotal: 8 * 1024 * 1024,
+            heapUsed: 4 * 1024 * 1024,
+            external: 1,
+            arrayBuffers: 0,
+        };
+    }
+    memoryUsage.rss = _rssMemory;
+
+    const _knownPermissionScopes = new Set([
+        'fs', 'fs.read', 'fs.write',
+        'child', 'worker', 'addons', 'inspector',
+    ]);
+
+    function _makeWarning(warning, typeOrOptions, codeOrCtor, ctor) {
+        if (warning instanceof Error) return warning;
+        if (typeof warning !== 'string') {
+            throw _makeInvalidArgTypeError('warning', 'string or an instance of Error', warning);
+        }
+
+        let type = 'Warning';
+        let code;
+        let detail;
+        if (typeof typeOrOptions === 'object' && typeOrOptions !== null) {
+            if (typeof typeOrOptions.type === 'string') type = typeOrOptions.type;
+            if (typeof typeOrOptions.code === 'string') code = typeOrOptions.code;
+            if (typeof typeOrOptions.detail === 'string') detail = typeOrOptions.detail;
+            if (typeof typeOrOptions.ctor === 'function') ctor = typeOrOptions.ctor;
+        } else if (typeof typeOrOptions === 'function') {
+            ctor = typeOrOptions;
+        } else if (typeOrOptions !== undefined) {
+            if (typeof typeOrOptions !== 'string') {
+                throw _makeInvalidArgTypeError('type', 'string', typeOrOptions);
+            }
+            type = typeOrOptions || 'Warning';
+        }
+
+        if (codeOrCtor !== undefined) {
+            if (typeof codeOrCtor === 'function') {
+                ctor = codeOrCtor;
+            } else if (typeof codeOrCtor === 'string') {
+                code = codeOrCtor;
+            } else {
+                throw _makeInvalidArgTypeError('code', 'string', codeOrCtor);
+            }
+        }
+
+        let err;
+        if (typeof ctor === 'function') {
+            err = new ctor();
+            if (!(err instanceof Error)) err = new Error(warning);
+            if (!err.message) err.message = warning;
+        } else {
+            err = new Error(warning);
+            err.name = type;
+        }
+        if (code !== undefined) err.code = code;
+        if (detail !== undefined) err.detail = detail;
+        return err;
+    }
+
+    class Process extends events.EventEmitter {}
+
+    const proc = new Process();
 
     Object.assign(proc, {
         title: 'node',
@@ -884,9 +1036,12 @@ const process = (() => {
         execArgv: [],
         execPath: '/usr/bin/node',
         pid: os.getpid(),
-        ppid: 0,  // Not easily available
+        ppid: 1,  // No host parent is exposed; use init as the stable parent.
         exitCode: 0,
         _exiting: false,
+        noDeprecation: false,
+        throwDeprecation: false,
+        traceDeprecation: false,
 
         cwd() { return _cwd; },
         chdir(dir) {
@@ -944,9 +1099,7 @@ const process = (() => {
             }
         }),
 
-        memoryUsage() {
-            return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 };
-        },
+        memoryUsage,
 
         cpuUsage(prev) {
             const usage = { user: 0, system: 0 };
@@ -968,12 +1121,129 @@ const process = (() => {
         },
 
         umask(mask) {
-            // TODO: implement via syscall
-            if (mask !== undefined) return 0o022;
-            return 0o022;
+            const old = _umask;
+            if (mask !== undefined) _umask = _parseUmask(mask);
+            return old;
         },
 
-        features: {},
+        getuid() { return _uid; },
+        geteuid() { return _euid; },
+        getgid() { return _gid; },
+        getegid() { return _egid; },
+        setuid(id) { _uid = _euid = _credentialValue('User', id, 'id'); },
+        seteuid(id) { _euid = _credentialValue('User', id, 'id'); },
+        setgid(id) { _gid = _egid = _credentialValue('Group', id, 'id'); },
+        setegid(id) { _egid = _credentialValue('Group', id, 'id'); },
+        getgroups() { return _groups.slice(); },
+        setgroups(groups) {
+            if (!Array.isArray(groups)) {
+                const err = new TypeError(`The "groups" argument must be an instance of Array. Received ${_actualArgType(groups)}`);
+                err.code = 'ERR_INVALID_ARG_TYPE';
+                throw err;
+            }
+            _groups = groups.map((group, index) => _credentialValue('Group', group, `groups[${index}]`));
+        },
+        initgroups(user, extraGroup) {
+            _validateCredentialInput('user', user);
+            _validateCredentialInput('extraGroup', extraGroup);
+            const group = _credentialValue('Group', extraGroup, 'extraGroup');
+            _credentialValue('User', user, 'user');
+            _groups = Array.from(new Set([_gid, group]));
+        },
+
+        permission: {
+            has(scope, reference) {
+                _validateString(scope, 'scope');
+                if (reference !== undefined) _validateString(reference, 'reference');
+                return _knownPermissionScopes.has(scope);
+            },
+        },
+
+        getActiveResourcesInfo() {
+            return Array.from(_activeResources.values());
+        },
+        _getActiveHandles() { return []; },
+        _getActiveRequests() { return []; },
+
+        resourceUsage() {
+            return {
+                userCPUTime: 0,
+                systemCPUTime: 0,
+                maxRSS: Math.ceil(_rssMemory() / 1024),
+                sharedMemorySize: 0,
+                unsharedDataSize: 0,
+                unsharedStackSize: 0,
+                minorPageFault: 0,
+                majorPageFault: 0,
+                swappedOut: 0,
+                fsRead: 0,
+                fsWrite: 0,
+                ipcSent: 0,
+                ipcReceived: 0,
+                signalsCount: 0,
+                voluntaryContextSwitches: 0,
+                involuntaryContextSwitches: 0,
+            };
+        },
+        availableMemory() { return 64 * 1024 * 1024; },
+        constrainedMemory() { return 0; },
+
+        emitWarning(warning, typeOrOptions, codeOrCtor, ctor) {
+            const err = _makeWarning(warning, typeOrOptions, codeOrCtor, ctor);
+            if (err.name === 'DeprecationWarning' && proc.noDeprecation) return;
+            queueMicrotask(() => {
+                if (err.name === 'DeprecationWarning' && proc.throwDeprecation) {
+                    if (!proc.emit('uncaughtException', err)) throw err;
+                    return;
+                }
+                proc.emit('warning', err);
+            });
+        },
+
+        setUncaughtExceptionCaptureCallback(fn) {
+            if (fn !== null && typeof fn !== 'function') {
+                const err = new TypeError(`The "fn" argument must be of type function or null. Received type ${typeof fn}${typeof fn === 'number' ? ` (${fn})` : ''}`);
+                err.code = 'ERR_INVALID_ARG_TYPE';
+                throw err;
+            }
+            if (fn && _uncaughtExceptionCaptureCallback) {
+                const err = new Error('setupUncaughtExceptionCapture called while a capture callback is already active');
+                err.code = 'ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET';
+                throw err;
+            }
+            _uncaughtExceptionCaptureCallback = fn;
+        },
+        hasUncaughtExceptionCaptureCallback() {
+            return _uncaughtExceptionCaptureCallback !== null;
+        },
+        _handleUncaughtException(err) {
+            if (_uncaughtExceptionCaptureCallback) {
+                _uncaughtExceptionCaptureCallback(err);
+                return true;
+            }
+            if (proc.emit('uncaughtExceptionMonitor', err)) {
+                // Monitors observe only; regular handlers still decide fate.
+            }
+            return proc.emit('uncaughtException', err);
+        },
+
+        assert(value, message) {
+            if (value) return;
+            proc.emitWarning(
+                'process.assert() is deprecated. Please use the `assert` module instead.',
+                'DeprecationWarning',
+                'DEP0100',
+            );
+            const err = new Error(message || 'assertion error');
+            err.code = 'ERR_ASSERTION';
+            throw err;
+        },
+
+        binding(name) {
+            return _processBinding(String(name));
+        },
+
+        features: { inspector: false, debug: false, uv: false, ipv6: true, tls: true },
         config: { variables: {} },
         release: { name: 'node' },
         moduleLoadList: [],
@@ -2182,14 +2452,20 @@ const util = (() => {
         isRegExp(v) { return v instanceof RegExp; },
         isNativeError(v) { return v instanceof Error; },
         isPromise(v) { return v instanceof Promise; },
+        isAsyncFunction(v) { return typeof v === 'function' && v.constructor && v.constructor.name === 'AsyncFunction'; },
         isArrayBuffer(v) { return v instanceof ArrayBuffer; },
+        isAnyArrayBuffer(v) { return v instanceof ArrayBuffer || (typeof SharedArrayBuffer === 'function' && v instanceof SharedArrayBuffer); },
+        isArrayBufferView(v) { return ArrayBuffer.isView(v); },
         isTypedArray(v) { return ArrayBuffer.isView(v) && !(v instanceof DataView); },
         isMap(v) { return v instanceof Map; },
         isSet(v) { return v instanceof Set; },
+        isMapIterator(v) { return Object.prototype.toString.call(v) === '[object Map Iterator]'; },
+        isSetIterator(v) { return Object.prototype.toString.call(v) === '[object Set Iterator]'; },
         isWeakMap(v) { return v instanceof WeakMap; },
         isWeakSet(v) { return v instanceof WeakSet; },
         isDataView(v) { return v instanceof DataView; },
         isUint8Array(v) { return v instanceof Uint8Array; },
+        isExternal(_v) { return false; },
     };
 
     // Node's util.formatWithOptions(opts, ...args). Our inspect() ignores
@@ -3050,26 +3326,49 @@ const timers = (() => {
     // int64 timer id. Node returns an object with .unref()/.refresh(); npm's
     // Display calls both on its spinner timers, so wrap the id in an object.
     // clearAny() unwraps _id when the wrapper is passed back to clear*().
-    const wrap = (id) => ({ _id: id, unref() { return this; }, refresh() { return this; } });
+    const wrap = (id, resourceId) => ({
+        _id: id,
+        _resourceId: resourceId,
+        unref() { return this; },
+        ref() { return this; },
+        hasRef() { return true; },
+        refresh() { return this; },
+    });
     const clearAny = (t) => {
         if (t == null) return;
+        if (typeof t === 'object') _untrackActiveResource(t._resourceId);
         os.clearTimeout(typeof t === 'object' ? t._id : t);
     };
     return {
-        setTimeout: (fn, ms, ...args) =>
-            wrap(os.setTimeout(() => fn(...args), ms || 0)),
+        setTimeout: (fn, ms, ...args) => {
+            const resourceId = _trackActiveResource('Timeout');
+            const t = wrap(0, resourceId);
+            t._id = os.setTimeout(() => {
+                try { fn(...args); }
+                finally { _untrackActiveResource(resourceId); }
+            }, ms || 0);
+            return t;
+        },
         clearTimeout: clearAny,
         setInterval: (fn, ms, ...args) => {
             // _id is rewritten on every tick so the latest live id is what
             // clearInterval cancels.
-            const t = wrap(0);
+            const resourceId = _trackActiveResource('Timeout');
+            const t = wrap(0, resourceId);
             const tick = () => { fn(...args); t._id = os.setTimeout(tick, ms || 0); };
             t._id = os.setTimeout(tick, ms || 0);
             return t;
         },
         clearInterval: clearAny,
-        setImmediate: (fn, ...args) =>
-            wrap(os.setTimeout(() => fn(...args), 0)),
+        setImmediate: (fn, ...args) => {
+            const resourceId = _trackActiveResource('Immediate');
+            const t = wrap(0, resourceId);
+            t._id = os.setTimeout(() => {
+                _untrackActiveResource(resourceId);
+                fn(...args);
+            }, 0);
+            return t;
+        },
         clearImmediate: clearAny,
     };
 })();
@@ -5439,6 +5738,79 @@ const _builtinModules = {
     },
 };
 
+const _processBindingCache = Object.create(null);
+
+function _nullProto(value) {
+    return Object.assign(Object.create(null), value || {});
+}
+
+function _processBinding(name) {
+    if (_processBindingCache[name]) return _processBindingCache[name];
+    if (name === 'util') {
+        const selected = [
+            'isAnyArrayBuffer',
+            'isArrayBuffer',
+            'isArrayBufferView',
+            'isAsyncFunction',
+            'isDataView',
+            'isDate',
+            'isExternal',
+            'isMap',
+            'isMapIterator',
+            'isNativeError',
+            'isPromise',
+            'isRegExp',
+            'isSet',
+            'isSetIterator',
+            'isTypedArray',
+            'isUint8Array',
+        ];
+        const out = {};
+        for (const key of selected) out[key] = util.types[key];
+        return (_processBindingCache[name] = out);
+    }
+    if (name === 'constants') {
+        return (_processBindingCache[name] = _nullProto({
+            crypto: _nullProto({}),
+            fs: _nullProto(fs.constants),
+            os: _nullProto({
+                UV_UDP_REUSEADDR: 4,
+                dlopen: _nullProto({ RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0 }),
+                errno: _nullProto(nodeOs.constants.errno),
+                priority: _nullProto({ PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 }),
+                signals: _nullProto(nodeOs.constants.signals),
+            }),
+            trace: _nullProto({}),
+            zlib: _nullProto({}),
+        }));
+    }
+    if (name === 'uv') {
+        return (_processBindingCache[name] = _nullProto({
+            UV_UDP_REUSEADDR: 4,
+        }));
+    }
+    if (name === 'buffer') {
+        return (_processBindingCache[name] = _nullProto({
+            kMaxLength: Buffer.kMaxLength,
+        }));
+    }
+    if (name === 'natives') {
+        return (_processBindingCache[name] = _builtinModules);
+    }
+    const allowlist = new Set([
+        'async_wrap', 'cares_wrap', 'contextify', 'crypto', 'fs',
+        'fs_event_wrap', 'http_parser', 'icu', 'inspector', 'js_stream',
+        'os', 'pipe_wrap', 'signal_wrap', 'spawn_sync', 'stream_wrap',
+        'tcp_wrap', 'tls_wrap', 'tty_wrap', 'udp_wrap', 'url', 'v8', 'zlib',
+    ]);
+    if (allowlist.has(name)) {
+        return (_processBindingCache[name] = _nullProto({}));
+    }
+    const err = new Error(`No such module: ${name}`);
+    err.code = 'ERR_INVALID_MODULE';
+    throw err;
+}
+
 // Node exposes `node:module` as the CJS Module class itself: a
 // constructor that doubles as the namespace for createRequire / _cache
 // / _nodeModulePaths / etc., with a self-ref `Module.Module === Module`.
@@ -5774,7 +6146,19 @@ function _rewriteStaticEsmImports(source) {
 
 function _runCommonJsMain(filename) {
     const mainRequire = _makeRequire(filename);
-    mainRequire(filename);
+    try {
+        mainRequire(filename);
+    } catch (err) {
+        try {
+            if (!process._handleUncaughtException(err)) {
+                console.error(_formatThrownFailure(err));
+                process.exitCode = process.exitCode || 1;
+            }
+        } catch (handlerErr) {
+            console.error(_formatThrownFailure(handlerErr));
+            process.exitCode = process.exitCode || 1;
+        }
+    }
     if (typeof drainJobQueue === 'function') drainJobQueue();
     process.exit(process.exitCode || 0);
 }
@@ -5823,8 +6207,15 @@ function _runEsmMain(filename, source) {
         }
     }
     if (failure) {
-        console.error(_formatThrownFailure(failure));
-        process.exitCode = process.exitCode || 1;
+        try {
+            if (!process._handleUncaughtException(failure)) {
+                console.error(_formatThrownFailure(failure));
+                process.exitCode = process.exitCode || 1;
+            }
+        } catch (handlerErr) {
+            console.error(_formatThrownFailure(handlerErr));
+            process.exitCode = process.exitCode || 1;
+        }
     }
     process.exit(process.exitCode || 0);
 }
