@@ -16,6 +16,7 @@ const SERVER_HOST = "127.0.0.1";
 const SERVER_PORT = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_PORT ?? 5312);
 const DEFAULT_TIMEOUT_MS = Number(process.env.SPIDERMONKEY_WRAPPER_TIMEOUT_MS ?? 600_000);
 const SHUTDOWN_TIMEOUT_MS = Number(process.env.SPIDERMONKEY_BROWSER_JS_SHELL_SHUTDOWN_TIMEOUT_MS ?? 10_000);
+const CHROMIUM_ARGS = ["--enable-features=SharedArrayBuffer"];
 
 interface RunRequest {
   argv: string[];
@@ -266,6 +267,13 @@ async function openPage(browser: Browser): Promise<Page> {
   return page;
 }
 
+async function launchBrowser(reason: string): Promise<Browser> {
+  if (reason) {
+    console.error(`[browser js shell bridge] launching Chromium after ${reason}`);
+  }
+  return chromium.launch({ args: CHROMIUM_ARGS });
+}
+
 function readJsonBody(req: IncomingMessage): Promise<RunRequest> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -298,16 +306,45 @@ async function main() {
   }
 
   viteProcess = await startViteServer();
-  browserInstance = await chromium.launch({
-    args: ["--enable-features=SharedArrayBuffer"],
-  });
+  browserInstance = await launchBrowser("bridge startup");
   let page = await openPage(browserInstance);
   let queue = Promise.resolve();
+
+  async function relaunchBrowser(reason: string): Promise<Browser> {
+    console.error(`[browser js shell bridge] relaunching Chromium after ${reason}`);
+    const previousBrowser = browserInstance;
+    browserInstance = null;
+    if (previousBrowser) {
+      await Promise.race([
+        previousBrowser.close().catch(() => {}),
+        delay(SHUTDOWN_TIMEOUT_MS),
+      ]);
+    }
+    browserInstance = await launchBrowser(reason);
+    return browserInstance;
+  }
+
+  async function ensureBrowser(reason: string): Promise<Browser> {
+    if (browserInstance?.isConnected()) {
+      return browserInstance;
+    }
+    return relaunchBrowser(reason);
+  }
 
   async function reopenPage(reason: string): Promise<void> {
     console.error(`[browser js shell bridge] reopening page after ${reason}`);
     await page.context().close().catch(() => {});
-    page = await openPage(browserInstance!);
+    let browser = await ensureBrowser(reason);
+    try {
+      page = await openPage(browser);
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      if (!isPageContextLoss(message)) {
+        throw err;
+      }
+      browser = await relaunchBrowser(`${reason}; openPage failed: ${message}`);
+      page = await openPage(browser);
+    }
   }
 
   async function runInPage(body: RunRequest): Promise<RunResult> {
