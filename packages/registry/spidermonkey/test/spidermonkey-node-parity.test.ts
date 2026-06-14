@@ -475,6 +475,169 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility parity", () => {
     });
   });
 
+  describe("diagnostics_channel", () => {
+    it("tracks channel identity, subscriptions, and hasSubscribers", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const dc = require('diagnostics_channel');
+        const { Channel } = dc;
+        const seen = [];
+        const channel = dc.channel('probe');
+        assert.strictEqual(channel, dc.channel('probe'));
+        assert.ok(channel instanceof Channel);
+        assert.strictEqual(channel.hasSubscribers, false);
+        assert.strictEqual(dc.hasSubscribers('probe'), false);
+        const subscriber = (message, name) => seen.push([message.value, name]);
+        assert.strictEqual(dc.subscribe('probe', subscriber), undefined);
+        assert.strictEqual(channel.hasSubscribers, true);
+        assert.strictEqual(dc.hasSubscribers('probe'), true);
+        channel.publish({ value: 1 });
+        assert.strictEqual(dc.unsubscribe('probe', subscriber), true);
+        assert.strictEqual(dc.unsubscribe('probe', subscriber), false);
+        assert.strictEqual(channel.hasSubscribers, false);
+        channel.publish({ value: 2 });
+        const symbol = Symbol('named');
+        dc.channel(symbol).subscribe((message, name) => seen.push([message.value, name === symbol]));
+        dc.channel(symbol).publish({ value: 3 });
+        assert.throws(() => channel.subscribe(null), { code: 'ERR_INVALID_ARG_TYPE' });
+        process.stdout.write(JSON.stringify(seen));
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([
+        [1, "probe"],
+        [3, true],
+      ]);
+    });
+
+    it("runs bound stores through channel and tracing operations", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const { AsyncLocalStorage } = require('async_hooks');
+        const dc = require('diagnostics_channel');
+        const store = new AsyncLocalStorage();
+        const channel = dc.channel('stores');
+        const seen = [];
+        channel.bindStore(store, (data) => ({ data }));
+        assert.strictEqual(channel.hasSubscribers, true);
+        channel.runStores('outer', function(arg) {
+          seen.push(['runStores', this.label, arg, store.getStore().data]);
+        }, { label: 'thisArg' }, 'arg');
+        const ordered = dc.channel('ordered-stores');
+        const firstStore = new AsyncLocalStorage();
+        const secondStore = new AsyncLocalStorage();
+        ordered.bindStore(firstStore, () => {
+          seen.push(['transform', 'first']);
+          return 'first';
+        });
+        ordered.bindStore(secondStore, () => {
+          seen.push(['transform', 'second']);
+          return 'second';
+        });
+        ordered.runStores('ordered', () => {
+          seen.push(['ordered', firstStore.getStore(), secondStore.getStore()]);
+        });
+
+        const tracing = dc.tracingChannel('trace');
+        assert.strictEqual(tracing.start.name, 'tracing:trace:start');
+        tracing.start.bindStore(store, () => ({ phase: 'start' }));
+        tracing.asyncStart.bindStore(store, () => ({ phase: 'asyncStart' }));
+        tracing.subscribe({
+          start: (ctx) => seen.push(['start', ctx.input, store.getStore().phase]),
+          end: (ctx) => seen.push(['end', ctx.result]),
+          asyncStart: (ctx) => seen.push(['asyncStart', ctx.result, store.getStore().phase]),
+          asyncEnd: (ctx) => seen.push(['asyncEnd', ctx.result]),
+          error: (ctx) => seen.push(['error', ctx.error && ctx.error.message]),
+        });
+        const result = tracing.traceSync(function(value) {
+          seen.push(['body', value, store.getStore().phase]);
+          return 'sync-result';
+        }, { input: 'sync' }, null, 42);
+        assert.strictEqual(result, 'sync-result');
+        tracing.traceCallback(function(cb) {
+          seen.push(['callback-body', store.getStore().phase]);
+          setImmediate(cb, null, 'callback-result');
+        }, 0, { input: 'callback' }, null, (err, value) => {
+          assert.strictEqual(err, null);
+          seen.push(['callback', value, store.getStore().phase]);
+          process.stdout.write(JSON.stringify(seen));
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([
+        ["runStores", "thisArg", "arg", "outer"],
+        ["transform", "second"],
+        ["transform", "first"],
+        ["ordered", "first", "second"],
+        ["start", "sync", "start"],
+        ["body", 42, "start"],
+        ["end", "sync-result"],
+        ["start", "callback", "start"],
+        ["callback-body", "start"],
+        ["end", null],
+        ["asyncStart", "callback-result", "asyncStart"],
+        ["callback", "callback-result", "asyncStart"],
+        ["asyncEnd", "callback-result"],
+      ]);
+    });
+
+    it("handles tracing promise/error paths and argument validation", async () => {
+      const result = await runNodeScript(`
+        const assert = require('assert');
+        const dc = require('diagnostics_channel');
+        const seen = [];
+        const tracing = dc.tracingChannel({
+          start: dc.channel('custom:start'),
+          end: dc.channel('custom:end'),
+          asyncStart: dc.channel('custom:asyncStart'),
+          asyncEnd: dc.channel('custom:asyncEnd'),
+          error: dc.channel('custom:error'),
+        });
+        tracing.subscribe({
+          start: (ctx) => seen.push(['start', ctx.kind]),
+          end: (ctx) => seen.push(['end', ctx.kind]),
+          asyncStart: (ctx) => seen.push(['asyncStart', ctx.kind, ctx.result || ctx.error.message]),
+          asyncEnd: (ctx) => seen.push(['asyncEnd', ctx.kind]),
+          error: (ctx) => seen.push(['error', ctx.kind, ctx.error.message]),
+        });
+        assert.throws(() => dc.tracingChannel(0), { code: 'ERR_INVALID_ARG_TYPE' });
+        assert.throws(() => dc.tracingChannel({ start: '' }), { code: 'ERR_INVALID_ARG_TYPE' });
+        const expected = new Error('boom');
+        try {
+          tracing.traceSync(() => { throw expected; }, { kind: 'sync-error' });
+        } catch (err) {
+          assert.strictEqual(err, expected);
+        }
+        tracing.tracePromise(() => Promise.resolve('ok'), { kind: 'promise-ok' }).then(() =>
+          tracing.tracePromise(() => Promise.reject(expected), { kind: 'promise-error' }),
+          assert.fail,
+        ).then(assert.fail, () => {
+          process.stdout.write(JSON.stringify(seen));
+        });
+      `);
+
+      expect(result.stderr).toBe("");
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([
+        ["start", "sync-error"],
+        ["error", "sync-error", "boom"],
+        ["end", "sync-error"],
+        ["start", "promise-ok"],
+        ["end", "promise-ok"],
+        ["asyncStart", "promise-ok", "ok"],
+        ["asyncEnd", "promise-ok"],
+        ["start", "promise-error"],
+        ["end", "promise-error"],
+        ["error", "promise-error", "boom"],
+        ["asyncStart", "promise-error", "boom"],
+        ["asyncEnd", "promise-error"],
+      ]);
+    });
+  });
+
   describe.skipIf(!hasNpm)("npm-oriented CommonJS compatibility", () => {
     it("supports EventEmitter class extension and proc-log output events", async () => {
       const result = await runNodeScriptOnHostFs(`
