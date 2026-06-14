@@ -244,25 +244,41 @@ function selectManifestTests(manifest: Manifest, options: Options): SelectedTest
     });
 }
 
+function manifestOverridesByPath(manifest: Manifest): Map<string, ManifestTest> {
+  const overrides = new Map<string, ManifestTest>();
+  for (const test of manifest.tests) {
+    overrides.set(normalizeOfficialPath(test.path), {
+      ...test,
+      path: normalizeOfficialPath(test.path),
+    });
+  }
+  return overrides;
+}
+
 function selectFullSuiteTests(manifest: Manifest, sourceDir: string, options: Options): SelectedTest[] {
   const defaultTimeoutMs = options.timeoutMs ?? manifest.defaults?.timeoutMs ?? 30_000;
   const parallelDir = join(sourceDir, "test/parallel");
+  const overrides = manifestOverridesByPath(manifest);
   return walkFiles(parallelDir)
     .map((file) => normalizeOfficialPath(relative(sourceDir, file)))
     .filter((path) => /^test\/parallel\/test-.+\.js$/.test(path))
     .map((path): SelectedTest => {
       const area = areaForOfficialParallelTest(path);
-      const reason = "Discovered from upstream Node v22.0.0 test/parallel/test-*.js; full-suite mode has no pre-run exclusions.";
+      const override = overrides.get(path);
+      const hostOverride = override?.hosts?.[options.host];
+      const expected = hostOverride?.expected ?? override?.expected ?? "PASS";
+      const reason = hostOverride?.reason ?? override?.reason ??
+        "Discovered from upstream Node v22.0.0 test/parallel/test-*.js; expected to pass unless this test has an explicit post-triage manifest override.";
       return {
         spec: {
           path,
-          area,
-          expected: "PASS",
+          area: override?.area ?? area,
+          expected,
           reason,
         },
-        expected: "PASS",
+        expected,
         reason,
-        timeoutMs: defaultTimeoutMs,
+        timeoutMs: options.timeoutMs ?? hostOverride?.timeoutMs ?? override?.timeoutMs ?? defaultTimeoutMs,
       };
     })
     .filter((test) => options.areas.size === 0 || options.areas.has(test.spec.area))
@@ -1093,18 +1109,21 @@ async function main(): Promise<void> {
 
   source ??= ensureSource(manifest, options);
   validateOfficialFiles(source.dir, selected);
-  const runtimePath = await resolveRuntime(options.runtimePath);
   const resultsDir = makeResultsDir(options);
   mkdirSync(join(resultsDir, "stdout"), { recursive: true });
   mkdirSync(join(resultsDir, "stderr"), { recursive: true });
   writeUsedManifest(manifest, options, selected, resultsDir);
-  const preludePath = writePrelude(resultsDir);
 
   const runnable = selected.filter((test) => test.expected !== "SKIP");
   const skipped = selected.filter((test) => test.expected === "SKIP");
   const recorded: RecordedResult[] = skipped.map((test) => skippedResult(test, options.host, resultsDir));
+  let runtimePath = "(not resolved: all selected tests skipped)";
 
-  if (options.host === "node") {
+  if (runnable.length === 0) {
+    // No runtime binary is required to verify explicit support-boundary skips.
+  } else if (options.host === "node") {
+    runtimePath = await resolveRuntime(options.runtimePath);
+    const preludePath = writePrelude(resultsDir);
     const jobs = options.jobs ?? manifest.defaults?.jobs ?? 1;
     const programBytes = loadBytes(runtimePath);
     const nodeResults = await runWithConcurrency(runnable, jobs, async (test) => {
@@ -1113,6 +1132,8 @@ async function main(): Promise<void> {
     });
     recorded.push(...nodeResults);
   } else {
+    runtimePath = await resolveRuntime(options.runtimePath);
+    const preludePath = writePrelude(resultsDir);
     const jobs = options.jobs ?? manifest.defaults?.jobs ?? 1;
     const browserResults = await runBrowserTests(runnable, source.dir, preludePath, runtimePath, resultsDir, jobs);
     for (const test of runnable) {
