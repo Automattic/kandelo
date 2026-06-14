@@ -14,10 +14,19 @@
         }
     }
 
+    function defineAdapterGlobal(name, value) {
+        Object.defineProperty(globalThis, name, {
+            value,
+            writable: true,
+            configurable: true,
+            enumerable: false,
+        });
+    }
+
     if (typeof globalThis.queueMicrotask !== 'function') {
-        globalThis.queueMicrotask = function queueMicrotask(callback) {
+        defineAdapterGlobal('queueMicrotask', function queueMicrotask(callback) {
             Promise.resolve().then(() => callback());
-        };
+        });
     }
 
     const shellOs = globalThis.os || {};
@@ -273,10 +282,10 @@
         return next === Infinity ? null : Math.max(0, next - now);
     }
 
-    globalThis.__kandeloRunDueTimers = runDueTimers;
-    globalThis.__kandeloNextTimerDelay = nextTimerDelay;
+    defineAdapterGlobal('__kandeloRunDueTimers', runDueTimers);
+    defineAdapterGlobal('__kandeloNextTimerDelay', nextTimerDelay);
 
-    globalThis.__kandeloCreateWorkerThreads = function(EventEmitter) {
+    defineAdapterGlobal('__kandeloCreateWorkerThreads', function createWorkerThreads(EventEmitter) {
         class MessagePort extends EventEmitter {
             postMessage() {}
             start() {}
@@ -371,7 +380,7 @@
             MessagePort,
             SHARE_ENV: Symbol.for('kandelo.worker_threads.SHARE_ENV'),
         };
-    };
+    });
 
     const native = globalThis.__kandeloNodeNative || {};
     const _nodeNative = {
@@ -406,5 +415,5 @@
 
     const entryPath = typeof scriptPath === 'string' && scriptPath ? scriptPath : '';
     const args = typeof scriptArgs !== 'undefined' ? Array.from(scriptArgs) : [];
-    globalThis.argv0 = 'node';
-    globalThis.execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];
+    defineAdapterGlobal('argv0', 'node');
+    defineAdapterGlobal('execArgv', entryPath ? ['node', entryPath, ...args] : ['node', ...args]);
