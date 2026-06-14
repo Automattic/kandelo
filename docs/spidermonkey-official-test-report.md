@@ -76,6 +76,102 @@ source tree pinned by the SpiderMonkey package manifest. The browser VFS builder
 uses the same source tree so absolute upstream test paths stay valid inside the
 guest filesystem.
 
+## Exhaustive Node jstests Result
+
+The `kad-165.4` Node host run of Mozilla's upstream `js/src/tests` jstest
+inventory is preserved under:
+
+```text
+/Users/brandon/gt/kandelo/polecats/toast/kandelo/test-results/spidermonkey-official/
+```
+
+Selecting the latest valid row for each chunk across the preserved run and
+resume segments gives 738 chunks, 50,503 passes, 1,932 known skips, and 237
+unexpected results. The superseded `resume9` bridge-state corruption tail is
+not part of those totals; `resume10-restart` superseded that tail with zero
+unexpected results for the restarted class-statement range.
+
+The 237 unexpected results are classified as:
+
+| Count | Classification | Tracking |
+| ---: | --- | --- |
+| 61 | wasm32 BigInt Atomics platform limitation: 60 `MOZ_CRASH("No 64-bit atomics")` rows plus the deterministic `test262/built-ins/Atomics/waitAsync/bigint/good-views.js` timeout | `kad-165.18` |
+| 16 | SpiderMonkey mozglue timezone/env interposer crashes in Node Date/Intl tests | `kad-crh` |
+| 2 | recursion stress tests that trip the Node kernel worker call stack | `kad-165.20` |
+| 158 | non-Atomics timeout/resource-envelope rows, split below | `kad-165.19` |
+
+### Node jstest Timeout Classification
+
+The timeout subset contains 159 `TEST-UNEXPECTED` timeout rows across 55
+chunks. One of those is the BigInt Atomics timeout tracked by `kad-165.18`;
+the remaining 158 are non-Atomics timeout/resource-envelope rows.
+
+Segment distribution:
+
+| Rows | Segment |
+| ---: | --- |
+| 113 | `kad-165.4-node-jstests-20260613T171924Z-resume8-retry` |
+| 24 | `kad-165.4-node-jstests-20260613T114141Z-resume6-restart` |
+| 14 | `kad-165.4-node-jstests-20260613T031900Z-resume4-restart` |
+| 4 | `kad-165.4-node-jstests-20260614T051920Z-resume9` before the superseded corruption tail |
+| 3 | `kad-165.4-node-jstests-20260613T003718Z` |
+| 1 | `kad-165.4-node-jstests-20260613T021257Z-resume2` |
+
+Largest timeout chunks:
+
+| Rows | Chunk |
+| ---: | --- |
+| 10 | `test262/language/expressions/async-generator/_files#part-0001` |
+| 8 | `test262/language/expressions/arrow-function` |
+| 8 | `test262/language/expressions/async-generator/dstr` |
+| 7 | `test262/language/expressions/class/elements/_files#part-0001` |
+| 7 | `test262/language/expressions/object/method-definition` |
+| 6 | `test262/built-ins/Set` |
+| 6 | `test262/language/expressions/class/elements/_files#part-0002` |
+| 6 | `test262/language/expressions/dynamic-import/usage` |
+| 6 | `test262/language/expressions/object/dstr/_files#part-0001` |
+
+Focused reruns on the current integration branch used the normal Node official
+jstest harness with `--host node --suite jstests --jobs 1` and a shorter
+`--timeout 20` to classify representatives quickly. A `KERNEL_SYSCALL_LOG=1`
+rerun of `non262/TypedArray/sort_modifications_concurrent.js` with
+`--timeout 5` showed the guest still active at the harness timeout, continuing
+to issue clock/futex/mmap activity around the timeout boundary. That rules out a
+completed guest process whose host cleanup merely failed to report exit.
+
+Deterministic single-file timeout/resource rows observed in focused reruns:
+
+- `non262/TypedArray/sort_modifications_concurrent.js`
+- `shell/os.js`
+- `non262/async-functions/syntax.js`
+- `test262/built-ins/Set/prototype/union/size-is-a-number.js`
+- `test262/built-ins/Atomics/waitAsync/bigint/good-views.js` (`kad-165.18`)
+
+Representative timeout rows that passed in isolation under the same harness:
+
+- `test262/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-species-throws.js`
+- `test262/language/statements/async-generator/dstr/dflt-ary-ptrn-elem-id-init-fn-name-fn.js`
+- `test262/language/expressions/dynamic-import/usage/nested-arrow-import-then-is-call-expression-square-brackets.js`
+- `test262/language/expressions/async-generator/yield-star-next-not-callable-null-throw.js`
+- `test262/language/expressions/object/method-definition/static-init-await-binding-accessor.js`
+- `test262/built-ins/TypedArrayConstructors/internals/HasProperty/BigInt/infinity-with-detached-buffer.js`
+- `test262/built-ins/decodeURI/S15.1.3.1_A1.11_T2.js`
+- `test262/built-ins/isNaN/return-abrupt-from-tonumber-number.js`
+- `test262/built-ins/Math/sin/S15.8.2.16_A5.js`
+- `test262/built-ins/parseFloat/tonumber-numeric-separator-literal-nzd-nsl-dd.js`
+- `test262/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-160.js`
+- `test262/built-ins/Object/defineProperties/15.2.3.7-5-b-263.js`
+
+Conclusion: the timeout cluster is not a single deterministic JavaScript engine
+bug and not a generic post-exit host cleanup stall. It splits into a small
+deterministic resource/stress set plus a larger chunk/order-dependent resource
+pressure set in long official jstest chunks. The chunk-dependent rows should be
+handled by an official expected-timeout/resource layer or by a follow-up harness
+improvement that reruns timeout rows individually before recording them as
+unexpected. The deterministic rows above should be tracked as explicit
+SpiderMonkey resource/stress expected failures unless a later platform change
+makes them pass under the supported timeout budget.
+
 ## Exhaustive Node jit-tests Result
 
 The `kad-165.5` Node host run of the upstream `js/src/jit-test/tests` inventory
