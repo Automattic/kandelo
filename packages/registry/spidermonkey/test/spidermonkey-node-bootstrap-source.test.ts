@@ -121,6 +121,75 @@ ${source}
   expect(child.status).toBe(0);
 }
 
+function runBootstrapCliSmoke(scriptArgs: string[], files: Record<string, string>, cwd: string): string[] {
+  const smoke = `
+const nativeProcess = process;
+globalThis.evalInWorker = function() {};
+globalThis.quit = (code) => nativeProcess.exit(code | 0);
+globalThis.putstr = (text) => nativeProcess.stdout.write(String(text));
+globalThis.printErr = (text) => nativeProcess.stderr.write(String(text) + "\\n");
+globalThis.scriptArgs = ${JSON.stringify(scriptArgs)};
+const files = new Map(Object.entries(${JSON.stringify(files)}));
+const dirs = new Set(["/"]);
+for (const filename of files.keys()) {
+  let dir = filename.slice(0, filename.lastIndexOf("/")) || "/";
+  while (dir && !dirs.has(dir)) {
+    dirs.add(dir);
+    const parent = dir.slice(0, dir.lastIndexOf("/")) || "/";
+    if (parent === dir) break;
+    dir = parent;
+  }
+}
+function statFor(path) {
+  path = String(path);
+  if (files.has(path)) return { mode: 0o100000, size: files.get(path).length };
+  if (dirs.has(path)) return { mode: 0o40000, size: 0 };
+  throw new Error("ENOENT: " + path);
+}
+globalThis.os = {
+  getenv() { return null; },
+  getcwd() { return ${JSON.stringify(cwd)}; },
+  getpid() { return 1; },
+  kill() { return 0; },
+  file: {
+    readFile(path) {
+      path = String(path);
+      if (files.has(path)) return files.get(path);
+      throw new Error("ENOENT: " + path);
+    },
+    stat(path) { return statFor(path); },
+    lstat(path) { return statFor(path); },
+    listDir(path) {
+      path = String(path);
+      if (!dirs.has(path)) throw new Error("ENOENT: " + path);
+      const prefix = path === "/" ? "/" : path + "/";
+      const names = new Set();
+      for (const file of files.keys()) {
+        if (!file.startsWith(prefix)) continue;
+        const rest = file.slice(prefix.length);
+        if (rest) names.add(rest.split("/")[0]);
+      }
+      return Array.from(names);
+    },
+    realpath(path) {
+      path = String(path);
+      if (files.has(path) || dirs.has(path)) return path;
+      throw new Error("ENOENT: " + path);
+    },
+  },
+};
+${generatedBootstrapSource()}
+`;
+  const child = spawnSync(process.execPath, ["-"], {
+    input: smoke,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  expect(child.stderr).toBe("");
+  expect(child.status).toBe(0);
+  return child.stdout.trim().split("\n").filter(Boolean);
+}
+
 describe("SpiderMonkey Node bootstrap source", () => {
   it("resolves the full-suite missing built-in and internal module surface", () => {
     runBootstrapSmoke(`
@@ -255,6 +324,38 @@ for (const [name, fn] of [
 }
 if (failures.length) throw new Error(failures.join("\\n"));
 `);
+  });
+
+  it("runs CLI preload modules before the main script with Node argv semantics", () => {
+    const lines = runBootstrapCliSmoke(
+      ["node", "-r", "./preload.js", "-r", "self_ref", "main.js", "alpha"],
+      {
+        "/pkg/package.json": JSON.stringify({ name: "self_ref", exports: "./index.js" }),
+        "/pkg/index.js": "console.log('self-ref:' + __filename);",
+        "/pkg/preload.js": "console.log('preload:' + JSON.stringify({ argv: process.argv, execArgv: process.execArgv }));",
+        "/pkg/main.js": "console.log('main:' + JSON.stringify({ argv: process.argv, execArgv: process.execArgv }));",
+      },
+      "/pkg",
+    );
+    expect(lines).toEqual([
+      'preload:{"argv":["/usr/bin/node","/pkg/main.js","alpha"],"execArgv":["-r","./preload.js","-r","self_ref"]}',
+      "self-ref:/pkg/index.js",
+      'main:{"argv":["/usr/bin/node","/pkg/main.js","alpha"],"execArgv":["-r","./preload.js","-r","self_ref"]}',
+    ]);
+  });
+
+  it("runs CLI preloads before print-eval expressions", () => {
+    const lines = runBootstrapCliSmoke(
+      ["node", "-r", "./preload.js", "-pe", "1+1", "tail"],
+      {
+        "/app/preload.js": "console.log('preload:' + JSON.stringify({ argv: process.argv, execArgv: process.execArgv }));",
+      },
+      "/app",
+    );
+    expect(lines).toEqual([
+      'preload:{"argv":["/usr/bin/node","tail"],"execArgv":["-r","./preload.js","-pe","1+1"]}',
+      "2",
+    ]);
   });
 
   it("matches Node events listener bookkeeping and EventTarget helper semantics", () => {
