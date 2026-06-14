@@ -4338,6 +4338,11 @@ pub fn sys_exit(proc: &mut Process, host: &mut dyn HostIO, status: i32) {
     proc.exit_status = status;
 }
 
+/// Terminate the process with signal-style wait status and normal exit cleanup.
+pub fn sys_signal_exit(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
+    sys_exit(proc, host, 128 + signum as i32);
+}
+
 /// Get the current time from the specified clock.
 pub fn sys_clock_gettime(
     _proc: &Process,
@@ -11080,6 +11085,26 @@ mod tests {
         assert_eq!(proc.exit_status, 42);
 
         // All fds should be closed - trying to read from fd should fail
+        let mut buf = [0u8; 10];
+        let result = sys_read(&mut proc, &mut host, fd, &mut buf);
+        assert_eq!(result, Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn test_signal_exit_closes_fds_and_sets_signal_status() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_RDWR | O_CREAT, 0o644).unwrap();
+
+        sys_signal_exit(&mut proc, &mut host, wasm_posix_shared::signal::SIGABRT);
+
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert_eq!(
+            proc.exit_status,
+            128 + wasm_posix_shared::signal::SIGABRT as i32
+        );
+
         let mut buf = [0u8; 10];
         let result = sys_read(&mut proc, &mut host, fd, &mut buf);
         assert_eq!(result, Err(Errno::EBADF));
