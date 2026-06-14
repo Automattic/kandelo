@@ -2491,6 +2491,7 @@ const util = (() => {
         return 'TextEncoder {}';
     };
     TextDecoder.prototype[customInspectSymbol] = function(_depth, options) {
+        _assertTextDecoder(this);
         return inspect(this, options);
     };
 
