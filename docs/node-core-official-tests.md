@@ -71,3 +71,8 @@ only after the complete suite has been attempted and triaged.
 
 See `docs/plans/2026-06-13-node-core-full-suite-kad-nct17.md` for the exact
 commands, artifact paths, root-cause grouping, and follow-up beads.
+
+`kad-nct.23` further breaks the broad semantic TypeError and AssertionError
+buckets into module-specific follow-up beads. See
+`docs/plans/2026-06-14-node-core-semantic-mismatch-triage-kad-nct23.md` for the
+fix bead breakdown.
