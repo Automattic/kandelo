@@ -145,6 +145,53 @@ describe("BrowserKernel", () => {
     expect(await exit).toBe(7);
   });
 
+  it("sends browser execPrograms as transferable init bytes", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const toolBytes = new Uint8Array([0, 97, 115, 109]);
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      execPrograms: {
+        tool: toolBytes,
+        "/usr/bin/tool": toolBytes,
+      },
+    });
+
+    const bootPromise = kernel.boot({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+      argv: ["/init"],
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    const initCapture = w.sent.find((m) => (m.data as any)?.type === "init");
+    expect(initCapture).toBeDefined();
+    const init = initCapture!.data as any;
+    expect(Object.keys(init.execPrograms).sort()).toEqual([
+      "/usr/bin/tool",
+      "tool",
+    ]);
+    expect(init.execPrograms.tool).toBe(init.execPrograms["/usr/bin/tool"]);
+    expect(Array.from(new Uint8Array(init.execPrograms.tool))).toEqual([
+      0, 97, 115, 109,
+    ]);
+    expect(init.execPrograms.tool).not.toBe(toolBytes.buffer);
+    toolBytes[1] = 0;
+    expect(Array.from(new Uint8Array(init.execPrograms.tool))).toEqual([
+      0, 97, 115, 109,
+    ]);
+    expect(initCapture!.transfer).toContain(init.kernelWasmBytes);
+    expect(initCapture!.transfer).toContain(init.execPrograms.tool);
+
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+    const spawn = w.lastMessage("spawn");
+    w.simulateMessage({ type: "response", requestId: spawn.requestId, result: 100 });
+    const { exit } = await bootPromise;
+    w.simulateMessage({ type: "exit", pid: 100, status: 0 });
+    await exit;
+  });
+
   describe("fetchInKernel", () => {
     async function bootedKernel() {
       const BrowserKernel = await loadBrowserKernel();

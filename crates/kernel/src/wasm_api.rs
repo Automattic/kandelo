@@ -1085,11 +1085,14 @@ fn ensure_memory_covers(_end_addr: usize) {
 // 3c. Signal delivery at syscall boundaries
 // ---------------------------------------------------------------------------
 
+fn terminate_process_by_signal(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
+    syscalls::sys_signal_exit(proc, host, signum);
+}
+
 /// Check for and deliver pending signals before/after syscall.
 fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
     use crate::signal::{DefaultAction, SignalHandler, default_action};
     let tid = crate::process_table::current_tid();
-    let _ = host;
     loop {
         // Caught signals are delivered by the glue code via
         // kernel_dequeue_signal; default and ignored signals are consumed here.
@@ -1108,8 +1111,7 @@ fn deliver_pending_signals(proc: &mut Process, host: &mut WasmHostIO) {
                 let _ = dequeue_signal_for(proc, tid, signum);
                 match default_action(signum) {
                     DefaultAction::Terminate | DefaultAction::CoreDump => {
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+                        terminate_process_by_signal(proc, host, signum);
                     }
                     _ => {}
                 }
@@ -1566,9 +1568,13 @@ pub extern "C" fn kernel_get_parent_pid(pid: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.mark_process_signaled(pid, signum) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
+    match table.get_mut(pid) {
+        Some(proc) => {
+            let mut host = WasmHostIO;
+            terminate_process_by_signal(proc, &mut host, signum);
+            0
+        }
+        None => -(Errno::ESRCH as i32),
     }
 }
 
@@ -2015,8 +2021,8 @@ pub extern "C" fn kernel_dequeue_signal(pid: u32, out_ptr: *mut u8) -> i32 {
                         for t in proc.threads.iter_mut() {
                             t.signals.sigsuspend_saved_mask = None;
                         }
-                        proc.state = crate::process::ProcessState::Exited;
-                        proc.exit_status = 128 + signum as i32;
+                        let mut host = WasmHostIO;
+                        terminate_process_by_signal(proc, &mut host, signum);
                         return 0;
                     }
                     _ => continue,
