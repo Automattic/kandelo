@@ -2540,6 +2540,10 @@ const stream = (() => {
 // ============================================================
 
 const url = (() => {
+    const URL_STATE = Symbol('kandelo.url.state');
+    const SEARCH_PARAMS_STATE = Symbol('kandelo.urlSearchParams.state');
+    const SEARCH_PARAMS_ITERATOR_STATE = Symbol('kandelo.urlSearchParamsIterator.state');
+
     class Url {
         constructor() {
             this.protocol = null;
@@ -2555,6 +2559,126 @@ const url = (() => {
             this.path = null;
             this.href = '';
         }
+    }
+
+    function makeTypeError(code, message) {
+        const err = new TypeError(message);
+        if (code) err.code = code;
+        return err;
+    }
+
+    function toNodeString(value) {
+        if (typeof value === 'symbol') {
+            throw new TypeError('Cannot convert a Symbol value to a string');
+        }
+        return String(value);
+    }
+
+    function toUSVString(value) {
+        const input = toNodeString(value);
+        let out = '';
+        for (let i = 0; i < input.length; i++) {
+            const code = input.charCodeAt(i);
+            if (code >= 0xD800 && code <= 0xDBFF) {
+                if (i + 1 < input.length) {
+                    const next = input.charCodeAt(i + 1);
+                    if (next >= 0xDC00 && next <= 0xDFFF) {
+                        out += input[i] + input[++i];
+                        continue;
+                    }
+                }
+                out += '\uFFFD';
+            } else if (code >= 0xDC00 && code <= 0xDFFF) {
+                out += '\uFFFD';
+            } else {
+                out += input[i];
+            }
+        }
+        return out;
+    }
+
+    function hexByte(ch) {
+        return '%' + ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0');
+    }
+
+    function percentEncodeForm(value) {
+        return encodeURIComponent(toUSVString(value))
+            .replace(/%20/g, '+')
+            .replace(/[!'()~]/g, hexByte);
+    }
+
+    function safeDecode(text, plusAsSpace) {
+        let input = String(text);
+        if (plusAsSpace) input = input.replace(/\+/g, ' ');
+        input = input.replace(/%(?![0-9A-Fa-f]{2})/g, '%25');
+        try {
+            return decodeURIComponent(input);
+        } catch {
+            return input;
+        }
+    }
+
+    function quoteInspect(value) {
+        return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+    }
+
+    function encodeUserInfo(value) {
+        return encodeURIComponent(toUSVString(value));
+    }
+
+    function encodePathname(value) {
+        let text = toUSVString(value);
+        if (!text.startsWith('/')) text = '/' + text;
+        return encodeURI(text).replace(/[?#]/g, hexByte);
+    }
+
+    function encodeSearch(value) {
+        let text = toUSVString(value);
+        if (text.startsWith('?')) text = text.slice(1);
+        if (text === '') return '';
+        return '?' + encodeURI(text).replace(/#/g, '%23');
+    }
+
+    function encodeHash(value) {
+        let text = toUSVString(value);
+        if (text.startsWith('#')) text = text.slice(1);
+        if (text === '') return '';
+        return '#' + encodeURI(text);
+    }
+
+    function parseSearchPairs(search) {
+        const out = [];
+        const qs = String(search || '').replace(/^\?/, '');
+        if (!qs) return out;
+        for (const pair of qs.split('&')) {
+            if (pair === '') continue;
+            const eq = pair.indexOf('=');
+            const key = eq === -1 ? pair : pair.slice(0, eq);
+            const value = eq === -1 ? '' : pair.slice(eq + 1);
+            out.push([safeDecode(key, true), safeDecode(value, true)]);
+        }
+        return out;
+    }
+
+    function serializePairs(pairs) {
+        return pairs.map(([key, value]) => `${percentEncodeForm(key)}=${percentEncodeForm(value)}`).join('&');
+    }
+
+    function removeDotSegments(pathname) {
+        const isAbs = pathname.startsWith('/');
+        const trailing = pathname.endsWith('/');
+        const out = [];
+        for (const part of pathname.split('/')) {
+            if (part === '' || part === '.') continue;
+            if (part === '..') {
+                if (out.length) out.pop();
+                continue;
+            }
+            out.push(part);
+        }
+        let result = (isAbs ? '/' : '') + out.join('/');
+        if (trailing && result !== '/' && result !== '') result += '/';
+        return result || (isAbs ? '/' : '');
     }
 
     function parse(urlStr, parseQueryString) {
@@ -2665,182 +2789,560 @@ const url = (() => {
         return format(result);
     }
 
-    function _formEncode(value) {
-        const bytes = new TextEncoder().encode(String(value));
-        let out = '';
-        for (const b of bytes) {
-            if ((b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a) ||
-                (b >= 0x30 && b <= 0x39) || b === 0x2a || b === 0x2d ||
-                b === 0x2e || b === 0x5f) {
-                out += String.fromCharCode(b);
-            } else if (b === 0x20) {
-                out += '+';
+    function resolveObject(from, to) {
+        if (!from) return to;
+        return parse(resolve(from, to));
+    }
+
+    function parseAuthority(authority, state) {
+        let host = authority;
+        const atIdx = host.lastIndexOf('@');
+        if (atIdx !== -1) {
+            const auth = host.slice(0, atIdx);
+            host = host.slice(atIdx + 1);
+            const colon = auth.indexOf(':');
+            if (colon === -1) {
+                state.username = auth;
+                state.password = '';
             } else {
-                out += '%' + b.toString(16).toUpperCase().padStart(2, '0');
+                state.username = auth.slice(0, colon);
+                state.password = auth.slice(colon + 1);
             }
         }
+
+        if (host.startsWith('[')) {
+            const end = host.indexOf(']');
+            if (end !== -1) {
+                state.hostname = host.slice(0, end + 1).toLowerCase();
+                if (host[end + 1] === ':') state.port = host.slice(end + 2);
+                return;
+            }
+        }
+
+        const colon = host.lastIndexOf(':');
+        if (colon > -1 && host.indexOf(':') === colon) {
+            state.hostname = host.slice(0, colon).toLowerCase();
+            state.port = host.slice(colon + 1);
+        } else {
+            state.hostname = host.toLowerCase();
+            state.port = '';
+        }
+    }
+
+    function parseAbsoluteUrl(value) {
+        const input = toNodeString(value);
+        const match = input.match(/^([A-Za-z][A-Za-z0-9+.-]*:)([\s\S]*)$/);
+        if (!match) throw new TypeError(`Invalid URL: ${input}`);
+
+        const state = {
+            protocol: match[1].toLowerCase(),
+            username: '',
+            password: '',
+            hostname: '',
+            port: '',
+            pathname: '',
+            search: '',
+            hash: '',
+            hasAuthority: false,
+        };
+
+        let rest = match[2];
+        const hashIdx = rest.indexOf('#');
+        if (hashIdx !== -1) {
+            state.hash = rest.slice(hashIdx);
+            rest = rest.slice(0, hashIdx);
+        }
+        const searchIdx = rest.indexOf('?');
+        if (searchIdx !== -1) {
+            state.search = rest.slice(searchIdx);
+            rest = rest.slice(0, searchIdx);
+        }
+
+        if (rest.startsWith('//')) {
+            state.hasAuthority = true;
+            rest = rest.slice(2);
+            const slash = rest.search(/[/?#]/);
+            const authority = slash === -1 ? rest : rest.slice(0, slash);
+            state.pathname = slash === -1 ? '/' : rest.slice(slash) || '/';
+            parseAuthority(authority, state);
+            if (state.pathname === '') state.pathname = '/';
+        } else {
+            state.pathname = rest || '';
+        }
+
+        if (state.hasAuthority && state.pathname === '') state.pathname = '/';
+        return state;
+    }
+
+    function parseUrl(input, base) {
+        const value = toNodeString(input);
+        if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return parseAbsoluteUrl(value);
+        if (base === undefined) throw new TypeError(`Invalid URL: ${value}`);
+
+        const baseState = parseUrl(base);
+        if (value.startsWith('//')) return parseAbsoluteUrl(baseState.protocol + value);
+
+        const hashIdx = value.indexOf('#');
+        const beforeHash = hashIdx === -1 ? value : value.slice(0, hashIdx);
+        const hash = hashIdx === -1 ? '' : value.slice(hashIdx);
+        const searchIdx = beforeHash.indexOf('?');
+        const beforeSearch = searchIdx === -1 ? beforeHash : beforeHash.slice(0, searchIdx);
+        const search = searchIdx === -1 ? '' : beforeHash.slice(searchIdx);
+
+        const state = { ...baseState, hash: hash || '', search: search || '' };
+        if (beforeSearch === '') {
+            if (searchIdx === -1) state.search = baseState.search;
+            return state;
+        }
+        if (beforeSearch.startsWith('/')) {
+            state.pathname = removeDotSegments(beforeSearch);
+            return state;
+        }
+
+        const basePath = baseState.pathname || '/';
+        const baseDir = basePath.endsWith('/') ? basePath : basePath.slice(0, basePath.lastIndexOf('/') + 1);
+        state.pathname = removeDotSegments(baseDir + beforeSearch);
+        return state;
+    }
+
+    function hostFromState(state) {
+        if (!state.hostname) return '';
+        return state.hostname + (state.port ? ':' + state.port : '');
+    }
+
+    function formatUrlState(state) {
+        let out = state.protocol;
+        if (state.hasAuthority) {
+            out += '//';
+            if (state.username || state.password) {
+                out += state.username;
+                if (state.password) out += ':' + state.password;
+                out += '@';
+            }
+            out += hostFromState(state);
+        }
+        out += state.pathname || (state.hasAuthority ? '/' : '');
+        out += state.search || '';
+        out += state.hash || '';
         return out;
     }
 
-    function _safeDecodeComponent(value, plusAsSpace) {
-        value = String(value);
-        if (plusAsSpace) value = value.replace(/\+/g, ' ');
-        try { return decodeURIComponent(value); }
-        catch (_) {
-            return value.replace(/%([0-9a-fA-F]{2})/g, (_, h) =>
-                String.fromCharCode(parseInt(h, 16)));
+    function originFromState(state) {
+        if (state.protocol === 'blob:') {
+            try {
+                return originFromState(parseAbsoluteUrl(state.pathname));
+            } catch {
+                return 'null';
+            }
         }
+        if (/^(https?|wss?|ftp):$/.test(state.protocol) && state.hostname) {
+            return `${state.protocol}//${hostFromState(state)}`;
+        }
+        return 'null';
+    }
+
+    function getUrlState(self) {
+        if (!self || !self[URL_STATE]) {
+            throw makeTypeError('ERR_INVALID_THIS', 'Value of "this" must be of type URL');
+        }
+        return self[URL_STATE];
+    }
+
+    function getSearchParamsState(self) {
+        if (!self || !self[SEARCH_PARAMS_STATE]) {
+            throw makeTypeError('ERR_INVALID_THIS', 'Value of "this" must be of type URLSearchParams');
+        }
+        return self[SEARCH_PARAMS_STATE];
+    }
+
+    function getSearchParamsIteratorState(self) {
+        if (!self || !self[SEARCH_PARAMS_ITERATOR_STATE]) {
+            throw makeTypeError('ERR_INVALID_THIS', 'Value of "this" must be of type URLSearchParamsIterator');
+        }
+        return self[SEARCH_PARAMS_ITERATOR_STATE];
+    }
+
+    function requireSearchParamArgs(actual, expected, message) {
+        if (actual < expected) throw makeTypeError('ERR_MISSING_ARGS', message);
+    }
+
+    function updateOwnerSearch(state) {
+        if (!state.owner) return;
+        const ownerState = getUrlState(state.owner);
+        const serialized = serializePairs(state.pairs);
+        ownerState.search = serialized ? '?' + serialized : '';
+    }
+
+    function resetSearchParamsFromUrl(urlObject) {
+        const state = getUrlState(urlObject);
+        const paramsState = getSearchParamsState(state.searchParams);
+        paramsState.pairs = parseSearchPairs(state.search);
     }
 
     const SearchParamsClass = class URLSearchParams {
-        constructor(init, onUpdate) {
-            this._pairs = [];
-            this._onUpdate = typeof onUpdate === 'function' ? onUpdate : null;
+        constructor(init) {
+            const state = { pairs: [], owner: null };
+            Object.defineProperty(this, SEARCH_PARAMS_STATE, { value: state });
+            if (init == null) return;
             if (typeof init === 'string') {
-                this._replaceFromString(init);
-            } else if (init && typeof init[Symbol.iterator] === 'function') {
-                for (const pair of init) this.append(pair[0], pair[1]);
-            } else if (init && typeof init === 'object') {
-                for (const key of Object.keys(init)) this.append(key, init[key]);
+                state.pairs = parseSearchPairs(init);
+                return;
             }
-        }
-        get size() { return this._pairs.length; }
-        _replaceFromString(input) {
-            this._pairs = [];
-            const qs = String(input).startsWith('?') ? String(input).slice(1) : String(input);
-            if (!qs) return;
-            for (const pair of qs.split('&')) {
-                if (pair === '') continue;
-                const idx = pair.indexOf('=');
-                const key = idx >= 0 ? pair.slice(0, idx) : pair;
-                const val = idx >= 0 ? pair.slice(idx + 1) : '';
-                this._pairs.push([
-                    _safeDecodeComponent(key, true),
-                    _safeDecodeComponent(val, true),
-                ]);
+            const iterator = init && init[Symbol.iterator];
+            if (iterator !== undefined) {
+                if (typeof iterator !== 'function') {
+                    throw makeTypeError('ERR_ARG_NOT_ITERABLE', 'Query pairs must be iterable');
+                }
+                for (const pair of init) {
+                    if (pair == null || typeof pair[Symbol.iterator] !== 'function') {
+                        throw makeTypeError('ERR_INVALID_TUPLE', 'Each query pair must be an iterable [name, value] tuple');
+                    }
+                    const tuple = Array.from(pair);
+                    if (tuple.length !== 2) {
+                        throw makeTypeError('ERR_INVALID_TUPLE', 'Each query pair must be an iterable [name, value] tuple');
+                    }
+                    state.pairs.push([toUSVString(tuple[0]), toUSVString(tuple[1])]);
+                }
+                return;
             }
+            if (typeof init === 'object') {
+                for (const sym of Object.getOwnPropertySymbols(init)) {
+                    if (Object.prototype.propertyIsEnumerable.call(init, sym)) {
+                        throw new TypeError('Cannot convert a Symbol value to a string');
+                    }
+                }
+                for (const key of Object.keys(init)) {
+                    state.pairs.push([toUSVString(key), toUSVString(init[key])]);
+                }
+                return;
+            }
+            state.pairs = parseSearchPairs(toNodeString(init));
         }
-        _updated() { if (this._onUpdate) this._onUpdate(this.toString()); }
+        get size() { return getSearchParamsState(this).pairs.length; }
         get(key) {
-            key = String(key);
-            for (const pair of this._pairs) if (pair[0] === key) return pair[1];
-            return null;
+            requireSearchParamArgs(arguments.length, 1, 'The "name" argument must be specified');
+            key = toUSVString(key);
+            const pair = getSearchParamsState(this).pairs.find(([k]) => k === key);
+            return pair ? pair[1] : null;
         }
         set(key, val) {
-            key = String(key);
-            val = String(val);
-            let seen = false;
+            requireSearchParamArgs(arguments.length, 2, 'The "name" and "value" arguments must be specified');
+            key = toUSVString(key);
+            val = toUSVString(val);
+            const state = getSearchParamsState(this);
+            let found = false;
             const next = [];
-            for (const pair of this._pairs) {
+            for (const pair of state.pairs) {
                 if (pair[0] === key) {
-                    if (!seen) next.push([key, val]);
-                    seen = true;
+                    if (!found) next.push([key, val]);
+                    found = true;
                 } else {
                     next.push(pair);
                 }
             }
-            if (!seen) next.push([key, val]);
-            this._pairs = next;
-            this._updated();
+            if (!found) next.push([key, val]);
+            state.pairs = next;
+            updateOwnerSearch(state);
         }
         has(key) {
-            key = String(key);
-            return this._pairs.some((pair) => pair[0] === key);
+            requireSearchParamArgs(arguments.length, 1, 'The "name" argument must be specified');
+            key = toUSVString(key);
+            return getSearchParamsState(this).pairs.some(([k]) => k === key);
         }
         append(key, val) {
-            this._pairs.push([String(key), String(val)]);
-            this._updated();
+            requireSearchParamArgs(arguments.length, 2, 'The "name" and "value" arguments must be specified');
+            const state = getSearchParamsState(this);
+            state.pairs.push([toUSVString(key), toUSVString(val)]);
+            updateOwnerSearch(state);
         }
         delete(key) {
-            key = String(key);
-            this._pairs = this._pairs.filter((pair) => pair[0] !== key);
-            this._updated();
+            requireSearchParamArgs(arguments.length, 1, 'The "name" argument must be specified');
+            key = toUSVString(key);
+            const state = getSearchParamsState(this);
+            state.pairs = state.pairs.filter(([k]) => k !== key);
+            updateOwnerSearch(state);
         }
         getAll(key) {
-            key = String(key);
-            return this._pairs.filter((pair) => pair[0] === key).map((pair) => pair[1]);
+            requireSearchParamArgs(arguments.length, 1, 'The "name" argument must be specified');
+            key = toUSVString(key);
+            return getSearchParamsState(this).pairs.filter(([k]) => k === key).map(([, v]) => v);
         }
-        *entries() {
-            for (const pair of this._pairs) yield [pair[0], pair[1]];
+        sort() {
+            const state = getSearchParamsState(this);
+            state.pairs = state.pairs
+                .map((pair, index) => ({ pair, index }))
+                .sort((a, b) => a.pair[0] < b.pair[0] ? -1 : a.pair[0] > b.pair[0] ? 1 : a.index - b.index)
+                .map(({ pair }) => pair);
+            updateOwnerSearch(state);
         }
-        *keys() { for (const pair of this._pairs) yield pair[0]; }
-        *values() { for (const pair of this._pairs) yield pair[1]; }
-        get [Symbol.iterator]() { return this.entries; }
+        entries() { getSearchParamsState(this); return new URLSearchParamsIterator(this, 'entries'); }
+        keys() { getSearchParamsState(this); return new URLSearchParamsIterator(this, 'keys'); }
+        values() { getSearchParamsState(this); return new URLSearchParamsIterator(this, 'values'); }
         forEach(cb, thisArg) {
-            if (typeof cb !== 'function') throw _makeInvalidArgTypeError('callback', 'function', cb);
-            for (const pair of this._pairs) cb.call(thisArg, pair[1], pair[0], this);
+            if (typeof cb !== 'function') {
+                throw makeTypeError('ERR_INVALID_ARG_TYPE', 'The "callback" argument must be of type function');
+            }
+            for (const [k, v] of getSearchParamsState(this).pairs.slice()) {
+                cb.call(thisArg, v, k, this);
+            }
         }
-        toString() {
-            return this._pairs
-                .map(([k, v]) => _formEncode(k) + '=' + _formEncode(v))
-                .join('&');
+        toString() { return serializePairs(getSearchParamsState(this).pairs); }
+        [util.inspect.custom](depth, options) {
+            getSearchParamsState(this);
+            if (depth !== undefined && depth < 0) return '[Object]';
+            const pairs = getSearchParamsState(this).pairs.map(([k, v]) => `${quoteInspect(k)} => ${quoteInspect(v)}`);
+            if (pairs.length === 0) return 'URLSearchParams {}';
+            if (options && options.breakLength <= 1) return `URLSearchParams {\n  ${pairs.join(',\n  ')} }`;
+            return `URLSearchParams { ${pairs.join(', ')} }`;
         }
     };
+    SearchParamsClass.prototype[Symbol.iterator] = SearchParamsClass.prototype.entries;
+    const searchParamsPrototypeOrder = [
+        'size', 'append', 'delete', 'get', 'getAll', 'has', 'set', 'sort',
+        'entries', 'forEach', 'keys', 'values', 'toString',
+    ];
+    const searchParamsPrototypeDescriptors = {};
+    for (const name of searchParamsPrototypeOrder) {
+        const desc = Object.getOwnPropertyDescriptor(SearchParamsClass.prototype, name);
+        if (desc) {
+            searchParamsPrototypeDescriptors[name] = { ...desc, enumerable: true };
+            delete SearchParamsClass.prototype[name];
+        }
+    }
+    for (const name of searchParamsPrototypeOrder) {
+        if (searchParamsPrototypeDescriptors[name]) {
+            Object.defineProperty(SearchParamsClass.prototype, name, searchParamsPrototypeDescriptors[name]);
+        }
+    }
+    Object.defineProperty(SearchParamsClass.prototype, Symbol.iterator, {
+        value: SearchParamsClass.prototype.entries,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+    });
+    Object.defineProperty(SearchParamsClass.prototype, Symbol.toStringTag, {
+        value: 'URLSearchParams',
+        configurable: true,
+    });
+
+    class URLSearchParamsIterator {
+        constructor(params, kind) {
+            Object.defineProperty(this, SEARCH_PARAMS_ITERATOR_STATE, {
+                value: { params, kind, index: 0 },
+            });
+        }
+        next() {
+            const state = getSearchParamsIteratorState(this);
+            const pairs = getSearchParamsState(state.params).pairs;
+            if (state.index >= pairs.length) return { value: undefined, done: true };
+            const pair = pairs[state.index++];
+            if (state.kind === 'keys') return { value: pair[0], done: false };
+            if (state.kind === 'values') return { value: pair[1], done: false };
+            return { value: [pair[0], pair[1]], done: false };
+        }
+        [Symbol.iterator]() { return this; }
+        [util.inspect.custom](_depth, options) {
+            const state = getSearchParamsIteratorState(this);
+            const pairs = getSearchParamsState(state.params).pairs.slice(state.index);
+            const items = pairs.map((pair) => {
+                if (state.kind === 'keys') return quoteInspect(pair[0]);
+                if (state.kind === 'values') return quoteInspect(pair[1]);
+                return `[ ${quoteInspect(pair[0])}, ${quoteInspect(pair[1])} ]`;
+            });
+            if (items.length === 0) return 'URLSearchParams Iterator {  }';
+            if (options && options.breakLength <= 1) return `URLSearchParams Iterator {\n  ${items.join(',\n  ')} }`;
+            return `URLSearchParams Iterator { ${items.join(', ')} }`;
+        }
+    }
+    {
+        const desc = Object.getOwnPropertyDescriptor(URLSearchParamsIterator.prototype, 'next');
+        Object.defineProperty(URLSearchParamsIterator.prototype, 'next', { ...desc, enumerable: true });
+        Object.defineProperty(URLSearchParamsIterator.prototype, Symbol.toStringTag, {
+            value: 'URLSearchParams Iterator',
+            configurable: true,
+        });
+    }
+
     const URLClass = class URL {
         constructor(input, base) {
-            const parsed = parse(base ? resolve(base, input) : input);
-            // hosted-git-info wraps `new URL(...)` in try/catch and falls back
-            // when the first attempt is invalid; without throwing on missing
-            // protocol, the fallback never runs and downstream code reads a
-            // null hostname.
-            if (!parsed.protocol) throw new TypeError(`Invalid URL: ${input}`);
-            this._searchParams = new SearchParamsClass('', (qs) => {
-                this._search = qs ? `?${qs}` : '';
-                this.query = qs || null;
-                this.path = this.pathname + this._search;
-            });
-            this._assign(parsed);
+            const state = parseUrl(input, base);
+            const searchParams = new SearchParamsClass(state.search);
+            getSearchParamsState(searchParams).owner = this;
+            state.searchParams = searchParams;
+            Object.defineProperty(this, URL_STATE, { value: state });
         }
-        _assign(parsed) {
-            this.protocol = parsed.protocol;
-            this.slashes = parsed.slashes;
-            this.auth = parsed.auth;
-            this.host = parsed.host || '';
-            this.port = parsed.port || '';
-            this.hostname = parsed.hostname || '';
-            this.hash = parsed.hash || '';
-            this._search = parsed.search || '';
-            this.query = parsed.query || null;
-            this.pathname = parsed.pathname || '/';
-            this.path = this.pathname + this._search;
-            this._searchParams._replaceFromString(this._search);
-        }
-        get href() { return format(this); }
-        set href(value) {
-            const parsed = parse(value);
-            if (!parsed.protocol) throw new TypeError(`Invalid URL: ${value}`);
-            if (!this._searchParams) {
-                this._searchParams = new SearchParamsClass('', (qs) => {
-                    this._search = qs ? `?${qs}` : '';
-                    this.query = qs || null;
-                    this.path = this.pathname + this._search;
-                });
-            }
-            this._assign(parsed);
-        }
-        get search() { return this._search; }
-        set search(value) {
-            value = String(value || '');
-            this._search = value && value[0] !== '?' ? `?${value}` : value;
-            this.query = this._search ? this._search.slice(1) : null;
-            this.path = this.pathname + this._search;
-            this._searchParams._replaceFromString(this._search);
-        }
-        get searchParams() { return this._searchParams; }
-        set pathname(value) {
-            this._pathname = String(value || '/');
-            if (this._pathname[0] !== '/') this._pathname = '/' + this._pathname;
-            this.path = this._pathname + (this._search || '');
-        }
-        get pathname() { return this._pathname; }
-        set hash(value) {
-            value = String(value || '');
-            this._hash = value && value[0] !== '#' ? `#${value}` : value;
-        }
-        get hash() { return this._hash; }
-        toString() { return this.href; }
-        toJSON() { return this.href; }
     };
+
+    function setHref(self, value) {
+        const next = parseUrl(value);
+        const current = getUrlState(self);
+        current.protocol = next.protocol;
+        current.username = next.username;
+        current.password = next.password;
+        current.hostname = next.hostname;
+        current.port = next.port;
+        current.pathname = next.pathname;
+        current.search = next.search;
+        current.hash = next.hash;
+        current.hasAuthority = next.hasAuthority;
+        resetSearchParamsFromUrl(self);
+    }
+
+    function defineUrlPrototype() {
+        const proto = URLClass.prototype;
+        Object.defineProperties(proto, {
+            toString: { value() { return this.href; }, enumerable: true, configurable: true },
+            href: {
+                get() { return formatUrlState(getUrlState(this)); },
+                set(value) { setHref(this, value); },
+                enumerable: true,
+                configurable: true,
+            },
+            origin: { get() { return originFromState(getUrlState(this)); }, enumerable: true, configurable: true },
+            protocol: {
+                get() { return getUrlState(this).protocol; },
+                set(value) {
+                    const state = getUrlState(this);
+                    let text = toNodeString(value).toLowerCase();
+                    if (!text.endsWith(':')) text += ':';
+                    if (/^[a-z][a-z0-9+.-]*:$/.test(text)) state.protocol = text;
+                },
+                enumerable: true,
+                configurable: true,
+            },
+            username: {
+                get() { return getUrlState(this).username; },
+                set(value) { getUrlState(this).username = encodeUserInfo(value); },
+                enumerable: true,
+                configurable: true,
+            },
+            password: {
+                get() { return getUrlState(this).password; },
+                set(value) { getUrlState(this).password = encodeUserInfo(value); },
+                enumerable: true,
+                configurable: true,
+            },
+            host: {
+                get() { return hostFromState(getUrlState(this)); },
+                set(value) { parseAuthority(toNodeString(value), getUrlState(this)); },
+                enumerable: true,
+                configurable: true,
+            },
+            hostname: {
+                get() { return getUrlState(this).hostname; },
+                set(value) { getUrlState(this).hostname = toNodeString(value).toLowerCase(); },
+                enumerable: true,
+                configurable: true,
+            },
+            port: {
+                get() { return getUrlState(this).port; },
+                set(value) {
+                    const text = toNodeString(value);
+                    getUrlState(this).port = /^\d*$/.test(text) ? text : getUrlState(this).port;
+                },
+                enumerable: true,
+                configurable: true,
+            },
+            pathname: {
+                get() { return getUrlState(this).pathname; },
+                set(value) { getUrlState(this).pathname = encodePathname(value); },
+                enumerable: true,
+                configurable: true,
+            },
+            search: {
+                get() { return getUrlState(this).search; },
+                set(value) {
+                    getUrlState(this).search = encodeSearch(value);
+                    resetSearchParamsFromUrl(this);
+                },
+                enumerable: true,
+                configurable: true,
+            },
+            searchParams: { get() { return getUrlState(this).searchParams; }, enumerable: true, configurable: true },
+            hash: {
+                get() { return getUrlState(this).hash; },
+                set(value) { getUrlState(this).hash = encodeHash(value); },
+                enumerable: true,
+                configurable: true,
+            },
+            toJSON: { value() { return this.href; }, enumerable: true, configurable: true },
+            [Symbol.toStringTag]: { value: 'URL', configurable: true },
+            [util.inspect.custom]: {
+                value(depth, options) {
+                    getUrlState(this);
+                    if (depth !== undefined && depth < 1) return `${this.constructor.name} {}`;
+                    const pairs = [
+                        ['href', this.href],
+                        ['origin', this.origin],
+                        ['protocol', this.protocol],
+                        ['username', this.username],
+                        ['password', this.password],
+                        ['host', this.host],
+                        ['hostname', this.hostname],
+                        ['port', this.port],
+                        ['pathname', this.pathname],
+                        ['search', this.search],
+                        ['searchParams', this.searchParams],
+                        ['hash', this.hash],
+                    ].map(([key, value]) => `  ${key}: ${util.inspect(value, options)}`);
+                    return `${this.constructor.name} {\n${pairs.join(',\n')}\n}`;
+                },
+                configurable: true,
+            },
+        });
+    }
+    defineUrlPrototype();
+
+    function canParse(input, base) {
+        if (arguments.length === 0) {
+            throw makeTypeError('ERR_MISSING_ARGS', 'The "input" argument must be specified');
+        }
+        try {
+            parseUrl(input, base);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+    Object.defineProperty(URLClass, 'canParse', { value: canParse, configurable: true });
+
+    function isURL(value) {
+        return !!(value && value[URL_STATE]);
+    }
+
+    function urlToHttpOptions(value) {
+        const state = value && value[URL_STATE];
+        if (!state) {
+            return {
+                protocol: value && value.protocol,
+                auth: value && value.auth,
+                hostname: value && value.hostname,
+                port: Number(value && value.port),
+                path: ((value && value.pathname) || '') + ((value && value.search) || ''),
+                pathname: value && value.pathname,
+                search: value && value.search,
+                hash: value && value.hash,
+                href: value && value.href,
+            };
+        }
+        const hostname = state.hostname.startsWith('[') && state.hostname.endsWith(']')
+            ? state.hostname.slice(1, -1)
+            : state.hostname;
+        const options = {
+            protocol: state.protocol,
+            auth: state.username || state.password ? `${safeDecode(state.username)}:${safeDecode(state.password)}` : undefined,
+            hostname,
+            port: state.port ? Number(state.port) : undefined,
+            path: (state.pathname || '/') + (state.search || ''),
+            pathname: state.pathname,
+            search: state.search,
+            hash: state.hash,
+            href: formatUrlState(state),
+        };
+        for (const key of Object.keys(value)) options[key] = value[key];
+        return options;
+    }
+
     function fileURLToPath(u) {
         // Accept URL instance or string. Strip "file://", decode %XX.
         const s = typeof u === 'string' ? u : (u && u.href);
@@ -2863,9 +3365,10 @@ const url = (() => {
         return new URLClass('file://' + encodeURI(p));
     }
     return {
-        parse, format, resolve, Url,
+        parse, format, resolve, resolveObject, Url,
         URL: URLClass,
         URLSearchParams: SearchParamsClass,
+        urlToHttpOptions, isURL,
         fileURLToPath, pathToFileURL,
     };
 })();
