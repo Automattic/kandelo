@@ -320,7 +320,8 @@ Object.defineProperty(globalThis.TextDecoder.prototype, Symbol.toStringTag, {
 });
 
 function _assertTextDecoder(value) {
-    if (!value || value[_TEXT_DECODER_BRAND] !== true) {
+    const proto = value == null ? null : Object.getPrototypeOf(Object(value));
+    if (proto !== globalThis.TextDecoder.prototype || value[_TEXT_DECODER_BRAND] !== true) {
         const err = new TypeError('Value of "this" must be of type TextDecoder');
         err.code = 'ERR_INVALID_THIS';
         throw err;
@@ -328,7 +329,8 @@ function _assertTextDecoder(value) {
 }
 
 function _assertTextEncoder(value) {
-    if (!value || value[_TEXT_ENCODER_BRAND] !== true) {
+    const proto = value == null ? null : Object.getPrototypeOf(Object(value));
+    if (proto !== globalThis.TextEncoder.prototype || value[_TEXT_ENCODER_BRAND] !== true) {
         const err = new TypeError('Value of "this" must be of type TextEncoder');
         err.code = 'ERR_INVALID_THIS';
         throw err;
@@ -2336,7 +2338,11 @@ const util = (() => {
     function inspect(obj, options) {
         if (obj === null) return 'null';
         if (obj === undefined) return 'undefined';
-        if (options && options.depth < 0 && obj && obj.constructor && obj.constructor.name === 'BlockList') return '[BlockList]';
+        if (obj && obj.constructor && obj.constructor.name === 'BlockList') {
+            if (options && options.depth < 0) return '[BlockList]';
+            const rules = obj.rules && obj.rules.length ? inspect(obj.rules, options) : '[]';
+            return `BlockList { rules: ${rules} }`;
+        }
         if (obj instanceof TextDecoder) {
             if (options && options.depth < 0) return '[TextDecoder]';
             if (options && options.showHidden) {
@@ -4376,7 +4382,11 @@ const net = (() => {
             try {
                 parsed = _addressValue(address, family);
             } catch (err) {
-                if (family === undefined && typeof address === 'string') return false;
+                const normalizedFamily = typeof family === 'string' ? family.toLowerCase() : family;
+                if (typeof address === 'string' &&
+                    (family === undefined || normalizedFamily === 'ipv4' || normalizedFamily === 'ipv6')) {
+                    return false;
+                }
                 throw err;
             }
             for (const rule of this._rules) {
