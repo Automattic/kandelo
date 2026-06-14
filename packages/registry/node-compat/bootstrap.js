@@ -12054,6 +12054,7 @@ const nodeTest = (() => {
             options: options || {},
             fn,
             parent,
+            children: [],
             promise: null,
             resolve: null,
             reject: null,
@@ -12139,7 +12140,9 @@ const nodeTest = (() => {
         const node = newTest(args.name, Object.assign({}, args.options, extraOptions || {}), args.fn, parent);
         parent.children.push(node);
         if (running && parentContext) {
-            return runTestNode(node, parentContext);
+            const promise = runTestNode(node, parentContext);
+            promise.catch(() => {});
+            return promise;
         }
         return node.promise;
     }
@@ -12480,14 +12483,23 @@ const nodeTest = (() => {
         return contexts;
     }
 
-    async function runHooks(context, name) {
+    function runHooks(context, name) {
         if (!context) return;
         const contexts = collectHookContexts(context);
         if (name === 'afterEach') contexts.reverse();
+        let chain = null;
         for (const ctx of contexts) {
             const hooks = ctx._hooks && ctx._hooks[name] || [];
-            for (const hookFn of hooks) await hookFn();
+            for (const hookFn of hooks) {
+                if (chain) {
+                    chain = chain.then(() => hookFn());
+                } else {
+                    const result = hookFn();
+                    if (result && typeof result.then === 'function') chain = result;
+                }
+            }
         }
+        return chain || undefined;
     }
 
     async function runTestNode(node, parentContext) {
@@ -12521,11 +12533,15 @@ const nodeTest = (() => {
             timeoutId = timers.setTimeout(() => ctx._abortController.abort(), Math.max(0, node.options.timeout));
         }
         try {
-            await runHooks(parentContext, 'beforeEach');
+            const beforeHooks = runHooks(parentContext, 'beforeEach');
+            if (beforeHooks && typeof beforeHooks.then === 'function') await beforeHooks;
             const prev = TestContext.current;
             TestContext.current = ctx;
             try {
-                if (typeof node.fn === 'function') await node.fn(ctx);
+                if (typeof node.fn === 'function') {
+                    const result = node.fn(ctx);
+                    if (result && typeof result.then === 'function') await result;
+                }
             } finally {
                 TestContext.current = prev;
             }
@@ -12544,7 +12560,8 @@ const nodeTest = (() => {
                     }
                 }
             }
-            await runHooks(parentContext, 'afterEach');
+            const afterHooks = runHooks(parentContext, 'afterEach');
+            if (afterHooks && typeof afterHooks.then === 'function') await afterHooks;
             if (ctx.signal.aborted) status = 'cancelled';
             if (childFailures > 0 && status === 'pass') {
                 status = 'fail';

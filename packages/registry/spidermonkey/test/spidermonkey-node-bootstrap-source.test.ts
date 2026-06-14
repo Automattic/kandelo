@@ -138,15 +138,16 @@ function runBootstrapCli(args: string[], options: {
 const nodeProcess = process;
 const nodeFs = require('node:fs');
 const nodePath = require('node:path');
-const nodeUrl = require('node:url');
 globalThis.quit = (code) => nodeProcess.exit(code | 0);
 globalThis.drainJobQueue = () => {
   if (typeof nodeProcess._tickCallback === 'function') nodeProcess._tickCallback();
 };
-globalThis.execArgv = ${JSON.stringify(["/usr/bin/node", ...args])};
+globalThis.scriptArgs = ${JSON.stringify(args)};
 globalThis.argv0 = '/usr/bin/node';
 let currentCwd = ${JSON.stringify(cwd)};
 const env = ${JSON.stringify(env)};
+let nextFd = 100;
+const fdMap = new Map();
 function toMode(stats) {
   return stats.isDirectory() ? 0o40000 : stats.isSymbolicLink() ? 0o120000 : 0o100000;
 }
@@ -175,8 +176,34 @@ globalThis.os = {
   getcwd() { return currentCwd; },
   chdir(path) { currentCwd = nodePath.resolve(currentCwd, String(path)); return 0; },
   getpid() { return nodeProcess.pid; },
+  open(path, flags, mode) {
+    let nodeFlag = 'r';
+    if (flags & 0o2000) nodeFlag = 'a';
+    else if (flags & 0o1000) nodeFlag = 'w';
+    else if (flags & 1 || flags & 2) nodeFlag = 'r+';
+    if (flags & 0o100 && nodeFlag === 'r+') nodeFlag = 'w+';
+    try {
+      const fd = nodeFs.openSync(String(path), nodeFlag, mode || 0o666);
+      const virtualFd = nextFd++;
+      fdMap.set(virtualFd, fd);
+      return virtualFd;
+    } catch {
+      return -2;
+    }
+  },
+  close(fd) {
+    if (fdMap.has(fd)) {
+      nodeFs.closeSync(fdMap.get(fd));
+      fdMap.delete(fd);
+    }
+    return 0;
+  },
   write(fd, buffer, byteOffset, length) {
     const bytes = Buffer.from(new Uint8Array(buffer, byteOffset || 0, length));
+    if (fdMap.has(fd)) {
+      nodeFs.writeSync(fdMap.get(fd), bytes);
+      return bytes.length;
+    }
     if (fd === 2) nodeProcess.stderr.write(bytes);
     else nodeProcess.stdout.write(bytes);
     return bytes.length;
@@ -1091,6 +1118,137 @@ try {
     });
     expect(child.stderr).toBe("");
     expect(child.status).toBe(0);
+  });
+
+  it("matches supported node:test mock and helper API surface", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+const { mock, test, describe, it } = require("node:test");
+const { convertStringToRegExp } = require("internal/test_runner/utils");
+const { MockTracker } = require("internal/test_runner/mock/mock");
+
+assert.strictEqual(typeof test.only, "function");
+assert.strictEqual(typeof test.skip, "function");
+assert.strictEqual(typeof test.todo, "function");
+assert.strictEqual(typeof describe.only, "function");
+assert.strictEqual(typeof it.todo, "function");
+assert.strictEqual(MockTracker, mock.constructor);
+assert.deepStrictEqual(convertStringToRegExp("/baz/gi", "x"), /baz/gi);
+assert.deepStrictEqual(convertStringToRegExp("/foo/9", "x"), /\\/foo\\/9/);
+assert.throws(
+  () => convertStringToRegExp("/foo/abcdefghijk", "x"),
+  { code: "ERR_INVALID_ARG_VALUE" },
+);
+
+const fn = mock.fn((a, b) => a + b, (a, b) => a * b, { times: 1 });
+assert.strictEqual(fn(2, 3), 6);
+assert.strictEqual(fn(2, 3), 5);
+assert.strictEqual(fn.mock.callCount(), 2);
+assert.deepStrictEqual(fn.mock.calls[0].arguments, [2, 3]);
+fn.mock.mockImplementation((a, b) => a - b);
+assert.strictEqual(fn(5, 2), 3);
+fn.mock.resetCalls();
+assert.strictEqual(fn.mock.callCount(), 0);
+
+const obj = {
+  value: 4,
+  add(x) { return this.value + x; },
+};
+const method = mock.method(obj, "add", function(x) { return this.value * x; });
+assert.strictEqual(obj.add(3), 12);
+assert.strictEqual(method.mock.calls[0].this, obj);
+method.mock.restore();
+assert.strictEqual(obj.add(3), 7);
+`);
+  });
+
+  it("runs the node:test CLI with discovery, sharding, reporters, and validation", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-test-"));
+    try {
+      mkdirSync(join(root, "subdir"), { recursive: true });
+      mkdirSync(join(root, "test"), { recursive: true });
+      mkdirSync(join(root, "node_modules"), { recursive: true });
+      writeFileSync(join(root, "index.test.js"), `
+const test = require('node:test');
+test('this should pass');
+`);
+      writeFileSync(join(root, "random.test.mjs"), `
+import test from 'node:test';
+test('this should fail', () => { throw new Error('boom'); });
+`);
+      writeFileSync(join(root, "subdir", "subdir_test.js"), "");
+      writeFileSync(join(root, "test", "random.cjs"), `
+const test = require('node:test');
+test('nested test dir pass');
+`);
+      writeFileSync(join(root, "test", "skip_by_name.cjs"), `
+const test = require('node:test');
+test('this should be skipped');
+test('this should be executed');
+`);
+      writeFileSync(join(root, "node_modules", "test-nm.js"), "throw new Error('ignored');");
+
+      const discovered = runBootstrapCli(["--test"], { cwd: root });
+      expect(discovered.status).toBe(1);
+      expect(discovered.stderr).toBe("");
+      expect(discovered.stdout).toMatch(/TAP version 13/);
+      expect(discovered.stdout).toMatch(/ok 1 - this should pass/);
+      expect(discovered.stdout).toMatch(/not ok 2 - this should fail/);
+      expect(discovered.stdout).toMatch(/ok 3 - .*subdir_test\.js/);
+      expect(discovered.stdout).toMatch(/ok 4 - nested test dir pass/);
+      expect(discovered.stdout).toMatch(/ok 5 - this should be skipped/);
+      expect(discovered.stdout).toMatch(/ok 6 - this should be executed/);
+      expect(discovered.stdout).not.toContain("ignored");
+
+      const debug = runBootstrapCli(["--test", "--test-concurrency=2", "--test-timeout", "10"], {
+        cwd: root,
+        env: { NODE_DEBUG: "test_runner" },
+      });
+      expect(debug.stderr).toMatch(/concurrency: 2,/);
+      expect(debug.stderr).toMatch(/timeout: 10,/);
+
+      const invalidShard = runBootstrapCli(["--test", "--test-shard=0/3", join(root, "index.test.js")]);
+      expect(invalidShard.status).toBe(1);
+      expect(invalidShard.stdout).toBe("");
+      expect(invalidShard.stderr).toMatch(/options\.shard\.index/);
+
+      const shards = join(root, "shards");
+      mkdirSync(shards);
+      for (const name of ["a", "b", "c"]) {
+        writeFileSync(join(shards, `${name}.cjs`), `
+const test = require('node:test');
+test('${name}.cjs this should pass');
+`);
+      }
+      const dotFile = join(root, "dot.out");
+      const sharded = runBootstrapCli([
+        "--test",
+        "--test-reporter", "dot",
+        "--test-reporter-destination", dotFile,
+        "--test-shard=2/2",
+        join(shards, "*.cjs"),
+      ]);
+      expect(sharded.status).toBe(0);
+      expect(sharded.stdout).toBe("");
+      expect(sharded.stderr).toBe("");
+      expect(readFileSync(dotFile, "utf8")).toBe(".\n");
+
+      const reporterFile = join(root, "reporters.js");
+      writeFileSync(reporterFile, `
+const test = require('node:test');
+test('nested', { concurrency: 4 }, async (t) => {
+  t.test('ok', () => {});
+  t.test('failing', () => { throw new Error('error'); });
+});
+test('top level', () => {});
+`);
+      const dot = runBootstrapCli(["--test", "--test-reporter", "dot", reporterFile]);
+      expect(dot.status).toBe(1);
+      expect(dot.stdout).toBe(".XX.\n");
+      expect(dot.stderr).toBe("");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("implements readline interface, keypress, and raw-mode basics", () => {
