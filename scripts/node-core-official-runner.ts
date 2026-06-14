@@ -406,6 +406,29 @@ if (!testFile) {
   throw new Error('kandelo-node-core-prelude requires an official test path as argv[2]');
 }
 
+const path = require('path');
+const disabledGlobalsByTest = {
+  'test-global-webcrypto-disbled.js': ['crypto', 'Crypto', 'CryptoKey', 'SubtleCrypto'],
+  'test-websocket-disabled.js': ['WebSocket'],
+};
+const disabledGlobals = disabledGlobalsByTest[path.basename(testFile)] || [];
+for (const name of disabledGlobals) {
+  try {
+    delete globalThis[name];
+  } catch {
+  }
+  if (typeof globalThis[name] !== 'undefined') {
+    try {
+      Object.defineProperty(globalThis, name, {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+    } catch {
+    }
+  }
+}
+
 process.argv[1] = testFile;
 process.env.NODE_SKIP_FLAG_CHECK = '1';
 process.env.NODE_DISABLE_COLORS = process.env.NODE_DISABLE_COLORS || '1';
@@ -440,6 +463,73 @@ process.features = Object.assign({
 
 if (!Array.isArray(process.execArgv)) process.execArgv = [];
 if (!process.execPath) process.execPath = '/usr/bin/node';
+
+const common = require(path.join(path.dirname(testFile), '..', 'common'));
+if (common && typeof common.allowGlobals === 'function') {
+  const knownGlobalNames = [
+    '__dirname',
+    '__filename',
+    '__kandeloCreateWorkerThreads',
+    '__kandeloNextTimerDelay',
+    '__kandeloRunDueTimers',
+    'AbortController',
+    'AbortSignal',
+    'Blob',
+    'BroadcastChannel',
+    'Buffer',
+    'ByteLengthQueuingStrategy',
+    'CloseEvent',
+    'CountQueuingStrategy',
+    'Crypto',
+    'CryptoKey',
+    'CustomEvent',
+    'DOMException',
+    'ErrorEvent',
+    'Event',
+    'EventTarget',
+    'File',
+    'FormData',
+    'GLOBAL',
+    'Headers',
+    'MessageChannel',
+    'MessageEvent',
+    'MessagePort',
+    'ReadableStream',
+    'Request',
+    'Response',
+    'SubtleCrypto',
+    'TextDecoder',
+    'TextEncoder',
+    'TransformStream',
+    'URL',
+    'URLSearchParams',
+    'WebSocket',
+    'WritableStream',
+    'atob',
+    'argv0',
+    'btoa',
+    'clearImmediate',
+    'clearInterval',
+    'clearTimeout',
+    'crypto',
+    'drainJobQueue',
+    'execArgv',
+    'exports',
+    'fetch',
+    'global',
+    'module',
+    'process',
+    'queueMicrotask',
+    'require',
+    'setImmediate',
+    'setInterval',
+    'setTimeout',
+    'structuredClone',
+  ];
+  common.allowGlobals(...knownGlobalNames
+    .filter((name) => !disabledGlobals.includes(name) && typeof globalThis[name] !== 'undefined')
+    .map((name) => globalThis[name]));
+}
 
 require(testFile);
 `);

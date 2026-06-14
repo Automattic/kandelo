@@ -101,7 +101,10 @@ function _normalizeTextDecoderEncoding(label) {
 function _u8(input) {
     if (input === undefined) return new Uint8Array(0);
     if (input instanceof Uint8Array) return input;
-    if (input instanceof ArrayBuffer || input instanceof SharedArrayBuffer) return new Uint8Array(input);
+    if (input instanceof ArrayBuffer ||
+        (typeof SharedArrayBuffer !== 'undefined' && input instanceof SharedArrayBuffer)) {
+        return new Uint8Array(input);
+    }
     if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
     throw _makeEncodingArgTypeError('input', 'ArrayBuffer, Buffer, TypedArray, or DataView', input);
 }
@@ -240,6 +243,10 @@ function _decodeUtf16Bytes(bytes, bigEndian, fatal) {
         chunk.push(code);
         _appendCodeUnits(chunks, chunk);
     }
+    if (bytes.byteLength % 2 !== 0) {
+        chunk.push(0xfffd);
+        _appendCodeUnits(chunks, chunk);
+    }
     if (chunk.length > 0) chunks.push(String.fromCharCode.apply(null, chunk));
     return chunks.join('');
 }
@@ -355,21 +362,24 @@ if (typeof globalThis.atob === 'undefined') {
 
     globalThis.atob = function(str) {
         str = String(str).replace(/[\t\n\f\r ]+/g, '');
-        if (str.length % 4 === 1 || /[^A-Za-z0-9+/=]/.test(str) || /=.*[^=]/.test(str)) {
+        if (str.length % 4 === 1 || /[^A-Za-z0-9+/=]/.test(str) ||
+            /=.*[^=]/.test(str) || /={3,}$/.test(str)) {
             throw new DOMException('The string to be decoded is not correctly encoded.', 'InvalidCharacterError');
         }
-        str = str.replace(/=+$/, '');
+        const paddedLength = Math.ceil(str.length / 4) * 4;
+        str = str.padEnd(paddedLength, '=');
         let result = '';
-        let i = 0;
-        while (i < str.length) {
-            const a = _b64lookup[str.charCodeAt(i++)];
-            const b = _b64lookup[str.charCodeAt(i++)];
-            const c = _b64lookup[str.charCodeAt(i++)];
-            const d = _b64lookup[str.charCodeAt(i++)];
+        for (let i = 0; i < str.length; i += 4) {
+            const c2 = str.charCodeAt(i + 2);
+            const c3 = str.charCodeAt(i + 3);
+            const a = _b64lookup[str.charCodeAt(i)];
+            const b = _b64lookup[str.charCodeAt(i + 1)];
+            const c = c2 === 61 ? 0 : _b64lookup[c2];
+            const d = c3 === 61 ? 0 : _b64lookup[c3];
             const triple = (a << 18) | (b << 12) | (c << 6) | d;
             result += String.fromCharCode((triple >> 16) & 0xFF);
-            if (c !== undefined) result += String.fromCharCode((triple >> 8) & 0xFF);
-            if (d !== undefined) result += String.fromCharCode(triple & 0xFF);
+            if (c2 !== 61) result += String.fromCharCode((triple >> 8) & 0xFF);
+            if (c3 !== 61) result += String.fromCharCode(triple & 0xFF);
         }
         return result;
     };
@@ -381,6 +391,8 @@ if (typeof globalThis.atob === 'undefined') {
 
 const _SLASH = '/';
 const _DOT = '.';
+const _kEvents = Symbol('kEvents');
+const _kWeakHandler = Symbol('kWeakHandler');
 
 function _defineGlobal(name, value) {
     Object.defineProperty(globalThis, name, {
@@ -2311,6 +2323,14 @@ const util = (() => {
             if (options && options.depth < 0) return '[TextDecoder]';
             return `TextDecoder { encoding: '${obj.encoding}', fatal: ${obj.fatal}, ignoreBOM: ${obj.ignoreBOM} }`;
         }
+        if (typeof globalThis.Event !== 'undefined' && obj instanceof globalThis.Event) {
+            if (options && options.depth < 0) return obj.constructor && obj.constructor.name || 'Event';
+            return `${obj.constructor && obj.constructor.name || 'Event'} { type: '${obj.type}' }`;
+        }
+        if (typeof globalThis.EventTarget !== 'undefined' && obj instanceof globalThis.EventTarget) {
+            if (options && options.depth < 0) return obj.constructor && obj.constructor.name || 'EventTarget';
+            return `${obj.constructor && obj.constructor.name || 'EventTarget'} {}`;
+        }
         if (typeof obj === 'string') return `'${obj}'`;
         if (typeof obj === 'number' || typeof obj === 'boolean' || typeof obj === 'bigint') return String(obj);
         if (typeof obj === 'symbol') return obj.toString();
@@ -3890,7 +3910,7 @@ const child_process = (() => {
 // crypto module (minimal)
 // ============================================================
 
-const crypto = (() => {
+const nodeCrypto = (() => {
     class CryptoKey {}
     class SubtleCrypto {}
     class Crypto {
@@ -5640,6 +5660,78 @@ const _builtinModules = {
     'os': nodeOs,
     'util': util,
     'util/types': util.types,
+    'internal/util': util,
+    'internal/util/types': util.types,
+    'internal/util/inspect': {
+        inspect: util.inspect,
+        customInspectSymbol: util.customInspectSymbol,
+        stripVTControlCharacters(value) {
+            return String(value).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+        },
+        getStringWidth(value) { return String(value).length; },
+    },
+    'internal/util/debuglog': { debuglog: util.debuglog, debug: util.debuglog },
+    'internal/util/inspector': { sendInspectorCommand() {} },
+    'internal/errors': (() => {
+        class AbortError extends Error {
+            constructor(message = 'The operation was aborted', options) {
+                if (options !== undefined && (options === null || typeof options !== 'object')) {
+                    throw _makeInvalidArgTypeError('options', 'object', options);
+                }
+                super(String(message), options);
+                this.name = 'AbortError';
+                this.code = 'ABORT_ERR';
+                if (options && Object.prototype.hasOwnProperty.call(options, 'cause') && !('cause' in this)) {
+                    Object.defineProperty(this, 'cause', {
+                        value: options.cause,
+                        writable: true,
+                        configurable: true,
+                    });
+                }
+            }
+        }
+        class ERR_INVALID_ARG_TYPE extends TypeError {
+            constructor(name, expected, actual) {
+                super(_makeInvalidArgTypeError(name, expected, actual).message);
+                this.code = 'ERR_INVALID_ARG_TYPE';
+            }
+        }
+        class ERR_OUT_OF_RANGE extends RangeError {
+            constructor(name, range, actual) {
+                super(`The value of "${name}" is out of range. It must be ${range}. Received ${actual}`);
+                this.code = 'ERR_OUT_OF_RANGE';
+            }
+        }
+        function aggregateTwoErrors(innerError, outerError) {
+            return outerError || innerError;
+        }
+        function formatList(list) {
+            return Array.isArray(list) ? list.join(', ') : String(list);
+        }
+        function hideStackFrames(fn) { return fn; }
+        return {
+            AbortError,
+            codes: { ERR_INVALID_ARG_TYPE, ERR_OUT_OF_RANGE },
+            aggregateTwoErrors,
+            formatList,
+            hideStackFrames,
+            E() {},
+            SystemError: Error,
+            UVException: Error,
+            UVExceptionWithHostPort: Error,
+            kIsNodeError: Symbol('kIsNodeError'),
+        };
+    })(),
+    'internal/event_target': {
+        get Event() { return globalThis.Event; },
+        get EventTarget() { return globalThis.EventTarget; },
+        get CustomEvent() { return globalThis.CustomEvent; },
+        get NodeEventTarget() { return KandeloNodeEventTarget; },
+        defineEventHandler: _defineEventHandler,
+        isEventTarget(value) { return value instanceof globalThis.EventTarget; },
+        kEvents: _kEvents,
+        kWeakHandler: _kWeakHandler,
+    },
     'assert': assert,
     'assert/strict': assert,
     'stream': stream,
@@ -5652,7 +5744,12 @@ const _builtinModules = {
     // make-fetch-happen (http/1) — empty stub satisfies the load.
     'http2': { constants: {} },
     'child_process': child_process,
-    'crypto': crypto,
+    'crypto': nodeCrypto,
+    'internal/crypto/webcrypto': {
+        Crypto: nodeCrypto.Crypto,
+        CryptoKey: nodeCrypto.CryptoKey,
+        SubtleCrypto: nodeCrypto.SubtleCrypto,
+    },
     'net': net,
     'tls': tls,
     'http': http,
@@ -6471,14 +6568,10 @@ if (typeof globalThis.BroadcastChannel === 'undefined')
 // from `require('crypto')`. uuid/dist-node/rng.js and many other packages
 // reach for the bare `crypto.getRandomValues()` here without importing
 // anything — undefined crypto → silent rejection during session init.
-if (typeof globalThis.crypto === 'undefined') {
-    globalThis.crypto = {
-        getRandomValues: crypto.getRandomValues,
-        randomUUID: crypto.randomUUID,
-        // Subtle is left unimplemented; consumers that actually need it
-        // will fail loudly, which is preferable to a silent stub.
-    };
-}
+_defineGlobal('crypto', nodeCrypto.webcrypto);
+_defineGlobal('Crypto', nodeCrypto.Crypto);
+_defineGlobal('CryptoKey', nodeCrypto.CryptoKey);
+_defineGlobal('SubtleCrypto', nodeCrypto.SubtleCrypto);
 
 // structuredClone — Node 17+ global. Settings managers and other helpers
 // use it to deep-copy plain config objects. Falls back to JSON for the
@@ -6498,6 +6591,9 @@ class KandeloEvent {
         if (arguments.length === 0 || typeof type === 'symbol') {
             throw _makeInvalidArgTypeError('type', 'string', type);
         }
+        if (init !== undefined && init !== null && typeof init !== 'object') {
+            throw _makeInvalidArgTypeError('options', 'object', init);
+        }
         init = init || {};
         this.type = String(type);
         this.bubbles = !!init.bubbles;
@@ -6508,11 +6604,16 @@ class KandeloEvent {
         this.currentTarget = null;
         this.eventPhase = 0;
         this.isTrusted = false;
-        this.cancelBubble = false;
+        this._cancelBubble = false;
         this.timeStamp = Date.now();
         this._passive = false;
     }
-    composedPath() { return []; }
+    get cancelBubble() { return this._cancelBubble; }
+    set cancelBubble(value) { this._cancelBubble = !!value; }
+    get srcElement() { return this.target; }
+    composedPath() {
+        return this.eventPhase === KandeloEvent.AT_TARGET && this.currentTarget ? [this.currentTarget] : [];
+    }
     preventDefault() {
         if (this.cancelable && !this._passive) this.defaultPrevented = true;
     }
@@ -6542,9 +6643,17 @@ class KandeloEventTarget {
         });
     }
     addEventListener(type, listener, options) {
+        if (arguments.length < 2) {
+            const err = new TypeError('The "type" and "listener" arguments must be specified');
+            err.code = 'ERR_MISSING_ARGS';
+            throw err;
+        }
         if (listener == null) {
             if (options && typeof options === 'object') void options.passive;
             return undefined;
+        }
+        if (typeof listener !== 'function' && typeof listener !== 'object') {
+            throw _makeInvalidArgTypeError('listener', 'EventListener', listener);
         }
         const opts = _eventListenerOptions(options);
         if (opts.signal !== undefined && !(opts.signal instanceof globalThis.AbortSignal)) {
@@ -6589,32 +6698,110 @@ class KandeloEventTarget {
         return undefined;
     }
     dispatchEvent(event) {
+        if (!(this instanceof KandeloEventTarget)) {
+            const err = new TypeError('Value of "this" must be of type EventTarget');
+            err.code = 'ERR_INVALID_THIS';
+            throw err;
+        }
         if (!(event instanceof KandeloEvent)) {
             throw _makeInvalidArgTypeError('event', 'Event', event);
         }
+        if (event._dispatching) {
+            const err = new Error('The event is already being dispatched');
+            err.code = 'ERR_EVENT_RECURSION';
+            throw err;
+        }
         const list = (this._eventTargetListeners.get(event.type) || []).slice();
-        event.target = event.target || this;
+        event._dispatching = true;
+        event.target = this;
         event.currentTarget = this;
         event.eventPhase = KandeloEvent.AT_TARGET;
-        for (const entry of list) {
-            if (entry.removed) continue;
-            if (entry.once) this.removeEventListener(event.type, entry.listener, { capture: entry.capture });
-            event._passive = entry.passive;
-            try {
-                if (typeof entry.listener === 'function') entry.listener.call(this, event);
-                else if (entry.listener && typeof entry.listener.handleEvent === 'function') {
-                    entry.listener.handleEvent(event);
+        try {
+            for (const entry of list) {
+                if (entry.removed) continue;
+                if (entry.once) this.removeEventListener(event.type, entry.listener, { capture: entry.capture });
+                event._passive = entry.passive;
+                try {
+                    if (typeof entry.listener === 'function') entry.listener.call(this, event);
+                    else if (entry.listener && typeof entry.listener.handleEvent === 'function') {
+                        entry.listener.handleEvent(event);
+                    }
+                } catch (err) {
+                    queueMicrotask(() => { throw err; });
+                } finally {
+                    event._passive = false;
                 }
-            } finally {
-                event._passive = false;
+                if (event._stopImmediate) break;
             }
-            if (event._stopImmediate) break;
+        } finally {
+            event._dispatching = false;
+            event.eventPhase = KandeloEvent.NONE;
+            event.currentTarget = null;
         }
-        event.eventPhase = KandeloEvent.NONE;
-        event.currentTarget = null;
         return !event.defaultPrevented;
     }
 }
+
+class KandeloNodeEventTarget extends KandeloEventTarget {
+    constructor() {
+        super();
+        this._maxListeners = KandeloNodeEventTarget.defaultMaxListeners;
+    }
+    setMaxListeners(n) { this._maxListeners = n; return this; }
+    getMaxListeners() { return this._maxListeners; }
+    eventNames() {
+        return Array.from(this._eventTargetListeners.keys())
+            .filter((name) => (this._eventTargetListeners.get(name) || []).length > 0);
+    }
+    listenerCount(type) {
+        const list = this._eventTargetListeners.get(String(type));
+        return list ? list.filter((entry) => !entry.removed).length : 0;
+    }
+    on(type, listener, options) { this.addEventListener(type, listener, options); return this; }
+    addListener(type, listener, options) { return this.on(type, listener, options); }
+    once(type, listener, options) {
+        const opts = options && typeof options === 'object'
+            ? Object.assign({}, options, { once: true })
+            : { once: true };
+        this.addEventListener(type, listener, opts);
+        return this;
+    }
+    off(type, listener, options) { this.removeEventListener(type, listener, options); return this; }
+    removeListener(type, listener, options) { return this.off(type, listener, options); }
+    removeAllListeners(type) {
+        if (type === undefined) this._eventTargetListeners.clear();
+        else this._eventTargetListeners.delete(String(type));
+        return this;
+    }
+    emit(type, ...args) {
+        if (arguments.length === 0) throw _makeInvalidArgTypeError('type', 'string', type);
+        const event = args[0] instanceof KandeloEvent
+            ? args[0]
+            : new KandeloCustomEvent(String(type), { detail: args[0] });
+        return this.dispatchEvent(event);
+    }
+}
+KandeloNodeEventTarget.defaultMaxListeners = 10;
+Object.defineProperty(KandeloNodeEventTarget, 'name', { value: 'NodeEventTarget' });
+Object.defineProperty(KandeloEvent.prototype, Symbol.toStringTag, {
+    value: 'Event',
+    configurable: true,
+});
+Object.defineProperty(KandeloEventTarget.prototype, Symbol.toStringTag, {
+    value: 'EventTarget',
+    configurable: true,
+});
+for (const key of ['addEventListener', 'dispatchEvent', 'removeEventListener']) {
+    Object.defineProperty(KandeloEventTarget.prototype, key, {
+        value: KandeloEventTarget.prototype[key],
+        writable: true,
+        configurable: true,
+        enumerable: true,
+    });
+}
+Object.defineProperty(KandeloEvent, 'length', { value: 1 });
+Object.defineProperty(KandeloEvent, 'name', { value: 'Event' });
+Object.defineProperty(KandeloEventTarget, 'name', { value: 'EventTarget' });
 
 function _eventListenerOptions(options) {
     if (options === undefined || options === null) {
@@ -6632,6 +6819,26 @@ function _eventListenerOptions(options) {
         passive: !!options.passive,
         signal: options.signal,
     };
+}
+
+function _defineEventHandler(target, name, eventName) {
+    eventName = eventName || name;
+    const prop = `on${name}`;
+    const slot = Symbol(prop);
+    Object.defineProperty(target, prop, {
+        configurable: true,
+        enumerable: true,
+        get() { return this[slot] || null; },
+        set(handler) {
+            if (this[slot]) this.removeEventListener(eventName, this[slot]);
+            if (typeof handler === 'function') {
+                this[slot] = handler;
+                this.addEventListener(eventName, handler);
+            } else {
+                this[slot] = null;
+            }
+        },
+    });
 }
 
 class KandeloMessageEvent extends KandeloEvent {
@@ -6682,6 +6889,8 @@ Object.defineProperty(KandeloCustomEvent.prototype, Symbol.toStringTag, {
     value: 'CustomEvent',
     configurable: true,
 });
+Object.defineProperty(KandeloCustomEvent, 'length', { value: 1 });
+Object.defineProperty(KandeloCustomEvent, 'name', { value: 'CustomEvent' });
 
 class KandeloDOMException extends Error {
     constructor(message = '', name = 'Error') {
@@ -6701,9 +6910,34 @@ class KandeloDOMException extends Error {
             super(String(message));
             this.name = name === undefined ? 'Error' : String(name);
         }
-        this.code = 0;
+        const codes = {
+            IndexSizeError: 1,
+            HierarchyRequestError: 3,
+            WrongDocumentError: 4,
+            InvalidCharacterError: 5,
+            NoModificationAllowedError: 7,
+            NotFoundError: 8,
+            NotSupportedError: 9,
+            InUseAttributeError: 10,
+            InvalidStateError: 11,
+            SyntaxError: 12,
+            InvalidModificationError: 13,
+            NamespaceError: 14,
+            InvalidAccessError: 15,
+            TypeMismatchError: 17,
+            SecurityError: 18,
+            NetworkError: 19,
+            AbortError: 20,
+            URLMismatchError: 21,
+            QuotaExceededError: 22,
+            TimeoutError: 23,
+            InvalidNodeTypeError: 24,
+            DataCloneError: 25,
+        };
+        this.code = codes[this.name] || 0;
     }
 }
+Object.defineProperty(KandeloDOMException, 'name', { value: 'DOMException' });
 
 class KandeloAbortSignal extends KandeloEventTarget {
     constructor() {
@@ -6798,6 +7032,39 @@ class KandeloMessageChannel {
 }
 _defineGlobal('MessagePort', KandeloMessagePort);
 _defineGlobal('MessageChannel', KandeloMessageChannel);
+
+class KandeloWebSocket extends KandeloEventTarget {
+    constructor(url, protocols) {
+        super();
+        this.url = String(url);
+        this.protocol = Array.isArray(protocols) ? protocols[0] || '' : (protocols || '');
+        this.readyState = KandeloWebSocket.CONNECTING;
+        queueMicrotask(() => {
+            this.readyState = KandeloWebSocket.CLOSED;
+            this.dispatchEvent(new KandeloCloseEvent('close'));
+        });
+    }
+    send() {
+        if (this.readyState !== KandeloWebSocket.OPEN) {
+            throw new KandeloDOMException('WebSocket is not open', 'InvalidStateError');
+        }
+    }
+    close() {
+        this.readyState = KandeloWebSocket.CLOSED;
+        this.dispatchEvent(new KandeloCloseEvent('close'));
+    }
+}
+for (const [name, value] of Object.entries({
+    CONNECTING: 0,
+    OPEN: 1,
+    CLOSING: 2,
+    CLOSED: 3,
+})) {
+    Object.defineProperty(KandeloWebSocket, name, { value, enumerable: true });
+    Object.defineProperty(KandeloWebSocket.prototype, name, { value, enumerable: true });
+}
+Object.defineProperty(KandeloWebSocket, 'name', { value: 'WebSocket' });
+_defineGlobal('WebSocket', KandeloWebSocket);
 
 // Some engines ship without ECMA-402 (Intl). TUIs use Intl.Segmenter for
 // grapheme-based terminal-width math; a per-code-point fallback is good
