@@ -2992,13 +2992,38 @@ function _refreshWs(fd) {
 }
 
 function _writeControl(stream, seq, cb) {
-    stream.write(seq);
+    if (cb !== undefined && typeof cb !== 'function') {
+        throw _makeInvalidArgTypeError('callback', 'function', cb);
+    }
+    if (!stream || typeof stream.write !== 'function') {
+        if (cb) cb(null);
+        return true;
+    }
     if (typeof cb === 'function') cb();
+    stream.write(seq);
     return true;
 }
 
 function _cursorTo(stream, x, y, cb) {
     if (typeof y === 'function') { cb = y; y = undefined; }
+    if (cb !== undefined && typeof cb !== 'function') {
+        throw _makeInvalidArgTypeError('callback', 'function', cb);
+    }
+    if (!stream || typeof stream.write !== 'function') {
+        if (cb) cb(null);
+        return true;
+    }
+    if (Number.isNaN(x) || Number.isNaN(y)) {
+        throw _makeInvalidArgValueError(Number.isNaN(x) ? 'x' : 'y', Number.isNaN(x) ? x : y);
+    }
+    if (typeof x !== 'number') {
+        if (typeof y === 'number') {
+            const err = new TypeError('Cannot set cursor row without setting its column');
+            err.code = 'ERR_INVALID_CURSOR_POS';
+            throw err;
+        }
+        return true;
+    }
     x = Math.max(0, x | 0);
     if (typeof y === 'number') {
         return _writeControl(stream, `\x1b[${Math.max(0, y | 0) + 1};${x + 1}H`, cb);
@@ -11399,6 +11424,687 @@ const internalTestBinding = {
     },
 };
 
+const readline = (() => {
+    const kKeypressDecoder = Symbol('kKeypressDecoder');
+    const kEscapeParser = Symbol('kEscapeParser');
+    const ESCAPE_CODE_TIMEOUT = 500;
+
+    function codePointWidth(cp) {
+        if (
+            cp === 0x200e || cp === 0x200f ||
+            (cp >= 0x0300 && cp <= 0x036f) ||
+            (cp >= 0x20d0 && cp <= 0x20ff) ||
+            (cp >= 0xfe00 && cp <= 0xfe0f)
+        ) return 0;
+        if (
+            cp >= 0x1100 &&
+            (cp <= 0x115f ||
+             cp === 0x2329 || cp === 0x232a ||
+             (cp >= 0x2e80 && cp <= 0xa4cf) ||
+             (cp >= 0xac00 && cp <= 0xd7a3) ||
+             (cp >= 0xf900 && cp <= 0xfaff) ||
+             (cp >= 0xfe10 && cp <= 0xfe19) ||
+             (cp >= 0xfe30 && cp <= 0xfe6f) ||
+             (cp >= 0xff00 && cp <= 0xff60) ||
+             (cp >= 0xffe0 && cp <= 0xffe6) ||
+             (cp >= 0x1f300 && cp <= 0x1faff))
+        ) return 2;
+        return 1;
+    }
+
+    function stringWidth(value) {
+        value = String(value || '');
+        let width = 0;
+        for (let i = 0; i < value.length;) {
+            const cp = value.codePointAt(i);
+            width += codePointWidth(cp);
+            i += cp > 0xffff ? 2 : 1;
+        }
+        return width;
+    }
+
+    function charLengthAt(value, index) {
+        if (value.length <= index) return 1;
+        return value.codePointAt(index) > 0xffff ? 2 : 1;
+    }
+
+    function charLengthLeft(value, index) {
+        if (index <= 0) return 0;
+        const prev = value.codePointAt(index - 1);
+        if (prev >= 0xdc00 && prev <= 0xdfff && index > 1) return 2;
+        return 1;
+    }
+
+    function toStringChunk(input) {
+        if (input == null) return '';
+        if (typeof input === 'string') return input;
+        if (input instanceof Uint8Array || input instanceof ArrayBuffer || ArrayBuffer.isView(input)) {
+            return Buffer.from(input).toString('utf8');
+        }
+        return String(input);
+    }
+
+    function parseEscapeCode(s) {
+        let ch = s[1];
+        let code = ch;
+        let modifier = 0;
+        if (ch === 'O') {
+            ch = s[2];
+            let end = 3;
+            if (ch >= '0' && ch <= '9') {
+                modifier = Number(ch) - 1;
+                ch = s[3];
+                end = 4;
+            }
+            return { code: `O${ch || ''}`, modifier, end };
+        }
+        if (ch !== '[') return null;
+
+        let i = 2;
+        code = '[';
+        if (s[i] === '[') {
+            code += '[';
+            i++;
+        }
+        const cmdStart = i;
+        while (i < s.length && s[i] >= '0' && s[i] <= '9' && i - cmdStart < 3) i++;
+        if (s[i] === ';') {
+            i++;
+            if (s[i] >= '0' && s[i] <= '9') i++;
+        }
+        if (i >= s.length) return null;
+        i++;
+        const cmd = s.slice(cmdStart, i);
+        let match = /^(?:(\d\d?)(?:;(\d))?([~^$])|(\d{3}~))$/.exec(cmd);
+        if (match) {
+            if (match[4]) {
+                code += match[4];
+            } else {
+                code += match[1] + match[3];
+                modifier = Number(match[2] || 1) - 1;
+            }
+        } else if ((match = /^((\d;)?(\d))?([A-Za-z])$/.exec(cmd))) {
+            code += match[4];
+            modifier = Number(match[3] || 1) - 1;
+        } else {
+            code += cmd;
+        }
+        return { code, modifier, end: i };
+    }
+
+    function nameEscapeKey(code, key) {
+        switch (code) {
+            case '[P': case 'OP': case '[11~': case '[[A': key.name = 'f1'; break;
+            case '[Q': case 'OQ': case '[12~': case '[[B': key.name = 'f2'; break;
+            case '[R': case 'OR': case '[13~': case '[[C': key.name = 'f3'; break;
+            case '[S': case 'OS': case '[14~': case '[[D': key.name = 'f4'; break;
+            case '[[E': case '[15~': key.name = 'f5'; break;
+            case '[17~': key.name = 'f6'; break;
+            case '[18~': key.name = 'f7'; break;
+            case '[19~': key.name = 'f8'; break;
+            case '[20~': key.name = 'f9'; break;
+            case '[21~': key.name = 'f10'; break;
+            case '[23~': key.name = 'f11'; break;
+            case '[24~': key.name = 'f12'; break;
+            case '[A': case 'OA': key.name = 'up'; break;
+            case '[B': case 'OB': key.name = 'down'; break;
+            case '[C': case 'OC': key.name = 'right'; break;
+            case '[D': case 'OD': key.name = 'left'; break;
+            case '[E': case 'OE': key.name = 'clear'; break;
+            case '[F': case 'OF': case '[4~': case '[8~': key.name = 'end'; break;
+            case '[H': case 'OH': case '[1~': case '[7~': key.name = 'home'; break;
+            case '[2~': key.name = 'insert'; break;
+            case '[3~': key.name = 'delete'; break;
+            case '[5~': case '[[5~': key.name = 'pageup'; break;
+            case '[6~': case '[[6~': key.name = 'pagedown'; break;
+            case '[200~': key.name = 'paste-start'; break;
+            case '[201~': key.name = 'paste-end'; break;
+            case '[a': key.name = 'up'; key.shift = true; break;
+            case '[b': key.name = 'down'; key.shift = true; break;
+            case '[c': key.name = 'right'; key.shift = true; break;
+            case '[d': key.name = 'left'; key.shift = true; break;
+            case '[e': key.name = 'clear'; key.shift = true; break;
+            case '[2$': key.name = 'insert'; key.shift = true; break;
+            case '[3$': key.name = 'delete'; key.shift = true; break;
+            case '[5$': key.name = 'pageup'; key.shift = true; break;
+            case '[6$': key.name = 'pagedown'; key.shift = true; break;
+            case '[7$': key.name = 'home'; key.shift = true; break;
+            case '[8$': key.name = 'end'; key.shift = true; break;
+            case 'Oa': key.name = 'up'; key.ctrl = true; break;
+            case 'Ob': key.name = 'down'; key.ctrl = true; break;
+            case 'Oc': key.name = 'right'; key.ctrl = true; break;
+            case 'Od': key.name = 'left'; key.ctrl = true; break;
+            case 'Oe': key.name = 'clear'; key.ctrl = true; break;
+            case '[2^': key.name = 'insert'; key.ctrl = true; break;
+            case '[3^': key.name = 'delete'; key.ctrl = true; break;
+            case '[5^': key.name = 'pageup'; key.ctrl = true; break;
+            case '[6^': key.name = 'pagedown'; key.ctrl = true; break;
+            case '[7^': key.name = 'home'; key.ctrl = true; break;
+            case '[8^': key.name = 'end'; key.ctrl = true; break;
+            case '[Z': key.name = 'tab'; key.shift = true; break;
+            default: key.name = 'undefined'; break;
+        }
+    }
+
+    function parseKeyBuffer(buffer) {
+        const key = { sequence: null, name: undefined, ctrl: false, meta: false, shift: false };
+        if (!buffer) return null;
+        let s = buffer;
+        let escaped = false;
+        let sequenceOffset = 0;
+        let ch = s[0];
+        if (ch === '\x1b') {
+            escaped = true;
+            if (s.length === 1) {
+                key.sequence = s;
+                key.name = 'escape';
+                key.meta = true;
+                return { event: { sequence: undefined, key }, used: 1 };
+            }
+            if (s[1] === '\x1b') {
+                if (s.length < 3) return null;
+                s = '\x1b' + s.slice(2);
+                sequenceOffset = 1;
+            }
+            ch = s[1];
+        }
+
+        if (escaped && (ch === 'O' || ch === '[')) {
+            const parsed = parseEscapeCode(s);
+            if (!parsed) return null;
+            key.ctrl = !!(parsed.modifier & 4);
+            key.meta = !!(parsed.modifier & 10);
+            key.shift = !!(parsed.modifier & 1);
+            key.code = parsed.code;
+            nameEscapeKey(parsed.code, key);
+            const used = parsed.end + sequenceOffset;
+            key.sequence = buffer.slice(0, used);
+            return { event: { sequence: undefined, key }, used };
+        }
+
+        const used = (escaped ? Math.min(s.length, 2) : charLengthAt(s, 0)) + sequenceOffset;
+        ch = escaped ? s[1] : s.slice(0, used);
+        if (ch === '\r') {
+            key.name = 'return';
+            key.meta = escaped;
+        } else if (ch === '\n') {
+            key.name = 'enter';
+            key.meta = escaped;
+        } else if (ch === '\t') {
+            key.name = 'tab';
+            key.meta = escaped;
+        } else if (ch === '\b' || ch === '\x7f') {
+            key.name = 'backspace';
+            key.meta = escaped;
+        } else if (ch === '\x1b') {
+            key.name = 'escape';
+            key.meta = escaped;
+        } else if (ch === ' ') {
+            key.name = 'space';
+            key.meta = escaped;
+        } else if (!escaped && ch <= '\x1a') {
+            key.name = String.fromCharCode(ch.charCodeAt(0) + 'a'.charCodeAt(0) - 1);
+            key.ctrl = true;
+        } else if (/^[0-9A-Za-z]$/.test(ch)) {
+            key.name = ch.toLowerCase();
+            key.shift = /^[A-Z]$/.test(ch);
+            key.meta = escaped;
+        } else if (escaped) {
+            key.name = ch.length ? undefined : 'escape';
+            key.meta = true;
+        }
+        key.sequence = buffer.slice(0, used);
+        if (key.name !== undefined || escaped || charLengthAt(key.sequence, 0) === key.sequence.length) {
+            return { event: { sequence: escaped ? undefined : key.sequence, key }, used };
+        }
+        return { used };
+    }
+
+    function emitKeypressEvents(input, iface = {}) {
+        if (!input || typeof input.on !== 'function' || input[kKeypressDecoder]) return;
+        input[kKeypressDecoder] = true;
+        input[kEscapeParser] = { buffer: '', timeoutId: null };
+        const state = input[kEscapeParser];
+        const flushEscape = () => {
+            state.timeoutId = null;
+            if (state.buffer === '\x1b') {
+                const parsed = parseKeyBuffer(state.buffer);
+                state.buffer = '';
+                if (parsed && parsed.event) input.emit('keypress', parsed.event.sequence, parsed.event.key);
+            }
+        };
+        input.on('data', (chunk) => {
+            if (state.timeoutId) {
+                clearTimeout(state.timeoutId);
+                state.timeoutId = null;
+            }
+            state.buffer += toStringChunk(chunk);
+            while (state.buffer.length) {
+                if (state.buffer === '\x1b') {
+                    state.timeoutId = setTimeout(flushEscape, iface.escapeCodeTimeout || ESCAPE_CODE_TIMEOUT);
+                    break;
+                }
+                const parsed = parseKeyBuffer(state.buffer);
+                if (!parsed) break;
+                state.buffer = state.buffer.slice(parsed.used || 1);
+                if (parsed.event && input.listenerCount('keypress') > 0) {
+                    input.emit('keypress', parsed.event.sequence, parsed.event.key);
+                }
+            }
+        });
+    }
+
+    function isOptionsObject(value) {
+        return value && typeof value === 'object' &&
+            (Object.prototype.hasOwnProperty.call(value, 'input') ||
+             Object.prototype.hasOwnProperty.call(value, 'output') ||
+             Object.prototype.hasOwnProperty.call(value, 'terminal') ||
+             Object.prototype.hasOwnProperty.call(value, 'completer') ||
+             Object.prototype.hasOwnProperty.call(value, 'prompt'));
+    }
+
+    function normalizeOptions(input, output, completer, terminal) {
+        if (isOptionsObject(input)) return { ...input };
+        if (arguments.length === 2 && output && typeof output === 'object' &&
+            typeof output.write !== 'function' && typeof output.on !== 'function') {
+            return { ...output, input };
+        }
+        const options = { input };
+        if (output !== undefined) options.output = output;
+        if (completer !== undefined) options.completer = completer;
+        if (terminal !== undefined) options.terminal = terminal;
+        return options;
+    }
+
+    function validateOptions(options) {
+        if (options.completer !== undefined && typeof options.completer !== 'function') {
+            throw _makeInvalidArgValueError('completer', options.completer);
+        }
+        if (options.history !== undefined && !Array.isArray(options.history)) {
+            throw _makeInvalidArgTypeError('history', 'Array', options.history);
+        }
+        if (options.historySize !== undefined) {
+            if (typeof options.historySize !== 'number') {
+                throw _makeInvalidArgTypeError('historySize', 'number', options.historySize);
+            }
+            if (!Number.isFinite(options.historySize) || options.historySize < 0) {
+                const err = new RangeError(`The value of "historySize" is out of range. Received ${options.historySize}`);
+                err.code = 'ERR_OUT_OF_RANGE';
+                throw err;
+            }
+        }
+        if (options.tabSize !== undefined) {
+            if (typeof options.tabSize !== 'number') throw _makeInvalidArgTypeError('tabSize', 'number', options.tabSize);
+            if (!Number.isInteger(options.tabSize) || options.tabSize < 1) {
+                const err = new RangeError(`The value of "tabSize" is out of range. It must be an integer. Received ${options.tabSize}`);
+                err.code = 'ERR_OUT_OF_RANGE';
+                throw err;
+            }
+        }
+        if (options.escapeCodeTimeout !== undefined) {
+            if (typeof options.escapeCodeTimeout !== 'number' ||
+                !Number.isFinite(options.escapeCodeTimeout) ||
+                options.escapeCodeTimeout < 0) {
+                throw _makeInvalidArgValueError('escapeCodeTimeout', options.escapeCodeTimeout);
+            }
+        }
+    }
+
+    function isWord(ch) {
+        return /[A-Za-z0-9_]/.test(ch || '');
+    }
+
+    function Interface(input, output, completer, terminal) {
+        if (!(this instanceof Interface)) return new Interface(input, output, completer, terminal);
+        const options = normalizeOptions(input, output, completer, terminal);
+        validateOptions(options);
+        this._events = Object.create(null);
+        this._maxListeners = events.EventEmitter.defaultMaxListeners;
+        this.input = options.input;
+        this.output = options.output;
+        this.completer = options.completer;
+        this.terminal = options.terminal !== undefined ? !!options.terminal : !!(this.output && this.output.isTTY);
+        this.crlfDelay = Math.max(options.crlfDelay || 100, 100);
+        this.escapeCodeTimeout = options.escapeCodeTimeout ?? ESCAPE_CODE_TIMEOUT;
+        this.historySize = options.historySize ?? 30;
+        this.history = Array.isArray(options.history) ? options.history.slice() : [];
+        this.removeHistoryDuplicates = !!options.removeHistoryDuplicates;
+        this.historyIndex = -1;
+        this.line = '';
+        this.cursor = 0;
+        this.closed = false;
+        this._prompt = options.prompt || '';
+        this._lastWasCR = false;
+        this._sawReturn = false;
+        this._questionCallback = null;
+        this._onInputData = this._normalWrite.bind(this);
+        this._onKeypress = this._ttyWrite.bind(this);
+        this._onEnd = () => {
+            if (this.line.length > 0) this._emitLine();
+            this.close();
+        };
+        this._onError = (err) => this.emit('error', err);
+
+        if (this.input && typeof this.input.on === 'function') {
+            if (this.terminal) {
+                emitKeypressEvents(this.input, this);
+                this.input.on('keypress', this._onKeypress);
+            } else {
+                this.input.on('data', this._onInputData);
+            }
+            this.input.on('end', this._onEnd);
+            this.input.on('error', this._onError);
+            if (this.terminal && typeof this.input.setRawMode === 'function') this.input.setRawMode(true);
+            if (typeof this.input.resume === 'function') this.input.resume();
+        }
+    }
+
+    Interface.prototype = Object.create(events.EventEmitter.prototype, {
+        constructor: { value: Interface, writable: true, configurable: true },
+    });
+
+    Interface.prototype._writeToOutput = function(data) {
+        if (this.output && typeof this.output.write === 'function') this.output.write(data);
+    };
+
+    Interface.prototype._insertString = function(value) {
+        value = String(value);
+        this.line = this.line.slice(0, this.cursor) + value + this.line.slice(this.cursor);
+        this.cursor += value.length;
+        this._writeToOutput(value);
+    };
+
+    Interface.prototype._deleteLeft = function() {
+        const len = charLengthLeft(this.line, this.cursor);
+        if (!len) return;
+        this.line = this.line.slice(0, this.cursor - len) + this.line.slice(this.cursor);
+        this.cursor -= len;
+    };
+
+    Interface.prototype._wordRight = function() {
+        if (this.cursor >= this.line.length) return;
+        if (!isWord(this.line[this.cursor])) {
+            this.cursor += charLengthAt(this.line, this.cursor);
+            return;
+        }
+        while (this.cursor < this.line.length && isWord(this.line[this.cursor])) this.cursor += charLengthAt(this.line, this.cursor);
+        while (this.line[this.cursor] === ' ') this.cursor++;
+    };
+
+    Interface.prototype._wordLeft = function() {
+        if (this.cursor <= 0) return;
+        let i = this.cursor;
+        const prev = () => this.line[i - charLengthLeft(this.line, i)];
+        if (!isWord(prev())) {
+            i -= charLengthLeft(this.line, i);
+        } else {
+            while (i > 0 && isWord(prev())) i -= charLengthLeft(this.line, i);
+        }
+        this.cursor = Math.max(0, i);
+    };
+
+    Interface.prototype._deleteWordRight = function() {
+        if (this.cursor >= this.line.length) return;
+        let end = this.cursor;
+        if (!isWord(this.line[end])) {
+            end += charLengthAt(this.line, end);
+        } else {
+            while (end < this.line.length && isWord(this.line[end])) end += charLengthAt(this.line, end);
+            while (this.line[end] === ' ') end++;
+        }
+        this.line = this.line.slice(0, this.cursor) + this.line.slice(end);
+    };
+
+    Interface.prototype._lineForHistory = function(line) {
+        if (!line || this.historySize === 0) return;
+        if (this.removeHistoryDuplicates) {
+            this.history = this.history.filter((entry) => entry !== line);
+        }
+        this.history.unshift(line);
+        if (this.history.length > this.historySize) this.history.length = this.historySize;
+        this.emit('history', this.history);
+    };
+
+    Interface.prototype._emitLine = function() {
+        const line = this.line;
+        this._lineForHistory(line);
+        this.line = '';
+        this.cursor = 0;
+        this.historyIndex = -1;
+        if (this._questionCallback) {
+            const cb = this._questionCallback;
+            this._questionCallback = null;
+            cb(line);
+        }
+        this.emit('line', line);
+    };
+
+    Interface.prototype._normalWrite = function(chunk) {
+        const data = toStringChunk(chunk);
+        for (let i = 0; i < data.length; i++) {
+            const ch = data[i];
+            if (ch === '\r' || ch === '\n') {
+                if (ch === '\n' && this._lastWasCR) {
+                    this._lastWasCR = false;
+                    continue;
+                }
+                this._lastWasCR = ch === '\r';
+                this._emitLine();
+            } else {
+                this._lastWasCR = false;
+                this._insertString(ch);
+            }
+        }
+    };
+
+    Interface.prototype._historyMove = function(delta) {
+        if (this.history.length === 0) return;
+        if (delta < 0) {
+            this.historyIndex = Math.min(this.history.length - 1, this.historyIndex + 1);
+        } else {
+            this.historyIndex = Math.max(-1, this.historyIndex - 1);
+        }
+        this.line = this.historyIndex >= 0 ? this.history[this.historyIndex] : '';
+        this.cursor = this.line.length;
+    };
+
+    Interface.prototype._ttyWrite = function(s, key) {
+        key = key || {};
+        if (key.ctrl && key.name === 'u') {
+            this.line = '';
+            this.cursor = 0;
+            return;
+        }
+        if (key.ctrl && key.name === 'a') key = { ...key, name: 'home', ctrl: false };
+        if (key.ctrl && key.name === 'e') key = { ...key, name: 'end', ctrl: false };
+        if (key.ctrl && key.name === 'b') key = { ...key, name: 'left', ctrl: false };
+        if (key.ctrl && key.name === 'f') key = { ...key, name: 'right', ctrl: false };
+        if (key.ctrl && key.name === 'p') key = { ...key, name: 'up', ctrl: false };
+        if (key.ctrl && key.name === 'n') key = { ...key, name: 'down', ctrl: false };
+        if (key.meta && key.name === 'b') return this._wordLeft();
+        if (key.meta && key.name === 'f') return this._wordRight();
+        if (key.meta && key.name === 'd') return this._deleteWordRight();
+
+        switch (key.name) {
+            case 'return':
+            case 'enter':
+                this._writeToOutput(key.sequence || '\n');
+                this._emitLine();
+                return;
+            case 'tab':
+                if (this.completer) this.completer(this.line);
+                else if (s) this._insertString(s);
+                return;
+            case 'backspace':
+                this._deleteLeft();
+                return;
+            case 'home':
+                this.cursor = 0;
+                return;
+            case 'end':
+                this.cursor = this.line.length;
+                return;
+            case 'left':
+                this.cursor = Math.max(0, this.cursor - charLengthLeft(this.line, this.cursor));
+                return;
+            case 'right':
+                this.cursor = Math.min(this.line.length, this.cursor + charLengthAt(this.line, this.cursor));
+                return;
+            case 'up':
+                this._historyMove(-1);
+                return;
+            case 'down':
+                this._historyMove(1);
+                return;
+            case 'delete':
+                if (this.cursor < this.line.length) {
+                    const len = charLengthAt(this.line, this.cursor);
+                    this.line = this.line.slice(0, this.cursor) + this.line.slice(this.cursor + len);
+                }
+                return;
+            default:
+                if (s) this._insertString(s);
+        }
+    };
+
+    Interface.prototype.write = function(data, key) {
+        if (key) this._ttyWrite(data == null ? undefined : String(data), key);
+        else this._normalWrite(data == null ? '' : data);
+        return this;
+    };
+
+    Interface.prototype.pause = function() {
+        if (this.input && typeof this.input.pause === 'function') this.input.pause();
+        return this;
+    };
+
+    Interface.prototype.resume = function() {
+        if (this.input && typeof this.input.resume === 'function') this.input.resume();
+        return this;
+    };
+
+    Interface.prototype.close = function() {
+        if (this.closed) return;
+        this.closed = true;
+        if (this.input) {
+            if (this.terminal && typeof this.input.setRawMode === 'function') this.input.setRawMode(false);
+            if (this.terminal && typeof this.input.removeListener === 'function') this.input.removeListener('keypress', this._onKeypress);
+            if (!this.terminal && typeof this.input.removeListener === 'function') this.input.removeListener('data', this._onInputData);
+            if (typeof this.input.removeListener === 'function') {
+                this.input.removeListener('end', this._onEnd);
+                this.input.removeListener('error', this._onError);
+            }
+            if (typeof this.input.pause === 'function') this.input.pause();
+        }
+        this.emit('close');
+    };
+
+    Interface.prototype.setPrompt = function(prompt) {
+        this._prompt = String(prompt);
+    };
+
+    Interface.prototype.getPrompt = function() {
+        return this._prompt;
+    };
+
+    Interface.prototype.prompt = function(preserveCursor) {
+        if (!preserveCursor) this.cursor = 0;
+        this._writeToOutput(this._prompt);
+    };
+
+    Interface.prototype.question = function(query, options, cb) {
+        if (typeof options === 'function') { cb = options; options = undefined; }
+        if (typeof cb !== 'function') return;
+        this._prompt = String(query);
+        this._writeToOutput(this._prompt);
+        this._questionCallback = cb;
+    };
+
+    Interface.prototype.getCursorPos = function() {
+        const display = `${this._prompt || ''}${this.line.slice(0, this.cursor)}`;
+        const parts = display.split('\n');
+        return {
+            rows: parts.length - 1,
+            cols: stringWidth(parts[parts.length - 1]),
+        };
+    };
+
+    Interface.prototype[Symbol.asyncIterator] = function() {
+        const rl = this;
+        const queue = [];
+        const waiters = [];
+        let ended = false;
+        let error = null;
+        const settle = () => {
+            while (waiters.length && (queue.length || ended || error)) {
+                const { resolve, reject } = waiters.shift();
+                if (error) reject(error);
+                else if (queue.length) resolve({ value: queue.shift(), done: false });
+                else resolve({ value: undefined, done: true });
+            }
+        };
+        rl.on('line', (line) => { queue.push(line); settle(); });
+        rl.on('close', () => { ended = true; settle(); });
+        rl.on('error', (err) => { error = err; settle(); });
+        return {
+            [Symbol.asyncIterator]() { return this; },
+            next() {
+                if (queue.length) return Promise.resolve({ value: queue.shift(), done: false });
+                if (error) return Promise.reject(error);
+                if (ended) return Promise.resolve({ value: undefined, done: true });
+                return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+            },
+        };
+    };
+
+    function createInterface(...args) {
+        return new Interface(...args);
+    }
+
+    class PromisesInterface extends Interface {
+        question(query, options) {
+            return new Promise((resolve, reject) => {
+                const signal = options && options.signal;
+                if (signal && signal.aborted) {
+                    reject(new internalErrors.AbortError());
+                    return;
+                }
+                const onAbort = () => {
+                    cleanup();
+                    reject(new internalErrors.AbortError());
+                };
+                const cleanup = () => {
+                    if (signal && typeof signal.removeEventListener === 'function') signal.removeEventListener('abort', onAbort);
+                };
+                if (signal && typeof signal.addEventListener === 'function') signal.addEventListener('abort', onAbort, { once: true });
+                Interface.prototype.question.call(this, query, (answer) => {
+                    cleanup();
+                    resolve(answer);
+                });
+            });
+        }
+    }
+
+    function createPromisesInterface(...args) {
+        return new PromisesInterface(...args);
+    }
+
+    return {
+        Interface,
+        InterfaceConstructor: Interface,
+        createInterface,
+        emitKeypressEvents,
+        cursorTo: _cursorTo,
+        moveCursor: _moveCursor,
+        clearLine: _clearLine,
+        clearScreenDown: _clearScreenDown,
+        promises: {
+            Interface: PromisesInterface,
+            createInterface: createPromisesInterface,
+        },
+    };
+})();
+
 // ============================================================
 // Module system (require/module)
 // ============================================================
@@ -11781,26 +12487,8 @@ const _builtinModules = {
     },
     'dns': dns,
     'dns/promises': dns.promises,
-    'readline': {
-        createInterface(options) {
-            const rl = new events.EventEmitter();
-            rl.close = () => rl.emit('close');
-            rl.question = (query, cb) => { process.stdout.write(query); cb(''); };
-            rl.prompt = () => {};
-            rl.setPrompt = () => {};
-            return rl;
-        },
-        cursorTo: _cursorTo,
-        moveCursor: _moveCursor,
-        clearLine: _clearLine,
-        clearScreenDown: _clearScreenDown,
-    },
-    'readline/promises': {
-        Interface: class Interface extends events.EventEmitter {},
-        createInterface(options) {
-            return _builtinModules.readline.createInterface(options);
-        },
-    },
+    'readline': readline,
+    'readline/promises': readline.promises,
     'perf_hooks': {
         performance: {
             now() { return Date.now(); },
@@ -12240,6 +12928,35 @@ const _builtinModules = {
     'internal/net': net,
     'internal/priority_queue': _makeUnsupportedNamespace('internal/priority_queue'),
     'internal/readline/utils': {
+        CSI: Object.assign(
+            (strings, ...args) => {
+                let out = '\x1b[';
+                for (let i = 0; i < strings.length; i++) {
+                    out += strings[i];
+                    if (i < args.length) out += args[i];
+                }
+                return out;
+            },
+            {
+                kEscape: '\x1b',
+                kClearToLineBeginning: '\x1b[1K',
+                kClearToLineEnd: '\x1b[0K',
+                kClearLine: '\x1b[2K',
+                kClearScreenDown: '\x1b[0J',
+            }
+        ),
+        charLengthAt(value, index) {
+            value = String(value || '');
+            if (value.length <= index) return 1;
+            return value.codePointAt(index) > 0xffff ? 2 : 1;
+        },
+        charLengthLeft(value, index) {
+            value = String(value || '');
+            if (index <= 0) return 0;
+            const prev = value.codePointAt(index - 1);
+            if (prev >= 0xdc00 && prev <= 0xdfff && index > 1) return 2;
+            return 1;
+        },
         commonPrefix(strings) {
             if (!strings || strings.length === 0) return '';
             let prefix = strings[0];
