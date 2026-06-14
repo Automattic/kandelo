@@ -302,6 +302,24 @@ describe("resolveForBrowser", () => {
     expect(log.sharedBuffer.byteLength).toBe(256 * 1024);
   });
 
+  it("scratch mounts can grow beyond their initial browser SAB size", () => {
+    const mounts = resolveForBrowser(DEFAULT_MOUNT_SPEC, image, {
+      scratchSabBytes: tinyScratch,
+      scratchMaxByteLength: { "/tmp": 1024 * 1024 },
+    });
+    const tmp = mounts.find((m) => m.mountPoint === "/tmp")!.backend as MemoryFileSystem;
+
+    const data = new Uint8Array(384 * 1024);
+    data.fill(0x5a);
+    const fd = tmp.open("/large.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0o644);
+    const written = tmp.write(fd, data, null, data.length);
+    tmp.close(fd);
+
+    expect(written).toBe(data.length);
+    expect(tmp.stat("/large.tmp").size).toBe(data.length);
+    expect(tmp.sharedBuffer.byteLength).toBeGreaterThan(tinyScratch["/tmp"]);
+  });
+
   it("throws on duplicate mount paths", () => {
     const dup: MountSpec[] = [
       { path: "/", source: "image" },

@@ -1194,6 +1194,58 @@ export class SharedFS {
     }
   }
 
+  private fdRefCountForInode(ino: number): number {
+    let count = 0;
+    for (let fd = 0; fd < MAX_FDS; fd++) {
+      const entry = this.fdGet(fd);
+      if (entry?.ino === ino) count++;
+    }
+    return count;
+  }
+
+  private maybeFreeUnlinkedInode(ino: number): void {
+    const inoOff = this.inodeOffset(ino);
+    let shouldFree = false;
+
+    this.inodeWriteLock(ino);
+    try {
+      if (
+        this.r32(inoOff + INO_LINK_COUNT) === 0 &&
+        this.fdRefCountForInode(ino) === 0
+      ) {
+        this.inodeTruncate(ino, 0);
+        shouldFree = true;
+      }
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+
+    if (shouldFree) this.inodeFree(ino);
+  }
+
+  private dropDirectoryLink(ino: number): void {
+    const inoOff = this.inodeOffset(ino);
+    let shouldFree = false;
+
+    this.inodeWriteLock(ino);
+    try {
+      const linkCount = this.r32(inoOff + INO_LINK_COUNT);
+      if (linkCount <= 1) {
+        this.w32(inoOff + INO_LINK_COUNT, 0);
+        if (this.fdRefCountForInode(ino) === 0) {
+          this.inodeTruncate(ino, 0);
+          shouldFree = true;
+        }
+      } else {
+        this.w32(inoOff + INO_LINK_COUNT, linkCount - 1);
+      }
+    } finally {
+      this.inodeWriteUnlock(ino);
+    }
+
+    if (shouldFree) this.inodeFree(ino);
+  }
+
   // ── Build stat result from inode ─────────────────────────────────
 
   private buildStat(ino: number): StatResult {
@@ -1291,7 +1343,9 @@ export class SharedFS {
   close(fd: number): void {
     const entry = this.fdGet(fd);
     if (!entry) throw new SFSError(EBADF);
+    const ino = entry.ino;
     this.fdFree(fd);
+    this.maybeFreeUnlinkedInode(ino);
   }
 
   read(fd: number, buffer: Uint8Array): number {
@@ -1433,17 +1487,7 @@ export class SharedFS {
       const rc = this.dirRemoveEntry(parentIno, nameBytes);
       if (rc < 0) throw new SFSError(rc);
 
-      this.inodeWriteLock(childIno);
-      const linkCount = this.r32(childOff + INO_LINK_COUNT);
-      if (linkCount <= 1) {
-        this.inodeTruncate(childIno, 0);
-        this.w32(childOff + INO_LINK_COUNT, 0);
-        this.inodeWriteUnlock(childIno);
-        this.inodeFree(childIno);
-      } else {
-        this.w32(childOff + INO_LINK_COUNT, linkCount - 1);
-        this.inodeWriteUnlock(childIno);
-      }
+      this.dropDirectoryLink(childIno);
     } finally {
       this.inodeWriteUnlock(parentIno);
     }
@@ -1474,11 +1518,7 @@ export class SharedFS {
         const existMode = this.r32(existOff + INO_MODE);
         if ((existMode & S_IFMT) === S_IFDIR) throw new SFSError(EISDIR);
         this.dirRemoveEntry(newParent, newNameBytes);
-        this.inodeWriteLock(existingIno);
-        this.inodeTruncate(existingIno, 0);
-        this.w32(existOff + INO_LINK_COUNT, 0);
-        this.inodeWriteUnlock(existingIno);
-        this.inodeFree(existingIno);
+        this.dropDirectoryLink(existingIno);
       }
 
       // Add entry in new directory
