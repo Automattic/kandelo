@@ -67,6 +67,7 @@ if (typeof globalThis.TextEncoder === 'undefined') {
 // 8-bit strings.
 const _TEXT_DECODER_CHUNK = 8192;
 const _TEXT_DECODER_BRAND = Symbol('kandelo.TextDecoder');
+const _DETACHED_ARRAY_BUFFERS = new WeakSet();
 const _TEXT_DECODER_LABELS = new Map([
     ['utf-8', 'utf-8'],
     ['utf8', 'utf-8'],
@@ -111,10 +112,18 @@ function _u8(input) {
     if (input instanceof Uint8Array) return input;
     if (input instanceof ArrayBuffer ||
         (typeof SharedArrayBuffer !== 'undefined' && input instanceof SharedArrayBuffer)) {
+        if (_isCompatDetachedArrayBuffer(input)) return new Uint8Array(0);
         return new Uint8Array(input);
     }
-    if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    if (ArrayBuffer.isView(input)) {
+        if (_isCompatDetachedArrayBuffer(input.buffer)) return new Uint8Array(0);
+        return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    }
     throw _makeEncodingArgTypeError('input', 'ArrayBuffer, Buffer, TypedArray, or DataView', input);
+}
+
+function _isCompatDetachedArrayBuffer(value) {
+    return value instanceof ArrayBuffer && _DETACHED_ARRAY_BUFFERS.has(value);
 }
 
 function _concatBytes(a, b) {
@@ -7059,14 +7068,55 @@ _defineGlobal('DOMException', KandeloDOMException);
 _defineGlobal('AbortSignal', KandeloAbortSignal);
 _defineGlobal('AbortController', KandeloAbortController);
 
-function _messageClone(data) {
+function _copyArrayBuffer(buffer) {
+    const copy = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(copy).set(new Uint8Array(buffer));
+    return copy;
+}
+
+function _messageClone(data, transferList) {
     if (data instanceof net.BlockList) {
         const clone = new net.BlockList();
         clone._rules = data._rules;
         clone.rules = data.rules;
         return clone;
     }
-    return data;
+    let transferredBuffers = null;
+    if (transferList && typeof transferList[Symbol.iterator] === 'function') {
+        transferredBuffers = new Set();
+        for (const item of transferList) {
+            if (item instanceof ArrayBuffer) transferredBuffers.add(item);
+        }
+    }
+    const cloned = transferredBuffers && transferredBuffers.has(data) ? _copyArrayBuffer(data) : data;
+    if (transferredBuffers) {
+        for (const buffer of transferredBuffers) _DETACHED_ARRAY_BUFFERS.add(buffer);
+    }
+    return cloned;
+}
+
+function _messageTransferList(transferList) {
+    if (transferList === undefined) return undefined;
+    if (transferList === null || typeof transferList[Symbol.iterator] !== 'function') {
+        throw _makeInvalidArgTypeError('transferList', 'iterable', transferList);
+    }
+    return transferList;
+}
+
+function _messageDataCloneError(message) {
+    return new KandeloDOMException(message, 'DataCloneError');
+}
+
+function _validateMessageTransferList(transferList) {
+    const seen = new Set();
+    if (!transferList) return;
+    for (const item of transferList) {
+        if (seen.has(item)) throw _messageDataCloneError('Transfer list contains duplicate ArrayBuffer');
+        seen.add(item);
+        if (!(item instanceof ArrayBuffer) && !(item instanceof KandeloMessagePort)) {
+            throw _messageDataCloneError('Object that needs transfer was found in message but not listed in transferList');
+        }
+    }
 }
 
 class KandeloMessagePort extends KandeloEventTarget {
@@ -7076,12 +7126,15 @@ class KandeloMessagePort extends KandeloEventTarget {
         this._peer = null;
         this._closed = false;
     }
-    postMessage(data) {
+    postMessage(data, transferList) {
         if (this._closed || !this._peer || this._peer._closed) return;
+        transferList = _messageTransferList(transferList);
+        _validateMessageTransferList(transferList);
+        const cloned = _messageClone(data, transferList);
         const target = this._peer;
         queueMicrotask(() => {
             if (target._closed) return;
-            const event = new KandeloMessageEvent('message', { data: _messageClone(data) });
+            const event = new KandeloMessageEvent('message', { data: cloned });
             if (typeof target.onmessage === 'function') target.onmessage.call(target, event);
             target.dispatchEvent(event);
         });
