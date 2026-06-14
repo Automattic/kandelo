@@ -474,7 +474,12 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           threadAllocator.free(alloc.basePage);
         });
 
-        return tid;
+        return {
+          tid,
+          start: () => {
+            threadWorker.postMessage({ type: "start_thread" });
+          },
+        };
       },
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {

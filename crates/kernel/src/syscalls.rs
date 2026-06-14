@@ -7701,16 +7701,29 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
     }
 }
 
-// Returns thread ID. Without threading, tid == pid.
-// Threading upgrade: return actual TID from thread table.
-pub fn sys_gettid(proc: &Process) -> i32 {
-    proc.pid as i32
+fn current_thread_id(proc: &Process) -> u32 {
+    let tid = crate::process_table::current_tid();
+    if proc.is_main_thread(tid) {
+        proc.pid
+    } else {
+        tid
+    }
 }
 
-// Stores tidptr for thread exit notification. Without threading, returns pid.
-// Threading upgrade: store tidptr per-thread; kernel writes 0 + futex-wakes on exit.
-pub fn sys_set_tid_address(proc: &Process) -> i32 {
-    proc.pid as i32
+// Returns the kernel thread ID for the currently serviced channel.
+pub fn sys_gettid(proc: &Process) -> i32 {
+    current_thread_id(proc) as i32
+}
+
+// Stores the caller's clear-TID address and returns the current thread ID.
+pub fn sys_set_tid_address(proc: &mut Process, tidptr: usize) -> i32 {
+    let tid = current_thread_id(proc);
+    if !proc.is_main_thread(tid) {
+        if let Some(thread) = proc.get_thread_mut(tid) {
+            thread.tidptr = tidptr;
+        }
+    }
+    tid as i32
 }
 
 // No-op — robust futex list tracking deferred until threading is implemented.
