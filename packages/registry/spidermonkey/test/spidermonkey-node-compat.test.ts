@@ -416,6 +416,30 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("node:5");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("matches Node querystring.stringify for nullish and primitive inputs", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('node:assert')",
+        "const qs = require('querystring')",
+        "assert.strictEqual(qs.stringify(), '')",
+        "assert.strictEqual(qs.stringify(undefined), '')",
+        "assert.strictEqual(qs.stringify(null), '')",
+        "assert.strictEqual(qs.stringify('abc'), '')",
+        "assert.strictEqual(qs.stringify(0), '')",
+        "assert.strictEqual(qs.stringify(false), '')",
+        "function fn() {}",
+        "fn.answer = 42",
+        "assert.strictEqual(qs.stringify(fn), '')",
+        "assert.strictEqual(qs.stringify({ a: 1, b: [true, null] }), 'a=1&b=true&b=')",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("provides vm.runInNewContext for foreign objects and sandbox globals", async () => {
     const result = await runNode(
       [

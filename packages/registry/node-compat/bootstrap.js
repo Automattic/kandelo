@@ -2940,7 +2940,7 @@ const querystring = (() => {
     function stringify(obj, sep, eq, options) {
         sep = sep == null ? '&' : String(sep);
         eq = eq == null ? '=' : String(eq);
-        if (obj == null || (typeof obj !== 'object' && typeof obj !== 'function')) return '';
+        if (obj == null || typeof obj !== 'object') return '';
         const encoder = options && typeof options.encodeURIComponent === 'function'
             ? options.encodeURIComponent
             : encodeURIComponent;
