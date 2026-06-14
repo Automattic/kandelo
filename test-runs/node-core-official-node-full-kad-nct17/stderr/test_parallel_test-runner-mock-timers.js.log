@@ -1,0 +1,10 @@
+Error: Cannot find module 'node:test'
+require@kandelo:spidermonkey-node-bootstrap:5248:25
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-runner-mock-timers.js:7:39
+require@kandelo:spidermonkey-node-bootstrap:5300:22
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/test-runs/node-core-official-node-full-kad-nct17/kandelo-node-core-prelude.js:45:8
+_runEsmMain@kandelo:spidermonkey-node-bootstrap:5443:21
+_runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+@kandelo:spidermonkey-node-bootstrap:6158:1
+@kandelo:spidermonkey-node-bootstrap:6159:3
+

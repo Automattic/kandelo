@@ -7,8 +7,9 @@ usage() {
   cat <<'EOF'
 Usage: scripts/run-node-core-official-tests.sh [OPTIONS]
 
-Run selected official Node.js core JavaScript tests on Kandelo's
-Node-compatible runtime.
+Run the complete official Node.js test/parallel JavaScript suite on
+Kandelo's Node-compatible runtime. Use --smoke or --manifest-only for the
+small curated manifest.
 
 Upstream source:
   nodejs/node tag v22.0.0
@@ -25,8 +26,10 @@ Options:
   --runtime FILE            Kandelo Node-compatible wasm binary
   --timeout-ms N            Per-test timeout override
   --jobs N                  Concurrency for the Node host (default from manifest: 1)
-  --area NAME               Run only manifest entries in this area; repeatable
+  --area NAME               Run only selected entries in this area; repeatable
   --test PATH               Run only this official test path; repeatable
+  --full-suite              Discover and run all test/parallel/test-*.js files (default)
+  --manifest-only           Run only tests listed in --manifest
   --smoke                   Run only manifest entries marked smoke=true
   --list                    Print selected official test files and exit
   --explain                 Print source, selection, controls, and artifact plan without running
@@ -38,7 +41,8 @@ Artifacts:
   runs browser-console.log. Results are preserved even for expected failures.
 
 Examples:
-  scripts/run-node-core-official-tests.sh --explain
+  scripts/run-node-core-official-tests.sh --fetch-source --explain
+  scripts/run-node-core-official-tests.sh --fetch-source --host node --jobs 4
   scripts/run-node-core-official-tests.sh --list --smoke
   scripts/run-node-core-official-tests.sh --fetch-source --smoke --host node
   scripts/run-node-core-official-tests.sh --fetch-source --smoke --host browser

@@ -9,16 +9,17 @@ gh pr create --base main --head integration/kad-nct-node-core-tests --title "Add
 This PR adds the first official Node.js core JavaScript module test harness for
 Kandelo's SpiderMonkey-backed Node-compatible runtime. The harness is pinned to
 upstream `nodejs/node` `v22.0.0` at peeled commit
-`12fb157f79da8c094a54bc99370994941c28c235`, sparse-checks out only the selected
-official test material, and runs each selected `test/parallel/test-*.js` file
-through Kandelo's normal runtime path on either host.
+`12fb157f79da8c094a54bc99370994941c28c235`, discovers the complete upstream
+`test/parallel/test-*.js` suite by default, and runs each test file through
+Kandelo's normal runtime path on either host.
 
 The branch includes:
 
 - Scope documentation for the official-test adoption boundary.
 - `scripts/run-node-core-official-tests.sh` and
   `scripts/node-core-official-runner.ts`.
-- A small public-API-focused manifest under `tests/node-core-official/`.
+- A small public-API-focused manifest under `tests/node-core-official/` for
+  smoke and targeted runs only.
 - Browser test-runner support for serving the upstream source fixture tree,
   generated prelude, and runtime wasm through a same-origin Vite route.
 - Recorded Node-host and browser-host result artifacts under
@@ -36,59 +37,74 @@ Pinned source:
 - Tag object: `ec49bec48284ab642db1d109d917c6ae3b695c13`
 - Peeled commit: `12fb157f79da8c094a54bc99370994941c28c235`
 
-Final authoritative artifacts:
+Full-suite correction artifacts:
 
 - Node host:
-  `test-runs/node-core-official-node-final/`
-- Browser host:
-  `test-runs/node-core-official-browser-final/`
+  `test-runs/node-core-official-node-full-kad-nct17/`
+- Browser host attempt:
+  `test-runs/node-core-official-browser-full-kad-nct17-host-timeout/`
+- Browser authority sentinel:
+  `test-runs/node-core-official-node-sentinel-kad-nct17/` and
+  `test-runs/node-core-official-browser-sentinel-kad-nct17/`
 
-Final commands:
+Full-suite commands:
 
 ```bash
-scripts/run-node-core-official-tests.sh --fetch-source --host node --results-dir test-runs/node-core-official-node-final
-scripts/run-node-core-official-tests.sh --fetch-source --host browser --results-dir test-runs/node-core-official-browser-final
+scripts/run-node-core-official-tests.sh --fetch-source --host node --jobs 4 --timeout-ms 10000 --results-dir test-runs/node-core-official-node-full-kad-nct17
+scripts/run-node-core-official-tests.sh --fetch-source --host browser --jobs 4 --timeout-ms 10000 --results-dir test-runs/node-core-official-browser-full-kad-nct17-host-timeout
 ```
 
-Both final runs used the same selected 10-test manifest, upstream Node
-`v22.0.0` peeled commit `12fb157f79da8c094a54bc99370994941c28c235`, and the
-current integration runtime staged at
-`local-binaries/programs/wasm32/spidermonkey-node.wasm` from package
-`spidermonkey-node` revision 8. Both hosts completed all executable selected
-tests and recorded the explicit manifest skip. No test timed out. No browser
-result was missing. `test-runs/node-core-official-browser-final/browser-console.log`
-contains only Vite startup/client messages.
+Both full-suite runs used upstream Node `v22.0.0` peeled commit
+`12fb157f79da8c094a54bc99370994941c28c235`, runner Node `v24.15.0` on
+`darwin/arm64`, and the current integration runtime staged at
+`local-binaries/programs/wasm32/spidermonkey-node.wasm`.
+
+The browser host completed an attempt over all 3382 files, but its reported
+PASS count is not authoritative. A temporary throwing sentinel test failed
+correctly on the Node host and incorrectly reported `PASS`/`exitCode=0` with
+empty stdout/stderr on the browser host. Tracking: `kad-nct.18`.
 
 Final counts:
 
-| Host | Selected | PASS | FAIL / unexpected | SKIP / support boundary | Timeout | Harness / resource failure |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Node | 10 | 0 | 9 | 1 | 0 | 0 |
-| Browser | 10 | 0 | 9 | 1 | 0 | 0 |
+| Host | Selected | PASS | FAIL / unexpected | Timeout | Authority |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Node | 3382 | 7 | 3375 | 13 timeout results included in FAIL | Authoritative |
+| Browser | 3382 | 3382 reported | 0 reported | 0 reported | Not authoritative until `kad-nct.18` is fixed |
 
-Superseded artifacts are retained for history but are not the final status:
-`test-runs/node-core-official-node-kad-nct6-integration-rev7/` and
-`test-runs/node-core-official-browser-kad-nct6-integration-rev7/` were recorded
-against the pre-`kad-nct.9` rev7 runtime and reported `FAIL=10` on both hosts.
-They are excluded from the final counts above.
+The Node-host failure grouping is in
+`docs/plans/2026-06-13-node-core-full-suite-kad-nct17.md`. Primary first-line
+groups:
 
-The final shared failures are:
-
-| Area | Tests | Classification | Tracking |
-| --- | --- | --- | --- |
-| Process global surface | `test-path.js`, `test-events-list.js`, `test-console-count.js`, `test-url-parse-query.js`, `test-timers-clear-null-does-not-throw-error.js` | Runtime bug: DOM/Web and Kandelo helper globals still leak into Node's `test/common` global-leak check: `__kandeloRunDueTimers`, `__kandeloNextTimerDelay`, `__kandeloCreateWorkerThreads`, `argv0`, `execArgv`, `TextEncoder`, `TextDecoder`, `btoa`, `atob`, `Blob`, `File`, `FormData`, `MessagePort`, `MessageChannel`, `BroadcastChannel`, `Event`, `EventTarget`, `MessageEvent`, `CloseEvent`, `ErrorEvent`, `DOMException`, `AbortSignal`. | `kad-nct.11` |
-| Buffer | `test-buffer-alloc.js` | Runtime bug: `buffer.kMaxLength` still does not match the actual typed-array allocation limit; the test expected allocation past `kMaxLength` to throw. | `kad-nct.12` |
-| Query string | `test-querystring.js` | Runtime bug: `querystring.stringify()` still throws `TypeError: can't convert undefined to object` for an official-test input. | `kad-nct.13` |
-| String decoder | `test-string-decoder.js` | Runtime bug: UTF-8 replacement handling differs from Node for invalid byte sequence `c9 b5 a9 41`. | `kad-nct.14` |
-| URL | `test-whatwg-url-custom-searchparams.js` | Runtime bug: `URLSearchParams` percent-encodes unpaired surrogate values differently from Node, preserving `%ED...` instead of replacement-character `%EF%BF%BD`. | `kad-nct.15` |
-| Util internals | `test-util-inspect.js` | Support-boundary SKIP: selected official test requires Node's private `--expose-internals` path and `internal/test/binding` native hooks. | Manifest skip |
+| Group | Count | Tracking |
+| --- | ---: | --- |
+| Node `test/common` unexpected global leak assertion | 1455 | `kad-nct.11` |
+| Missing module/API surface | 457 | `kad-nct.21` |
+| TypeError semantic mismatch | 447 | `kad-nct.23` |
+| Assertion semantic mismatch | 391 | `kad-nct.23`, plus `kad-nct.12`-`kad-nct.15` for selected narrow bugs |
+| `http.createServer` not implemented | 269 | `kad-nct.20` |
+| Shared tmpdir/process identity collision | 194 | `kad-nct.19` |
+| `cluster.fork` missing | 48 | `kad-nct.22` |
+| Other primary `Error` mismatches | 42 | `kad-nct.23` |
+| `child_process.fork`/`cp.fork` missing | 33 | `kad-nct.22` |
+| Other/empty stderr | 24 | `kad-nct.23` |
+| Timeout as primary group | 12 | `kad-nct.24` |
+| Stream buffer encoding mismatch | 2 | `kad-nct.23` |
+| `querystring.stringify()` undefined input bug | 1 | `kad-nct.13` |
 
 ## Unsupported And Excluded Scope
 
-The initial manifest is intentionally small and public-API focused. The full
-scope policy is in `docs/plans/2026-06-12-node-core-js-test-scope.md`.
+The full-suite correction has no pre-run exclusions: all 3382 upstream
+`test/parallel/test-*.js` files are selected and expected to pass. Unsupported
+native, V8, inspector, platform, or environment assumptions are recorded as
+concrete failures or timeouts and then grouped into follow-up beads.
 
-Current exclusions are not hidden failures:
+The support-boundary policy is in
+`docs/plans/2026-06-12-node-core-js-test-scope.md`; the `kad-nct.17` correction
+and counts are in
+`docs/plans/2026-06-13-node-core-full-suite-kad-nct17.md`.
+
+Classes that may become explicit support-boundary exclusions in later manifests
+must be justified; they are not hidden from the full-suite correction:
 
 - Native addons, Node-API, C++ tests, `.node` loads, and
   `process.dlopen()` are outside this harness boundary.
@@ -106,10 +122,13 @@ Current exclusions are not hidden failures:
 
 ## Follow-Up Work
 
+- `kad-nct.18`: fix the browser false-PASS/exit-status blocker before treating
+  browser PASS counts as authoritative.
+- `kad-nct.11`: fix Node global surface leaks, now observed in 3354 full-suite
+  Node-host stderr logs.
+- `kad-nct.19`-`kad-nct.24`: full-suite failure classes created by
+  `kad-nct.17`.
+- `kad-nct.12`-`kad-nct.15`: existing selected narrow runtime bugs still linked
+  from the full-suite semantic mismatch group.
 - `kad-nct.8`: open or update the GitHub PR using the command in the comment at
-  the top of this file after the `kad-nct.9` MR has landed and the final
-  two-host official runs have been recorded.
-- Future beads can expand the manifest area by area using the adoption boundary
-  in `docs/plans/2026-06-12-node-core-js-test-scope.md`. Each expansion should
-  classify unsupported official expectations as `SKIP` and real in-scope gaps as
-  `XFAIL` or tracked runtime bugs.
+  the top of this file after this full-suite correction is reviewed.

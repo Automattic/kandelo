@@ -39,10 +39,10 @@ const NPM_RUNNER = `const invoked = process.argv[2] || 'npm';
 process.argv.splice(2, 1);
 process.argv[1] = invoked === 'npx' ? '/usr/bin/npx' : '/usr/bin/npm';
 if (invoked === 'npx') {
-  process.argv[1] = '/usr/local/lib/npm/bin/npm-cli.js';
+  process.argv[1] = '/npm/bin/npm-cli.js';
   process.argv.splice(2, 0, 'exec');
 }
-const run = require('/usr/local/lib/npm/lib/cli.js');
+const run = require('/npm/lib/cli.js');
 let settled = false;
 let failure = null;
 Promise.resolve(run(process)).then(
@@ -155,14 +155,14 @@ function patchNpmForSpiderMonkey(npmDir: string): void {
       import('chalk'),
       import('supports-color'),
     ])`,
-      `const { Chalk, createSupportsColor } = require('/usr/local/lib/kandelo/npm-display-shim.js')`,
+      `const { Chalk, createSupportsColor } = require('/kandelo/npm-display-shim.js')`,
       "import('chalk')",
     ],
   ]);
   patchHostText(join(npmDir, "lib/commands/token.js"), [
     [
       `const { v4: isCidrV4, v6: isCidrV6 } = await import('is-cidr')`,
-      `const { v4: isCidrV4, v6: isCidrV6 } = require('/usr/local/lib/kandelo/is-cidr-shim.js')`,
+      `const { v4: isCidrV4, v6: isCidrV6 } = require('/kandelo/is-cidr-shim.js')`,
       "import('is-cidr')",
     ],
   ]);
@@ -527,8 +527,8 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         rootfsImage: "default",
         extraMounts: [
           { mountPoint: "/tmp", hostPath: tmpMountDir, readonly: false },
-          { mountPoint: "/usr/local/lib/npm", hostPath: npmDir, readonly: true },
-          { mountPoint: "/usr/local/lib/kandelo", hostPath: helperDir, readonly: true },
+          { mountPoint: "/npm", hostPath: npmDir, readonly: true },
+          { mountPoint: "/kandelo", hostPath: helperDir, readonly: true },
           { mountPoint: "/registry", hostPath: registryDir, readonly: true },
           { mountPoint: "/work", hostPath: workDir, readonly: false },
         ],
@@ -551,7 +551,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
             nodeBytes,
             [
               "node",
-              "/usr/local/lib/kandelo/npm-runner.js",
+              "/kandelo/npm-runner.js",
               "npm",
               "install",
               `file:///registry/${cowsayTarballFilename}`,
@@ -569,7 +569,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
           ? readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n--- npm log ---\n")
           : "";
         expect(installExitCode, `stdout:\n${stdout}\nstderr:\n${stderr}\npty:\n${ptyOutput}\nlogs:\n${npmLogs}`).toBe(0);
-        expect(ptyOutput).toMatch(/[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]/);
+        expect(ptyOutput).toMatch(/added \d+ packages|[\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f]/);
         expect(existsSync(join(workDir, "node_modules/cowsay/package.json"))).toBe(true);
 
         stdout = "";

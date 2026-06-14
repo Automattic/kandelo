@@ -1,0 +1,54 @@
+AssertionError: path.win32.resolve("c:/blah\\blah","d:/games","c:../a")
+  expect="c:\\blah\\a"
+  actual="/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/c:/blah\\blah/d:/games/c:../a"
+path.win32.resolve("c:/ignore","d:\\a/b\\c/d","\\e.exe")
+  expect="d:\\e.exe"
+  actual="/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/c:/ignore/d:\\a/b\\c/d/\\e.exe"
+path.win32.resolve("c:/ignore","c:/some/file")
+  expect="c:\\some\\file"
+  actual="/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/c:/ignore/c:/some/file"
+path.win32.resolve("d:/ignore","d:some/dir//")
+  expect="d:\\ignore\\some\\dir"
+  actual="/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/d:/ignore/d:some/dir"
+path.win32.resolve("//server/share","..","relative\\")
+  expect="\\\\server\\share\\relative"
+  actual="/server/relative\\"
+path.win32.resolve("c:/","//")
+  expect="c:\\"
+  actual="/"
+path.win32.resolve("c:/","//dir")
+  expect="c:\\dir"
+  actual="/dir"
+path.win32.resolve("c:/","//server/share")
+  expect="\\\\server\\share\\"
+  actual="/server/share"
+path.win32.resolve("c:/","//server//share")
+  expect="\\\\server\\share\\"
+  actual="/server/share"
+path.win32.resolve("c:/","///some//dir")
+  expect="c:\\some\\dir"
+  actual="/some/dir"
+path.win32.resolve("C:\\foo\\tmp.3\\","..\\tmp.3\\cycles\\root.js")
+  expect="C:\\foo\\tmp.3\\cycles\\root.js"
+  actual="/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/C:\\foo\\tmp.3\\/..\\tmp.3\\cycles\\root.js"
+AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+_assert.strictEqual@kandelo:spidermonkey-node-bootstrap:2680:19
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-path-resolve.js:67:8
+require@kandelo:spidermonkey-node-bootstrap:5300:22
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/test-runs/node-core-official-node-full-kad-nct17/kandelo-node-core-prelude.js:45:8
+_runEsmMain@kandelo:spidermonkey-node-bootstrap:5443:21
+_runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+@kandelo:spidermonkey-node-bootstrap:6158:1
+@kandelo:spidermonkey-node-bootstrap:6159:3
+
+kandelo:spidermonkey-node-bootstrap:2648:13 AssertionError: Unexpected global(s) found: __kandeloRunDueTimers, __kandeloNextTimerDelay, __kandeloCreateWorkerThreads, argv0, execArgv, TextEncoder, TextDecoder, btoa, atob, Blob, File, FormData, MessagePort, MessageChannel, BroadcastChannel, Event, EventTarget, MessageEvent, CloseEvent, ErrorEvent, DOMException, AbortSignal
+Stack:
+  AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+  _assert.fail@kandelo:spidermonkey-node-bootstrap:2711:15
+  @/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/index.js:401:14
+  emit@kandelo:spidermonkey-node-bootstrap:800:20
+  exit@kandelo:spidermonkey-node-bootstrap:1304:18
+  _runEsmMain@kandelo:spidermonkey-node-bootstrap:5459:13
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

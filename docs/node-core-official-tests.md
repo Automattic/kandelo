@@ -1,7 +1,9 @@
 # Official Node.js Core Test Harness
 
-`scripts/run-node-core-official-tests.sh` runs selected official Node.js
-JavaScript core-module tests against Kandelo's Node-compatible runtime.
+`scripts/run-node-core-official-tests.sh` runs the complete official Node.js
+`test/parallel/test-*.js` JavaScript suite against Kandelo's Node-compatible
+runtime by default. The small checked-in manifest is now only for smoke and
+targeted compatibility runs.
 
 The harness is pinned to upstream `nodejs/node` tag `v22.0.0`, tag object
 `ec49bec48284ab642db1d109d917c6ae3b695c13`, peeled commit
@@ -12,7 +14,9 @@ The harness is pinned to upstream `nodejs/node` tag `v22.0.0`, tag object
 Common commands:
 
 ```bash
-scripts/run-node-core-official-tests.sh --explain
+scripts/run-node-core-official-tests.sh --fetch-source --explain
+scripts/run-node-core-official-tests.sh --fetch-source --host node --jobs 4
+scripts/run-node-core-official-tests.sh --fetch-source --host browser --jobs 4
 scripts/run-node-core-official-tests.sh --list --smoke
 scripts/run-node-core-official-tests.sh --fetch-source --smoke --host node
 scripts/run-node-core-official-tests.sh --fetch-source --smoke --host browser
@@ -25,9 +29,15 @@ Useful controls:
 - `--runtime FILE` overrides the resolved `spidermonkey-node.wasm` or
   `node.wasm` binary.
 - `--timeout-ms N` overrides the per-test timeout.
-- `--jobs N` controls Node-host concurrency. Browser runs stay serial because
-  each test creates a fresh kernel and SharedArrayBuffer-backed process memory.
-- `--area NAME`, `--test PATH`, and `--smoke` filter the manifest.
+- `--jobs N` controls runner concurrency. Browser jobs use separate pages; keep
+  this low because each test creates a fresh kernel and SharedArrayBuffer-backed
+  process memory.
+- `--full-suite` discovers every upstream `test/parallel/test-*.js` file from
+  the pinned source checkout. This is the default unless `--smoke` or
+  `--manifest-only` is used.
+- `--area NAME` and `--test PATH` filter the selected full suite or manifest.
+- `--smoke` and `--manifest-only` use the checked-in manifest rather than the
+  generated full-suite list.
 
 Browser runs start the Vite test-runner page with `KANDELO_BROWSER_DEMO_INPUTS`
 set to `test-runner` and serve the pinned Node source, generated prelude, and
@@ -41,7 +51,23 @@ default, or under `--results-dir`. Each run preserves `summary.txt`,
 `stdout/*.log` and `stderr/*.log`; browser runs also preserve
 `browser-console.log`.
 
-The manifest is intentionally small and public-API focused. Tests that require
-Node's private `--expose-internals` hooks, such as `internal/test/binding`, must
-be marked as an explicit support-boundary `SKIP` with a reason instead of being
-reported as runtime parity failures.
+Full-suite mode has no pre-run exclusions: every discovered upstream parallel
+test is expected to pass and any unsupported native, V8, inspector, platform,
+or environment assumption is recorded as a concrete failure or timeout artifact.
+Principled support-boundary exclusions belong in explicit follow-up manifests
+only after the complete suite has been attempted and triaged.
+
+## Current Full-Suite Status
+
+`kad-nct.17` records the first complete correction run against Node v22.0.0:
+
+- Node host: 3382 selected, 7 PASS, 3375 FAIL. Artifacts:
+  `test-runs/node-core-official-node-full-kad-nct17/`.
+- Browser host: all 3382 files were attempted, but the reported 3382 PASS
+  result is not authoritative. A deliberate throwing sentinel test failed on
+  the Node host and incorrectly reported PASS on the browser host, proving the
+  browser path does not yet propagate uncaught JS exceptions to stderr and
+  non-zero exit status. Tracking: `kad-nct.18`.
+
+See `docs/plans/2026-06-13-node-core-full-suite-kad-nct17.md` for the exact
+commands, artifact paths, root-cause grouping, and follow-up beads.

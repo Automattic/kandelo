@@ -1,8 +1,22 @@
 # Official Node.js Core JS Module Test Scope
 
-**Status:** scope decision for `kad-nct.1`
-**Date:** 2026-06-12
+**Status:** scope decision for `kad-nct.1`; corrected by `kad-nct.17`
+**Date:** 2026-06-12; correction recorded 2026-06-13
 **Epic:** `kad-nct` - run official Node.js core JS module tests on Kandelo
+
+## `kad-nct.17` Correction
+
+The original `kad-nct.1` adoption plan below described a selected manifest as
+the default run boundary. `kad-nct.17` supersedes that for the epic-level
+correction: the official core JavaScript module suite is the complete upstream
+Node v22.0.0 `test/parallel/test-*.js` set, currently 3382 files. The harness
+default is now full-suite discovery with no pre-run exclusions; the checked-in
+manifest is only for `--smoke`, `--manifest-only`, and targeted compatibility
+runs.
+
+The full-suite correction report, artifacts, commands, counts, and follow-up
+beads are recorded in
+`docs/plans/2026-06-13-node-core-full-suite-kad-nct17.md`.
 
 ## Decision
 
@@ -80,9 +94,11 @@ Out of scope for the first harness:
   `test/es-module` as top-level directories. These can be reconsidered by
   later beads after the `test/parallel` harness is producing artifacts.
 
-Node v22.0.0 has 3382 `test/parallel/test-*.js` files. The harness should not
-attempt all of them by default. It should start from the scoped globs below and
-write every skipped or expected-failing class into a status manifest.
+Node v22.0.0 has 3382 `test/parallel/test-*.js` files. The original scoped
+glob table below is retained as historical adoption guidance for breaking down
+future fixes by area, but it is no longer the default harness selection. The
+default full-suite run attempts all 3382 files and records unsupported
+capabilities as concrete failures or timeouts.
 
 ## In-Scope Test Globs
 

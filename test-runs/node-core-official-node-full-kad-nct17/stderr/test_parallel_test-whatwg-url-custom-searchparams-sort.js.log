@@ -1,0 +1,24 @@
+In Parse and sort: a14=b&a27=b&a28=b&a38=b&a12=b&a11=b&a40=b&a34=b&a13=b&a35=b&a39=b&a37=b&a15=b&a10=b&a41=b&a16=b&a26=b&a36=b&a29=b&a32=b&a31=b&a17=b&a18=b&a33=b&a20=b&a19=b&a21=b&a30=b&a22=b&a24=b&a23=b&a25=b&a45=b&a44=b&a43=b&a42=b&a47=b&a46=b&a48=b&a49=b&a53=b&a50=b&a52=b&a51=b&a57=b&a55=b&a54=b&a56=b&a61=b&a60=b&a59=b&a58=b&a63=b&a62=b&a64=b&a65=b&a71=b&a73=b&a67=b&a66=b&a68=b&a70=b&a69=b&a72=b&a84=b&a81=b&a78=b&a74=b&a75=b&a87=b&a82=b&a85=b&a86=b&a76=b&a80=b&a79=b&a83=b&a77=b&a89=b&a88=b&a98=b&a92=b&a90=b&a91=b&a93=b&a99=b&a94=b&a96=b&a95=b&a97=b:
+TypeError: params.sort is not a function
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-whatwg-url-custom-searchparams-sort.js:35:12
+test@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/wpt.js:153:7
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-whatwg-url-custom-searchparams-sort.js:32:7
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/parallel/test-whatwg-url-custom-searchparams-sort.js:31:7
+require@kandelo:spidermonkey-node-bootstrap:5300:22
+@/Users/brandon/gt/kandelo/polecats/capable/kandelo/test-runs/node-core-official-node-full-kad-nct17/kandelo-node-core-prelude.js:45:8
+_runEsmMain@kandelo:spidermonkey-node-bootstrap:5443:21
+_runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+@kandelo:spidermonkey-node-bootstrap:6158:1
+@kandelo:spidermonkey-node-bootstrap:6159:3
+
+kandelo:spidermonkey-node-bootstrap:2648:13 AssertionError: Unexpected global(s) found: __kandeloRunDueTimers, __kandeloNextTimerDelay, __kandeloCreateWorkerThreads, argv0, execArgv, TextEncoder, TextDecoder, btoa, atob, Blob, File, FormData, MessagePort, MessageChannel, BroadcastChannel, Event, EventTarget, MessageEvent, CloseEvent, ErrorEvent, DOMException, AbortSignal
+Stack:
+  AssertionError@kandelo:spidermonkey-node-bootstrap:2648:13
+  _assert.fail@kandelo:spidermonkey-node-bootstrap:2711:15
+  @/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0/test/common/index.js:401:14
+  emit@kandelo:spidermonkey-node-bootstrap:800:20
+  exit@kandelo:spidermonkey-node-bootstrap:1304:18
+  _runEsmMain@kandelo:spidermonkey-node-bootstrap:5459:13
+  _runMainScriptIfPresent@kandelo:spidermonkey-node-bootstrap:5471:20
+  @kandelo:spidermonkey-node-bootstrap:6158:1
+  @kandelo:spidermonkey-node-bootstrap:6159:3

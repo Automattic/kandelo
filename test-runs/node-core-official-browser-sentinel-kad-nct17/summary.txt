@@ -1,0 +1,20 @@
+Official Node.js core JS module summary
+host=browser
+source_tag=v22.0.0
+source_commit=12fb157f79da8c094a54bc99370994941c28c235
+source_dir=/Users/brandon/gt/kandelo/polecats/capable/kandelo/.cache/node-core-official/node-v22.0.0
+runtime=/Users/brandon/gt/kandelo/polecats/capable/kandelo/local-binaries/programs/wasm32/spidermonkey-node.wasm
+results_dir=/Users/brandon/gt/kandelo/polecats/capable/kandelo/test-runs/node-core-official-browser-sentinel-kad-nct17
+mode=full-suite
+selected=1
+command="/Users/brandon/.nvm/versions/node/v24.15.0/bin/node" "/Users/brandon/gt/kandelo/polecats/capable/kandelo/scripts/node-core-official-runner.ts" "--host" "browser" "--jobs" "1" "--test" "test/parallel/test-kandelo-sentinel.js" "--timeout-ms" "10000" "--results-dir" "test-runs/node-core-official-browser-sentinel-kad-nct17"
+runner_node=v24.15.0
+runner_platform=darwin/arm64
+
+Totals:
+  PASS: 1
+
+By area:
+  kandelo: PASS=1
+
+Unexpected results:

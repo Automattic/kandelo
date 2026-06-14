@@ -1,0 +1,1 @@
+1..0 # Skipped: lchmod is only available on macOS

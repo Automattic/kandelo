@@ -1,0 +1,45 @@
+[vite:stdout] 
+  VITE v8.0.16  ready in 102 ms
+
+[vite:stdout]   ➜  Local:   http://127.0.0.1:5199/
+[page:0:console:debug] [vite] connecting...
+[page:3:console:debug] [vite] connecting...
+[page:1:console:debug] [vite] connecting...
+[page:2:console:debug] [vite] connecting...
+[page:0:console:debug] [vite] connected.
+[page:3:console:debug] [vite] connected.
+[page:1:console:debug] [vite] connected.
+[page:2:console:debug] [vite] connected.
+[progress] completed=100/3382
+[progress] completed=200/3382
+[progress] completed=300/3382
+[progress] completed=400/3382
+[progress] completed=500/3382
+[progress] completed=600/3382
+[progress] completed=700/3382
+[progress] completed=800/3382
+[progress] completed=900/3382
+[progress] completed=1000/3382
+[progress] completed=1100/3382
+[progress] completed=1200/3382
+[progress] completed=1300/3382
+[progress] completed=1400/3382
+[progress] completed=1500/3382
+[progress] completed=1600/3382
+[progress] completed=1700/3382
+[progress] completed=1800/3382
+[progress] completed=1900/3382
+[progress] completed=2000/3382
+[progress] completed=2100/3382
+[progress] completed=2200/3382
+[progress] completed=2300/3382
+[progress] completed=2400/3382
+[progress] completed=2500/3382
+[progress] completed=2600/3382
+[progress] completed=2700/3382
+[progress] completed=2800/3382
+[progress] completed=2900/3382
+[progress] completed=3000/3382
+[progress] completed=3100/3382
+[progress] completed=3200/3382
+[progress] completed=3300/3382

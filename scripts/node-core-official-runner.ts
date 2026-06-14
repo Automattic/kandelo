@@ -1,13 +1,14 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import {
+  basename,
   dirname,
   join,
   relative,
@@ -18,7 +19,9 @@ import { fileURLToPath } from "node:url";
 type HostName = "node" | "browser";
 type ExpectedStatus = "PASS" | "FAIL" | "XFAIL" | "SKIP";
 type ActualStatus = ExpectedStatus | "ERROR" | "XPASS";
+type SelectionMode = "full-suite" | "manifest";
 type Browser = import("playwright").Browser;
+type BrowserContext = import("playwright").BrowserContext;
 type Page = import("playwright").Page;
 
 interface SourceSpec {
@@ -65,6 +68,7 @@ interface Options {
   smoke: boolean;
   list: boolean;
   explain: boolean;
+  selectionMode: SelectionMode;
   areas: Set<string>;
   tests: Set<string>;
 }
@@ -120,6 +124,7 @@ function parseArgs(argv: string[]): Options {
     smoke: false,
     list: false,
     explain: false,
+    selectionMode: "full-suite",
     areas: new Set(),
     tests: new Set(),
   };
@@ -168,8 +173,16 @@ function parseArgs(argv: string[]): Options {
       case "--test":
         options.tests.add(normalizeOfficialPath(value()));
         break;
+      case "--full-suite":
+      case "--full":
+        options.selectionMode = "full-suite";
+        break;
+      case "--manifest-only":
+        options.selectionMode = "manifest";
+        break;
       case "--smoke":
         options.smoke = true;
+        options.selectionMode = "manifest";
         break;
       case "--list":
         options.list = true;
@@ -214,7 +227,7 @@ function normalizeOfficialPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
-function selectTests(manifest: Manifest, options: Options): SelectedTest[] {
+function selectManifestTests(manifest: Manifest, options: Options): SelectedTest[] {
   const defaultTimeoutMs = options.timeoutMs ?? manifest.defaults?.timeoutMs ?? 30_000;
   return manifest.tests
     .filter((test) => !options.smoke || test.smoke)
@@ -229,6 +242,63 @@ function selectTests(manifest: Manifest, options: Options): SelectedTest[] {
         timeoutMs: options.timeoutMs ?? hostOverride?.timeoutMs ?? test.timeoutMs ?? defaultTimeoutMs,
       };
     });
+}
+
+function selectFullSuiteTests(manifest: Manifest, sourceDir: string, options: Options): SelectedTest[] {
+  const defaultTimeoutMs = options.timeoutMs ?? manifest.defaults?.timeoutMs ?? 30_000;
+  const parallelDir = join(sourceDir, "test/parallel");
+  return walkFiles(parallelDir)
+    .map((file) => normalizeOfficialPath(relative(sourceDir, file)))
+    .filter((path) => /^test\/parallel\/test-.+\.js$/.test(path))
+    .map((path): SelectedTest => {
+      const area = areaForOfficialParallelTest(path);
+      const reason = "Discovered from upstream Node v22.0.0 test/parallel/test-*.js; full-suite mode has no pre-run exclusions.";
+      return {
+        spec: {
+          path,
+          area,
+          expected: "PASS",
+          reason,
+        },
+        expected: "PASS",
+        reason,
+        timeoutMs: defaultTimeoutMs,
+      };
+    })
+    .filter((test) => options.areas.size === 0 || options.areas.has(test.spec.area))
+    .filter((test) => options.tests.size === 0 || options.tests.has(test.spec.path));
+}
+
+function areaForOfficialParallelTest(path: string): string {
+  const name = basename(path).replace(/^test-/, "").replace(/\.js$/, "");
+  const mappings: Array<[RegExp, string]> = [
+    [/^(whatwg-url|url)(?:-|$)/, "url"],
+    [/^(querystring)(?:-|$)/, "querystring"],
+    [/^(string-decoder)(?:-|$)/, "string_decoder"],
+    [/^(eventtarget|events?)(?:-|$)/, "events"],
+    [/^(buffer|blob|file)(?:-|$)/, "buffer"],
+    [/^(timers?|next-tick)(?:-|$)/, "timers"],
+    [/^(console)(?:-|$)/, "console"],
+    [/^(util)(?:-|$)/, "util"],
+    [/^(path)(?:-|$)/, "path"],
+    [/^(fs|filehandle|statfs|watch-file)(?:-|$)/, "fs"],
+    [/^(stream|stream2|stream3|readable|writable|duplex|pipeline|finished)(?:-|$)/, "stream"],
+    [/^(module|modules|require|commonjs|esm|es-module|cjs|resolve)(?:-|$)/, "loader"],
+    [/^(process|stdin|stdout|stderr|child-process|spawn|exec|signal)(?:-|$)/, "process"],
+    [/^(os)(?:-|$)/, "os"],
+    [/^(crypto|webcrypto|random)(?:-|$)/, "crypto"],
+    [/^(zlib|brotli)(?:-|$)/, "zlib"],
+    [/^(net|socket|tcp|udp|dns|http|https|tls|http2|dgram)(?:-|$)/, "network"],
+    [/^(vm)(?:-|$)/, "vm"],
+    [/^(v8|inspector|debugger|coverage|trace|tick-processor)(?:-|$)/, "v8_inspector"],
+    [/^(worker|worker-memory|messageport|broadcastchannel)(?:-|$)/, "workers"],
+    [/^(wasi)(?:-|$)/, "wasi"],
+    [/^(assert)(?:-|$)/, "assert"],
+  ];
+  for (const [pattern, area] of mappings) {
+    if (pattern.test(name)) return area;
+  }
+  return name.split("-")[0] || "misc";
 }
 
 function sourceDirFor(manifest: Manifest, options: Options): string {
@@ -319,7 +389,7 @@ function makeResultsDir(options: Options): string {
     mkdirSync(options.resultsDir, { recursive: true });
     return options.resultsDir;
   }
-  const mode = options.smoke ? "smoke" : "manifest";
+  const mode = options.smoke ? "smoke" : options.selectionMode;
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
   const dir = join(repoRoot, "test-runs", `node-core-official-${options.host}-${mode}`, stamp);
   mkdirSync(dir, { recursive: true });
@@ -399,7 +469,7 @@ function explain(
   const resultsDir = options.resultsDir ?? join(
     repoRoot,
     "test-runs",
-    `node-core-official-${options.host}-${options.smoke ? "smoke" : "manifest"}`,
+    `node-core-official-${options.host}-${options.smoke ? "smoke" : options.selectionMode}`,
     "<timestamp>",
   );
   const runtime =
@@ -417,8 +487,8 @@ function explain(
   console.log(`manifest=${options.manifestPath}`);
   console.log(`results_dir=${resultsDir}`);
   console.log(`timeout_ms=${options.timeoutMs ?? manifest.defaults?.timeoutMs ?? 30_000}`);
-  console.log(`jobs=${options.host === "browser" ? 1 : jobs}`);
-  console.log(`mode=${options.smoke ? "smoke" : "manifest"}`);
+  console.log(`jobs=${jobs}`);
+  console.log(`mode=${options.smoke ? "smoke" : options.selectionMode}`);
   console.log(`selected=${selected.length}`);
   console.log(`status_counts=${JSON.stringify(statusCounts)}`);
   console.log(`area_counts=${JSON.stringify(areaCounts)}`);
@@ -455,6 +525,7 @@ async function runNodeTest(
   sourceDir: string,
   preludePath: string,
   runtimePath: string,
+  programBytes: ArrayBuffer,
 ): Promise<RawRunResult> {
   const { NodeKernelHost } = await import("../host/src/node-kernel-host");
   const started = Date.now();
@@ -462,7 +533,6 @@ async function runNodeTest(
   let stderr = "";
   let pid: number | null = null;
   let timeout = false;
-  const programBytes = loadBytes(runtimePath);
   const testPath = join(sourceDir, test.spec.path);
 
   const host = new NodeKernelHost({
@@ -532,11 +602,12 @@ async function runBrowserTests(
   preludePath: string,
   runtimePath: string,
   resultsDir: string,
+  jobs: number,
 ): Promise<Map<string, RawRunResult>> {
   const { chromium } = await import("playwright");
   const consoleLog = join(resultsDir, "browser-console.log");
   writeFileSync(consoleLog, "");
-  const baseFiles = collectBrowserDataFiles(sourceDir, preludePath, resultsDir);
+  const baseFiles = collectBrowserDataFiles(sourceDir, preludePath);
   const runtimeUrl = nodeCoreOfficialUrl("runtime");
   let viteProc: ChildProcess | null = null;
   let browser: Browser | null = null;
@@ -548,70 +619,77 @@ async function runBrowserTests(
       args: ["--enable-features=SharedArrayBuffer"],
     });
     const context = await browser.newContext();
-    const page = await context.newPage();
-    page.on("console", (msg) => {
-      appendText(consoleLog, `[console:${msg.type()}] ${msg.text()}\n`);
-    });
-    page.on("pageerror", (err) => {
-      appendText(consoleLog, `[pageerror] ${err.stack || err.message}\n`);
-    });
-    page.on("crash", () => {
-      appendText(consoleLog, "[pagecrash] page crashed\n");
-    });
-    page.on("requestfailed", (request) => {
-      const failure = request.failure();
-      appendText(consoleLog, `[requestfailed] ${request.url()} ${failure?.errorText ?? ""}\n`);
-    });
-    await waitForTestRunner(page);
-
-    for (const test of tests) {
-      const started = Date.now();
-      const testHostPath = join(sourceDir, test.spec.path);
-      const dataFiles = [
-        ...baseFiles,
-        dataFileFromSourceUrl(sourceDir, testHostPath, `/node-v22.0.0/${test.spec.path}`),
-      ];
+    let next = 0;
+    const browserJobs = Math.max(1, Math.min(jobs, tests.length));
+    await Promise.all(Array.from({ length: browserJobs }, async (_, workerId) => {
+      let page = await createBrowserWorkerPage(context, workerId, baseFiles, consoleLog);
       try {
-        const result = await page.evaluate(
-          async ({ wasmUrl, argv, timeoutMs, dataFiles: files, env }) => {
-            return await (window as any).__runTestFromUrl(
-              wasmUrl,
-              argv,
-              timeoutMs,
-              { dataFiles: files, cwd: "/node-v22.0.0", env },
+        while (next < tests.length) {
+          const index = next++;
+          const test = tests[index];
+          const started = Date.now();
+          const testHostPath = join(sourceDir, test.spec.path);
+          const dataFiles = [
+            dataFileFromSourceUrl(sourceDir, testHostPath, `/node-v22.0.0/${test.spec.path}`),
+          ];
+          try {
+            const result = await withHostTimeout(
+              page.evaluate(
+                async ({ wasmUrl, argv, timeoutMs, dataFiles: files, env }) => {
+                  return await (window as any).__runTestFromUrl(
+                    wasmUrl,
+                    argv,
+                    timeoutMs,
+                    { useNodeCoreOfficialBaseFiles: true, dataFiles: files, cwd: "/node-v22.0.0", env },
+                  );
+                },
+                {
+                  wasmUrl: runtimeUrl,
+                  argv: [
+                    "node",
+                    "/node-v22.0.0/kandelo-node-core-prelude.js",
+                    `/node-v22.0.0/${test.spec.path}`,
+                  ],
+                  timeoutMs: test.timeoutMs,
+                  dataFiles,
+                  env: envForRun(),
+                },
+              ),
+              test.timeoutMs + 2_000,
+              `browser host timeout after ${test.timeoutMs + 2_000}ms`,
             );
-          },
-          {
-            wasmUrl: runtimeUrl,
-            argv: [
-              "node",
-              "/node-v22.0.0/kandelo-node-core-prelude.js",
-              `/node-v22.0.0/${test.spec.path}`,
-            ],
-            timeoutMs: test.timeoutMs,
-            dataFiles,
-            env: envForRun(),
-          },
-        );
-        results.set(test.spec.path, {
-          exitCode: result.exitCode,
-          stdout: result.stdout ?? "",
-          stderr: result.stderr ?? "",
-          durationMs: Date.now() - started,
-          timeout: false,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        results.set(test.spec.path, {
-          exitCode: message.includes("TIMEOUT") ? 124 : null,
-          stdout: "",
-          stderr: "",
-          durationMs: Date.now() - started,
-          timeout: message.includes("TIMEOUT"),
-          error: message,
-        });
+            results.set(test.spec.path, {
+              exitCode: result.exitCode,
+              stdout: result.stdout ?? "",
+              stderr: result.stderr ?? "",
+              durationMs: Date.now() - started,
+              timeout: false,
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            results.set(test.spec.path, {
+              exitCode: message.includes("TIMEOUT") ? 124 : null,
+              stdout: "",
+              stderr: "",
+              durationMs: Date.now() - started,
+              timeout: message.includes("TIMEOUT"),
+              error: message,
+            });
+            if (message.includes("browser host timeout") || message.includes("Target page") || message.includes("Execution context")) {
+              appendText(consoleLog, `[page:${workerId}:reset] ${test.spec.path}: ${message}\n`);
+              await closePageBestEffort(page);
+              page = await createBrowserWorkerPage(context, workerId, baseFiles, consoleLog);
+            }
+          } finally {
+            if (results.size > 0 && results.size % 100 === 0) {
+              appendText(consoleLog, `[progress] completed=${results.size}/${tests.length}\n`);
+            }
+          }
+        }
+      } finally {
+        await closePageBestEffort(page);
       }
-    }
+    }));
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (viteProc) {
@@ -626,17 +704,68 @@ async function runBrowserTests(
   return results;
 }
 
+async function createBrowserWorkerPage(
+  context: BrowserContext,
+  workerId: number,
+  baseFiles: BrowserDataFile[],
+  consoleLog: string,
+): Promise<Page> {
+  const page = await context.newPage();
+  page.on("console", (msg) => {
+    appendText(consoleLog, `[page:${workerId}:console:${msg.type()}] ${msg.text()}\n`);
+  });
+  page.on("pageerror", (err) => {
+    appendText(consoleLog, `[page:${workerId}:pageerror] ${err.stack || err.message}\n`);
+  });
+  page.on("crash", () => {
+    appendText(consoleLog, `[page:${workerId}:pagecrash] page crashed\n`);
+  });
+  page.on("requestfailed", (request) => {
+    const failure = request.failure();
+    appendText(consoleLog, `[page:${workerId}:requestfailed] ${request.url()} ${failure?.errorText ?? ""}\n`);
+  });
+  await waitForTestRunner(page);
+  await page.evaluate((files) => {
+    (window as any).__setNodeCoreOfficialBaseFiles(files);
+  }, baseFiles);
+  return page;
+}
+
+async function closePageBestEffort(page: Page): Promise<void> {
+  await withHostTimeout(page.close({ runBeforeUnload: false }), 2_000, "page close timeout").catch(() => {});
+}
+
+function withHostTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout>;
+  return new Promise<T>((resolvePromise, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolvePromise(value);
+      },
+      (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      },
+    );
+  });
+}
+
 interface BrowserDataFile {
   path: string;
   data?: number[];
   url?: string;
+  lazy?: boolean;
+  size?: number;
+  mode?: number;
 }
 
-function collectBrowserDataFiles(sourceDir: string, preludePath: string, resultsDir: string): BrowserDataFile[] {
+function collectBrowserDataFiles(sourceDir: string, preludePath: string): BrowserDataFile[] {
   const files: BrowserDataFile[] = [
-    dataFileFromResultsUrl(resultsDir, preludePath, "/node-v22.0.0/kandelo-node-core-prelude.js"),
+    dataFileFromResultsData(preludePath, "/node-v22.0.0/kandelo-node-core-prelude.js"),
   ];
-  for (const relDir of ["test/common", "test/fixtures"]) {
+  for (const relDir of ["test/common", "test/fixtures", "lib"]) {
     const absDir = join(sourceDir, relDir);
     for (const file of walkFiles(absDir)) {
       files.push(dataFileFromSourceUrl(sourceDir, file, `/node-v22.0.0/${relative(sourceDir, file).replace(/\\/g, "/")}`));
@@ -646,11 +775,21 @@ function collectBrowserDataFiles(sourceDir: string, preludePath: string, results
 }
 
 function dataFileFromSourceUrl(sourceDir: string, hostPath: string, vfsPath: string): BrowserDataFile {
-  return { path: vfsPath, url: nodeCoreOfficialUrl("source", relative(sourceDir, hostPath)) };
+  return {
+    path: vfsPath,
+    url: nodeCoreOfficialUrl("source", relative(sourceDir, hostPath)),
+    lazy: true,
+    size: statSync(hostPath).size,
+    mode: 0o644,
+  };
 }
 
-function dataFileFromResultsUrl(resultsDir: string, hostPath: string, vfsPath: string): BrowserDataFile {
-  return { path: vfsPath, url: nodeCoreOfficialUrl("results", relative(resultsDir, hostPath)) };
+function dataFileFromResultsData(hostPath: string, vfsPath: string): BrowserDataFile {
+  return {
+    path: vfsPath,
+    data: Array.from(readFileSync(hostPath)),
+    mode: 0o644,
+  };
 }
 
 function nodeCoreOfficialUrl(kind: "runtime" | "source" | "results", relPath = ""): string {
@@ -821,8 +960,34 @@ function validateOfficialFiles(sourceDir: string, selected: SelectedTest[]): voi
   }
 }
 
-function copyManifest(manifestPath: string, resultsDir: string): void {
-  cpSync(manifestPath, join(resultsDir, "manifest.used.json"));
+function writeUsedManifest(
+  manifest: Manifest,
+  options: Options,
+  selected: SelectedTest[],
+  resultsDir: string,
+): void {
+  const tests = selected.map((test) => ({
+    ...test.spec,
+    expected: test.expected,
+    reason: test.reason,
+    timeoutMs: test.timeoutMs,
+  }));
+  writeFileSync(join(resultsDir, "manifest.used.json"), JSON.stringify({
+    source: manifest.source,
+    defaults: manifest.defaults,
+    selection: {
+      mode: options.smoke ? "smoke" : options.selectionMode,
+      generatedFrom: options.selectionMode === "full-suite" && !options.smoke
+        ? "test/parallel/test-*.js"
+        : options.manifestPath,
+      selected: tests.length,
+      filters: {
+        areas: Array.from(options.areas).sort(),
+        tests: Array.from(options.tests).sort(),
+      },
+    },
+    tests,
+  }, null, 2));
 }
 
 function writeSummaries(
@@ -848,6 +1013,20 @@ function writeSummaries(
     },
     runtime: runtimePath,
     resultsDir,
+    command: process.argv,
+    selection: {
+      mode: options.smoke ? "smoke" : options.selectionMode,
+      selected: results.length,
+    },
+    runnerEnvironment: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      cwd: process.cwd(),
+    },
+    guestEnvironment: envForRun().filter((entry) =>
+      /^(NODE_SKIP_FLAG_CHECK|NODE_DISABLE_COLORS|TERM|CI)=/.test(entry)
+    ),
     totals,
     byArea,
     unexpected: results.filter((result) => result.unexpected).length,
@@ -863,6 +1042,11 @@ function writeSummaries(
     `source_dir=${source.dir}`,
     `runtime=${runtimePath}`,
     `results_dir=${resultsDir}`,
+    `mode=${options.smoke ? "smoke" : options.selectionMode}`,
+    `selected=${results.length}`,
+    `command=${process.argv.map((arg) => JSON.stringify(arg)).join(" ")}`,
+    `runner_node=${process.version}`,
+    `runner_platform=${process.platform}/${process.arch}`,
     "",
     "Totals:",
     ...Object.entries(totals).sort().map(([status, count]) => `  ${status}: ${count}`),
@@ -883,8 +1067,15 @@ function writeSummaries(
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   const manifest = loadManifest(options.manifestPath);
-  const selected = selectTests(manifest, options);
   const sourceDir = sourceDirFor(manifest, options);
+  const fullSuite = options.selectionMode === "full-suite" && !options.smoke;
+  let source: { dir: string; commit: string | null } | null = null;
+  if (fullSuite) {
+    source = ensureSource(manifest, options);
+  }
+  const selected = fullSuite
+    ? selectFullSuiteTests(manifest, source!.dir, options)
+    : selectManifestTests(manifest, options);
 
   if (selected.length === 0) {
     throw new Error("No manifest entries matched the requested selection");
@@ -900,13 +1091,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  const source = ensureSource(manifest, options);
+  source ??= ensureSource(manifest, options);
   validateOfficialFiles(source.dir, selected);
   const runtimePath = await resolveRuntime(options.runtimePath);
   const resultsDir = makeResultsDir(options);
   mkdirSync(join(resultsDir, "stdout"), { recursive: true });
   mkdirSync(join(resultsDir, "stderr"), { recursive: true });
-  copyManifest(options.manifestPath, resultsDir);
+  writeUsedManifest(manifest, options, selected, resultsDir);
   const preludePath = writePrelude(resultsDir);
 
   const runnable = selected.filter((test) => test.expected !== "SKIP");
@@ -915,13 +1106,15 @@ async function main(): Promise<void> {
 
   if (options.host === "node") {
     const jobs = options.jobs ?? manifest.defaults?.jobs ?? 1;
+    const programBytes = loadBytes(runtimePath);
     const nodeResults = await runWithConcurrency(runnable, jobs, async (test) => {
-      const raw = await runNodeTest(test, source.dir, preludePath, runtimePath);
+      const raw = await runNodeTest(test, source.dir, preludePath, runtimePath, programBytes);
       return recordResult(test, options.host, raw, resultsDir);
     });
     recorded.push(...nodeResults);
   } else {
-    const browserResults = await runBrowserTests(runnable, source.dir, preludePath, runtimePath, resultsDir);
+    const jobs = options.jobs ?? manifest.defaults?.jobs ?? 1;
+    const browserResults = await runBrowserTests(runnable, source.dir, preludePath, runtimePath, resultsDir, jobs);
     for (const test of runnable) {
       const raw = browserResults.get(test.spec.path) ?? {
         exitCode: null,
