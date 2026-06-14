@@ -427,6 +427,7 @@ const _SLASH = '/';
 const _DOT = '.';
 const _kEvents = Symbol('kEvents');
 const _kWeakHandler = Symbol('kWeakHandler');
+const _kNodeEventTargetListenerWrapper = Symbol('kNodeEventTargetListenerWrapper');
 let _eventTargetDefaultMaxListeners = 10;
 
 function _defineGlobal(name, value) {
@@ -736,7 +737,10 @@ const events = (() => {
     function getEventTargetListeners(target, type) {
         const map = target && target[_kEvents];
         const list = map && map.get(String(type));
-        return list ? list.filter((entry) => !entry.removed).map((entry) => entry.listener) : [];
+        return list ? list.filter((entry) => !entry.removed).map((entry) => {
+            const listener = entry.listener;
+            return listener && listener[_kNodeEventTargetListenerWrapper] ? listener.listener : listener;
+        }) : [];
     }
 
     function getAbortError(signal) {
@@ -14515,12 +14519,27 @@ for (const [name, value] of Object.entries({
 
 class KandeloEventTarget {
     constructor() {
+        const listeners = new Map();
         Object.defineProperty(this, '_eventTargetListeners', {
-            value: new Map(),
+            value: listeners,
+            configurable: true,
+        });
+        Object.defineProperty(this, _kEvents, {
+            value: listeners,
+            configurable: true,
+        });
+        Object.defineProperty(this, '_maxListeners', {
+            value: _eventTargetDefaultMaxListeners,
+            writable: true,
             configurable: true,
         });
     }
     addEventListener(type, listener, options) {
+        if (!(this instanceof KandeloEventTarget)) {
+            const err = new TypeError('Value of "this" must be of type EventTarget');
+            err.code = 'ERR_INVALID_THIS';
+            throw err;
+        }
         if (arguments.length < 2) {
             const err = new TypeError('The "type" and "listener" arguments must be specified');
             err.code = 'ERR_MISSING_ARGS';
@@ -14557,23 +14576,44 @@ class KandeloEventTarget {
             entry.signal.addEventListener('abort', entry.abortHandler, { once: true });
         }
         list.push(entry);
+        const max = this._maxListeners === undefined ? _eventTargetDefaultMaxListeners : this._maxListeners;
+        if (max > 0 && list.length > max && !list.warned) {
+            list.warned = true;
+            _emitEventTargetMemoryWarning(this, type, list.length);
+        }
         return undefined;
     }
     removeEventListener(type, listener, options) {
+        if (!(this instanceof KandeloEventTarget)) {
+            const err = new TypeError('Value of "this" must be of type EventTarget');
+            err.code = 'ERR_INVALID_THIS';
+            throw err;
+        }
         type = String(type);
         if (listener == null) return undefined;
         const capture = _eventListenerOptions(options).capture;
         const list = this._eventTargetListeners.get(type);
         if (!list) return undefined;
         for (const entry of list) {
-            if (!entry.removed && entry.listener === listener && entry.capture === capture) {
+            if (!entry.removed &&
+                (entry.listener === listener ||
+                    (entry.listener &&
+                        entry.listener[_kNodeEventTargetListenerWrapper] &&
+                        entry.listener.listener === listener)) &&
+                entry.capture === capture) {
                 entry.removed = true;
                 if (entry.signal && entry.abortHandler) {
                     entry.signal.removeEventListener('abort', entry.abortHandler);
                 }
             }
         }
-        this._eventTargetListeners.set(type, list.filter((entry) => !entry.removed));
+        const remaining = list.filter((entry) => !entry.removed);
+        if (remaining.length === 0) {
+            this._eventTargetListeners.delete(type);
+        } else {
+            remaining.warned = list.warned;
+            this._eventTargetListeners.set(type, remaining);
+        }
         return undefined;
     }
     dispatchEvent(event) {
@@ -14626,33 +14666,81 @@ class KandeloNodeEventTarget extends KandeloEventTarget {
         super();
         this._maxListeners = KandeloNodeEventTarget.defaultMaxListeners;
     }
-    setMaxListeners(n) { this._maxListeners = n; return this; }
-    getMaxListeners() { return this._maxListeners; }
+    setMaxListeners(n) {
+        _assertNodeEventTargetThis(this);
+        n = Number(n);
+        if (!Number.isFinite(n) || n < 0) {
+            const err = new RangeError('The value of "n" is out of range. It must be a non-negative number.');
+            err.code = 'ERR_OUT_OF_RANGE';
+            throw err;
+        }
+        this._maxListeners = n;
+        return this;
+    }
+    getMaxListeners() {
+        _assertNodeEventTargetThis(this);
+        return this._maxListeners;
+    }
     eventNames() {
+        _assertNodeEventTargetThis(this);
         return Array.from(this._eventTargetListeners.keys())
             .filter((name) => (this._eventTargetListeners.get(name) || []).length > 0);
     }
-    listenerCount(type) {
+    listenerCount(type, listener) {
+        _assertNodeEventTargetThis(this);
         const list = this._eventTargetListeners.get(String(type));
-        return list ? list.filter((entry) => !entry.removed).length : 0;
+        if (!list) return 0;
+        const active = list.filter((entry) => !entry.removed);
+        if (listener === undefined) return active.length;
+        return active.filter((entry) => entry.listener === listener ||
+            (entry.listener &&
+                entry.listener[_kNodeEventTargetListenerWrapper] &&
+                entry.listener.listener === listener)).length;
     }
-    on(type, listener, options) { this.addEventListener(type, listener, options); return this; }
+    _wrapNodeListener(listener) {
+        if (typeof listener !== 'function') return listener;
+        const wrapped = function nodeEventTargetListener(event) {
+            const value = event instanceof KandeloCustomEvent ? event.detail : event;
+            return listener.call(this, value);
+        };
+        Object.defineProperty(wrapped, 'listener', {
+            value: listener,
+            configurable: true,
+        });
+        Object.defineProperty(wrapped, _kNodeEventTargetListenerWrapper, {
+            value: true,
+            configurable: true,
+        });
+        return wrapped;
+    }
+    on(type, listener, options) {
+        _assertNodeEventTargetThis(this);
+        this.addEventListener(type, this._wrapNodeListener(listener), options);
+        return this;
+    }
     addListener(type, listener, options) { return this.on(type, listener, options); }
     once(type, listener, options) {
+        _assertNodeEventTargetThis(this);
         const opts = options && typeof options === 'object'
             ? Object.assign({}, options, { once: true })
             : { once: true };
-        this.addEventListener(type, listener, opts);
+        this.addEventListener(type, this._wrapNodeListener(listener), opts);
         return this;
     }
-    off(type, listener, options) { this.removeEventListener(type, listener, options); return this; }
+    off(type, listener, options) {
+        _assertNodeEventTargetThis(this);
+        this.removeEventListener(type, listener, options);
+        return this;
+    }
     removeListener(type, listener, options) { return this.off(type, listener, options); }
     removeAllListeners(type) {
+        _assertNodeEventTargetThis(this);
         if (type === undefined) this._eventTargetListeners.clear();
         else this._eventTargetListeners.delete(String(type));
         return this;
     }
     emit(type, ...args) {
+        _assertNodeEventTargetThis(this);
         if (arguments.length === 0) throw _makeInvalidArgTypeError('type', 'string', type);
         const event = args[0] instanceof KandeloEvent
             ? args[0]
@@ -14660,7 +14748,18 @@ class KandeloNodeEventTarget extends KandeloEventTarget {
         return this.dispatchEvent(event);
     }
 }
-KandeloNodeEventTarget.defaultMaxListeners = 10;
+function _assertNodeEventTargetThis(value) {
+    if (!(value instanceof KandeloNodeEventTarget)) {
+        const err = new TypeError('Value of "this" must be of type NodeEventTarget');
+        err.code = 'ERR_INVALID_THIS';
+        throw err;
+    }
+}
+Object.defineProperty(KandeloNodeEventTarget, 'defaultMaxListeners', {
+    get() { return _eventTargetDefaultMaxListeners; },
+    set(value) { _eventTargetDefaultMaxListeners = Number(value); },
+    configurable: true,
+});
 Object.defineProperty(KandeloNodeEventTarget, 'name', { value: 'NodeEventTarget' });
 Object.defineProperty(KandeloEvent.prototype, Symbol.toStringTag, {
     value: 'Event',
@@ -14698,6 +14797,20 @@ function _eventListenerOptions(options) {
         passive: !!options.passive,
         signal: options.signal,
     };
+}
+
+function _emitEventTargetMemoryWarning(target, type, count) {
+    if (typeof process === 'undefined' || typeof process.emitWarning !== 'function') return;
+    const targetName = target && target.constructor && target.constructor.name || 'EventTarget';
+    const err = new Error(
+        `Possible EventTarget memory leak detected. ${count} ${type} listeners added to ${targetName}. ` +
+        'Use events.setMaxListeners() to increase limit',
+    );
+    err.name = 'MaxListenersExceededWarning';
+    err.target = target;
+    err.count = count;
+    err.type = type;
+    process.emitWarning(err);
 }
 
 function _defineEventHandler(target, name, eventName) {
@@ -14883,6 +14996,7 @@ function _abortSignal(signal, reason) {
     signal.dispatchEvent(new KandeloEvent('abort'));
     const list = signal._eventTargetListeners.get('abort');
     if (list) list.length = 0;
+    signal._eventTargetListeners.delete('abort');
 }
 
 _defineGlobal('Event', KandeloEvent);
