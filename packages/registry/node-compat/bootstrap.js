@@ -2562,9 +2562,104 @@ const fs = (() => {
 
     function _pathToString(p) {
         if (typeof p === 'string') return p;
-        if (p instanceof URL) return p.pathname;
+        if (typeof URL !== 'undefined' && p instanceof URL) {
+            if (p.protocol !== 'file:') {
+                throw _makeInvalidArgTypeError('path', 'string, Buffer, or URL', p);
+            }
+            return url.fileURLToPath ? url.fileURLToPath(p) : p.pathname;
+        }
+        if (p && typeof p === 'object' && typeof p.href === 'string' &&
+            typeof p.pathname === 'string' && typeof p.protocol === 'string') {
+            if (p.protocol !== 'file:') {
+                throw _makeInvalidArgTypeError('path', 'string, Buffer, or URL', p);
+            }
+            return url.fileURLToPath ? url.fileURLToPath(p) : p.pathname;
+        }
         if (Buffer.isBuffer(p)) return p.toString();
-        throw new TypeError('path must be a string, Buffer, or URL');
+        throw _makeInvalidArgTypeError('path', 'string, Buffer, or URL', p);
+    }
+
+    function _pathToStringNoThrow(p) {
+        try { return _pathToString(p); } catch (_) { return null; }
+    }
+
+    function _validateCallback(cb) {
+        if (typeof cb !== 'function') {
+            throw _makeInvalidArgTypeError('callback', 'function', cb);
+        }
+    }
+
+    function _toFsBytes(data, encoding, name = 'data') {
+        if (typeof data === 'string') return Buffer.from(data, encoding || 'utf8');
+        if (data instanceof Uint8Array) return data;
+        if (data instanceof ArrayBuffer) return new Uint8Array(data);
+        if (ArrayBuffer.isView(data)) {
+            return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        }
+        throw _makeInvalidArgTypeError(name, 'string, Buffer, TypedArray, or DataView', data);
+    }
+
+    function _validateInteger(value, name) {
+        if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+            throw _makeInvalidArgTypeError(name, 'integer', value);
+        }
+        return value;
+    }
+
+    function _validateUidOrGid(value, name) {
+        _validateInteger(value, name);
+        if (value < 0) {
+            const err = new RangeError(`The value of "${name}" is out of range.`);
+            err.code = 'ERR_OUT_OF_RANGE';
+            throw err;
+        }
+    }
+
+    function _validateBufferView(buffer, name = 'buffer') {
+        if (buffer instanceof Uint8Array || ArrayBuffer.isView(buffer)) return buffer;
+        throw _makeInvalidArgTypeError(name, 'Buffer, TypedArray, or DataView', buffer);
+    }
+
+    function _normalizePosition(value) {
+        if (value === undefined || value === null) return null;
+        if (typeof value === 'bigint') value = Number(value);
+        _validateInteger(value, 'position');
+        return value < 0 ? null : value;
+    }
+
+    function _normalizeBufferOptions(buffer, offsetOrOptions, length, position) {
+        const view = _validateBufferView(buffer);
+        let offset = 0;
+        let len = view.byteLength ?? view.length;
+        let pos = position;
+
+        if (offsetOrOptions === undefined || offsetOrOptions === null) {
+            // Defaults above.
+        } else if (typeof offsetOrOptions === 'object' && !Array.isArray(offsetOrOptions)) {
+            offset = offsetOrOptions.offset ?? 0;
+            len = offsetOrOptions.length ?? (view.byteLength ?? view.length) - offset;
+            pos = offsetOrOptions.position;
+        } else if (typeof offsetOrOptions === 'number') {
+            offset = offsetOrOptions;
+            len = length ?? (view.byteLength ?? view.length) - offset;
+        } else {
+            throw _makeInvalidArgTypeError('options', 'Object', offsetOrOptions);
+        }
+
+        offset = _validateInteger(offset, 'offset');
+        len = _validateInteger(len, 'length');
+        const size = view.byteLength ?? view.length;
+        if (offset < 0 || offset > size) {
+            const err = new RangeError('The value of "offset" is out of range.');
+            err.code = 'ERR_OUT_OF_RANGE';
+            throw err;
+        }
+        if (len < 0 || len > size - offset) {
+            const err = new RangeError('The value of "length" is out of range.');
+            err.code = 'ERR_OUT_OF_RANGE';
+            throw err;
+        }
+        return { view, offset, length: len, position: _normalizePosition(pos) };
     }
 
     function _flagsToMode(flags) {
@@ -2585,7 +2680,9 @@ const fs = (() => {
     }
 
     function existsSync(filepath) {
-        const [, err] = os.stat(_pathToString(filepath));
+        const p = _pathToStringNoThrow(filepath);
+        if (p === null) return false;
+        const [, err] = os.stat(p);
         return err === 0;
     }
 
@@ -2608,11 +2705,26 @@ const fs = (() => {
     }
 
     function readFileSync(filepath, options) {
-        const p = _pathToString(filepath);
         let encoding = null;
         if (typeof options === 'string') encoding = options;
         else if (options && options.encoding) encoding = options.encoding;
 
+        if (typeof filepath === 'number') {
+            const chunks = [];
+            let total = 0;
+            while (true) {
+                const chunk = Buffer.alloc(64 * 1024);
+                const n = os.read(filepath, chunk.buffer, chunk.byteOffset, chunk.byteLength);
+                if (n < 0) _throwErrno(-n, 'read');
+                if (n === 0) break;
+                chunks.push(chunk.subarray(0, n));
+                total += n;
+            }
+            const data = Buffer.concat(chunks, total);
+            return encoding ? data.toString(encoding) : data;
+        }
+
+        const p = _pathToString(filepath);
         const f = std.open(p, 'rb');
         if (!f) {
             _throwErrno(2, 'open', p); // ENOENT
@@ -2631,7 +2743,6 @@ const fs = (() => {
     }
 
     function writeFileSync(filepath, data, options) {
-        const p = _pathToString(filepath);
         let encoding = 'utf8';
         let mode = 0o666;
         let flag = 'w';
@@ -2642,25 +2753,21 @@ const fs = (() => {
             if (options.flag) flag = options.flag;
         }
 
+        const isFd = typeof filepath === 'number';
+        const p = isFd ? undefined : _pathToString(filepath);
         const flags = _flagsToMode(flag);
-        const fd = os.open(p, flags, mode);
+        const fd = isFd ? filepath : os.open(p, flags, mode);
         if (fd < 0) _throwErrno(-fd, 'open', p);
 
-        let buf;
-        if (typeof data === 'string') {
-            buf = new TextEncoder().encode(data);
-        } else if (data instanceof Uint8Array) {
-            buf = data;
-        } else {
-            buf = new TextEncoder().encode(String(data));
-        }
-        os.write(fd, buf.buffer, buf.byteOffset, buf.byteLength);
-        os.close(fd);
+        const buf = _toFsBytes(data, encoding, 'data');
+        const written = os.write(fd, buf.buffer, buf.byteOffset, buf.byteLength);
+        if (written < 0) _throwErrno(-written, 'write', p);
+        if (!isFd) os.close(fd);
     }
 
     function appendFileSync(filepath, data, options) {
-        const opts = typeof options === 'string' ? { encoding: options } : (options || {});
-        opts.flag = opts.flag || 'a';
+        const opts = typeof options === 'string' ? { encoding: options } : { ...(options || {}) };
+        if (opts.flag === undefined) opts.flag = 'a';
         writeFileSync(filepath, data, opts);
     }
 
@@ -2778,6 +2885,21 @@ const fs = (() => {
         if (err !== 0) _throwErrno(-err, 'symlink', _pathToString(linkpath));
     }
 
+    function linkSync(existingPath, newPath) {
+        const oldp = _pathToString(existingPath);
+        const newp = _pathToString(newPath);
+        if (typeof os.link === 'function') {
+            const err = os.link(oldp, newp);
+            if (err === -38 || err === 38) {
+                copyFileSync(oldp, newp, constants.COPYFILE_EXCL);
+                return;
+            }
+            if (err !== 0) _throwErrno(err < 0 ? -err : err, 'link', newp);
+            return;
+        }
+        copyFileSync(oldp, newp, constants.COPYFILE_EXCL);
+    }
+
     function readlinkSync(filepath) {
         const p = _pathToString(filepath);
         const [target, err] = os.readlink(p);
@@ -2805,6 +2927,18 @@ const fs = (() => {
         if (err !== 0) _throwErrno(-err, 'chown', p);
         void uid;
         void gid;
+    }
+
+    function lchownSync(filepath, uid, gid) {
+        const p = _pathToString(filepath);
+        _validateUidOrGid(uid, 'uid');
+        _validateUidOrGid(gid, 'gid');
+        const [, err] = os.lstat(p);
+        if (err !== 0) _throwErrno(-err, 'lchown', p);
+        if (typeof os.lchown === 'function') {
+            const chownErr = os.lchown(p, uid, gid);
+            if (chownErr !== 0) _throwErrno(chownErr < 0 ? -chownErr : chownErr, 'lchown', p);
+        }
     }
 
     function utimesSync(filepath, atime, mtime) {
@@ -2842,29 +2976,44 @@ const fs = (() => {
     }
 
     function readSync(fd, buffer, offset, length, position) {
-        if (position !== null && position !== undefined) {
-            os.seek(fd, position, std.SEEK_SET);
+        const opts = _normalizeBufferOptions(buffer, offset, length, position);
+        if (opts.position !== null) {
+            const seekErr = os.seek(fd, opts.position, std.SEEK_SET);
+            if (seekErr < 0) _throwErrno(-seekErr, 'seek');
         }
-        return os.read(fd, buffer.buffer, buffer.byteOffset + (offset || 0), length || buffer.length);
+        const n = os.read(fd, opts.view.buffer, opts.view.byteOffset + opts.offset, opts.length);
+        if (n < 0) _throwErrno(-n, 'read');
+        return n;
     }
 
     function writeSync(fd, data, offsetOrPosition, lengthOrEncoding, position) {
         let buf;
         if (typeof data === 'string') {
-            buf = new TextEncoder().encode(data);
-            if (typeof offsetOrPosition === 'number') {
-                os.seek(fd, offsetOrPosition, std.SEEK_SET);
+            let stringPosition = offsetOrPosition;
+            let encoding = typeof lengthOrEncoding === 'string' ? lengthOrEncoding : 'utf8';
+            if (typeof offsetOrPosition === 'string') {
+                encoding = offsetOrPosition;
+                stringPosition = null;
+            }
+            buf = Buffer.from(data, encoding);
+            const pos = _normalizePosition(stringPosition);
+            if (pos !== null) {
+                const seekErr = os.seek(fd, pos, std.SEEK_SET);
+                if (seekErr < 0) _throwErrno(-seekErr, 'seek');
             }
         } else {
-            buf = data;
-            const offset = offsetOrPosition || 0;
-            const length = lengthOrEncoding || (buf.length - offset);
-            if (position !== null && position !== undefined) {
-                os.seek(fd, position, std.SEEK_SET);
+            const opts = _normalizeBufferOptions(data, offsetOrPosition, lengthOrEncoding, position);
+            if (opts.position !== null) {
+                const seekErr = os.seek(fd, opts.position, std.SEEK_SET);
+                if (seekErr < 0) _throwErrno(-seekErr, 'seek');
             }
-            return os.write(fd, buf.buffer, buf.byteOffset + offset, length);
+            const n = os.write(fd, opts.view.buffer, opts.view.byteOffset + opts.offset, opts.length);
+            if (n < 0) _throwErrno(-n, 'write');
+            return n;
         }
-        return os.write(fd, buf.buffer, 0, buf.length);
+        const n = os.write(fd, buf.buffer, buf.byteOffset, buf.byteLength);
+        if (n < 0) _throwErrno(-n, 'write');
+        return n;
     }
 
     // fs-minipass guards on `if (!fs.writev)` and falls back to
@@ -3006,10 +3155,273 @@ const fs = (() => {
         };
     }
 
+    function link(existingPath, newPath, cb) {
+        _validateCallback(cb);
+        const oldp = _pathToString(existingPath);
+        const newp = _pathToString(newPath);
+        try {
+            linkSync(oldp, newp);
+            queueMicrotask(() => cb(null));
+        } catch (err) {
+            queueMicrotask(() => cb(err));
+        }
+    }
+
+    function lchown(filepath, uid, gid, cb) {
+        _validateCallback(cb);
+        const p = _pathToString(filepath);
+        _validateUidOrGid(uid, 'uid');
+        _validateUidOrGid(gid, 'gid');
+        try {
+            lchownSync(p, uid, gid);
+            queueMicrotask(() => cb(null));
+        } catch (err) {
+            queueMicrotask(() => cb(err));
+        }
+    }
+
+    class FSWatcher extends events.EventEmitter {
+        constructor() {
+            super();
+            this.closed = false;
+        }
+        close() {
+            if (this.closed) return;
+            this.closed = true;
+            queueMicrotask(() => this.emit('close'));
+        }
+        ref() { return this; }
+        unref() { return this; }
+    }
+
+    class StatWatcher extends events.EventEmitter {
+        constructor(filepath) {
+            super();
+            this.path = filepath;
+            this.closed = false;
+        }
+        stop() {
+            if (this.closed) return;
+            this.closed = true;
+            queueMicrotask(() => this.emit('stop'));
+        }
+        ref() { return this; }
+        unref() { return this; }
+    }
+
+    const statWatchers = new Map();
+
+    function createReadStream(filepath, options) {
+        const opts = { ...(options || {}) };
+        const highWaterMark = opts.highWaterMark || 64 * 1024;
+        const autoClose = opts.autoClose !== false;
+        const pathValue = opts.fd === undefined ? _pathToString(filepath) : filepath;
+        let opened = false;
+        let closed = false;
+        let readStarted = false;
+        let fd = opts.fd === undefined ? null : opts.fd;
+        const rs = new stream.Readable({
+            ...opts,
+            read() {
+                if (readStarted || !opened || closed) return;
+                readStarted = true;
+                queueMicrotask(() => {
+                    try {
+                        while (!closed) {
+                            const chunk = Buffer.alloc(highWaterMark);
+                            const n = os.read(fd, chunk.buffer, chunk.byteOffset, chunk.byteLength);
+                            if (n < 0) _throwErrno(-n, 'read', typeof pathValue === 'string' ? pathValue : undefined);
+                            if (n === 0) break;
+                            rs.bytesRead += n;
+                            rs.push(chunk.subarray(0, n));
+                        }
+                        rs.push(null);
+                        if (autoClose) rs.close();
+                    } catch (err) {
+                        rs.destroy(err);
+                    }
+                });
+            },
+        });
+        rs.path = pathValue;
+        rs.fd = fd;
+        rs.flags = opts.flags || 'r';
+        rs.mode = opts.mode || 0o666;
+        rs.autoClose = autoClose;
+        rs.bytesRead = 0;
+        rs.pending = fd === null;
+        rs.close = function(cb) {
+            if (typeof cb === 'function') rs.once('close', cb);
+            if (closed) return;
+            closed = true;
+            if (fd !== null && opts.fd === undefined) {
+                os.close(fd);
+                fd = null;
+                rs.fd = null;
+            }
+            queueMicrotask(() => rs.emit('close'));
+        };
+        const originalDestroy = rs.destroy.bind(rs);
+        rs.destroy = function(err) {
+            if (!closed && fd !== null && opts.fd === undefined) {
+                os.close(fd);
+                fd = null;
+                rs.fd = null;
+            }
+            closed = true;
+            return originalDestroy(err);
+        };
+        queueMicrotask(() => {
+            try {
+                if (closed) return;
+                if (fd === null) {
+                    fd = openSync(pathValue, rs.flags, rs.mode);
+                    rs.fd = fd;
+                }
+                opened = true;
+                rs.pending = false;
+                rs.emit('open', fd);
+                rs.emit('ready');
+                rs._read(highWaterMark);
+            } catch (err) {
+                rs.pending = false;
+                rs.destroy(err);
+            }
+        });
+        return rs;
+    }
+
+    function createWriteStream(filepath, options) {
+        const opts = { ...(options || {}) };
+        const autoClose = opts.autoClose !== false;
+        const pathValue = opts.fd === undefined ? _pathToString(filepath) : filepath;
+        let fd = opts.fd === undefined ? null : opts.fd;
+        let opened = fd !== null;
+        let closed = false;
+        const pendingWrites = [];
+        const pendingFinals = [];
+        function doWrite(chunk, cb) {
+            try {
+                const bytes = _toFsBytes(chunk, opts.encoding || opts.defaultEncoding || 'utf8', 'chunk');
+                const n = os.write(fd, bytes.buffer, bytes.byteOffset, bytes.byteLength);
+                if (n < 0) _throwErrno(-n, 'write', typeof pathValue === 'string' ? pathValue : undefined);
+                ws.bytesWritten += n;
+                cb();
+            } catch (err) {
+                cb(err);
+            }
+        }
+        function flushPending() {
+            while (pendingWrites.length > 0) {
+                const { chunk, cb } = pendingWrites.shift();
+                doWrite(chunk, cb);
+            }
+            while (pendingFinals.length > 0) {
+                pendingFinals.shift()();
+            }
+        }
+        function closeFd() {
+            if (closed) return;
+            closed = true;
+            if (fd !== null && opts.fd === undefined) {
+                os.close(fd);
+                fd = null;
+                ws.fd = null;
+            }
+            queueMicrotask(() => ws.emit('close'));
+        }
+        const ws = new stream.Writable({
+            ...opts,
+            write(chunk, _encoding, cb) {
+                if (!opened) {
+                    pendingWrites.push({ chunk, cb });
+                    return;
+                }
+                doWrite(chunk, cb);
+            },
+            final(cb) {
+                const finish = () => {
+                    if (autoClose) closeFd();
+                    cb();
+                };
+                if (!opened) pendingFinals.push(finish);
+                else finish();
+            },
+        });
+        ws.path = pathValue;
+        ws.fd = fd;
+        ws.flags = opts.flags || 'w';
+        ws.mode = opts.mode || 0o666;
+        ws.autoClose = autoClose;
+        ws.bytesWritten = 0;
+        ws.pending = !opened;
+        ws.close = function(cb) {
+            if (typeof cb === 'function') ws.once('close', cb);
+            closeFd();
+        };
+        queueMicrotask(() => {
+            try {
+                if (closed) return;
+                if (fd === null) {
+                    fd = openSync(pathValue, ws.flags, ws.mode);
+                    ws.fd = fd;
+                }
+                opened = true;
+                ws.pending = false;
+                ws.emit('open', fd);
+                ws.emit('ready');
+                flushPending();
+            } catch (err) {
+                ws.pending = false;
+                ws.destroy(err);
+            }
+        });
+        return ws;
+    }
+
+    function ReadStream(filepath, options) {
+        return createReadStream(filepath, options);
+    }
+
+    function WriteStream(filepath, options) {
+        return createWriteStream(filepath, options);
+    }
+
+    function watchFile(filepath, options, listener) {
+        if (typeof options === 'function') {
+            listener = options;
+            options = undefined;
+        }
+        const p = _pathToString(filepath);
+        let watcher = statWatchers.get(p);
+        if (!watcher || watcher.closed) {
+            watcher = new StatWatcher(p);
+            statWatchers.set(p, watcher);
+        }
+        if (typeof listener === 'function') watcher.on('change', listener);
+        void options;
+        return watcher;
+    }
+
+    function unwatchFile(filepath, listener) {
+        const p = _pathToStringNoThrow(filepath);
+        if (p === null) return;
+        const watcher = statWatchers.get(p);
+        if (!watcher) return;
+        if (typeof listener === 'function') watcher.removeListener('change', listener);
+        else watcher.removeAllListeners('change');
+        if (watcher.listenerCount('change') === 0) {
+            statWatchers.delete(p);
+            watcher.stop();
+        }
+    }
+
     const mod = {
         constants,
         Stats,
         Dirent,
+        FSWatcher,
+        StatWatcher,
         existsSync,
         statSync,
         lstatSync,
@@ -3023,11 +3435,13 @@ const fs = (() => {
         unlinkSync,
         renameSync,
         copyFileSync,
+        linkSync,
         symlinkSync,
         readlinkSync,
         realpathSync,
         chmodSync,
         chownSync,
+        lchownSync,
         utimesSync,
         truncateSync,
         accessSync,
@@ -3063,17 +3477,20 @@ const fs = (() => {
         unlink: _callbackify(unlinkSync),
         rename: _callbackify(renameSync),
         copyFile: _callbackify(copyFileSync),
+        link,
         symlink: _callbackify(symlinkSync),
         readlink: _callbackify(readlinkSync),
         realpath: _callbackify(realpathSync),
         chmod: _callbackify(chmodSync),
         chown: _callbackify(chownSync),
+        lchown,
         utimes: _callbackify(utimesSync),
         stat: _callbackify(statSync),
         lstat: _callbackify(lstatSync),
         access: _callbackify(accessSync),
         rm: _callbackify(rmSync),
         exists(filepath, cb) {
+            _validateCallback(cb);
             cb(existsSync(filepath));
         },
         open: _callbackify(openSync),
@@ -3094,77 +3511,39 @@ const fs = (() => {
             const cb = rest.pop();
             try {
                 const n = writeSync(fd, data, ...rest);
-                queueMicrotask(() => cb(null, n));
+                queueMicrotask(() => cb(null, n, data));
             } catch (err) {
                 queueMicrotask(() => cb(err));
             }
         },
 
-        createReadStream(filepath, options) {
-            const data = readFileSync(filepath, options);
-            // Return a minimal readable stream
-            return {
-                data,
-                on(ev, fn) {
-                    if (ev === 'data') queueMicrotask(() => fn(data));
-                    if (ev === 'end') queueMicrotask(() => fn());
-                    return this;
-                },
-                pipe(dest) {
-                    dest.write(data);
-                    dest.end();
-                    return dest;
-                },
-            };
-        },
-
-        createWriteStream(filepath, options) {
-            const chunks = [];
-            return {
-                writable: true,
-                write(data, encoding, cb) {
-                    chunks.push(typeof data === 'string' ? Buffer.from(data, encoding) : data);
-                    if (typeof cb === 'function') cb();
-                    return true;
-                },
-                end(data, encoding, cb) {
-                    if (data) this.write(data, encoding);
-                    writeFileSync(filepath, Buffer.concat(chunks));
-                    if (typeof cb === 'function') cb();
-                },
-                on() { return this; },
-            };
-        },
+        createReadStream,
+        ReadStream,
+        createWriteStream,
+        WriteStream,
 
         // No filesystem-watch primitive in our wasm sysroot — return an
         // inert FSWatcher so callers can listen() and close() without
         // exploding. CLI tools that call fs.watch for live updates simply
         // won't get them, which is fine for one-shot invocations.
         watch(_path, _options, listener) {
-            const w = {
-                on() { return this; },
-                once() { return this; },
-                addListener() { return this; },
-                removeListener() { return this; },
-                off() { return this; },
-                close() {},
-                ref() { return this; },
-                unref() { return this; },
-            };
             if (typeof _options === 'function') listener = _options;
+            const w = new FSWatcher();
+            if (typeof listener === 'function') w.on('change', listener);
             // listener is never called, since we don't observe changes.
             return w;
         },
-        watchFile() {},
-        unwatchFile() {},
+        watchFile,
+        unwatchFile,
     };
 
     // fs.promises
     mod.promises = {};
     for (const key of Object.keys(mod)) {
         if (key.endsWith('Sync') || key === 'constants' || key === 'Stats' ||
-            key === 'Dirent' || key === 'promises' || key === 'createReadStream' ||
-            key === 'createWriteStream') continue;
+            key === 'Dirent' || key === 'FSWatcher' || key === 'StatWatcher' ||
+            key === 'promises' || key === 'createReadStream' || key === 'ReadStream' ||
+            key === 'createWriteStream' || key === 'WriteStream') continue;
         const syncKey = key + 'Sync';
         if (mod[syncKey]) {
             mod.promises[key] = async function(...args) {
@@ -3184,17 +3563,20 @@ const fs = (() => {
     mod.promises.rmdir = async (p, o) => rmdirSync(p, o);
     mod.promises.rename = async (o, n) => renameSync(o, n);
     mod.promises.copyFile = async (s, d, m) => copyFileSync(s, d, m);
+    mod.promises.link = async (s, d) => linkSync(s, d);
     mod.promises.symlink = async (t, p) => symlinkSync(t, p);
     mod.promises.readlink = async (p) => readlinkSync(p);
     mod.promises.realpath = async (p) => realpathSync(p);
     mod.promises.chmod = async (p, m) => chmodSync(p, m);
     mod.promises.chown = async (p, u, g) => chownSync(p, u, g);
+    mod.promises.lchown = async (p, u, g) => lchownSync(p, u, g);
     mod.promises.utimes = async (p, a, m) => utimesSync(p, a, m);
     mod.promises.fstat = async (fd) => fstatSync(fd);
     mod.promises.fchmod = async (fd, m) => fchmodSync(fd, m);
     mod.promises.fchown = async (fd, u, g) => fchownSync(fd, u, g);
     mod.promises.futimes = async (fd, a, m) => futimesSync(fd, a, m);
     mod.promises.open = async (p, flags, mode) => new FileHandle(openSync(p, flags, mode), _pathToString(p));
+    mod.promises.constants = constants;
 
     return mod;
 })();
@@ -10894,6 +11276,13 @@ function _resolveFile(id, basedir) {
 // keyed by absolute resolved path. Without this, circular requires loop
 // forever (each module gets its own cache and re-evaluates the cycle).
 const _moduleCache = {};
+Module._cache = _moduleCache;
+
+function _throwUnknownBuiltinModule(id) {
+    const err = new Error(`No such built-in module: ${id}`);
+    err.code = 'ERR_UNKNOWN_BUILTIN_MODULE';
+    throw err;
+}
 
 function _stripShebang(source) {
     if (source && source.charCodeAt(0) === 35 && source.charCodeAt(1) === 33) {
@@ -10909,9 +11298,14 @@ function _makeRequire(filename) {
 
     function require(id) {
         // Built-in modules (with or without 'node:' prefix)
+        const nodePrefixed = id.startsWith('node:');
         let name = id;
-        if (name.startsWith('node:')) name = name.slice(5);
+        if (nodePrefixed) name = name.slice(5);
+        if (nodePrefixed && (name.startsWith('internal/') || _builtinModules[name] === undefined)) {
+            _throwUnknownBuiltinModule(id);
+        }
         if (_builtinModules[name] !== undefined) {
+            if (!nodePrefixed && _moduleCache[name]) return _moduleCache[name].exports;
             return _builtinModules[name];
         }
 
@@ -10980,8 +11374,12 @@ function _makeRequire(filename) {
     }
 
     require.resolve = function(id) {
+        const nodePrefixed = id.startsWith('node:');
         let name = id;
-        if (name.startsWith('node:')) name = name.slice(5);
+        if (nodePrefixed) name = name.slice(5);
+        if (nodePrefixed && (name.startsWith('internal/') || _builtinModules[name] === undefined)) {
+            _throwUnknownBuiltinModule(id);
+        }
         if (_builtinModules[name] !== undefined) return name;
         const resolvedPath = _resolveFile(id, basedir);
         if (!resolvedPath) {
