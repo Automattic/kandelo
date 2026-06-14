@@ -62,6 +62,18 @@
       "reason": "Legacy url.parse query handling."
     },
     {
+      "path": "test/parallel/test-repl-array-prototype-tempering.js",
+      "area": "repl",
+      "expected": "SKIP",
+      "reason": "Requires streaming child_process stdio connected to a separately executing `node --interactive` REPL child. Kandelo's Node compatibility layer currently supports buffered popen-style child output, not interactive child stdin/stdout."
+    },
+    {
+      "path": "test/parallel/test-repl-unsafe-array-iteration.js",
+      "area": "repl",
+      "expected": "SKIP",
+      "reason": "Requires streaming child_process stdio connected to a separately executing `node --interactive` REPL child. Kandelo's Node compatibility layer currently supports buffered popen-style child output, not interactive child stdin/stdout."
+    },
+    {
       "path": "test/parallel/test-util-inspect.js",
       "area": "util",
       "expected": "SKIP",

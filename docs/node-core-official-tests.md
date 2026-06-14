@@ -34,7 +34,9 @@ Useful controls:
   process memory.
 - `--full-suite` discovers every upstream `test/parallel/test-*.js` file from
   the pinned source checkout. This is the default unless `--smoke` or
-  `--manifest-only` is used.
+  `--manifest-only` is used. Discovered tests default to `PASS`; explicit
+  manifest entries can override a discovered test after triage to record a
+  support boundary such as `SKIP` or `XFAIL`.
 - `--area NAME` and `--test PATH` filter the selected full suite or manifest.
 - `--smoke` and `--manifest-only` use the checked-in manifest rather than the
   generated full-suite list.
@@ -58,11 +60,17 @@ default, or under `--results-dir`. Each run preserves `summary.txt`,
 `stdout/*.log` and `stderr/*.log`; browser runs also preserve
 `browser-console.log`.
 
-Full-suite mode has no pre-run exclusions: every discovered upstream parallel
-test is expected to pass and any unsupported native, V8, inspector, platform,
-or environment assumption is recorded as a concrete failure or timeout artifact.
-Principled support-boundary exclusions belong in explicit follow-up manifests
-only after the complete suite has been attempted and triaged.
+Full-suite mode discovers every upstream parallel test. Every discovered test
+is expected to pass unless it has an explicit manifest override added after
+triage. Unsupported native, V8, inspector, platform, or environment assumptions
+should first be recorded as concrete failure or timeout artifacts, then moved
+to a manifest `SKIP` or `XFAIL` only when the support boundary is understood
+and documented in the manifest reason.
+
+The current manifest records the two `node --interactive` REPL child-process
+tests as `SKIP`: they require streaming `child_process` stdio connected to a
+separately executing interactive REPL child, while Kandelo's Node compatibility
+layer currently implements buffered popen-style child output.
 
 ## SpiderMonkey VM Boundary
 
