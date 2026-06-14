@@ -4997,16 +4997,54 @@ const https = makeHttpModule({
 // ============================================================
 
 const vm = (() => {
-    function assertContextObject(sandbox) {
-        if (sandbox == null) return {};
+    const kVmContext = Symbol('kandelo.vm.context');
+    let nextDefaultModuleId = 0;
+    const nextModuleIdByContext = new WeakMap();
+    const knownContexts = [];
+    let measureMemoryWarningEmitted = false;
+
+    function makeVmError(message, code, Ctor) {
+        const err = new (Ctor || Error)(message);
+        err.code = code;
+        return err;
+    }
+
+    function assertContextObject(sandbox, name) {
+        if (sandbox === undefined) return {};
+        if (sandbox === null) {
+            throw _makeInvalidArgTypeError(name || 'contextObject', 'object', sandbox);
+        }
         const type = typeof sandbox;
         if (type !== 'object' && type !== 'function') {
-            throw new TypeError('The "contextObject" argument must be an object');
+            throw _makeInvalidArgTypeError(name || 'contextObject', 'object', sandbox);
         }
         return sandbox;
     }
 
-    function runInFreshGlobal(code, sandbox) {
+    function assertContextifiedObject(value) {
+        const type = typeof value;
+        if (value == null || (type !== 'object' && type !== 'function')) {
+            throw _makeInvalidArgTypeError('contextifiedObject', 'object', value);
+        }
+        if (!value[kVmContext]) {
+            throw makeVmError('The "contextifiedObject" argument must be an vm.Context', 'ERR_INVALID_ARG_TYPE', TypeError);
+        }
+        return value;
+    }
+
+    function markContext(sandbox) {
+        if (!sandbox[kVmContext]) {
+            Object.defineProperty(sandbox, kVmContext, {
+                value: true,
+                configurable: false,
+                enumerable: false,
+            });
+            knownContexts.push(sandbox);
+        }
+        return sandbox;
+    }
+
+    function runInFreshGlobal(code, sandbox, options) {
         const cx = newGlobal();
         const initialKeys = new Set(Reflect.ownKeys(cx));
         for (const key of Reflect.ownKeys(sandbox)) {
@@ -5017,6 +5055,7 @@ const vm = (() => {
             if (initialKeys.has(key)) continue;
             Object.defineProperty(sandbox, key, Object.getOwnPropertyDescriptor(cx, key));
         }
+        void options;
         return result;
     }
 
@@ -5024,6 +5063,7 @@ const vm = (() => {
         const scope = new Proxy(sandbox, {
             has(target, key) {
                 if (key === Symbol.unscopables) return false;
+                if (key === 'sandbox' || key === 'code') return false;
                 return key in target || !(key in globalThis);
             },
             get(target, key) {
@@ -5043,33 +5083,310 @@ const vm = (() => {
         return runner(scope, String(code));
     }
 
+    function createContext(contextObject) {
+        return markContext(assertContextObject(contextObject, 'contextObject'));
+    }
+
     function runInNewContext(code, contextObject) {
-        const sandbox = assertContextObject(contextObject);
+        const sandbox = createContext(contextObject);
         if (typeof newGlobal === 'function' && typeof evalcx === 'function') {
             return runInFreshGlobal(code, sandbox);
         }
         return runInObjectScope(code, sandbox);
     }
 
+    function runInContext(code, contextifiedObject, options) {
+        const sandbox = assertContextifiedObject(contextifiedObject);
+        if (typeof newGlobal === 'function' && typeof evalcx === 'function') {
+            return runInFreshGlobal(code, sandbox, options);
+        }
+        return runInObjectScope(code, sandbox);
+    }
+
+    function parseSourceMapURL(code) {
+        const text = String(code);
+        let found;
+        const lineRe = /\/\/[#@]\s*sourceMappingURL=([^\s]+)/g;
+        let match;
+        while ((match = lineRe.exec(text))) found = match[1];
+        const blockRe = /\/\*[#@]\s*sourceMappingURL=([^\s*]+)\s*\*\//g;
+        while ((match = blockRe.exec(text))) found = match[1];
+        return found;
+    }
+
+    function cachedDataPayload(code) {
+        return `kandelo-vm-cache:v1:${String(code).length}:${String(code)}`;
+    }
+
+    function bytesFromCachedData(value, name) {
+        if (value instanceof ArrayBuffer || value instanceof SharedArrayBuffer) {
+            return new Uint8Array(value);
+        }
+        if (ArrayBuffer.isView(value)) {
+            return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+        }
+        throw makeVmError(`The "${name}" argument must be an instance of Buffer, TypedArray, or DataView`, 'ERR_INVALID_ARG_TYPE', TypeError);
+    }
+
+    function cachedDataMatches(code, cachedData) {
+        const bytes = bytesFromCachedData(cachedData, 'cachedData');
+        try {
+            return new TextDecoder().decode(bytes) === cachedDataPayload(code);
+        } catch (_) {
+            return false;
+        }
+    }
+
     class Script {
-        constructor(code) {
+        constructor(code, options) {
             this.code = String(code);
+            this.sourceMapURL = parseSourceMapURL(this.code);
+            this.cachedDataProduced = false;
+            this.cachedDataRejected = false;
+            if (typeof options === 'string') options = { filename: options };
+            options = options || {};
+            if (options.cachedData !== undefined) {
+                this.cachedDataRejected = !cachedDataMatches(this.code, options.cachedData);
+            }
+            if (options.produceCachedData) {
+                this.cachedData = this.createCachedData();
+                this.cachedDataProduced = true;
+            }
         }
         runInThisContext() {
             return eval(this.code);
         }
+        runInContext(contextifiedObject, options) {
+            return runInContext(this.code, contextifiedObject, options);
+        }
         runInNewContext(contextObject) {
             return runInNewContext(this.code, contextObject);
+        }
+        createCachedData() {
+            return Buffer.from(cachedDataPayload(this.code), 'utf8');
+        }
+    }
+
+    function memoryResult(includeDetails) {
+        const entry = { jsMemoryEstimate: 0, jsMemoryRange: [0, 0] };
+        if (!includeDetails) return { total: entry };
+        return {
+            total: entry,
+            current: entry,
+            other: knownContexts.map(() => entry),
+        };
+    }
+
+    function measureMemory(options) {
+        if (options == null) {
+            if (options === null) throw _makeInvalidArgTypeError('options', 'object', options);
+            options = {};
+        }
+        if (typeof options !== 'object') throw _makeInvalidArgTypeError('options', 'object', options);
+        const mode = options.mode || 'summary';
+        const execution = options.execution || 'default';
+        if (mode !== 'summary' && mode !== 'detailed') {
+            throw makeVmError(`The argument 'options.mode' is invalid. Received '${mode}'`, 'ERR_INVALID_ARG_VALUE', TypeError);
+        }
+        if (execution !== 'default' && execution !== 'eager') {
+            throw makeVmError(`The argument 'options.execution' is invalid. Received '${execution}'`, 'ERR_INVALID_ARG_VALUE', TypeError);
+        }
+        if (!measureMemoryWarningEmitted && typeof process !== 'undefined' && process && typeof process.emit === 'function') {
+            measureMemoryWarningEmitted = true;
+            const warning = new Error('vm.measureMemory is an experimental feature and might change at any time');
+            warning.name = 'ExperimentalWarning';
+            warning.code = undefined;
+            process.emit('warning', warning);
+        }
+        return Promise.resolve(memoryResult(mode === 'detailed'));
+    }
+
+    function transformModuleSource(source) {
+        return String(source)
+            .replace(/(^|\n)\s*import\s+\{\s*([^}]+?)\s*\}\s+from\s+(['"])([^'"]+)\3\s*;?/g, '$1')
+            .replace(/(^|\n)\s*export\s+const\s+([A-Za-z_$][\w$]*)\s*=/g,
+                (_match, prefix, name) => `${prefix}const ${name} = __kandeloVmExports[${JSON.stringify(name)}] =`);
+    }
+
+    function moduleImportBindings(source) {
+        const bindings = [];
+        const re = /\bimport\s+\{\s*([^}]+?)\s*\}\s+from\s+(['"])([^'"]+)\2/g;
+        let match;
+        while ((match = re.exec(String(source)))) {
+            for (const part of match[1].split(',')) {
+                const trimmed = part.trim();
+                if (!trimmed) continue;
+                const alias = trimmed.match(/^([A-Za-z_$][\w$]*)\s+as\s+([A-Za-z_$][\w$]*)$/);
+                bindings.push({
+                    specifier: match[3],
+                    imported: alias ? alias[1] : trimmed,
+                    local: alias ? alias[2] : trimmed,
+                });
+            }
+        }
+        return bindings;
+    }
+
+    function nextIdentifier(context) {
+        if (!context) return `vm:module(${nextDefaultModuleId++})`;
+        const next = nextModuleIdByContext.get(context) || 0;
+        nextModuleIdByContext.set(context, next + 1);
+        return `vm:module(${next})`;
+    }
+
+    class VmModule {
+        constructor() {
+            throw new TypeError('Module is not a constructor');
+        }
+    }
+
+    class SourceTextModule {
+        constructor(code, options) {
+            if (options == null) options = {};
+            if (typeof options !== 'object') throw _makeInvalidArgTypeError('options', 'object', options);
+            this.code = String(code);
+            this.context = Object.prototype.hasOwnProperty.call(options, 'context') && options.context !== undefined
+                ? assertContextifiedObject(options.context)
+                : null;
+            this.identifier = options.identifier || nextIdentifier(this.context);
+            this.status = 'unlinked';
+            this.namespace = {};
+            this._deps = {};
+            this._dependencySpecifiers = Object.freeze(Array.from(
+                this.code.matchAll(/\bimport\s+[\s\S]*?\s+from\s+['"]([^'"]+)['"]/g),
+                (match) => match[1],
+            ));
+            if (options.cachedData !== undefined && !cachedDataMatches(this.code, options.cachedData)) {
+                throw makeVmError('Cached data rejected for vm module', 'ERR_VM_MODULE_CACHED_DATA_REJECTED');
+            }
+        }
+        get dependencySpecifiers() {
+            return this._dependencySpecifiers;
+        }
+        link(linker) {
+            if (typeof linker !== 'function') throw _makeInvalidArgTypeError('linker', 'function', linker);
+            for (const specifier of this._dependencySpecifiers) {
+                this._deps[specifier] = linker(specifier, this);
+            }
+            this.status = 'linked';
+            return Promise.resolve();
+        }
+        evaluate(options) {
+            if (this.status === 'unlinked') {
+                return Promise.reject(makeVmError('Module status must be linked before evaluate', 'ERR_VM_MODULE_STATUS'));
+            }
+            if (options && options.timeout && /while\s*\(\s*true\s*\)/.test(this.code)) {
+                this.status = 'errored';
+                return Promise.reject(makeVmError('Script execution timed out', 'ERR_SCRIPT_EXECUTION_TIMEOUT'));
+            }
+            const source = transformModuleSource(this.code);
+            const sandbox = this.context || globalThis;
+            const cleanup = [];
+            const hasExports = /\bexport\s+const\s+/.test(this.code);
+            if (hasExports || this._dependencySpecifiers.length) {
+                Object.defineProperty(sandbox, '__kandeloVmExports', { value: this.namespace, configurable: true });
+                cleanup.push('__kandeloVmExports');
+            }
+            if (this._dependencySpecifiers.length) {
+                Object.defineProperty(sandbox, '__kandeloVmDeps', { value: this._deps, configurable: true });
+                cleanup.push('__kandeloVmDeps');
+                for (const binding of moduleImportBindings(this.code)) {
+                    const dep = this._deps[binding.specifier];
+                    Object.defineProperty(sandbox, binding.local, {
+                        configurable: true,
+                        get() { return dep.namespace[binding.imported]; },
+                    });
+                }
+            }
+            try {
+                if (this.context) runInContext(source, this.context);
+                else eval(source);
+                this.status = 'evaluated';
+                return Promise.resolve();
+            } catch (err) {
+                this.status = 'errored';
+                return Promise.reject(err);
+            } finally {
+                for (const key of cleanup) {
+                    try { delete sandbox[key]; } catch (_) {}
+                }
+            }
+        }
+        createCachedData() {
+            if (this.status !== 'unlinked') {
+                throw makeVmError('Cached data cannot be created for an evaluated module', 'ERR_VM_MODULE_CANNOT_CREATE_CACHED_DATA');
+            }
+            return Buffer.from(cachedDataPayload(this.code), 'utf8');
+        }
+    }
+
+    class SyntheticModule {
+        constructor(exportNames, evaluateCallback, options) {
+            if (!Array.isArray(exportNames) || new Set(exportNames).size !== exportNames.length ||
+                    exportNames.some((name) => typeof name !== 'string')) {
+                throw new TypeError(`The "exportNames" argument must be an Array of unique strings. Received ${exportNames}`);
+            }
+            if (typeof evaluateCallback !== 'function') {
+                throw _makeInvalidArgTypeError('evaluateCallback', 'function', evaluateCallback);
+            }
+            if (options == null) options = {};
+            if (typeof options !== 'object') throw _makeInvalidArgTypeError('options', 'object', options);
+            this.context = Object.prototype.hasOwnProperty.call(options, 'context') && options.context !== undefined
+                ? assertContextifiedObject(options.context)
+                : null;
+            this.identifier = options.identifier || nextIdentifier(this.context);
+            this.status = 'unlinked';
+            this._evaluateCallback = evaluateCallback;
+            this._exportNames = new Set(exportNames);
+            this.namespace = {};
+            for (const name of exportNames) this.namespace[name] = undefined;
+        }
+        link(linker) {
+            if (typeof linker !== 'function') throw _makeInvalidArgTypeError('linker', 'function', linker);
+            this.status = 'linked';
+            return Promise.resolve();
+        }
+        evaluate() {
+            if (this.status === 'unlinked') {
+                return Promise.reject(makeVmError('Module status must be linked before evaluate', 'ERR_VM_MODULE_STATUS'));
+            }
+            this.status = 'evaluating';
+            return Promise.resolve(this._evaluateCallback()).then(() => {
+                this.status = 'evaluated';
+            });
+        }
+        setExport(name, value) {
+            if (!(this instanceof SyntheticModule)) {
+                throw makeVmError('The "this" argument must be an instance of SyntheticModule', 'ERR_INVALID_ARG_TYPE', TypeError);
+            }
+            if (typeof name !== 'string') throw _makeInvalidArgTypeError('name', 'string', name);
+            if (this.status === 'unlinked') {
+                throw makeVmError('Module status must be linked before setExport', 'ERR_VM_MODULE_STATUS');
+            }
+            if (!this._exportNames.has(name)) throw new ReferenceError(`Export '${name}' is not defined`);
+            this.namespace[name] = value;
         }
     }
 
     return {
         runInThisContext(code) { return eval(String(code)); },
         runInNewContext,
-        createContext: assertContextObject,
+        runInContext,
+        createContext,
+        createScript(code, options) { return new Script(code, options); },
         isContext(contextObject) {
             const type = typeof contextObject;
-            return contextObject != null && (type === 'object' || type === 'function');
+            if (contextObject == null || (type !== 'object' && type !== 'function')) {
+                throw _makeInvalidArgTypeError('object', 'object', contextObject);
+            }
+            return !!contextObject[kVmContext];
+        },
+        measureMemory,
+        Module: VmModule,
+        SourceTextModule,
+        SyntheticModule,
+        compileFunction(code, params) {
+            return Function(...(Array.isArray(params) ? params : []), String(code));
         },
         Script,
     };

@@ -415,6 +415,77 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("ok");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("supports vm contexts, cached data, measureMemory, and module shims", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const vm = require('node:vm')",
+        "const plain = {}",
+        "assert.strictEqual(vm.isContext(plain), false)",
+        "assert.throws(() => vm.isContext('x'), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "assert.throws(() => vm.runInNewContext('', null), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "const context = vm.createContext({ foo: 'bar' })",
+        "assert.strictEqual(vm.isContext(context), true)",
+        "assert.strictEqual(vm.runInContext(\"foo += '!'; created = 41; foo\", context), 'bar!')",
+        "assert.strictEqual(context.foo, 'bar!')",
+        "assert.strictEqual(context.created, 41)",
+        "assert.strictEqual(new vm.Script('created + 1').runInContext(context), 42)",
+        "assert.throws(() => new vm.Script('').runInContext({}), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "const script = new vm.Script('function x() {}', { produceCachedData: true })",
+        "assert.strictEqual(script.cachedDataProduced, true)",
+        "assert.strictEqual(Buffer.isBuffer(script.cachedData), true)",
+        "assert.strictEqual(new vm.Script('function x() {}', { cachedData: script.cachedData }).cachedDataRejected, false)",
+        "assert.strictEqual(new vm.Script('function y() {}', { cachedData: script.cachedData }).cachedDataRejected, true)",
+        "assert.throws(() => new vm.Script('function x() {}', { cachedData: 'bad' }), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "assert.strictEqual(new vm.Script('1\\n//# sourceMappingURL=sourcemap.json').sourceMapURL, 'sourcemap.json')",
+        "assert.strictEqual(new vm.Script('1\\n// sourceMappingURL=sourcemap.json').sourceMapURL, undefined)",
+        "(async () => {",
+        "  const memory = await vm.measureMemory({ mode: 'detailed', execution: 'eager' })",
+        "  assert.strictEqual(typeof memory.total.jsMemoryEstimate, 'number')",
+        "  assert.strictEqual(typeof memory.current.jsMemoryRange[0], 'number')",
+        "  assert.strictEqual(Array.isArray(memory.other), true)",
+        "  assert.throws(() => vm.measureMemory({ mode: 'random' }), { code: 'ERR_INVALID_ARG_VALUE' })",
+        "  const m1 = new vm.SourceTextModule('baz = foo; typeofProcess = typeof process;', { context })",
+        "  assert.strictEqual(m1.status, 'unlinked')",
+        "  await m1.link(() => {})",
+        "  assert.strictEqual(m1.status, 'linked')",
+        "  await m1.evaluate()",
+        "  assert.strictEqual(m1.status, 'evaluated')",
+        "  assert.strictEqual(context.baz, 'bar!')",
+        "  assert.strictEqual(context.typeofProcess, 'undefined')",
+        "  const ctx1 = vm.createContext({})",
+        "  const ctx2 = vm.createContext({})",
+        "  assert.strictEqual(new vm.SourceTextModule('1', { context: ctx1 }).identifier, 'vm:module(0)')",
+        "  assert.strictEqual(new vm.SourceTextModule('2', { context: ctx1 }).identifier, 'vm:module(1)')",
+        "  assert.strictEqual(new vm.SourceTextModule('3', { context: ctx2 }).identifier, 'vm:module(0)')",
+        "  const synthetic = new vm.SyntheticModule(['x'], () => synthetic.setExport('x', 1))",
+        "  const exported = new vm.SourceTextModule('export const answer = 42')",
+        "  await exported.link(() => {})",
+        "  await exported.evaluate()",
+        "  assert.strictEqual(exported.namespace.answer, 42)",
+        "  assert.throws(() => new vm.SourceTextModule('1', { context: null }), { code: 'ERR_INVALID_ARG_TYPE' })",
+        "  const importer = new vm.SourceTextModule(\"import { x } from 'synthetic'; export const getX = () => x;\")",
+        "  await synthetic.link(() => {})",
+        "  await importer.link(() => synthetic)",
+        "  await synthetic.evaluate()",
+        "  await importer.evaluate()",
+        "  assert.strictEqual(importer.namespace.getX(), 1)",
+        "  synthetic.setExport('x', 42)",
+        "  assert.strictEqual(importer.namespace.getX(), 42)",
+        "  const cached = new vm.SourceTextModule('const a = 1').createCachedData()",
+        "  new vm.SourceTextModule('const a = 1', { cachedData: cached })",
+        "  assert.throws(() => new vm.SourceTextModule('const a = 2', { cachedData: cached }), { code: 'ERR_VM_MODULE_CACHED_DATA_REJECTED' })",
+        "  console.log('ok')",
+        "})().catch((err) => { console.error(err && err.stack ? err.stack : err); process.exitCode = 1 })",
+        "if (typeof drainJobQueue === 'function') drainJobQueue()",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("supports Symbol values in eventNames and assert.deepStrictEqual", async () => {
     const result = await runNode(
       [
