@@ -176,6 +176,65 @@ if (qs.unescapeBuffer("a+b", true).toString() !== "a b" ||
     qs.unescapeBuffer("a%20").toString() !== "a ") {
   failures.push("querystring.unescapeBuffer");
 }
+const v8 = require("v8");
+const heapStats = v8.getHeapStatistics();
+if (typeof heapStats.heap_size_limit !== "number" ||
+    typeof heapStats.used_heap_size !== "number" ||
+    typeof heapStats.external_memory !== "number") {
+  failures.push("v8.getHeapStatistics shape");
+}
+const codeStats = v8.getHeapCodeStatistics();
+if (typeof codeStats.code_and_metadata_size !== "number" ||
+    typeof codeStats.bytecode_and_metadata_size !== "number") {
+  failures.push("v8.getHeapCodeStatistics shape");
+}
+if (!Array.isArray(v8.getHeapSpaceStatistics()) ||
+    !v8.getHeapSpaceStatistics().every((entry) => typeof entry.space_name === "string")) {
+  failures.push("v8.getHeapSpaceStatistics shape");
+}
+const versionTag1 = v8.cachedDataVersionTag();
+v8.setFlagsFromString("--expose-gc");
+const versionTag2 = v8.cachedDataVersionTag();
+if (typeof versionTag1 !== "number" || typeof versionTag2 !== "number" || versionTag1 === versionTag2) {
+  failures.push("v8.cachedDataVersionTag/setFlagsFromString compatibility");
+}
+const heapSnapshot = v8.getHeapSnapshot();
+if (!heapSnapshot || typeof heapSnapshot.on !== "function") {
+  failures.push("v8.getHeapSnapshot stream shape");
+}
+if (v8.startupSnapshot.isBuildingSnapshot() !== false) {
+  failures.push("v8.startupSnapshot.isBuildingSnapshot");
+}
+for (const [name, fn] of [
+  ["addSerializeCallback", () => v8.startupSnapshot.addSerializeCallback(() => {})],
+  ["addDeserializeCallback", () => v8.startupSnapshot.addDeserializeCallback(() => {})],
+  ["setDeserializeMainFunction", () => v8.startupSnapshot.setDeserializeMainFunction(() => {})],
+]) {
+  try {
+    fn();
+    failures.push("v8.startupSnapshot." + name + " did not throw");
+  } catch (error) {
+    if (!error || error.code !== "ERR_NOT_BUILDING_SNAPSHOT") {
+      failures.push("v8.startupSnapshot." + name + ": " + (error && error.code || error));
+    }
+  }
+}
+for (const [name, fn] of [
+  ["serialize", () => v8.serialize({ value: 1 })],
+  ["deserialize", () => v8.deserialize(Buffer.from([]))],
+  ["queryObjects", () => v8.queryObjects(function Probe() {})],
+  ["GCProfiler.start", () => new v8.GCProfiler().start()],
+  ["writeHeapSnapshot", () => v8.writeHeapSnapshot()],
+]) {
+  try {
+    fn();
+    failures.push("v8." + name + " did not report support boundary");
+  } catch (error) {
+    if (!error || error.code !== "ERR_KANDELO_UNSUPPORTED_NODE_API") {
+      failures.push("v8." + name + ": " + (error && error.code || error));
+    }
+  }
+}
 if (failures.length) throw new Error(failures.join("\\n"));
 `;
     const child = spawnSync(process.execPath, ["-"], {
