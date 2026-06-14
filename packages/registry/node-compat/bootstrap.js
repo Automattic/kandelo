@@ -109,7 +109,10 @@ function _normalizeTextDecoderEncoding(label) {
 
 function _u8(input) {
     if (input === undefined) return new Uint8Array(0);
-    if (input instanceof Uint8Array) return input;
+    if (input instanceof Uint8Array) {
+        if (_isCompatDetachedArrayBuffer(input.buffer)) return new Uint8Array(0);
+        return input;
+    }
     if (input instanceof ArrayBuffer ||
         (typeof SharedArrayBuffer !== 'undefined' && input instanceof SharedArrayBuffer)) {
         if (_isCompatDetachedArrayBuffer(input)) return new Uint8Array(0);
@@ -7100,7 +7103,7 @@ function _messageTransferList(transferList) {
     if (transferList === null || typeof transferList[Symbol.iterator] !== 'function') {
         throw _makeInvalidArgTypeError('transferList', 'iterable', transferList);
     }
-    return transferList;
+    return Array.from(transferList);
 }
 
 function _messageDataCloneError(message) {
