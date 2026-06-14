@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
+import { NodePlatformIO } from "../../../../host/src/platform/node";
 import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -391,6 +392,119 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe("node:5");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("matches Node assert helper semantics used by core tests", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "assert.match('MODULE_NOT_FOUND: Cannot find module', /Cannot find module/)",
+        "assert.throws(() => { throw Object.assign(new TypeError('bad'), { code: 'ERR_BAD' }) }, { name: 'TypeError', code: 'ERR_BAD', message: /bad/ })",
+        "assert.throws(() => assert.throws(() => {}, /missing/), { code: 'ERR_ASSERTION', message: 'Missing expected exception.' })",
+        "try { assert.throws(() => {}) } catch (e) { assert.strictEqual(e.stack.includes('throws'), false) }",
+        "assert.throws(() => assert.doesNotThrow(() => { throw Object.assign(new Error('bad'), { code: 'ERR_BAD' }) }, { code: 'ERR_BAD' }), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' })",
+        "const arr = new Uint8Array([1, 2, 3])",
+        "const buf = Buffer.from([1, 2, 3])",
+        "assert.throws(() => assert.deepStrictEqual(arr, buf), { code: 'ERR_ASSERTION', operator: 'deepStrictEqual' })",
+        "assert.deepEqual(arr, buf)",
+        "const original = new Error('test error')",
+        "assert.throws(() => assert.ifError(original), { code: 'ERR_ASSERTION', message: 'ifError got unwanted exception: test error', actual: original, expected: null, operator: 'ifError' })",
+        "const tracker = new assert.CallTracker()",
+        "function add(a, b, c = 0) { return a + b + c }",
+        "add.customProperty = 42",
+        "const tracked = tracker.calls(add, 2)",
+        "assert.strictEqual(tracked.length, 2)",
+        "assert.strictEqual(tracked.customProperty, 42)",
+        "assert.strictEqual(tracked(1, 2, 3), 6)",
+        "tracked.call({ label: 'ctx' }, 4, 5)",
+        "const calls = tracker.getCalls(tracked)",
+        "assert.deepStrictEqual(calls[0].arguments, [1, 2, 3])",
+        "assert.deepStrictEqual(calls[1].thisArg, { label: 'ctx' })",
+        "assert.throws(() => calls.push(1), { name: 'TypeError' })",
+        "function noLength(a, b) { return a + b }",
+        "delete noLength.length",
+        "const noLengthTracked = tracker.calls(noLength, 1)",
+        "assert.strictEqual(Object.hasOwn(noLengthTracked, 'length'), false)",
+        "assert.strictEqual(noLengthTracked(2, 3), 5)",
+        "const arrayIteratorPrototype = Reflect.getPrototypeOf(Array.prototype.values())",
+        "const originalArrayIteratorNext = arrayIteratorPrototype.next",
+        "arrayIteratorPrototype.next = () => { throw new Error('array iterator used') }",
+        "Object.prototype.get = () => { throw new Error('prototype getter used') }",
+        "try {",
+        "  const marker = Symbol('marker')",
+        "  function iteratorSafe(a, b, c = 2) { return a + b + c }",
+        "  iteratorSafe.customProperty = marker",
+        "  Object.defineProperty(iteratorSafe, 'length', { get() { throw new Error('length getter used') } })",
+        "  const iteratorTracked = tracker.calls(iteratorSafe, 1)",
+        "  assert.strictEqual(Object.hasOwn(iteratorTracked, 'length'), true)",
+        "  assert.strictEqual(iteratorTracked.customProperty, marker)",
+        "  assert.strictEqual(iteratorTracked(1, 2, 3), 6)",
+        "} finally {",
+        "  arrayIteratorPrototype.next = originalArrayIteratorNext",
+        "  delete Object.prototype.get",
+        "}",
+        "tracker.verify()",
+        "const promises = [",
+        "  assert.rejects(Promise.reject(Object.assign(new Error('nope'), { code: 'E_NOPE' })), { code: 'E_NOPE', message: /nope/ }),",
+        "  assert.doesNotReject(Promise.resolve('ok')),",
+        "  assert.rejects(assert.doesNotReject(Promise.reject(Object.assign(new Error('bad'), { code: 'ERR_BAD' })), { code: 'ERR_BAD' }), { code: 'ERR_INVALID_ARG_TYPE', name: 'TypeError' }),",
+        "  assert.rejects(assert.rejects(Promise.resolve(), () => true), { code: 'ERR_ASSERTION', operator: 'rejects' })",
+        "]",
+        "const syncThrown = new Error('sync thrown')",
+        "promises.push(assert.rejects(() => { throw syncThrown }, {}).then(() => { throw new Error('expected sync throw') }, (err) => assert.strictEqual(err, syncThrown)))",
+        "promises.push(assert.doesNotReject(() => { throw syncThrown }, () => { throw new Error('expected validator not called') }).then(() => { throw new Error('expected sync throw') }, (err) => assert.strictEqual(err, syncThrown)))",
+        "let done = false",
+        "Promise.all(promises).then(() => { done = true }, (err) => { console.error(err && err.stack || err); process.exitCode = 1; done = true })",
+        "let spins = 0",
+        "while (!done && typeof drainJobQueue === 'function' && spins++ < 1000) drainJobQueue()",
+        "assert.strictEqual(done, true)",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("drains promise jobs before main script exit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-node-drain-"));
+    const scriptPath = join(root, "drain.js");
+    writeFileSync(
+      scriptPath,
+      [
+        "let count = 0",
+        "Promise.resolve().then(() => {",
+        "  count++",
+        "  return Promise.resolve().then(() => { count++ })",
+        "}).then(() => { count++ })",
+        "process.on('exit', () => {",
+        "  if (count !== 3) {",
+        "    console.error(`promise jobs not drained: ${count}`)",
+        "    process.exitCode = 1",
+        "  } else {",
+        "    console.log('ok')",
+        "  }",
+        "})",
+      ].join("\n"),
+    );
+
+    let result: Awaited<ReturnType<typeof runCentralizedProgram>>;
+    try {
+      result = await runCentralizedProgram({
+        programPath: nodeWasm!,
+        programModule: nodeModule,
+        argv: ["node", scriptPath],
+        io: new NodePlatformIO(),
+        timeout: DEFAULT_TIMEOUT,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
   }, DEFAULT_TEST_TIMEOUT);
 
   it("provides vm.runInNewContext for foreign objects and sandbox globals", async () => {

@@ -409,6 +409,7 @@ if (!testFile) {
 process.argv[1] = testFile;
 process.env.NODE_SKIP_FLAG_CHECK = '1';
 process.env.NODE_DISABLE_COLORS = process.env.NODE_DISABLE_COLORS || '1';
+process.env.NODE_TEST_KNOWN_GLOBALS = process.env.NODE_TEST_KNOWN_GLOBALS || '0';
 
 process.config = process.config || {};
 process.config.variables = Object.assign({
@@ -515,6 +516,7 @@ function envForRun(): string[] {
       .map(([key, value]) => `${key}=${value}`),
     "NODE_SKIP_FLAG_CHECK=1",
     "NODE_DISABLE_COLORS=1",
+    "NODE_TEST_KNOWN_GLOBALS=0",
     "TERM=dumb",
     "CI=1",
   ];
