@@ -119,6 +119,10 @@ fix bead breakdown.
 runtime-progress bugs, long-running rows, and a runner cleanup blocker. See
 `docs/plans/2026-06-14-node-core-timeout-triage-kad-nct24.md`.
 
+`kad-nct.48` reran the Node-host full suite on the current integration branch
+and split the remaining one-off semantic tail into narrow follow-up beads. See
+`docs/plans/2026-06-14-node-core-tail-triage-kad-nct48.md`.
+
 The manifest is intentionally small and public-API focused. Tests that require
 Node's private `--expose-internals` hooks, such as `internal/test/binding`, must
 be marked as an explicit support-boundary `SKIP` with a reason instead of being
