@@ -2888,6 +2888,7 @@ const querystring = (() => {
     function stringify(obj, sep, eq) {
         sep = sep || '&';
         eq = eq || '=';
+        if (obj === null || typeof obj !== 'object') return '';
         const pairs = [];
         for (const key of Object.keys(obj)) {
             const val = obj[key];
