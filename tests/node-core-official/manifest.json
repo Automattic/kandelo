@@ -78,6 +78,30 @@
       "area": "timers",
       "expected": "PASS",
       "reason": "Tiny timers API smoke case."
+    },
+    {
+      "path": "test/parallel/test-performance-eventlooputil.js",
+      "area": "performance",
+      "expected": "SKIP",
+      "reason": "Main-thread perf_hooks.eventLoopUtilization is implemented, but this official test's final phase requires module-file worker_threads execution plus parentPort.postMessage. Kandelo's SpiderMonkey shell adapter currently supports only the eval/shared-memory worker subset."
+    },
+    {
+      "path": "test/parallel/test-performance-gc.js",
+      "area": "performance",
+      "expected": "SKIP",
+      "reason": "Requires Node/V8 --expose-gc performance GC entries and flags. Kandelo's SpiderMonkey-backed Node compatibility layer does not expose V8 GC telemetry as public runtime support."
+    },
+    {
+      "path": "test/parallel/test-performanceobserver-gc.js",
+      "area": "performanceobserver",
+      "expected": "SKIP",
+      "reason": "Requires Node/V8 GC performance observer events. Kandelo does not expose engine GC telemetry through perf_hooks on the SpiderMonkey runtime."
+    },
+    {
+      "path": "test/parallel/test-performanceobserver.js",
+      "area": "performanceobserver",
+      "expected": "SKIP",
+      "reason": "Requires --expose-internals and internal/test/binding('performance') observerCounts. That native internal test hook is outside Kandelo's Node-compatible public API surface."
     }
   ]
 }

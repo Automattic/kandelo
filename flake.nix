@@ -90,6 +90,7 @@
             #            magic-build, etc.
             #   flex/bison — bash, m4, mariadb (yacc-style parsers)
             #   xz     — extracting .tar.xz tarballs (sed, m4, …)
+            #   bzip2  — libbz2 for Rust xtask's archive dependencies
             #   patch  — applying *.patch files (mariadb, ruby)
             #   gh     — only used by stage-pr-staging release lookup
             pkgs.curl
@@ -98,6 +99,7 @@
             pkgs.flex
             pkgs.bison
             pkgs.xz
+            pkgs.bzip2
             pkgs.gnupatch
             pkgs.gh
             # rsync — build-vim-zip.sh / build-shell-vfs-image.sh
@@ -176,6 +178,9 @@
             # declared Rust toolchain first so source fallbacks that require
             # nightly flags do not accidentally run a host stable cargo.
             export PATH="${rustToolchain}/bin:$PATH"
+            export RUSTC="${rustToolchain}/bin/rustc"
+            export CARGO="${rustToolchain}/bin/cargo"
+            export PKG_CONFIG="${pkgs.pkg-config}/bin/pkg-config"
             export LLVM_BIN=${llvmTree}/bin
             export LLVM_PREFIX=${llvmTree}
             export LLVM_VERSION=21

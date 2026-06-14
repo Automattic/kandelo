@@ -440,6 +440,119 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("ok");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("implements the perf_hooks public timing surface", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const util = require('util')",
+        "const {",
+        "  createHistogram,",
+        "  monitorEventLoopDelay,",
+        "  PerformanceEntry,",
+        "  PerformanceMark,",
+        "  PerformanceMeasure,",
+        "  PerformanceObserver,",
+        "  PerformanceResourceTiming,",
+        "  performance,",
+        "} = require('perf_hooks')",
+        "assert.strictEqual(globalThis.performance, performance)",
+        "const tag = Object.getOwnPropertyDescriptor(PerformanceMark.prototype, Symbol.toStringTag)",
+        "assert.deepStrictEqual(tag, { configurable: true, enumerable: false, writable: false, value: 'PerformanceMark' })",
+        "assert.throws(() => new PerformanceEntry(), { code: 'ERR_ILLEGAL_CONSTRUCTOR' })",
+        "assert.throws(() => new PerformanceResourceTiming(), { code: 'ERR_ILLEGAL_CONSTRUCTOR' })",
+        "const seen = []",
+        "const obs = new PerformanceObserver((list) => seen.push(list.getEntries().map((entry) => entry.entryType + ':' + entry.name).join(',')))",
+        "obs.observe({ entryTypes: ['mark', 'measure', 'function', 'resource'] })",
+        "const detail = { nested: [/x/] }",
+        "const mark = performance.mark('a', { detail, startTime: 1 })",
+        "assert(mark instanceof PerformanceEntry)",
+        "assert(mark instanceof PerformanceMark)",
+        "assert.notStrictEqual(mark.detail.nested, undefined)",
+        "assert.notStrictEqual(mark.detail, detail)",
+        "performance.mark('b', { startTime: 11 })",
+        "const measure = performance.measure('a to b', 'a', 'b')",
+        "assert(measure instanceof PerformanceMeasure)",
+        "assert.strictEqual(measure.startTime, 1)",
+        "assert.strictEqual(measure.duration, 10)",
+        "const histogram = createHistogram()",
+        "assert.strictEqual(histogram.max, 0)",
+        "const wrapped = performance.timerify(function sample(a, b = 1) { return a + b }, { histogram })",
+        "assert.strictEqual(wrapped.length, 1)",
+        "assert.strictEqual(wrapped.name, 'timerified sample')",
+        "assert.strictEqual(wrapped(2, 3), 5)",
+        "assert.notStrictEqual(histogram.max, 0)",
+        "class C {}",
+        "assert(new (performance.timerify(C))() instanceof C)",
+        "let asyncDone = false",
+        "const asyncWrapped = performance.timerify(async function doIt() { asyncDone = true; return 'ok' })",
+        "asyncWrapped().then((value) => assert.strictEqual(value, 'ok'))",
+        "if (typeof drainJobQueue === 'function') drainJobQueue()",
+        "if (typeof drainJobQueue === 'function') drainJobQueue()",
+        "assert.strictEqual(asyncDone, true)",
+        "const resource = performance.markResourceTiming({",
+        "  startTime: 50,",
+        "  endTime: 100,",
+        "  encodedBodySize: 150,",
+        "  decodedBodySize: 140,",
+        "  finalConnectionTimingInfo: {},",
+        "}, 'http://localhost:8080', 'fetch', globalThis, '')",
+        "assert(resource instanceof PerformanceResourceTiming)",
+        "assert.strictEqual(resource.duration, 50)",
+        "assert.strictEqual(resource.transferSize, 450)",
+        "assert(util.inspect(resource).startsWith('PerformanceResourceTiming'))",
+        "const h = createHistogram()",
+        "h.record(1)",
+        "const mc = new MessageChannel()",
+        "mc.port1.onmessage = ({ data }) => data.record(2n)",
+        "mc.port2.postMessage(h)",
+        "if (typeof drainJobQueue === 'function') drainJobQueue()",
+        "assert.strictEqual(h.max, 2)",
+        "const delay = monitorEventLoopDelay()",
+        "delay.enable()",
+        "const mc2 = new MessageChannel()",
+        "let clonedDelayHasNoMethods = false",
+        "mc2.port1.onmessage = ({ data }) => { clonedDelayHasNoMethods = data.count > 0 && data.enable === undefined }",
+        "mc2.port2.postMessage(delay)",
+        "if (typeof drainJobQueue === 'function') drainJobQueue()",
+        "assert.strictEqual(clonedDelayHasNoMethods, true)",
+        "if (typeof drainJobQueue === 'function') drainJobQueue()",
+        "obs.disconnect()",
+        "assert.deepStrictEqual(performance.eventLoopUtilization(), { idle: 0, active: 0, utilization: 0 })",
+        "let eluTimerFired = false",
+        "setTimeout(() => {",
+        "  const beforeSpin = performance.eventLoopUtilization()",
+        "  assert(beforeSpin.idle >= 0)",
+        "  const start = Date.now()",
+        "  while (Date.now() - start < 20) {}",
+        "  const delta = performance.eventLoopUtilization(beforeSpin)",
+        "  assert.strictEqual(delta.idle, 0)",
+        "  assert(delta.active >= 0)",
+        "  eluTimerFired = true",
+        "}, 1)",
+        "process.on('exit', () => assert.strictEqual(eluTimerFired, true))",
+        "const json = performance.toJSON()",
+        "assert.strictEqual(json.timeOrigin, performance.timeOrigin)",
+        "assert.strictEqual(typeof json.nodeTiming, 'object')",
+        "console.log(JSON.stringify({",
+        "  entries: performance.getEntries().map((entry) => entry.entryType),",
+        "  observerCalls: seen.length,",
+        "  nodeTimingName: performance.nodeTiming.name,",
+        "}))",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    const data = JSON.parse(result.stdout) as {
+      entries: string[];
+      observerCalls: number;
+      nodeTimingName: string;
+    };
+    expect(data.entries).toEqual(["mark", "mark", "measure", "resource"]);
+    expect(data.observerCalls).toBeGreaterThanOrEqual(1);
+    expect(data.nodeTimingName).toBe("node");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("provides vm.runInNewContext for foreign objects and sandbox globals", async () => {
     const result = await runNode(
       [

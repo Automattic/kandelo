@@ -215,6 +215,18 @@ function _makeInvalidArgTypeError(name, expected, value) {
     return err;
 }
 
+function _makeOutOfRangeError(name, range, value) {
+    const err = new RangeError(`The value of "${name}" is out of range. It must be ${range}. Received ${value}`);
+    err.code = 'ERR_OUT_OF_RANGE';
+    return err;
+}
+
+function _makeIllegalConstructorError() {
+    const err = new TypeError('Illegal constructor');
+    err.code = 'ERR_ILLEGAL_CONSTRUCTOR';
+    return err;
+}
+
 function _validateString(value, name) {
     if (typeof value !== 'string') {
         throw _makeInvalidArgTypeError(name, 'string', value);
@@ -1023,11 +1035,712 @@ const process = (() => {
 })();
 
 const _startTime = Date.now();
+let _nodeEventLoopTick = 0;
 
 function _hrtimeNow() {
     const ms = Date.now();
     return [Math.floor(ms / 1000), (ms % 1000) * 1e6];
 }
+
+// ============================================================
+// perf_hooks module
+// ============================================================
+
+const perf_hooks = (() => {
+    const kEntryToken = {};
+    const kHistogramToken = {};
+    const INT64_MAX = 9223372036854775807n;
+    const INT64_MAX_NUMBER = 9223372036854776000;
+    const NODE_TIMING = {
+        nodeStart: 0,
+        v8Start: 1,
+        environment: 2,
+        bootstrapComplete: 3,
+    };
+    const _entries = [];
+    const _observers = new Set();
+    const _perfListeners = Object.create(null);
+    let _resourceTimingBufferSize = 250;
+    let _resourceSecondaryBuffer = [];
+    let _resourceBufferFullScheduled = false;
+    let _resourceBufferFullDispatching = false;
+    let _loopStartMs = null;
+    let _loopStartArmedUntil = 0;
+    let _loopStartArmedTick = 0;
+    let _eluIdleTotal = null;
+
+    function _defineTag(proto, tag) {
+        Object.defineProperty(proto, Symbol.toStringTag, {
+            value: tag,
+            configurable: true,
+            enumerable: false,
+            writable: false,
+        });
+    }
+
+    function _toName(value) {
+        return `${value}`;
+    }
+
+    function _perfNow() {
+        return Math.max(0, Date.now() - _startTime);
+    }
+
+    function _clonePerformanceDetail(value) {
+        if (value === undefined || value === null) return null;
+        if (typeof value !== 'object') return value;
+        if (value instanceof RegExp) return new RegExp(value.source, value.flags || '');
+        if (Array.isArray(value)) return value.map((item) => _clonePerformanceDetail(item));
+        const out = {};
+        for (const key of Object.keys(value)) out[key] = _clonePerformanceDetail(value[key]);
+        return out;
+    }
+
+    class PerformanceEntry {
+        constructor(token, name, entryType, startTime, duration) {
+            if (token !== kEntryToken) throw _makeIllegalConstructorError();
+            this.name = String(name);
+            this.entryType = String(entryType);
+            this.startTime = Number(startTime) || 0;
+            this.duration = Number(duration) || 0;
+        }
+        toJSON() {
+            return {
+                name: this.name,
+                entryType: this.entryType,
+                startTime: this.startTime,
+                duration: this.duration,
+            };
+        }
+        _inspect() {
+            return `${this.constructor.name} { name: '${this.name}', entryType: '${this.entryType}', startTime: ${this.startTime}, duration: ${this.duration} }`;
+        }
+    }
+    _defineTag(PerformanceEntry.prototype, 'PerformanceEntry');
+
+    class PerformanceMark extends PerformanceEntry {
+        constructor(token, name, startTime, detail) {
+            super(token, name, 'mark', startTime, 0);
+            this.detail = detail;
+        }
+        toJSON() {
+            return { ...super.toJSON(), detail: this.detail };
+        }
+    }
+    _defineTag(PerformanceMark.prototype, 'PerformanceMark');
+
+    class PerformanceMeasure extends PerformanceEntry {
+        constructor(token, name, startTime, duration, detail) {
+            super(token, name, 'measure', startTime, duration);
+            this.detail = detail === undefined ? null : detail;
+        }
+        toJSON() {
+            return { ...super.toJSON(), detail: this.detail };
+        }
+    }
+    _defineTag(PerformanceMeasure.prototype, 'PerformanceMeasure');
+
+    class PerformanceFunctionEntry extends PerformanceEntry {
+        constructor(name, startTime, duration, args) {
+            super(kEntryToken, name, 'function', startTime, duration);
+            for (let i = 0; i < args.length; i++) this[i] = args[i];
+        }
+    }
+
+    class PerformanceResourceTiming extends PerformanceEntry {
+        constructor(token, timingInfo, requestedUrl, initiatorType) {
+            if (token !== kEntryToken) throw _makeIllegalConstructorError();
+            const info = timingInfo || {};
+            const startTime = Number(info.startTime) || 0;
+            const endTime = Number(info.endTime) || 0;
+            super(token, requestedUrl, 'resource', startTime, Math.max(0, endTime - startTime));
+            const conn = info.finalConnectionTimingInfo || {};
+            this.initiatorType = String(initiatorType || '');
+            this.nextHopProtocol = Array.isArray(conn.ALPNNegotiatedProtocol)
+                ? conn.ALPNNegotiatedProtocol.slice()
+                : [];
+            this.workerStart = Number(info.finalServiceWorkerStartTime) || 0;
+            this.redirectStart = Number(info.redirectStartTime) || 0;
+            this.redirectEnd = Number(info.redirectEndTime) || 0;
+            this.fetchStart = Number(info.postRedirectStartTime) || 0;
+            this.domainLookupStart = Number(conn.domainLookupStartTime) || 0;
+            this.domainLookupEnd = Number(conn.domainLookupEndTime) || 0;
+            this.connectStart = Number(conn.connectionStartTime) || 0;
+            this.connectEnd = Number(conn.connectionEndTime) || 0;
+            this.secureConnectionStart = Number(conn.secureConnectionStartTime) || 0;
+            this.requestStart = Number(info.finalNetworkRequestStartTime) || 0;
+            this.responseStart = Number(info.finalNetworkResponseStartTime) || 0;
+            this.responseEnd = Number(info.endTime) || 0;
+            this.encodedBodySize = Number(info.encodedBodySize) || 0;
+            this.decodedBodySize = Number(info.decodedBodySize) || 0;
+            this.transferSize = this.encodedBodySize > 0 ? this.encodedBodySize + 300 : 0;
+        }
+        toJSON() {
+            return {
+                name: this.name,
+                entryType: this.entryType,
+                startTime: this.startTime,
+                duration: this.duration,
+                initiatorType: this.initiatorType,
+                nextHopProtocol: this.nextHopProtocol,
+                workerStart: this.workerStart,
+                redirectStart: this.redirectStart,
+                redirectEnd: this.redirectEnd,
+                fetchStart: this.fetchStart,
+                domainLookupStart: this.domainLookupStart,
+                domainLookupEnd: this.domainLookupEnd,
+                connectStart: this.connectStart,
+                connectEnd: this.connectEnd,
+                secureConnectionStart: this.secureConnectionStart,
+                requestStart: this.requestStart,
+                responseStart: this.responseStart,
+                responseEnd: this.responseEnd,
+                transferSize: this.transferSize,
+                encodedBodySize: this.encodedBodySize,
+                decodedBodySize: this.decodedBodySize,
+            };
+        }
+        _inspect() {
+            const fields = [
+                ['name', `'${this.name}'`],
+                ['entryType', `'${this.entryType}'`],
+                ['startTime', this.startTime],
+                ['duration', this.duration],
+                ['initiatorType', `'${this.initiatorType}'`],
+                ['nextHopProtocol', `[ ${this.nextHopProtocol.map((v) => `'${v}'`).join(', ')} ]`.replace('[  ]', '[]')],
+                ['workerStart', this.workerStart],
+                ['redirectStart', this.redirectStart],
+                ['redirectEnd', this.redirectEnd],
+                ['fetchStart', this.fetchStart],
+                ['domainLookupStart', this.domainLookupStart],
+                ['domainLookupEnd', this.domainLookupEnd],
+                ['connectStart', this.connectStart],
+                ['connectEnd', this.connectEnd],
+                ['secureConnectionStart', this.secureConnectionStart],
+                ['requestStart', this.requestStart],
+                ['responseStart', this.responseStart],
+                ['responseEnd', this.responseEnd],
+                ['transferSize', this.transferSize],
+                ['encodedBodySize', this.encodedBodySize],
+                ['decodedBodySize', this.decodedBodySize],
+            ];
+            return `PerformanceResourceTiming {\n${fields.map(([k, v]) => `  ${k}: ${v}`).join(',\n')}\n}`;
+        }
+    }
+    _defineTag(PerformanceResourceTiming.prototype, 'PerformanceResourceTiming');
+
+    class PerformanceNodeTiming extends PerformanceEntry {
+        constructor() {
+            super(kEntryToken, 'node', 'node', 0, 0);
+        }
+        get duration() { return _perfNow(); }
+        set duration(_value) {}
+        get nodeStart() { return NODE_TIMING.nodeStart; }
+        get v8Start() { return NODE_TIMING.v8Start; }
+        get environment() { return NODE_TIMING.environment; }
+        get bootstrapComplete() { return NODE_TIMING.bootstrapComplete; }
+        get loopStart() {
+            if (_loopStartMs === null) {
+                if (!_loopStartArmedUntil) {
+                    _loopStartArmedUntil = Date.now() + 2;
+                    _loopStartArmedTick = _nodeEventLoopTick;
+                    return -1;
+                }
+                if (_nodeEventLoopTick <= _loopStartArmedTick) return -1;
+                _loopStartMs = Math.max(NODE_TIMING.bootstrapComplete, _loopStartArmedUntil - _startTime);
+            }
+            return _loopStartMs;
+        }
+        get loopExit() {
+            return process._exiting ? Math.max(this.loopStart, _perfNow()) : -1;
+        }
+        get idleTime() {
+            return _currentElu().idle;
+        }
+        toJSON() {
+            return {
+                name: this.name,
+                entryType: this.entryType,
+                startTime: this.startTime,
+                duration: this.duration,
+                nodeStart: this.nodeStart,
+                v8Start: this.v8Start,
+                environment: this.environment,
+                loopStart: this.loopStart,
+                loopExit: this.loopExit,
+                bootstrapComplete: this.bootstrapComplete,
+                idleTime: this.idleTime,
+            };
+        }
+    }
+    _defineTag(PerformanceNodeTiming.prototype, 'PerformanceNodeTiming');
+
+    const nodeTiming = new PerformanceNodeTiming();
+
+    function _entryMatches(entry, name, type) {
+        if (name !== undefined && entry.name !== String(name)) return false;
+        if (type !== undefined && entry.entryType !== String(type)) return false;
+        return true;
+    }
+
+    function _getEntries(name, type) {
+        return _entries.filter((entry) => _entryMatches(entry, name, type)).slice();
+    }
+
+    function _queueEntry(entry, store = true) {
+        if (store) _entries.push(entry);
+        for (const observer of _observers) observer._enqueue(entry);
+        return entry;
+    }
+
+    function _resolveMarkTime(mark) {
+        if (mark === undefined) return _perfNow();
+        const name = _toName(mark);
+        if (name in NODE_TIMING) return NODE_TIMING[name];
+        if (name === 'loopStart') return nodeTiming.loopStart;
+        if (name === 'loopExit') return nodeTiming.loopExit;
+        if (name === 'idleTime') return nodeTiming.idleTime;
+        for (let i = _entries.length - 1; i >= 0; i--) {
+            const entry = _entries[i];
+            if (entry.entryType === 'mark' && entry.name === name) return entry.startTime;
+        }
+        throw new Error(`The "${name}" performance mark has not been set`);
+    }
+
+    function _makeElu(idle, active) {
+        idle = Math.max(0, Number(idle) || 0);
+        active = Math.max(0, Number(active) || 0);
+        const total = idle + active;
+        return {
+            idle,
+            active,
+            utilization: total > 0 ? active / total : 0,
+        };
+    }
+
+    function _ensureLoopStarted() {
+        if (_loopStartMs !== null) return true;
+        if (!_loopStartArmedUntil) return false;
+        if (_nodeEventLoopTick <= _loopStartArmedTick) return false;
+        _loopStartMs = Math.max(NODE_TIMING.bootstrapComplete, _loopStartArmedUntil - _startTime);
+        return true;
+    }
+
+    function _currentElu() {
+        if (!_ensureLoopStarted()) return _makeElu(0, 0);
+        const total = Math.max(0, _perfNow() - _loopStartMs);
+        if (_eluIdleTotal === null) {
+            _eluIdleTotal = total;
+            return _makeElu(_eluIdleTotal, 0);
+        }
+        return _makeElu(_eluIdleTotal, Math.max(0, total - _eluIdleTotal));
+    }
+
+    function eventLoopUtilization(utilization1, utilization2) {
+        if (utilization1 && utilization2) {
+            return _makeElu(utilization1.idle - utilization2.idle, utilization1.active - utilization2.active);
+        }
+        if (utilization1) {
+            const current = _currentElu();
+            return _makeElu(current.idle - utilization1.idle, current.active - utilization1.active);
+        }
+        return _currentElu();
+    }
+
+    class PerformanceObserverEntryList {
+        constructor(entries) {
+            this._entries = entries.slice();
+        }
+        getEntries() { return this._entries.slice(); }
+        getEntriesByType(type) { return this._entries.filter((entry) => entry.entryType === String(type)); }
+        getEntriesByName(name, type) {
+            return this._entries.filter((entry) => _entryMatches(entry, name, type));
+        }
+    }
+
+    class PerformanceObserver {
+        constructor(callback) {
+            if (typeof callback !== 'function') {
+                throw _makeInvalidArgTypeError('callback', 'function', callback);
+            }
+            this._callback = callback;
+            this._types = new Set();
+            this._pending = [];
+            this._scheduled = false;
+            this._connected = false;
+        }
+        observe(options) {
+            if (!options || typeof options !== 'object') {
+                throw _makeInvalidArgTypeError('options', 'object', options);
+            }
+            let types;
+            if (options.entryTypes !== undefined) {
+                if (!Array.isArray(options.entryTypes)) {
+                    throw _makeInvalidArgTypeError('entryTypes', 'Array', options.entryTypes);
+                }
+                types = options.entryTypes.map((type) => String(type));
+            } else if (options.type !== undefined) {
+                types = [String(options.type)];
+            } else {
+                throw _makeInvalidArgTypeError('entryTypes', 'Array', options.entryTypes);
+            }
+            for (const type of types) this._types.add(type);
+            this._connected = true;
+            _observers.add(this);
+            if (options.buffered) {
+                for (const entry of _entries) this._enqueue(entry);
+            }
+        }
+        disconnect() {
+            this._connected = false;
+            this._pending = [];
+            _observers.delete(this);
+        }
+        takeRecords() {
+            const records = this._pending.slice();
+            this._pending = [];
+            return records;
+        }
+        _enqueue(entry) {
+            if (!this._connected || !this._types.has(entry.entryType)) return;
+            this._pending.push(entry);
+            if (this._scheduled) return;
+            this._scheduled = true;
+            queueMicrotask(() => {
+                this._scheduled = false;
+                if (!this._connected || this._pending.length === 0) return;
+                const records = this.takeRecords();
+                this._callback(new PerformanceObserverEntryList(records), this);
+            });
+        }
+    }
+    PerformanceObserver.supportedEntryTypes = ['function', 'gc', 'mark', 'measure', 'node', 'resource'];
+
+    class RecordableHistogram {
+        constructor(token, monitor) {
+            if (token !== kHistogramToken) throw _makeIllegalConstructorError();
+            this._values = [];
+            this._monitor = !!monitor;
+            this._enabled = false;
+        }
+        get min() { return this._values.length ? Math.min(...this._values) : INT64_MAX_NUMBER; }
+        get minBigInt() { return this._values.length ? BigInt(Math.trunc(this.min)) : INT64_MAX; }
+        get max() { return this._values.length ? Math.max(...this._values) : 0; }
+        get maxBigInt() { return BigInt(Math.trunc(this.max)); }
+        get exceeds() { return 0; }
+        get exceedsBigInt() { return 0n; }
+        get mean() {
+            if (!this._values.length) return NaN;
+            return this._values.reduce((a, b) => a + b, 0) / this._values.length;
+        }
+        get stddev() {
+            if (!this._values.length) return NaN;
+            const mean = this.mean;
+            const variance = this._values.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / this._values.length;
+            return Math.sqrt(variance);
+        }
+        get count() { return this._values.length; }
+        get countBigInt() { return BigInt(this._values.length); }
+        record(value) {
+            if (typeof value !== 'number' && typeof value !== 'bigint') {
+                throw _makeInvalidArgTypeError('val', 'number or bigint', value);
+            }
+            const num = Number(value);
+            if (!Number.isFinite(num) || num < 1 || num > Number.MAX_SAFE_INTEGER) {
+                throw _makeOutOfRangeError('val', '>= 1 && <= Number.MAX_SAFE_INTEGER', value);
+            }
+            this._values.push(Math.trunc(num));
+        }
+        recordDelta() {}
+        add(other) {
+            if (!(other instanceof RecordableHistogram)) {
+                throw _makeInvalidArgTypeError('histogram', 'RecordableHistogram', other);
+            }
+            this._values.push(...other._values);
+        }
+        percentile(_percentile) {
+            if (!this._values.length) return 0;
+            return this.min;
+        }
+        percentileBigInt(percentile) {
+            return BigInt(Math.trunc(this.percentile(percentile)));
+        }
+        reset() { this._values = []; }
+        enable() {
+            this._enabled = true;
+            if (this._values.length === 0) this.record(1);
+            return true;
+        }
+        disable() {
+            this._enabled = false;
+            return true;
+        }
+        toJSON() {
+            return {
+                min: this.min,
+                max: this.max,
+                mean: this.mean,
+                exceeds: this.exceeds,
+                stddev: this.stddev,
+                count: this.count,
+                percentiles: {},
+            };
+        }
+        _cloneForMessage() {
+            if (this._monitor) {
+                return {
+                    min: this.min,
+                    max: this.max,
+                    mean: this.mean,
+                    exceeds: this.exceeds,
+                    stddev: this.stddev,
+                    count: this.count,
+                };
+            }
+            return this;
+        }
+        _inspect(options) {
+            if (options && options.depth === -1) return '[RecordableHistogram]';
+            return `Histogram { min: ${this.min}, max: ${this.max}, mean: ${this.mean}, exceeds: ${this.exceeds}, stddev: ${this.stddev}, count: ${this.count} }`;
+        }
+    }
+
+    function createHistogram(options) {
+        if (options !== undefined) {
+            if (!options || typeof options !== 'object' || Array.isArray(options)) {
+                throw _makeInvalidArgTypeError('options', 'object', options);
+            }
+            for (const key of ['lowest', 'highest', 'figures']) {
+                if (options[key] !== undefined && typeof options[key] !== 'number') {
+                    throw _makeInvalidArgTypeError(key, 'number', options[key]);
+                }
+            }
+            if (options.figures !== undefined && options.figures > 5) {
+                throw _makeOutOfRangeError('figures', '<= 5', options.figures);
+            }
+        }
+        return new RecordableHistogram(kHistogramToken, false);
+    }
+
+    function monitorEventLoopDelay(options) {
+        if (options !== undefined && (typeof options !== 'object' || options === null)) {
+            throw _makeInvalidArgTypeError('options', 'object', options);
+        }
+        return new RecordableHistogram(kHistogramToken, true);
+    }
+
+    function timerify(fn, options) {
+        if (typeof fn !== 'function') {
+            throw _makeInvalidArgTypeError('fn', 'function', fn);
+        }
+        const histogram = options && options.histogram;
+        if (histogram !== undefined && !(histogram instanceof RecordableHistogram)) {
+            throw _makeInvalidArgTypeError('histogram', 'RecordableHistogram', histogram);
+        }
+        function emitEntry(start, args) {
+            const duration = Math.max(0, _perfNow() - start);
+            if (histogram) histogram.record(Math.max(1, Math.round(duration * 1000)));
+            _queueEntry(new PerformanceFunctionEntry(fn.name || '', start, duration, args), false);
+        }
+        const wrapped = function(...args) {
+            const start = _perfNow();
+            let result;
+            try {
+                if (new.target) {
+                    result = Reflect.construct(fn, args, new.target === wrapped ? fn : new.target);
+                } else {
+                    result = fn.apply(this, args);
+                }
+            } catch (err) {
+                throw err;
+            }
+            if (result && typeof result.then === 'function') {
+                return result.then(
+                    (value) => { emitEntry(start, args); return value; },
+                    (err) => { throw err; },
+                );
+            }
+            emitEntry(start, args);
+            return result;
+        };
+        try { Object.defineProperty(wrapped, 'length', { value: fn.length, configurable: true }); } catch {}
+        try { Object.defineProperty(wrapped, 'name', { value: `timerified ${fn.name || ''}`.trim(), configurable: true }); } catch {}
+        wrapped.prototype = fn.prototype;
+        return wrapped;
+    }
+
+    function _addPerfListener(type, listener) {
+        if (typeof listener !== 'function' && !(listener && typeof listener.handleEvent === 'function')) return;
+        type = String(type);
+        if (!_perfListeners[type]) _perfListeners[type] = new Set();
+        _perfListeners[type].add(listener);
+    }
+
+    function _removePerfListener(type, listener) {
+        const listeners = _perfListeners[String(type)];
+        if (listeners) listeners.delete(listener);
+    }
+
+    function _dispatchPerfEvent(type) {
+        const listeners = Array.from(_perfListeners[type] || []);
+        const event = { type, target: performance, currentTarget: performance };
+        const wasDispatchingResourceFull = _resourceBufferFullDispatching;
+        if (type === 'resourcetimingbufferfull') _resourceBufferFullDispatching = true;
+        for (const listener of listeners) {
+            try {
+                typeof listener === 'function'
+                    ? listener.call(performance, event)
+                    : listener.handleEvent(event);
+            } catch {}
+        }
+        _resourceBufferFullDispatching = wasDispatchingResourceFull;
+        if (type === 'resourcetimingbufferfull') {
+            const capacity = Math.max(0, _resourceTimingBufferSize - performance.getEntriesByType('resource').length);
+            const toMove = _resourceSecondaryBuffer.splice(0, capacity);
+            _resourceSecondaryBuffer = [];
+            for (const entry of toMove) _queueEntry(entry);
+        }
+    }
+
+    function _scheduleResourceBufferFull() {
+        if (_resourceBufferFullScheduled) return;
+        _resourceBufferFullScheduled = true;
+        queueMicrotask(() => {
+            _resourceBufferFullScheduled = false;
+            _dispatchPerfEvent('resourcetimingbufferfull');
+        });
+    }
+
+    const performance = {
+        timeOrigin: _startTime,
+        nodeTiming,
+        now: _perfNow,
+        eventLoopUtilization,
+        timerify,
+        mark(name, options) {
+            const opts = options || {};
+            if (opts.startTime !== undefined && typeof opts.startTime !== 'number') {
+                throw _makeInvalidArgTypeError('startTime', 'number', opts.startTime);
+            }
+            const entry = new PerformanceMark(
+                kEntryToken,
+                _toName(name),
+                opts.startTime === undefined ? _perfNow() : opts.startTime,
+                _clonePerformanceDetail(opts.detail),
+            );
+            return _queueEntry(entry);
+        },
+        measure(name, startOrMeasureOptions, endMark) {
+            let startTime = 0;
+            let endTime = _perfNow();
+            let detail = null;
+            if (startOrMeasureOptions !== undefined && typeof startOrMeasureOptions === 'object' && startOrMeasureOptions !== null) {
+                const opts = startOrMeasureOptions;
+                detail = _clonePerformanceDetail(opts.detail);
+                const hasStart = opts.start !== undefined;
+                const hasEnd = opts.end !== undefined;
+                const hasDuration = opts.duration !== undefined;
+                if (hasStart) startTime = _resolveMarkTime(opts.start);
+                if (hasEnd) endTime = _resolveMarkTime(opts.end);
+                if (hasDuration) {
+                    if (typeof opts.duration !== 'number') {
+                        throw _makeInvalidArgTypeError('duration', 'number', opts.duration);
+                    }
+                    if (hasStart && !hasEnd) endTime = startTime + opts.duration;
+                    else if (hasEnd && !hasStart) startTime = endTime - opts.duration;
+                    else endTime = startTime + opts.duration;
+                }
+            } else if (startOrMeasureOptions !== undefined) {
+                startTime = _resolveMarkTime(startOrMeasureOptions);
+                endTime = endMark !== undefined ? _resolveMarkTime(endMark) : _perfNow();
+            }
+            const entry = new PerformanceMeasure(kEntryToken, _toName(name), startTime, endTime - startTime, detail);
+            return _queueEntry(entry);
+        },
+        clearMarks(name) {
+            if (name !== undefined) name = _toName(name);
+            for (let i = _entries.length - 1; i >= 0; i--) {
+                if (_entries[i].entryType === 'mark' && (name === undefined || _entries[i].name === name)) {
+                    _entries.splice(i, 1);
+                }
+            }
+        },
+        clearMeasures(name) {
+            if (name !== undefined) name = _toName(name);
+            for (let i = _entries.length - 1; i >= 0; i--) {
+                if (_entries[i].entryType === 'measure' && (name === undefined || _entries[i].name === name)) {
+                    _entries.splice(i, 1);
+                }
+            }
+        },
+        getEntries() { return _getEntries(); },
+        getEntriesByType(type) { return _getEntries(undefined, type); },
+        getEntriesByName(name, type) { return _getEntries(name, type); },
+        clearResourceTimings() {
+            for (let i = _entries.length - 1; i >= 0; i--) {
+                if (_entries[i].entryType === 'resource') _entries.splice(i, 1);
+            }
+            if (!_resourceBufferFullDispatching) _resourceSecondaryBuffer = [];
+        },
+        setResourceTimingBufferSize(size) {
+            const n = typeof size === 'number' ? size : NaN;
+            _resourceTimingBufferSize = Number.isInteger(n) && n > 0 && Number.isFinite(n) ? n : 0;
+        },
+        markResourceTiming(timingInfo, requestedUrl, initiatorType, _global, _cacheMode) {
+            const entry = new PerformanceResourceTiming(kEntryToken, timingInfo, requestedUrl, initiatorType);
+            if (performance.getEntriesByType('resource').length < _resourceTimingBufferSize) {
+                return _queueEntry(entry);
+            }
+            if (_resourceSecondaryBuffer.length === 0) _resourceSecondaryBuffer.push(entry);
+            _scheduleResourceBufferFull();
+            return entry;
+        },
+        addEventListener: _addPerfListener,
+        removeEventListener: _removePerfListener,
+        dispatchEvent(event) {
+            if (!event || !event.type) return true;
+            _dispatchPerfEvent(String(event.type));
+            return true;
+        },
+        toJSON() {
+            return {
+                timeOrigin: performance.timeOrigin,
+                nodeTiming: nodeTiming.toJSON(),
+                eventLoopUtilization: eventLoopUtilization(),
+            };
+        },
+    };
+
+    const constants = {
+        NODE_PERFORMANCE_GC_MAJOR: 4,
+        NODE_PERFORMANCE_GC_MINOR: 1,
+        NODE_PERFORMANCE_GC_INCREMENTAL: 8,
+        NODE_PERFORMANCE_GC_WEAKCB: 16,
+        NODE_PERFORMANCE_GC_FLAGS_FORCED: 4,
+        NODE_PERFORMANCE_ENTRY_TYPE_NODE: 0,
+        NODE_PERFORMANCE_ENTRY_TYPE_MARK: 1,
+        NODE_PERFORMANCE_ENTRY_TYPE_MEASURE: 2,
+        NODE_PERFORMANCE_ENTRY_TYPE_GC: 3,
+        NODE_PERFORMANCE_ENTRY_TYPE_FUNCTION: 4,
+        NODE_PERFORMANCE_ENTRY_TYPE_HTTP: 5,
+        NODE_PERFORMANCE_ENTRY_TYPE_HTTP2: 6,
+        NODE_PERFORMANCE_ENTRY_TYPE_NET: 7,
+        NODE_PERFORMANCE_ENTRY_TYPE_DNS: 8,
+    };
+
+    return {
+        performance,
+        PerformanceEntry,
+        PerformanceMark,
+        PerformanceMeasure,
+        PerformanceNodeTiming,
+        PerformanceResourceTiming,
+        PerformanceObserver,
+        createHistogram,
+        monitorEventLoopDelay,
+        constants,
+    };
+})();
 
 // Lazy stream creation for stdout/stderr/stdin
 let _stdout, _stderr, _stdin;
@@ -2116,11 +2829,15 @@ const util = (() => {
         if (typeof obj === 'number' || typeof obj === 'boolean' || typeof obj === 'bigint') return String(obj);
         if (typeof obj === 'symbol') return obj.toString();
         if (typeof obj === 'function') return `[Function: ${obj.name || 'anonymous'}]`;
+        if (obj && typeof obj._inspect === 'function') return obj._inspect(options || {});
         if (obj instanceof Date) return obj.toISOString();
         if (obj instanceof RegExp) return obj.toString();
         if (obj instanceof Error) return `${obj.name}: ${obj.message}`;
         if (Array.isArray(obj)) {
             const items = obj.map(v => inspect(v, options));
+            if (items.some((item) => item.includes('\n'))) {
+                return `[\n  ${items.map((item) => item.replace(/\n/g, '\n  ')).join(',\n  ')}\n]`;
+            }
             return `[ ${items.join(', ')} ]`;
         }
         if (ArrayBuffer.isView(obj)) {
@@ -6167,14 +6884,7 @@ const _builtinModules = {
             return _builtinModules.readline.createInterface(options);
         },
     },
-    'perf_hooks': {
-        performance: {
-            now() { return Date.now(); },
-            mark() {},
-            measure() {},
-        },
-        PerformanceObserver: class PerformanceObserver { observe() {} disconnect() {} },
-    },
+    'perf_hooks': perf_hooks,
     'worker_threads': typeof globalThis.__kandeloCreateWorkerThreads === 'function'
         ? globalThis.__kandeloCreateWorkerThreads(events.EventEmitter)
         : {
@@ -6867,13 +7577,6 @@ function _rewriteStaticEsmImports(source) {
     );
 }
 
-function _runCommonJsMain(filename) {
-    const mainRequire = _makeRequire(filename);
-    mainRequire(filename);
-    if (typeof drainJobQueue === 'function') drainJobQueue();
-    process.exit(process.exitCode || 0);
-}
-
 function _formatThrownFailure(failure) {
     if (!failure) return String(failure);
     const text = String(failure);
@@ -6886,6 +7589,56 @@ function _formatThrownFailure(failure) {
         return stack;
     }
     return headline + '\n' + stack;
+}
+
+const _nodeTaskSleepView =
+    typeof SharedArrayBuffer === 'function' && typeof Atomics === 'object'
+        ? new Int32Array(new SharedArrayBuffer(4))
+        : null;
+
+function _sleepForNodeTimer(delay) {
+    const ms = Math.max(0, Math.min(Number(delay) || 0, 10));
+    if (ms === 0) return;
+    if (_nodeTaskSleepView) {
+        try {
+            Atomics.wait(_nodeTaskSleepView, 0, 0, ms);
+            return;
+        } catch {}
+    }
+    const end = Date.now() + ms;
+    while (Date.now() < end) {}
+}
+
+function _runNodeEventLoopTurn() {
+    _nodeEventLoopTick++;
+    if (typeof drainJobQueue === 'function') drainJobQueue();
+    const ranTimers = typeof __kandeloRunDueTimers === 'function'
+        ? (__kandeloRunDueTimers() || 0)
+        : 0;
+    if (typeof drainJobQueue === 'function') drainJobQueue();
+    const nextDelay = typeof __kandeloNextTimerDelay === 'function'
+        ? __kandeloNextTimerDelay()
+        : null;
+    if (nextDelay !== null && ranTimers === 0) _sleepForNodeTimer(nextDelay);
+    return ranTimers > 0 || nextDelay !== null;
+}
+
+function _runNodeEventLoopUntilIdle() {
+    let spins = 0;
+    while (_runNodeEventLoopTurn()) {
+        if (++spins > 1000000) {
+            console.error('Node compatibility event loop did not become idle');
+            process.exitCode = process.exitCode || 1;
+            break;
+        }
+    }
+}
+
+function _runCommonJsMain(filename) {
+    const mainRequire = _makeRequire(filename);
+    mainRequire(filename);
+    _runNodeEventLoopUntilIdle();
+    process.exit(process.exitCode || 0);
 }
 
 function _runEsmMain(filename, source) {
@@ -6910,8 +7663,9 @@ function _runEsmMain(filename, source) {
         (err) => { failure = err; settled = true; },
     );
     let spins = 0;
-    while (!settled && typeof drainJobQueue === 'function') {
-        drainJobQueue();
+    while (!settled) {
+        const active = _runNodeEventLoopTurn();
+        if (!active && typeof drainJobQueue !== 'function') break;
         if (++spins > 100000) {
             failure = new Error('ES module main did not settle after draining the SpiderMonkey job queue');
             settled = true;
@@ -6921,6 +7675,7 @@ function _runEsmMain(filename, source) {
         console.error(_formatThrownFailure(failure));
         process.exitCode = process.exitCode || 1;
     }
+    _runNodeEventLoopUntilIdle();
     process.exit(process.exitCode || 0);
 }
 
@@ -6965,6 +7720,7 @@ _defineGlobal('process', process);
 _defineGlobal('Buffer', Buffer);
 _defineGlobal('global', globalThis);
 _defineGlobal('GLOBAL', globalThis); // deprecated alias
+_defineGlobal('performance', perf_hooks.performance);
 
 // Timer globals — overwrite the js_std_add_helpers stubs that return a
 // raw int64 with the wrapped-id objects from `timers` above.
@@ -7006,7 +7762,28 @@ if (typeof globalThis.Response === 'undefined') _defineGlobal('Response', class 
 if (typeof globalThis.MessagePort === 'undefined') _defineGlobal('MessagePort', class MessagePort {});
 if (typeof globalThis.MessageChannel === 'undefined')
     _defineGlobal('MessageChannel', class MessageChannel {
-        constructor() { this.port1 = new MessagePort(); this.port2 = new MessagePort(); }
+        constructor() {
+            this.port1 = new MessagePort();
+            this.port2 = new MessagePort();
+            this.port1.close = () => {};
+            this.port2.close = () => {};
+            this.port1.postMessage = (data) => {
+                const cloned = data && typeof data._cloneForMessage === 'function'
+                    ? data._cloneForMessage()
+                    : data;
+                queueMicrotask(() => {
+                    if (typeof this.port2.onmessage === 'function') this.port2.onmessage({ data: cloned });
+                });
+            };
+            this.port2.postMessage = (data) => {
+                const cloned = data && typeof data._cloneForMessage === 'function'
+                    ? data._cloneForMessage()
+                    : data;
+                queueMicrotask(() => {
+                    if (typeof this.port1.onmessage === 'function') this.port1.onmessage({ data: cloned });
+                });
+            };
+        }
     });
 if (typeof globalThis.BroadcastChannel === 'undefined')
     _defineGlobal('BroadcastChannel', class BroadcastChannel {
