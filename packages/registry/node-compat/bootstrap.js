@@ -3581,9 +3581,67 @@ const net = (() => {
         if (typeof b === 'string') return Buffer.from(b, 'utf8');
         throw new TypeError('socket: chunk must be Buffer, Uint8Array, ArrayBuffer, or string');
     };
+    const codedTypeError = (message, code) => {
+        const err = new TypeError(message);
+        err.code = code;
+        return err;
+    };
+    const codedRangeError = (message, code) => {
+        const err = new RangeError(message);
+        err.code = code;
+        return err;
+    };
+    function isValidIPv4(input) {
+        const parts = String(input).split('.');
+        if (parts.length !== 4) return false;
+        for (const part of parts) {
+            if (!/^(0|[1-9]\d*)$/.test(part)) return false;
+            const n = Number(part);
+            if (n < 0 || n > 255) return false;
+        }
+        return true;
+    }
+    function isValidIPv6(input) {
+        let value = String(input);
+        const zoneIndex = value.indexOf('%');
+        if (zoneIndex >= 0) {
+            const zone = value.slice(zoneIndex + 1);
+            if (!/^[A-Za-z0-9_.~-]+$/.test(zone)) return false;
+            value = value.slice(0, zoneIndex);
+        }
+        if (value.length === 0) return false;
+        if (value.indexOf(':::') >= 0) return false;
+        const hasCompression = value.includes('::');
+        if (hasCompression && value.indexOf('::') !== value.lastIndexOf('::')) return false;
+        if (value.startsWith(':') && !value.startsWith('::')) return false;
+        if (value.endsWith(':') && !value.endsWith('::')) return false;
+        if (!hasCompression && (value.startsWith(':') || value.endsWith(':'))) return false;
+        const rawParts = value.split(':');
+        const parts = rawParts.filter((part) => part.length > 0);
+        let hextets = 0;
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            if (part.includes('.')) {
+                if (i !== parts.length - 1 || !isValidIPv4(part)) return false;
+                hextets += 2;
+            } else {
+                if (!/^[0-9A-Fa-f]{1,4}$/.test(part)) return false;
+                hextets++;
+            }
+        }
+        return hasCompression ? hextets < 8 : hextets === 8;
+    }
 
     class Socket extends stream.Duplex {
         constructor(options) {
+            if (options?.fd !== undefined) {
+                if (typeof options.fd !== 'number') {
+                    throw codedTypeError('The "options.fd" property must be of type number.', 'ERR_INVALID_ARG_TYPE');
+                }
+                if (!Number.isInteger(options.fd) || options.fd < 0) {
+                    throw codedRangeError('The value of "options.fd" is out of range.', 'ERR_OUT_OF_RANGE');
+                }
+            }
             super(options);
             this._fd = options?.fd ?? -1;
             this._socketDestroyed = false;
@@ -3683,6 +3741,8 @@ const net = (() => {
         setTimeout(ms, cb) { if (cb) this.once('timeout', cb); return this; }
         setNoDelay() { return this; }
         setKeepAlive() { return this; }
+        resetAndDestroy() { return this.destroy(); }
+        _setSimultaneousAccepts() {}
         address() { return { address: this.localAddress, port: this.localPort, family: 'IPv4' }; }
         ref() { return this; }
         unref() { return this; }
@@ -3710,19 +3770,207 @@ const net = (() => {
         unref() { return this; }
     }
 
+    function Stream(options) {
+        return new Socket(options);
+    }
+    Object.setPrototypeOf(Stream, Socket);
+    Stream.prototype = Socket.prototype;
+    Object.defineProperty(Stream.prototype, 'constructor', {
+        value: Socket,
+        writable: true,
+        configurable: true,
+    });
+
     return {
-        Socket, Server,
+        Socket, Stream, Server,
         createServer(options, listener) { return new Server(options, listener); },
         createConnection(port, host, cb) { return new Socket().connect(port, host, cb); },
         connect(port, host, cb) { return new Socket().connect(port, host, cb); },
+        _setSimultaneousAccepts() {},
         isIP(input) {
-            if (/^\d+\.\d+\.\d+\.\d+$/.test(input)) return 4;
-            if (input.includes(':')) return 6;
+            try { input = String(input); } catch (_) { return 0; }
+            if (isValidIPv4(input)) return 4;
+            if (isValidIPv6(input)) return 6;
             return 0;
         },
         isIPv4(input) { return net.isIP(input) === 4; },
         isIPv6(input) { return net.isIP(input) === 6; },
     };
+})();
+
+const dns = (() => {
+    const defaultServers = ['127.0.0.1'];
+    const codedTypeError = (message) => {
+        const err = new TypeError(message);
+        err.code = 'ERR_INVALID_ARG_TYPE';
+        return err;
+    };
+    function validateServers(servers) {
+        if (!Array.isArray(servers)) {
+            throw codedTypeError('The "servers" argument must be an instance of Array.');
+        }
+        for (let i = 0; i < servers.length; i++) {
+            if (typeof servers[i] !== 'string') {
+                throw codedTypeError(`The "servers[${i}]" argument must be of type string.`);
+            }
+        }
+    }
+    function lookup(hostname, options, cb) {
+        if (typeof options === 'function') { cb = options; options = {}; }
+        if (typeof cb !== 'function') return;
+        cb(null, net.isIP(hostname) === 6 ? '::1' : '127.0.0.1', net.isIP(hostname) || 4);
+    }
+    function lookupService(address, port, cb) {
+        if (String(address).startsWith('192.0.2.')) {
+            const err = new Error(`getnameinfo ENOTFOUND ${address}`);
+            err.code = 'ENOTFOUND';
+            err.syscall = 'getnameinfo';
+            if (typeof cb === 'function') cb(err);
+            return;
+        }
+        if (typeof cb === 'function') cb(null, 'localhost', String(port));
+    }
+    function answerForType(rrtype) {
+        switch (String(rrtype || 'A').toUpperCase()) {
+            case 'A': return ['127.0.0.1'];
+            case 'AAAA': return ['::1'];
+            case 'ANY': return [{ type: 'A', address: '127.0.0.1' }];
+            case 'SOA': return {
+                nsname: 'localhost',
+                hostmaster: 'root.localhost',
+                serial: 1,
+                refresh: 0,
+                retry: 0,
+                expire: 0,
+                minttl: 0,
+            };
+            default: return [];
+        }
+    }
+    class Resolver {
+        constructor() {
+            this._servers = defaultServers.slice();
+            this._localAddress = undefined;
+            this._localAddress6 = undefined;
+            this._handle = {
+                getServers: () => this._servers.slice(),
+            };
+        }
+        getServers() {
+            const servers = this._handle && this._handle.getServers
+                ? this._handle.getServers()
+                : this._servers;
+            return Array.isArray(servers) ? servers.slice() : [];
+        }
+        setServers(servers) {
+            validateServers(servers);
+            this._servers = servers.slice();
+        }
+        setLocalAddress(ipv4, ipv6) {
+            this._localAddress = ipv4;
+            this._localAddress6 = ipv6;
+        }
+        resolve(hostname, rrtype, cb) {
+            if (typeof rrtype === 'function') { cb = rrtype; rrtype = 'A'; }
+            if (typeof cb === 'function') cb(null, answerForType(rrtype));
+        }
+        resolve4(hostname, cb) { this.resolve(hostname, 'A', cb); }
+        resolve6(hostname, cb) { this.resolve(hostname, 'AAAA', cb); }
+        resolveAny(hostname, cb) { this.resolve(hostname, 'ANY', cb); }
+        resolveCaa(hostname, cb) { this.resolve(hostname, 'CAA', cb); }
+        resolveCname(hostname, cb) { this.resolve(hostname, 'CNAME', cb); }
+        resolveMx(hostname, cb) { this.resolve(hostname, 'MX', cb); }
+        resolveNaptr(hostname, cb) { this.resolve(hostname, 'NAPTR', cb); }
+        resolveNs(hostname, cb) { this.resolve(hostname, 'NS', cb); }
+        resolvePtr(hostname, cb) { this.resolve(hostname, 'PTR', cb); }
+        resolveSoa(hostname, cb) { this.resolve(hostname, 'SOA', cb); }
+        resolveSrv(hostname, cb) { this.resolve(hostname, 'SRV', cb); }
+        resolveTxt(hostname, cb) { this.resolve(hostname, 'TXT', cb); }
+        reverse(_ip, cb) { if (typeof cb === 'function') cb(null, ['localhost']); }
+    }
+    const resolver = new Resolver();
+    const callbackApi = {
+        Resolver,
+        lookup,
+        lookupService,
+        resolve: resolver.resolve.bind(resolver),
+        resolve4: resolver.resolve4.bind(resolver),
+        resolve6: resolver.resolve6.bind(resolver),
+        resolveAny: resolver.resolveAny.bind(resolver),
+        resolveCaa: resolver.resolveCaa.bind(resolver),
+        resolveCname: resolver.resolveCname.bind(resolver),
+        resolveMx: resolver.resolveMx.bind(resolver),
+        resolveNaptr: resolver.resolveNaptr.bind(resolver),
+        resolveNs: resolver.resolveNs.bind(resolver),
+        resolvePtr: resolver.resolvePtr.bind(resolver),
+        resolveSoa: resolver.resolveSoa.bind(resolver),
+        resolveSrv: resolver.resolveSrv.bind(resolver),
+        resolveTxt: resolver.resolveTxt.bind(resolver),
+        reverse: resolver.reverse.bind(resolver),
+        getServers: resolver.getServers.bind(resolver),
+        setServers: resolver.setServers.bind(resolver),
+        setDefaultResultOrder() {},
+        getDefaultResultOrder() { return 'verbatim'; },
+    };
+    class PromisesResolver extends Resolver {
+        lookup(hostname, options) {
+            return new Promise((resolve, reject) =>
+                lookup(hostname, options, (err, address, family) =>
+                    err ? reject(err) : resolve({ address, family })));
+        }
+        lookupService(address, port) {
+            return new Promise((resolve, reject) =>
+                lookupService(address, port, (err, hostname, service) =>
+                    err ? reject(err) : resolve({ hostname, service })));
+        }
+        resolve(hostname, rrtype) {
+            return new Promise((resolve, reject) =>
+                super.resolve(hostname, rrtype || 'A', (err, addresses) =>
+                    err ? reject(err) : resolve(addresses)));
+        }
+        resolve4(hostname) { return this.resolve(hostname, 'A'); }
+        resolve6(hostname) { return this.resolve(hostname, 'AAAA'); }
+        resolveAny(hostname) { return this.resolve(hostname, 'ANY'); }
+        resolveCaa(hostname) { return this.resolve(hostname, 'CAA'); }
+        resolveCname(hostname) { return this.resolve(hostname, 'CNAME'); }
+        resolveMx(hostname) { return this.resolve(hostname, 'MX'); }
+        resolveNaptr(hostname) { return this.resolve(hostname, 'NAPTR'); }
+        resolveNs(hostname) { return this.resolve(hostname, 'NS'); }
+        resolvePtr(hostname) { return this.resolve(hostname, 'PTR'); }
+        resolveSoa(hostname) { return this.resolve(hostname, 'SOA'); }
+        resolveSrv(hostname) { return this.resolve(hostname, 'SRV'); }
+        resolveTxt(hostname) { return this.resolve(hostname, 'TXT'); }
+        reverse(ip) {
+            return new Promise((resolve, reject) =>
+                super.reverse(ip, (err, hostnames) =>
+                    err ? reject(err) : resolve(hostnames)));
+        }
+    }
+    const promisesResolver = new PromisesResolver();
+    callbackApi.promises = {
+        Resolver: PromisesResolver,
+        lookup: promisesResolver.lookup.bind(promisesResolver),
+        lookupService: promisesResolver.lookupService.bind(promisesResolver),
+        resolve: promisesResolver.resolve.bind(promisesResolver),
+        resolve4: promisesResolver.resolve4.bind(promisesResolver),
+        resolve6: promisesResolver.resolve6.bind(promisesResolver),
+        resolveAny: promisesResolver.resolveAny.bind(promisesResolver),
+        resolveCaa: promisesResolver.resolveCaa.bind(promisesResolver),
+        resolveCname: promisesResolver.resolveCname.bind(promisesResolver),
+        resolveMx: promisesResolver.resolveMx.bind(promisesResolver),
+        resolveNaptr: promisesResolver.resolveNaptr.bind(promisesResolver),
+        resolveNs: promisesResolver.resolveNs.bind(promisesResolver),
+        resolvePtr: promisesResolver.resolvePtr.bind(promisesResolver),
+        resolveSoa: promisesResolver.resolveSoa.bind(promisesResolver),
+        resolveSrv: promisesResolver.resolveSrv.bind(promisesResolver),
+        resolveTxt: promisesResolver.resolveTxt.bind(promisesResolver),
+        reverse: promisesResolver.reverse.bind(promisesResolver),
+        getServers: promisesResolver.getServers.bind(promisesResolver),
+        setServers: promisesResolver.setServers.bind(promisesResolver),
+        setDefaultResultOrder() {},
+        getDefaultResultOrder() { return 'verbatim'; },
+    };
+    return callbackApi;
 })();
 
 // ============================================================
@@ -3888,6 +4136,163 @@ const STATUS_CODES = {
 const HTTP_METHODS = [
     'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'CONNECT', 'TRACE',
 ];
+
+function makeNodeTypeError(message, code) {
+    const err = new TypeError(message);
+    err.code = code;
+    return err;
+}
+
+class IncomingMessage extends stream.Readable {
+    constructor(socket) {
+        super();
+        this.socket = socket;
+        this.headers = Object.create(null);
+        this.rawHeaders = [];
+        this.trailers = Object.create(null);
+        this.rawTrailers = [];
+        this.httpVersion = '1.1';
+        this.httpVersionMajor = 1;
+        this.httpVersionMinor = 1;
+        this.statusCode = 0;
+        this.statusMessage = '';
+        this.complete = false;
+        this.url = '';
+        this.method = null;
+    }
+    get connection() { return this.socket; }
+    set connection(value) { this.socket = value; }
+    _addHeaderLines(lines, n) {
+        for (let i = 0; i < n; i += 2) {
+            this.headers[String(lines[i]).toLowerCase()] = lines[i + 1];
+        }
+    }
+    _read() {}
+}
+
+class OutgoingMessage extends stream.Writable {
+    constructor() {
+        super();
+        this.destroyed = false;
+        this.headersSent = false;
+        this.finished = false;
+        this.writableEnded = false;
+        this._headerNames = Object.create(null);
+        this._headerValues = Object.create(null);
+    }
+    setHeader(name, value) {
+        const lk = String(name).toLowerCase();
+        this._headerNames[lk] = String(name);
+        this._headerValues[lk] = value;
+    }
+    getHeader(name) { return this._headerValues[String(name).toLowerCase()]; }
+    getHeaders() {
+        const out = Object.create(null);
+        for (const lk of Object.keys(this._headerValues)) out[lk] = this._headerValues[lk];
+        return out;
+    }
+    hasHeader(name) { return this.getHeader(name) !== undefined; }
+    removeHeader(name) {
+        const lk = String(name).toLowerCase();
+        delete this._headerNames[lk];
+        delete this._headerValues[lk];
+    }
+    flushHeaders() { this.headersSent = true; }
+    _write(chunk, encoding, cb) {
+        if (this.socket && typeof this.socket.write === 'function') {
+            this.socket.write(chunk, encoding, cb);
+        } else {
+            cb();
+        }
+    }
+    end(chunk, encoding, cb) {
+        if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
+        if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+        if (chunk != null) this.write(chunk, encoding);
+        if (this.socket && typeof this.socket.write === 'function') {
+            this.socket.write(Buffer.alloc(0), encoding || 'utf8', () => {});
+        }
+        this.finished = true;
+        this.headersSent = true;
+        this.writableEnded = true;
+        this.emit('finish');
+        if (cb) cb();
+        return this;
+    }
+    destroy(err) {
+        if (this.destroyed) return this;
+        this.destroyed = true;
+        if (err) this.emit('error', err);
+        this.emit('close');
+        return this;
+    }
+}
+
+class ServerResponse extends OutgoingMessage {
+    constructor(req) {
+        super();
+        this.req = req || null;
+        this.statusCode = 200;
+        this.statusMessage = STATUS_CODES[200];
+    }
+    writeHead(statusCode, statusMessage, headers) {
+        this.statusCode = statusCode;
+        if (typeof statusMessage === 'object') {
+            headers = statusMessage;
+        } else if (statusMessage !== undefined) {
+            this.statusMessage = String(statusMessage);
+        }
+        if (headers) {
+            for (const name of Object.keys(headers)) this.setHeader(name, headers[name]);
+        }
+        this.headersSent = true;
+        return this;
+    }
+    destroy(err) {
+        return super.destroy(err);
+    }
+}
+
+function Server(options, requestListener) {
+    if (!(this instanceof Server)) return new Server(options, requestListener);
+    if (typeof options === 'function') { requestListener = options; options = {}; }
+    this._events = Object.create(null);
+    this._maxListeners = events.defaultMaxListeners;
+    this.timeout = options?.timeout || 0;
+    this.listening = false;
+    this._address = null;
+    if (requestListener) this.on('request', requestListener);
+}
+Object.setPrototypeOf(Server, events);
+Server.prototype = Object.create(events.prototype);
+Object.defineProperty(Server.prototype, 'constructor', {
+    value: Server,
+    writable: true,
+    configurable: true,
+});
+Server.prototype.listen = function(port, host, cb) {
+    if (typeof host === 'function') { cb = host; host = undefined; }
+    if (typeof port === 'function') { cb = port; port = 0; }
+    this._address = { address: host || '::', port: port || 0, family: 'IPv6' };
+    this.listening = true;
+    if (cb) this.once('listening', cb);
+    queueMicrotask(() => this.emit('listening'));
+    return this;
+};
+Server.prototype.address = function() { return this._address; };
+Server.prototype.close = function(cb) {
+    this.listening = false;
+    if (cb) queueMicrotask(cb);
+    this.emit('close');
+    return this;
+};
+Server.prototype.setTimeout = function(ms, cb) {
+    this.timeout = ms;
+    if (cb) this.on('timeout', cb);
+    return this;
+};
+Server.prototype.ref = function() { return this; };
+Server.prototype.unref = function() { return this; };
 
 /* IncomingMessage parser — single instance per ClientRequest. Bytes from
    the socket arrive via feed() and trigger onHeaders / message.push().
@@ -4122,20 +4527,7 @@ function makeResponseParser({ onHeaders, onError, onComplete }) {
 }
 
 function makeIncomingMessage() {
-    const msg = new stream.Readable();
-    msg.headers = Object.create(null);
-    msg.rawHeaders = [];
-    msg.trailers = Object.create(null);
-    msg.rawTrailers = [];
-    msg.httpVersion = '1.1';
-    msg.httpVersionMajor = 1;
-    msg.httpVersionMinor = 1;
-    msg.statusCode = 0;
-    msg.statusMessage = '';
-    msg.complete = false;
-    msg.url = '';
-    msg.method = null;
-    return msg;
+    return new IncomingMessage();
 }
 
 function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
@@ -4216,11 +4608,14 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         return { opts, cb };
     }
 
-    class ClientRequest extends stream.Writable {
+    class ClientRequest extends OutgoingMessage {
         constructor(opts, cb) {
             super();
             this.method = (opts.method || 'GET').toUpperCase();
             this.path = opts.path || '/';
+            if (/[^\x21-\x7e]/.test(this.path)) {
+                throw makeNodeTypeError('Request path contains unescaped characters', 'ERR_UNESCAPED_CHARACTERS');
+            }
             this._host = opts.hostname || opts.host || 'localhost';
             // WHATWG URL gives `port = ''` when default; treat that like missing.
             this._port = (opts.port != null && opts.port !== '')
@@ -4537,12 +4932,38 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         return req;
     }
 
+    class Agent extends events.EventEmitter {
+        constructor(options) {
+            super();
+            this.options = options || {};
+            this.requests = Object.create(null);
+            this.sockets = Object.create(null);
+            this.freeSockets = Object.create(null);
+            this.keepAlive = !!this.options.keepAlive;
+            this.maxSockets = this.options.maxSockets ?? Infinity;
+            this.maxFreeSockets = this.options.maxFreeSockets ?? 256;
+            this.maxTotalSockets = this.options.maxTotalSockets ?? Infinity;
+            this.defaultPort = defaultPort;
+            this.protocol = protoLower;
+        }
+        getName(options = {}) {
+            const host = options.host || options.hostname || 'localhost';
+            const port = options.port || defaultPort;
+            const localAddress = options.localAddress || '';
+            const family = options.family || '';
+            return `${host}:${port}:${localAddress}:${family}`;
+        }
+        addRequest(_req, _options) {}
+        destroy() {}
+    }
+    const globalAgent = new Agent();
+
     return {
         STATUS_CODES, METHODS: HTTP_METHODS,
         request, get,
-        ClientRequest,
-        Agent: class Agent {},
-        globalAgent: {},
+        ClientRequest, IncomingMessage, OutgoingMessage, ServerResponse, Server,
+        Agent,
+        globalAgent,
         createServer() {
             throw new Error('http.createServer is not yet implemented (Phase 4 part 2 shipped client-side only)');
         },
@@ -4689,6 +5110,16 @@ const _builtinModules = {
     'tls': tls,
     'http': http,
     'https': https,
+    '_http_agent': { Agent: http.Agent, globalAgent: http.globalAgent },
+    '_http_client': { ClientRequest: http.ClientRequest },
+    '_http_common': { methods: HTTP_METHODS },
+    '_http_incoming': { IncomingMessage: http.IncomingMessage },
+    '_http_outgoing': { OutgoingMessage: http.OutgoingMessage },
+    '_http_server': {
+        Server: http.Server,
+        ServerResponse: http.ServerResponse,
+        STATUS_CODES: http.STATUS_CODES,
+    },
     'zlib': (() => {
         const z = _nodeNative;
         const toU8 = (b) => {
@@ -4760,16 +5191,8 @@ const _builtinModules = {
         toASCII(s) { return s; },
         toUnicode(s) { return s; },
     },
-    'dns': {
-        lookup(hostname, options, cb) {
-            if (typeof options === 'function') { cb = options; options = {}; }
-            cb(null, '127.0.0.1', 4);
-        },
-        resolve(hostname, rrtype, cb) {
-            if (typeof rrtype === 'function') { cb = rrtype; rrtype = 'A'; }
-            cb(null, ['127.0.0.1']);
-        },
-    },
+    'dns': dns,
+    'dns/promises': dns.promises,
     'readline': {
         createInterface(options) {
             const rl = new events.EventEmitter();
