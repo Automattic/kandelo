@@ -14,6 +14,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_WRAPPER="$REPO_ROOT/scripts/kandelo-js-shell-wrapper.sh"
 BROWSER_WRAPPER="$REPO_ROOT/scripts/kandelo-browser-js-shell-wrapper.sh"
+source "$REPO_ROOT/scripts/spidermonkey-known-skips.sh"
 
 HOST="both"
 SUITE="both"
@@ -39,27 +40,7 @@ FILTERED_JIT_FILES=()
 KANDELO_KNOWN_SKIP_FILES=()
 NEXT_KNOWN_SKIP_FILES=()
 
-# Kandelo's wasm32 SpiderMonkey build does not provide native 64-bit atomic
-# operations, so BigInt64Array/BigUint64Array atomics crash the browser-hosted
-# shell with MOZ_CRASH("No 64-bit atomics"). Keep these browser-only and
-# file-scoped so the rest of the atomics directories continue to run.
 FILTERED_JSTEST_SELECTORS=()
-KANDELO_BROWSER_WASM32_KNOWN_JIT_SKIP_FILES=(
-  "atomics/bigint-add-for-effect.js"
-  "atomics/bigint-add.js"
-  "atomics/bigint-and-for-effect.js"
-  "atomics/bigint-and.js"
-  "atomics/bigint-compareExchange.js"
-  "atomics/bigint-exchange.js"
-  "atomics/bigint-load.js"
-  "atomics/bigint-or-for-effect.js"
-  "atomics/bigint-or.js"
-  "atomics/bigint-store.js"
-  "atomics/bigint-sub-for-effect.js"
-  "atomics/bigint-sub.js"
-  "atomics/bigint-xor-for-effect.js"
-  "atomics/bigint-xor.js"
-)
 
 usage() {
   cat <<EOF
@@ -270,42 +251,12 @@ rel_jstest_path() {
   printf '%s\n' "${file#$SM_SOURCE/js/src/tests/}"
 }
 
-rel_suite_test_path() {
-  local suite="$1"
-  local file="$2"
-  case "$suite" in
-    jstests)
-      rel_jstest_path "$file"
-      ;;
-    jit-tests)
-      rel_jit_test_path "$file"
-      ;;
-    *)
-      printf '%s\n' "$file"
-      ;;
-  esac
-}
-
-is_kandelo_browser_wasm32_known_jstest_skip() {
+is_kandelo_known_jstest_skip() {
   local host="$1"
   local file="$2"
   local rel
-  if [ "$host" != "browser" ]; then
-    return 1
-  fi
   rel="$(rel_jstest_path "$file")"
-  case "$rel" in
-    test262/staging/sm/expressions/destructuring-pattern-parenthesized.js|\
-    test262/staging/sm/expressions/optional-chain-super-elem.js|\
-    test262/staging/sm/expressions/optional-chain-tdz.js|\
-    test262/staging/sm/extensions/recursion.js)
-      return 0
-      ;;
-    test262/built-ins/Atomics/*/bigint/*.js)
-      return 0
-      ;;
-  esac
-  return 1
+  kandelo_known_jstest_skip_reason "$host" "$rel" >/dev/null
 }
 
 is_kandelo_browser_wasm32_known_jstest_skip_dir() {
@@ -329,17 +280,8 @@ is_kandelo_browser_wasm32_known_jit_skip() {
   local host="$1"
   local file="$2"
   local rel
-  if [ "$host" != "browser" ]; then
-    return 1
-  fi
   rel="$(rel_jit_test_path "$file")"
-  local known
-  for known in "${KANDELO_BROWSER_WASM32_KNOWN_JIT_SKIP_FILES[@]}"; do
-    if [ "$rel" = "$known" ]; then
-      return 0
-    fi
-  done
-  return 1
+  kandelo_known_jit_skip_reason "$host" "$rel" >/dev/null
 }
 
 filter_kandelo_known_jit_skips() {
@@ -365,7 +307,7 @@ filter_kandelo_known_jstest_skips() {
   local selector file
   for selector in "$@"; do
     file="$SM_SOURCE/js/src/tests/$selector"
-    if [ -f "$file" ] && is_kandelo_browser_wasm32_known_jstest_skip "$host" "$file"; then
+    if [ -f "$file" ] && is_kandelo_known_jstest_skip "$host" "$file"; then
       KANDELO_KNOWN_SKIP_FILES+=("$file")
     else
       FILTERED_JSTEST_SELECTORS+=("$selector")
@@ -380,63 +322,10 @@ queue_known_skip_entries() {
   fi
 }
 
-jitflag_variant_count() {
-  case "$JITFLAGS" in
-    all) printf '6\n' ;;
-    jstests) printf '4\n' ;;
-    ion) printf '2\n' ;;
-    debug) printf '3\n' ;;
-    tsan) printf '3\n' ;;
-    baseline|interp|none) printf '1\n' ;;
-    *) printf '1\n' ;;
-  esac
-}
-
-expected_jstest_variant_count() {
-  case "$JSTEST_JITFLAGS" in
-    all|jstests) printf '4\n' ;;
-    ion) printf '2\n' ;;
-    debug) printf '3\n' ;;
-    baseline|interp|none) printf '1\n' ;;
-    *) printf '1\n' ;;
-  esac
-}
-
-known_skip_entry_count() {
-  local suite="$1"
-  local file="$2"
-  if [ "$suite" = "jstests" ]; then
-    expected_jstest_variant_count
-    return 0
-  fi
-  if [ "$suite" != "jit-tests" ]; then
-    printf '1\n'
-    return 0
-  fi
-  local count joins
-  count="$(jitflag_variant_count)"
-  joins="$({ head -n 1 "$file" | grep -o 'test-join=' || true; } | wc -l | tr -d ' ')"
-  while [ "$joins" -gt 0 ]; do
-    count=$((count * 2))
-    joins=$((joins - 1))
-  done
-  printf '%s\n' "$count"
-}
-
 write_known_skip_entries() {
   local suite="$1"
   shift
-  local file rel count index
-  for file in "$@"; do
-    rel="$(rel_suite_test_path "$suite" "$file")"
-    count="$(known_skip_entry_count "$suite" "$file")"
-    index=1
-    while [ "$index" -le "$count" ]; do
-      printf 'TEST-KNOWN-FAIL | %s | skipped: known Kandelo browser wasm32 SpiderMonkey limitation (variant %s/%s)\n' \
-        "$rel" "$index" "$count"
-      index=$((index + 1))
-    done
-  done
+  kandelo_write_known_skip_entries "$suite" "$CURRENT_HOST" "$@"
 }
 
 should_skip_chunk() {

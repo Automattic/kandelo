@@ -38,6 +38,14 @@ lacks native 64-bit atomic operations, and those tests otherwise crash the
 shell with `MOZ_CRASH("No 64-bit atomics")`; the rest of the atomics
 directories still run normally.
 
+The official runners also share a small stack-stress exclusion policy for
+tests that recurse through SpiderMonkey's wasm frames until the host worker's
+WebAssembly call stack is exhausted before the shell can report a guest
+`InternalError`. On the Node host this currently covers
+`non262/extensions/array-isArray-proxy-recursion.js` and
+`non262/regress/regress-311629.js`; the browser host keeps the same policy
+shape for its existing recursion outlier.
+
 ## Harness Shape
 
 The Node host path starts `scripts/kandelo-node-js-shell-server.ts`, which keeps

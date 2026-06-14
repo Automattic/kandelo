@@ -10,6 +10,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_WRAPPER="$REPO_ROOT/scripts/kandelo-js-shell-wrapper.sh"
 BROWSER_WRAPPER="$REPO_ROOT/scripts/kandelo-browser-js-shell-wrapper.sh"
+source "$REPO_ROOT/scripts/spidermonkey-known-skips.sh"
 
 HOST="both"
 SUITE="both"
@@ -24,6 +25,8 @@ EXTRA_ARGS=()
 JS_SHELL_WRAPPER="$NODE_WRAPPER"
 NODE_SERVER_PID=""
 BROWSER_SERVER_PID=""
+FILTERED_JSTEST_ARGS=()
+KANDELO_KNOWN_SKIP_FILES=()
 
 usage() {
   cat <<EOF
@@ -180,6 +183,26 @@ fi
 
 chmod +x "$NODE_WRAPPER" "$BROWSER_WRAPPER"
 
+filter_kandelo_known_jstest_args() {
+  local host="$1"
+  shift
+  FILTERED_JSTEST_ARGS=()
+  KANDELO_KNOWN_SKIP_FILES=()
+
+  local arg file rel
+  for arg in "$@"; do
+    file="$SM_SOURCE/js/src/tests/$arg"
+    if [ -f "$file" ]; then
+      rel="$(kandelo_rel_jstest_path "$file")"
+      if kandelo_known_jstest_skip_reason "$host" "$rel" >/dev/null; then
+        KANDELO_KNOWN_SKIP_FILES+=("$file")
+        continue
+      fi
+    fi
+    FILTERED_JSTEST_ARGS+=("$arg")
+  done
+}
+
 start_browser_shell_bridge() {
   local port="${SPIDERMONKEY_BROWSER_JS_SHELL_PORT:-5312}"
   export SPIDERMONKEY_BROWSER_JS_SHELL_PORT="$port"
@@ -252,6 +275,14 @@ run_jstests() {
   fi
 
   echo "===== Official SpiderMonkey jstests on Kandelo $CURRENT_HOST host ====="
+  filter_kandelo_known_jstest_args "$CURRENT_HOST" "${args[@]}"
+  if [ "${#KANDELO_KNOWN_SKIP_FILES[@]}" -gt 0 ]; then
+    kandelo_write_known_skip_entries jstests "$CURRENT_HOST" "${KANDELO_KNOWN_SKIP_FILES[@]}"
+    if [ "${#FILTERED_JSTEST_ARGS[@]}" -eq 0 ]; then
+      return 0
+    fi
+  fi
+
   export SPIDERMONKEY_WRAPPER_TIMEOUT_MS="${SPIDERMONKEY_WRAPPER_TIMEOUT_MS:-$((TIMEOUT * 1000 + 30000))}"
   python3 "$SM_SOURCE/js/src/tests/jstests.py" \
     --no-progress \
@@ -263,7 +294,7 @@ run_jstests() {
     --worker-count "$JOBS" \
     --timeout "$TIMEOUT" \
     "$JS_SHELL_WRAPPER" \
-    ${args[@]+"${args[@]}"}
+    ${FILTERED_JSTEST_ARGS[@]+"${FILTERED_JSTEST_ARGS[@]}"}
 }
 
 run_jit_tests() {
