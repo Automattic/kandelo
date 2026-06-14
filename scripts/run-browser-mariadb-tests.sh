@@ -86,19 +86,237 @@ CURATED_TESTS=(
 )
 
 # ── Expected failures in browser ──
-# Tests in the curated set that may intermittently fail due to
-# browser resource constraints or timing issues.
+#
+# The browser full-suite runner shares the Node wrapper's PASS/FAIL/XFAIL/XPASS
+# contract, but keeps a separate list because browser full-suite artifacts have
+# additional VFS and storage-state follow-ups that must stay visible as
+# unexpected failures. Only classify known MariaDB build/MTR limitations here:
+# release/debug-only tests, disabled event scheduler/plugins, unsupported native
+# helper/client/shell commands, and expected-result differences from the
+# Aria-only wasm build. See docs/mariadb-project-tests.md.
+#
+# The curated browser set is expected to pass in focused/default runs. If a
+# curated test also appears below as a historical full-suite limitation, keep it
+# as expected-pass so the default smoke does not turn green tests into XPASS.
+BROWSER_EXPECTED_PASS=("${CURATED_TESTS[@]}")
+
 BROWSER_EXPECTED_FAIL=(
-    # These may fail under heavy resource pressure
+    # release/debug-only surface absent in the production MariaDB build
+    alter_table_debug
+    alter_table_upgrade_myisam_debug
+    analyze_debug
+    cache_temporal_4265
+    connect2
+    connect_debug
+    frm-debug
+    func_debug
+    func_regexp_pcre_debug
+    gis-debug
+    invisible_field_debug
+    invisible_field_grant_completely
+    join_cache_debug
+    json_debug_nonembedded_noasan
+    log_slow_debug
+    long_unique_debug
+    merge_debug
+    myisam_debug
+    myisam_debug_keys
+    mysqltest_tracking_info_debug
+    select_debug
+    sequence_debug
+    subselect_debug
+    system_time_debug
+    table_elim_debug
+    type_temporal_mysql56_debug
+    warnings_debug
+
+    # event scheduler and dynamic plugin expectations not available in browser
+    events_1
+    events_2
+    events_bugs
+    events_grant
+    events_scheduling
+    events_slowlog
+    events_trans
+    events_trans_notembedded
+    plugin
+    plugin_innodb
+    plugin_load
+    plugin_load_option
+    plugin_loaderr
+    plugin_not_embedded
+
+    # unsupported native helper/client/shell/perl commands in upstream MTR tests
+    analyze_stmt_slow_query_log
+    binary_to_hex
+    bootstrap
+    bug47671
+    client
+    client_xml
+    crash_commit_before
+    ctype_upgrade
+    ctype_utf32_not_embedded
+    ddl_i18n_koi8r
+    ddl_i18n_utf8
+    delayed
+    delimiter_command_case_sensitivity
+    dirty_close
+    distinct
+    distinct_notembedded
+    drop
+    drop_bad_db_type
+    drop_combinations
+    empty_server_name-8224
+    file_contents
+    grant_not_windows
+    ipv4_and_ipv6
+    ipv6
+    load_timezones_with_alter_algorithm_inplace
+    log_errchk
+    log_slow
+    my_print_defaults
+    myisampack
+    mysql
+    mysql-bug41486
+    mysql-bug45236
+    mysql-metadata
+    mysql_comments
+    mysql_cp932
+    mysql_locale_posix
+    mysql_not_windows
+    mysql_protocols
+    mysql_tzinfo_to_sql_symlink
+    mysql_upgrade
+    mysql_upgrade-20228
+    mysql_upgrade-6984
+    mysql_upgrade_file_leak
+    mysql_upgrade_mysql_json_system_tables
+    mysql_upgrade_no_innodb
+    mysql_upgrade_to_100502
+    mysqladmin
+    mysqlcheck
+    mysqld--defaults-file
+    mysqld--help-aria
+    mysqld_help_crash-9183
+    mysqld_option_err
+    mysqldump-compat
+    mysqldump-compat-102
+    mysqldump-nl
+    mysqldump-no-binlog
+    mysqldump-timing
+    mysqldump-utf8mb4
+    mysqlhotcopy_myisam
+    mysqlshow
+    mysqlslap
+    not_embedded_server
+    parser_not_embedded
+    partition_not_windows
+    repair_symlink-5543
+    shutdown_not_windows
+    symlink
+    temp_table_symlink
+
+    # Aria-only wasm build and upstream expected-result mismatches
+    ctype_eucjpms
+    ctype_like_range
+    ctype_utf16
+    ctype_utf16le
+    ctype_utf32
+    func_json
+    insert
+    invisible_field
+    long_unique
+    long_unique_bugs
+    long_unique_using_hash
+    old-mode
+    partition
+    partition_alter
+    partition_datatype
+    partition_example
+    partition_exchange
+    partition_innodb
+    partition_innodb_semi_consistent
+    partition_key_cache
+    partition_mgm
+    partition_mgm_err2
+    partition_range
+    password_expiration
+    ps_2myisam
+    ps_5merge
+    ps_ddl
+    ps_error
+    range_innodb
+    range_interrupted-13751
+    rowid_filter_innodb
+    select_safe
+    selectivity_no_engine
+    servers
+    show_check
+    signal_code
+    skip_grants
+    skip_name_resolve
+    slowlog_enospace-10508
+    slowlog_integrity
+    sp-code
+    sp-lock
+    sp-security
+    sp-security-anchor-type
+    sp2
+    sp_notembedded
+    sql_mode
+    sql_safe_updates
+    ssl_verify_ip
+    stat_tables_innodb
+    statistics
+    statistics_index_crash-7362
+    status
+    status2
+    strict
+    subselect3
+    sum_distinct
+    type_blob
+    type_date
+    type_datetime
+    type_timestamp
+    type_timestamp_round
+    union
+    union_crash-714
+    unique
+    upgrade
+    upgrade_MDEV-19650
+    upgrade_MDEV-23102-1
+    upgrade_MDEV-23102-2
+    upgrade_geometrycolumn_procedure_definer
+    upgrade_mdev_24363
+    variables
+    variables-notembedded
+    wait_timeout
 )
 
 # ── Helpers ──
 
+matches_test_pattern() {
+    local test_name="$1"
+    shift
+    for pattern in "$@"; do
+        [ "$pattern" = "$test_name" ] && return 0
+        if [[ "$pattern" == *"*"* ]]; then
+            case "$test_name" in
+                $pattern) return 0 ;;
+            esac
+        fi
+    done
+    return 1
+}
+
 is_expected_fail() {
     local test_name="$1"
-    for pattern in "${BROWSER_EXPECTED_FAIL[@]+"${BROWSER_EXPECTED_FAIL[@]}"}"; do
-        [ "$pattern" = "$test_name" ] && return 0
-    done
+    if matches_test_pattern "$test_name" "${BROWSER_EXPECTED_PASS[@]+"${BROWSER_EXPECTED_PASS[@]}"}"; then
+        return 1
+    fi
+    if matches_test_pattern "$test_name" "${BROWSER_EXPECTED_FAIL[@]+"${BROWSER_EXPECTED_FAIL[@]}"}"; then
+        return 0
+    fi
     return 1
 }
 
