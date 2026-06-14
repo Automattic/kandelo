@@ -2242,9 +2242,15 @@ fn mq_would_block_result(timeout_ptr: usize, table: &crate::mqueue::MqueueTable,
 pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
     use wasm_posix_shared::channel::*;
 
-    // Set current process for dispatch
-    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.set_current_pid(pid);
+    {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        if table.get(pid).is_none() {
+            let result = -(Errno::ESRCH as i32);
+            write_channel_result(offset, result);
+            return result;
+        }
+        table.set_current_pid(pid);
+    }
 
     // Read syscall number and args from kernel memory
     let base = offset;
@@ -2285,7 +2291,13 @@ pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
 
     let result = dispatch_channel_syscall(syscall_nr, &args);
 
-    // Write result back to channel
+    write_channel_result(base, result);
+    result
+}
+
+fn write_channel_result(base: usize, result: i32) {
+    use wasm_posix_shared::channel::*;
+
     let out = unsafe {
         let ptr = base as *mut u8;
         core::slice::from_raw_parts_mut(ptr, MIN_CHANNEL_SIZE)
@@ -2304,8 +2316,6 @@ pub extern "C" fn kernel_handle_channel(offset: usize, pid: u32) -> i32 {
 
     out[RETURN_OFFSET..RETURN_OFFSET + 8].copy_from_slice(&ret_val.to_le_bytes());
     out[ERRNO_OFFSET..ERRNO_OFFSET + 4].copy_from_slice(&errno_val.to_le_bytes());
-
-    result
 }
 
 /// Compute the length of a null-terminated C string at `ptr` in kernel memory.
