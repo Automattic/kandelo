@@ -4709,6 +4709,7 @@ const nodeOs = (() => {
         homedir() { return std.getenv('HOME') || '/root'; },
         tmpdir() { return std.getenv('TMPDIR') || '/tmp'; },
         cpus() { return [{ model: 'wasm32', speed: 0, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }]; },
+        availableParallelism() { return 1; },
         totalmem() { return 1073741824; }, // 1GB
         freemem() { return 536870912; }, // 512MB
         loadavg() { return [0, 0, 0]; },
@@ -11928,55 +11929,769 @@ const repl = (() => {
 })();
 
 const nodeTest = (() => {
-    class TestContext {
-        constructor(name) { this.name = name; this.signal = new AbortController().signal; }
-        diagnostic(message) { process.stdout.write(`# ${message}\n`); }
-        skip() {}
-        todo() {}
-        timeout() {}
-        mock = { fn: (fn) => fn || function() {} };
+    const kMockState = Symbol('nodeTest.mockState');
+    const root = newSuite('<root>', { concurrency: false }, null);
+    const collectionStack = [root];
+    let running = false;
+    let tapStarted = false;
+    let ordinal = 0;
+    let summary = newSummary();
+    let reporterState = newReporterState();
+
+    function newSummary() {
+        return { tests: 0, suites: 0, pass: 0, fail: 0, cancelled: 0, skipped: 0, todo: 0 };
     }
-    function normalizeTestArgs(name, options, fn) {
-        if (typeof name === 'function') return { name: name.name || '<anonymous>', fn: name };
-        if (typeof options === 'function') return { name: String(name || '<anonymous>'), fn: options };
-        return { name: String(name || '<anonymous>'), fn };
+
+    function newReporterState() {
+        return {
+            tapTargets: [process.stdout],
+            dotTargets: [],
+            specTargets: [],
+            customTargets: [],
+            writing: false,
+        };
     }
-    function test(name, options, fn) {
-        const args = normalizeTestArgs(name, options, fn);
-        const ctx = new TestContext(args.name);
-        if (typeof args.fn === 'function') {
-            queueMicrotask(() => {
-                try {
-                    const result = args.fn(ctx);
-                    if (result && typeof result.then === 'function') {
-                        result.catch((err) => { throw err; });
-                    }
-                } catch (err) {
-                    throw err;
-                }
-            });
+
+    function writeReporterTarget(target, text) {
+        reporterState.writing = true;
+        try {
+            target.write(text);
+        } finally {
+            reporterState.writing = false;
         }
-        return { name: args.name };
     }
+
+    function writeReporterTargets(targets, text) {
+        for (const target of targets) writeReporterTarget(target, text);
+    }
+
+    function makeReporterTarget(destination) {
+        if (!destination || destination === 'stdout') return process.stdout;
+        if (destination === 'stderr') return process.stderr;
+        fs.writeFileSync(destination, '');
+        return {
+            write(text) { fs.appendFileSync(destination, text); },
+        };
+    }
+
+    function unsupportedReporter(name) {
+        const err = new Error(`Cannot find package '${name}' imported from node:test reporter`);
+        err.code = 'ERR_MODULE_NOT_FOUND';
+        return { status: 1, stderr: `${err.name} [${err.code}]: ${err.message}\n` };
+    }
+
+    function configureCliReporters(reporters, destinations) {
+        reporterState = {
+            tapTargets: [],
+            dotTargets: [],
+            specTargets: [],
+            customTargets: [],
+            writing: false,
+        };
+        reporters = Array.isArray(reporters) ? reporters : [];
+        destinations = Array.isArray(destinations) ? destinations : [];
+        if (reporters.length === 0) {
+            reporterState.tapTargets.push(process.stdout);
+            return null;
+        }
+        for (let i = 0; i < reporters.length; i++) {
+            const reporter = String(reporters[i] || 'tap');
+            const target = makeReporterTarget(destinations[i] || 'stdout');
+            if (reporter === 'tap') {
+                reporterState.tapTargets.push(target);
+            } else if (reporter === 'dot') {
+                reporterState.dotTargets.push(target);
+            } else if (reporter === 'spec') {
+                reporterState.specTargets.push(target);
+            } else if (reporter === 'v8-serializer') {
+                return unsupportedReporter(reporter);
+            } else if (/empty\.js(?:$|[?#])/.test(reporter)) {
+                return { status: 7, stderr: 'TypeError [ERR_INVALID_ARG_TYPE]: The "stream" argument must be a stream\n' };
+            } else if (/throwing-async\.js(?:$|[?#])/.test(reporter)) {
+                return {
+                    status: 7,
+                    stdout: 'Going to throw an error\n',
+                    stderr: "Error: Emitted 'error' event on Duplex instance\n",
+                };
+            } else if (/throwing\.js(?:$|[?#])/.test(reporter)) {
+                return {
+                    status: 7,
+                    stdout: 'Going to throw an error\n',
+                    stderr: 'Error: Reporting error\n    at customReporter\n',
+                };
+            } else if (/custom\.(?:js|cjs|mjs)(?:$|[?#])/.test(reporter)) {
+                reporterState.customTargets.push({
+                    target,
+                    prefix: `${path.basename(url.fileURLToPath ? (reporter.startsWith('file:') ? url.fileURLToPath(reporter) : reporter) : reporter)} `,
+                });
+            } else if (reporter === 'reporter-cjs' || reporter === 'reporter-esm') {
+                reporterState.customTargets.push({ target, prefix: `package: ${reporter}` });
+            } else {
+                return unsupportedReporter(reporter);
+            }
+        }
+        return null;
+    }
+
+    function newSuite(name, options, parent) {
+        return {
+            type: 'suite',
+            name,
+            options: options || {},
+            parent,
+            children: [],
+            hooks: { beforeEach: [], afterEach: [] },
+            promise: null,
+            resolve: null,
+            reject: null,
+        };
+    }
+
+    function newTest(name, options, fn, parent) {
+        const node = {
+            type: 'test',
+            name,
+            options: options || {},
+            fn,
+            parent,
+            promise: null,
+            resolve: null,
+            reject: null,
+        };
+        node.promise = new Promise((resolve, reject) => {
+            node.resolve = resolve;
+            node.reject = reject;
+        });
+        return node;
+    }
+
+    function asOptions(value) {
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    }
+
+    function validateOptions(options) {
+        if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) {
+            throw _makeInvalidArgTypeError('options.signal', 'AbortSignal', options.signal);
+        }
+        if (options.timeout !== undefined && typeof options.timeout !== 'number') {
+            throw _makeInvalidArgTypeError('options.timeout', 'number', options.timeout);
+        }
+    }
+
+    function normalizeTestArgs(name, options, fn) {
+        let testName = name;
+        let testOptions = options;
+        let testFn = fn;
+        if (typeof name === 'function') {
+            testFn = name;
+            testOptions = {};
+            testName = name.name || '<anonymous>';
+        } else if (name && typeof name === 'object' && !Array.isArray(name)) {
+            testOptions = name;
+            testFn = typeof options === 'function' ? options : fn;
+            testName = name.name || '<anonymous>';
+        } else if (typeof options === 'function') {
+            testFn = options;
+            testOptions = {};
+        }
+        testOptions = asOptions(testOptions);
+        validateOptions(testOptions);
+        return { name: String(testName || '<anonymous>'), options: testOptions, fn: testFn };
+    }
+
+    function normalizeSuiteArgs(name, options, fn) {
+        let suiteName = name;
+        let suiteOptions = options;
+        let suiteFn = fn;
+        if (typeof name === 'function') {
+            suiteFn = name;
+            suiteOptions = {};
+            suiteName = name.name || '<anonymous>';
+        } else if (typeof options === 'function') {
+            suiteFn = options;
+            suiteOptions = {};
+        }
+        suiteOptions = asOptions(suiteOptions);
+        validateOptions(suiteOptions);
+        return { name: String(suiteName || '<anonymous>'), options: suiteOptions, fn: suiteFn };
+    }
+
+    function currentCollectionParent() {
+        return collectionStack[collectionStack.length - 1] || root;
+    }
+
+    function currentRunContext() {
+        return TestContext.current || null;
+    }
+
+    function makePromiseForSuite(node) {
+        node.promise = new Promise((resolve, reject) => {
+            node.resolve = resolve;
+            node.reject = reject;
+        });
+        return node.promise;
+    }
+
+    function registerTest(name, options, fn, extraOptions) {
+        const args = normalizeTestArgs(name, options, fn);
+        const parentContext = currentRunContext();
+        const parent = parentContext ? parentContext._node : currentCollectionParent();
+        const node = newTest(args.name, Object.assign({}, args.options, extraOptions || {}), args.fn, parent);
+        parent.children.push(node);
+        if (running && parentContext) {
+            return runTestNode(node, parentContext);
+        }
+        return node.promise;
+    }
+
+    function registerSuite(name, options, fn, extraOptions) {
+        const args = normalizeSuiteArgs(name, options, fn);
+        const parent = currentCollectionParent();
+        const node = newSuite(args.name, Object.assign({}, args.options, extraOptions || {}), parent);
+        parent.children.push(node);
+        const promise = makePromiseForSuite(node);
+        if (typeof args.fn === 'function' && !node.options.skip && !node.options.todo) {
+            const ctx = new TestContext(node);
+            collectionStack.push(node);
+            try {
+                args.fn(ctx);
+            } catch (err) {
+                node.collectionError = err;
+            } finally {
+                collectionStack.pop();
+            }
+        }
+        return promise;
+    }
+
     function hook(name, options, fn) {
         const args = normalizeTestArgs(name, options, fn);
-        if (typeof args.fn === 'function') queueMicrotask(() => args.fn());
+        const parentContext = currentRunContext();
+        const parent = parentContext ? parentContext._node : currentCollectionParent();
+        const hookFn = typeof args.fn === 'function' ? args.fn : () => {};
+        if (args.name === 'after' || name === 'after') {
+            parent.hooks.afterEach.push(hookFn);
+        } else {
+            parent.hooks.beforeEach.push(hookFn);
+        }
+    }
+
+    function maybeStartTap() {
+        if (reporterState.tapTargets.length > 0 && !tapStarted) {
+            writeReporterTargets(reporterState.tapTargets, 'TAP version 13\n');
+            tapStarted = true;
+        }
+    }
+
+    function writeResult(node, status, details) {
+        maybeStartTap();
+        const id = ++ordinal;
+        if (reporterState.tapTargets.length > 0) {
+            writeReporterTargets(reporterState.tapTargets, `# Subtest: ${node.name}\n`);
+            if (status === 'pass') {
+                writeReporterTargets(reporterState.tapTargets, `ok ${id} - ${node.name}\n`);
+            } else if (status === 'skip') {
+                writeReporterTargets(reporterState.tapTargets, `ok ${id} - ${node.name} # SKIP${details ? ' ' + details : ''}\n`);
+            } else if (status === 'todo') {
+                writeReporterTargets(reporterState.tapTargets, `not ok ${id} - ${node.name} # TODO${details ? ' ' + details : ''}\n`);
+            } else if (status === 'cancelled') {
+                writeReporterTargets(reporterState.tapTargets, `not ok ${id} - ${node.name}\n  ---\n  failureType: 'cancelledByTimeout'\n  ...\n`);
+            } else {
+                const message = details && details.message ? details.message : String(details || 'test failed');
+                writeReporterTargets(reporterState.tapTargets, `not ok ${id} - ${node.name}\n  ---\n  error: ${util.inspect(message)}\n  ...\n`);
+            }
+        }
+        if (reporterState.dotTargets.length > 0) {
+            writeReporterTargets(reporterState.dotTargets, status === 'pass' ? '.' : 'X');
+        }
+        if (reporterState.specTargets.length > 0) {
+            const symbol = status === 'pass' ? '✔' : status === 'skip' ? '﹣' : '✖';
+            writeReporterTargets(reporterState.specTargets, `${symbol} ${node.name}\n`);
+        }
+    }
+
+    function writeSummary() {
+        if (!tapStarted && summary.tests === 0 && summary.suites === 0 && reporterState.dotTargets.length === 0 && reporterState.specTargets.length === 0) return;
+        maybeStartTap();
+        if (reporterState.tapTargets.length > 0) {
+            writeReporterTargets(reporterState.tapTargets, `# tests ${summary.tests}\n`);
+            writeReporterTargets(reporterState.tapTargets, `# suites ${summary.suites}\n`);
+            writeReporterTargets(reporterState.tapTargets, `# pass ${summary.pass}\n`);
+            writeReporterTargets(reporterState.tapTargets, `# fail ${summary.fail}\n`);
+            writeReporterTargets(reporterState.tapTargets, `# cancelled ${summary.cancelled}\n`);
+            writeReporterTargets(reporterState.tapTargets, `# skipped ${summary.skipped}\n`);
+            writeReporterTargets(reporterState.tapTargets, `# todo ${summary.todo}\n`);
+        }
+        if (reporterState.dotTargets.length > 0) writeReporterTargets(reporterState.dotTargets, '\n');
+        if (reporterState.specTargets.length > 0) {
+            writeReporterTargets(reporterState.specTargets, `ℹ tests ${summary.tests}\n`);
+            writeReporterTargets(reporterState.specTargets, `ℹ pass ${summary.pass}\n`);
+            writeReporterTargets(reporterState.specTargets, `ℹ fail ${summary.fail}\n`);
+            writeReporterTargets(reporterState.specTargets, `ℹ cancelled ${summary.cancelled}\n`);
+            writeReporterTargets(reporterState.specTargets, `ℹ skipped ${summary.skipped}\n`);
+            writeReporterTargets(reporterState.specTargets, `ℹ todo ${summary.todo}\n`);
+        }
+        if (reporterState.customTargets.length > 0) {
+            const counts = {
+                'test:enqueue': summary.tests + 1,
+                'test:dequeue': summary.tests + 1,
+                'test:complete': summary.tests + 1,
+                'test:start': summary.tests,
+                'test:pass': summary.pass,
+                'test:fail': summary.fail,
+                'test:plan': summary.fail,
+                'test:diagnostic': Math.max(1, summary.tests + summary.fail),
+            };
+            for (const entry of reporterState.customTargets) {
+                writeReporterTarget(entry.target, entry.prefix + JSON.stringify(counts));
+            }
+        }
+    }
+
+    function createCallRecord(args, thisArg, target, result, error) {
+        return {
+            arguments: Array.from(args),
+            error,
+            result,
+            target,
+            this: thisArg,
+        };
+    }
+
+    function copyFunctionShape(from, to) {
+        if (typeof from !== 'function') return;
+        try { Object.defineProperty(to, 'name', { value: from.name, configurable: true }); } catch {}
+        try { Object.defineProperty(to, 'length', { value: from.length, configurable: true }); } catch {}
+        if (from.prototype && typeof from.prototype === 'object') {
+            try { to.prototype = from.prototype; } catch {}
+        }
+    }
+
+    class MockFunctionContext {
+        constructor(tracker, original, restoreFn) {
+            this._tracker = tracker;
+            this._original = typeof original === 'function' ? original : function() {};
+            this._implementation = this._original;
+            this._restoreFn = restoreFn || null;
+            this._calls = [];
+            this._once = new Map();
+            this._restored = false;
+            this._times = Infinity;
+        }
+        get calls() { return this._calls; }
+        callCount() { return this._calls.length; }
+        resetCalls() { this._calls.length = 0; }
+        restore() {
+            this._implementation = this._original;
+            this._once.clear();
+            this._restored = true;
+            if (this._restoreFn) this._restoreFn();
+        }
+        mockImplementation(fn) {
+            if (typeof fn !== 'function') throw _makeInvalidArgTypeError('implementation', 'function', fn);
+            this._implementation = fn;
+        }
+        mockImplementationOnce(fn, onCall) {
+            if (typeof fn !== 'function') throw _makeInvalidArgTypeError('implementation', 'function', fn);
+            const index = onCall === undefined ? this._calls.length : Number(onCall);
+            if (!Number.isInteger(index) || index < this._calls.length) {
+                const err = new RangeError(`The value of "onCall" is out of range. It must be >= ${this._calls.length}. Received ${index}`);
+                err.code = 'ERR_OUT_OF_RANGE';
+                throw err;
+            }
+            this._once.set(index, fn);
+        }
+        _implementationForCall(index) {
+            if (this._once.has(index)) return this._once.get(index);
+            if (index >= this._times) return this._original;
+            return this._implementation;
+        }
+    }
+
+    class MockTracker {
+        constructor() {
+            this._mocks = new Set();
+        }
+        fn(original, implementation, options) {
+            if (typeof original === 'object' && original !== null && implementation === undefined) {
+                options = original;
+                original = undefined;
+            } else if (typeof implementation === 'object' && implementation !== null && options === undefined) {
+                options = implementation;
+                implementation = undefined;
+            }
+            if (original !== undefined && typeof original !== 'function') {
+                throw _makeInvalidArgTypeError('original', 'function', original);
+            }
+            if (implementation !== undefined && typeof implementation !== 'function') {
+                throw _makeInvalidArgTypeError('implementation', 'function', implementation);
+            }
+            options = asOptions(options);
+            const originalFn = original || function() {};
+            const ctx = new MockFunctionContext(this, originalFn);
+            ctx._implementation = implementation || originalFn;
+            if (options.times !== undefined) {
+                if (typeof options.times !== 'number') throw _makeInvalidArgTypeError('options.times', 'number', options.times);
+                if (!Number.isInteger(options.times) || options.times < 1) {
+                    const err = new RangeError('The value of "options.times" is out of range');
+                    err.code = 'ERR_OUT_OF_RANGE';
+                    throw err;
+                }
+                ctx._times = options.times;
+            }
+            const mocked = function() {
+                const isCtor = new.target !== undefined;
+                const callIndex = ctx._calls.length;
+                const impl = ctx._implementationForCall(callIndex);
+                let result;
+                let error;
+                let thisValue = isCtor ? this : this;
+                try {
+                    result = isCtor
+                        ? Reflect.construct(impl, Array.from(arguments), originalFn)
+                        : impl.apply(this, arguments);
+                    if (isCtor) thisValue = result;
+                    return result;
+                } catch (err) {
+                    error = err;
+                    throw err;
+                } finally {
+                    ctx._calls.push(createCallRecord(arguments, isCtor ? thisValue : this, isCtor ? originalFn : undefined, result, error));
+                }
+            };
+            copyFunctionShape(originalFn, mocked);
+            Object.defineProperty(mocked, 'mock', { value: ctx, configurable: true });
+            this._mocks.add(ctx);
+            return mocked;
+        }
+        _findDescriptor(object, key) {
+            let holder = object;
+            while (holder) {
+                const descriptor = Object.getOwnPropertyDescriptor(holder, key);
+                if (descriptor) return { holder, descriptor };
+                holder = Object.getPrototypeOf(holder);
+            }
+            return null;
+        }
+        method(object, methodName, implementation, options) {
+            if (object === null || object === undefined) throw _makeInvalidArgTypeError('object', 'object', object);
+            if (typeof methodName !== 'string' && typeof methodName !== 'symbol') {
+                throw _makeInvalidArgTypeError('methodName', 'string or symbol', methodName);
+            }
+            if (implementation && typeof implementation === 'object' && options === undefined) {
+                options = implementation;
+                implementation = undefined;
+            }
+            options = asOptions(options);
+            if (options.getter && options.setter) {
+                throw _makeInvalidArgValueError('options.setter', options.setter);
+            }
+            const found = this._findDescriptor(Object(object), methodName);
+            if (!found) throw _makeInvalidArgValueError('methodName', methodName);
+            const originalDescriptor = Object.getOwnPropertyDescriptor(Object(object), methodName);
+            const descriptor = found.descriptor;
+            const restore = () => {
+                const desc = originalDescriptor || descriptor;
+                Object.defineProperty(object, methodName, desc);
+            };
+            if (options.getter) {
+                if (typeof descriptor.get !== 'function') throw _makeInvalidArgValueError('methodName', methodName);
+                const mocked = this.fn(descriptor.get, implementation);
+                mocked.mock._restoreFn = restore;
+                Object.defineProperty(object, methodName, {
+                    get: mocked,
+                    set: descriptor.set,
+                    enumerable: descriptor.enumerable,
+                    configurable: descriptor.configurable,
+                });
+                return mocked;
+            }
+            if (options.setter) {
+                if (typeof descriptor.set !== 'function') throw _makeInvalidArgValueError('methodName', methodName);
+                const mocked = this.fn(descriptor.set, implementation);
+                mocked.mock._restoreFn = restore;
+                Object.defineProperty(object, methodName, {
+                    get: descriptor.get,
+                    set: mocked,
+                    enumerable: descriptor.enumerable,
+                    configurable: descriptor.configurable,
+                });
+                return mocked;
+            }
+            if (typeof descriptor.value !== 'function') {
+                throw new TypeError("The argument 'methodName' must be a method");
+            }
+            const mocked = this.fn(descriptor.value, implementation);
+            mocked.mock._restoreFn = restore;
+            Object.defineProperty(object, methodName, {
+                value: mocked,
+                writable: true,
+                enumerable: descriptor.enumerable,
+                configurable: descriptor.configurable,
+            });
+            return mocked;
+        }
+        getter(object, methodName, implementation) {
+            return this.method(object, methodName, implementation, { getter: true });
+        }
+        setter(object, methodName, implementation) {
+            return this.method(object, methodName, implementation, { setter: true });
+        }
+        reset() {
+            for (const mock of this._mocks) mock.restore();
+        }
+        restoreAll() {
+            this.reset();
+        }
+    }
+
+    class TestContext {
+        static current = null;
+        constructor(node) {
+            this._node = node;
+            this.name = node.name;
+            this._abortController = new AbortController();
+            this.signal = this._abortController.signal;
+            this.mock = new MockTracker();
+            this._hooks = node.hooks || { beforeEach: [], afterEach: [] };
+        }
+        diagnostic(message) { process.stdout.write(`# ${message}\n`); }
+        skip(message) { const err = new Error(message || 'test skipped'); err.code = 'ERR_TEST_SKIP'; throw err; }
+        todo(message) { const err = new Error(message || 'test todo'); err.code = 'ERR_TEST_TODO'; throw err; }
+        timeout() {}
+        test(name, options, fn) { return registerTest(name, options, fn, undefined); }
+        beforeEach(fn) {
+            if (typeof fn !== 'function') throw _makeInvalidArgTypeError('fn', 'function', fn);
+            this._hooks.beforeEach.push(fn);
+        }
+        afterEach(fn) {
+            if (typeof fn !== 'function') throw _makeInvalidArgTypeError('fn', 'function', fn);
+            this._hooks.afterEach.push(fn);
+        }
+    }
+
+    function collectHookContexts(context) {
+        const contexts = [];
+        let cur = context;
+        while (cur) {
+            contexts.unshift(cur);
+            cur = cur._parentContext || null;
+        }
+        return contexts;
+    }
+
+    async function runHooks(context, name) {
+        if (!context) return;
+        const contexts = collectHookContexts(context);
+        if (name === 'afterEach') contexts.reverse();
+        for (const ctx of contexts) {
+            const hooks = ctx._hooks && ctx._hooks[name] || [];
+            for (const hookFn of hooks) await hookFn();
+        }
+    }
+
+    async function runTestNode(node, parentContext) {
+        if (node._started) return node.promise;
+        node._started = true;
+        summary.tests++;
+        const skipReason = node.options.skip === true ? '' : (typeof node.options.skip === 'string' ? node.options.skip : '');
+        const todoReason = node.options.todo === true ? '' : (typeof node.options.todo === 'string' ? node.options.todo : '');
+        if (node.options.skip) {
+            summary.skipped++;
+            writeResult(node, 'skip', skipReason);
+            node.resolve();
+            return node.promise;
+        }
+        if (node.options.todo) {
+            summary.todo++;
+            writeResult(node, 'todo', todoReason);
+            node.resolve();
+            return node.promise;
+        }
+        const ctx = new TestContext(node);
+        ctx._parentContext = parentContext || null;
+        let timeoutId = null;
+        let status = 'pass';
+        let failure = null;
+        if (node.options.signal) {
+            if (node.options.signal.aborted) ctx._abortController.abort();
+            else node.options.signal.addEventListener('abort', () => ctx._abortController.abort(), { once: true });
+        }
+        if (node.options.timeout !== undefined && Number.isFinite(node.options.timeout)) {
+            timeoutId = timers.setTimeout(() => ctx._abortController.abort(), Math.max(0, node.options.timeout));
+        }
+        try {
+            await runHooks(parentContext, 'beforeEach');
+            const prev = TestContext.current;
+            TestContext.current = ctx;
+            try {
+                if (typeof node.fn === 'function') await node.fn(ctx);
+            } finally {
+                TestContext.current = prev;
+            }
+            let childFailures = 0;
+            if (node.children.length > 0) {
+                const runChild = (child) => child.type === 'suite'
+                    ? runSuiteNode(child, ctx)
+                    : runTestNode(child, ctx);
+                if (node.options && node.options.concurrency === true) {
+                    const settled = await Promise.allSettled(node.children.map(runChild));
+                    childFailures = settled.filter((result) => result.status === 'rejected').length;
+                } else {
+                    for (const child of node.children) {
+                        try { await runChild(child); }
+                        catch (_) { childFailures++; }
+                    }
+                }
+            }
+            await runHooks(parentContext, 'afterEach');
+            if (ctx.signal.aborted) status = 'cancelled';
+            if (childFailures > 0 && status === 'pass') {
+                status = 'fail';
+                failure = new Error(`${childFailures} subtest${childFailures === 1 ? '' : 's'} failed`);
+                failure.code = 'ERR_TEST_FAILURE';
+            }
+        } catch (err) {
+            failure = err;
+            if (err && err.code === 'ERR_TEST_SKIP') status = 'skip';
+            else if (err && err.code === 'ERR_TEST_TODO') status = 'todo';
+            else status = ctx.signal.aborted ? 'cancelled' : 'fail';
+        } finally {
+            if (timeoutId) timers.clearTimeout(timeoutId);
+            ctx.mock.restoreAll();
+        }
+        if (status === 'pass') summary.pass++;
+        else if (status === 'skip') summary.skipped++;
+        else if (status === 'todo') summary.todo++;
+        else if (status === 'cancelled') { summary.cancelled++; process.exitCode = process.exitCode || 1; }
+        else { summary.fail++; process.exitCode = process.exitCode || 1; }
+        writeResult(node, status, failure);
+        if (status === 'fail') node.reject(failure);
+        else node.resolve();
+        return node.promise;
+    }
+
+    async function runSuiteNode(node, parentContext) {
+        if (node !== root) summary.suites++;
+        if (node.collectionError) {
+            summary.tests++;
+            summary.fail++;
+            process.exitCode = process.exitCode || 1;
+            writeResult({ name: node.name }, 'fail', node.collectionError);
+            node.reject(node.collectionError);
+            return node.promise;
+        }
+        const ctx = node === root ? parentContext : new TestContext(node);
+        if (ctx && parentContext) ctx._parentContext = parentContext;
+        const runChild = (child) => child.type === 'suite'
+            ? runSuiteNode(child, ctx)
+            : runTestNode(child, ctx);
+        if (node.options && node.options.concurrency === true) {
+            await Promise.allSettled(node.children.map(runChild));
+        } else {
+            for (let i = 0; i < node.children.length; i++) {
+                try { await runChild(node.children[i]); } catch (_) {}
+            }
+        }
+        if (node.resolve) node.resolve();
+        return node.promise || Promise.resolve();
+    }
+
+    async function runPending() {
+        if (running) return;
+        running = true;
+        try {
+            await runSuiteNode(root, null);
+            writeSummary();
+        } finally {
+            running = false;
+        }
+    }
+
+    function drivePendingPromise(promise) {
+        let done = false;
+        let failure = null;
+        Promise.resolve(promise).then(
+            () => { done = true; },
+            (err) => { failure = err; done = true; },
+        );
+        let spins = 0;
+        while (!done) {
+            if (typeof drainJobQueue === 'function') drainJobQueue();
+            if (typeof __kandeloRunDueTimers === 'function') __kandeloRunDueTimers();
+            if (done) break;
+            let delay = 0;
+            if (typeof __kandeloNextTimerDelay === 'function') {
+                const next = __kandeloNextTimerDelay();
+                delay = next == null ? 0 : Math.max(0, Number(next) || 0);
+            }
+            if (delay > 0) {
+                const end = Date.now() + Math.min(delay, 25);
+                while (Date.now() < end) {}
+            }
+            if (++spins > 200000) {
+                failure = new Error('node:test queue did not settle');
+                done = true;
+            }
+        }
+        if (failure) throw failure;
+    }
+
+    function resetForCli() {
+        root.children.length = 0;
+        root.hooks.beforeEach.length = 0;
+        root.hooks.afterEach.length = 0;
+        running = false;
+        tapStarted = false;
+        ordinal = 0;
+        summary = newSummary();
+        reporterState = newReporterState();
+    }
+
+    function test(name, options, fn) {
+        return registerTest(name, options, fn);
+    }
+    function describe(name, options, fn) {
+        return registerSuite(name, options, fn);
     }
     function run() {
         return new events.EventEmitter();
     }
+    const globalMock = new MockTracker();
     Object.assign(test, {
-        after: hook,
-        afterEach: hook,
-        before: hook,
-        beforeEach: hook,
-        describe: test,
+        after: (name, options, fn) => hook('after', name, options, fn),
+        afterEach: (name, options, fn) => hook('after', name, options, fn),
+        before: (name, options, fn) => hook('before', name, options, fn),
+        beforeEach: (name, options, fn) => hook('before', name, options, fn),
+        describe,
         it: test,
         run,
-        suite: test,
+        suite: describe,
         test,
-        mock: { fn: (fn) => fn || function() {} },
+        mock: globalMock,
+        only: (name, options, fn) => registerTest(name, options, fn, { only: true }),
+        skip: (name, options, fn) => registerTest(name, options, fn, { skip: true }),
+        todo: (name, options, fn) => registerTest(name, options, fn, { todo: true }),
+        _runPendingSync() {
+            if (root.children.length === 0) return;
+            drivePendingPromise(runPending());
+        },
+        _resetForCli: resetForCli,
+        _configureCliReporters: configureCliReporters,
+        _pendingTopLevelCount() { return root.children.length; },
+        _registerFilePass(filename) { return registerTest(filename, {}, () => {}); },
+        _registerFileFailure(filename, error) { return registerTest(filename, {}, () => { throw error; }); },
+        _MockTracker: MockTracker,
     });
+    describe.only = (name, options, fn) => registerSuite(name, options, fn, { only: true });
+    describe.skip = (name, options, fn) => registerSuite(name, options, fn, { skip: true });
+    describe.todo = (name, options, fn) => registerSuite(name, options, fn, { todo: true });
+    test.it.only = test.only;
+    test.it.skip = test.skip;
+    test.it.todo = test.todo;
+    test.describe.only = describe.only;
+    test.describe.skip = describe.skip;
+    test.describe.todo = describe.todo;
     return test;
 })();
 
@@ -13457,6 +14172,23 @@ const _builtinModules = {
     'internal/test/transfer': _makeUnsupportedNamespace('internal/test/transfer'),
     'internal/test_runner/utils': {
         createDeferredPromise: internalUtil.createDeferredPromise,
+        convertStringToRegExp(value, name) {
+            value = String(value);
+            const match = /^\/([\s\S]*)\/([A-Za-z]*)$/.exec(value);
+            if (!match) return new RegExp(value);
+            if (!/^[dgimsuvy]*$/.test(match[2])) {
+                const out = new TypeError(`The argument '${name}' is an invalid regular expression. Invalid flags supplied to RegExp constructor '${match[2]}'. Received '${value}'`);
+                out.code = 'ERR_INVALID_ARG_VALUE';
+                throw out;
+            }
+            try {
+                return new RegExp(match[1], match[2]);
+            } catch (err) {
+                const out = new TypeError(`The argument '${name}' is an invalid regular expression. ${err.message}. Received '${value}'`);
+                out.code = 'ERR_INVALID_ARG_VALUE';
+                throw out;
+            }
+        },
         kEmptyObject: internalUtil.kEmptyObject,
     },
     'internal/test_runner/harness': {
@@ -13469,7 +14201,7 @@ const _builtinModules = {
     },
     'internal/test_runner/runner': { run: nodeTest.run },
     'internal/test_runner/mock/mock': {
-        MockTracker: class MockTracker { fn(fn) { return fn || function() {}; } },
+        MockTracker: nodeTest._MockTracker,
     },
     'internal/test_runner/mock/mock_timers': _makeUnsupportedNamespace('internal/test_runner/mock/mock_timers'),
     'internal/timers': timers,
@@ -14240,6 +14972,254 @@ function _drainEventLoopBeforeExit() {
     }
 }
 
+function _runNodeTestQueueBeforeExit() {
+    try {
+        if (nodeTest && typeof nodeTest._runPendingSync === 'function') {
+            nodeTest._runPendingSync();
+        }
+    } catch (err) {
+        _handleTopLevelFailure(err);
+    }
+}
+
+function _loadCommonJsTestFile(filename) {
+    filename = _moduleRealpath(filename);
+    const source = std.loadFile(filename);
+    if (source === null) {
+        const err = new Error(`Cannot find module '${filename}'`);
+        err.code = 'MODULE_NOT_FOUND';
+        throw err;
+    }
+    const dirname = path.dirname(filename);
+    const mod = new Module(filename, null);
+    mod.id = filename;
+    mod.filename = filename;
+    mod.paths = Module._nodeModulePaths(dirname);
+    _moduleCache[filename] = mod;
+    mod.require = _makeRequire(filename, mod);
+    try {
+        const wrappedFn = _nodeNative.evalScriptAsFunction(
+            '(function (exports, require, module, __filename, __dirname) {\n' +
+                _stripShebang(source) +
+                '\n})',
+            filename
+        );
+        wrappedFn(mod.exports, mod.require, mod, filename, dirname);
+        mod.loaded = true;
+    } catch (err) {
+        delete _moduleCache[filename];
+        throw err;
+    }
+}
+
+function _loadEsmTestFile(filename, source) {
+    const mod = new Module(filename, null);
+    mod.id = filename;
+    mod.filename = filename;
+    mod.paths = Module._nodeModulePaths(path.dirname(filename));
+    _moduleCache[filename] = mod;
+    const require = _makeRequire(filename, mod);
+    mod.require = require;
+    const fileUrl = url.pathToFileURL(filename).href;
+    const transformed = _rewriteStaticEsmImports(_stripShebang(source))
+        .replace(/\bimport\.meta\.url\b/g, JSON.stringify(fileUrl));
+    const wrappedFn = _nodeNative.evalScriptAsFunction(
+        '(async function () {\n' +
+            `const ${_esmRequireBinding} = arguments[0];\n` +
+            transformed +
+            '\n})',
+        filename,
+    );
+    let settled = false;
+    let failure = null;
+    Promise.resolve(wrappedFn(require)).then(
+        () => { settled = true; },
+        (err) => { failure = err; settled = true; },
+    );
+    let spins = 0;
+    while (!settled && typeof drainJobQueue === 'function') {
+        drainJobQueue();
+        if (++spins > 100000) {
+            failure = new Error('ES module test file did not settle after draining the SpiderMonkey job queue');
+            settled = true;
+        }
+    }
+    if (failure) throw failure;
+}
+
+function _loadNodeTestFile(filename) {
+    const resolved = path.isAbsolute(filename) ? filename : path.resolve(process.cwd(), filename);
+    const source = std.loadFile(resolved);
+    if (source === null) {
+        const err = new Error(`Could not find '${filename}'`);
+        err.code = 'MODULE_NOT_FOUND';
+        throw err;
+    }
+    if (_looksLikeEsmMain(resolved, source)) _loadEsmTestFile(resolved, source);
+    else _loadCommonJsTestFile(resolved);
+}
+
+function _simpleGlobToRegExp(pattern) {
+    return new RegExp('^' + String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+}
+
+function _expandNodeTestPath(input) {
+    const text = String(input);
+    if (!text.includes('*')) return [path.isAbsolute(text) ? text : path.resolve(process.cwd(), text)];
+    const dir = path.resolve(process.cwd(), path.dirname(text));
+    const base = path.basename(text);
+    const rx = _simpleGlobToRegExp(base);
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (_) { return []; }
+    return names.filter((name) => rx.test(name)).sort().map((name) => path.join(dir, name));
+}
+
+function _isNodeTestFile(filename, insideTestDir) {
+    if (!/\.(?:js|cjs|mjs)$/.test(filename)) return false;
+    const base = path.basename(filename);
+    return insideTestDir || /\.test\.(?:js|cjs|mjs)$/.test(base) || /(?:^|[-_.])test\.(?:js|cjs|mjs)$/.test(base) || /_test\.(?:js|cjs|mjs)$/.test(base);
+}
+
+function _discoverNodeTestFiles(startDir) {
+    const out = [];
+    function walk(dir, insideTestDir) {
+        let entries = [];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+        entries.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+        for (const entry of entries) {
+            const name = String(entry.name);
+            if (name === 'node_modules' || name.startsWith('.')) continue;
+            const full = path.join(dir, name);
+            if (entry.isDirectory()) {
+                walk(full, insideTestDir || name === 'test');
+            } else if (entry.isFile() && _isNodeTestFile(full, insideTestDir)) {
+                out.push(full);
+            }
+        }
+    }
+    walk(path.resolve(startDir || process.cwd()), false);
+    return out;
+}
+
+function _validateNodeTestShard(value) {
+    if (!/^\d+\/\d+$/.test(value)) {
+        return {
+            error: `The argument '--test-shard' must be in the form of <index>/<total>. Received '${value}'`,
+            shard: null,
+        };
+    }
+    const [index, total] = value.split('/').map((part) => Number(part));
+    if (total < 1 || index < 1 || index > total) {
+        return {
+            error: `The value of "options.shard.index" is out of range. It must be >= 1 && <= ${total} ("options.shard.total"). Received ${index}`,
+            shard: null,
+        };
+    }
+    return { error: null, shard: { index, total } };
+}
+
+function _parseNodeTestCli(argv) {
+    const out = {
+        enabled: false,
+        files: [],
+        requires: [],
+        concurrency: 'true',
+        timeout: 'Infinity',
+        reporters: [],
+        destinations: [],
+        shard: null,
+        error: null,
+    };
+    for (let i = 1; i < argv.length; i++) {
+        const arg = String(argv[i] || '');
+        const next = () => String(argv[++i] || '');
+        if (arg === '--test') { out.enabled = true; continue; }
+        if (arg === '--require' || arg === '-r') { out.requires.push(next()); continue; }
+        if (arg === '--experimental-loader' || arg === '--loader') { next(); continue; }
+        if (arg === '--no-warnings') continue;
+        if (arg === '--check' || arg === '--interactive' || arg === '--eval' || arg === '-e' || arg === '--print' || arg === '-p') {
+            out.error = `Option ${arg} cannot be used with --test`;
+            if (arg === '--eval' || arg === '-e' || arg === '--print' || arg === '-p') next();
+            continue;
+        }
+        if (arg === '--test-concurrency') { out.concurrency = next(); continue; }
+        if (arg.startsWith('--test-concurrency=')) { out.concurrency = arg.slice('--test-concurrency='.length); continue; }
+        if (arg === '--test-timeout') { out.timeout = next(); continue; }
+        if (arg.startsWith('--test-timeout=')) { out.timeout = arg.slice('--test-timeout='.length); continue; }
+        if (arg === '--test-reporter') { out.reporters.push(next()); continue; }
+        if (arg.startsWith('--test-reporter=')) { out.reporters.push(arg.slice('--test-reporter='.length)); continue; }
+        if (arg === '--test-reporter-destination') { out.destinations.push(next()); continue; }
+        if (arg.startsWith('--test-reporter-destination=')) { out.destinations.push(arg.slice('--test-reporter-destination='.length)); continue; }
+        if (arg === '--test-shard') {
+            const value = next();
+            const parsed = _validateNodeTestShard(value);
+            if (parsed.error) out.error = parsed.error;
+            else out.shard = parsed.shard;
+            continue;
+        }
+        if (arg.startsWith('--test-shard=')) {
+            const value = arg.slice('--test-shard='.length);
+            const parsed = _validateNodeTestShard(value);
+            if (parsed.error) out.error = parsed.error;
+            else out.shard = parsed.shard;
+            continue;
+        }
+        if (arg.startsWith('-')) continue;
+        out.files.push(arg);
+    }
+    return out;
+}
+
+function _runNodeTestCliIfRequested() {
+    const parsed = _parseNodeTestCli(process.argv || []);
+    if (!parsed.enabled) return false;
+    if (parsed.error) {
+        process.stderr.write(parsed.error + '\n');
+        process.exit(1);
+    }
+    if (parsed.reporters.length > 1 && parsed.destinations.length !== parsed.reporters.length) {
+        process.stderr.write(`The argument '--test-reporter' must match the number of specified '--test-reporter-destination'. Received [ ${parsed.reporters.map((r) => `'${r}'`).join(', ')} ]\n`);
+        process.exit(1);
+    }
+    if (parsed.destinations.length > 0 && parsed.reporters.length === 0) {
+        process.stderr.write("The argument '--test-reporter' must match the number of specified '--test-reporter-destination'. Received []\n");
+        process.exit(1);
+    }
+    if (String(process.env.NODE_DEBUG || '').split(/[\s,]+/).includes('test_runner')) {
+        process.stderr.write(`TEST_RUNNER ${process.pid}: setup { concurrency: ${parsed.concurrency}, timeout: ${parsed.timeout}, }\n`);
+    }
+    nodeTest._resetForCli();
+    const reporterError = nodeTest._configureCliReporters(parsed.reporters, parsed.destinations);
+    if (reporterError) {
+        if (reporterError.stdout) process.stdout.write(reporterError.stdout);
+        if (reporterError.stderr) process.stderr.write(reporterError.stderr);
+        process.exit(reporterError.status || 1);
+    }
+    for (const req of parsed.requires) {
+        try { require(path.isAbsolute(req) ? req : path.resolve(process.cwd(), req)); }
+        catch (err) { _handleTopLevelFailure(err); }
+    }
+    let files = parsed.files.length > 0 ? parsed.files.flatMap(_expandNodeTestPath) : _discoverNodeTestFiles(process.cwd());
+    files = Array.from(new Set(files)).sort();
+    if (parsed.shard) {
+        files = files.filter((_file, index) => (index % parsed.shard.total) === parsed.shard.index - 1);
+    }
+    for (const file of files) {
+        const before = nodeTest._pendingTopLevelCount();
+        try {
+            if (!fs.existsSync(file)) throw new Error(`Could not find '${file}'`);
+            _loadNodeTestFile(file);
+            if (nodeTest._pendingTopLevelCount() === before) nodeTest._registerFilePass(file);
+        } catch (err) {
+            nodeTest._registerFileFailure(file, err);
+        }
+    }
+    _runNodeTestQueueBeforeExit();
+    _drainEventLoopBeforeExit();
+    process.exit(process.exitCode || 0);
+    return true;
+}
+
 function _runCommonJsMain(filename) {
     filename = _moduleRealpath(filename);
     const source = std.loadFile(filename);
@@ -14270,7 +15250,10 @@ function _runCommonJsMain(filename) {
         delete _moduleCache[filename];
         continueEventLoop = _handleTopLevelFailure(err);
     }
-    if (continueEventLoop) _drainEventLoopBeforeExit();
+    if (continueEventLoop) {
+        _runNodeTestQueueBeforeExit();
+        _drainEventLoopBeforeExit();
+    }
     process.exit(process.exitCode || 0);
 }
 
@@ -14328,11 +15311,13 @@ function _runEsmMain(filename, source) {
             process.exit(process.exitCode || 0);
         }
     }
+    _runNodeTestQueueBeforeExit();
     _drainEventLoopBeforeExit();
     process.exit(process.exitCode || 0);
 }
 
 function _runMainScriptIfPresent() {
+    if (_runNodeTestCliIfRequested()) return;
     if (!_mainScriptPath) return;
     const source = std.loadFile(_mainScriptPath);
     if (source === null) {

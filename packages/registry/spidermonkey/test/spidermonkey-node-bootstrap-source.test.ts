@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -119,6 +126,98 @@ ${source}
   });
   expect(child.stderr).toBe("");
   expect(child.status).toBe(0);
+}
+
+function runBootstrapCli(args: string[], options: {
+  cwd?: string;
+  env?: Record<string, string>;
+} = {}): { status: number | null; stdout: string; stderr: string } {
+  const cwd = options.cwd ?? process.cwd();
+  const env = options.env ?? {};
+  const source = `
+const nodeProcess = process;
+const nodeFs = require('node:fs');
+const nodePath = require('node:path');
+const nodeUrl = require('node:url');
+globalThis.quit = (code) => nodeProcess.exit(code | 0);
+globalThis.drainJobQueue = () => {
+  if (typeof nodeProcess._tickCallback === 'function') nodeProcess._tickCallback();
+};
+globalThis.execArgv = ${JSON.stringify(["/usr/bin/node", ...args])};
+globalThis.argv0 = '/usr/bin/node';
+let currentCwd = ${JSON.stringify(cwd)};
+const env = ${JSON.stringify(env)};
+function toMode(stats) {
+  return stats.isDirectory() ? 0o40000 : stats.isSymbolicLink() ? 0o120000 : 0o100000;
+}
+function toStat(path) {
+  const stats = nodeFs.statSync(path);
+  return {
+    dev: stats.dev,
+    ino: stats.ino,
+    mode: toMode(stats) | (stats.mode & 0o777),
+    nlink: stats.nlink,
+    uid: stats.uid,
+    gid: stats.gid,
+    rdev: stats.rdev,
+    size: stats.size,
+    blocks: stats.blocks || 0,
+    atime: Math.floor(stats.atimeMs / 1000),
+    mtime: Math.floor(stats.mtimeMs / 1000),
+    ctime: Math.floor(stats.ctimeMs / 1000),
+  };
+}
+globalThis.os = {
+  getenv(name) {
+    if (Object.prototype.hasOwnProperty.call(env, name)) return env[name];
+    return nodeProcess.env[name] ?? null;
+  },
+  getcwd() { return currentCwd; },
+  chdir(path) { currentCwd = nodePath.resolve(currentCwd, String(path)); return 0; },
+  getpid() { return nodeProcess.pid; },
+  write(fd, buffer, byteOffset, length) {
+    const bytes = Buffer.from(new Uint8Array(buffer, byteOffset || 0, length));
+    if (fd === 2) nodeProcess.stderr.write(bytes);
+    else nodeProcess.stdout.write(bytes);
+    return bytes.length;
+  },
+  file: {
+    readFile(path, mode) {
+      path = String(path);
+      return mode === 'binary' ? nodeFs.readFileSync(path) : nodeFs.readFileSync(path, 'utf8');
+    },
+    stat: toStat,
+    lstat(path) {
+      const stats = nodeFs.lstatSync(path);
+      return {
+        dev: stats.dev,
+        ino: stats.ino,
+        mode: toMode(stats) | (stats.mode & 0o777),
+        nlink: stats.nlink,
+        uid: stats.uid,
+        gid: stats.gid,
+        rdev: stats.rdev,
+        size: stats.size,
+        blocks: stats.blocks || 0,
+        atime: Math.floor(stats.atimeMs / 1000),
+        mtime: Math.floor(stats.mtimeMs / 1000),
+        ctime: Math.floor(stats.ctimeMs / 1000),
+      };
+    },
+    listDir(path) { return nodeFs.readdirSync(path); },
+    mkdir(path) { nodeFs.mkdirSync(path, { recursive: false }); return 0; },
+    realpath(path) { return nodeFs.realpathSync(path); },
+  },
+};
+globalThis.evalInWorker = function() {};
+${generatedBootstrapSource()}
+`;
+  const child = spawnSync(process.execPath, ["-"], {
+    input: source,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  return { status: child.status, stdout: child.stdout, stderr: child.stderr };
 }
 
 describe("SpiderMonkey Node bootstrap source", () => {
