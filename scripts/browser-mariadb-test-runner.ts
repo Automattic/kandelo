@@ -52,6 +52,23 @@ function classifyRuntimeFailure(stderr: string | undefined, browserErrors: reado
   return undefined;
 }
 
+function mariadbFailureDiagnosticPaths(testName: string): string[] {
+  switch (testName) {
+    case "merge":
+      return [
+        "/data/master-data/test/t5.MRG",
+        "/data/master-data/test/t6.MRG",
+      ];
+    case "merge_mmap":
+      return [
+        "/data/master-data/test/m1.MRG",
+        "/data/master-data/test/m2.MRG",
+      ];
+    default:
+      return [];
+  }
+}
+
 async function launchChromium(): Promise<Browser> {
   return chromium.launch({
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
@@ -160,13 +177,22 @@ async function runTest(page: Page, testName: string, testTimeout: number): Promi
 
     let stderr = result.stderr || undefined;
     if (status === "fail") {
-      const serverLog = await page.evaluate(async () => {
+      const diagnosticPaths = [
+        "/data/error.log",
+        ...mariadbFailureDiagnosticPaths(testName),
+      ];
+      const serverLog = await page.evaluate(async (paths) => {
         const readFile = (window as any).__readMariadbFile;
         if (typeof readFile !== "function") return "";
-        return await readFile("/data/error.log", 3000);
-      }).catch(() => "");
+        const chunks: string[] = [];
+        for (const path of paths) {
+          const content = await readFile(path, 3000);
+          if (content.trim()) chunks.push(`[${path}]\n${content.slice(-4000)}`);
+        }
+        return chunks.join("\n\n");
+      }, diagnosticPaths).catch(() => "");
       if (serverLog.trim()) {
-        stderr = `${stderr ?? ""}\n\n[data/error.log]\n${serverLog.slice(-4000)}`;
+        stderr = `${stderr ?? ""}\n\n${serverLog.slice(-8000)}`;
       }
     }
 
