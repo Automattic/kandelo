@@ -122,6 +122,22 @@ ${source}
 }
 
 describe("SpiderMonkey Node bootstrap source", () => {
+  it("constructs internal worker MessageEvent after installing Event globals", () => {
+    const bootstrap = readFileSync(
+      join(repoRoot, "packages/registry/node-compat/bootstrap.js"),
+      "utf8",
+    );
+    const factoryIndex = bootstrap.indexOf("function _createInternalWorkerIo()");
+    const placeholderIndex = bootstrap.indexOf("'internal/worker/io': null");
+    const eventGlobalIndex = bootstrap.indexOf("_defineGlobal('Event', KandeloEvent);");
+    const installIndex = bootstrap.indexOf("_builtinModules['internal/worker/io'] = _createInternalWorkerIo();");
+
+    expect(factoryIndex).toBeGreaterThanOrEqual(0);
+    expect(placeholderIndex).toBeGreaterThan(factoryIndex);
+    expect(eventGlobalIndex).toBeGreaterThan(placeholderIndex);
+    expect(installIndex).toBeGreaterThan(eventGlobalIndex);
+  });
+
   it("resolves the full-suite missing built-in and internal module surface", () => {
     runBootstrapSmoke(`
 const names = ${JSON.stringify(historicalMissingBuiltins)};
@@ -253,6 +269,39 @@ for (const [name, fn] of [
     }
   }
 }
+function expectPath(label, actual, expected) {
+  if (actual !== expected) failures.push(label + ": " + JSON.stringify(actual) + " !== " + JSON.stringify(expected));
+}
+const bs = String.fromCharCode(92);
+const nodePath = require("path");
+expectPath("path.basename", nodePath.basename("/dir/basename.ext"), "basename.ext");
+expectPath("path.basename trailing slash", nodePath.basename("basename.ext//"), "basename.ext");
+expectPath("path.dirname", nodePath.dirname("/a/b/"), "/a");
+expectPath("path.extname dotfile", nodePath.extname(".."), "");
+expectPath("path.join trailing slash", nodePath.join("foo/", ""), "foo/");
+expectPath("path.posix export", require("path/posix").join("a", "b"), "a/b");
+expectPath("node:path/posix export", require("node:path/posix").dirname("/a/b/"), "/a");
+expectPath("path.win32 export", require("path/win32").sep, bs);
+expectPath("node:path/win32 export", require("node:path/win32").delimiter, ";");
+expectPath("path.win32.basename", nodePath.win32.basename(bs + "dir" + bs + "basename.ext"), "basename.ext");
+expectPath("path.win32.dirname", nodePath.win32.dirname("c:" + bs + "foo" + bs + "bar" + bs), "c:" + bs + "foo");
+expectPath("path.win32.extname", nodePath.win32.extname(bs + "path.to" + bs + "file"), "");
+expectPath("path.win32.join unc", nodePath.win32.join("//foo", "bar"), bs + bs + "foo" + bs + "bar" + bs);
+expectPath("path.win32.normalize", nodePath.win32.normalize("fixtures///b/../b/c.js"), "fixtures" + bs + "b" + bs + "c.js");
+expectPath("path.win32.resolve drive", nodePath.win32.resolve("c:/blah" + bs + "blah", "d:/games", "c:../a"), "c:" + bs + "blah" + bs + "a");
+expectPath("path.win32.resolve unc", nodePath.win32.resolve("//server/share", "..", "relative" + bs), bs + bs + "server" + bs + "share" + bs + "relative");
+expectPath("path.win32.relative case-insensitive", nodePath.win32.relative("c:/AaAa/bbbb", "c:/aaaa/bbbb"), "");
+expectPath("path.win32.relative child", nodePath.win32.relative("C:" + bs + "foo" + bs + "test", "C:" + bs + "foo" + bs + "test" + bs + "bar" + bs + "package.json"), "bar" + bs + "package.json");
+expectPath("path.win32.isAbsolute unc", nodePath.win32.isAbsolute(bs + bs + "server"), true);
+expectPath("path.win32.isAbsolute drive-relative", nodePath.win32.isAbsolute("C:foo"), false);
+expectPath("path.posix.parse", JSON.stringify(nodePath.posix.parse("/home/user/file.txt")), JSON.stringify({ root: "/", dir: "/home/user", base: "file.txt", ext: ".txt", name: "file" }));
+expectPath("path.posix.format", nodePath.posix.format({ dir: "/home/user", base: "file.txt" }), "/home/user/file.txt");
+expectPath("path.win32.parse", JSON.stringify(nodePath.win32.parse("C:" + bs + "path" + bs + "dir" + bs + "index.html")), JSON.stringify({ root: "C:" + bs, dir: "C:" + bs + "path" + bs + "dir", base: "index.html", ext: ".html", name: "index" }));
+expectPath("path.win32.format", nodePath.win32.format({ dir: "C:" + bs + "path" + bs + "dir", base: "index.html" }), "C:" + bs + "path" + bs + "dir" + bs + "index.html");
+expectPath("path.win32.toNamespacedPath drive", nodePath.win32.toNamespacedPath("C:/foo"), bs + bs + "?" + bs + "C:" + bs + "foo");
+expectPath("path.win32.toNamespacedPath unc", nodePath.win32.toNamespacedPath("//foo//bar"), bs + bs + "?" + bs + "UNC" + bs + "foo" + bs + "bar" + bs);
+expectPath("path.toNamespacedPath posix non-string", nodePath.toNamespacedPath(null), null);
+expectPath("path.posix._makeLong", nodePath.posix._makeLong("/tmp/x"), "/tmp/x");
 if (failures.length) throw new Error(failures.join("\\n"));
 `);
   });
@@ -577,6 +626,39 @@ assert.strictEqual(sawExit, true);
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.deepStrictEqual(activeTypes(), []);
 `);
+  });
+
+  it("drains timers scheduled by eval-mode code after bootstrap startup", () => {
+    const smoke = `
+const nativeProcess = process;
+globalThis.evalInWorker = function() {};
+globalThis.quit = (code) => nativeProcess.exit(code | 0);
+globalThis.putstr = (text) => nativeProcess.stdout.write(String(text));
+globalThis.printErr = (text) => nativeProcess.stderr.write(String(text) + "\\n");
+globalThis.scriptArgs = ["node", "-e", "setImmediate(() => process.stdout.write('eval-loop-ok'))"];
+globalThis.os = {
+  getenv() { return null; },
+  getcwd() { return "/"; },
+  getpid() { return 1; },
+  kill() { return 0; },
+  file: {
+    readFile() { throw new Error("ENOENT"); },
+    stat() { throw new Error("ENOENT"); },
+    lstat() { throw new Error("ENOENT"); },
+    realpath(path) { return String(path); },
+  },
+};
+${generatedBootstrapSource()}
+setImmediate(() => process.stdout.write("eval-loop-ok"));
+`;
+    const child = spawnSync(process.execPath, ["-"], {
+      input: smoke,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    });
+    expect(child.stderr).toBe("");
+    expect(child.status).toBe(0);
+    expect(child.stdout).toBe("eval-loop-ok");
   });
 
   it("drives Node timers and immediates through event-loop turns", () => {

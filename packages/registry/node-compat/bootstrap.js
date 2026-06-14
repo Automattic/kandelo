@@ -565,135 +565,1086 @@ function _checkErrno(errno, syscall, path) {
 // path module
 // ============================================================
 
+// Portions of this path module are adapted from Node.js v22 lib/path.js.
+// Copyright Joyent, Inc. and other Node contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to permit
+// persons to whom the Software is furnished to do so, subject to the
+// following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
 const path = (() => {
-    const sep = '/';
-    const delimiter = ':';
+    // Standalone adaptation of Node.js v22 lib/path.js. Keep this self-contained:
+    // the compatibility bootstrap creates `path` before the shimmed process
+    // object is globally installed.
+    const CHAR_UPPERCASE_A = 65;
+    const CHAR_LOWERCASE_A = 97;
+    const CHAR_UPPERCASE_Z = 90;
+    const CHAR_LOWERCASE_Z = 122;
+    const CHAR_DOT = 46;
+    const CHAR_FORWARD_SLASH = 47;
+    const CHAR_BACKWARD_SLASH = 92;
+    const CHAR_COLON = 58;
+    const CHAR_QUESTION_MARK = 63;
 
-    function normalize(p) {
-        _validateString(p, 'path');
-        if (p.length === 0) return '.';
-        const isAbsolute = p.charCodeAt(0) === 47; // '/'
-        const parts = p.split('/');
-        const result = [];
-        for (const part of parts) {
-            if (part === '' || part === '.') continue;
-            if (part === '..') {
-                if (result.length > 0 && result[result.length - 1] !== '..') {
-                    result.pop();
-                } else if (!isAbsolute) {
-                    result.push('..');
+    const StringPrototypeCharCodeAt = (str, index) => str.charCodeAt(index);
+    const StringPrototypeIndexOf = (str, search, start) => str.indexOf(search, start);
+    const StringPrototypeLastIndexOf = (str, search) => str.lastIndexOf(search);
+    const StringPrototypeReplace = (str, search, replacement) => str.replace(search, replacement);
+    const StringPrototypeSlice = (str, start, end) => str.slice(start, end);
+    const StringPrototypeToLowerCase = (str) => str.toLowerCase();
+
+    function validateString(value, name) {
+        _validateString(value, name);
+    }
+
+    function validateObject(value, name) {
+        if (value === null || typeof value !== 'object') {
+            throw _makeInvalidArgTypeError(name, 'object', value);
+        }
+    }
+
+    function cwd() {
+        const result = os.getcwd();
+        return Array.isArray(result) ? result[0] : result;
+    }
+
+    function isPathSeparator(code) {
+        return code === CHAR_FORWARD_SLASH || code === CHAR_BACKWARD_SLASH;
+    }
+
+    function isPosixPathSeparator(code) {
+        return code === CHAR_FORWARD_SLASH;
+    }
+
+    function isWindowsDeviceRoot(code) {
+        return (code >= CHAR_UPPERCASE_A && code <= CHAR_UPPERCASE_Z) ||
+               (code >= CHAR_LOWERCASE_A && code <= CHAR_LOWERCASE_Z);
+    }
+
+    function normalizeString(path, allowAboveRoot, separator, isPathSeparator) {
+        let res = '';
+        let lastSegmentLength = 0;
+        let lastSlash = -1;
+        let dots = 0;
+        let code = 0;
+        for (let i = 0; i <= path.length; ++i) {
+            if (i < path.length)
+                code = StringPrototypeCharCodeAt(path, i);
+            else if (isPathSeparator(code))
+                break;
+            else
+                code = CHAR_FORWARD_SLASH;
+
+            if (isPathSeparator(code)) {
+                if (lastSlash === i - 1 || dots === 1) {
+                    // NOOP
+                } else if (dots === 2) {
+                    if (res.length < 2 || lastSegmentLength !== 2 ||
+                        StringPrototypeCharCodeAt(res, res.length - 1) !== CHAR_DOT ||
+                        StringPrototypeCharCodeAt(res, res.length - 2) !== CHAR_DOT) {
+                        if (res.length > 2) {
+                            const lastSlashIndex = StringPrototypeLastIndexOf(res, separator);
+                            if (lastSlashIndex === -1) {
+                                res = '';
+                                lastSegmentLength = 0;
+                            } else {
+                                res = StringPrototypeSlice(res, 0, lastSlashIndex);
+                                lastSegmentLength =
+                                    res.length - 1 - StringPrototypeLastIndexOf(res, separator);
+                            }
+                            lastSlash = i;
+                            dots = 0;
+                            continue;
+                        } else if (res.length !== 0) {
+                            res = '';
+                            lastSegmentLength = 0;
+                            lastSlash = i;
+                            dots = 0;
+                            continue;
+                        }
+                    }
+                    if (allowAboveRoot) {
+                        res += res.length > 0 ? `${separator}..` : '..';
+                        lastSegmentLength = 2;
+                    }
+                } else {
+                    if (res.length > 0)
+                        res += `${separator}${StringPrototypeSlice(path, lastSlash + 1, i)}`;
+                    else
+                        res = StringPrototypeSlice(path, lastSlash + 1, i);
+                    lastSegmentLength = i - lastSlash - 1;
                 }
+                lastSlash = i;
+                dots = 0;
+            } else if (code === CHAR_DOT && dots !== -1) {
+                ++dots;
             } else {
-                result.push(part);
+                dots = -1;
             }
         }
-        let out = result.join('/');
-        if (isAbsolute) out = '/' + out;
-        return out || (isAbsolute ? '/' : '.');
+        return res;
     }
 
-    function join(...args) {
-        if (args.length === 0) return '.';
-        let joined = '';
-        for (const arg of args) {
-            _validateString(arg, 'path');
-            if (arg.length > 0) {
-                joined = joined ? joined + '/' + arg : arg;
+    function formatExt(ext) {
+        return ext ? `${ext[0] === '.' ? '' : '.'}${ext}` : '';
+    }
+
+    function _format(sep, pathObject) {
+        validateObject(pathObject, 'pathObject');
+        const dir = pathObject.dir || pathObject.root;
+        const base = pathObject.base ||
+            `${pathObject.name || ''}${formatExt(pathObject.ext)}`;
+        if (!dir) return base;
+        return dir === pathObject.root ? `${dir}${base}` : `${dir}${sep}${base}`;
+    }
+
+    const win32 = {
+        resolve(...args) {
+            let resolvedDevice = '';
+            let resolvedTail = '';
+            let resolvedAbsolute = false;
+
+            for (let i = args.length - 1; i >= -1; i--) {
+                let path;
+                if (i >= 0) {
+                    path = args[i];
+                    validateString(path, `paths[${i}]`);
+                    if (path.length === 0) continue;
+                } else if (resolvedDevice.length === 0) {
+                    path = cwd();
+                } else {
+                    path = cwd();
+                    if (path === undefined ||
+                        (StringPrototypeToLowerCase(StringPrototypeSlice(path, 0, 2)) !==
+                        StringPrototypeToLowerCase(resolvedDevice) &&
+                        StringPrototypeCharCodeAt(path, 2) === CHAR_BACKWARD_SLASH)) {
+                        path = `${resolvedDevice}\\`;
+                    }
+                }
+
+                const len = path.length;
+                let rootEnd = 0;
+                let device = '';
+                let isAbsolute = false;
+                const code = StringPrototypeCharCodeAt(path, 0);
+
+                if (len === 1) {
+                    if (isPathSeparator(code)) {
+                        rootEnd = 1;
+                        isAbsolute = true;
+                    }
+                } else if (isPathSeparator(code)) {
+                    isAbsolute = true;
+                    if (isPathSeparator(StringPrototypeCharCodeAt(path, 1))) {
+                        let j = 2;
+                        let last = j;
+                        while (j < len && !isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                        if (j < len && j !== last) {
+                            const firstPart = StringPrototypeSlice(path, last, j);
+                            last = j;
+                            while (j < len && isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                            if (j < len && j !== last) {
+                                last = j;
+                                while (j < len && !isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                                if (j === len || j !== last) {
+                                    device =
+                                        `\\\\${firstPart}\\${StringPrototypeSlice(path, last, j)}`;
+                                    rootEnd = j;
+                                }
+                            }
+                        }
+                    } else {
+                        rootEnd = 1;
+                    }
+                } else if (isWindowsDeviceRoot(code) &&
+                           StringPrototypeCharCodeAt(path, 1) === CHAR_COLON) {
+                    device = StringPrototypeSlice(path, 0, 2);
+                    rootEnd = 2;
+                    if (len > 2 && isPathSeparator(StringPrototypeCharCodeAt(path, 2))) {
+                        isAbsolute = true;
+                        rootEnd = 3;
+                    }
+                }
+
+                if (device.length > 0) {
+                    if (resolvedDevice.length > 0) {
+                        if (StringPrototypeToLowerCase(device) !==
+                            StringPrototypeToLowerCase(resolvedDevice))
+                            continue;
+                    } else {
+                        resolvedDevice = device;
+                    }
+                }
+
+                if (resolvedAbsolute) {
+                    if (resolvedDevice.length > 0) break;
+                } else {
+                    resolvedTail = `${StringPrototypeSlice(path, rootEnd)}\\${resolvedTail}`;
+                    resolvedAbsolute = isAbsolute;
+                    if (isAbsolute && resolvedDevice.length > 0) break;
+                }
             }
-        }
-        return joined ? normalize(joined) : '.';
-    }
 
-    function resolve(...args) {
-        let resolved = '';
-        for (let i = args.length - 1; i >= 0; i--) {
-            const p = args[i];
-            _validateString(p, `paths[${i}]`);
-            if (p.length === 0) continue;
-            resolved = p + (resolved ? '/' + resolved : '');
-            if (p.charCodeAt(0) === 47) break;
-        }
-        if (resolved.charCodeAt(0) !== 47) {
-            const [cwd] = os.getcwd();
-            resolved = cwd + '/' + resolved;
-        }
-        return normalize(resolved);
-    }
+            resolvedTail = normalizeString(resolvedTail, !resolvedAbsolute, '\\',
+                                           isPathSeparator);
 
-    function dirname(p) {
-        _validateString(p, 'path');
-        if (p.length === 0) return '.';
-        const idx = p.lastIndexOf('/');
-        if (idx === -1) return '.';
-        if (idx === 0) return '/';
-        return p.slice(0, idx);
-    }
+            return resolvedAbsolute ?
+                `${resolvedDevice}\\${resolvedTail}` :
+                `${resolvedDevice}${resolvedTail}` || '.';
+        },
 
-    function basename(p, ext) {
-        _validateString(p, 'path');
-        if (ext !== undefined) _validateString(ext, 'suffix');
-        let base = p;
-        const idx = p.lastIndexOf('/');
-        if (idx !== -1) base = p.slice(idx + 1);
-        if (ext && base.endsWith(ext)) base = base.slice(0, -ext.length);
-        return base;
-    }
+        normalize(path) {
+            validateString(path, 'path');
+            const len = path.length;
+            if (len === 0) return '.';
+            let rootEnd = 0;
+            let device;
+            let isAbsolute = false;
+            const code = StringPrototypeCharCodeAt(path, 0);
 
-    function extname(p) {
-        _validateString(p, 'path');
-        const base = basename(p);
-        const idx = base.lastIndexOf('.');
-        if (idx <= 0) return '';
-        return base.slice(idx);
-    }
+            if (len === 1) return isPosixPathSeparator(code) ? '\\' : path;
+            if (isPathSeparator(code)) {
+                isAbsolute = true;
 
-    function isAbsolute(p) {
-        _validateString(p, 'path');
-        return p.length > 0 && p.charCodeAt(0) === 47;
-    }
+                if (isPathSeparator(StringPrototypeCharCodeAt(path, 1))) {
+                    let j = 2;
+                    let last = j;
+                    while (j < len && !isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                    if (j < len && j !== last) {
+                        const firstPart = StringPrototypeSlice(path, last, j);
+                        last = j;
+                        while (j < len && isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                        if (j < len && j !== last) {
+                            last = j;
+                            while (j < len && !isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                            if (j === len) {
+                                return `\\\\${firstPart}\\${StringPrototypeSlice(path, last)}\\`;
+                            }
+                            if (j !== last) {
+                                device =
+                                    `\\\\${firstPart}\\${StringPrototypeSlice(path, last, j)}`;
+                                rootEnd = j;
+                            }
+                        }
+                    }
+                } else {
+                    rootEnd = 1;
+                }
+            } else if (isWindowsDeviceRoot(code) &&
+                       StringPrototypeCharCodeAt(path, 1) === CHAR_COLON) {
+                device = StringPrototypeSlice(path, 0, 2);
+                rootEnd = 2;
+                if (len > 2 && isPathSeparator(StringPrototypeCharCodeAt(path, 2))) {
+                    isAbsolute = true;
+                    rootEnd = 3;
+                }
+            }
 
-    function relative(from, to) {
-        from = resolve(from);
-        to = resolve(to);
-        if (from === to) return '';
-        const fromParts = from.split('/').filter(Boolean);
-        const toParts = to.split('/').filter(Boolean);
-        let common = 0;
-        while (common < fromParts.length && common < toParts.length &&
-               fromParts[common] === toParts[common]) {
-            common++;
-        }
-        const ups = fromParts.length - common;
-        const result = [];
-        for (let i = 0; i < ups; i++) result.push('..');
-        for (let i = common; i < toParts.length; i++) result.push(toParts[i]);
-        return result.join('/');
-    }
+            let tail = rootEnd < len ?
+                normalizeString(StringPrototypeSlice(path, rootEnd),
+                                !isAbsolute, '\\', isPathSeparator) :
+                '';
+            if (tail.length === 0 && !isAbsolute) tail = '.';
+            if (tail.length > 0 &&
+                isPathSeparator(StringPrototypeCharCodeAt(path, len - 1)))
+                tail += '\\';
+            if (device === undefined) return isAbsolute ? `\\${tail}` : tail;
+            return isAbsolute ? `${device}\\${tail}` : `${device}${tail}`;
+        },
 
-    function parse(p) {
-        const dir = dirname(p);
-        const base = basename(p);
-        const ext = extname(p);
-        const name = ext ? base.slice(0, -ext.length) : base;
-        const root = isAbsolute(p) ? '/' : '';
-        return { root, dir, base, ext, name };
-    }
+        isAbsolute(path) {
+            validateString(path, 'path');
+            const len = path.length;
+            if (len === 0) return false;
+            const code = StringPrototypeCharCodeAt(path, 0);
+            return isPathSeparator(code) ||
+                (len > 2 &&
+                isWindowsDeviceRoot(code) &&
+                StringPrototypeCharCodeAt(path, 1) === CHAR_COLON &&
+                isPathSeparator(StringPrototypeCharCodeAt(path, 2)));
+        },
 
-    function format(obj) {
-        const dir = obj.dir || obj.root || '';
-        const base = obj.base || ((obj.name || '') + (obj.ext || ''));
-        return dir ? (dir === obj.root ? dir + base : dir + '/' + base) : base;
-    }
+        join(...args) {
+            if (args.length === 0) return '.';
 
-    return {
-        sep, delimiter, normalize, join, resolve, dirname,
-        basename, extname, isAbsolute, relative, parse, format,
-        posix: null, // set below
+            let joined;
+            let firstPart;
+            for (let i = 0; i < args.length; ++i) {
+                const arg = args[i];
+                validateString(arg, 'path');
+                if (arg.length > 0) {
+                    if (joined === undefined)
+                        joined = firstPart = arg;
+                    else
+                        joined += `\\${arg}`;
+                }
+            }
+
+            if (joined === undefined) return '.';
+
+            let needsReplace = true;
+            let slashCount = 0;
+            if (isPathSeparator(StringPrototypeCharCodeAt(firstPart, 0))) {
+                ++slashCount;
+                const firstLen = firstPart.length;
+                if (firstLen > 1 &&
+                    isPathSeparator(StringPrototypeCharCodeAt(firstPart, 1))) {
+                    ++slashCount;
+                    if (firstLen > 2) {
+                        if (isPathSeparator(StringPrototypeCharCodeAt(firstPart, 2)))
+                            ++slashCount;
+                        else
+                            needsReplace = false;
+                    }
+                }
+            }
+            if (needsReplace) {
+                while (slashCount < joined.length &&
+                       isPathSeparator(StringPrototypeCharCodeAt(joined, slashCount))) {
+                    slashCount++;
+                }
+                if (slashCount >= 2)
+                    joined = `\\${StringPrototypeSlice(joined, slashCount)}`;
+            }
+
+            return win32.normalize(joined);
+        },
+
+        relative(from, to) {
+            validateString(from, 'from');
+            validateString(to, 'to');
+
+            if (from === to) return '';
+
+            const fromOrig = win32.resolve(from);
+            const toOrig = win32.resolve(to);
+
+            if (fromOrig === toOrig) return '';
+
+            from = StringPrototypeToLowerCase(fromOrig);
+            to = StringPrototypeToLowerCase(toOrig);
+
+            if (from === to) return '';
+
+            let fromStart = 0;
+            while (fromStart < from.length &&
+                   StringPrototypeCharCodeAt(from, fromStart) === CHAR_BACKWARD_SLASH) {
+                fromStart++;
+            }
+            let fromEnd = from.length;
+            while (
+                fromEnd - 1 > fromStart &&
+                StringPrototypeCharCodeAt(from, fromEnd - 1) === CHAR_BACKWARD_SLASH
+            ) {
+                fromEnd--;
+            }
+            const fromLen = fromEnd - fromStart;
+
+            let toStart = 0;
+            while (toStart < to.length &&
+                   StringPrototypeCharCodeAt(to, toStart) === CHAR_BACKWARD_SLASH) {
+                toStart++;
+            }
+            let toEnd = to.length;
+            while (toEnd - 1 > toStart &&
+                   StringPrototypeCharCodeAt(to, toEnd - 1) === CHAR_BACKWARD_SLASH) {
+                toEnd--;
+            }
+            const toLen = toEnd - toStart;
+
+            const length = fromLen < toLen ? fromLen : toLen;
+            let lastCommonSep = -1;
+            let i = 0;
+            for (; i < length; i++) {
+                const fromCode = StringPrototypeCharCodeAt(from, fromStart + i);
+                if (fromCode !== StringPrototypeCharCodeAt(to, toStart + i))
+                    break;
+                else if (fromCode === CHAR_BACKWARD_SLASH)
+                    lastCommonSep = i;
+            }
+
+            if (i !== length) {
+                if (lastCommonSep === -1) return toOrig;
+            } else {
+                if (toLen > length) {
+                    if (StringPrototypeCharCodeAt(to, toStart + i) ===
+                        CHAR_BACKWARD_SLASH) {
+                        return StringPrototypeSlice(toOrig, toStart + i + 1);
+                    }
+                    if (i === 2) return StringPrototypeSlice(toOrig, toStart + i);
+                }
+                if (fromLen > length) {
+                    if (StringPrototypeCharCodeAt(from, fromStart + i) ===
+                        CHAR_BACKWARD_SLASH) {
+                        lastCommonSep = i;
+                    } else if (i === 2) {
+                        lastCommonSep = 3;
+                    }
+                }
+                if (lastCommonSep === -1) lastCommonSep = 0;
+            }
+
+            let out = '';
+            for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {
+                if (i === fromEnd ||
+                    StringPrototypeCharCodeAt(from, i) === CHAR_BACKWARD_SLASH) {
+                    out += out.length === 0 ? '..' : '\\..';
+                }
+            }
+
+            toStart += lastCommonSep;
+
+            if (out.length > 0)
+                return `${out}${StringPrototypeSlice(toOrig, toStart, toEnd)}`;
+
+            if (StringPrototypeCharCodeAt(toOrig, toStart) === CHAR_BACKWARD_SLASH)
+                ++toStart;
+            return StringPrototypeSlice(toOrig, toStart, toEnd);
+        },
+
+        toNamespacedPath(path) {
+            if (typeof path !== 'string' || path.length === 0) return path;
+
+            const resolvedPath = win32.resolve(path);
+
+            if (resolvedPath.length <= 2) return path;
+
+            if (StringPrototypeCharCodeAt(resolvedPath, 0) === CHAR_BACKWARD_SLASH) {
+                if (StringPrototypeCharCodeAt(resolvedPath, 1) === CHAR_BACKWARD_SLASH) {
+                    const code = StringPrototypeCharCodeAt(resolvedPath, 2);
+                    if (code !== CHAR_QUESTION_MARK && code !== CHAR_DOT) {
+                        return `\\\\?\\UNC\\${StringPrototypeSlice(resolvedPath, 2)}`;
+                    }
+                }
+            } else if (
+                isWindowsDeviceRoot(StringPrototypeCharCodeAt(resolvedPath, 0)) &&
+                StringPrototypeCharCodeAt(resolvedPath, 1) === CHAR_COLON &&
+                StringPrototypeCharCodeAt(resolvedPath, 2) === CHAR_BACKWARD_SLASH
+            ) {
+                return `\\\\?\\${resolvedPath}`;
+            }
+
+            return path;
+        },
+
+        dirname(path) {
+            validateString(path, 'path');
+            const len = path.length;
+            if (len === 0) return '.';
+            let rootEnd = -1;
+            let offset = 0;
+            const code = StringPrototypeCharCodeAt(path, 0);
+
+            if (len === 1) return isPathSeparator(code) ? path : '.';
+
+            if (isPathSeparator(code)) {
+                rootEnd = offset = 1;
+
+                if (isPathSeparator(StringPrototypeCharCodeAt(path, 1))) {
+                    let j = 2;
+                    let last = j;
+                    while (j < len && !isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                    if (j < len && j !== last) {
+                        last = j;
+                        while (j < len && isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                        if (j < len && j !== last) {
+                            last = j;
+                            while (j < len && !isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                            if (j === len) return path;
+                            if (j !== last) rootEnd = offset = j + 1;
+                        }
+                    }
+                }
+            } else if (isWindowsDeviceRoot(code) &&
+                       StringPrototypeCharCodeAt(path, 1) === CHAR_COLON) {
+                rootEnd =
+                    len > 2 && isPathSeparator(StringPrototypeCharCodeAt(path, 2)) ? 3 : 2;
+                offset = rootEnd;
+            }
+
+            let end = -1;
+            let matchedSlash = true;
+            for (let i = len - 1; i >= offset; --i) {
+                if (isPathSeparator(StringPrototypeCharCodeAt(path, i))) {
+                    if (!matchedSlash) {
+                        end = i;
+                        break;
+                    }
+                } else {
+                    matchedSlash = false;
+                }
+            }
+
+            if (end === -1) {
+                if (rootEnd === -1) return '.';
+                end = rootEnd;
+            }
+            return StringPrototypeSlice(path, 0, end);
+        },
+
+        basename(path, suffix) {
+            if (suffix !== undefined) validateString(suffix, 'ext');
+            validateString(path, 'path');
+            let start = 0;
+            let end = -1;
+            let matchedSlash = true;
+
+            if (path.length >= 2 &&
+                isWindowsDeviceRoot(StringPrototypeCharCodeAt(path, 0)) &&
+                StringPrototypeCharCodeAt(path, 1) === CHAR_COLON) {
+                start = 2;
+            }
+
+            if (suffix !== undefined && suffix.length > 0 && suffix.length <= path.length) {
+                if (suffix === path) return '';
+                let extIdx = suffix.length - 1;
+                let firstNonSlashEnd = -1;
+                for (let i = path.length - 1; i >= start; --i) {
+                    const code = StringPrototypeCharCodeAt(path, i);
+                    if (isPathSeparator(code)) {
+                        if (!matchedSlash) {
+                            start = i + 1;
+                            break;
+                        }
+                    } else {
+                        if (firstNonSlashEnd === -1) {
+                            matchedSlash = false;
+                            firstNonSlashEnd = i + 1;
+                        }
+                        if (extIdx >= 0) {
+                            if (code === StringPrototypeCharCodeAt(suffix, extIdx)) {
+                                if (--extIdx === -1) end = i;
+                            } else {
+                                extIdx = -1;
+                                end = firstNonSlashEnd;
+                            }
+                        }
+                    }
+                }
+
+                if (start === end) end = firstNonSlashEnd;
+                else if (end === -1) end = path.length;
+                return StringPrototypeSlice(path, start, end);
+            }
+            for (let i = path.length - 1; i >= start; --i) {
+                if (isPathSeparator(StringPrototypeCharCodeAt(path, i))) {
+                    if (!matchedSlash) {
+                        start = i + 1;
+                        break;
+                    }
+                } else if (end === -1) {
+                    matchedSlash = false;
+                    end = i + 1;
+                }
+            }
+
+            if (end === -1) return '';
+            return StringPrototypeSlice(path, start, end);
+        },
+
+        extname(path) {
+            validateString(path, 'path');
+            let start = 0;
+            let startDot = -1;
+            let startPart = 0;
+            let end = -1;
+            let matchedSlash = true;
+            let preDotState = 0;
+
+            if (path.length >= 2 &&
+                StringPrototypeCharCodeAt(path, 1) === CHAR_COLON &&
+                isWindowsDeviceRoot(StringPrototypeCharCodeAt(path, 0))) {
+                start = startPart = 2;
+            }
+
+            for (let i = path.length - 1; i >= start; --i) {
+                const code = StringPrototypeCharCodeAt(path, i);
+                if (isPathSeparator(code)) {
+                    if (!matchedSlash) {
+                        startPart = i + 1;
+                        break;
+                    }
+                    continue;
+                }
+                if (end === -1) {
+                    matchedSlash = false;
+                    end = i + 1;
+                }
+                if (code === CHAR_DOT) {
+                    if (startDot === -1)
+                        startDot = i;
+                    else if (preDotState !== 1)
+                        preDotState = 1;
+                } else if (startDot !== -1) {
+                    preDotState = -1;
+                }
+            }
+
+            if (startDot === -1 ||
+                end === -1 ||
+                preDotState === 0 ||
+                (preDotState === 1 &&
+                 startDot === end - 1 &&
+                 startDot === startPart + 1)) {
+                return '';
+            }
+            return StringPrototypeSlice(path, startDot, end);
+        },
+
+        format(pathObject) {
+            return _format('\\', pathObject);
+        },
+
+        parse(path) {
+            validateString(path, 'path');
+
+            const ret = { root: '', dir: '', base: '', ext: '', name: '' };
+            if (path.length === 0) return ret;
+
+            const len = path.length;
+            let rootEnd = 0;
+            let code = StringPrototypeCharCodeAt(path, 0);
+
+            if (len === 1) {
+                if (isPathSeparator(code)) {
+                    ret.root = ret.dir = path;
+                    return ret;
+                }
+                ret.base = ret.name = path;
+                return ret;
+            }
+            if (isPathSeparator(code)) {
+                rootEnd = 1;
+                if (isPathSeparator(StringPrototypeCharCodeAt(path, 1))) {
+                    let j = 2;
+                    let last = j;
+                    while (j < len && !isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                    if (j < len && j !== last) {
+                        last = j;
+                        while (j < len && isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                        if (j < len && j !== last) {
+                            last = j;
+                            while (j < len && !isPathSeparator(StringPrototypeCharCodeAt(path, j))) j++;
+                            if (j === len) rootEnd = j;
+                            else if (j !== last) rootEnd = j + 1;
+                        }
+                    }
+                }
+            } else if (isWindowsDeviceRoot(code) &&
+                       StringPrototypeCharCodeAt(path, 1) === CHAR_COLON) {
+                if (len <= 2) {
+                    ret.root = ret.dir = path;
+                    return ret;
+                }
+                rootEnd = 2;
+                if (isPathSeparator(StringPrototypeCharCodeAt(path, 2))) {
+                    if (len === 3) {
+                        ret.root = ret.dir = path;
+                        return ret;
+                    }
+                    rootEnd = 3;
+                }
+            }
+            if (rootEnd > 0) ret.root = StringPrototypeSlice(path, 0, rootEnd);
+
+            let startDot = -1;
+            let startPart = rootEnd;
+            let end = -1;
+            let matchedSlash = true;
+            let i = path.length - 1;
+            let preDotState = 0;
+
+            for (; i >= rootEnd; --i) {
+                code = StringPrototypeCharCodeAt(path, i);
+                if (isPathSeparator(code)) {
+                    if (!matchedSlash) {
+                        startPart = i + 1;
+                        break;
+                    }
+                    continue;
+                }
+                if (end === -1) {
+                    matchedSlash = false;
+                    end = i + 1;
+                }
+                if (code === CHAR_DOT) {
+                    if (startDot === -1)
+                        startDot = i;
+                    else if (preDotState !== 1)
+                        preDotState = 1;
+                } else if (startDot !== -1) {
+                    preDotState = -1;
+                }
+            }
+
+            if (end !== -1) {
+                if (startDot === -1 ||
+                    preDotState === 0 ||
+                    (preDotState === 1 &&
+                     startDot === end - 1 &&
+                     startDot === startPart + 1)) {
+                    ret.base = ret.name = StringPrototypeSlice(path, startPart, end);
+                } else {
+                    ret.name = StringPrototypeSlice(path, startPart, startDot);
+                    ret.base = StringPrototypeSlice(path, startPart, end);
+                    ret.ext = StringPrototypeSlice(path, startDot, end);
+                }
+            }
+
+            if (startPart > 0 && startPart !== rootEnd)
+                ret.dir = StringPrototypeSlice(path, 0, startPart - 1);
+            else
+                ret.dir = ret.root;
+
+            return ret;
+        },
+
+        sep: '\\',
+        delimiter: ';',
+        win32: null,
+        posix: null,
     };
+
+    function posixCwd() {
+        return cwd();
+    }
+
+    const posix = {
+        resolve(...args) {
+            let resolvedPath = '';
+            let resolvedAbsolute = false;
+
+            for (let i = args.length - 1; i >= -1 && !resolvedAbsolute; i--) {
+                const path = i >= 0 ? args[i] : posixCwd();
+                validateString(path, `paths[${i}]`);
+                if (path.length === 0) continue;
+
+                resolvedPath = `${path}/${resolvedPath}`;
+                resolvedAbsolute =
+                    StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+            }
+
+            resolvedPath = normalizeString(resolvedPath, !resolvedAbsolute, '/',
+                                           isPosixPathSeparator);
+
+            if (resolvedAbsolute) return `/${resolvedPath}`;
+            return resolvedPath.length > 0 ? resolvedPath : '.';
+        },
+
+        normalize(path) {
+            validateString(path, 'path');
+
+            if (path.length === 0) return '.';
+
+            const isAbsolute =
+                StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+            const trailingSeparator =
+                StringPrototypeCharCodeAt(path, path.length - 1) === CHAR_FORWARD_SLASH;
+
+            path = normalizeString(path, !isAbsolute, '/', isPosixPathSeparator);
+
+            if (path.length === 0) {
+                if (isAbsolute) return '/';
+                return trailingSeparator ? './' : '.';
+            }
+            if (trailingSeparator) path += '/';
+
+            return isAbsolute ? `/${path}` : path;
+        },
+
+        isAbsolute(path) {
+            validateString(path, 'path');
+            return path.length > 0 &&
+                   StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+        },
+
+        join(...args) {
+            if (args.length === 0) return '.';
+            let joined;
+            for (let i = 0; i < args.length; ++i) {
+                const arg = args[i];
+                validateString(arg, 'path');
+                if (arg.length > 0) {
+                    if (joined === undefined)
+                        joined = arg;
+                    else
+                        joined += `/${arg}`;
+                }
+            }
+            if (joined === undefined) return '.';
+            return posix.normalize(joined);
+        },
+
+        relative(from, to) {
+            validateString(from, 'from');
+            validateString(to, 'to');
+
+            if (from === to) return '';
+
+            from = posix.resolve(from);
+            to = posix.resolve(to);
+
+            if (from === to) return '';
+
+            const fromStart = 1;
+            const fromEnd = from.length;
+            const fromLen = fromEnd - fromStart;
+            const toStart = 1;
+            const toLen = to.length - toStart;
+
+            const length = (fromLen < toLen ? fromLen : toLen);
+            let lastCommonSep = -1;
+            let i = 0;
+            for (; i < length; i++) {
+                const fromCode = StringPrototypeCharCodeAt(from, fromStart + i);
+                if (fromCode !== StringPrototypeCharCodeAt(to, toStart + i))
+                    break;
+                else if (fromCode === CHAR_FORWARD_SLASH)
+                    lastCommonSep = i;
+            }
+            if (i === length) {
+                if (toLen > length) {
+                    if (StringPrototypeCharCodeAt(to, toStart + i) === CHAR_FORWARD_SLASH) {
+                        return StringPrototypeSlice(to, toStart + i + 1);
+                    }
+                    if (i === 0) return StringPrototypeSlice(to, toStart + i);
+                } else if (fromLen > length) {
+                    if (StringPrototypeCharCodeAt(from, fromStart + i) ===
+                        CHAR_FORWARD_SLASH) {
+                        lastCommonSep = i;
+                    } else if (i === 0) {
+                        lastCommonSep = 0;
+                    }
+                }
+            }
+
+            let out = '';
+            for (i = fromStart + lastCommonSep + 1; i <= fromEnd; ++i) {
+                if (i === fromEnd ||
+                    StringPrototypeCharCodeAt(from, i) === CHAR_FORWARD_SLASH) {
+                    out += out.length === 0 ? '..' : '/..';
+                }
+            }
+
+            return `${out}${StringPrototypeSlice(to, toStart + lastCommonSep)}`;
+        },
+
+        toNamespacedPath(path) {
+            return path;
+        },
+
+        dirname(path) {
+            validateString(path, 'path');
+            if (path.length === 0) return '.';
+            const hasRoot = StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+            let end = -1;
+            let matchedSlash = true;
+            for (let i = path.length - 1; i >= 1; --i) {
+                if (StringPrototypeCharCodeAt(path, i) === CHAR_FORWARD_SLASH) {
+                    if (!matchedSlash) {
+                        end = i;
+                        break;
+                    }
+                } else {
+                    matchedSlash = false;
+                }
+            }
+
+            if (end === -1) return hasRoot ? '/' : '.';
+            if (hasRoot && end === 1) return '//';
+            return StringPrototypeSlice(path, 0, end);
+        },
+
+        basename(path, suffix) {
+            if (suffix !== undefined) validateString(suffix, 'ext');
+            validateString(path, 'path');
+
+            let start = 0;
+            let end = -1;
+            let matchedSlash = true;
+
+            if (suffix !== undefined && suffix.length > 0 && suffix.length <= path.length) {
+                if (suffix === path) return '';
+                let extIdx = suffix.length - 1;
+                let firstNonSlashEnd = -1;
+                for (let i = path.length - 1; i >= 0; --i) {
+                    const code = StringPrototypeCharCodeAt(path, i);
+                    if (code === CHAR_FORWARD_SLASH) {
+                        if (!matchedSlash) {
+                            start = i + 1;
+                            break;
+                        }
+                    } else {
+                        if (firstNonSlashEnd === -1) {
+                            matchedSlash = false;
+                            firstNonSlashEnd = i + 1;
+                        }
+                        if (extIdx >= 0) {
+                            if (code === StringPrototypeCharCodeAt(suffix, extIdx)) {
+                                if (--extIdx === -1) end = i;
+                            } else {
+                                extIdx = -1;
+                                end = firstNonSlashEnd;
+                            }
+                        }
+                    }
+                }
+
+                if (start === end) end = firstNonSlashEnd;
+                else if (end === -1) end = path.length;
+                return StringPrototypeSlice(path, start, end);
+            }
+            for (let i = path.length - 1; i >= 0; --i) {
+                if (StringPrototypeCharCodeAt(path, i) === CHAR_FORWARD_SLASH) {
+                    if (!matchedSlash) {
+                        start = i + 1;
+                        break;
+                    }
+                } else if (end === -1) {
+                    matchedSlash = false;
+                    end = i + 1;
+                }
+            }
+
+            if (end === -1) return '';
+            return StringPrototypeSlice(path, start, end);
+        },
+
+        extname(path) {
+            validateString(path, 'path');
+            let startDot = -1;
+            let startPart = 0;
+            let end = -1;
+            let matchedSlash = true;
+            let preDotState = 0;
+            for (let i = path.length - 1; i >= 0; --i) {
+                const char = path[i];
+                if (char === '/') {
+                    if (!matchedSlash) {
+                        startPart = i + 1;
+                        break;
+                    }
+                    continue;
+                }
+                if (end === -1) {
+                    matchedSlash = false;
+                    end = i + 1;
+                }
+                if (char === '.') {
+                    if (startDot === -1)
+                        startDot = i;
+                    else if (preDotState !== 1)
+                        preDotState = 1;
+                } else if (startDot !== -1) {
+                    preDotState = -1;
+                }
+            }
+
+            if (startDot === -1 ||
+                end === -1 ||
+                preDotState === 0 ||
+                (preDotState === 1 &&
+                 startDot === end - 1 &&
+                 startDot === startPart + 1)) {
+                return '';
+            }
+            return StringPrototypeSlice(path, startDot, end);
+        },
+
+        format(pathObject) {
+            return _format('/', pathObject);
+        },
+
+        parse(path) {
+            validateString(path, 'path');
+
+            const ret = { root: '', dir: '', base: '', ext: '', name: '' };
+            if (path.length === 0) return ret;
+            const isAbsolute =
+                StringPrototypeCharCodeAt(path, 0) === CHAR_FORWARD_SLASH;
+            const start = isAbsolute ? 1 : 0;
+            if (isAbsolute) ret.root = '/';
+
+            let startDot = -1;
+            let startPart = 0;
+            let end = -1;
+            let matchedSlash = true;
+            let i = path.length - 1;
+            let preDotState = 0;
+
+            for (; i >= start; --i) {
+                const code = StringPrototypeCharCodeAt(path, i);
+                if (code === CHAR_FORWARD_SLASH) {
+                    if (!matchedSlash) {
+                        startPart = i + 1;
+                        break;
+                    }
+                    continue;
+                }
+                if (end === -1) {
+                    matchedSlash = false;
+                    end = i + 1;
+                }
+                if (code === CHAR_DOT) {
+                    if (startDot === -1)
+                        startDot = i;
+                    else if (preDotState !== 1)
+                        preDotState = 1;
+                } else if (startDot !== -1) {
+                    preDotState = -1;
+                }
+            }
+
+            if (end !== -1) {
+                const start = startPart === 0 && isAbsolute ? 1 : startPart;
+                if (startDot === -1 ||
+                    preDotState === 0 ||
+                    (preDotState === 1 &&
+                     startDot === end - 1 &&
+                     startDot === startPart + 1)) {
+                    ret.base = ret.name = StringPrototypeSlice(path, start, end);
+                } else {
+                    ret.name = StringPrototypeSlice(path, start, startDot);
+                    ret.base = StringPrototypeSlice(path, start, end);
+                    ret.ext = StringPrototypeSlice(path, startDot, end);
+                }
+            }
+
+            if (startPart > 0)
+                ret.dir = StringPrototypeSlice(path, 0, startPart - 1);
+            else if (isAbsolute)
+                ret.dir = '/';
+
+            return ret;
+        },
+
+        sep: '/',
+        delimiter: ':',
+        win32: null,
+        posix: null,
+    };
+
+    posix.win32 = win32.win32 = win32;
+    posix.posix = win32.posix = posix;
+    win32._makeLong = win32.toNamespacedPath;
+    posix._makeLong = posix.toNamespacedPath;
+
+    return posix;
 })();
-path.posix = path;
-// tar/cacache/minimatch read `path.win32.{sep,parse,isAbsolute}` at module init.
-path.win32 = { ...path, sep: '\\', delimiter: ';' };
 
 // ============================================================
 // events module (EventEmitter)
@@ -8010,6 +8961,26 @@ const string_decoder = (() => {
 // timers module
 // ============================================================
 
+let _nodeEventLoopDrainScheduled = false;
+function _scheduleNodeEventLoopDrain() {
+    if (_nodeEventLoopDrainScheduled || process._exiting) return;
+    _nodeEventLoopDrainScheduled = true;
+    queueMicrotask(() => {
+        _nodeEventLoopDrainScheduled = false;
+        if (process._exiting) return;
+        if (typeof _drainEventLoopBeforeExit !== 'function') return;
+        try {
+            _drainEventLoopBeforeExit();
+        } catch (err) {
+            if (typeof _handleTopLevelFailure === 'function') {
+                _handleTopLevelFailure(err);
+            } else {
+                throw err;
+            }
+        }
+    });
+}
+
 const timers = (() => {
     const TIMEOUT_MAX = 2147483647;
     const kTimerHandle = Symbol('kandelo.timerHandle');
@@ -8056,6 +9027,14 @@ const timers = (() => {
         process.emitWarning(message, 'DeprecationWarning', code);
     }
 
+    function createAsyncResource(type) {
+        if (typeof async_hooks !== 'object' || async_hooks === null ||
+            typeof async_hooks.AsyncResource !== 'function') {
+            return null;
+        }
+        return new async_hooks.AsyncResource(type);
+    }
+
     function normalizeDelay(value, options) {
         const opts = options || {};
         if (opts.legacyEnroll && typeof value !== 'number') {
@@ -8100,12 +9079,27 @@ const timers = (() => {
         }
     }
 
+    function deactivateImmediate(handle) {
+        if (!handle) return;
+        handle._refed = false;
+        handle._idleTimeout = -1;
+        handle._idlePrev = null;
+        handle._idleNext = null;
+        liveHandles.delete(handle);
+        handlesByPrimitiveId.delete(handle._primitiveId);
+        untrackHandle(handle);
+    }
+
     function destroyHandle(handle, clearCallback) {
         if (!handle || handle._destroyed) return;
         clearNativeId(handle._nativeId);
         handle._nativeId = 0;
         handle._id = 0;
         handle._destroyed = true;
+        if (handle._asyncResource) {
+            handle._asyncResource.emitDestroy();
+            handle._asyncResource = null;
+        }
         if (handle._kind === 'Immediate') handle._refed = false;
         handle._idleTimeout = -1;
         handle._idlePrev = null;
@@ -8137,9 +9131,13 @@ const timers = (() => {
         return handle;
     }
 
-    function callTimerCallback(callback, receiver, args) {
+    function callTimerCallback(callback, receiver, args, resource) {
         try {
-            callback.apply(receiver, args || []);
+            if (resource && typeof resource.runInAsyncScope === 'function') {
+                resource.runInAsyncScope(callback, receiver, ...(args || []));
+            } else {
+                callback.apply(receiver, args || []);
+            }
         } catch (err) {
             if (!process._handleUncaughtException(err)) throw err;
         }
@@ -8161,8 +9159,12 @@ const timers = (() => {
         if (!shouldRunHandle(handle)) return;
         const callback = handle._onImmediate;
         const args = handle._timerArgs || [];
-        destroyHandle(handle, true);
-        if (typeof callback === 'function') callTimerCallback(callback, handle, args);
+        deactivateImmediate(handle);
+        try {
+            if (typeof callback === 'function') callTimerCallback(callback, handle, args, handle._asyncResource);
+        } finally {
+            destroyHandle(handle, true);
+        }
     }
 
     function fireTimeout(handle) {
@@ -8176,7 +9178,7 @@ const timers = (() => {
             return;
         }
         try {
-            callTimerCallback(callback, handle, handle._timerArgs || []);
+            callTimerCallback(callback, handle, handle._timerArgs || [], handle._asyncResource);
         } finally {
             if (handle._destroyed) return;
             if (handle._nativeId) return;
@@ -8205,6 +9207,7 @@ const timers = (() => {
             this._refed = isRefed !== false;
             this._kind = 'Timeout';
             this._resourceId = _trackActiveResource('Timeout');
+            this._asyncResource = createAsyncResource('Timeout');
             this._primitiveId = nextPrimitiveId++;
             this._nativeId = 0;
             this._id = 0;
@@ -8242,6 +9245,7 @@ const timers = (() => {
             this._refed = true;
             this._kind = 'Immediate';
             this._resourceId = _trackActiveResource('Immediate');
+            this._asyncResource = createAsyncResource('Immediate');
             this._primitiveId = nextPrimitiveId++;
             this._nativeId = 0;
             this._id = 0;
@@ -8397,15 +9401,21 @@ const timers = (() => {
     }
 
     function setTimeoutCompat(fn, ms, ...args) {
-        return new Timeout(fn, ms, args, false, true);
+        const handle = new Timeout(fn, ms, args, false, true);
+        if (typeof _scheduleNodeEventLoopDrain === 'function') _scheduleNodeEventLoopDrain();
+        return handle;
     }
 
     function setIntervalCompat(fn, ms, ...args) {
-        return new Timeout(fn, ms, args, true, true);
+        const handle = new Timeout(fn, ms, args, true, true);
+        if (typeof _scheduleNodeEventLoopDrain === 'function') _scheduleNodeEventLoopDrain();
+        return handle;
     }
 
     function setImmediateCompat(fn, ...args) {
-        return new Immediate(fn, args);
+        const handle = new Immediate(fn, args);
+        if (typeof _scheduleNodeEventLoopDrain === 'function') _scheduleNodeEventLoopDrain();
+        return handle;
     }
 
     function setUnrefTimeout(fn, ms, ...args) {
@@ -11744,7 +12754,7 @@ const internalEventTarget = (() => {
     };
 })();
 
-const internalWorkerIo = (() => {
+function _createInternalWorkerIo() {
     const MESSAGE_EVENT_STATE = new WeakMap();
     function invalidMessageEventThis() {
         const err = new TypeError('Value of "this" must be of type MessageEvent');
@@ -11790,7 +12800,7 @@ const internalWorkerIo = (() => {
         get ports() { return getMessageEventState(this).ports; }
     }
     return { MessageEvent };
-})();
+}
 
 const domain = (() => {
     let active = null;
@@ -13593,7 +14603,7 @@ const _builtinModules = {
     },
     'internal/webstreams/util': _makeUnsupportedNamespace('internal/webstreams/util'),
     'internal/worker': _makeUnsupportedNamespace('internal/worker'),
-    'internal/worker/io': internalWorkerIo,
+    'internal/worker/io': null,
     'internal/worker/js_transferable': _makeUnsupportedNamespace('internal/worker/js_transferable'),
 };
 
@@ -15008,6 +16018,7 @@ _defineGlobal('CustomEvent', KandeloCustomEvent);
 _defineGlobal('DOMException', KandeloDOMException);
 _defineGlobal('AbortSignal', KandeloAbortSignal);
 _defineGlobal('AbortController', KandeloAbortController);
+_builtinModules['internal/worker/io'] = _createInternalWorkerIo();
 
 function _copyArrayBuffer(buffer) {
     const copy = new ArrayBuffer(buffer.byteLength);
