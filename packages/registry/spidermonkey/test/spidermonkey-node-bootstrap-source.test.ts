@@ -186,4 +186,83 @@ if (failures.length) throw new Error(failures.join("\\n"));
     expect(child.stderr).toBe("");
     expect(child.status).toBe(0);
   });
+
+  it("implements readline interface, keypress, and raw-mode basics", () => {
+    const smoke = `
+globalThis.evalInWorker = function() {};
+${generatedBootstrapSource()}
+const assert = require("assert");
+const { PassThrough, Stream } = require("stream");
+const readline = require("readline");
+
+assert.strictEqual(readline.Interface, readline.InterfaceConstructor);
+
+{
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const rl = readline.createInterface({ input, output, terminal: true, prompt: "" });
+  assert(rl instanceof readline.Interface);
+  const lines = [];
+  const keys = [];
+  rl.on("line", (line) => lines.push(line));
+  input.on("keypress", (_sequence, key) => keys.push(key));
+  input.write("foo");
+  assert.deepStrictEqual(keys.map((key) => key.name), ["f", "o", "o"]);
+  assert.strictEqual(rl.line, "foo");
+  assert.strictEqual(rl.cursor, 3);
+  rl.write(null, { ctrl: true, name: "a" });
+  assert.strictEqual(rl.cursor, 0);
+  rl.write(null, { meta: true, name: "f" });
+  assert.strictEqual(rl.cursor, 3);
+  input.write("\\n");
+  assert.deepStrictEqual(lines, ["foo"]);
+  rl.close();
+}
+
+{
+  const input = new PassThrough();
+  const keys = [];
+  readline.emitKeypressEvents(input);
+  input.on("keypress", (_sequence, key) => keys.push(key));
+  input.write("\\x1b[D");
+  input.write("\\x1b\\x1b ");
+  assert.deepStrictEqual(keys.map((key) => [key.name, key.code, key.sequence]), [
+    ["left", "[D", "\\x1b[D"],
+    ["space", undefined, "\\x1b\\x1b "],
+  ]);
+}
+
+{
+  const input = new Stream();
+  let rawMode = null;
+  let resumed = 0;
+  let paused = 0;
+  input.setRawMode = (value) => { rawMode = value; };
+  input.resume = () => { resumed++; };
+  input.pause = () => { paused++; };
+  const rl = readline.createInterface({ input, output: input, terminal: true });
+  assert.strictEqual(rawMode, true);
+  assert.strictEqual(resumed, 1);
+  rl.pause();
+  assert.strictEqual(paused, 1);
+  rl.resume();
+  assert.strictEqual(resumed, 2);
+  rl.close();
+  assert.strictEqual(rawMode, false);
+}
+
+{
+  const { CSI } = require("internal/readline/utils");
+  assert.strictEqual(CSI.kClearLine, "\\x1b[2K");
+  assert.strictEqual(CSI\`1\${2}3\`, "\\x1b[123");
+}
+`;
+    const child = spawnSync(process.execPath, ["-"], {
+      input: smoke,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    });
+    expect(child.stderr).toBe("");
+    expect(child.status).toBe(0);
+  });
 });
