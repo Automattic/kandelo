@@ -291,7 +291,11 @@ console.log(cowsay.say({ text }));
   };
 }
 
-async function runNode(source: string, timeout = DEFAULT_TIMEOUT) {
+async function runNode(
+  source: string,
+  timeout = DEFAULT_TIMEOUT,
+  extraOptions: { execPrograms?: Map<string, string> } = {},
+) {
   const label =
     expect.getState().currentTestName ?? "spidermonkey node program";
   return withCiProgress(
@@ -300,6 +304,7 @@ async function runNode(source: string, timeout = DEFAULT_TIMEOUT) {
       programPath: nodeWasm!,
       programModule: nodeModule,
       argv: ["node", "-e", source],
+      ...extraOptions,
       timeout,
     }),
   );
@@ -667,6 +672,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "assert.strictEqual(typeof cluster.on, 'function')",
         "assert.strictEqual(typeof cluster.fork, 'function')",
         "assert.throws(() => cluster.fork(), { code: 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM' })",
+        "fs.writeFileSync('/usr/bin/node', '')",
         "fs.writeFileSync('/tmp/kandelo-fork-child.js', \"console.log('fork-child:' + process.argv.slice(2).join(','))\\n\")",
         "const child = cp.fork('/tmp/kandelo-fork-child.js', ['alpha', 'beta'])",
         "let out = ''",
@@ -685,6 +691,8 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         "assert.strictEqual(child.send({ hello: 'world' }, (err) => console.log(err.code)), false)",
         "drainJobQueue()",
       ].join("\n"),
+      DEFAULT_TIMEOUT,
+      { execPrograms: new Map([["/usr/bin/node", nodeWasm!]]) },
     );
 
     expect(result.exitCode).toBe(0);
