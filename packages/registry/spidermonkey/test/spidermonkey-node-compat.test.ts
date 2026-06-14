@@ -440,6 +440,106 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("ok");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("provides Node process identity, memory, resource, and permission APIs", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "assert.strictEqual(process.getuid(), 0)",
+        "assert.strictEqual(process.geteuid(), 0)",
+        "assert.strictEqual(process.getgid(), 0)",
+        "assert.strictEqual(process.getegid(), 0)",
+        "process.setgid('nobody')",
+        "process.setuid('nobody')",
+        "assert.strictEqual(process.getgid(), 65534)",
+        "assert.strictEqual(process.getuid(), 65534)",
+        "assert.deepStrictEqual(process.getgroups(), [0])",
+        "const old = process.umask('0664')",
+        "assert.strictEqual(old, 0o022)",
+        "assert.strictEqual(process.umask(), 0o664)",
+        "assert.strictEqual(process.umask(old), 0o664)",
+        "const memory = process.memoryUsage()",
+        "assert(memory.rss > 0)",
+        "assert(memory.heapTotal > 0)",
+        "assert(memory.heapUsed > 0)",
+        "assert(memory.external > 0)",
+        "assert.strictEqual(typeof process.memoryUsage.rss(), 'number')",
+        "const rusage = process.resourceUsage()",
+        "assert.strictEqual(typeof rusage.maxRSS, 'number')",
+        "assert.strictEqual(typeof process.availableMemory(), 'number')",
+        "assert.strictEqual(typeof process.constrainedMemory(), 'number')",
+        "assert.strictEqual(process.permission.has('fs.read', '/tmp/file'), true)",
+        "assert.strictEqual(process.permission.has('child'), true)",
+        "assert.strictEqual(process.permission.has('invalid-key'), false)",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("emits warnings and exposes process.binding util parity", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const util = require('util')",
+        "const seen = []",
+        "process.on('warning', (warning) => seen.push([warning.name, warning.message, warning.code || '']))",
+        "process.emitWarning('careful', 'CustomWarning', 'CODE001')",
+        "assert.throws(() => process.assert(false, 'asserted'), { code: 'ERR_ASSERTION' })",
+        "drainJobQueue()",
+        "assert.deepStrictEqual(seen, [",
+        "  ['CustomWarning', 'careful', 'CODE001'],",
+        "  ['DeprecationWarning', 'process.assert() is deprecated. Please use the `assert` module instead.', 'DEP0100'],",
+        "])",
+        "const binding = process.binding('util')",
+        "assert.deepStrictEqual(Object.keys(binding).sort(), [",
+        "  'isAnyArrayBuffer', 'isArrayBuffer', 'isArrayBufferView', 'isAsyncFunction',",
+        "  'isDataView', 'isDate', 'isExternal', 'isMap', 'isMapIterator',",
+        "  'isNativeError', 'isPromise', 'isRegExp', 'isSet', 'isSetIterator',",
+        "  'isTypedArray', 'isUint8Array',",
+        "].sort())",
+        "for (const key of Object.keys(binding)) assert.strictEqual(binding[key], util.types[key])",
+        "console.log('ok')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
+  it("tracks active process resources and uncaught-exception capture callbacks", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "assert.strictEqual(process.hasUncaughtExceptionCaptureCallback(), false)",
+        "process.setUncaughtExceptionCaptureCallback((err) => {",
+        "  assert.strictEqual(err.message, 'captured')",
+        "  console.log('captured')",
+        "})",
+        "assert.strictEqual(process.hasUncaughtExceptionCaptureCallback(), true)",
+        "const timeout = setTimeout(() => {",
+        "  assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length, 1)",
+        "  clearTimeout(timeout)",
+        "  assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length, 0)",
+        "}, 0)",
+        "assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Timeout').length, 1)",
+        "const immediate = setImmediate(() => {",
+        "  assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Immediate').length, 0)",
+        "})",
+        "assert.strictEqual(process.getActiveResourcesInfo().filter((x) => x === 'Immediate').length, 1)",
+        "drainJobQueue()",
+        "throw new Error('captured')",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("captured");
+  }, DEFAULT_TEST_TIMEOUT);
+
   it("provides vm.runInNewContext for foreign objects and sandbox globals", async () => {
     const result = await runNode(
       [

@@ -1940,7 +1940,7 @@
    }
  }
 
-@@ -6876,7 +7958,43 @@
+@@ -6876,6 +7958,70 @@
 
  int shell::sArgc;
  char** shell::sArgv;
@@ -1955,7 +1955,7 @@
 +         strcmp(base, "spidermonkey-node") == 0 ||
 +         strcmp(base, "spidermonkey-node.wasm") == 0;
 +}
-
++
 +static bool IsKandeloNodeMode() {
 +  return sArgc > 0 && sArgv && IsKandeloNodeProgramName(sArgv[0]);
 +}
@@ -1981,10 +1981,37 @@
 +  return JS::Evaluate(cx, opts, srcBuf, &rval);
 +}
 +
++static bool MaybeHandleKandeloNodeUncaughtException(JSContext* cx) {
++  if (!IsKandeloNodeMode() || !JS_IsExceptionPending(cx)) {
++    return false;
++  }
++
++  RootedValue exception(cx);
++  if (!JS_GetPendingException(cx, &exception)) {
++    return false;
++  }
++  JS_ClearPendingException(cx);
++
++  RootedObject global(cx, cx->global());
++  RootedValue processValue(cx);
++  if (!JS_GetProperty(cx, global, "process", &processValue) ||
++      !processValue.isObject()) {
++    return false;
++  }
++
++  RootedObject processObject(cx, &processValue.toObject());
++  RootedValue handledValue(cx);
++  if (!JS_CallFunctionName(cx, processObject, "_handleUncaughtException",
++                           HandleValueArray(exception), &handledValue)) {
++    return false;
++  }
++
++  return ToBoolean(handledValue);
++}
+
  #ifndef __wasi__
  static const char sWasmCompileAndSerializeFlag[] =
-     "--wasm-compile-and-serialize";
-@@ -11703,6 +12821,10 @@
+@@ -11703,6 +12849,10 @@
 
    /* |scriptArgs| gets bound on the global before any code is run. */
    if (!BindScriptArgs(cx, op)) {
@@ -1995,7 +2022,18 @@
      return false;
    }
 
-@@ -12321,6 +13443,12 @@
+@@ -11796,7 +12946,9 @@
+
+       RootedValue rval(cx);
+       if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
+-        return false;
++        if (!MaybeHandleKandeloNodeUncaughtException(cx)) {
++          return false;
++        }
+       }
+
+       codeChunks.popFront();
+@@ -12321,6 +13473,12 @@
    int result;
 
    setlocale(LC_ALL, "");
@@ -2008,7 +2046,7 @@
 
    // Special-case stdout and stderr. We bump their refcounts to prevent them
    // from getting closed and then having some printf fail somewhere.
-@@ -13315,6 +14443,8 @@
+@@ -13315,6 +14473,8 @@
      } else {
        return OptionFailure("shared-memory", str);
      }
