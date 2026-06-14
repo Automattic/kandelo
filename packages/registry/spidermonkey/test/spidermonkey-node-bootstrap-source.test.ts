@@ -257,6 +257,176 @@ if (failures.length) throw new Error(failures.join("\\n"));
 `);
   });
 
+  it("matches diagnostics_channel bootstrap semantics", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+const dc = require("diagnostics_channel");
+const { AsyncLocalStorage } = require("async_hooks");
+
+assert.deepStrictEqual(Object.keys(dc).sort(), [
+  "Channel",
+  "channel",
+  "hasSubscribers",
+  "subscribe",
+  "tracingChannel",
+  "unsubscribe",
+]);
+assert.strictEqual("TracingChannel" in dc, false);
+
+const seen = [];
+const channel = dc.channel("probe");
+assert.strictEqual(channel, dc.channel("probe"));
+assert.ok(channel instanceof dc.Channel);
+assert.strictEqual(channel.hasSubscribers, false);
+assert.strictEqual(dc.hasSubscribers("probe"), false);
+const subscriber = (message, name) => seen.push([message.value, name]);
+assert.strictEqual(dc.subscribe("probe", subscriber), undefined);
+assert.strictEqual(channel.hasSubscribers, true);
+assert.strictEqual(dc.hasSubscribers("probe"), true);
+channel.publish({ value: 1 });
+assert.strictEqual(dc.unsubscribe("probe", subscriber), true);
+assert.strictEqual(dc.unsubscribe("probe", subscriber), false);
+assert.strictEqual(channel.hasSubscribers, false);
+channel.publish({ value: 2 });
+
+const symbol = Symbol("named");
+dc.channel(symbol).subscribe((message, name) => seen.push([message.value, name === symbol]));
+dc.channel(symbol).publish({ value: 3 });
+assert.throws(() => channel.subscribe(null), { code: "ERR_INVALID_ARG_TYPE" });
+assert.deepStrictEqual(seen, [
+  [1, "probe"],
+  [3, true],
+]);
+
+const tracing = dc.tracingChannel("trace");
+assert.strictEqual(tracing.start.name, "tracing:trace:start");
+assert.deepStrictEqual(Object.keys(tracing), []);
+const startDescriptor = Object.getOwnPropertyDescriptor(tracing, "start");
+assert.deepStrictEqual({
+  writable: startDescriptor.writable,
+  enumerable: startDescriptor.enumerable,
+  configurable: startDescriptor.configurable,
+}, {
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
+assert.throws(() => dc.tracingChannel(0), { code: "ERR_INVALID_ARG_TYPE" });
+assert.throws(() => dc.tracingChannel({ start: "" }), { code: "ERR_INVALID_ARG_TYPE" });
+assert.throws(() => dc.tracingChannel({}), /Cannot convert undefined or null to object/);
+assert.throws(() => tracing.subscribe(undefined), /Cannot read properties of undefined/);
+assert.throws(() => tracing.unsubscribe(undefined), /Cannot read properties of undefined/);
+
+const store = new AsyncLocalStorage();
+const storesChannel = dc.channel("stores");
+storesChannel.bindStore(store, (data) => ({ data }));
+assert.strictEqual(storesChannel.hasSubscribers, true);
+storesChannel.runStores("outer", function(arg) {
+  assert.deepStrictEqual([this.label, arg, store.getStore().data], ["thisArg", "arg", "outer"]);
+}, { label: "thisArg" }, "arg");
+
+const ordered = dc.channel("ordered-stores");
+const firstStore = new AsyncLocalStorage();
+const secondStore = new AsyncLocalStorage();
+const orderedSeen = [];
+ordered.bindStore(firstStore, () => {
+  orderedSeen.push(["transform", "first"]);
+  return "first";
+});
+ordered.bindStore(secondStore, () => {
+  orderedSeen.push(["transform", "second"]);
+  return "second";
+});
+ordered.runStores("ordered", () => {
+  orderedSeen.push(["ordered", firstStore.getStore(), secondStore.getStore()]);
+});
+assert.deepStrictEqual(orderedSeen, [
+  ["transform", "second"],
+  ["transform", "first"],
+  ["ordered", "first", "second"],
+]);
+
+const traceSeen = [];
+tracing.start.bindStore(store, () => ({ phase: "start" }));
+tracing.asyncStart.bindStore(store, () => ({ phase: "asyncStart" }));
+tracing.subscribe({
+  start: (ctx) => traceSeen.push(["start", ctx.input, store.getStore().phase]),
+  end: (ctx) => traceSeen.push(["end", ctx.result ?? null]),
+  asyncStart: (ctx) => traceSeen.push(["asyncStart", ctx.result, store.getStore().phase]),
+  asyncEnd: (ctx) => traceSeen.push(["asyncEnd", ctx.result]),
+  error: (ctx) => traceSeen.push(["error", ctx.error && ctx.error.message]),
+});
+const syncResult = tracing.traceSync(function(value) {
+  traceSeen.push(["body", value, store.getStore().phase]);
+  return "sync-result";
+}, { input: "sync" }, null, 42);
+assert.strictEqual(syncResult, "sync-result");
+
+await new Promise((resolve) => {
+  tracing.traceCallback(function(cb) {
+    traceSeen.push(["callback-body", store.getStore().phase]);
+    setImmediate(cb, null, "callback-result");
+  }, 0, { input: "callback" }, null, (err, value) => {
+    assert.strictEqual(err, null);
+    traceSeen.push(["callback", value, store.getStore().phase]);
+    resolve();
+  });
+});
+
+assert.deepStrictEqual(traceSeen, [
+  ["start", "sync", "start"],
+  ["body", 42, "start"],
+  ["end", "sync-result"],
+  ["start", "callback", "start"],
+  ["callback-body", "start"],
+  ["end", null],
+  ["asyncStart", "callback-result", "asyncStart"],
+  ["callback", "callback-result", "asyncStart"],
+  ["asyncEnd", "callback-result"],
+]);
+
+const custom = dc.tracingChannel({
+  start: dc.channel("custom:start"),
+  end: dc.channel("custom:end"),
+  asyncStart: dc.channel("custom:asyncStart"),
+  asyncEnd: dc.channel("custom:asyncEnd"),
+  error: dc.channel("custom:error"),
+});
+const errorSeen = [];
+custom.subscribe({
+  start: (ctx) => errorSeen.push(["start", ctx.kind]),
+  end: (ctx) => errorSeen.push(["end", ctx.kind]),
+  asyncStart: (ctx) => errorSeen.push(["asyncStart", ctx.kind, ctx.result || ctx.error.message]),
+  asyncEnd: (ctx) => errorSeen.push(["asyncEnd", ctx.kind]),
+  error: (ctx) => errorSeen.push(["error", ctx.kind, ctx.error.message]),
+});
+const expected = new Error("boom");
+try {
+  custom.traceSync(() => { throw expected; }, { kind: "sync-error" });
+} catch (err) {
+  assert.strictEqual(err, expected);
+}
+await custom.tracePromise(() => Promise.resolve("ok"), { kind: "promise-ok" });
+await custom.tracePromise(() => Promise.reject(expected), { kind: "promise-error" }).catch((err) => {
+  assert.strictEqual(err, expected);
+});
+assert.deepStrictEqual(errorSeen, [
+  ["start", "sync-error"],
+  ["error", "sync-error", "boom"],
+  ["end", "sync-error"],
+  ["start", "promise-ok"],
+  ["end", "promise-ok"],
+  ["asyncStart", "promise-ok", "ok"],
+  ["asyncEnd", "promise-ok"],
+  ["start", "promise-error"],
+  ["end", "promise-error"],
+  ["error", "promise-error", "boom"],
+  ["asyncStart", "promise-error", "boom"],
+  ["asyncEnd", "promise-error"],
+]);
+`);
+  });
+
   it("matches Node events listener bookkeeping and EventTarget helper semantics", () => {
     runBootstrapSmoke(`
 const assert = require("assert");

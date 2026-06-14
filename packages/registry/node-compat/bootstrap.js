@@ -13314,8 +13314,6 @@ const _builtinModules = {
                 for (const name of traceEvents) {
                     Object.defineProperty(this, name, {
                         value: tracingChannelFrom(nameOrChannels, name),
-                        enumerable: true,
-                        configurable: true,
                     });
                 }
             }
@@ -13330,14 +13328,14 @@ const _builtinModules = {
 
             subscribe(handlers) {
                 for (const name of traceEvents) {
-                    if (handlers && handlers[name]) this[name].subscribe(handlers[name]);
+                    if (handlers[name]) this[name].subscribe(handlers[name]);
                 }
             }
 
             unsubscribe(handlers) {
                 let done = true;
                 for (const name of traceEvents) {
-                    if (handlers && handlers[name] && !this[name].unsubscribe(handlers[name])) {
+                    if (handlers[name] && !this[name].unsubscribe(handlers[name])) {
                         done = false;
                     }
                 }
@@ -13439,7 +13437,6 @@ const _builtinModules = {
                 return !!(ch && ch.hasSubscribers);
             },
             Channel,
-            TracingChannel,
         };
     })(),
     'v8': (() => {
