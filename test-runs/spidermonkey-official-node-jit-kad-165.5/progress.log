@@ -1,0 +1,173 @@
+===== 2026-06-13T02:15:07Z node jit-tests _files =====
+===== 2026-06-13T02:32:31Z node jit-tests Date =====
+===== 2026-06-13T02:32:33Z node jit-tests JSON =====
+===== 2026-06-13T02:32:37Z node jit-tests Set =====
+===== 2026-06-13T02:32:52Z node jit-tests arguments =====
+===== 2026-06-13T02:41:50Z node jit-tests arrays =====
+===== 2026-06-13T02:43:46Z node jit-tests arrow-functions =====
+===== 2026-06-13T02:45:35Z node jit-tests asm.js =====
+===== 2026-06-13T02:52:30Z node jit-tests async =====
+Skipping node jit-tests _files before --start-at atomics
+Skipping node jit-tests Date before --start-at atomics
+Skipping node jit-tests JSON before --start-at atomics
+Skipping node jit-tests Set before --start-at atomics
+Skipping node jit-tests arguments before --start-at atomics
+Skipping node jit-tests arrays before --start-at atomics
+Skipping node jit-tests arrow-functions before --start-at atomics
+Skipping node jit-tests asm.js before --start-at atomics
+Skipping node jit-tests async before --start-at atomics
+===== 2026-06-13T03:11:32Z node jit-tests atomics =====
+Skipping node jit-tests _files before --start-at atomics
+Skipping node jit-tests Date before --start-at atomics
+Skipping node jit-tests JSON before --start-at atomics
+Skipping node jit-tests Set before --start-at atomics
+Skipping node jit-tests arguments before --start-at atomics
+Skipping node jit-tests arrays before --start-at atomics
+Skipping node jit-tests arrow-functions before --start-at atomics
+Skipping node jit-tests asm.js before --start-at atomics
+Skipping node jit-tests async before --start-at atomics
+===== 2026-06-13T03:13:54Z node jit-tests atomics =====
+===== 2026-06-13T03:16:05Z node jit-tests auto-regress =====
+===== 2026-06-13T03:33:14Z node jit-tests baseline =====
+===== 2026-06-13T03:36:43Z node jit-tests basic#part-0001 =====
+===== 2026-06-13T03:58:14Z node jit-tests basic#part-0002 =====
+===== 2026-06-13T04:03:43Z node jit-tests basic#part-0003 =====
+===== 2026-06-13T04:08:52Z node jit-tests bigint =====
+===== 2026-06-13T04:09:51Z node jit-tests cacheir =====
+===== 2026-06-13T04:12:48Z node jit-tests class =====
+===== 2026-06-13T04:13:24Z node jit-tests closures =====
+===== 2026-06-13T04:14:23Z node jit-tests collections =====
+===== 2026-06-13T04:16:08Z node jit-tests constant-compare =====
+===== 2026-06-13T04:16:10Z node jit-tests coverage =====
+===== 2026-06-13T04:16:17Z node jit-tests ctypes =====
+===== 2026-06-13T04:16:48Z node jit-tests dataview =====
+===== 2026-06-13T04:16:58Z node jit-tests debug#part-0001 =====
+===== 2026-06-13T04:24:05Z node jit-tests debug#part-0002 =====
+===== 2026-06-13T04:36:33Z node jit-tests debug#part-0003 =====
+===== 2026-06-13T04:37:46Z node jit-tests decorators =====
+===== 2026-06-13T04:37:51Z node jit-tests environments =====
+===== 2026-06-13T04:38:01Z node jit-tests errors =====
+===== 2026-06-13T04:38:12Z node jit-tests explicit-resource-management =====
+===== 2026-06-13T04:39:20Z node jit-tests fields =====
+===== 2026-06-13T04:39:49Z node jit-tests for-of =====
+===== 2026-06-13T04:40:50Z node jit-tests function =====
+===== 2026-06-13T04:40:53Z node jit-tests fuses =====
+===== 2026-06-13T04:41:13Z node jit-tests gc =====
+===== 2026-06-13T04:46:36Z node jit-tests generators =====
+===== 2026-06-13T04:46:54Z node jit-tests heap-analysis =====
+===== 2026-06-13T04:47:03Z node jit-tests ion#part-0001 =====
+===== 2026-06-13T04:53:29Z node jit-tests ion#part-0002 =====
+===== 2026-06-13T04:58:52Z node jit-tests ion#part-0003 =====
+===== 2026-06-13T04:59:12Z node jit-tests jaeger =====
+Skipping node jit-tests _files before --start-at jaeger
+Skipping node jit-tests Date before --start-at jaeger
+Skipping node jit-tests JSON before --start-at jaeger
+Skipping node jit-tests Set before --start-at jaeger
+Skipping node jit-tests arguments before --start-at jaeger
+Skipping node jit-tests arrays before --start-at jaeger
+Skipping node jit-tests arrow-functions before --start-at jaeger
+Skipping node jit-tests asm.js before --start-at jaeger
+Skipping node jit-tests async before --start-at jaeger
+Skipping node jit-tests atomics before --start-at jaeger
+Skipping node jit-tests auto-regress before --start-at jaeger
+Skipping node jit-tests baseline before --start-at jaeger
+Skipping node jit-tests basic#part-0001 before --start-at jaeger
+Skipping node jit-tests basic#part-0002 before --start-at jaeger
+Skipping node jit-tests basic#part-0003 before --start-at jaeger
+Skipping node jit-tests bigint before --start-at jaeger
+Skipping node jit-tests cacheir before --start-at jaeger
+Skipping node jit-tests class before --start-at jaeger
+Skipping node jit-tests closures before --start-at jaeger
+Skipping node jit-tests collections before --start-at jaeger
+Skipping node jit-tests constant-compare before --start-at jaeger
+Skipping node jit-tests coverage before --start-at jaeger
+Skipping node jit-tests ctypes before --start-at jaeger
+Skipping node jit-tests dataview before --start-at jaeger
+Skipping node jit-tests debug#part-0001 before --start-at jaeger
+Skipping node jit-tests debug#part-0002 before --start-at jaeger
+Skipping node jit-tests debug#part-0003 before --start-at jaeger
+Skipping node jit-tests decorators before --start-at jaeger
+Skipping node jit-tests environments before --start-at jaeger
+Skipping node jit-tests errors before --start-at jaeger
+Skipping node jit-tests explicit-resource-management before --start-at jaeger
+Skipping node jit-tests fields before --start-at jaeger
+Skipping node jit-tests for-of before --start-at jaeger
+Skipping node jit-tests function before --start-at jaeger
+Skipping node jit-tests fuses before --start-at jaeger
+Skipping node jit-tests gc before --start-at jaeger
+Skipping node jit-tests generators before --start-at jaeger
+Skipping node jit-tests heap-analysis before --start-at jaeger
+Skipping node jit-tests ion#part-0001 before --start-at jaeger
+Skipping node jit-tests ion#part-0002 before --start-at jaeger
+Skipping node jit-tests ion#part-0003 before --start-at jaeger
+===== 2026-06-13T11:33:58Z node jit-tests jaeger =====
+Skipping node jit-tests _files before --start-at jaeger
+Skipping node jit-tests Date before --start-at jaeger
+Skipping node jit-tests JSON before --start-at jaeger
+Skipping node jit-tests Set before --start-at jaeger
+Skipping node jit-tests arguments before --start-at jaeger
+Skipping node jit-tests arrays before --start-at jaeger
+Skipping node jit-tests arrow-functions before --start-at jaeger
+Skipping node jit-tests asm.js before --start-at jaeger
+Skipping node jit-tests async before --start-at jaeger
+Skipping node jit-tests atomics before --start-at jaeger
+Skipping node jit-tests auto-regress before --start-at jaeger
+Skipping node jit-tests baseline before --start-at jaeger
+Skipping node jit-tests basic#part-0001 before --start-at jaeger
+Skipping node jit-tests basic#part-0002 before --start-at jaeger
+Skipping node jit-tests basic#part-0003 before --start-at jaeger
+Skipping node jit-tests bigint before --start-at jaeger
+Skipping node jit-tests cacheir before --start-at jaeger
+Skipping node jit-tests class before --start-at jaeger
+Skipping node jit-tests closures before --start-at jaeger
+Skipping node jit-tests collections before --start-at jaeger
+Skipping node jit-tests constant-compare before --start-at jaeger
+Skipping node jit-tests coverage before --start-at jaeger
+Skipping node jit-tests ctypes before --start-at jaeger
+Skipping node jit-tests dataview before --start-at jaeger
+Skipping node jit-tests debug#part-0001 before --start-at jaeger
+Skipping node jit-tests debug#part-0002 before --start-at jaeger
+Skipping node jit-tests debug#part-0003 before --start-at jaeger
+Skipping node jit-tests decorators before --start-at jaeger
+Skipping node jit-tests environments before --start-at jaeger
+Skipping node jit-tests errors before --start-at jaeger
+Skipping node jit-tests explicit-resource-management before --start-at jaeger
+Skipping node jit-tests fields before --start-at jaeger
+Skipping node jit-tests for-of before --start-at jaeger
+Skipping node jit-tests function before --start-at jaeger
+Skipping node jit-tests fuses before --start-at jaeger
+Skipping node jit-tests gc before --start-at jaeger
+Skipping node jit-tests generators before --start-at jaeger
+Skipping node jit-tests heap-analysis before --start-at jaeger
+Skipping node jit-tests ion#part-0001 before --start-at jaeger
+Skipping node jit-tests ion#part-0002 before --start-at jaeger
+Skipping node jit-tests ion#part-0003 before --start-at jaeger
+===== 2026-06-13T11:35:59Z node jit-tests jaeger =====
+===== 2026-06-13T13:00:46Z node jit-tests large-arraybuffers =====
+===== 2026-06-13T13:01:38Z node jit-tests latin1 =====
+===== 2026-06-13T13:04:30Z node jit-tests modules =====
+===== 2026-06-13T13:16:39Z node jit-tests optional-chain =====
+===== 2026-06-13T13:16:44Z node jit-tests parser =====
+===== 2026-06-13T13:20:02Z node jit-tests pic =====
+===== 2026-06-13T13:20:43Z node jit-tests profiler =====
+===== 2026-06-13T13:21:31Z node jit-tests promise =====
+===== 2026-06-13T13:22:29Z node jit-tests proxy =====
+===== 2026-06-13T13:26:06Z node jit-tests realms =====
+===== 2026-06-13T13:26:35Z node jit-tests regexp =====
+===== 2026-06-13T13:27:53Z node jit-tests resist-fingerprinting =====
+===== 2026-06-13T13:27:59Z node jit-tests saved-stacks =====
+===== 2026-06-13T13:29:08Z node jit-tests self-hosting =====
+===== 2026-06-13T13:29:36Z node jit-tests self-test =====
+===== 2026-06-13T13:30:05Z node jit-tests sharedbuf =====
+===== 2026-06-13T13:30:31Z node jit-tests strings =====
+===== 2026-06-13T13:30:34Z node jit-tests structured-clone =====
+===== 2026-06-13T13:31:00Z node jit-tests sunspider =====
+===== 2026-06-13T13:31:31Z node jit-tests symbol =====
+===== 2026-06-13T13:31:39Z node jit-tests truthiness =====
+===== 2026-06-13T13:32:05Z node jit-tests typedarray =====
+===== 2026-06-13T13:33:19Z node jit-tests v8-v5 =====
+===== 2026-06-13T13:33:26Z node jit-tests warp =====
+===== 2026-06-13T13:38:23Z node jit-tests wasm#part-0001 =====
+===== 2026-06-13T13:58:00Z node jit-tests wasm#part-0002 =====
+===== 2026-06-13T14:12:53Z node jit-tests watchtower =====
+===== 2026-06-13T14:13:08Z node jit-tests xdr =====

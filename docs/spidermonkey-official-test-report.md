@@ -76,6 +76,23 @@ source tree pinned by the SpiderMonkey package manifest. The browser VFS builder
 uses the same source tree so absolute upstream test paths stay valid inside the
 guest filesystem.
 
+## Exhaustive Node jit-tests Result
+
+The `kad-165.5` Node host run of the upstream `js/src/jit-test/tests` inventory
+is preserved under `test-runs/spidermonkey-official-node-jit-kad-165.5/`. It
+used `scripts/run-spidermonkey-official-all.sh --host node --suite jit-tests
+--jobs 1 --no-slow` with the effective jit flag coverage left at the runner
+default, `SPIDERMONKEY_OFFICIAL_JITFLAGS=all`.
+
+The committed artifact bundle contains the merged `summary.tsv`, 70 per-chunk
+logs, 70 per-chunk input lists, `inventory.tsv`, `progress.log`, and `run.log`.
+Final merged totals were 10,371 passes, 0 known skips, and 45,386 unexpected
+results across 70 chunks. The dominant unexpected classes were 45,173
+`RuntimeError: memory access out of bounds` results, 174
+`MOZ_CRASH(No 64-bit atomics)` results, 34 timeouts, and 5 pthread slot-limit
+exhaustions. See the artifact README for the exact resume commands and largest
+failure chunks.
+
 ## Current Limitations
 
 This branch intentionally does not adopt the broad PR #1 runtime changes:

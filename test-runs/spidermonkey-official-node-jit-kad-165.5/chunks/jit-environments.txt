@@ -1,0 +1,16 @@
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/1890252.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/bug1671563-strict.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/bug1671563.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/bug1671762.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/bug1710089.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/bug1912715-1.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/bug1912715-2.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/bug1912715-3.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/delete-global-var.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/evaluate_envChainObject.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/lexical-shadows-global-var.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/replace-global-var-with-getter.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-1.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-2.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/shape-guard-for-extensible-global-lex-env-3.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/environments/strict-eval-bindings.js

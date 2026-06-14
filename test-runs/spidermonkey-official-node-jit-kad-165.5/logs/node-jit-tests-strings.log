@@ -1,0 +1,102 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/bug1947139.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/bug1947139.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/bug1947139.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/bug1947139.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/bug1947139.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/bug1947139.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/bug1947139.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/bug1947139.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/bug1947139.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/bug1947139.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/bug1947139.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/bug1947139.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/nursery-chars.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/nursery-chars.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/nursery-chars.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/nursery-chars.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/nursery-chars.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/nursery-chars.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/nursery-chars.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/nursery-chars.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/nursery-chars.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/nursery-chars.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - strings/nursery-chars.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/strings/nursery-chars.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    strings/bug1947139.js
+    --ion-eager --ion-offthread-compile=off --more-compartments strings/bug1947139.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads strings/bug1947139.js
+    --baseline-eager --write-protect-code=off strings/bug1947139.js
+    --no-blinterp --no-baseline --no-ion --more-compartments strings/bug1947139.js
+    --blinterp-eager strings/bug1947139.js
+    strings/nursery-chars.js
+    --ion-eager --ion-offthread-compile=off --more-compartments strings/nursery-chars.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads strings/nursery-chars.js
+    --baseline-eager --write-protect-code=off strings/nursery-chars.js
+    --no-blinterp --no-baseline --no-ion --more-compartments strings/nursery-chars.js
+    --blinterp-eager strings/nursery-chars.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 12

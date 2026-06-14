@@ -1,0 +1,16 @@
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/create-out-of-bounds-ccw.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/nan-canonicalization.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/out-of-bounds-access.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/read-aligned.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/read-unaligned.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/resizable-dataview-bytelength-with-sab.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/resizable-dataview-bytelength.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/resizable-dataview-byteoffset-sab.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/resizable-dataview-byteoffset.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/resizable-dataview-get-elem-with-sab.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/resizable-dataview-get-elem.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/resizable-dataview-set-elem-with-sab.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/resizable-dataview-set-elem.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/throws-on-detached.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/write-aligned.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/dataview/write-unaligned.js

@@ -1,0 +1,11 @@
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/bug-1249107.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/bug-1252912.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/bug-1254105.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/byteSize-of-bigint.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/byteSize-of-object.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/byteSize-of-scripts.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/byteSize-of-string.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/byteSize-of-symbol.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/findPath.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/pointerByteSize.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/heap-analysis/shortestPaths.js

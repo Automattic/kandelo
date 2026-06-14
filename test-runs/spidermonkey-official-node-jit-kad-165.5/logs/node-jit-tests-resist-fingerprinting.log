@@ -1,0 +1,198 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/locale.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/locale.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/locale.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/locale.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/locale.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/locale.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/locale.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/locale.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/locale.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/locale.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/locale.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/locale.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan-asm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan-asm.js | RuntimeError: memory access out of bounds (code 255, args "") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan-asm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan-asm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan-asm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan-asm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan-asm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan-asm.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan-asm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan-asm.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan-asm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan-asm.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/math-fdlibm-sincostan.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/math-fdlibm-sincostan.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/timezone.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/timezone.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/timezone.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/timezone.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/timezone.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/timezone.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/timezone.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/timezone.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/timezone.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/timezone.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - resist-fingerprinting/timezone.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/resist-fingerprinting/timezone.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    resist-fingerprinting/locale.js
+    --ion-eager --ion-offthread-compile=off --more-compartments resist-fingerprinting/locale.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads resist-fingerprinting/locale.js
+    --baseline-eager --write-protect-code=off resist-fingerprinting/locale.js
+    --no-blinterp --no-baseline --no-ion --more-compartments resist-fingerprinting/locale.js
+    --blinterp-eager resist-fingerprinting/locale.js
+    resist-fingerprinting/math-fdlibm-sincostan-asm.js
+    --ion-eager --ion-offthread-compile=off --more-compartments resist-fingerprinting/math-fdlibm-sincostan-asm.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads resist-fingerprinting/math-fdlibm-sincostan-asm.js
+    --baseline-eager --write-protect-code=off resist-fingerprinting/math-fdlibm-sincostan-asm.js
+    --no-blinterp --no-baseline --no-ion --more-compartments resist-fingerprinting/math-fdlibm-sincostan-asm.js
+    --blinterp-eager resist-fingerprinting/math-fdlibm-sincostan-asm.js
+    resist-fingerprinting/math-fdlibm-sincostan.js
+    --ion-eager --ion-offthread-compile=off --more-compartments resist-fingerprinting/math-fdlibm-sincostan.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads resist-fingerprinting/math-fdlibm-sincostan.js
+    --baseline-eager --write-protect-code=off resist-fingerprinting/math-fdlibm-sincostan.js
+    --no-blinterp --no-baseline --no-ion --more-compartments resist-fingerprinting/math-fdlibm-sincostan.js
+    --blinterp-eager resist-fingerprinting/math-fdlibm-sincostan.js
+    resist-fingerprinting/timezone.js
+    --ion-eager --ion-offthread-compile=off --more-compartments resist-fingerprinting/timezone.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads resist-fingerprinting/timezone.js
+    --baseline-eager --write-protect-code=off resist-fingerprinting/timezone.js
+    --no-blinterp --no-baseline --no-ion --more-compartments resist-fingerprinting/timezone.js
+    --blinterp-eager resist-fingerprinting/timezone.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 24

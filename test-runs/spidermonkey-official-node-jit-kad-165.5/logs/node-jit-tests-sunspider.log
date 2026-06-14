@@ -1,0 +1,1406 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-cube.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-cube.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-cube.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-cube.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-cube.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-cube.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-cube.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-cube.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-cube.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-cube.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-cube.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-cube.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-cube.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-cube.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-morph.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-morph.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-morph.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-morph.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-morph.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-morph.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-morph.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-morph.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-morph.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-morph.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-morph.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-morph.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-morph.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-morph.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-3d-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-3d-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-binary-trees.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-binary-trees.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-binary-trees.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-binary-trees.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-binary-trees.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-binary-trees.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-binary-trees.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-binary-trees.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-binary-trees.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-binary-trees.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-binary-trees.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-binary-trees.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-binary-trees.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-binary-trees.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-fannkuch.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-fannkuch.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-fannkuch.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-fannkuch.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-fannkuch.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-fannkuch.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-fannkuch.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-fannkuch.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-fannkuch.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-fannkuch.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-fannkuch.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-fannkuch.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-fannkuch.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-fannkuch.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nbody.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nbody.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nbody.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nbody.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nbody.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nbody.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nbody.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nbody.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nbody.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nbody.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nbody.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nbody.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nbody.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nbody.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nsieve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nsieve.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nsieve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nsieve.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nsieve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nsieve.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nsieve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nsieve.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nsieve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nsieve.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nsieve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nsieve.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-access-nsieve.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-access-nsieve.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-3bit-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-3bit-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-3bit-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-3bit-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-3bit-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-3bit-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-3bit-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-3bit-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-3bit-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-3bit-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-3bit-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-3bit-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-3bit-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-3bit-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bits-in-byte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bits-in-byte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bitwise-and.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bitwise-and.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bitwise-and.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bitwise-and.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bitwise-and.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bitwise-and.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bitwise-and.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bitwise-and.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bitwise-and.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bitwise-and.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bitwise-and.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bitwise-and.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-bitwise-and.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-bitwise-and.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-nsieve-bits.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-nsieve-bits.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-nsieve-bits.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-nsieve-bits.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-nsieve-bits.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-nsieve-bits.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-nsieve-bits.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-nsieve-bits.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-nsieve-bits.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-nsieve-bits.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-nsieve-bits.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-nsieve-bits.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-bitops-nsieve-bits.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-bitops-nsieve-bits.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-controlflow-recursive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-controlflow-recursive.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-controlflow-recursive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-controlflow-recursive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-controlflow-recursive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-controlflow-recursive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-controlflow-recursive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-controlflow-recursive.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-controlflow-recursive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-controlflow-recursive.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-controlflow-recursive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-controlflow-recursive.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-controlflow-recursive.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-controlflow-recursive.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-aes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-aes.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-aes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-aes.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-aes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-aes.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-aes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-aes.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-aes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-aes.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-aes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-aes.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-aes.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-aes.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-md5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-md5.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-md5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-md5.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-md5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-md5.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-md5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-md5.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-md5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-md5.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-md5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-md5.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-md5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-md5.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-sha1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-sha1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-sha1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-sha1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-sha1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-sha1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-sha1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-sha1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-sha1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-sha1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-sha1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-sha1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-crypto-sha1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-crypto-sha1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-tofte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-tofte.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-tofte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-tofte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-tofte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-tofte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-tofte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-tofte.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-tofte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-tofte.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-tofte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-tofte.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-tofte.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-tofte.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-xparb.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-xparb.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-xparb.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-xparb.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-xparb.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-xparb.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-xparb.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-xparb.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-xparb.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-xparb.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-xparb.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-xparb.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-date-format-xparb.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-date-format-xparb.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-cordic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-cordic.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-cordic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-cordic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-cordic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-cordic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-cordic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-cordic.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-cordic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-cordic.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-cordic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-cordic.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-cordic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-cordic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-partial-sums.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-partial-sums.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-partial-sums.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-partial-sums.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-partial-sums.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-partial-sums.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-partial-sums.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-partial-sums.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-partial-sums.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-partial-sums.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-partial-sums.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-partial-sums.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-partial-sums.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-partial-sums.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-spectral-norm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-spectral-norm.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-spectral-norm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-spectral-norm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-spectral-norm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-spectral-norm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-spectral-norm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-spectral-norm.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-spectral-norm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-spectral-norm.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-spectral-norm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-spectral-norm.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-math-spectral-norm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-math-spectral-norm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-mont.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-mont.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-mont.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-mont.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-mont.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-mont.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-mont.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-mont.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-mont.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-mont.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-mont.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-mont.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-mont.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-mont.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-regexp-dna.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-regexp-dna.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-regexp-dna.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-regexp-dna.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-regexp-dna.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-regexp-dna.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-regexp-dna.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-regexp-dna.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-regexp-dna.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-regexp-dna.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-regexp-dna.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-regexp-dna.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-regexp-dna.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-regexp-dna.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-fasta.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-fasta.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-fasta.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-fasta.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-fasta.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-fasta.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-fasta.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-fasta.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-fasta.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-fasta.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-fasta.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-fasta.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-fasta.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-fasta.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-tagcloud.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-tagcloud.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-tagcloud.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-tagcloud.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-tagcloud.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-tagcloud.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-tagcloud.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-tagcloud.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-tagcloud.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-tagcloud.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-tagcloud.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-tagcloud.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-tagcloud.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-tagcloud.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-unpack-code.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-unpack-code.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-unpack-code.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-unpack-code.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-unpack-code.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-unpack-code.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-unpack-code.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-unpack-code.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-unpack-code.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-unpack-code.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-unpack-code.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-unpack-code.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - sunspider/check-string-unpack-code.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/sunspider/check-string-unpack-code.js | RuntimeError: memory access out of bounds (code 255, args "--ion-regalloc=simple") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    sunspider/check-3d-cube.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-3d-cube.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-3d-cube.js
+    --baseline-eager --write-protect-code=off sunspider/check-3d-cube.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-3d-cube.js
+    --blinterp-eager sunspider/check-3d-cube.js
+    --ion-regalloc=simple sunspider/check-3d-cube.js
+    sunspider/check-3d-morph.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-3d-morph.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-3d-morph.js
+    --baseline-eager --write-protect-code=off sunspider/check-3d-morph.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-3d-morph.js
+    --blinterp-eager sunspider/check-3d-morph.js
+    --ion-regalloc=simple sunspider/check-3d-morph.js
+    sunspider/check-3d-raytrace.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-3d-raytrace.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-3d-raytrace.js
+    --baseline-eager --write-protect-code=off sunspider/check-3d-raytrace.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-3d-raytrace.js
+    --blinterp-eager sunspider/check-3d-raytrace.js
+    --ion-regalloc=simple sunspider/check-3d-raytrace.js
+    sunspider/check-access-binary-trees.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-access-binary-trees.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-access-binary-trees.js
+    --baseline-eager --write-protect-code=off sunspider/check-access-binary-trees.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-access-binary-trees.js
+    --blinterp-eager sunspider/check-access-binary-trees.js
+    --ion-regalloc=simple sunspider/check-access-binary-trees.js
+    sunspider/check-access-fannkuch.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-access-fannkuch.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-access-fannkuch.js
+    --baseline-eager --write-protect-code=off sunspider/check-access-fannkuch.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-access-fannkuch.js
+    --blinterp-eager sunspider/check-access-fannkuch.js
+    --ion-regalloc=simple sunspider/check-access-fannkuch.js
+    sunspider/check-access-nbody.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-access-nbody.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-access-nbody.js
+    --baseline-eager --write-protect-code=off sunspider/check-access-nbody.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-access-nbody.js
+    --blinterp-eager sunspider/check-access-nbody.js
+    --ion-regalloc=simple sunspider/check-access-nbody.js
+    sunspider/check-access-nsieve.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-access-nsieve.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-access-nsieve.js
+    --baseline-eager --write-protect-code=off sunspider/check-access-nsieve.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-access-nsieve.js
+    --blinterp-eager sunspider/check-access-nsieve.js
+    --ion-regalloc=simple sunspider/check-access-nsieve.js
+    sunspider/check-bitops-3bit-bits-in-byte.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-bitops-3bit-bits-in-byte.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-bitops-3bit-bits-in-byte.js
+    --baseline-eager --write-protect-code=off sunspider/check-bitops-3bit-bits-in-byte.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-bitops-3bit-bits-in-byte.js
+    --blinterp-eager sunspider/check-bitops-3bit-bits-in-byte.js
+    --ion-regalloc=simple sunspider/check-bitops-3bit-bits-in-byte.js
+    sunspider/check-bitops-bits-in-byte.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-bitops-bits-in-byte.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-bitops-bits-in-byte.js
+    --baseline-eager --write-protect-code=off sunspider/check-bitops-bits-in-byte.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-bitops-bits-in-byte.js
+    --blinterp-eager sunspider/check-bitops-bits-in-byte.js
+    --ion-regalloc=simple sunspider/check-bitops-bits-in-byte.js
+    sunspider/check-bitops-bitwise-and.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-bitops-bitwise-and.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-bitops-bitwise-and.js
+    --baseline-eager --write-protect-code=off sunspider/check-bitops-bitwise-and.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-bitops-bitwise-and.js
+    --blinterp-eager sunspider/check-bitops-bitwise-and.js
+    --ion-regalloc=simple sunspider/check-bitops-bitwise-and.js
+    sunspider/check-bitops-nsieve-bits.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-bitops-nsieve-bits.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-bitops-nsieve-bits.js
+    --baseline-eager --write-protect-code=off sunspider/check-bitops-nsieve-bits.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-bitops-nsieve-bits.js
+    --blinterp-eager sunspider/check-bitops-nsieve-bits.js
+    --ion-regalloc=simple sunspider/check-bitops-nsieve-bits.js
+    sunspider/check-controlflow-recursive.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-controlflow-recursive.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-controlflow-recursive.js
+    --baseline-eager --write-protect-code=off sunspider/check-controlflow-recursive.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-controlflow-recursive.js
+    --blinterp-eager sunspider/check-controlflow-recursive.js
+    --ion-regalloc=simple sunspider/check-controlflow-recursive.js
+    sunspider/check-crypto-aes.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-crypto-aes.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-crypto-aes.js
+    --baseline-eager --write-protect-code=off sunspider/check-crypto-aes.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-crypto-aes.js
+    --blinterp-eager sunspider/check-crypto-aes.js
+    --ion-regalloc=simple sunspider/check-crypto-aes.js
+    sunspider/check-crypto-md5.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-crypto-md5.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-crypto-md5.js
+    --baseline-eager --write-protect-code=off sunspider/check-crypto-md5.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-crypto-md5.js
+    --blinterp-eager sunspider/check-crypto-md5.js
+    --ion-regalloc=simple sunspider/check-crypto-md5.js
+    sunspider/check-crypto-sha1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-crypto-sha1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-crypto-sha1.js
+    --baseline-eager --write-protect-code=off sunspider/check-crypto-sha1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-crypto-sha1.js
+    --blinterp-eager sunspider/check-crypto-sha1.js
+    --ion-regalloc=simple sunspider/check-crypto-sha1.js
+    sunspider/check-date-format-tofte.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-date-format-tofte.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-date-format-tofte.js
+    --baseline-eager --write-protect-code=off sunspider/check-date-format-tofte.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-date-format-tofte.js
+    --blinterp-eager sunspider/check-date-format-tofte.js
+    --ion-regalloc=simple sunspider/check-date-format-tofte.js
+    sunspider/check-date-format-xparb.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-date-format-xparb.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-date-format-xparb.js
+    --baseline-eager --write-protect-code=off sunspider/check-date-format-xparb.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-date-format-xparb.js
+    --blinterp-eager sunspider/check-date-format-xparb.js
+    --ion-regalloc=simple sunspider/check-date-format-xparb.js
+    sunspider/check-math-cordic.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-math-cordic.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-math-cordic.js
+    --baseline-eager --write-protect-code=off sunspider/check-math-cordic.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-math-cordic.js
+    --blinterp-eager sunspider/check-math-cordic.js
+    --ion-regalloc=simple sunspider/check-math-cordic.js
+    sunspider/check-math-partial-sums.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-math-partial-sums.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-math-partial-sums.js
+    --baseline-eager --write-protect-code=off sunspider/check-math-partial-sums.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-math-partial-sums.js
+    --blinterp-eager sunspider/check-math-partial-sums.js
+    --ion-regalloc=simple sunspider/check-math-partial-sums.js
+    sunspider/check-math-spectral-norm.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-math-spectral-norm.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-math-spectral-norm.js
+    --baseline-eager --write-protect-code=off sunspider/check-math-spectral-norm.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-math-spectral-norm.js
+    --blinterp-eager sunspider/check-math-spectral-norm.js
+    --ion-regalloc=simple sunspider/check-math-spectral-norm.js
+    sunspider/check-mont.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-mont.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-mont.js
+    --baseline-eager --write-protect-code=off sunspider/check-mont.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-mont.js
+    --blinterp-eager sunspider/check-mont.js
+    --ion-regalloc=simple sunspider/check-mont.js
+    sunspider/check-regexp-dna.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-regexp-dna.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-regexp-dna.js
+    --baseline-eager --write-protect-code=off sunspider/check-regexp-dna.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-regexp-dna.js
+    --blinterp-eager sunspider/check-regexp-dna.js
+    --ion-regalloc=simple sunspider/check-regexp-dna.js
+    sunspider/check-string-fasta.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-string-fasta.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-string-fasta.js
+    --baseline-eager --write-protect-code=off sunspider/check-string-fasta.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-string-fasta.js
+    --blinterp-eager sunspider/check-string-fasta.js
+    --ion-regalloc=simple sunspider/check-string-fasta.js
+    sunspider/check-string-tagcloud.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-string-tagcloud.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-string-tagcloud.js
+    --baseline-eager --write-protect-code=off sunspider/check-string-tagcloud.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-string-tagcloud.js
+    --blinterp-eager sunspider/check-string-tagcloud.js
+    --ion-regalloc=simple sunspider/check-string-tagcloud.js
+    sunspider/check-string-unpack-code.js
+    --ion-eager --ion-offthread-compile=off --more-compartments sunspider/check-string-unpack-code.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads sunspider/check-string-unpack-code.js
+    --baseline-eager --write-protect-code=off sunspider/check-string-unpack-code.js
+    --no-blinterp --no-baseline --no-ion --more-compartments sunspider/check-string-unpack-code.js
+    --blinterp-eager sunspider/check-string-unpack-code.js
+    --ion-regalloc=simple sunspider/check-string-unpack-code.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 175

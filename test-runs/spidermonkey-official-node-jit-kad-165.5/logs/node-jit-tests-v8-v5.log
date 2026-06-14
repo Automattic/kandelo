@@ -1,0 +1,294 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-deltablue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-deltablue.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-deltablue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-deltablue.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-deltablue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-deltablue.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-deltablue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-deltablue.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-deltablue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-deltablue.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-deltablue.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-deltablue.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-earley-boyer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-earley-boyer.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-earley-boyer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-earley-boyer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-earley-boyer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-earley-boyer.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-earley-boyer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-earley-boyer.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-earley-boyer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-earley-boyer.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-earley-boyer.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-earley-boyer.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-raytrace.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-raytrace.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-regexp.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-regexp.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-regexp.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-regexp.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-regexp.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-regexp.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-regexp.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-regexp.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-regexp.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-regexp.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-regexp.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-regexp.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-richards.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-richards.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-richards.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-richards.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-richards.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-richards.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-richards.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-richards.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-richards.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-richards.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-richards.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-richards.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-splay.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-splay.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-splay.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-splay.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-splay.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-splay.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-splay.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-splay.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-splay.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-splay.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - v8-v5/check-splay.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/v8-v5/check-splay.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    v8-v5/check-deltablue.js
+    --ion-eager --ion-offthread-compile=off --more-compartments v8-v5/check-deltablue.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads v8-v5/check-deltablue.js
+    --baseline-eager --write-protect-code=off v8-v5/check-deltablue.js
+    --no-blinterp --no-baseline --no-ion --more-compartments v8-v5/check-deltablue.js
+    --blinterp-eager v8-v5/check-deltablue.js
+    v8-v5/check-earley-boyer.js
+    --ion-eager --ion-offthread-compile=off --more-compartments v8-v5/check-earley-boyer.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads v8-v5/check-earley-boyer.js
+    --baseline-eager --write-protect-code=off v8-v5/check-earley-boyer.js
+    --no-blinterp --no-baseline --no-ion --more-compartments v8-v5/check-earley-boyer.js
+    --blinterp-eager v8-v5/check-earley-boyer.js
+    v8-v5/check-raytrace.js
+    --ion-eager --ion-offthread-compile=off --more-compartments v8-v5/check-raytrace.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads v8-v5/check-raytrace.js
+    --baseline-eager --write-protect-code=off v8-v5/check-raytrace.js
+    --no-blinterp --no-baseline --no-ion --more-compartments v8-v5/check-raytrace.js
+    --blinterp-eager v8-v5/check-raytrace.js
+    v8-v5/check-regexp.js
+    --ion-eager --ion-offthread-compile=off --more-compartments v8-v5/check-regexp.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads v8-v5/check-regexp.js
+    --baseline-eager --write-protect-code=off v8-v5/check-regexp.js
+    --no-blinterp --no-baseline --no-ion --more-compartments v8-v5/check-regexp.js
+    --blinterp-eager v8-v5/check-regexp.js
+    v8-v5/check-richards.js
+    --ion-eager --ion-offthread-compile=off --more-compartments v8-v5/check-richards.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads v8-v5/check-richards.js
+    --baseline-eager --write-protect-code=off v8-v5/check-richards.js
+    --no-blinterp --no-baseline --no-ion --more-compartments v8-v5/check-richards.js
+    --blinterp-eager v8-v5/check-richards.js
+    v8-v5/check-splay.js
+    --ion-eager --ion-offthread-compile=off --more-compartments v8-v5/check-splay.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads v8-v5/check-splay.js
+    --baseline-eager --write-protect-code=off v8-v5/check-splay.js
+    --no-blinterp --no-baseline --no-ion --more-compartments v8-v5/check-splay.js
+    --blinterp-eager v8-v5/check-splay.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 36

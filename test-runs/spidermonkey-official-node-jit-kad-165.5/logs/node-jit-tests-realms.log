@@ -1,0 +1,1062 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-ctor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-ctor.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-ctor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-ctor.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-ctor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-ctor.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-ctor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-ctor.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-ctor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-ctor.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-ctor.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-ctor.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-species-create.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-species-create.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-species-create.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-species-create.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-species-create.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-species-create.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-species-create.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-species-create.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-species-create.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-species-create.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/array-species-create.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/array-species-create.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/basic.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/basic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/basic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/basic.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/basic.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/basic.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1479430.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1479430.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1479430.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1479430.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1479430.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1479430.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1479430.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1479430.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1479430.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1479430.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1479430.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1479430.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1487238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1487238.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1487238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1487238.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1487238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1487238.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1487238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1487238.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1487238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1487238.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1487238.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1487238.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1496892.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1496892.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1496892.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1496892.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1496892.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1496892.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1496892.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1496892.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1496892.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1496892.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1496892.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1496892.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1513665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1513665.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1513665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1513665.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1513665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1513665.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1513665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1513665.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1513665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1513665.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1513665.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1513665.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1514263.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1514263.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1514263.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1514263.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1514263.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1514263.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1514263.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1514263.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1514263.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1514263.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1514263.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1514263.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518753.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518753.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518753.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518753.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518753.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518753.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518753.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518753.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518753.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518753.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518753.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518753.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518821.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518821.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518821.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518821.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518821.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518821.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518821.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518821.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518821.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518821.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1518821.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1518821.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1519857.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1519857.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1519857.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1519857.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1519857.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1519857.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1519857.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1519857.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1519857.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1519857.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1519857.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1519857.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1548611.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1548611.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1548611.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1548611.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1548611.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1548611.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1548611.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1548611.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1548611.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1548611.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1548611.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1548611.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1610189.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1610189.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1610189.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1610189.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1610189.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1610189.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1610189.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1610189.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1610189.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1610189.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/bug1610189.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/bug1610189.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/ccw-errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/ccw-errors.js | RuntimeError: memory access out of bounds (code 255, args "") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/ccw-errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/ccw-errors.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/ccw-errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/ccw-errors.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/ccw-errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/ccw-errors.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/ccw-errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/ccw-errors.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/ccw-errors.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/ccw-errors.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/first-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/first-global.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/first-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/first-global.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/first-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/first-global.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/first-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/first-global.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/first-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/first-global.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/first-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/first-global.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/nuking.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/nuking.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/nuking.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/nuking.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/nuking.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/nuking.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/nuking.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/nuking.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/nuking.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/nuking.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/nuking.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/nuking.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-job-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-job-global.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-job-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-job-global.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-job-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-job-global.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-job-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-job-global.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-job-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-job-global.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-job-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-job-global.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-then.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-then.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-then.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-then.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-then.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-then.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-then.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-then.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-then.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-then.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/promise-then.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/promise-then.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/proxy-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/proxy-realm.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/proxy-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/proxy-realm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/proxy-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/proxy-realm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/proxy-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/proxy-realm.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/proxy-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/proxy-realm.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/proxy-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/proxy-realm.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/scripted-caller-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/scripted-caller-global.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/scripted-caller-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/scripted-caller-global.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/scripted-caller-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/scripted-caller-global.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/scripted-caller-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/scripted-caller-global.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/scripted-caller-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/scripted-caller-global.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/scripted-caller-global.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/scripted-caller-global.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-native.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-native.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-native.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-native.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-native.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-native.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-native.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-native.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-native.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-native.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-native.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-native.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-scripted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-scripted.js | RuntimeError: memory access out of bounds (code 255, args "") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-scripted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-scripted.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-scripted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-scripted.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-scripted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-scripted.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-scripted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-scripted.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - realms/switch-realms-scripted.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/realms/switch-realms-scripted.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    realms/array-ctor.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/array-ctor.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/array-ctor.js
+    --baseline-eager --write-protect-code=off realms/array-ctor.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/array-ctor.js
+    --blinterp-eager realms/array-ctor.js
+    realms/array-species-create.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/array-species-create.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/array-species-create.js
+    --baseline-eager --write-protect-code=off realms/array-species-create.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/array-species-create.js
+    --blinterp-eager realms/array-species-create.js
+    realms/basic.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/basic.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/basic.js
+    --baseline-eager --write-protect-code=off realms/basic.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/basic.js
+    --blinterp-eager realms/basic.js
+    realms/bug1479430.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1479430.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1479430.js
+    --baseline-eager --write-protect-code=off realms/bug1479430.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1479430.js
+    --blinterp-eager realms/bug1479430.js
+    realms/bug1487238.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1487238.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1487238.js
+    --baseline-eager --write-protect-code=off realms/bug1487238.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1487238.js
+    --blinterp-eager realms/bug1487238.js
+    realms/bug1496892.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1496892.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1496892.js
+    --baseline-eager --write-protect-code=off realms/bug1496892.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1496892.js
+    --blinterp-eager realms/bug1496892.js
+    realms/bug1513665.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1513665.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1513665.js
+    --baseline-eager --write-protect-code=off realms/bug1513665.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1513665.js
+    --blinterp-eager realms/bug1513665.js
+    realms/bug1514263.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1514263.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1514263.js
+    --baseline-eager --write-protect-code=off realms/bug1514263.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1514263.js
+    --blinterp-eager realms/bug1514263.js
+    realms/bug1518753.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1518753.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1518753.js
+    --baseline-eager --write-protect-code=off realms/bug1518753.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1518753.js
+    --blinterp-eager realms/bug1518753.js
+    realms/bug1518821.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1518821.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1518821.js
+    --baseline-eager --write-protect-code=off realms/bug1518821.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1518821.js
+    --blinterp-eager realms/bug1518821.js
+    realms/bug1519857.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1519857.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1519857.js
+    --baseline-eager --write-protect-code=off realms/bug1519857.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1519857.js
+    --blinterp-eager realms/bug1519857.js
+    realms/bug1548611.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1548611.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1548611.js
+    --baseline-eager --write-protect-code=off realms/bug1548611.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1548611.js
+    --blinterp-eager realms/bug1548611.js
+    realms/bug1610189.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/bug1610189.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/bug1610189.js
+    --baseline-eager --write-protect-code=off realms/bug1610189.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/bug1610189.js
+    --blinterp-eager realms/bug1610189.js
+    realms/ccw-errors.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/ccw-errors.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/ccw-errors.js
+    --baseline-eager --write-protect-code=off realms/ccw-errors.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/ccw-errors.js
+    --blinterp-eager realms/ccw-errors.js
+    realms/first-global.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/first-global.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/first-global.js
+    --baseline-eager --write-protect-code=off realms/first-global.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/first-global.js
+    --blinterp-eager realms/first-global.js
+    realms/nuking.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/nuking.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/nuking.js
+    --baseline-eager --write-protect-code=off realms/nuking.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/nuking.js
+    --blinterp-eager realms/nuking.js
+    realms/promise-job-global.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/promise-job-global.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/promise-job-global.js
+    --baseline-eager --write-protect-code=off realms/promise-job-global.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/promise-job-global.js
+    --blinterp-eager realms/promise-job-global.js
+    realms/promise-then.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/promise-then.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/promise-then.js
+    --baseline-eager --write-protect-code=off realms/promise-then.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/promise-then.js
+    --blinterp-eager realms/promise-then.js
+    realms/proxy-realm.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/proxy-realm.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/proxy-realm.js
+    --baseline-eager --write-protect-code=off realms/proxy-realm.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/proxy-realm.js
+    --blinterp-eager realms/proxy-realm.js
+    realms/scripted-caller-global.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/scripted-caller-global.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/scripted-caller-global.js
+    --baseline-eager --write-protect-code=off realms/scripted-caller-global.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/scripted-caller-global.js
+    --blinterp-eager realms/scripted-caller-global.js
+    realms/switch-realms-native.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/switch-realms-native.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/switch-realms-native.js
+    --baseline-eager --write-protect-code=off realms/switch-realms-native.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/switch-realms-native.js
+    --blinterp-eager realms/switch-realms-native.js
+    realms/switch-realms-scripted.js
+    --ion-eager --ion-offthread-compile=off --more-compartments realms/switch-realms-scripted.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads realms/switch-realms-scripted.js
+    --baseline-eager --write-protect-code=off realms/switch-realms-scripted.js
+    --no-blinterp --no-baseline --no-ion --more-compartments realms/switch-realms-scripted.js
+    --blinterp-eager realms/switch-realms-scripted.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 132

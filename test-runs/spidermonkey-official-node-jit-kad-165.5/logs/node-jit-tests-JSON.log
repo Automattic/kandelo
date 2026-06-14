@@ -1,0 +1,17 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+TEST-PASS | js/src/jit-test/tests/JSON/parse-oom.js | Success (code 0, args "--enable-json-parse-with-source") [0.3 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-oom.js | Success (code 0, args "--enable-json-parse-with-source --ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-oom.js | Success (code 0, args "--enable-json-parse-with-source --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-oom.js | Success (code 0, args "--enable-json-parse-with-source --baseline-eager --write-protect-code=off") [0.4 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-oom.js | Success (code 0, args "--enable-json-parse-with-source --no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-oom.js | Success (code 0, args "--enable-json-parse-with-source --blinterp-eager") [0.4 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-with-source-oom.js | Success (code 0, args "--enable-json-parse-with-source") [0.4 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-with-source-oom.js | Success (code 0, args "--enable-json-parse-with-source --ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-with-source-oom.js | Success (code 0, args "--enable-json-parse-with-source --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-with-source-oom.js | Success (code 0, args "--enable-json-parse-with-source --baseline-eager --write-protect-code=off") [0.4 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-with-source-oom.js | Success (code 0, args "--enable-json-parse-with-source --no-blinterp --no-baseline --no-ion --more-compartments") [0.4 s]
+TEST-PASS | js/src/jit-test/tests/JSON/parse-with-source-oom.js | Success (code 0, args "--enable-json-parse-with-source --blinterp-eager") [0.3 s]
+PASSED ALL
+Result summary:
+Passed: 12
+Failed: 0

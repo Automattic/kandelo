@@ -1,0 +1,2 @@
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/strings/bug1947139.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/strings/nursery-chars.js

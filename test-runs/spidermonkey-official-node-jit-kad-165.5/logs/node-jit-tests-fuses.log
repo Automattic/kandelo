@@ -1,0 +1,1542 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/1937176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/1937176.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/1937176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/1937176.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/1937176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/1937176.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/1937176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/1937176.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/1937176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/1937176.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/1937176.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/1937176.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/MapSet-prototype-add-set-fuses.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/MapSet-prototype-add-set-fuses.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/MapSet-prototype-add-set-fuses.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/MapSet-prototype-add-set-fuses.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/MapSet-prototype-add-set-fuses.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/MapSet-prototype-add-set-fuses.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/MapSet-prototype-add-set-fuses.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/MapSet-prototype-add-set-fuses.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/MapSet-prototype-add-set-fuses.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/MapSet-prototype-add-set-fuses.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/MapSet-prototype-add-set-fuses.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/MapSet-prototype-add-set-fuses.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/array-length-exceeds-int32-fuse-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/array-length-exceeds-int32-fuse-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/array-length-exceeds-int32-fuse-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/array-length-exceeds-int32-fuse-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/array-length-exceeds-int32-fuse-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/array-length-exceeds-int32-fuse-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/array-length-exceeds-int32-fuse-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/array-length-exceeds-int32-fuse-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/array-length-exceeds-int32-fuse-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/array-length-exceeds-int32-fuse-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/array-length-exceeds-int32-fuse-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/array-length-exceeds-int32-fuse-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921201.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921201.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --fuzzing-safe --gc-zeal=6,120") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921201.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921201.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --fuzzing-safe --gc-zeal=6,120 --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921201.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921201.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --fuzzing-safe --gc-zeal=6,120 --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921201.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921201.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --fuzzing-safe --gc-zeal=6,120 --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921201.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921201.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --fuzzing-safe --gc-zeal=6,120 --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921201.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921201.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --fuzzing-safe --gc-zeal=6,120 --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921592.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921592.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --ion-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921592.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921592.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --ion-eager --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921592.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921592.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --ion-eager --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921592.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921592.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --ion-eager --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921592.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921592.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --ion-eager --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1921592.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1921592.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --ion-eager --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1928852.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1928852.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1928852.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1928852.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1928852.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1928852.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1928852.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1928852.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1928852.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1928852.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/bug1928852.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/bug1928852.js | RuntimeError: memory access out of bounds (code 255, args "--fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/cross-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/cross-realm.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/cross-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/cross-realm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/cross-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/cross-realm.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/cross-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/cross-realm.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/cross-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/cross-realm.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/cross-realm.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/cross-realm.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/htmldda-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/htmldda-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/htmldda-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/htmldda-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/htmldda-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/htmldda-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/htmldda-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/htmldda-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/htmldda-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/htmldda-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/htmldda-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/htmldda-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/optimized-getiterator-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/optimized-getiterator-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/optimized-getiterator-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/optimized-getiterator-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/optimized-getiterator-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/optimized-getiterator-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/optimized-getiterator-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/optimized-getiterator-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/optimized-getiterator-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/optimized-getiterator-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/optimized-getiterator-invalidation.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/optimized-getiterator-invalidation.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/popped-getiter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/popped-getiter.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/popped-getiter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/popped-getiter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/popped-getiter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/popped-getiter.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/popped-getiter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/popped-getiter.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/popped-getiter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/popped-getiter.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/popped-getiter.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/popped-getiter.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/promise-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/promise-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-3.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-3.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-3.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/property-mutation-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/property-mutation-3.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-4.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-4.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-4.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-4.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-4.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-4.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-4.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-5.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-5.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-5.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-5.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-5.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-5.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-5.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-6.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-6.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-6.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-6.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-6.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/regexp-6.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/regexp-6.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-3.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-3.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-3.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-3.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-3.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-arraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-arraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/species-fuse-sharedarraybuffer-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/species-fuse-sharedarraybuffer-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-1.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-1.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-1.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-1.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-1.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-2.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-2.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-2.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-2.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-2.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/string-proto-symbols-3.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/string-proto-symbols-3.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/with.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/with.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/with.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/with.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/with.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/with.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/with.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/with.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/with.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/with.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - fuses/with.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/fuses/with.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    --fast-warmup --no-threads fuses/1937176.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments fuses/1937176.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/1937176.js
+    --fast-warmup --no-threads --baseline-eager --write-protect-code=off fuses/1937176.js
+    --fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments fuses/1937176.js
+    --fast-warmup --no-threads --blinterp-eager fuses/1937176.js
+    fuses/MapSet-prototype-add-set-fuses.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/MapSet-prototype-add-set-fuses.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/MapSet-prototype-add-set-fuses.js
+    --baseline-eager --write-protect-code=off fuses/MapSet-prototype-add-set-fuses.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/MapSet-prototype-add-set-fuses.js
+    --blinterp-eager fuses/MapSet-prototype-add-set-fuses.js
+    fuses/array-length-exceeds-int32-fuse-invalidation.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/array-length-exceeds-int32-fuse-invalidation.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/array-length-exceeds-int32-fuse-invalidation.js
+    --baseline-eager --write-protect-code=off fuses/array-length-exceeds-int32-fuse-invalidation.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/array-length-exceeds-int32-fuse-invalidation.js
+    --blinterp-eager fuses/array-length-exceeds-int32-fuse-invalidation.js
+    --fast-warmup --fuzzing-safe --gc-zeal=6,120 fuses/bug1921201.js
+    --fast-warmup --fuzzing-safe --gc-zeal=6,120 --ion-eager --ion-offthread-compile=off --more-compartments fuses/bug1921201.js
+    --fast-warmup --fuzzing-safe --gc-zeal=6,120 --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/bug1921201.js
+    --fast-warmup --fuzzing-safe --gc-zeal=6,120 --baseline-eager --write-protect-code=off fuses/bug1921201.js
+    --fast-warmup --fuzzing-safe --gc-zeal=6,120 --no-blinterp --no-baseline --no-ion --more-compartments fuses/bug1921201.js
+    --fast-warmup --fuzzing-safe --gc-zeal=6,120 --blinterp-eager fuses/bug1921201.js
+    --fuzzing-safe --no-threads --ion-eager fuses/bug1921592.js
+    --fuzzing-safe --no-threads --ion-eager --ion-eager --ion-offthread-compile=off --more-compartments fuses/bug1921592.js
+    --fuzzing-safe --no-threads --ion-eager --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/bug1921592.js
+    --fuzzing-safe --no-threads --ion-eager --baseline-eager --write-protect-code=off fuses/bug1921592.js
+    --fuzzing-safe --no-threads --ion-eager --no-blinterp --no-baseline --no-ion --more-compartments fuses/bug1921592.js
+    --fuzzing-safe --no-threads --ion-eager --blinterp-eager fuses/bug1921592.js
+    --fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion fuses/bug1928852.js
+    --fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --ion-eager --ion-offthread-compile=off --more-compartments fuses/bug1928852.js
+    --fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/bug1928852.js
+    --fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --baseline-eager --write-protect-code=off fuses/bug1928852.js
+    --fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --no-blinterp --no-baseline --no-ion --more-compartments fuses/bug1928852.js
+    --fuzzing-safe --no-threads --no-blinterp --no-baseline --no-ion --blinterp-eager fuses/bug1928852.js
+    fuses/cross-realm.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/cross-realm.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/cross-realm.js
+    --baseline-eager --write-protect-code=off fuses/cross-realm.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/cross-realm.js
+    --blinterp-eager fuses/cross-realm.js
+    fuses/htmldda-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/htmldda-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/htmldda-1.js
+    --baseline-eager --write-protect-code=off fuses/htmldda-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/htmldda-1.js
+    --blinterp-eager fuses/htmldda-1.js
+    fuses/optimized-getiterator-invalidation.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/optimized-getiterator-invalidation.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/optimized-getiterator-invalidation.js
+    --baseline-eager --write-protect-code=off fuses/optimized-getiterator-invalidation.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/optimized-getiterator-invalidation.js
+    --blinterp-eager fuses/optimized-getiterator-invalidation.js
+    fuses/popped-getiter.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/popped-getiter.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/popped-getiter.js
+    --baseline-eager --write-protect-code=off fuses/popped-getiter.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/popped-getiter.js
+    --blinterp-eager fuses/popped-getiter.js
+    fuses/promise-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/promise-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/promise-1.js
+    --baseline-eager --write-protect-code=off fuses/promise-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/promise-1.js
+    --blinterp-eager fuses/promise-1.js
+    fuses/promise-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/promise-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/promise-2.js
+    --baseline-eager --write-protect-code=off fuses/promise-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/promise-2.js
+    --blinterp-eager fuses/promise-2.js
+    fuses/property-mutation-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/property-mutation-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/property-mutation-1.js
+    --baseline-eager --write-protect-code=off fuses/property-mutation-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/property-mutation-1.js
+    --blinterp-eager fuses/property-mutation-1.js
+    fuses/property-mutation-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/property-mutation-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/property-mutation-2.js
+    --baseline-eager --write-protect-code=off fuses/property-mutation-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/property-mutation-2.js
+    --blinterp-eager fuses/property-mutation-2.js
+    fuses/property-mutation-3.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/property-mutation-3.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/property-mutation-3.js
+    --baseline-eager --write-protect-code=off fuses/property-mutation-3.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/property-mutation-3.js
+    --blinterp-eager fuses/property-mutation-3.js
+    fuses/regexp-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/regexp-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/regexp-1.js
+    --baseline-eager --write-protect-code=off fuses/regexp-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/regexp-1.js
+    --blinterp-eager fuses/regexp-1.js
+    fuses/regexp-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/regexp-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/regexp-2.js
+    --baseline-eager --write-protect-code=off fuses/regexp-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/regexp-2.js
+    --blinterp-eager fuses/regexp-2.js
+    --fast-warmup --no-threads fuses/regexp-3.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments fuses/regexp-3.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/regexp-3.js
+    --fast-warmup --no-threads --baseline-eager --write-protect-code=off fuses/regexp-3.js
+    --fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments fuses/regexp-3.js
+    --fast-warmup --no-threads --blinterp-eager fuses/regexp-3.js
+    --fast-warmup --no-threads fuses/regexp-4.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments fuses/regexp-4.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/regexp-4.js
+    --fast-warmup --no-threads --baseline-eager --write-protect-code=off fuses/regexp-4.js
+    --fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments fuses/regexp-4.js
+    --fast-warmup --no-threads --blinterp-eager fuses/regexp-4.js
+    fuses/regexp-5.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/regexp-5.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/regexp-5.js
+    --baseline-eager --write-protect-code=off fuses/regexp-5.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/regexp-5.js
+    --blinterp-eager fuses/regexp-5.js
+    fuses/regexp-6.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/regexp-6.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/regexp-6.js
+    --baseline-eager --write-protect-code=off fuses/regexp-6.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/regexp-6.js
+    --blinterp-eager fuses/regexp-6.js
+    fuses/species-fuse-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/species-fuse-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/species-fuse-1.js
+    --baseline-eager --write-protect-code=off fuses/species-fuse-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/species-fuse-1.js
+    --blinterp-eager fuses/species-fuse-1.js
+    fuses/species-fuse-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/species-fuse-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/species-fuse-2.js
+    --baseline-eager --write-protect-code=off fuses/species-fuse-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/species-fuse-2.js
+    --blinterp-eager fuses/species-fuse-2.js
+    fuses/species-fuse-3.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/species-fuse-3.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/species-fuse-3.js
+    --baseline-eager --write-protect-code=off fuses/species-fuse-3.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/species-fuse-3.js
+    --blinterp-eager fuses/species-fuse-3.js
+    fuses/species-fuse-arraybuffer-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/species-fuse-arraybuffer-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/species-fuse-arraybuffer-1.js
+    --baseline-eager --write-protect-code=off fuses/species-fuse-arraybuffer-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/species-fuse-arraybuffer-1.js
+    --blinterp-eager fuses/species-fuse-arraybuffer-1.js
+    fuses/species-fuse-arraybuffer-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/species-fuse-arraybuffer-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/species-fuse-arraybuffer-2.js
+    --baseline-eager --write-protect-code=off fuses/species-fuse-arraybuffer-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/species-fuse-arraybuffer-2.js
+    --blinterp-eager fuses/species-fuse-arraybuffer-2.js
+    fuses/species-fuse-sharedarraybuffer-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/species-fuse-sharedarraybuffer-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/species-fuse-sharedarraybuffer-1.js
+    --baseline-eager --write-protect-code=off fuses/species-fuse-sharedarraybuffer-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/species-fuse-sharedarraybuffer-1.js
+    --blinterp-eager fuses/species-fuse-sharedarraybuffer-1.js
+    fuses/species-fuse-sharedarraybuffer-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/species-fuse-sharedarraybuffer-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/species-fuse-sharedarraybuffer-2.js
+    --baseline-eager --write-protect-code=off fuses/species-fuse-sharedarraybuffer-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/species-fuse-sharedarraybuffer-2.js
+    --blinterp-eager fuses/species-fuse-sharedarraybuffer-2.js
+    fuses/string-proto-symbols-1.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/string-proto-symbols-1.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/string-proto-symbols-1.js
+    --baseline-eager --write-protect-code=off fuses/string-proto-symbols-1.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/string-proto-symbols-1.js
+    --blinterp-eager fuses/string-proto-symbols-1.js
+    fuses/string-proto-symbols-2.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/string-proto-symbols-2.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/string-proto-symbols-2.js
+    --baseline-eager --write-protect-code=off fuses/string-proto-symbols-2.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/string-proto-symbols-2.js
+    --blinterp-eager fuses/string-proto-symbols-2.js
+    --fast-warmup --no-threads fuses/string-proto-symbols-3.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments fuses/string-proto-symbols-3.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/string-proto-symbols-3.js
+    --fast-warmup --no-threads --baseline-eager --write-protect-code=off fuses/string-proto-symbols-3.js
+    --fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments fuses/string-proto-symbols-3.js
+    --fast-warmup --no-threads --blinterp-eager fuses/string-proto-symbols-3.js
+    fuses/with.js
+    --ion-eager --ion-offthread-compile=off --more-compartments fuses/with.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads fuses/with.js
+    --baseline-eager --write-protect-code=off fuses/with.js
+    --no-blinterp --no-baseline --no-ion --more-compartments fuses/with.js
+    --blinterp-eager fuses/with.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 192

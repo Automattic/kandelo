@@ -1,0 +1,438 @@
+===== Official SpiderMonkey jit-tests on Kandelo node host =====
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/basic.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/basic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/basic.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/basic.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/basic.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/basic.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/basic.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/bug-1871949.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/bug-1871949.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/bug-1871949.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/bug-1871949.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/bug-1871949.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/bug-1871949.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/bug-1871949.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/bug-1871949.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/bug-1871949.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/bug-1871949.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/bug-1871949.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/bug-1871949.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --baseline-eager --write-protect-code=off") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-1.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-1.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-2.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-2.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-2.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-2.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --baseline-eager --write-protect-code=off") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-2.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/freeze-proto-2.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/freeze-proto-2.js | RuntimeError: memory access out of bounds (code 255, args "--fast-warmup --no-threads --blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-has-prop.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-has-prop.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-has-prop.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-has-prop.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-has-prop.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-has-prop.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-has-prop.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-has-prop.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-has-prop.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-has-prop.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-has-prop.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-has-prop.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.2 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-invalidate.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-invalidate.js | RuntimeError: memory access out of bounds (code 255, args "") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-invalidate.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-invalidate.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-invalidate.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-invalidate.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-invalidate.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-invalidate.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-invalidate.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-invalidate.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-invalidate.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-invalidate.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-long-proto-chain.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-long-proto-chain.js | RuntimeError: memory access out of bounds (code 255, args "") [0.6 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-long-proto-chain.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-long-proto-chain.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-long-proto-chain.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-long-proto-chain.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.4 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-long-proto-chain.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-long-proto-chain.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-long-proto-chain.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-long-proto-chain.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/megamorphic-long-proto-chain.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/megamorphic-long-proto-chain.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/property-modification.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/property-modification.js | RuntimeError: memory access out of bounds (code 255, args "") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/property-modification.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/property-modification.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/property-modification.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/property-modification.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/property-modification.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/property-modification.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/property-modification.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/property-modification.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/property-modification.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/property-modification.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.1 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/redefine-property.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/redefine-property.js | RuntimeError: memory access out of bounds (code 255, args "") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/redefine-property.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/redefine-property.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --more-compartments") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/redefine-property.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/redefine-property.js | RuntimeError: memory access out of bounds (code 255, args "--ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads") [0.5 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/redefine-property.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/redefine-property.js | RuntimeError: memory access out of bounds (code 255, args "--baseline-eager --write-protect-code=off") [0.7 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/redefine-property.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/redefine-property.js | RuntimeError: memory access out of bounds (code 255, args "--no-blinterp --no-baseline --no-ion --more-compartments") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+RuntimeError: memory access out of bounds
+Exit code: 255
+FAIL - watchtower/redefine-property.js
+TEST-UNEXPECTED-FAIL | js/src/jit-test/tests/watchtower/redefine-property.js | RuntimeError: memory access out of bounds (code 255, args "--blinterp-eager") [0.3 s]
+INFO exit-status     : 255
+INFO timed-out       : False
+INFO stderr         2> RuntimeError: memory access out of bounds
+FAILURES:
+    watchtower/basic.js
+    --ion-eager --ion-offthread-compile=off --more-compartments watchtower/basic.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/basic.js
+    --baseline-eager --write-protect-code=off watchtower/basic.js
+    --no-blinterp --no-baseline --no-ion --more-compartments watchtower/basic.js
+    --blinterp-eager watchtower/basic.js
+    watchtower/bug-1871949.js
+    --ion-eager --ion-offthread-compile=off --more-compartments watchtower/bug-1871949.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/bug-1871949.js
+    --baseline-eager --write-protect-code=off watchtower/bug-1871949.js
+    --no-blinterp --no-baseline --no-ion --more-compartments watchtower/bug-1871949.js
+    --blinterp-eager watchtower/bug-1871949.js
+    --fast-warmup --no-threads watchtower/freeze-proto-1.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments watchtower/freeze-proto-1.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/freeze-proto-1.js
+    --fast-warmup --no-threads --baseline-eager --write-protect-code=off watchtower/freeze-proto-1.js
+    --fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments watchtower/freeze-proto-1.js
+    --fast-warmup --no-threads --blinterp-eager watchtower/freeze-proto-1.js
+    --fast-warmup --no-threads watchtower/freeze-proto-2.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --more-compartments watchtower/freeze-proto-2.js
+    --fast-warmup --no-threads --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/freeze-proto-2.js
+    --fast-warmup --no-threads --baseline-eager --write-protect-code=off watchtower/freeze-proto-2.js
+    --fast-warmup --no-threads --no-blinterp --no-baseline --no-ion --more-compartments watchtower/freeze-proto-2.js
+    --fast-warmup --no-threads --blinterp-eager watchtower/freeze-proto-2.js
+    watchtower/megamorphic-has-prop.js
+    --ion-eager --ion-offthread-compile=off --more-compartments watchtower/megamorphic-has-prop.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/megamorphic-has-prop.js
+    --baseline-eager --write-protect-code=off watchtower/megamorphic-has-prop.js
+    --no-blinterp --no-baseline --no-ion --more-compartments watchtower/megamorphic-has-prop.js
+    --blinterp-eager watchtower/megamorphic-has-prop.js
+    watchtower/megamorphic-invalidate.js
+    --ion-eager --ion-offthread-compile=off --more-compartments watchtower/megamorphic-invalidate.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/megamorphic-invalidate.js
+    --baseline-eager --write-protect-code=off watchtower/megamorphic-invalidate.js
+    --no-blinterp --no-baseline --no-ion --more-compartments watchtower/megamorphic-invalidate.js
+    --blinterp-eager watchtower/megamorphic-invalidate.js
+    watchtower/megamorphic-long-proto-chain.js
+    --ion-eager --ion-offthread-compile=off --more-compartments watchtower/megamorphic-long-proto-chain.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/megamorphic-long-proto-chain.js
+    --baseline-eager --write-protect-code=off watchtower/megamorphic-long-proto-chain.js
+    --no-blinterp --no-baseline --no-ion --more-compartments watchtower/megamorphic-long-proto-chain.js
+    --blinterp-eager watchtower/megamorphic-long-proto-chain.js
+    watchtower/property-modification.js
+    --ion-eager --ion-offthread-compile=off --more-compartments watchtower/property-modification.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/property-modification.js
+    --baseline-eager --write-protect-code=off watchtower/property-modification.js
+    --no-blinterp --no-baseline --no-ion --more-compartments watchtower/property-modification.js
+    --blinterp-eager watchtower/property-modification.js
+    watchtower/redefine-property.js
+    --ion-eager --ion-offthread-compile=off --more-compartments watchtower/redefine-property.js
+    --ion-eager --ion-offthread-compile=off --ion-check-range-analysis --ion-extra-checks --no-sse3 --no-threads watchtower/redefine-property.js
+    --baseline-eager --write-protect-code=off watchtower/redefine-property.js
+    --no-blinterp --no-baseline --no-ion --more-compartments watchtower/redefine-property.js
+    --blinterp-eager watchtower/redefine-property.js
+TIMEOUTS:
+Result summary:
+Passed: 0
+Failed: 54

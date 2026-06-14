@@ -1,0 +1,6 @@
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/async/await-exception-stack-in-finally-1.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/async/await-exception-stack-in-finally-2.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/async/await-exception-stack-in-finally-3.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/async/bug1773650.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/async/debugger-reject-after-fulfill.js
+/Users/brandon/gt/kandelo/polecats/valkyrie/kandelo/packages/registry/spidermonkey/source/firefox-140.11.0/js/src/jit-test/tests/async/ecma262-issue-1461.js
