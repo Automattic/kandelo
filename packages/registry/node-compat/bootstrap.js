@@ -4419,32 +4419,183 @@ const nodeOs = (() => {
 // ============================================================
 
 const util = (() => {
-    const customInspectSymbol = Symbol.for('nodejs.util.inspect.custom');
+    const inspectCustom = Symbol.for('nodejs.util.inspect.custom');
+    const nullPrototypeNames = typeof WeakMap === 'function' ? new WeakMap() : null;
+    const originalSetPrototypeOf = Object.setPrototypeOf;
+    if (typeof originalSetPrototypeOf === 'function' && nullPrototypeNames) {
+        Object.defineProperty(Object, 'setPrototypeOf', {
+            value(target, proto) {
+                if (proto === null && target !== null && (typeof target === 'object' || typeof target === 'function')) {
+                    try {
+                        const oldProto = Object.getPrototypeOf(target);
+                        const ctor = oldProto && oldProto.constructor;
+                        if (typeof ctor === 'function' && ctor.name) nullPrototypeNames.set(target, ctor.name);
+                    } catch {}
+                }
+                return originalSetPrototypeOf(target, proto);
+            },
+            writable: true,
+            configurable: true,
+        });
+    }
+    const defaultInspectOptions = {
+        depth: 2,
+        getters: false,
+        numericSeparator: false,
+        showHidden: false,
+    };
 
-    function format(fmt, ...args) {
+    function makeInvalidArgValueError(name, value) {
+        const err = new TypeError(`The argument '${name}' is invalid. Received ${inspect(value)}`);
+        err.code = 'ERR_INVALID_ARG_VALUE';
+        return err;
+    }
+
+    function normalizeInspectOptions(options) {
+        return Object.assign({}, defaultInspectOptions, inspect.defaultOptions, options || {});
+    }
+
+    function groupDigits(text) {
+        const suffix = text.endsWith('n') ? 'n' : '';
+        if (suffix) text = text.slice(0, -1);
+        const sign = text.startsWith('-') ? '-' : '';
+        if (sign) text = text.slice(1);
+        const parts = text.split('.');
+        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, '_');
+        return sign + parts.join('.') + suffix;
+    }
+
+    function isArrayIndexKey(key, length) {
+        if (typeof key !== 'string' || key === '') return false;
+        const index = Number(key);
+        return Number.isInteger(index) && index >= 0 && index < length && String(index) === key;
+    }
+
+    function formatNumber(value, options, bigintSuffix) {
+        let out = Object.is(value, -0) ? '-0' : String(value);
+        if (bigintSuffix && typeof value === 'bigint') out += 'n';
+        if (options && options.numericSeparator && /^-?\d+n?$/.test(out)) {
+            out = groupDigits(out);
+        }
+        return out;
+    }
+
+    function colorize(text, style, options) {
+        if (!options || !options.colors) return text;
+        const codes = {
+            number: ['33', '39'],
+            boolean: ['33', '39'],
+            bigint: ['33', '39'],
+            undefined: ['90', '39'],
+            symbol: ['32', '39'],
+            null: ['1', '22'],
+        };
+        const pair = codes[style];
+        return pair ? `\u001b[${pair[0]}m${text}\u001b[${pair[1]}m` : text;
+    }
+
+    function numericFormat(value, kind, options) {
+        if (typeof value === 'bigint') {
+            return kind === 'f' ? formatNumber(value, options, false)
+                                : formatNumber(value, options, true);
+        }
+        if (typeof value === 'symbol') return 'NaN';
+        try {
+            if (Object.prototype.toString.call(value) === '[object Symbol]') return 'NaN';
+        } catch {}
+        let n;
+        try {
+            if (kind === 'i') n = parseInt(value);
+            else if (kind === 'f') n = parseFloat(value);
+            else n = Number(value);
+        } catch {
+            return 'NaN';
+        }
+        if (kind === 'i' && !Number.isFinite(n)) return 'NaN';
+        return formatNumber(n, options, false);
+    }
+
+    function stringFormat(value, options) {
+        if (typeof value === 'number') return formatNumber(value, options, false);
+        if (typeof value === 'bigint') return formatNumber(value, options, true);
+        if (typeof value === 'symbol') return value.toString();
+        if (value === null || value === undefined) return String(value);
+        if (typeof value === 'function') return Function.prototype.toString.call(value);
+        if (typeof value === 'object') {
+            const toString = value.toString;
+            if (typeof toString === 'function' && toString !== Object.prototype.toString
+                && toString !== Array.prototype.toString) {
+                try { return String(toString.call(value)); } catch {}
+            }
+            return inspect(value, Object.assign({}, options, { depth: 0, colors: false }));
+        }
+        return Object.is(value, -0) ? '-0' : String(value);
+    }
+
+    function formatExtra(value, options) {
+        if (typeof value === 'string') return value;
+        if (options && options.colors && (value === null || value === undefined ||
+            (typeof value !== 'object' && typeof value !== 'function'))) {
+            return inspect(value, options);
+        }
+        if (typeof value === 'number') return formatNumber(value, options, false);
+        if (typeof value === 'bigint') return formatNumber(value, options, true);
+        if (typeof value === 'symbol') return value.toString();
+        if (value instanceof Error && value.stack) return String(value.stack);
+        return inspect(value, options);
+    }
+
+    function jsonFormat(value) {
+        try {
+            return JSON.stringify(value);
+        } catch (err) {
+            if (err instanceof TypeError && /circular|cyclic/i.test(String(err.message))) {
+                return '[Circular]';
+            }
+            throw err;
+        }
+    }
+
+    function formatWithInspectOptions(options, fmt, ...args) {
+        options = normalizeInspectOptions(options);
         if (typeof fmt !== 'string') {
-            return [fmt, ...args].map(a => inspect(a)).join(' ');
+            return [fmt, ...args].map(a => formatExtra(a, options)).join(' ');
         }
         let i = 0;
-        return fmt.replace(/%[sdifjoO%]/g, (match) => {
+        return fmt.replace(/%[sdifjoOc%]/g, (match) => {
             if (match === '%%') return '%';
             if (i >= args.length) return match;
             const arg = args[i++];
             switch (match) {
-                case '%s': return String(arg);
-                case '%d': return Number(arg).toString();
-                case '%i': return parseInt(arg).toString();
-                case '%f': return parseFloat(arg).toString();
-                case '%j': try { return JSON.stringify(arg); } catch { return '[Circular]'; }
-                case '%o': case '%O': return inspect(arg);
+                case '%s': return stringFormat(arg, options);
+                case '%d': return numericFormat(arg, 'd', options);
+                case '%i': return numericFormat(arg, 'i', options);
+                case '%f': return numericFormat(arg, 'f', options);
+                case '%j': return jsonFormat(arg);
+                case '%o': return inspect(arg, Object.assign({}, options, { showHidden: true, depth: 4 }));
+                case '%O': return inspect(arg, options);
+                case '%c': return '';
                 default: return match;
             }
-        }) + (i < args.length ? ' ' + args.slice(i).map(a => inspect(a)).join(' ') : '');
+        }) + (i < args.length ? ' ' + args.slice(i).map(a => formatExtra(a, options)).join(' ') : '');
+    }
+
+    function format(fmt, ...args) {
+        if (arguments.length === 0) return '';
+        return formatWithInspectOptions(undefined, fmt, ...args);
     }
 
     function inspect(obj, options) {
-        if (obj === null) return 'null';
-        if (obj === undefined) return 'undefined';
+        options = normalizeInspectOptions(options);
+        const seen = [];
+        seen.circularRefs = new Map();
+        seen.nextRef = 1;
+        return inspectValue(obj, options, 0, seen);
+    }
+
+    function inspectValue(obj, options, depth, seen) {
+        if (obj === null) return colorize('null', 'null', options);
+        if (obj === undefined) return colorize('undefined', 'undefined', options);
         if (obj && obj.constructor && obj.constructor.name === 'BlockList') {
             if (options && options.depth < 0) return '[BlockList]';
             const rules = obj.rules && obj.rules.length ? inspect(obj.rules, options) : '[]';
@@ -4480,41 +4631,215 @@ const util = (() => {
             return `${obj.constructor && obj.constructor.name || 'EventTarget'} {}`;
         }
         if (typeof obj === 'string') return `'${obj}'`;
-        if (typeof obj === 'number' || typeof obj === 'boolean' || typeof obj === 'bigint') return String(obj);
-        if (typeof obj === 'symbol') return obj.toString();
-        if (typeof obj === 'function') return `[Function: ${obj.name || 'anonymous'}]`;
-        const customInspect = obj && obj[inspect.custom];
-        if (typeof customInspect === 'function' && (!options || options.customInspect !== false)) {
-            const depth = options && Object.prototype.hasOwnProperty.call(options, 'depth') ? options.depth : 2;
-            return customInspect.call(obj, depth, options || {}, inspect);
+        if (typeof obj === 'number') return colorize(formatNumber(obj, options, false), 'number', options);
+        if (typeof obj === 'bigint') return colorize(formatNumber(obj, options, true), 'bigint', options);
+        if (typeof obj === 'boolean') return colorize(String(obj), 'boolean', options);
+        if (typeof obj === 'symbol') return colorize(obj.toString(), 'symbol', options);
+        if (typeof obj === 'function' && !options.showHidden) {
+            return obj.name ? `[Function: ${obj.name}]` : '[Function (anonymous)]';
         }
+        try { Object.getPrototypeOf(obj); } catch { return '<Revoked Proxy>'; }
         if (obj instanceof Date) return obj.toISOString();
         if (obj instanceof RegExp) return obj.toString();
-        if (obj instanceof Error) return `${obj.name}: ${obj.message}`;
-        if (obj && typeof obj[customInspectSymbol] === 'function') {
-            return String(obj[customInspectSymbol](options && options.depth, options, inspect));
+        if (obj instanceof Error) {
+            if (obj.stack) return String(obj.stack);
+            const name = obj.name || 'Error';
+            return `[${name}${obj.message ? `: ${obj.message}` : ''}]`;
         }
-        if (Buffer.isBuffer(obj)) return obj.inspect();
+        let custom;
+        try { custom = obj && obj[inspectCustom]; } catch { return '<Revoked Proxy>'; }
+        if (typeof custom === 'function' && custom !== inspect) {
+            try { return String(custom.call(obj, options.depth - depth, options, inspect)); } catch {}
+        }
+        if (obj instanceof ArrayBuffer || (typeof SharedArrayBuffer === 'function' && obj instanceof SharedArrayBuffer)) {
+            const bytes = Array.from(new Uint8Array(obj).slice(0, 50))
+                .map((byte) => byte.toString(16).padStart(2, '0'))
+                .join(' ');
+            const suffix = obj.byteLength > 50 ? ' ...' : '';
+            return `${obj.constructor.name} { [Uint8Contents]: <${bytes}${suffix}>, byteLength: ${obj.byteLength} }`;
+        }
+        const seenIndex = seen.indexOf(obj);
+        if (seenIndex !== -1) {
+            let label = seen.circularRefs && seen.circularRefs.get(obj);
+            if (!label && seen.circularRefs) {
+                label = seen.nextRef++;
+                seen.circularRefs.set(obj, label);
+            }
+            return `[Circular *${label}]`;
+        }
+        if (depth > options.depth && options.depth !== null) {
+            if (Array.isArray(obj)) return '[Array]';
+            return `[${obj.constructor && obj.constructor.name || 'Object'}]`;
+        }
+        seen.push(obj);
         if (Array.isArray(obj)) {
-            const items = obj.map(v => inspect(v, options));
-            return `[ ${items.join(', ')} ]`;
+            const items = [];
+            for (let i = 0; i < obj.length; i++) {
+                if (Object.prototype.hasOwnProperty.call(obj, i)) {
+                    items.push(inspectValue(obj[i], options, depth + 1, seen));
+                } else {
+                    let holes = 1;
+                    while (i + 1 < obj.length && !Object.prototype.hasOwnProperty.call(obj, i + 1)) {
+                        holes++;
+                        i++;
+                    }
+                    items.push(`<${holes} empty item${holes === 1 ? '' : 's'}>`);
+                }
+            }
+            const descriptors = Object.getOwnPropertyDescriptors(obj);
+            const keys = options.showHidden ? Reflect.ownKeys(descriptors) : enumerableOwnKeys(obj);
+            for (const key of keys) {
+                if (key === 'length' && !options.showHidden) continue;
+                if (isArrayIndexKey(key, obj.length)) continue;
+                const desc = descriptors[key];
+                if (!desc) continue;
+                const enumerable = Object.prototype.propertyIsEnumerable.call(obj, key);
+                const hidden = options.showHidden && !enumerable;
+                const name = key === 'length' ? '[length]' : (typeof key === 'symbol' ? `[${key.toString()}]` : (hidden ? `[${String(key)}]` : String(key)));
+                if ('value' in desc) {
+                    items.push(`${name}: ${inspectValue(desc.value, options, depth + 1, seen)}`);
+                }
+            }
+            const ctor = obj.constructor && obj.constructor !== Array ? obj.constructor.name : '';
+            const prefix = ctor ? `${ctor}(${obj.length}) ` : '';
+            let body = items.length ? `[ ${items.join(', ')} ]` : '[]';
+            const oneLine = `${prefix}${body}`;
+            if (items.length > 1 && (oneLine.length > (options.breakLength || 80) || oneLine.includes('\n'))) {
+                const innerIndent = '  '.repeat(depth + 1);
+                const outerIndent = '  '.repeat(depth);
+                body = `[\n${innerIndent}${items.join(`,\n${innerIndent}`)}\n${outerIndent}]`;
+            }
+            seen.pop();
+            return `${prefix}${body}`;
         }
         if (ArrayBuffer.isView(obj)) {
-            return `<${obj.constructor.name} ${Array.from(obj.slice(0, 50)).join(' ')}${obj.length > 50 ? ' ...' : ''}>`;
+            const len = obj.length || obj.byteLength || 0;
+            const slice = typeof obj.slice === 'function' ? obj.slice(0, 50) : new Uint8Array(obj.buffer, obj.byteOffset, Math.min(obj.byteLength, 50));
+            seen.pop();
+            return `<${obj.constructor.name} ${Array.from(slice).join(' ')}${len > 50 ? ' ...' : ''}>`;
         }
         try {
-            const keys = Object.keys(obj);
-            const pairs = keys.map(k => `${k}: ${inspect(obj[k], options)}`);
-            return `{ ${pairs.join(', ')} }`;
+            const pairs = [];
+            const descriptors = Object.getOwnPropertyDescriptors(obj);
+            let keys = options.showHidden ? Reflect.ownKeys(descriptors) : enumerableOwnKeys(obj);
+            if (typeof obj === 'function' && options.showHidden) {
+                const preferred = ['length', 'name', 'prototype'];
+                keys = [
+                    ...preferred.filter((key) => Object.prototype.hasOwnProperty.call(descriptors, key)),
+                    ...keys.filter((key) => !preferred.includes(key)),
+                ];
+            }
+            for (const k of keys) {
+                const desc = descriptors[k];
+                const enumerable = Object.prototype.propertyIsEnumerable.call(obj, k);
+                const hidden = options.showHidden && !enumerable;
+                const name = typeof k === 'symbol' ? `[${k.toString()}]` : (hidden ? `[${String(k)}]` : String(k));
+                if (desc && ('value' in desc)) {
+                    pairs.push(`${name}: ${inspectValue(desc.value, options, depth + 1, seen)}`);
+                } else if (desc && desc.get) {
+                    let getterValue = null;
+                    let getterIsObject = false;
+                    if (options.getters) {
+                        try {
+                            const raw = desc.get.call(obj);
+                            getterIsObject = raw !== null && (typeof raw === 'object' || typeof raw === 'function');
+                            getterValue = inspectValue(raw, options, depth + 1, seen);
+                        }
+                        catch { getterValue = '<Inspection threw>'; }
+                    }
+                    if (getterValue === null) {
+                        pairs.push(`${name}: [Getter]`);
+                    } else if (getterIsObject || String(getterValue).startsWith('[Circular ')) {
+                        pairs.push(`${name}: [Getter] ${getterValue}`);
+                    } else {
+                        pairs.push(`${name}: [Getter: ${getterValue}]`);
+                    }
+                }
+            }
+            if (options.showHidden && options.getters) {
+                let proto = Object.getPrototypeOf(obj);
+                while (proto && proto !== Object.prototype) {
+                    const protoDescriptors = Object.getOwnPropertyDescriptors(proto);
+                    for (const k of Reflect.ownKeys(protoDescriptors)) {
+                        if (k === 'constructor') continue;
+                        if (pairs.some((p) => p.startsWith(`${String(k)}:`) || p.startsWith(`[${String(k)}]:`))) continue;
+                        const desc = protoDescriptors[k];
+                        if (!desc || !desc.get) continue;
+                        const name = typeof k === 'symbol' ? `[${k.toString()}]` : `[${String(k)}]`;
+                        let getterValue;
+                        let getterIsObject = false;
+                        try {
+                            const raw = desc.get.call(obj);
+                            getterIsObject = raw !== null && (typeof raw === 'object' || typeof raw === 'function');
+                            getterValue = inspectValue(raw, options, depth + 1, seen);
+                        }
+                        catch { getterValue = '<Inspection threw>'; }
+                        if (getterIsObject || String(getterValue).startsWith('[Circular ')) {
+                            pairs.push(`${name}: [Getter] ${getterValue}`);
+                        } else {
+                            pairs.push(`${name}: [Getter: ${getterValue}]`);
+                        }
+                    }
+                    proto = Object.getPrototypeOf(proto);
+                }
+            }
+            const nullProtoName = Object.getPrototypeOf(obj) === null
+                ? ((nullPrototypeNames && nullPrototypeNames.get(obj)) || 'Object')
+                : null;
+            const functionName = typeof obj === 'function'
+                ? (obj.name ? `[Function: ${obj.name}]` : '[Function (anonymous)]')
+                : '';
+            const proto = Object.getPrototypeOf(obj);
+            const protoCtor = proto && proto.constructor;
+            const ctor = functionName || (nullProtoName
+                ? `[${nullProtoName}: null prototype]`
+                : (typeof protoCtor === 'function' && protoCtor !== Object ? protoCtor.name : ''));
+            let body = pairs.length ? `{ ${pairs.join(', ')} }` : '{}';
+            const oneLine = ctor ? `${ctor} ${body}` : body;
+            if (pairs.length > 0 && (oneLine.length > (options.breakLength || 80) || oneLine.includes('\n'))) {
+                const innerIndent = '  '.repeat(depth + 1);
+                const outerIndent = '  '.repeat(depth);
+                body = `{\n${innerIndent}${pairs.join(`,\n${innerIndent}`)}\n${outerIndent}}`;
+            }
+            let result = ctor ? `${ctor} ${body}` : body;
+            const refLabel = seen.circularRefs && seen.circularRefs.get(obj);
+            if (refLabel) result = `<ref *${refLabel}> ${result}`;
+            seen.pop();
+            return result;
         } catch {
-            return String(obj);
+            seen.pop();
+            try { return String(obj); } catch { return '<Revoked Proxy>'; }
         }
     }
-    inspect.custom = customInspectSymbol;
-    inspect.defaultOptions = {};
+    inspect.custom = inspectCustom;
+    inspect.defaultOptions = Object.assign({}, defaultInspectOptions);
 
     function inherits(ctor, superCtor) {
+        if (typeof ctor !== 'function') {
+            throw _makeInvalidArgTypeError('ctor', 'function', ctor);
+        }
+        if (superCtor === null || superCtor === undefined) {
+            throw _makeInvalidArgTypeError('superCtor', 'function', superCtor);
+        }
+        if (!superCtor.prototype || typeof superCtor.prototype !== 'object') {
+            const err = new TypeError('The "superCtor.prototype" property must be of type object. Received undefined');
+            err.code = 'ERR_INVALID_ARG_TYPE';
+            throw err;
+        }
+        if (typeof superCtor !== 'function') {
+            throw _makeInvalidArgTypeError('superCtor', 'function', superCtor);
+        }
+        Object.defineProperty(ctor, 'super_', {
+            value: superCtor,
+            writable: true,
+            configurable: true,
+        });
         Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
+        Object.defineProperty(ctor.prototype, 'constructor', {
+            value: ctor,
+            writable: true,
+            configurable: true,
+        });
         Object.setPrototypeOf(ctor, superCtor);
     }
 
@@ -4562,28 +4887,102 @@ const util = (() => {
         return keys;
     }
 
-    function isDeepEqual(a, b, strict) {
-        if (a === b) return true;
+    function isDeepEqual(a, b, strict = false) {
+        return innerDeepEqual(a, b, [], !!strict);
+    }
+
+    function isDeepStrictEqual(a, b) {
+        return innerDeepEqual(a, b, [], true);
+    }
+
+    function boxedPrimitiveValue(value) {
+        const probes = [
+            ['boolean', Boolean.prototype.valueOf],
+            ['number', Number.prototype.valueOf],
+            ['string', String.prototype.valueOf],
+        ];
+        if (typeof BigInt === 'function') probes.push(['bigint', BigInt.prototype.valueOf]);
+        if (typeof Symbol === 'function') probes.push(['symbol', Symbol.prototype.valueOf]);
+        for (const [type, valueOf] of probes) {
+            try {
+                const primitive = valueOf.call(value);
+                if (typeof primitive === type) return { type, value: primitive };
+            } catch {}
+        }
+        return null;
+    }
+
+    function innerDeepEqual(a, b, memo, strict) {
+        if (strict ? Object.is(a, b) : a == b) return true;
         if (typeof a !== typeof b) return false;
         if (a === null || b === null) return false;
         if (typeof a !== 'object') return false;
+        for (const pair of memo) {
+            if (pair[0] === a && pair[1] === b) return true;
+        }
+        memo.push([a, b]);
         if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+        const boxedA = boxedPrimitiveValue(a);
+        const boxedB = boxedPrimitiveValue(b);
+        if (boxedA || boxedB) {
+            if (!boxedA || !boxedB) return false;
+            if (strict) {
+                if (boxedA.type !== boxedB.type || !Object.is(boxedA.value, boxedB.value)) return false;
+            } else if (boxedA.value != boxedB.value) {
+                return false;
+            }
+        }
+        if (a instanceof Date || b instanceof Date) {
+            return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
+        }
+        if (a instanceof RegExp || b instanceof RegExp) {
+            return a instanceof RegExp && b instanceof RegExp && String(a) === String(b);
+        }
         if (Array.isArray(a) !== Array.isArray(b)) return false;
         if (Array.isArray(a) && a.length !== b.length) return false;
+        if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
+            if (!ArrayBuffer.isView(a) || !ArrayBuffer.isView(b)) return false;
+            if ((strict && a.constructor !== b.constructor) || a.byteLength !== b.byteLength) return false;
+            const av = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+            const bv = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+            for (let i = 0; i < av.length; i++) if (av[i] !== bv[i]) return false;
+        }
+        if (a instanceof Map || b instanceof Map) {
+            if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
+            for (const [ak, av] of a) {
+                let found = false;
+                for (const [bk, bv] of b) {
+                    if (innerDeepEqual(ak, bk, memo, strict) && innerDeepEqual(av, bv, memo, strict)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
+            }
+        }
+        if (a instanceof Set || b instanceof Set) {
+            if (!(a instanceof Set) || !(b instanceof Set) || a.size !== b.size) return false;
+            for (const av of a) {
+                let found = false;
+                for (const bv of b) {
+                    if (innerDeepEqual(av, bv, memo, strict)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) return false;
+            }
+        }
         const keysA = enumerableOwnKeys(a);
         const keysB = enumerableOwnKeys(b);
         if (keysA.length !== keysB.length) return false;
         for (const key of keysA) {
-            if (!Object.prototype.propertyIsEnumerable.call(b, key)) return false;
+            if (!keysB.includes(key)) return false;
         }
         for (const key of keysA) {
-            if (!isDeepEqual(a[key], b[key], strict)) return false;
+            if (!innerDeepEqual(a[key], b[key], memo, strict)) return false;
         }
         return true;
-    }
-
-    function isDeepStrictEqual(a, b) {
-        return isDeepEqual(a, b, true);
     }
 
     const types = {
@@ -4611,8 +5010,15 @@ const util = (() => {
     // the options bag (no color/depth knobs yet) so this is just format()
     // with the leading options dropped — npm's lib/utils/format.js is the
     // primary caller.
-    function formatWithOptions(_opts, ...args) { return format(...args); }
+    function formatWithOptions(opts, ...args) {
+        if (opts === null || typeof opts !== 'object') {
+            throw _makeInvalidArgTypeError('inspectOptions', 'object', opts);
+        }
+        if (args.length === 0) return '';
+        return formatWithInspectOptions(opts, ...args);
+    }
 
+    const customInspectSymbol = inspectCustom;
     TextEncoder.prototype[customInspectSymbol] = function() {
         _assertTextEncoder(this);
         return 'TextEncoder {}';
@@ -4775,9 +5181,45 @@ const util = (() => {
         toJSON() { return this.toString(); }
     }
 
+    function log(...args) {
+        const now = new Date();
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const pad = (n) => String(n).padStart(2, '0');
+        const stamp = `${now.getDate()} ${months[now.getMonth()]} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+        process.stdout.write(`${stamp} - ${format(...args)}\n`);
+    }
+
+    const ansiStyles = {
+        bold: ['\u001b[1m', '\u001b[22m'],
+        red: ['\u001b[31m', '\u001b[39m'],
+    };
+
+    function styleText(formatName, text) {
+        if (!Array.isArray(formatName) && typeof formatName !== 'string') {
+            throw makeInvalidArgValueError('format', formatName);
+        }
+        if (typeof text !== 'string') throw _makeInvalidArgTypeError('text', 'string', text);
+        const names = Array.isArray(formatName) ? formatName : [formatName];
+        let open = '';
+        let close = '';
+        for (const name of names) {
+            if (typeof name !== 'string' || !ansiStyles[name]) {
+                throw makeInvalidArgValueError('format', name);
+            }
+            open += ansiStyles[name][0];
+            close = ansiStyles[name][1] + close;
+        }
+        return open + text + close;
+    }
+
+    function stripVTControlCharacters(value) {
+        return String(value).replace(/\u001b\[[0-9;]*m/g, '');
+    }
+
     return {
         format, formatWithOptions, inspect, inherits, deprecate, promisify, callbackify,
         isDeepEqual, isDeepStrictEqual, types,
+        log, styleText, stripVTControlCharacters,
         debuglog, debug: debuglog,
         TextDecoder, TextEncoder,
         MIMEType, MIMEParams,
@@ -11384,14 +11826,17 @@ const _builtinModules = {
     'console': (() => {
         const writeLine = (stream, args) => {
             try {
-                stream.write(args.map((a) =>
-                    typeof a === 'string' ? a : util.inspect(a)
-                ).join(' ') + '\n');
+                if (stream && typeof stream.once === 'function' && stream.listenerCount('error') === 0) {
+                    stream.once('error', () => {});
+                }
+                stream.write(util.format(...args) + '\n', () => {});
             } catch {}
         };
         class Console {
-            constructor(opts) {
-                opts = opts || {};
+            constructor(stdoutOrOptions, stderr) {
+                const opts = stdoutOrOptions && typeof stdoutOrOptions.write === 'function'
+                    ? { stdout: stdoutOrOptions, stderr }
+                    : (stdoutOrOptions || {});
                 this._out = opts.stdout || process.stdout;
                 this._err = opts.stderr || opts.stdout || process.stderr;
                 this._counts = Object.create(null);
@@ -11421,6 +11866,7 @@ const _builtinModules = {
             group(...args) { if (args.length) this.log(...args); }
             groupCollapsed(...args) { if (args.length) this.log(...args); }
             groupEnd() {}
+            dirxml(...args) { this.log(...args); }
             time(label) {
                 if (!this._timers) this._timers = Object.create(null);
                 this._timers[label || 'default'] = Date.now();
@@ -11436,7 +11882,11 @@ const _builtinModules = {
                 const start = this._timers && this._timers[label] || Date.now();
                 this.log(`${label}: ${Date.now() - start}ms`);
             }
-            clear() {}
+            clear() {
+                if (this._out && this._out.isTTY && process.env.TERM !== 'dumb') {
+                    try { this._out.write('\u001b[1;1H\u001b[0J'); } catch {}
+                }
+            }
         }
         return { Console, default: Console };
     })(),
@@ -13318,19 +13768,35 @@ _defineGlobal('exports', globalThis.module.exports);
 // Bind the global console to process stdout/stderr. SpiderMonkey's shell
 // console writes directly to the host stream, which bypasses tests and callers
 // that temporarily replace process.stdout.write.
-if (typeof globalThis.console === 'undefined') _defineGlobal('console', {});
-else _defineGlobal('console', globalThis.console);
 const _globalConsole = new _builtinModules['console'].Console({
     stdout: process.stdout,
     stderr: process.stderr,
 });
-for (const method of [
-    'log', 'info', 'debug', 'warn', 'error', 'trace', 'dir', 'table',
-    'assert', 'count', 'countReset', 'group', 'groupCollapsed', 'groupEnd',
-    'time', 'timeEnd', 'timeLog', 'clear',
-]) {
-    globalThis.console[method] = _globalConsole[method].bind(_globalConsole);
-}
+_globalConsole.Console = _builtinModules['console'].Console;
+const _globalConsoleProto = _builtinModules['console'].Console.prototype;
+const _globalConsoleMethods = {
+    log(...args) { return _globalConsoleProto.log.call(_globalConsole, ...args); },
+    info(...args) { return _globalConsoleProto.info.call(_globalConsole, ...args); },
+    debug(...args) { return _globalConsoleProto.debug.call(_globalConsole, ...args); },
+    warn(...args) { return _globalConsoleProto.warn.call(_globalConsole, ...args); },
+    error(...args) { return _globalConsoleProto.error.call(_globalConsole, ...args); },
+    trace(...args) { return _globalConsoleProto.trace.call(_globalConsole, ...args); },
+    dir(...args) { return _globalConsoleProto.dir.call(_globalConsole, ...args); },
+    table(...args) { return _globalConsoleProto.table.call(_globalConsole, ...args); },
+    assert(...args) { return _globalConsoleProto.assert.call(_globalConsole, ...args); },
+    count(...args) { return _globalConsoleProto.count.call(_globalConsole, ...args); },
+    countReset(...args) { return _globalConsoleProto.countReset.call(_globalConsole, ...args); },
+    group(...args) { return _globalConsoleProto.group.call(_globalConsole, ...args); },
+    groupCollapsed(...args) { return _globalConsoleProto.groupCollapsed.call(_globalConsole, ...args); },
+    groupEnd(...args) { return _globalConsoleProto.groupEnd.call(_globalConsole, ...args); },
+    time(...args) { return _globalConsoleProto.time.call(_globalConsole, ...args); },
+    timeEnd(...args) { return _globalConsoleProto.timeEnd.call(_globalConsole, ...args); },
+    timeLog(...args) { return _globalConsoleProto.timeLog.call(_globalConsole, ...args); },
+    clear(...args) { return _globalConsoleProto.clear.call(_globalConsole, ...args); },
+    dirxml(...args) { return _globalConsoleProto.dirxml.call(_globalConsole, ...args); },
+};
+Object.assign(_globalConsole, _globalConsoleMethods);
+_defineGlobal('console', _globalConsole);
 
 // ============================================================
 // WHATWG fetch + Headers/Response/Request/ReadableStream
