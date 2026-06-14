@@ -257,6 +257,81 @@ if (failures.length) throw new Error(failures.join("\\n"));
 `);
   });
 
+  it("matches HTTP message internal prototype helpers", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+const http = require("http");
+const stream = require("stream");
+const { kOutHeaders } = require("internal/http");
+
+{
+  const incoming = new http.IncomingMessage();
+  const dest = {};
+  incoming._addHeaderLine("Content-Type", "text/plain", dest);
+  incoming._addHeaderLine("content-type", "application/json", dest);
+  incoming._addHeaderLine("Set-Cookie", "a=1", dest);
+  incoming._addHeaderLine("set-cookie", "b=2", dest);
+  incoming._addHeaderLine("Cookie", "a=1", dest);
+  incoming._addHeaderLine("cookie", "b=2", dest);
+  incoming._addHeaderLine("X-Test", "one", dest);
+  incoming._addHeaderLine("x-test", "two", dest);
+  assert.deepStrictEqual(dest, {
+    "content-type": "text/plain",
+    "set-cookie": ["a=1", "b=2"],
+    cookie: "a=1; b=2",
+    "x-test": "one, two",
+  });
+}
+
+{
+  const outgoing = new http.OutgoingMessage();
+  assert.strictEqual(typeof outgoing._renderHeaders, "function");
+  assert.strictEqual(typeof outgoing._implicitHeader, "function");
+  assert.strictEqual(typeof outgoing.flushHeaders, "function");
+  assert.strictEqual(typeof outgoing.setTimeout, "function");
+  assert.throws(() => outgoing.pipe(outgoing), { code: "ERR_STREAM_CANNOT_PIPE" });
+  outgoing[kOutHeaders] = {
+    host: ["host", "nodejs.org"],
+    origin: ["Origin", "localhost"],
+  };
+  assert.deepStrictEqual(outgoing._renderHeaders(), {
+    host: "nodejs.org",
+    Origin: "localhost",
+  });
+}
+
+{
+  const outgoing = new http.OutgoingMessage();
+  assert.throws(() => outgoing.setHeader(), { code: "ERR_INVALID_HTTP_TOKEN" });
+  assert.throws(() => outgoing.setHeader("test"), { code: "ERR_HTTP_INVALID_HEADER_VALUE" });
+  assert.throws(() => outgoing.setHeader("200", "あ"), { code: "ERR_INVALID_CHAR" });
+  outgoing._implicitHeader = function() {};
+  assert.strictEqual(outgoing.outputSize, 0);
+  while (outgoing.write("asd"));
+  assert(outgoing.outputSize >= outgoing.writableHighWaterMark);
+  let timeoutValue = 0;
+  outgoing.setTimeout(42);
+  outgoing.emit("socket", { setTimeout(value) { timeoutValue = value; } });
+  assert.strictEqual(timeoutValue, 42);
+  let wrote = "";
+  const dest = new stream.Writable({
+    write(chunk, _encoding, callback) {
+      wrote += chunk.toString();
+      callback();
+    },
+  });
+  const assigned = new http.ServerResponse({ method: "GET" });
+  assigned.assignSocket(dest);
+  assigned.write("ok", () => { wrote += ":cb"; });
+  assigned.end(() => { wrote += ":end"; });
+  assert.strictEqual(assigned.writable, true);
+  assert.strictEqual(assigned.writableEnded, true);
+  assert.strictEqual(assigned.writableFinished, true);
+  assert(wrote.includes("ok"));
+}
+`);
+  });
+
   it("matches Node events listener bookkeeping and EventTarget helper semantics", () => {
     runBootstrapSmoke(`
 const assert = require("assert");

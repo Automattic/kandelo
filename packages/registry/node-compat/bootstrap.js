@@ -9907,15 +9907,65 @@ const HTTP_METHODS = [
     'GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'CONNECT', 'TRACE',
 ];
 
+const kOutHeaders = Symbol('kOutHeaders');
+
 function makeNodeTypeError(message, code) {
     const err = new TypeError(message);
     err.code = code;
     return err;
 }
 
+function makeHttpError(message, code, Ctor) {
+    const err = new (Ctor || Error)(message);
+    err.code = code;
+    return err;
+}
+
+function validateHttpToken(name, label) {
+    const value = String(name);
+    if (typeof name !== 'string' || value.length === 0 || !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(value)) {
+        throw makeHttpError(`${label} must be a valid HTTP token ["${value}"]`, 'ERR_INVALID_HTTP_TOKEN', TypeError);
+    }
+    return value;
+}
+
+function validateHttpHeaderValue(name, value, label) {
+    if (value === undefined) {
+        throw makeHttpError(`Invalid value "undefined" for ${label} "${name}"`, 'ERR_HTTP_INVALID_HEADER_VALUE', TypeError);
+    }
+    const values = Array.isArray(value) ? value : [value];
+    for (const item of values) {
+        const str = String(item);
+        if (/[^\t\x20-\x7e\x80-\xff]/.test(str)) {
+            throw makeHttpError(`Invalid character in ${label} content ["${name}"]`, 'ERR_INVALID_CHAR', TypeError);
+        }
+    }
+}
+
+function normalizeOutgoingHeaderValue(value) {
+    if (Array.isArray(value)) return value.map((item) => String(item));
+    return String(value);
+}
+
+function outgoingMessageWriteAfterEndError(code) {
+    return makeHttpError(
+        code === 'ERR_STREAM_ALREADY_FINISHED' ? 'Cannot call end after a stream was finished' : 'write after end',
+        code,
+    );
+}
+
+const uniqueIncomingHeaders = new Set([
+    'age', 'authorization', 'content-length', 'content-type', 'etag', 'expires',
+    'from', 'host', 'if-modified-since', 'if-unmodified-since', 'last-modified',
+    'location', 'max-forwards', 'proxy-authorization', 'referer', 'retry-after',
+    'server', 'user-agent',
+]);
+
 class IncomingMessage extends stream.Readable {
     constructor(socket) {
-        super();
+        super({
+            highWaterMark: socket?.readableHighWaterMark ?? socket?.highWaterMark,
+        });
         this.socket = socket;
         this.headers = Object.create(null);
         this.rawHeaders = [];
@@ -9933,9 +9983,25 @@ class IncomingMessage extends stream.Readable {
     }
     get connection() { return this.socket; }
     set connection(value) { this.socket = value; }
+    _addHeaderLine(field, value, dest) {
+        const lk = String(field).toLowerCase();
+        const strValue = value === undefined ? undefined : String(value);
+        if (lk === 'set-cookie') {
+            if (dest[lk] === undefined) dest[lk] = [];
+            dest[lk].push(strValue);
+        } else if (dest[lk] === undefined) {
+            dest[lk] = strValue;
+        } else if (uniqueIncomingHeaders.has(lk)) {
+            return;
+        } else if (lk === 'cookie') {
+            dest[lk] += '; ' + strValue;
+        } else {
+            dest[lk] += ', ' + strValue;
+        }
+    }
     _addHeaderLines(lines, n) {
         for (let i = 0; i < n; i += 2) {
-            this.headers[String(lines[i]).toLowerCase()] = lines[i + 1];
+            this._addHeaderLine(lines[i], lines[i + 1], this.headers);
         }
     }
     _read() {}
@@ -9947,13 +10013,30 @@ class OutgoingMessage extends stream.Writable {
         this.destroyed = false;
         this.headersSent = false;
         this.finished = false;
+        this._header = null;
+        this._hasBody = true;
+        this.outputData = [];
+        this.outputSize = 0;
         this._headerNames = Object.create(null);
         this._headerValues = Object.create(null);
+        this[kOutHeaders] = Object.create(null);
+        this.once('finish', () => {
+            this.finished = true;
+            this.headersSent = true;
+        });
     }
     setHeader(name, value) {
-        const lk = String(name).toLowerCase();
-        this._headerNames[lk] = String(name);
-        this._headerValues[lk] = value;
+        if (this._header || this.headersSent) {
+            throw makeHttpError('Cannot set headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
+        }
+        name = validateHttpToken(name, 'Header name');
+        validateHttpHeaderValue(name, value, 'header');
+        const lk = name.toLowerCase();
+        const normalized = normalizeOutgoingHeaderValue(value);
+        this._headerNames[lk] = name;
+        this._headerValues[lk] = normalized;
+        this[kOutHeaders][lk] = [name, normalized];
+        return this;
     }
     getHeader(name) { return this._headerValues[String(name).toLowerCase()]; }
     getHeaderNames() { return Object.keys(this._headerValues); }
@@ -9967,35 +10050,165 @@ class OutgoingMessage extends stream.Writable {
     }
     hasHeader(name) { return this.getHeader(name) !== undefined; }
     removeHeader(name) {
+        if (this._header || this.headersSent) {
+            throw makeHttpError('Cannot remove headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
+        }
         const lk = String(name).toLowerCase();
         delete this._headerNames[lk];
         delete this._headerValues[lk];
+        if (this[kOutHeaders]) delete this[kOutHeaders][lk];
     }
-    flushHeaders() { this.headersSent = true; }
+    _implicitHeader() {
+        throw makeHttpError('The _implicitHeader() method is not implemented', 'ERR_METHOD_NOT_IMPLEMENTED');
+    }
+    _renderHeaders() {
+        if (this._header) {
+            throw makeHttpError('Cannot render headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
+        }
+        const headers = this[kOutHeaders];
+        const out = {};
+        if (!headers) return out;
+        for (const lk of Object.keys(headers)) {
+            const pair = headers[lk];
+            if (Array.isArray(pair)) out[pair[0]] = pair[1];
+        }
+        return out;
+    }
+    _storeHeader(firstLine, headers) {
+        let head = String(firstLine || '');
+        if (headers && typeof headers === 'object') {
+            const rendered = Array.isArray(headers) ? headers : Object.entries(headers).flat();
+            for (let i = 0; i + 1 < rendered.length; i += 2) {
+                head += `${rendered[i]}: ${rendered[i + 1]}\r\n`;
+            }
+        }
+        head += '\r\n';
+        this._header = head;
+        this.headersSent = true;
+        return head;
+    }
+    _send(data, encoding, cb) {
+        if (data !== undefined && data !== null) this.write(data, encoding, cb);
+        else if (typeof cb === 'function') cb();
+        return this;
+    }
+    flushHeaders() {
+        if (!this._header && !this.headersSent) this._implicitHeader();
+        this.headersSent = true;
+        return this;
+    }
+    _writeRaw(data, encoding, cb) {
+        if (this.socket && typeof this.socket.write === 'function') {
+            return this.socket.write(data, encoding, cb);
+        }
+        if (typeof cb === 'function') cb();
+        return true;
+    }
+    assignSocket(socket) {
+        this.socket = socket;
+        this.connection = socket;
+        if (socket && typeof socket.writableHighWaterMark === 'number' && this._writableState) {
+            this._writableState.highWaterMark = socket.writableHighWaterMark;
+        }
+        this.emit('socket', socket);
+        this._flushOutputData();
+        return this;
+    }
+    detachSocket(socket) {
+        if (!socket || this.socket === socket) {
+            this.socket = null;
+            this.connection = null;
+        }
+    }
+    _flushOutputData() {
+        if (!this.socket || typeof this.socket.write !== 'function' || this.outputData.length === 0) return;
+        const queued = this.outputData;
+        this.outputData = [];
+        for (const item of queued) {
+            this.socket.write(item.data, item.encoding, () => {
+                this.outputSize = Math.max(0, this.outputSize - item.length);
+                item.callback();
+            });
+        }
+    }
+    _validateWriteChunk(chunk) {
+        if (chunk === null) {
+            throw makeHttpError('May not write null values to stream', 'ERR_STREAM_NULL_VALUES', TypeError);
+        }
+        if (chunk === undefined || (typeof chunk !== 'string' && !(chunk instanceof Uint8Array)
+            && !(chunk instanceof ArrayBuffer) && !ArrayBuffer.isView(chunk))) {
+            throw _makeInvalidArgTypeError('chunk', 'string or an instance of Buffer or Uint8Array', chunk);
+        }
+    }
+    write(chunk, encoding, cb) {
+        if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
+        if (this.destroyed || this._writableState?.destroyed) {
+            const err = makeHttpError('Cannot call write after a stream was destroyed', 'ERR_STREAM_DESTROYED');
+            if (typeof cb === 'function') cb(err);
+            return false;
+        }
+        this._validateWriteChunk(chunk);
+        if (!this._header && !this.headersSent) this._implicitHeader();
+        return stream.Writable.prototype.write.call(this, chunk, encoding, cb);
+    }
     _write(chunk, encoding, cb) {
         if (this.socket && typeof this.socket.write === 'function') {
             this.socket.write(chunk, encoding, cb);
         } else {
-            cb();
+            const data = (chunk instanceof Uint8Array) ? Buffer.from(chunk)
+                : (typeof chunk === 'string') ? Buffer.from(chunk, encoding || 'utf8')
+                : Buffer.from(chunk);
+            this.outputData.push({ data, encoding, callback: cb, length: data.length });
+            this.outputSize += data.length;
         }
     }
     end(chunk, encoding, cb) {
         if (typeof chunk === 'function') { cb = chunk; chunk = undefined; }
         if (typeof encoding === 'function') { cb = encoding; encoding = undefined; }
-        if (chunk != null) this.write(chunk, encoding);
-        if (this.socket && typeof this.socket.write === 'function') {
-            this.socket.write(Buffer.alloc(0), encoding || 'utf8', () => {});
+        if (this._writableState?.ended) {
+            const err = outgoingMessageWriteAfterEndError(
+                chunk !== undefined && chunk !== null ? 'ERR_STREAM_WRITE_AFTER_END' : 'ERR_STREAM_ALREADY_FINISHED'
+            );
+            if (typeof cb === 'function') cb(err);
+            if (chunk !== undefined && chunk !== null) this.emit('error', err);
+            return this;
         }
-        this.finished = true;
-        this.headersSent = true;
-        if (this._writableState) this._writableState.ended = true;
-        this.emit('finish');
-        if (cb) cb();
+        if (chunk !== undefined && chunk !== null) this._validateWriteChunk(chunk);
+        if (!this._header && !this.headersSent) this._implicitHeader();
+        stream.Writable.prototype.end.call(this, chunk, encoding, cb);
+        this.writable = true;
         return this;
+    }
+    setTimeout(ms, cb) {
+        if (cb) this.once('timeout', cb);
+        const apply = (socket) => {
+            if (socket && typeof socket.setTimeout === 'function') socket.setTimeout(ms);
+        };
+        if (this.socket) apply(this.socket);
+        else this.once('socket', apply);
+        return this;
+    }
+    pipe() {
+        throw makeHttpError('Cannot pipe, not readable', 'ERR_STREAM_CANNOT_PIPE');
+    }
+    addTrailers(headers) {
+        for (const name of Object.keys(headers)) {
+            validateHttpToken(name, 'Trailer name');
+            validateHttpHeaderValue(name, headers[name], 'trailer');
+        }
+    }
+    _finishWritable() {
+        stream.Writable.prototype._finishWritable.call(this);
+        this.writable = true;
     }
     destroy(err) {
         if (this.destroyed) return this;
         this.destroyed = true;
+        if (this._writableState) {
+            this._writableState.destroyed = true;
+            this._writableState.closed = true;
+            if (err) this._writableState.errored = err;
+        }
         if (err) this.emit('error', err);
         this.emit('close');
         return this;
@@ -10008,6 +10221,10 @@ class ServerResponse extends OutgoingMessage {
         this.req = req || null;
         this.statusCode = 200;
         this.statusMessage = STATUS_CODES[200];
+        if (req?.socket) this.assignSocket(req.socket);
+    }
+    _implicitHeader() {
+        this.writeHead(this.statusCode);
     }
     writeHead(statusCode, statusMessage, headers) {
         this.statusCode = statusCode;
@@ -10020,6 +10237,8 @@ class ServerResponse extends OutgoingMessage {
             for (const name of Object.keys(headers)) this.setHeader(name, headers[name]);
         }
         this.headersSent = true;
+        const statusMessageText = this.statusMessage || STATUS_CODES[this.statusCode] || '';
+        this._storeHeader(`HTTP/1.1 ${this.statusCode} ${statusMessageText}\r\n`, this._renderHeaders());
         return this;
     }
     destroy(err) {
@@ -10300,22 +10519,23 @@ function makeResponseParser({ onHeaders, onError, onComplete }) {
     };
 }
 
-function makeIncomingMessage() {
-    return new IncomingMessage();
+function attachIncomingSocket(message, socket) {
+    message.socket = socket;
+    message.connection = socket;
+    if (socket && typeof socket.readableHighWaterMark === 'number' && message._readableState) {
+        message._readableState.highWaterMark = socket.readableHighWaterMark;
+    }
+    return message;
+}
+
+function makeIncomingMessage(socket) {
+    return new IncomingMessage(socket);
 }
 
 function appendHttpHeader(message, name, value) {
-    const lk = name.toLowerCase();
     const strValue = String(value).trim();
     message.rawHeaders.push(name, strValue);
-    if (lk === 'set-cookie') {
-        if (Array.isArray(message.headers[lk])) message.headers[lk].push(strValue);
-        else message.headers[lk] = [strValue];
-    } else if (message.headers[lk] !== undefined) {
-        message.headers[lk] += ', ' + strValue;
-    } else {
-        message.headers[lk] = strValue;
-    }
+    message._addHeaderLine(name, strValue, message.headers);
 }
 
 function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
@@ -10381,12 +10601,19 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this.shouldKeepAlive = false;
             this._sendResponse = sendResponse;
             this._bodyChunks = [];
+            this.assignSocket(req.socket);
         }
 
         setHeader(name, value) {
+            if (this._header || this.headersSent) {
+                throw makeHttpError('Cannot set headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
+            }
+            name = validateHttpToken(name, 'Header name');
+            validateHttpHeaderValue(name, value, 'header');
             const lk = String(name).toLowerCase();
-            this._headerNames[lk] = String(name);
+            this._headerNames[lk] = name;
             this._headerValues[lk] = normalizeHeaderValue(value);
+            this[kOutHeaders][lk] = [name, this._headerValues[lk]];
             return this;
         }
         getHeader(name) { return this._headerValues[String(name).toLowerCase()]; }
@@ -10396,9 +10623,13 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             return Object.keys(this._headerValues).map((lk) => this._headerNames[lk] || lk);
         }
         removeHeader(name) {
+            if (this._header || this.headersSent) {
+                throw makeHttpError('Cannot remove headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
+            }
             const lk = String(name).toLowerCase();
             delete this._headerNames[lk];
             delete this._headerValues[lk];
+            delete this[kOutHeaders][lk];
         }
         getHeaders() {
             const out = Object.create(null);
@@ -10466,6 +10697,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             }
             head += '\r\n';
             this.headersSent = true;
+            this._header = head;
             this._sendResponse(Buffer.concat([
                 Buffer.from(head, 'latin1'),
                 bodyAllowed ? body : Buffer.alloc(0),
@@ -10486,13 +10718,15 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
     }
 
     class LoopbackHttpSocket extends events.EventEmitter {
-        constructor(server) {
+        constructor(server, options) {
             super();
             this.server = server;
             this.destroyed = false;
             this.readable = true;
             this.writable = true;
             this.writableEnded = false;
+            this.readableHighWaterMark = options?.readableHighWaterMark ?? options?.highWaterMark ?? 64 * 1024;
+            this.writableHighWaterMark = options?.writableHighWaterMark ?? options?.highWaterMark ?? 64 * 1024;
             this.localAddress = server._host || '127.0.0.1';
             this.localPort = server._port || 0;
             this.remoteAddress = '127.0.0.1';
@@ -10539,14 +10773,12 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
                 this._sendBadRequest();
                 return;
             }
-            const req = makeIncomingMessage();
+            const req = makeIncomingMessage(this);
             req.method = m[1];
             req.url = m[2];
             req.httpVersionMajor = parseInt(m[3], 10);
             req.httpVersionMinor = parseInt(m[4], 10);
             req.httpVersion = `${m[3]}.${m[4]}`;
-            req.socket = this;
-            req.connection = this;
             for (const line of lines) {
                 const colon = line.indexOf(':');
                 if (colon < 0) continue;
@@ -10750,6 +10982,9 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             this._port = (opts.port != null && opts.port !== '')
                 ? parseInt(opts.port, 10) : defaultPort;
             this._protocol = (opts.protocol || protoLower).toLowerCase();
+            this.host = this._host;
+            this.protocol = this._protocol;
+            this._createConnection = typeof opts.createConnection === 'function' ? opts.createConnection : null;
             // Header storage: case-insensitive lookup, original-case serialization.
             this._headerNames = Object.create(null); // lower -> original
             this._headerValues = Object.create(null); // lower -> value
@@ -10797,9 +11032,16 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         }
 
         setHeader(name, value) {
+            if (this._header || this.headersSent) {
+                throw makeHttpError('Cannot set headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
+            }
+            name = validateHttpToken(name, 'Header name');
+            validateHttpHeaderValue(name, value, 'header');
             const lk = name.toLowerCase();
             this._headerNames[lk] = name;
-            this._headerValues[lk] = String(value);
+            this._headerValues[lk] = normalizeOutgoingHeaderValue(value);
+            this[kOutHeaders][lk] = [name, this._headerValues[lk]];
+            return this;
         }
         getHeader(name) { return this._headerValues[name.toLowerCase()]; }
         getHeaders() {
@@ -10808,29 +11050,48 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             return out;
         }
         removeHeader(name) {
+            if (this._header || this.headersSent) {
+                throw makeHttpError('Cannot remove headers after they are sent to the client', 'ERR_HTTP_HEADERS_SENT');
+            }
             const lk = name.toLowerCase();
             delete this._headerNames[lk];
             delete this._headerValues[lk];
+            delete this[kOutHeaders][lk];
         }
+        _implicitHeader() {}
 
         _openSocket(retryFresh) {
             const key = poolKey(this._host, this._port);
             this._sockPoolKey = key;
+            const connectOptions = {
+                host: this._host,
+                hostname: this._host,
+                port: this._port,
+                ca: this._tlsOpts.ca,
+                rejectUnauthorized: this._tlsOpts.rejectUnauthorized,
+                servername: this._tlsOpts.servername,
+            };
             const loopbackServer = protoLower === 'http:' && isLoopbackHost(this._host)
                 ? loopbackServers.get(this._port) : null;
-            let sock = loopbackServer ? new LoopbackHttpSocket(loopbackServer)
+            if (loopbackServer && this._createConnection && !retryFresh) {
+                try {
+                    const created = this._createConnection(connectOptions);
+                    if (created && typeof created.on === 'function') created.on('error', () => {});
+                    if (created && typeof created.destroy === 'function') queueMicrotask(() => created.destroy());
+                } catch (_) {
+                    // Loopback requests are served by the in-process HTTP
+                    // path; keep createConnection side effects on options but
+                    // ignore its unusable real socket.
+                }
+            }
+            let sock = loopbackServer ? new LoopbackHttpSocket(loopbackServer, connectOptions)
                 : (retryFresh ? null : popLiveFromPool(key));
             const fromPool = sock != null && !loopbackServer;
             if (!sock) {
-                sock = connect({
-                    host: this._host,
-                    port: this._port,
-                    ca: this._tlsOpts.ca,
-                    rejectUnauthorized: this._tlsOpts.rejectUnauthorized,
-                    servername: this._tlsOpts.servername,
-                });
+                sock = this._createConnection ? this._createConnection(connectOptions) : connect(connectOptions);
             }
             this._socket = sock;
+            this.assignSocket(sock);
             this._fromPool = fromPool;
             this._headersReceived = false;
 
@@ -10949,6 +11210,8 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
                 req += `${this._headerNames[lk]}: ${this._headerValues[lk]}\r\n`;
             }
             req += '\r\n';
+            this._header = req;
+            this.headersSent = true;
             this._socket.write(Buffer.from(req, 'utf8'));
         }
 
@@ -10983,6 +11246,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
 
         _onHeaders(msg) {
             if (this._destroyed) return;
+            attachIncomingSocket(msg, this.socket || this._socket);
             this._respConnectionClose = /(^|,)\s*close\s*(,|$)/i.test(msg.headers.connection || '');
             // Auto-redirect (opt-in).
             if (this._followRedirects
@@ -11056,7 +11320,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
             return this;
         }
 
-        setTimeout(_ms, cb) { if (cb) this.once('timeout', cb); return this; }
+        setTimeout(ms, cb) { return OutgoingMessage.prototype.setTimeout.call(this, ms, cb); }
         setNoDelay() { return this; }
         setSocketKeepAlive() { return this; }
         flushHeaders() { /* deferred until connect */ }
@@ -11103,6 +11367,7 @@ function makeHttpModule({ connect, defaultPort, defaultProtocol }) {
         request, get,
         ClientRequest, IncomingMessage, OutgoingMessage, ServerResponse, Server,
         Agent,
+        kOutHeaders,
         globalAgent,
         createServer(options, listener) {
             if (protoLower !== 'http:') {
