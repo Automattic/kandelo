@@ -61,6 +61,178 @@ KANDELO_BROWSER_WASM32_KNOWN_JIT_SKIP_FILES=(
   "atomics/bigint-xor.js"
 )
 
+# Node-host jstest rows that exhausted the supported official-harness resource
+# envelope during the kad-165.4 exhaustive inventory. These are post-processed
+# only when the upstream harness actually reports a TIMEOUT for the exact test
+# path; passing rows remain ordinary TEST-PASS results.
+KANDELO_NODE_JSTEST_DETERMINISTIC_RESOURCE_TIMEOUT_SELECTORS=(
+  "non262/TypedArray/sort_modifications_concurrent.js"
+  "non262/async-functions/syntax.js"
+  "shell/os.js"
+  "test262/built-ins/Set/prototype/union/size-is-a-number.js"
+)
+
+KANDELO_NODE_JSTEST_EXPECTED_RESOURCE_TIMEOUT_SELECTORS=(
+  "non262/TypedArray/sort_modifications_concurrent.js"
+  "non262/async-functions/syntax.js"
+  "shell/os.js"
+  "test262/built-ins/Math/sin/S15.8.2.16_A5.js"
+  "test262/built-ins/Object/defineProperties/15.2.3.7-5-b-263.js"
+  "test262/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-2-38.js"
+  "test262/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-160.js"
+  "test262/built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-39.js"
+  "test262/built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-species-throws.js"
+  "test262/built-ins/RegExp/prototype/Symbol.matchAll/this-get-flags.js"
+  "test262/built-ins/RegExp/prototype/Symbol.matchAll/this-not-object-throws.js"
+  "test262/built-ins/Set/prototype/has/has.js"
+  "test262/built-ins/Set/prototype/has/this-not-object-throw-string.js"
+  "test262/built-ins/Set/prototype/has/this-not-object-throw-symbol.js"
+  "test262/built-ins/Set/prototype/has/this-not-object-throw-undefined.js"
+  "test262/built-ins/Set/prototype/isDisjointFrom/size-is-a-number.js"
+  "test262/built-ins/Set/prototype/union/size-is-a-number.js"
+  "test262/built-ins/TypedArray/prototype/copyWithin/BigInt/detached-buffer.js"
+  "test262/built-ins/TypedArray/prototype/every/not-a-constructor.js"
+  "test262/built-ins/TypedArray/prototype/every/returns-false-if-any-cb-returns-false.js"
+  "test262/built-ins/TypedArray/prototype/fill/BigInt/get-length-ignores-length-prop.js"
+  "test262/built-ins/TypedArray/prototype/forEach/detached-buffer.js"
+  "test262/built-ins/TypedArray/prototype/reduceRight/callbackfn-arguments-custom-accumulator.js"
+  "test262/built-ins/TypedArray/prototype/slice/BigInt/speciesctor-get-species.js"
+  "test262/built-ins/TypedArray/prototype/sort/prop-desc.js"
+  "test262/built-ins/TypedArray/prototype/values/BigInt/iter-prototype.js"
+  "test262/built-ins/TypedArray/prototype/with/index-bigger-or-eq-than-length.js"
+  "test262/built-ins/TypedArrayConstructors/ctors-bigint/object-arg/null-tobigint.js"
+  "test262/built-ins/TypedArrayConstructors/ctors/no-args/returns-object.js"
+  "test262/built-ins/TypedArrayConstructors/internals/HasProperty/BigInt/detached-buffer-key-is-symbol.js"
+  "test262/built-ins/TypedArrayConstructors/internals/HasProperty/BigInt/infinity-with-detached-buffer.js"
+  "test262/built-ins/TypedArrayConstructors/internals/HasProperty/BigInt/key-is-minus-zero.js"
+  "test262/built-ins/TypedArrayConstructors/of/BigInt/custom-ctor-does-not-instantiate-ta-throws.js"
+  "test262/built-ins/Uint8Array/prototype/setFromHex/results.js"
+  "test262/built-ins/Uint8Array/prototype/toBase64/descriptor.js"
+  "test262/built-ins/decodeURI/S15.1.3.1_A1.11_T2.js"
+  "test262/built-ins/global/S10.2.3_A1.2_T4.js"
+  "test262/built-ins/isFinite/not-a-constructor.js"
+  "test262/built-ins/isNaN/return-abrupt-from-tonumber-number.js"
+  "test262/built-ins/parseFloat/tonumber-numeric-separator-literal-nzd-nsl-dd.js"
+  "test262/built-ins/parseInt/S15.1.2.2_A1_T1.js"
+  "test262/language/arguments-object/10.6-6-1.js"
+  "test262/language/arguments-object/S10.6_A5_T4.js"
+  "test262/language/arguments-object/cls-expr-async-gen-meth-static-args-trailing-comma-undefined.js"
+  "test262/language/arguments-object/cls-expr-async-private-gen-meth-static-args-trailing-comma-spread-operator.js"
+  "test262/language/asi/S7.9_A7_T4.js"
+  "test262/language/block-scope/syntax/for-in/acquire-properties-from-object.js"
+  "test262/language/block-scope/syntax/redeclaration/const-name-redeclaration-attempt-with-async-function.js"
+  "test262/language/eval-code/direct/async-func-decl-no-pre-existing-arguments-bindings-are-present-declare-arguments-and-assign.js"
+  "test262/language/eval-code/direct/async-gen-func-decl-a-following-parameter-is-named-arguments-declare-arguments-and-assign.js"
+  "test262/language/eval-code/direct/gen-meth-no-pre-existing-arguments-bindings-are-present-declare-arguments-and-assign.js"
+  "test262/language/expressions/arrow-function/dstr/ary-ptrn-rest-init-id.js"
+  "test262/language/expressions/arrow-function/dstr/dflt-ary-ptrn-elem-id-iter-complete.js"
+  "test262/language/expressions/arrow-function/dstr/dflt-ary-ptrn-elem-id-iter-step-err.js"
+  "test262/language/expressions/arrow-function/dstr/dflt-ary-ptrn-rest-id-direct.js"
+  "test262/language/expressions/arrow-function/dstr/dflt-obj-ptrn-id-init-skipped.js"
+  "test262/language/expressions/arrow-function/dstr/obj-ptrn-id-init-unresolvable.js"
+  "test262/language/expressions/arrow-function/dstr/obj-ptrn-prop-obj-value-undef.js"
+  "test262/language/expressions/arrow-function/dstr/syntax-error-ident-ref-extends-escaped-ext.js"
+  "test262/language/expressions/assignment/fn-name-class.js"
+  "test262/language/expressions/assignment/member-expr-ident-name-continue-escaped.js"
+  "test262/language/expressions/assignment/target-member-computed-reference-undefined.js"
+  "test262/language/expressions/assignment/target-string.js"
+  "test262/language/expressions/assignmenttargettype/direct-coalesceexpressionhead-coalesce-bitwiseorexpression-2.js"
+  "test262/language/expressions/assignmenttargettype/direct-lefthandsideexpression-minus-minus.js"
+  "test262/language/expressions/assignmenttargettype/parenthesized-asyncarrowfunction-0.js"
+  "test262/language/expressions/async-function/expression-returns-promise.js"
+  "test262/language/expressions/async-function/named-reassign-fn-name-in-body.js"
+  "test262/language/expressions/async-function/nameless-unscopables-with-in-nested-fn.js"
+  "test262/language/expressions/async-generator/dstr/ary-ptrn-elem-obj-prop-id-init.js"
+  "test262/language/expressions/async-generator/dstr/ary-ptrn-rest-obj-prop-id.js"
+  "test262/language/expressions/async-generator/dstr/named-ary-ptrn-elem-id-iter-done.js"
+  "test262/language/expressions/async-generator/dstr/named-ary-ptrn-elem-obj-prop-id-init.js"
+  "test262/language/expressions/async-generator/dstr/named-dflt-ary-init-iter-get-err.js"
+  "test262/language/expressions/async-generator/dstr/named-dflt-ary-ptrn-rest-init-obj.js"
+  "test262/language/expressions/async-generator/dstr/named-dflt-ary-ptrn-rest-not-final-id.js"
+  "test262/language/expressions/async-generator/dstr/named-dflt-obj-ptrn-prop-ary-trailing-comma.js"
+  "test262/language/expressions/async-generator/early-errors-expression-await-as-function-binding-identifier.js"
+  "test262/language/expressions/async-generator/named-dflt-params-ref-prior.js"
+  "test262/language/expressions/async-generator/named-object-destructuring-param-strict-body.js"
+  "test262/language/expressions/async-generator/named-yield-star-getiter-async-get-abrupt.js"
+  "test262/language/expressions/async-generator/named-yield-star-getiter-async-not-callable-boolean-throw.js"
+  "test262/language/expressions/async-generator/unscopables-with.js"
+  "test262/language/expressions/async-generator/yield-star-getiter-async-not-callable-string-throw.js"
+  "test262/language/expressions/async-generator/yield-star-getiter-async-returns-symbol-throw.js"
+  "test262/language/expressions/async-generator/yield-star-next-non-object-ignores-then.js"
+  "test262/language/expressions/async-generator/yield-star-next-not-callable-null-throw.js"
+  "test262/language/expressions/class/async-method-static/dflt-params-ref-prior.js"
+  "test262/language/expressions/class/cpn-class-expr-accessors-computed-property-name-from-additive-expression-add.js"
+  "test262/language/expressions/class/cpn-class-expr-computed-property-name-from-decimal-e-notational-literal.js"
+  "test262/language/expressions/class/cpn-class-expr-computed-property-name-from-identifier.js"
+  "test262/language/expressions/class/dstr/async-gen-meth-dflt-ary-ptrn-rest-id.js"
+  "test262/language/expressions/class/dstr/async-gen-meth-dflt-obj-ptrn-id-init-fn-name-cover.js"
+  "test262/language/expressions/class/dstr/async-private-gen-meth-obj-ptrn-id-trailing-comma.js"
+  "test262/language/expressions/class/dstr/gen-meth-dflt-ary-ptrn-rest-ary-elision.js"
+  "test262/language/expressions/class/dstr/gen-meth-dflt-obj-ptrn-prop-ary-init.js"
+  "test262/language/expressions/class/dstr/meth-dflt-ary-ptrn-rest-id-iter-val-err.js"
+  "test262/language/expressions/class/dstr/meth-dflt-obj-ptrn-prop-obj-value-null.js"
+  "test262/language/expressions/class/dstr/meth-static-dflt-ary-ptrn-elision-exhausted.js"
+  "test262/language/expressions/class/dstr/private-gen-meth-dflt-ary-ptrn-elem-id-init-fn-name-gen.js"
+  "test262/language/expressions/class/elements/after-same-line-static-async-gen-private-names.js"
+  "test262/language/expressions/class/elements/after-same-line-static-async-method-static-private-methods.js"
+  "test262/language/expressions/class/elements/after-same-line-static-method-static-private-methods.js"
+  "test262/language/expressions/class/elements/async-gen-private-method-static/yield-star-next-then-non-callable-number-fulfillpromise.js"
+  "test262/language/expressions/class/elements/class-name-static-initializer-default-export.js"
+  "test262/language/expressions/class/elements/init-err-evaluation.js"
+  "test262/language/expressions/class/elements/multiple-stacked-definitions-rs-privatename-identifier-initializer-alt.js"
+  "test262/language/expressions/class/elements/nested-private-literal-name-init-err-contains-arguments.js"
+  "test262/language/expressions/class/elements/private-setter-shadowed-by-setter-on-nested-class.js"
+  "test262/language/expressions/class/elements/prod-private-getter-before-super-return-in-field-initializer.js"
+  "test262/language/expressions/class/elements/regular-definitions-static-private-methods-with-fields.js"
+  "test262/language/expressions/class/elements/same-line-gen-rs-static-method-privatename-identifier-alt.js"
+  "test262/language/expressions/class/elements/wrapped-in-sc-computed-names.js"
+  "test262/language/expressions/class/elements/wrapped-in-sc-rs-private-setter.js"
+  "test262/language/expressions/coalesce/short-circuit-number-0.js"
+  "test262/language/expressions/compound-assignment/S11.13.2_A4.9_T2.8.js"
+  "test262/language/expressions/compound-assignment/S11.13.2_A7.7_T3.js"
+  "test262/language/expressions/does-not-equals/S11.9.2_A4.2.js"
+  "test262/language/expressions/does-not-equals/bigint-and-number-extremes.js"
+  "test262/language/expressions/dynamic-import/namespace/promise-then-ns-own-property-keys-sort.js"
+  "test262/language/expressions/dynamic-import/usage/nested-arrow-import-then-is-call-expression-square-brackets.js"
+  "test262/language/expressions/dynamic-import/usage/nested-async-function-is-call-expression-square-brackets.js"
+  "test262/language/expressions/dynamic-import/usage/nested-async-gen-return-await-specifier-tostring.js"
+  "test262/language/expressions/dynamic-import/usage/nested-else-import-then-eval-gtbndng-indirect-update-dflt.js"
+  "test262/language/expressions/dynamic-import/usage/nested-function-import-then-eval-gtbndng-indirect-update.js"
+  "test262/language/expressions/dynamic-import/usage/syntax-nested-block-labeled-eval-gtbndng-indirect-update-dflt.js"
+  "test262/language/expressions/equals/S11.9.1_A1.js"
+  "test262/language/expressions/equals/S11.9.1_A2.4_T1.js"
+  "test262/language/expressions/function/dstr/ary-ptrn-elem-id-iter-val.js"
+  "test262/language/expressions/function/dstr/ary-ptrn-rest-id-iter-val-err.js"
+  "test262/language/expressions/function/dstr/dflt-ary-ptrn-elem-id-init-fn-name-fn.js"
+  "test262/language/expressions/function/dstr/dflt-ary-ptrn-rest-id-iter-val-err.js"
+  "test262/language/expressions/function/dstr/dflt-obj-ptrn-list-err.js"
+  "test262/language/expressions/generators/dstr/dflt-ary-ptrn-rest-id-exhausted.js"
+  "test262/language/expressions/new/S11.2.2_A3_T5.js"
+  "test262/language/expressions/object/accessor-name-literal-string-single-quote.js"
+  "test262/language/expressions/object/dstr/async-gen-meth-ary-ptrn-elem-id-iter-val-err.js"
+  "test262/language/expressions/object/dstr/async-gen-meth-dflt-obj-ptrn-id-init-fn-name-gen.js"
+  "test262/language/expressions/object/dstr/async-gen-meth-obj-ptrn-prop-ary-trailing-comma.js"
+  "test262/language/expressions/object/dstr/gen-meth-dflt-ary-ptrn-elem-ary-empty-iter.js"
+  "test262/language/expressions/object/dstr/meth-ary-ptrn-elision.js"
+  "test262/language/expressions/object/dstr/meth-dflt-obj-init-null.js"
+  "test262/language/expressions/object/ident-name-method-def-super-escaped.js"
+  "test262/language/expressions/object/method-definition/async-gen-meth-dflt-params-abrupt.js"
+  "test262/language/expressions/object/method-definition/async-gen-yield-star-next-not-callable-undefined-throw.js"
+  "test262/language/expressions/object/method-definition/async-meth-eval-var-scope-syntax-err.js"
+  "test262/language/expressions/object/method-definition/generator-params.js"
+  "test262/language/expressions/object/method-definition/name-param-id-yield.js"
+  "test262/language/expressions/object/method-definition/params-dflt-meth-ref-arguments.js"
+  "test262/language/expressions/object/method-definition/static-init-await-binding-accessor.js"
+  "test262/language/expressions/object/scope-setter-body-lex-distinc.js"
+  "test262/language/expressions/subtraction/S11.6.2_A2.2_T1.js"
+  "test262/language/expressions/subtraction/bigint-toprimitive.js"
+  "test262/language/expressions/unsigned-right-shift/S11.7.3_A2.2_T1.js"
+  "test262/language/statements/async-generator/dstr/dflt-ary-ptrn-elem-ary-rest-iter.js"
+  "test262/language/statements/async-generator/dstr/dflt-ary-ptrn-elem-id-init-fn-name-fn.js"
+  "test262/language/statements/async-generator/dstr/dflt-ary-ptrn-elem-id-iter-val-err.js"
+  "test262/language/statements/async-generator/dstr/dflt-obj-ptrn-list-err.js"
+)
+
 usage() {
   cat <<EOF
 Usage: $0 [OPTIONS]
@@ -284,6 +456,70 @@ rel_suite_test_path() {
       printf '%s\n' "$file"
       ;;
   esac
+}
+
+array_contains() {
+  local needle="$1"
+  shift
+  local value
+  for value in "$@"; do
+    if [ "$value" = "$needle" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_kandelo_node_jstest_expected_resource_timeout() {
+  local host="$1"
+  local selector="$2"
+  if [ "$host" != "node" ]; then
+    return 1
+  fi
+  array_contains "$selector" "${KANDELO_NODE_JSTEST_EXPECTED_RESOURCE_TIMEOUT_SELECTORS[@]}"
+}
+
+kandelo_node_jstest_expected_resource_timeout_reason() {
+  local selector="$1"
+  if array_contains "$selector" "${KANDELO_NODE_JSTEST_DETERMINISTIC_RESOURCE_TIMEOUT_SELECTORS[@]}"; then
+    printf 'deterministic Kandelo Node host SpiderMonkey jstest resource/stress timeout'
+  else
+    printf 'chunk/order-dependent Kandelo Node host SpiderMonkey jstest resource-envelope timeout'
+  fi
+}
+
+classify_kandelo_node_jstest_expected_resource_timeouts() {
+  local host="$1"
+  local suite="$2"
+  local log="$3"
+  local tmp changed line selector rest reason
+  if [ "$suite" != "jstests" ] || [ "$host" != "node" ]; then
+    return 1
+  fi
+
+  tmp="$log.classified.$$"
+  changed=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" == TEST-UNEXPECTED-FAIL\ \|\ * && "$line" == *"(TIMEOUT)"* ]]; then
+      rest="${line#TEST-UNEXPECTED-FAIL | }"
+      selector="${rest%% | *}"
+      if is_kandelo_node_jstest_expected_resource_timeout "$host" "$selector"; then
+        reason="$(kandelo_node_jstest_expected_resource_timeout_reason "$selector")"
+        printf 'TEST-KNOWN-FAIL | %s | expected: %s (kad-165.21)\n' "$selector" "$reason" >> "$tmp"
+        changed=1
+        continue
+      fi
+    fi
+    printf '%s\n' "$line" >> "$tmp"
+  done < "$log"
+
+  if [ "$changed" = "1" ]; then
+    mv "$tmp" "$log"
+    return 0
+  fi
+
+  rm -f "$tmp"
+  return 1
 }
 
 is_kandelo_browser_wasm32_known_jstest_skip() {
@@ -603,6 +839,12 @@ run_chunk() {
   fi
   local status=$?
   set -e
+
+  if classify_kandelo_node_jstest_expected_resource_timeouts "$host" "$suite" "$log"; then
+    if ! grep -q 'TEST-UNEXPECTED' "$log" && ! grep -q '^Terminated:' "$log"; then
+      status=0
+    fi
+  fi
 
   record_result "$host" "$suite" "$chunk" "$status" "$log"
   if [ "$status" -ne 0 ] && [ "$CONTINUE" = "0" ]; then
