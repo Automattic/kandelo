@@ -14,10 +14,19 @@
         }
     }
 
+    function defineGlobal(name, value) {
+        Object.defineProperty(globalThis, name, {
+            value,
+            writable: true,
+            configurable: true,
+            enumerable: false,
+        });
+    }
+
     if (typeof globalThis.queueMicrotask !== 'function') {
-        globalThis.queueMicrotask = function queueMicrotask(callback) {
+        defineGlobal('queueMicrotask', function queueMicrotask(callback) {
             Promise.resolve().then(() => callback());
-        };
+        });
     }
 
     const shellOs = globalThis.os || {};
@@ -273,12 +282,18 @@
         return next === Infinity ? null : Math.max(0, next - now);
     }
 
-    globalThis.__kandeloRunDueTimers = runDueTimers;
-    globalThis.__kandeloNextTimerDelay = nextTimerDelay;
+    defineGlobal('__kandeloRunDueTimers', runDueTimers);
+    defineGlobal('__kandeloNextTimerDelay', nextTimerDelay);
 
-    globalThis.__kandeloCreateWorkerThreads = function(EventEmitter) {
+    defineGlobal('__kandeloCreateWorkerThreads', function(EventEmitter) {
+        function unsupportedWorkerMessageApi(member) {
+            const err = new Error('SpiderMonkey shell workers expose eval-time workerData/shared memory, not a bidirectional worker_threads message channel');
+            err.code = 'ERR_KANDELO_UNSUPPORTED_NODE_API';
+            err.api = member;
+            return err;
+        }
         class MessagePort extends EventEmitter {
-            postMessage() {}
+            postMessage() { throw unsupportedWorkerMessageApi('MessagePort.postMessage'); }
             start() {}
             close() { this.emit('close'); }
             ref() { return this; }
@@ -331,10 +346,19 @@
                 const prelude = [
                     'var workerData = ' + workerDataExpression + ';',
                     'var parentPort = null;',
+                    'var __kandeloAsyncHooks = {',
+                    '  AsyncResource: class AsyncResource { runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); } emitDestroy() { return this; } asyncId() { return 0; } triggerAsyncId() { return 0; } bind(fn) { return fn; } static bind(fn) { return fn; } },',
+                    '  AsyncLocalStorage: class AsyncLocalStorage { run(store, fn, ...args) { this._store = store; try { return fn(...args); } finally { this._store = undefined; } } getStore() { return this._store; } enterWith(store) { this._store = store; } disable() { this._store = undefined; } },',
+                    '  createHook: function() { return { enable() { return this; }, disable() { return this; } }; },',
+                    '  executionAsyncId: function() { return 0; },',
+                    '  triggerAsyncId: function() { return 0; },',
+                    '  executionAsyncResource: function() { return {}; }',
+                    '};',
                     'var require = function(name) {',
                     '  if (name === "worker_threads" || name === "node:worker_threads") {',
                     '    return { isMainThread: false, parentPort: parentPort, workerData: workerData };',
                     '  }',
+                    '  if (name === "async_hooks" || name === "node:async_hooks") return __kandeloAsyncHooks;',
                     '  throw new Error("Cannot find module " + name);',
                     '};',
                     'var module = { exports: {} };',
@@ -351,7 +375,7 @@
                 defer(() => this.emit('online'));
             }
             postMessage() {
-                throw new Error('Worker.postMessage is not implemented in the SpiderMonkey shell adapter');
+                throw unsupportedWorkerMessageApi('Worker.postMessage');
             }
             terminate() {
                 clearSharedWorkerData();
@@ -371,7 +395,7 @@
             MessagePort,
             SHARE_ENV: Symbol.for('kandelo.worker_threads.SHARE_ENV'),
         };
-    };
+    });
 
     const native = globalThis.__kandeloNodeNative || {};
     const _nodeNative = {
@@ -414,5 +438,5 @@
             args.shift();
         }
     }
-    globalThis.argv0 = 'node';
-    globalThis.execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];
+    defineGlobal('argv0', 'node');
+    defineGlobal('execArgv', entryPath ? ['node', entryPath, ...args] : ['node', ...args]);

@@ -95,3 +95,15 @@ same-process loopback support inside the runtime. It lets `http.request()` and
 `localhost`/`127.0.0.1`, but it does not expose a real host-visible listening
 port. Browser-facing HTTP server demos still use the kernel TCP listener and
 service-worker HTTP bridge documented in `docs/browser-support.md`.
+
+The SpiderMonkey Node-compatible bootstrap resolves the public modules and
+private helper names that appear in the full `test/parallel/test-*.js` suite,
+including `dgram`, `domain`, `repl`, `node:test`, `internal/errors`,
+`internal/util`, and the `internal/test_runner/*` loader surface. Public modules
+have small JavaScript compatibility shims. V8/native-only internals exposed
+through `internal/test/binding` and low-level `internal/*` helpers resolve to
+namespaces that throw `ERR_KANDELO_UNSUPPORTED_NODE_API` only when used, making
+the boundary explicit instead of surfacing unexplained `Cannot find module`
+failures. SpiderMonkey shell workers similarly expose shared-memory
+`workerData`, but not Node's bidirectional post-start `worker_threads`
+message channel.
