@@ -13,10 +13,16 @@ import * as _nodeNative from 'qjs:node';
 // TextEncoder/TextDecoder polyfill for engines that do not provide it.
 // ============================================================
 
+const _TEXT_ENCODER_BRAND = Symbol('kandelo.TextEncoder');
+
 if (typeof globalThis.TextEncoder === 'undefined') {
     _defineGlobal('TextEncoder', class TextEncoder {
-        get encoding() { return 'utf-8'; }
-        encode(str) {
+        constructor() {
+            Object.defineProperty(this, _TEXT_ENCODER_BRAND, { value: true });
+        }
+        get encoding() { _assertTextEncoder(this); return 'utf-8'; }
+        encode(str = '') {
+            _assertTextEncoder(this);
             if (typeof str !== 'string') str = String(str);
             const bytes = [];
             for (let i = 0; i < str.length; i++) {
@@ -42,6 +48,8 @@ if (typeof globalThis.TextEncoder === 'undefined') {
             return new Uint8Array(bytes);
         }
         encodeInto(str, dest) {
+            _assertTextEncoder(this);
+            if (str === undefined) str = '';
             const encoded = this.encode(str);
             const len = Math.min(encoded.length, dest.length);
             dest.set(encoded.subarray(0, len));
@@ -50,64 +58,295 @@ if (typeof globalThis.TextEncoder === 'undefined') {
     });
 }
 
-if (typeof globalThis.TextDecoder === 'undefined') {
-    // Build the result by batching codepoints into 8K chunks and joining via
-    // String.fromCharCode.apply. The naive `result += String.fromCharCode(c)`
-    // loop produces a per-character string rope; JS_ToCStringLen (invoked
-    // when C reads the string, e.g. native JSON.parse on a 38 MB npm
-    // packument) must linearize that rope into a flat UTF-16 buffer and
-    // SIGABRTs from heap fragmentation on multi-MB inputs.
-    // Array.prototype.join('') is unsafe — QJS-NG zeros leading parts when
-    // joining many large 8-bit strings.
-    const _CHUNK = 8192;
-    _defineGlobal('TextDecoder', class TextDecoder {
-        constructor(encoding) {
-            this._encoding = (encoding || 'utf-8').toLowerCase();
-        }
-        get encoding() { return this._encoding; }
-        decode(input, options) {
-            if (!input) return '';
-            const bytes = input instanceof Uint8Array ? input :
-                          input instanceof ArrayBuffer ? new Uint8Array(input) :
-                          new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-            // Native UTF-8 → JS string in one pass. The JS fallback below
-            // does the same but takes ~10 s on a 38 MB npm packument.
-            if (typeof _nodeNative.decodeUtf8 === 'function') {
-                return _nodeNative.decodeUtf8(bytes);
+// Build decoder output by batching codepoints into 8K chunks and joining via
+// String.fromCharCode.apply. The naive `result += String.fromCharCode(c)` loop
+// produces a per-character string rope; JS_ToCStringLen (invoked when C reads
+// the string, e.g. native JSON.parse on a 38 MB npm packument) must linearize
+// that rope into a flat UTF-16 buffer and SIGABRTs from heap fragmentation on
+// multi-MB inputs. Array.prototype.join('') is unsafe in QJS-NG for many large
+// 8-bit strings.
+const _TEXT_DECODER_CHUNK = 8192;
+const _TEXT_DECODER_BRAND = Symbol('kandelo.TextDecoder');
+const _DETACHED_ARRAY_BUFFERS = new WeakSet();
+const _TEXT_DECODER_LABELS = new Map([
+    ['utf-8', 'utf-8'],
+    ['utf8', 'utf-8'],
+    ['unicode-1-1-utf-8', 'utf-8'],
+    ['unicode11utf8', 'utf-8'],
+    ['unicode20utf8', 'utf-8'],
+    ['x-unicode20utf8', 'utf-8'],
+    ['utf-16le', 'utf-16le'],
+    ['utf-16', 'utf-16le'],
+    ['utf-16be', 'utf-16be'],
+]);
+
+function _makeEncodingRangeError(label) {
+    const err = new RangeError(`The "${label}" encoding is not supported`);
+    err.code = 'ERR_ENCODING_NOT_SUPPORTED';
+    return err;
+}
+
+function _makeEncodingDataError(encoding) {
+    const err = new TypeError(`The encoded data was not valid for encoding ${encoding}`);
+    err.code = 'ERR_ENCODING_INVALID_ENCODED_DATA';
+    return err;
+}
+
+function _makeEncodingArgTypeError(name, expected, value) {
+    const actual = value === null ? 'null' : `type ${typeof value}`;
+    const err = new TypeError(`The "${name}" argument must be of type ${expected}. Received ${actual}`);
+    err.code = 'ERR_INVALID_ARG_TYPE';
+    return err;
+}
+
+function _normalizeTextDecoderEncoding(label) {
+    if (label === undefined) return 'utf-8';
+    const raw = String(label).toLowerCase();
+    const normalized = _TEXT_DECODER_LABELS.get(raw);
+    if (!normalized) throw _makeEncodingRangeError(label);
+    return normalized;
+}
+
+function _u8(input) {
+    if (input === undefined) return new Uint8Array(0);
+    if (input instanceof Uint8Array) {
+        if (_isCompatDetachedArrayBuffer(input.buffer)) return new Uint8Array(0);
+        return input;
+    }
+    if (input instanceof ArrayBuffer ||
+        (typeof SharedArrayBuffer !== 'undefined' && input instanceof SharedArrayBuffer)) {
+        if (_isCompatDetachedArrayBuffer(input)) return new Uint8Array(0);
+        return new Uint8Array(input);
+    }
+    if (ArrayBuffer.isView(input)) {
+        if (_isCompatDetachedArrayBuffer(input.buffer)) return new Uint8Array(0);
+        return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    }
+    throw _makeEncodingArgTypeError('input', 'ArrayBuffer, Buffer, TypedArray, or DataView', input);
+}
+
+function _isCompatDetachedArrayBuffer(value) {
+    return value instanceof ArrayBuffer && _DETACHED_ARRAY_BUFFERS.has(value);
+}
+
+function _concatBytes(a, b) {
+    if (!a || a.byteLength === 0) return b;
+    if (!b || b.byteLength === 0) return a;
+    const out = new Uint8Array(a.byteLength + b.byteLength);
+    out.set(a, 0);
+    out.set(b, a.byteLength);
+    return out;
+}
+
+function _utf8ExpectedLength(lead) {
+    if (lead < 0x80) return 1;
+    if (lead >= 0xc2 && lead <= 0xdf) return 2;
+    if (lead >= 0xe0 && lead <= 0xef) return 3;
+    if (lead >= 0xf0 && lead <= 0xf4) return 4;
+    return 0;
+}
+
+function _splitUtf8Pending(bytes) {
+    for (let start = Math.max(0, bytes.byteLength - 3); start < bytes.byteLength; start++) {
+        const expected = _utf8ExpectedLength(bytes[start]);
+        if (expected > 1 && bytes.byteLength - start < expected) {
+            let pending = true;
+            for (let i = start + 1; i < bytes.byteLength; i++) {
+                if ((bytes[i] & 0xc0) !== 0x80) {
+                    pending = false;
+                    break;
+                }
             }
-            let result = '';
-            let chunk = [];
-            let i = 0;
-            while (i < bytes.length) {
-                let code;
-                if (bytes[i] < 0x80) {
-                    code = bytes[i++];
-                } else if ((bytes[i] & 0xE0) === 0xC0) {
-                    code = ((bytes[i++] & 0x1F) << 6) | (bytes[i++] & 0x3F);
-                } else if ((bytes[i] & 0xF0) === 0xE0) {
-                    code = ((bytes[i++] & 0x0F) << 12) | ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
-                } else if ((bytes[i] & 0xF8) === 0xF0) {
-                    code = ((bytes[i++] & 0x07) << 18) | ((bytes[i++] & 0x3F) << 12) |
-                           ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
-                } else {
-                    code = 0xFFFD;
+            if (pending) return [bytes.subarray(0, start), bytes.subarray(start)];
+        }
+    }
+    return [bytes, new Uint8Array(0)];
+}
+
+function _pushCodePoint(out, code) {
+    if (code > 0xffff) {
+        code -= 0x10000;
+        out.push(0xd800 + (code >> 10), 0xdc00 + (code & 0x3ff));
+    } else {
+        out.push(code);
+    }
+}
+
+function _appendCodeUnits(chunks, chunk) {
+    if (chunk.length >= _TEXT_DECODER_CHUNK) {
+        chunks.push(String.fromCharCode.apply(null, chunk));
+        chunk.length = 0;
+    }
+}
+
+function _decodeUtf8Bytes(bytes, fatal) {
+    const chunks = [];
+    const chunk = [];
+    let i = 0;
+    const bad = () => {
+        if (fatal) throw _makeEncodingDataError('utf-8');
+        chunk.push(0xfffd);
+        _appendCodeUnits(chunks, chunk);
+    };
+    while (i < bytes.byteLength) {
+        const b0 = bytes[i];
+        if (b0 < 0x80) {
+            chunk.push(b0);
+            i++;
+            _appendCodeUnits(chunks, chunk);
+            continue;
+        }
+        const need = _utf8ExpectedLength(b0);
+        if (need === 0 || i + need > bytes.byteLength) {
+            bad();
+            i++;
+            continue;
+        }
+        let code;
+        const b1 = bytes[i + 1];
+        if ((b1 & 0xc0) !== 0x80) {
+            bad();
+            i++;
+            continue;
+        }
+        if (need === 2) {
+            code = ((b0 & 0x1f) << 6) | (b1 & 0x3f);
+        } else {
+            const b2 = bytes[i + 2];
+            if ((b2 & 0xc0) !== 0x80) {
+                bad();
+                i++;
+                continue;
+            }
+            if (need === 3) {
+                code = ((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f);
+                if (code < 0x800 || (code >= 0xd800 && code <= 0xdfff)) {
+                    bad();
                     i++;
+                    continue;
                 }
-                if (code > 0xFFFF) {
-                    code -= 0x10000;
-                    chunk.push(0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF));
-                } else {
-                    chunk.push(code);
+            } else {
+                const b3 = bytes[i + 3];
+                if ((b3 & 0xc0) !== 0x80) {
+                    bad();
+                    i++;
+                    continue;
                 }
-                if (chunk.length >= _CHUNK) {
-                    result += String.fromCharCode.apply(null, chunk);
-                    chunk = [];
+                code = ((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) |
+                       ((b2 & 0x3f) << 6) | (b3 & 0x3f);
+                if (code < 0x10000 || code > 0x10ffff) {
+                    bad();
+                    i++;
+                    continue;
                 }
             }
-            if (chunk.length > 0) result += String.fromCharCode.apply(null, chunk);
-            return result;
         }
-    });
+        _pushCodePoint(chunk, code);
+        i += need;
+        _appendCodeUnits(chunks, chunk);
+    }
+    if (chunk.length > 0) chunks.push(String.fromCharCode.apply(null, chunk));
+    return chunks.join('');
+}
+
+function _splitUtf16Pending(bytes) {
+    if (bytes.byteLength % 2 === 0) return [bytes, new Uint8Array(0)];
+    return [bytes.subarray(0, bytes.byteLength - 1), bytes.subarray(bytes.byteLength - 1)];
+}
+
+function _decodeUtf16Bytes(bytes, bigEndian, fatal) {
+    if (bytes.byteLength % 2 !== 0 && fatal) throw _makeEncodingDataError(bigEndian ? 'utf-16be' : 'utf-16le');
+    const chunks = [];
+    const chunk = [];
+    for (let i = 0; i + 1 < bytes.byteLength; i += 2) {
+        const code = bigEndian ? ((bytes[i] << 8) | bytes[i + 1]) : (bytes[i] | (bytes[i + 1] << 8));
+        chunk.push(code);
+        _appendCodeUnits(chunks, chunk);
+    }
+    if (bytes.byteLength % 2 !== 0) {
+        chunk.push(0xfffd);
+        _appendCodeUnits(chunks, chunk);
+    }
+    if (chunk.length > 0) chunks.push(String.fromCharCode.apply(null, chunk));
+    return chunks.join('');
+}
+
+_defineGlobal('TextDecoder', class TextDecoder {
+    constructor(encoding, options) {
+        if (options !== undefined && options !== null && typeof options !== 'object') {
+            throw _makeEncodingArgTypeError('options', 'object', options);
+        }
+        options = options || {};
+        if (options.fatal &&
+            globalThis.process &&
+            globalThis.process.config &&
+            globalThis.process.config.variables &&
+            !globalThis.process.config.variables.v8_enable_i18n_support) {
+            const err = new TypeError('"fatal" option is not supported on Node.js compiled without ICU');
+            err.code = 'ERR_NO_ICU';
+            throw err;
+        }
+        Object.defineProperty(this, _TEXT_DECODER_BRAND, { value: true });
+        this._encoding = _normalizeTextDecoderEncoding(encoding);
+        this._fatal = !!options.fatal;
+        this._ignoreBOM = !!options.ignoreBOM;
+        this._pending = new Uint8Array(0);
+        this._bomSeen = false;
+    }
+    get encoding() { _assertTextDecoder(this); return this._encoding; }
+    get fatal() { _assertTextDecoder(this); return this._fatal; }
+    get ignoreBOM() { _assertTextDecoder(this); return this._ignoreBOM; }
+    decode(input, options) {
+        _assertTextDecoder(this);
+        options = options || {};
+        const stream = !!options.stream;
+        let bytes = _concatBytes(this._pending, _u8(input));
+        this._pending = new Uint8Array(0);
+        if (stream) {
+            if (this._encoding === 'utf-8') {
+                [bytes, this._pending] = _splitUtf8Pending(bytes);
+            } else {
+                [bytes, this._pending] = _splitUtf16Pending(bytes);
+            }
+        } else if (this._pending.byteLength > 0) {
+            bytes = _concatBytes(bytes, this._pending);
+            this._pending = new Uint8Array(0);
+        }
+        let decoded = this._encoding === 'utf-8'
+            ? _decodeUtf8Bytes(bytes, this._fatal)
+            : _decodeUtf16Bytes(bytes, this._encoding === 'utf-16be', this._fatal);
+        if (!stream && this._pending.byteLength > 0) {
+            decoded += this._fatal ? '' : '\ufffd';
+            this._pending = new Uint8Array(0);
+        }
+        if (!this._ignoreBOM && !this._bomSeen && decoded.charCodeAt(0) === 0xfeff) {
+            decoded = decoded.slice(1);
+        }
+        if (decoded.length > 0 || !stream) this._bomSeen = true;
+        return decoded;
+    }
+});
+Object.defineProperty(globalThis.TextDecoder.prototype, Symbol.toStringTag, {
+    value: 'TextDecoder',
+    configurable: true,
+});
+
+function _assertTextDecoder(value) {
+    const proto = value == null ? null : Object.getPrototypeOf(Object(value));
+    if (proto !== globalThis.TextDecoder.prototype || value[_TEXT_DECODER_BRAND] !== true) {
+        const err = new TypeError('Value of "this" must be of type TextDecoder');
+        err.code = 'ERR_INVALID_THIS';
+        throw err;
+    }
+}
+
+function _assertTextEncoder(value) {
+    const proto = value == null ? null : Object.getPrototypeOf(Object(value));
+    if (proto !== globalThis.TextEncoder.prototype || value[_TEXT_ENCODER_BRAND] !== true) {
+        const err = new TypeError('Value of "this" must be of type TextEncoder');
+        err.code = 'ERR_INVALID_THIS';
+        throw err;
+    }
 }
 
 // Some JavaScript engine parsers are very slow on multi-MB npm packuments.
@@ -132,12 +371,18 @@ if (typeof globalThis.atob === 'undefined') {
     for (let i = 0; i < _b64chars.length; i++) _b64lookup[_b64chars.charCodeAt(i)] = i;
 
     _defineGlobal('btoa', function btoa(str) {
+        if (arguments.length === 0) throw new TypeError('btoa requires an argument');
+        if (typeof str === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
+        str = String(str);
         let result = '';
         const len = str.length;
         for (let i = 0; i < len; i += 3) {
             const a = str.charCodeAt(i);
             const b = i + 1 < len ? str.charCodeAt(i + 1) : 0;
             const c = i + 2 < len ? str.charCodeAt(i + 2) : 0;
+            if (a > 0xff || b > 0xff || c > 0xff) {
+                throw new DOMException('The string to be encoded contains characters outside of the Latin1 range.', 'InvalidCharacterError');
+            }
             const triple = (a << 16) | (b << 8) | c;
             result += _b64chars[(triple >> 18) & 0x3F];
             result += _b64chars[(triple >> 12) & 0x3F];
@@ -148,18 +393,27 @@ if (typeof globalThis.atob === 'undefined') {
     });
 
     _defineGlobal('atob', function atob(str) {
-        str = str.replace(/=+$/, '');
+        if (arguments.length === 0) throw new TypeError('atob requires an argument');
+        if (typeof str === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
+        str = String(str).replace(/[\t\n\f\r ]+/g, '');
+        if (str.length % 4 === 1 || /[^A-Za-z0-9+/=]/.test(str) ||
+            /=.*[^=]/.test(str) || /={3,}$/.test(str)) {
+            throw new DOMException('The string to be decoded is not correctly encoded.', 'InvalidCharacterError');
+        }
+        const paddedLength = Math.ceil(str.length / 4) * 4;
+        str = str.padEnd(paddedLength, '=');
         let result = '';
-        let i = 0;
-        while (i < str.length) {
-            const a = _b64lookup[str.charCodeAt(i++)];
-            const b = _b64lookup[str.charCodeAt(i++)];
-            const c = _b64lookup[str.charCodeAt(i++)];
-            const d = _b64lookup[str.charCodeAt(i++)];
+        for (let i = 0; i < str.length; i += 4) {
+            const c2 = str.charCodeAt(i + 2);
+            const c3 = str.charCodeAt(i + 3);
+            const a = _b64lookup[str.charCodeAt(i)];
+            const b = _b64lookup[str.charCodeAt(i + 1)];
+            const c = c2 === 61 ? 0 : _b64lookup[c2];
+            const d = c3 === 61 ? 0 : _b64lookup[c3];
             const triple = (a << 18) | (b << 12) | (c << 6) | d;
             result += String.fromCharCode((triple >> 16) & 0xFF);
-            if (c !== undefined) result += String.fromCharCode((triple >> 8) & 0xFF);
-            if (d !== undefined) result += String.fromCharCode(triple & 0xFF);
+            if (c2 !== 61) result += String.fromCharCode((triple >> 8) & 0xFF);
+            if (c3 !== 61) result += String.fromCharCode(triple & 0xFF);
         }
         return result;
     });
@@ -171,6 +425,8 @@ if (typeof globalThis.atob === 'undefined') {
 
 const _SLASH = '/';
 const _DOT = '.';
+const _kEvents = Symbol('kEvents');
+const _kWeakHandler = Symbol('kWeakHandler');
 
 function _defineGlobal(name, value) {
     Object.defineProperty(globalThis, name, {
@@ -2389,6 +2645,40 @@ const util = (() => {
     function inspect(obj, options) {
         if (obj === null) return 'null';
         if (obj === undefined) return 'undefined';
+        if (obj && obj.constructor && obj.constructor.name === 'BlockList') {
+            if (options && options.depth < 0) return '[BlockList]';
+            const rules = obj.rules && obj.rules.length ? inspect(obj.rules, options) : '[]';
+            return `BlockList { rules: ${rules} }`;
+        }
+        if (obj instanceof TextDecoder) {
+            if (options && options.depth < 0) return '[TextDecoder]';
+            if (options && options.showHidden) {
+                const flags = (obj.fatal ? 1 : 0) | (obj.ignoreBOM ? 4 : 0);
+                return 'TextDecoder {\n' +
+                    `  encoding: '${obj.encoding}',\n` +
+                    `  fatal: ${obj.fatal},\n` +
+                    `  ignoreBOM: ${obj.ignoreBOM},\n` +
+                    `  [Symbol(flags)]: ${flags},\n` +
+                    '  [Symbol(handle)]: StringDecoder {\n' +
+                    "    encoding: 'utf8',\n" +
+                    '    [Symbol(kNativeDecoder)]: <Buffer 00 00 00 00 00 00 01>\n' +
+                    '  }\n' +
+                    '}';
+            }
+            return `TextDecoder { encoding: '${obj.encoding}', fatal: ${obj.fatal}, ignoreBOM: ${obj.ignoreBOM} }`;
+        }
+        if (obj instanceof TextEncoder) {
+            if (options && options.depth < 0) return '[TextEncoder]';
+            return 'TextEncoder {}';
+        }
+        if (typeof globalThis.Event !== 'undefined' && obj instanceof globalThis.Event) {
+            if (options && options.depth < 0) return obj.constructor && obj.constructor.name || 'Event';
+            return `${obj.constructor && obj.constructor.name || 'Event'} { type: '${obj.type}' }`;
+        }
+        if (typeof globalThis.EventTarget !== 'undefined' && obj instanceof globalThis.EventTarget) {
+            if (options && options.depth < 0) return obj.constructor && obj.constructor.name || 'EventTarget';
+            return `${obj.constructor && obj.constructor.name || 'EventTarget'} {}`;
+        }
         if (typeof obj === 'string') return `'${obj}'`;
         if (typeof obj === 'number' || typeof obj === 'boolean' || typeof obj === 'bigint') return String(obj);
         if (typeof obj === 'symbol') return obj.toString();
@@ -2513,6 +2803,16 @@ const util = (() => {
     // primary caller.
     function formatWithOptions(_opts, ...args) { return format(...args); }
 
+    const customInspectSymbol = Symbol.for('nodejs.util.inspect.custom');
+    TextEncoder.prototype[customInspectSymbol] = function() {
+        _assertTextEncoder(this);
+        return 'TextEncoder {}';
+    };
+    TextDecoder.prototype[customInspectSymbol] = function(_depth, options) {
+        _assertTextDecoder(this);
+        return inspect(this, options);
+    };
+
     // util.debuglog(set) — Node returns a stderr logger gated on the
     // NODE_DEBUG env var. undici/diagnostics calls this at module init and
     // also reads `.enabled` to short-circuit format work. We honour the env
@@ -2534,11 +2834,146 @@ const util = (() => {
         return log;
     }
 
+    function aborted(signal, resource) {
+        if (!(signal instanceof AbortSignal)) {
+            const err = _makeInvalidArgTypeError('signal', 'AbortSignal', signal);
+            return Promise.reject(err);
+        }
+        if ((resource === null || resource === undefined) || (typeof resource !== 'object' && typeof resource !== 'function')) {
+            const err = _makeInvalidArgTypeError('resource', 'object', resource);
+            return Promise.reject(err);
+        }
+        if (signal.aborted) return Promise.resolve();
+        return new Promise((resolve) => {
+            const onAbort = () => {
+                signal.removeEventListener('abort', onAbort);
+                resolve();
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+        });
+    }
+
+    function transferableAbortSignal(signal) {
+        if (!(signal instanceof AbortSignal)) throw _makeInvalidArgTypeError('signal', 'AbortSignal', signal);
+        return signal;
+    }
+
+    function transferableAbortController() {
+        return new AbortController();
+    }
+
+    function _mimeSyntaxError(message) {
+        const err = new TypeError(message);
+        err.code = 'ERR_INVALID_MIME_SYNTAX';
+        return err;
+    }
+
+    function _isHttpToken(value) {
+        return typeof value === 'string' && value.length > 0 && /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(value);
+    }
+
+    function _quoteMimeValue(value) {
+        value = String(value);
+        if (value === '' || /[\s";=]/.test(value)) {
+            return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        }
+        return value;
+    }
+
+    class MIMEParams {
+        constructor(init, owner) {
+            this._owner = owner || null;
+            this._pairs = [];
+            if (owner) return;
+            void init;
+        }
+        _list() { return this._owner ? this._owner._params : this._pairs; }
+        get size() { return this._list().length; }
+        has(name) {
+            name = String(name).toLowerCase();
+            return this._list().some((pair) => pair[0] === name);
+        }
+        get(name) {
+            name = String(name).toLowerCase();
+            const pair = this._list().find((entry) => entry[0] === name);
+            return pair ? pair[1] : null;
+        }
+        set(name, value) {
+            name = String(name).toLowerCase();
+            value = String(value);
+            if (!_isHttpToken(name)) throw _mimeSyntaxError('Invalid MIME parameter name');
+            if (/[\n\r]/.test(value)) throw _mimeSyntaxError('Invalid MIME parameter value');
+            const list = this._list();
+            const pair = list.find((entry) => entry[0] === name);
+            if (pair) pair[1] = value;
+            else list.push([name, value]);
+        }
+        delete(name) {
+            name = String(name).toLowerCase();
+            const list = this._list();
+            for (let i = list.length - 1; i >= 0; i--) {
+                if (list[i][0] === name) list.splice(i, 1);
+            }
+        }
+        *entries() {
+            for (const pair of this._list()) yield [pair[0], pair[1]];
+        }
+        keys() { return Array.from(this._list(), (pair) => pair[0])[Symbol.iterator](); }
+        values() { return Array.from(this._list(), (pair) => pair[1])[Symbol.iterator](); }
+        [Symbol.iterator]() { return this.entries(); }
+        toString() {
+            return this._list().map(([k, v]) => `${k}=${_quoteMimeValue(v)}`).join(';');
+        }
+    }
+
+    class MIMEType {
+        constructor(input) {
+            if (arguments.length === 0) throw _mimeSyntaxError('Invalid MIME syntax');
+            const raw = String(input).trim();
+            const parts = raw.split(';');
+            const essence = parts.shift().trim().toLowerCase();
+            const slash = essence.indexOf('/');
+            if (slash <= 0 || slash === essence.length - 1) throw _mimeSyntaxError('Invalid MIME syntax');
+            this._type = essence.slice(0, slash);
+            this._subtype = essence.slice(slash + 1);
+            if (!_isHttpToken(this._type) || !_isHttpToken(this._subtype)) throw _mimeSyntaxError('Invalid MIME syntax');
+            this._params = [];
+            this.params = new MIMEParams(undefined, this);
+            for (const part of parts) {
+                if (!part.trim()) continue;
+                const idx = part.indexOf('=');
+                if (idx <= 0) continue;
+                this.params.set(part.slice(0, idx).trim(), part.slice(idx + 1).trim().replace(/^"|"$/g, ''));
+            }
+        }
+        get type() { return this._type; }
+        set type(value) {
+            value = String(value).toLowerCase();
+            if (!_isHttpToken(value)) throw _mimeSyntaxError('Invalid MIME type');
+            this._type = value;
+        }
+        get subtype() { return this._subtype; }
+        set subtype(value) {
+            value = String(value).toLowerCase();
+            if (!_isHttpToken(value)) throw _mimeSyntaxError('Invalid MIME subtype');
+            this._subtype = value;
+        }
+        get essence() { return `${this._type}/${this._subtype}`; }
+        toString() {
+            const params = this.params.toString();
+            return this.essence + (params ? `;${params}` : '');
+        }
+        toJSON() { return this.toString(); }
+    }
+
     return {
         format, formatWithOptions, inspect, inherits, deprecate, promisify, callbackify,
         isDeepEqual, isDeepStrictEqual, types,
         debuglog, debug: debuglog,
         TextDecoder, TextEncoder,
+        MIMEType, MIMEParams,
+        aborted, transferableAbortSignal, transferableAbortController,
+        customInspectSymbol,
         // Deprecated but widely used
         isArray: Array.isArray,
         isBoolean: v => typeof v === 'boolean',
@@ -5640,6 +6075,16 @@ const cluster = (() => {
 // ============================================================
 
 const crypto = (() => {
+    class CryptoKey {}
+    class SubtleCrypto {}
+    class Crypto {
+        constructor() {
+            this.subtle = new SubtleCrypto();
+        }
+        getRandomValues(buf) { return getRandomValues(buf); }
+        randomUUID() { return randomUUID(); }
+    }
+
     function randomBytes(size) {
         const buf = Buffer.alloc(size);
         // Use Math.random as fallback (not cryptographically secure)
@@ -5690,14 +6135,22 @@ const crypto = (() => {
         };
     }
 
+    function getRandomValues(buf) {
+        for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256);
+        return buf;
+    }
+
+    const webcrypto = new Crypto();
+
     return {
         randomBytes, randomUUID, randomInt,
         createHash, createHmac,
         getHashes() { return ['sha1', 'sha256', 'sha512', 'md5']; },
-        getRandomValues(buf) {
-            for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256);
-            return buf;
-        },
+        getRandomValues,
+        webcrypto,
+        Crypto,
+        CryptoKey,
+        SubtleCrypto,
     };
 })();
 
@@ -5913,8 +6366,201 @@ const net = (() => {
         configurable: true,
     });
 
+    function _netArgType(name, expected, value) {
+        return _netCodeMessage(_makeInvalidArgTypeError(name, expected, value));
+    }
+
+    function _netArgValue(name, value) {
+        return _netCodeMessage(_makeInvalidArgValueError(name, value));
+    }
+
+    function _netCodeMessage(err) {
+        if (!String(err.message).includes(err.code)) {
+            err.message = `${err.code}: ${err.message}`;
+        }
+        return err;
+    }
+
+    function _netBadPort(value) {
+        const err = new RangeError(`Port should be >= 0 and < 65536. Received ${value}.`);
+        err.code = 'ERR_SOCKET_BAD_PORT';
+        return _netCodeMessage(err);
+    }
+
+    function _family(family, valueErrorForAllInvalid) {
+        if (family === undefined) return 'ipv4';
+        if (typeof family !== 'string') {
+            throw valueErrorForAllInvalid ? _netArgValue('family', family) : _netArgType('family', 'string', family);
+        }
+        const f = family.toLowerCase();
+        if (f !== 'ipv4' && f !== 'ipv6') throw _netArgValue('family', family);
+        return f;
+    }
+
+    function _ipv4ToInt(address) {
+        if (typeof address !== 'string') throw _netArgType('address', 'string', address);
+        const parts = address.split('.');
+        if (parts.length !== 4) return null;
+        let out = 0;
+        for (const part of parts) {
+            if (!/^\d+$/.test(part)) return null;
+            const n = Number(part);
+            if (n < 0 || n > 255) return null;
+            out = (out << 8) | n;
+        }
+        return out >>> 0;
+    }
+
+    function _ipv6ToBigInt(address) {
+        if (typeof address !== 'string') throw _netArgType('address', 'string', address);
+        address = address.toLowerCase();
+        const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+        if (mapped) return 0xffff00000000n | BigInt(_ipv4ToInt(mapped[1]) ?? 0);
+        if (address.includes('.')) {
+            const idx = address.lastIndexOf(':');
+            const v4 = _ipv4ToInt(address.slice(idx + 1));
+            if (v4 === null) return null;
+            address = address.slice(0, idx) + ':' + ((v4 >>> 16) & 0xffff).toString(16) + ':' + (v4 & 0xffff).toString(16);
+        }
+        const sides = address.split('::');
+        if (sides.length > 2) return null;
+        const left = sides[0] ? sides[0].split(':').filter(Boolean) : [];
+        const right = sides.length === 2 && sides[1] ? sides[1].split(':').filter(Boolean) : [];
+        const fill = sides.length === 2 ? 8 - left.length - right.length : 0;
+        const groups = [...left, ...Array(Math.max(0, fill)).fill('0'), ...right];
+        if (groups.length !== 8) return null;
+        let out = 0n;
+        for (const group of groups) {
+            if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+            out = (out << 16n) | BigInt(parseInt(group, 16));
+        }
+        return out;
+    }
+
+    function _addressValue(input, family) {
+        if (input instanceof SocketAddress) {
+            return _addressValue(input.address, input.family);
+        }
+        family = _family(family);
+        if (family === 'ipv4') {
+            const direct = _ipv4ToInt(input);
+            if (direct !== null) return { family, value: BigInt(direct), bits: 32, address: input };
+            if (typeof input === 'string' && input.toLowerCase().startsWith('::ffff:')) {
+                const mapped = _ipv4ToInt(input.slice(7));
+                if (mapped !== null) return { family: 'ipv4', value: BigInt(mapped), bits: 32, address: input };
+            }
+            throw _netArgValue('address', input);
+        }
+        const value = _ipv6ToBigInt(input);
+        if (value === null) throw _netArgValue('address', input);
+        return { family, value, bits: 128, address: input };
+    }
+
+    class SocketAddress {
+        constructor(options) {
+            if (options === undefined) options = {};
+            if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+                throw _netArgType('options', 'object', options);
+            }
+            const family = _family(options.family, true);
+            const defaultAddress = family === 'ipv6' ? '::' : '127.0.0.1';
+            const address = options.address === undefined ? defaultAddress : options.address;
+            const parsed = _addressValue(address, family);
+            const port = options.port === undefined ? 0 : options.port;
+            if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) {
+                throw _netBadPort(port);
+            }
+            const flowlabel = options.flowlabel === undefined ? 0 : options.flowlabel;
+            if (typeof flowlabel !== 'number' || !Number.isInteger(flowlabel) || flowlabel < 0 || flowlabel > 0xfffff) {
+                const err = new RangeError('The value of "options.flowlabel" is out of range.');
+                err.code = 'ERR_OUT_OF_RANGE';
+                throw _netCodeMessage(err);
+            }
+            this.address = parsed.address;
+            this.port = port;
+            this.family = parsed.family;
+            this.flowlabel = flowlabel;
+        }
+
+        static isSocketAddress(value) {
+            return value instanceof SocketAddress;
+        }
+    }
+
+    class BlockList {
+        constructor() {
+            this._rules = [];
+            this.rules = [];
+        }
+        _push(kind, family, start, end, prefix, text) {
+            this._rules.push({ kind, family, start, end, prefix });
+            this.rules.unshift(text);
+        }
+        addAddress(address, family) {
+            const parsed = _addressValue(address, family);
+            const label = parsed.family === 'ipv6' ? 'IPv6' : 'IPv4';
+            this._push('address', parsed.family, parsed.value, parsed.value, parsed.bits, `Address: ${label} ${parsed.address}`);
+        }
+        addRange(start, end, family) {
+            const a = _addressValue(start, family);
+            const b = _addressValue(end, a.family);
+            if (a.family !== b.family || a.value > b.value) throw _netArgValue('range', `${start}-${end}`);
+            const label = a.family === 'ipv6' ? 'IPv6' : 'IPv4';
+            this._push('range', a.family, a.value, b.value, a.bits, `Range: ${label} ${a.address}-${b.address}`);
+        }
+        addSubnet(address, prefix, family) {
+            if (typeof prefix !== 'number') throw _netArgType('prefix', 'number', prefix);
+            if (Number.isNaN(prefix)) {
+                const err = new RangeError('prefix is out of range');
+                err.code = 'ERR_OUT_OF_RANGE';
+                throw _netCodeMessage(err);
+            }
+            const parsed = _addressValue(address, family);
+            const max = parsed.family === 'ipv6' ? 128 : 32;
+            if (prefix < 0 || prefix > max) {
+                const err = new RangeError('prefix is out of range');
+                err.code = 'ERR_OUT_OF_RANGE';
+                throw _netCodeMessage(err);
+            }
+            const hostBits = BigInt(max - prefix);
+            const mask = hostBits === BigInt(max) ? 0n : (((1n << BigInt(max)) - 1n) ^ ((1n << hostBits) - 1n));
+            const start = parsed.value & mask;
+            const end = start | ((1n << hostBits) - 1n);
+            const label = parsed.family === 'ipv6' ? 'IPv6' : 'IPv4';
+            this._push('subnet', parsed.family, start, end, prefix, `Subnet: ${label} ${parsed.address}/${prefix}`);
+        }
+        check(address, family) {
+            let parsed;
+            try {
+                parsed = _addressValue(address, family);
+            } catch (err) {
+                const normalizedFamily = typeof family === 'string' ? family.toLowerCase() : family;
+                if (typeof address === 'string' &&
+                    (family === undefined || normalizedFamily === 'ipv4' || normalizedFamily === 'ipv6')) {
+                    return false;
+                }
+                throw err;
+            }
+            for (const rule of this._rules) {
+                if (rule.family === parsed.family && parsed.value >= rule.start && parsed.value <= rule.end) return true;
+                if (rule.family === 'ipv4' && parsed.family === 'ipv6') {
+                    const mappedPrefix = parsed.value >> 32n;
+                    if (mappedPrefix === 0xffffn) {
+                        const v4 = parsed.value & 0xffffffffn;
+                        if (v4 >= rule.start && v4 <= rule.end) return true;
+                    }
+                }
+                if (rule.family === 'ipv6' && parsed.family === 'ipv4') {
+                    const mapped = 0xffff00000000n | parsed.value;
+                    if (mapped >= rule.start && mapped <= rule.end) return true;
+                }
+            }
+            return false;
+        }
+    }
+
     return {
-        Socket, Stream, Server,
+        Socket, Stream, Server, BlockList, SocketAddress,
         createServer(options, listener) { return new Server(options, listener); },
         createConnection(port, host, cb) { return new Socket().connect(port, host, cb); },
         connect(port, host, cb) { return new Socket().connect(port, host, cb); },
@@ -8132,35 +8778,16 @@ const internalOptions = {
 };
 
 const internalEventTarget = (() => {
-    const Target = globalThis.EventTarget || class EventTarget {
-        constructor() { this._listeners = new Map(); }
-        addEventListener(type, listener) {
-            if (!this._listeners.has(type)) this._listeners.set(type, new Set());
-            this._listeners.get(type).add(listener);
-        }
-        removeEventListener(type, listener) {
-            const listeners = this._listeners.get(type);
-            if (listeners) listeners.delete(listener);
-        }
-        dispatchEvent(event) {
-            const listeners = this._listeners.get(event.type);
-            if (listeners) for (const listener of listeners) {
-                if (typeof listener === 'function') listener.call(this, event);
-                else if (listener && typeof listener.handleEvent === 'function') listener.handleEvent(event);
-            }
-            return !event.defaultPrevented;
-        }
-    };
-    const EventClass = globalThis.Event || class Event {
-        constructor(type, init) { this.type = type; this.defaultPrevented = false; Object.assign(this, init || {}); }
-        preventDefault() { this.defaultPrevented = true; }
-    };
     return {
-        Event: EventClass,
-        EventTarget: Target,
-        NodeEventTarget: Target,
-        defineEventHandler() {},
+        get Event() { return globalThis.Event; },
+        get EventTarget() { return globalThis.EventTarget; },
+        get CustomEvent() { return globalThis.CustomEvent; },
+        get NodeEventTarget() { return KandeloNodeEventTarget; },
+        defineEventHandler: _defineEventHandler,
         initEventTarget() {},
+        isEventTarget(value) { return value instanceof globalThis.EventTarget; },
+        kEvents: _kEvents,
+        kWeakHandler: _kWeakHandler,
         kNewListener: Symbol('kNewListener'),
         kRemoveListener: Symbol('kRemoveListener'),
     };
@@ -8379,6 +9006,19 @@ const internalTestBinding = {
                 crypto: {},
             };
         }
+        if (name === 'block_list') {
+            const AF_INET = 4;
+            const AF_INET6 = 6;
+            class SocketAddress {
+                constructor(address, port, family, flowlabel) {
+                    this.address = address;
+                    this.port = port;
+                    this.family = family === AF_INET6 ? 'ipv6' : 'ipv4';
+                    this.flowlabel = flowlabel || 0;
+                }
+            }
+            return { SocketAddress, AF_INET, AF_INET6 };
+        }
         return _makeUnsupportedNamespace(`internalBinding(${name})`);
     },
 };
@@ -8397,6 +9037,8 @@ const _builtinModules = {
         SlowBuffer(size) { return Buffer.alloc(size); },
         kMaxLength: Buffer.kMaxLength,
         constants: { MAX_LENGTH: Buffer.kMaxLength, MAX_STRING_LENGTH: 0x1fffffe8 },
+        atob: globalThis.atob,
+        btoa: globalThis.btoa,
     },
     'fs': fs,
     'fs/promises': fs.promises,
@@ -8421,6 +9063,11 @@ const _builtinModules = {
     'http2': { constants: {} },
     'child_process': child_process,
     'crypto': crypto,
+    'internal/crypto/webcrypto': {
+        Crypto: crypto.Crypto,
+        CryptoKey: crypto.CryptoKey,
+        SubtleCrypto: crypto.SubtleCrypto,
+    },
     'net': net,
     'tls': tls,
     'http': http,
@@ -8868,9 +9515,17 @@ const _builtinModules = {
     'internal/repl/await': _makeUnsupportedNamespace('internal/repl/await'),
     'internal/socket_list': _makeUnsupportedNamespace('internal/socket_list'),
     'internal/socketaddress': {
-        SocketAddress: class SocketAddress {
-            constructor(options) { Object.assign(this, options || {}); }
+        InternalSocketAddress: class InternalSocketAddress extends net.SocketAddress {
+            constructor(handle) {
+                super({
+                    address: handle && handle.address,
+                    port: handle && handle.port,
+                    family: handle && handle.family,
+                    flowlabel: handle && handle.flowlabel,
+                });
+            }
         },
+        SocketAddress: net.SocketAddress,
     },
     'internal/streams/add-abort-signal': {
         addAbortSignal(_signal, stream) { return stream; },
@@ -9439,9 +10094,6 @@ _defineGlobal('URLSearchParams', url.URLSearchParams);
 // Web platform globals that modern Node exposes by default. undici/whatwg-
 // fetch reach for these at module init (e.g. `webidl.is.ReadableStream =
 // MakeTypeAssertion(ReadableStream)` in undici/lib/web/webidl/index.js).
-// We don't implement real semantics — just need the symbols to exist so
-// instanceof checks don't ReferenceError. The agent's --version path
-// doesn't actually exercise fetch; once it does, swap these for real impls.
 const _streamWeb = _builtinModules['stream/web'];
 if (typeof globalThis.ReadableStream === 'undefined')
     _defineGlobal('ReadableStream', _streamWeb.ReadableStream);
@@ -9459,11 +10111,6 @@ if (typeof globalThis.FormData === 'undefined') _defineGlobal('FormData', class 
 if (typeof globalThis.Headers === 'undefined') _defineGlobal('Headers', class Headers {});
 if (typeof globalThis.Request === 'undefined') _defineGlobal('Request', class Request {});
 if (typeof globalThis.Response === 'undefined') _defineGlobal('Response', class Response {});
-if (typeof globalThis.MessagePort === 'undefined') _defineGlobal('MessagePort', class MessagePort {});
-if (typeof globalThis.MessageChannel === 'undefined')
-    _defineGlobal('MessageChannel', class MessageChannel {
-        constructor() { this.port1 = new MessagePort(); this.port2 = new MessagePort(); }
-    });
 if (typeof globalThis.BroadcastChannel === 'undefined')
     _defineGlobal('BroadcastChannel', class BroadcastChannel {
         constructor(name) { this.name = name; }
@@ -9475,14 +10122,10 @@ if (typeof globalThis.BroadcastChannel === 'undefined')
 // from `require('crypto')`. uuid/dist-node/rng.js and many other packages
 // reach for the bare `crypto.getRandomValues()` here without importing
 // anything — undefined crypto → silent rejection during session init.
-if (typeof globalThis.crypto === 'undefined') {
-    _defineGlobal('crypto', {
-        getRandomValues: crypto.getRandomValues,
-        randomUUID: crypto.randomUUID,
-        // Subtle is left unimplemented; consumers that actually need it
-        // will fail loudly, which is preferable to a silent stub.
-    });
-}
+_defineGlobal('crypto', crypto.webcrypto);
+_defineGlobal('Crypto', crypto.Crypto);
+_defineGlobal('CryptoKey', crypto.CryptoKey);
+_defineGlobal('SubtleCrypto', crypto.SubtleCrypto);
 
 // structuredClone — Node 17+ global. Settings managers and other helpers
 // use it to deep-copy plain config objects. Falls back to JSON for the
@@ -9494,153 +10137,551 @@ if (typeof globalThis.structuredClone === 'undefined') {
     });
 }
 
-// AbortController/AbortSignal — used pervasively (undici, anthropic-sdk,
-// timers/promises). The bootstrap timers module already references
-// AbortSignal in its options bag for setTimeout. A minimal event-emitter-
-// style implementation is enough: signal.aborted toggles, listeners fire
-// once on abort. Real Node tracks reasons and AbortSignal.timeout() —
-// we add timeout() because @anthropic-ai/sdk uses it for request timeouts.
-// DOM Event/EventTarget — modern Node exposes these as globals. undici's
-// websocket layer subclasses Event and uses EventTarget. We don't dispatch
-// events through them in real flows here; just need the symbols so class
-// extension works at module init.
-if (typeof globalThis.Event === 'undefined') {
-    _defineGlobal('Event', class Event {
-        constructor(type, init) {
-            this.type = type;
-            this.bubbles = !!(init && init.bubbles);
-            this.cancelable = !!(init && init.cancelable);
-            this.composed = !!(init && init.composed);
-            this.defaultPrevented = false;
-            this.target = null;
-            this.currentTarget = null;
-            this.timeStamp = Date.now();
+// DOM Event/EventTarget/Abort primitives. Modern Node exposes these as globals
+// and its official tests exercise listener options (`once`, `passive`,
+// `signal`) as observable API, so the shim needs more than module-init stubs.
+class KandeloEvent {
+    constructor(type, init) {
+        if (arguments.length === 0 || typeof type === 'symbol') {
+            throw _makeInvalidArgTypeError('type', 'string', type);
         }
-        preventDefault() { this.defaultPrevented = true; }
-        stopPropagation() {}
-        stopImmediatePropagation() {}
-    });
+        if (init !== undefined && init !== null && typeof init !== 'object') {
+            throw _makeInvalidArgTypeError('options', 'object', init);
+        }
+        init = init || {};
+        this.type = String(type);
+        this.bubbles = !!init.bubbles;
+        this.cancelable = !!init.cancelable;
+        this.composed = !!init.composed;
+        this.defaultPrevented = false;
+        this.target = null;
+        this.currentTarget = null;
+        this.eventPhase = 0;
+        this.isTrusted = false;
+        this._cancelBubble = false;
+        this.timeStamp = Date.now();
+        this._passive = false;
+    }
+    get cancelBubble() { return this._cancelBubble; }
+    set cancelBubble(value) { this._cancelBubble = !!value; }
+    get srcElement() { return this.target; }
+    composedPath() {
+        return this.eventPhase === KandeloEvent.AT_TARGET && this.currentTarget ? [this.currentTarget] : [];
+    }
+    preventDefault() {
+        if (this.cancelable && !this._passive) this.defaultPrevented = true;
+    }
+    stopPropagation() { this.cancelBubble = true; }
+    stopImmediatePropagation() {
+        this.cancelBubble = true;
+        this._stopImmediate = true;
+    }
+    get returnValue() { return !this.defaultPrevented; }
+    set returnValue(value) { if (!value) this.preventDefault(); }
 }
-if (typeof globalThis.EventTarget === 'undefined') {
-    _defineGlobal('EventTarget', class EventTarget {
-        constructor() { this._lst = new Map(); }
-        addEventListener(type, listener) {
-            if (!this._lst.has(type)) this._lst.set(type, new Set());
-            this._lst.get(type).add(listener);
+for (const [name, value] of Object.entries({
+    NONE: 0,
+    CAPTURING_PHASE: 1,
+    AT_TARGET: 2,
+    BUBBLING_PHASE: 3,
+})) {
+    Object.defineProperty(KandeloEvent, name, { value, enumerable: true });
+    Object.defineProperty(KandeloEvent.prototype, name, { value, enumerable: true });
+}
+
+class KandeloEventTarget {
+    constructor() {
+        Object.defineProperty(this, '_eventTargetListeners', {
+            value: new Map(),
+            configurable: true,
+        });
+    }
+    addEventListener(type, listener, options) {
+        if (arguments.length < 2) {
+            const err = new TypeError('The "type" and "listener" arguments must be specified');
+            err.code = 'ERR_MISSING_ARGS';
+            throw err;
         }
-        removeEventListener(type, listener) {
-            const s = this._lst.get(type);
-            if (s) s.delete(listener);
+        if (listener == null) {
+            if (options && typeof options === 'object') void options.passive;
+            return undefined;
         }
-        dispatchEvent(ev) {
-            const s = this._lst.get(ev.type);
-            if (s) for (const l of s) {
-                try { typeof l === 'function' ? l.call(this, ev) : l.handleEvent(ev); } catch {}
+        if (typeof listener !== 'function' && typeof listener !== 'object') {
+            throw _makeInvalidArgTypeError('listener', 'EventListener', listener);
+        }
+        const opts = _eventListenerOptions(options);
+        if (opts.signal !== undefined && !(opts.signal instanceof globalThis.AbortSignal)) {
+            throw new TypeError('signal must be an AbortSignal');
+        }
+        if (opts.signal && opts.signal.aborted) return undefined;
+        type = String(type);
+        let list = this._eventTargetListeners.get(type);
+        if (!list) this._eventTargetListeners.set(type, list = []);
+        if (list.some((entry) => !entry.removed && entry.listener === listener && entry.capture === opts.capture)) {
+            return undefined;
+        }
+        const entry = {
+            listener,
+            once: opts.once,
+            passive: opts.passive,
+            capture: opts.capture,
+            signal: opts.signal || null,
+            removed: false,
+        };
+        if (entry.signal) {
+            entry.abortHandler = () => this.removeEventListener(type, listener, { capture: entry.capture });
+            entry.signal.addEventListener('abort', entry.abortHandler, { once: true });
+        }
+        list.push(entry);
+        return undefined;
+    }
+    removeEventListener(type, listener, options) {
+        type = String(type);
+        if (listener == null) return undefined;
+        const capture = _eventListenerOptions(options).capture;
+        const list = this._eventTargetListeners.get(type);
+        if (!list) return undefined;
+        for (const entry of list) {
+            if (!entry.removed && entry.listener === listener && entry.capture === capture) {
+                entry.removed = true;
+                if (entry.signal && entry.abortHandler) {
+                    entry.signal.removeEventListener('abort', entry.abortHandler);
+                }
             }
-            return !ev.defaultPrevented;
         }
+        this._eventTargetListeners.set(type, list.filter((entry) => !entry.removed));
+        return undefined;
+    }
+    dispatchEvent(event) {
+        if (!(this instanceof KandeloEventTarget)) {
+            const err = new TypeError('Value of "this" must be of type EventTarget');
+            err.code = 'ERR_INVALID_THIS';
+            throw err;
+        }
+        if (!(event instanceof KandeloEvent)) {
+            throw _makeInvalidArgTypeError('event', 'Event', event);
+        }
+        if (event._dispatching) {
+            const err = new Error('The event is already being dispatched');
+            err.code = 'ERR_EVENT_RECURSION';
+            throw err;
+        }
+        const list = (this._eventTargetListeners.get(event.type) || []).slice();
+        event._dispatching = true;
+        event.target = this;
+        event.currentTarget = this;
+        event.eventPhase = KandeloEvent.AT_TARGET;
+        try {
+            for (const entry of list) {
+                if (entry.removed) continue;
+                if (entry.once) this.removeEventListener(event.type, entry.listener, { capture: entry.capture });
+                event._passive = entry.passive;
+                try {
+                    if (typeof entry.listener === 'function') entry.listener.call(this, event);
+                    else if (entry.listener && typeof entry.listener.handleEvent === 'function') {
+                        entry.listener.handleEvent(event);
+                    }
+                } catch (err) {
+                    queueMicrotask(() => { throw err; });
+                } finally {
+                    event._passive = false;
+                }
+                if (event._stopImmediate) break;
+            }
+        } finally {
+            event._dispatching = false;
+            event.eventPhase = KandeloEvent.NONE;
+            event.currentTarget = null;
+        }
+        return !event.defaultPrevented;
+    }
+}
+
+class KandeloNodeEventTarget extends KandeloEventTarget {
+    constructor() {
+        super();
+        this._maxListeners = KandeloNodeEventTarget.defaultMaxListeners;
+    }
+    setMaxListeners(n) { this._maxListeners = n; return this; }
+    getMaxListeners() { return this._maxListeners; }
+    eventNames() {
+        return Array.from(this._eventTargetListeners.keys())
+            .filter((name) => (this._eventTargetListeners.get(name) || []).length > 0);
+    }
+    listenerCount(type) {
+        const list = this._eventTargetListeners.get(String(type));
+        return list ? list.filter((entry) => !entry.removed).length : 0;
+    }
+    on(type, listener, options) { this.addEventListener(type, listener, options); return this; }
+    addListener(type, listener, options) { return this.on(type, listener, options); }
+    once(type, listener, options) {
+        const opts = options && typeof options === 'object'
+            ? Object.assign({}, options, { once: true })
+            : { once: true };
+        this.addEventListener(type, listener, opts);
+        return this;
+    }
+    off(type, listener, options) { this.removeEventListener(type, listener, options); return this; }
+    removeListener(type, listener, options) { return this.off(type, listener, options); }
+    removeAllListeners(type) {
+        if (type === undefined) this._eventTargetListeners.clear();
+        else this._eventTargetListeners.delete(String(type));
+        return this;
+    }
+    emit(type, ...args) {
+        if (arguments.length === 0) throw _makeInvalidArgTypeError('type', 'string', type);
+        const event = args[0] instanceof KandeloEvent
+            ? args[0]
+            : new KandeloCustomEvent(String(type), { detail: args[0] });
+        return this.dispatchEvent(event);
+    }
+}
+KandeloNodeEventTarget.defaultMaxListeners = 10;
+Object.defineProperty(KandeloNodeEventTarget, 'name', { value: 'NodeEventTarget' });
+Object.defineProperty(KandeloEvent.prototype, Symbol.toStringTag, {
+    value: 'Event',
+    configurable: true,
+});
+Object.defineProperty(KandeloEventTarget.prototype, Symbol.toStringTag, {
+    value: 'EventTarget',
+    configurable: true,
+});
+for (const key of ['addEventListener', 'dispatchEvent', 'removeEventListener']) {
+    Object.defineProperty(KandeloEventTarget.prototype, key, {
+        value: KandeloEventTarget.prototype[key],
+        writable: true,
+        configurable: true,
+        enumerable: true,
     });
 }
-if (typeof globalThis.MessageEvent === 'undefined')
-    _defineGlobal('MessageEvent', class MessageEvent extends globalThis.Event {
-        constructor(type, init) { super(type, init); this.data = init && init.data; }
-    });
-if (typeof globalThis.CloseEvent === 'undefined')
-    _defineGlobal('CloseEvent', class CloseEvent extends globalThis.Event {
-        constructor(type, init) {
-            super(type, init);
-            this.code = (init && init.code) || 0;
-            this.reason = (init && init.reason) || '';
-            this.wasClean = !!(init && init.wasClean);
-        }
-    });
-if (typeof globalThis.ErrorEvent === 'undefined')
-    _defineGlobal('ErrorEvent', class ErrorEvent extends globalThis.Event {
-        constructor(type, init) { super(type, init); this.error = init && init.error; this.message = (init && init.message) || ''; }
-    });
-if (typeof globalThis.CustomEvent === 'undefined')
-    _defineGlobal('CustomEvent', class CustomEvent extends globalThis.Event {
-        constructor(type, init) { super(type, init); this.detail = init && init.detail; }
-    });
-if (typeof globalThis.DOMException === 'undefined') {
-    _defineGlobal('DOMException', class DOMException extends Error {
-        constructor(message, name) {
-            super(message);
-            this.name = name || 'Error';
-            this.code = 0;
-        }
+Object.defineProperty(KandeloEvent, 'length', { value: 1 });
+Object.defineProperty(KandeloEvent, 'name', { value: 'Event' });
+Object.defineProperty(KandeloEventTarget, 'name', { value: 'EventTarget' });
+
+function _eventListenerOptions(options) {
+    if (options === undefined || options === null) {
+        return { capture: false, once: false, passive: false, signal: undefined };
+    }
+    if (typeof options === 'boolean') {
+        return { capture: options, once: false, passive: false, signal: undefined };
+    }
+    if (typeof options !== 'object') {
+        return { capture: false, once: false, passive: false, signal: undefined };
+    }
+    return {
+        capture: !!options.capture,
+        once: !!options.once,
+        passive: !!options.passive,
+        signal: options.signal,
+    };
+}
+
+function _defineEventHandler(target, name, eventName) {
+    eventName = eventName || name;
+    const prop = `on${name}`;
+    const slot = Symbol(prop);
+    Object.defineProperty(target, prop, {
+        configurable: true,
+        enumerable: true,
+        get() { return this[slot] || null; },
+        set(handler) {
+            if (this[slot]) this.removeEventListener(eventName, this[slot]);
+            if (typeof handler === 'function') {
+                this[slot] = handler;
+                this.addEventListener(eventName, handler);
+            } else {
+                this[slot] = null;
+            }
+        },
     });
 }
 
-if (typeof globalThis.AbortSignal === 'undefined') {
-    class AbortSignal {
-        constructor() {
-            this.aborted = false;
-            this.reason = undefined;
-            this._listeners = new Set();
+class KandeloMessageEvent extends KandeloEvent {
+    constructor(type, init) {
+        super(type, init);
+        this.data = init && init.data;
+        this.origin = (init && init.origin) || '';
+        this.lastEventId = (init && init.lastEventId) || '';
+        this.source = (init && init.source) || null;
+        this.ports = (init && init.ports) || [];
+    }
+}
+class KandeloCloseEvent extends KandeloEvent {
+    constructor(type, init) {
+        super(type, init);
+        this.code = (init && init.code) || 0;
+        this.reason = (init && init.reason) || '';
+        this.wasClean = !!(init && init.wasClean);
+    }
+}
+class KandeloErrorEvent extends KandeloEvent {
+    constructor(type, init) {
+        super(type, init);
+        this.error = init && init.error;
+        this.message = (init && init.message) || '';
+    }
+}
+class KandeloCustomEvent extends KandeloEvent {
+    constructor(type, init) {
+        if (arguments.length === 0 || typeof type === 'symbol') {
+            throw _makeInvalidArgTypeError('type', 'string', type);
         }
-        addEventListener(type, listener) {
-            if (type === 'abort') this._listeners.add(listener);
+        if (init !== undefined && init !== null && typeof init !== 'object') {
+            throw _makeInvalidArgTypeError('options', 'object', init);
         }
-        removeEventListener(type, listener) {
-            if (type === 'abort') this._listeners.delete(listener);
-        }
-        dispatchEvent(ev) {
-            if (ev && ev.type === 'abort')
-                for (const l of this._listeners) l.call(this, ev);
-            return true;
-        }
-        throwIfAborted() { if (this.aborted) throw this.reason; }
-        static abort(reason) {
-            const s = new AbortSignal();
-            s.aborted = true;
-            s.reason = reason;
-            return s;
-        }
-        static timeout(ms) {
-            const s = new AbortSignal();
-            timers.setTimeout(() => {
-                s.aborted = true;
-                s.reason = new Error('The operation was aborted due to timeout');
-                s.reason.name = 'TimeoutError';
-                for (const l of s._listeners) {
-                    try { l.call(s, { type: 'abort', target: s }); } catch {}
-                }
-            }, ms);
-            return s;
-        }
-        static any(signals) {
-            const s = new AbortSignal();
-            for (const sig of signals) {
-                if (sig.aborted) { s.aborted = true; s.reason = sig.reason; return s; }
-                sig.addEventListener('abort', () => {
-                    if (s.aborted) return;
-                    s.aborted = true;
-                    s.reason = sig.reason;
-                    for (const l of s._listeners) {
-                        try { l.call(s, { type: 'abort', target: s }); } catch {}
-                    }
+        super(type, init || {});
+        Object.defineProperty(this, 'detail', {
+            value: init && Object.prototype.hasOwnProperty.call(init, 'detail') ? init.detail : null,
+            enumerable: true,
+        });
+    }
+}
+Object.setPrototypeOf(KandeloCustomEvent, KandeloEvent);
+for (const key of ['NONE', 'CAPTURING_PHASE', 'AT_TARGET', 'BUBBLING_PHASE']) {
+    Object.defineProperty(KandeloCustomEvent, key, { value: KandeloEvent[key], enumerable: true });
+}
+Object.defineProperty(KandeloCustomEvent.prototype, Symbol.toStringTag, {
+    value: 'CustomEvent',
+    configurable: true,
+});
+Object.defineProperty(KandeloCustomEvent, 'length', { value: 1 });
+Object.defineProperty(KandeloCustomEvent, 'name', { value: 'CustomEvent' });
+
+class KandeloDOMException extends Error {
+    constructor(message = '', name = 'Error') {
+        let causeOptions;
+        if (name && typeof name === 'object') {
+            causeOptions = Object.prototype.hasOwnProperty.call(name, 'cause') ? { cause: name.cause } : undefined;
+            super(String(message), causeOptions);
+            this.name = name.name === undefined ? 'Error' : String(name.name);
+            if (Object.prototype.hasOwnProperty.call(name, 'cause') && !('cause' in this)) {
+                Object.defineProperty(this, 'cause', {
+                    value: name.cause,
+                    writable: true,
+                    configurable: true,
                 });
             }
-            return s;
+        } else {
+            super(String(message));
+            this.name = name === undefined ? 'Error' : String(name);
+        }
+        const codes = {
+            IndexSizeError: 1,
+            HierarchyRequestError: 3,
+            WrongDocumentError: 4,
+            InvalidCharacterError: 5,
+            NoModificationAllowedError: 7,
+            NotFoundError: 8,
+            NotSupportedError: 9,
+            InUseAttributeError: 10,
+            InvalidStateError: 11,
+            SyntaxError: 12,
+            InvalidModificationError: 13,
+            NamespaceError: 14,
+            InvalidAccessError: 15,
+            TypeMismatchError: 17,
+            SecurityError: 18,
+            NetworkError: 19,
+            AbortError: 20,
+            URLMismatchError: 21,
+            QuotaExceededError: 22,
+            TimeoutError: 23,
+            InvalidNodeTypeError: 24,
+            DataCloneError: 25,
+        };
+        this.code = codes[this.name] || 0;
+    }
+}
+Object.defineProperty(KandeloDOMException, 'name', { value: 'DOMException' });
+
+class KandeloAbortSignal extends KandeloEventTarget {
+    constructor() {
+        super();
+        this.aborted = false;
+        this.reason = undefined;
+    }
+    throwIfAborted() { if (this.aborted) throw this.reason; }
+    static abort(reason) {
+        const signal = new KandeloAbortSignal();
+        _abortSignal(signal, reason);
+        return signal;
+    }
+    static timeout(ms) {
+        const signal = new KandeloAbortSignal();
+        timers.setTimeout(() => {
+            const err = new KandeloDOMException('The operation was aborted due to timeout', 'TimeoutError');
+            _abortSignal(signal, err);
+        }, ms);
+        return signal;
+    }
+    static any(signals) {
+        const signal = new KandeloAbortSignal();
+        for (const input of signals) {
+            if (!(input instanceof KandeloAbortSignal)) throw _makeInvalidArgTypeError('signals', 'AbortSignal', input);
+            if (input.aborted) {
+                _abortSignal(signal, input.reason);
+                return signal;
+            }
+            input.addEventListener('abort', () => _abortSignal(signal, input.reason), { once: true });
+        }
+        return signal;
+    }
+}
+
+class KandeloAbortController {
+    constructor() { this.signal = new KandeloAbortSignal(); }
+    abort(reason) { _abortSignal(this.signal, reason); }
+}
+
+function _abortSignal(signal, reason) {
+    if (signal.aborted) return;
+    signal.aborted = true;
+    signal.reason = reason !== undefined ? reason : new KandeloDOMException('This operation was aborted', 'AbortError');
+    signal.dispatchEvent(new KandeloEvent('abort'));
+    const list = signal._eventTargetListeners.get('abort');
+    if (list) list.length = 0;
+}
+
+_defineGlobal('Event', KandeloEvent);
+_defineGlobal('EventTarget', KandeloEventTarget);
+_defineGlobal('MessageEvent', KandeloMessageEvent);
+_defineGlobal('CloseEvent', KandeloCloseEvent);
+_defineGlobal('ErrorEvent', KandeloErrorEvent);
+_defineGlobal('CustomEvent', KandeloCustomEvent);
+_defineGlobal('DOMException', KandeloDOMException);
+_defineGlobal('AbortSignal', KandeloAbortSignal);
+_defineGlobal('AbortController', KandeloAbortController);
+
+function _copyArrayBuffer(buffer) {
+    const copy = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(copy).set(new Uint8Array(buffer));
+    return copy;
+}
+
+function _messageClone(data, transferList) {
+    if (data instanceof net.SocketAddress) {
+        return new net.SocketAddress({
+            address: data.address,
+            port: data.port,
+            family: data.family,
+            flowlabel: data.flowlabel,
+        });
+    }
+    if (data instanceof net.BlockList) {
+        const clone = new net.BlockList();
+        clone._rules = data._rules;
+        clone.rules = data.rules;
+        return clone;
+    }
+    let transferredBuffers = null;
+    if (transferList && typeof transferList[Symbol.iterator] === 'function') {
+        transferredBuffers = new Set();
+        for (const item of transferList) {
+            if (item instanceof ArrayBuffer) transferredBuffers.add(item);
         }
     }
-    _defineGlobal('AbortSignal', AbortSignal);
+    const cloned = transferredBuffers && transferredBuffers.has(data) ? _copyArrayBuffer(data) : data;
+    if (transferredBuffers) {
+        for (const buffer of transferredBuffers) _DETACHED_ARRAY_BUFFERS.add(buffer);
+    }
+    return cloned;
 }
-if (typeof globalThis.AbortController === 'undefined') {
-    _defineGlobal('AbortController', class AbortController {
-        constructor() { this.signal = new globalThis.AbortSignal(); }
-        abort(reason) {
-            const s = this.signal;
-            if (s.aborted) return;
-            s.aborted = true;
-            s.reason = reason !== undefined ? reason : new Error('aborted');
-            for (const l of s._listeners) {
-                try { l.call(s, { type: 'abort', target: s }); } catch {}
-            }
+
+function _messageTransferList(transferList) {
+    if (transferList === undefined) return undefined;
+    if (transferList === null || typeof transferList[Symbol.iterator] !== 'function') {
+        throw _makeInvalidArgTypeError('transferList', 'iterable', transferList);
+    }
+    return Array.from(transferList);
+}
+
+function _messageDataCloneError(message) {
+    return new KandeloDOMException(message, 'DataCloneError');
+}
+
+function _validateMessageTransferList(transferList) {
+    const seen = new Set();
+    if (!transferList) return;
+    for (const item of transferList) {
+        if (seen.has(item)) throw _messageDataCloneError('Transfer list contains duplicate ArrayBuffer');
+        seen.add(item);
+        if (!(item instanceof ArrayBuffer) && !(item instanceof KandeloMessagePort)) {
+            throw _messageDataCloneError('Object that needs transfer was found in message but not listed in transferList');
         }
-    });
+    }
 }
+
+class KandeloMessagePort extends KandeloEventTarget {
+    constructor() {
+        super();
+        this.onmessage = null;
+        this._peer = null;
+        this._closed = false;
+    }
+    postMessage(data, transferList) {
+        if (this._closed || !this._peer || this._peer._closed) return;
+        transferList = _messageTransferList(transferList);
+        _validateMessageTransferList(transferList);
+        const cloned = _messageClone(data, transferList);
+        const target = this._peer;
+        queueMicrotask(() => {
+            if (target._closed) return;
+            const event = new KandeloMessageEvent('message', { data: cloned });
+            if (typeof target.onmessage === 'function') target.onmessage.call(target, event);
+            target.dispatchEvent(event);
+        });
+    }
+    start() {}
+    close() {
+        this._closed = true;
+        this.dispatchEvent(new KandeloEvent('close'));
+    }
+    ref() { return this; }
+    unref() { return this; }
+}
+class KandeloMessageChannel {
+    constructor() {
+        this.port1 = new KandeloMessagePort();
+        this.port2 = new KandeloMessagePort();
+        this.port1._peer = this.port2;
+        this.port2._peer = this.port1;
+    }
+}
+_defineGlobal('MessagePort', KandeloMessagePort);
+_defineGlobal('MessageChannel', KandeloMessageChannel);
+
+class KandeloWebSocket extends KandeloEventTarget {
+    constructor(url, protocols) {
+        super();
+        this.url = String(url);
+        this.protocol = Array.isArray(protocols) ? protocols[0] || '' : (protocols || '');
+        this.readyState = KandeloWebSocket.CONNECTING;
+        queueMicrotask(() => {
+            this.readyState = KandeloWebSocket.CLOSED;
+            this.dispatchEvent(new KandeloCloseEvent('close'));
+        });
+    }
+    send() {
+        if (this.readyState !== KandeloWebSocket.OPEN) {
+            throw new KandeloDOMException('WebSocket is not open', 'InvalidStateError');
+        }
+    }
+    close() {
+        this.readyState = KandeloWebSocket.CLOSED;
+        this.dispatchEvent(new KandeloCloseEvent('close'));
+    }
+}
+for (const [name, value] of Object.entries({
+    CONNECTING: 0,
+    OPEN: 1,
+    CLOSING: 2,
+    CLOSED: 3,
+})) {
+    Object.defineProperty(KandeloWebSocket, name, { value, enumerable: true });
+    Object.defineProperty(KandeloWebSocket.prototype, name, { value, enumerable: true });
+}
+Object.defineProperty(KandeloWebSocket, 'name', { value: 'WebSocket' });
+_defineGlobal('WebSocket', KandeloWebSocket);
 
 // Some engines ship without ECMA-402 (Intl). TUIs use Intl.Segmenter for
 // grapheme-based terminal-width math; a per-code-point fallback is good
