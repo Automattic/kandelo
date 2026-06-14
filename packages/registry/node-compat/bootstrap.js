@@ -768,6 +768,650 @@ const events = (() => {
 })();
 
 // ============================================================
+// async_hooks module
+// ============================================================
+
+const async_hooks = (() => {
+    const rootResource = {};
+    const rootRecord = {
+        asyncId: 1,
+        triggerAsyncId: 0,
+        type: 'ROOT',
+        resource: rootResource,
+        stores: new Map(),
+        destroyed: false,
+    };
+
+    let nextAsyncId = 1;
+    let currentRecord = rootRecord;
+    let currentStores = rootRecord.stores;
+    const enabledHooks = new Set();
+    const promiseHooks = new Set();
+    const promiseRecords = new WeakMap();
+    const destroyRegistry = typeof FinalizationRegistry === 'function'
+        ? new FinalizationRegistry((record) => {
+            if (record && !record.destroyed) emitDestroy(record);
+        })
+        : null;
+
+    function makeTypeError(message, code) {
+        const err = new TypeError(message);
+        if (code) err.code = code;
+        return err;
+    }
+
+    function makeRangeError(message, code) {
+        const err = new RangeError(message);
+        if (code) err.code = code;
+        return err;
+    }
+
+    function reportHookError(err) {
+        const proc = globalThis.process;
+        if (proc && typeof proc.emit === 'function' && proc.emit('uncaughtException', err)) {
+            return;
+        }
+        throw err;
+    }
+
+    function cloneStores(stores) {
+        return new Map(stores || currentStores);
+    }
+
+    function callHook(hook, name, args) {
+        const fn = hook && hook.callbacks && hook.callbacks[name];
+        if (typeof fn !== 'function') return;
+        try {
+            fn.apply(hook, args);
+        } catch (err) {
+            reportHookError(err);
+        }
+    }
+
+    function forEachHook(name, args) {
+        for (const hook of Array.from(enabledHooks)) {
+            callHook(hook, name, args);
+        }
+    }
+
+    function newRecord(type, triggerAsyncId, resource, stores) {
+        const destroyRef = {
+            asyncId: ++nextAsyncId,
+            destroyed: false,
+        };
+        const record = {
+            asyncId: destroyRef.asyncId,
+            triggerAsyncId,
+            type,
+            resource,
+            stores: cloneStores(stores),
+            destroyed: false,
+            destroyRef,
+        };
+        forEachHook('init', [record.asyncId, type, triggerAsyncId, resource]);
+        return record;
+    }
+
+    function emitDestroy(record) {
+        if (!record) return;
+        const destroyRef = record.destroyRef || record;
+        if (destroyRef.destroyed) return;
+        destroyRef.destroyed = true;
+        record.destroyed = true;
+        forEachHook('destroy', [record.asyncId]);
+    }
+
+    function emitPromiseResolve(record) {
+        if (!record || record.promiseResolved) return;
+        record.promiseResolved = true;
+        forEachHook('promiseResolve', [record.asyncId]);
+    }
+
+    function validateAsyncId(id) {
+        if (typeof id !== 'number' || !Number.isInteger(id) || id < -1) {
+            throw makeRangeError('asyncId must be an unsigned integer', 'ERR_INVALID_ASYNC_ID');
+        }
+    }
+
+    function validateCallback(name, value) {
+        if (value !== undefined && typeof value !== 'function') {
+            throw makeTypeError(`hook.${name} must be a function`, 'ERR_ASYNC_CALLBACK');
+        }
+    }
+
+    function validatePromiseHook(name, value) {
+        const ctorName = value && value.constructor && value.constructor.name;
+        if (typeof value !== 'function' || ctorName === 'AsyncFunction' || ctorName === 'AsyncGeneratorFunction') {
+            throw makeTypeError(`The "${name}Hook" argument must be of type function`);
+        }
+    }
+
+    class AsyncHook {
+        constructor(callbacks) {
+            callbacks = callbacks || {};
+            for (const name of ['init', 'before', 'after', 'destroy', 'promiseResolve']) {
+                validateCallback(name, callbacks[name]);
+            }
+            this.callbacks = callbacks;
+            this.enabled = false;
+        }
+
+        enable() {
+            if (!this.enabled) {
+                this.enabled = true;
+                enabledHooks.add(this);
+            }
+            return this;
+        }
+
+        disable() {
+            if (this.enabled) {
+                this.enabled = false;
+                enabledHooks.delete(this);
+            }
+            return this;
+        }
+    }
+
+    class AsyncResource {
+        constructor(type, options) {
+            if (typeof type !== 'string') {
+                throw makeTypeError('The "type" argument must be of type string', 'ERR_INVALID_ARG_TYPE');
+            }
+            if (type.length === 0) {
+                throw makeTypeError('The "type" argument must be a non-empty string', 'ERR_ASYNC_TYPE');
+            }
+            let triggerAsyncId;
+            let requireManualDestroy = false;
+            if (typeof options === 'number') {
+                validateAsyncId(options);
+                triggerAsyncId = options;
+            } else if (options && typeof options === 'object') {
+                if (options.triggerAsyncId !== undefined) {
+                    validateAsyncId(options.triggerAsyncId);
+                    triggerAsyncId = options.triggerAsyncId;
+                }
+                requireManualDestroy = !!options.requireManualDestroy;
+                if (options.eventEmitter !== undefined) {
+                    this.eventEmitter = options.eventEmitter;
+                }
+            }
+            if (triggerAsyncId === undefined || triggerAsyncId === -1) {
+                triggerAsyncId = currentRecord.asyncId;
+            }
+            this._asyncRecord = newRecord(type, triggerAsyncId, this, currentStores);
+            if (!requireManualDestroy && destroyRegistry) {
+                destroyRegistry.register(this, this._asyncRecord.destroyRef, this);
+            }
+        }
+
+        runInAsyncScope(fn, thisArg, ...args) {
+            if (typeof fn !== 'function') {
+                throw makeTypeError('The "fn" argument must be of type function', 'ERR_INVALID_ARG_TYPE');
+            }
+            const record = this._asyncRecord;
+            const prevRecord = currentRecord;
+            const prevStores = currentStores;
+            currentRecord = record;
+            currentStores = record.stores;
+            forEachHook('before', [record.asyncId]);
+            try {
+                return fn.apply(thisArg, args);
+            } finally {
+                forEachHook('after', [record.asyncId]);
+                currentRecord = prevRecord;
+                currentStores = prevStores;
+            }
+        }
+
+        emitDestroy() {
+            if (destroyRegistry) destroyRegistry.unregister(this);
+            emitDestroy(this._asyncRecord);
+            return this;
+        }
+
+        asyncId() { return this._asyncRecord.asyncId; }
+        triggerAsyncId() { return this._asyncRecord.triggerAsyncId; }
+
+        bind(fn, thisArg) {
+            if (typeof fn !== 'function') {
+                throw makeTypeError('The "fn" argument must be of type function', 'ERR_INVALID_ARG_TYPE');
+            }
+            const resource = this;
+            const bound = function(...args) {
+                return resource.runInAsyncScope(fn, thisArg === undefined ? this : thisArg, ...args);
+            };
+            Object.defineProperty(bound, 'asyncResource', {
+                value: resource,
+                enumerable: true,
+                configurable: true,
+            });
+            try {
+                Object.defineProperty(bound, 'length', { value: fn.length, configurable: true });
+            } catch {}
+            return bound;
+        }
+
+        static bind(fn, type, thisArg) {
+            if (typeof type !== 'string') {
+                thisArg = type;
+                type = fn && fn.name ? fn.name : 'bound-anonymous-fn';
+            }
+            return new AsyncResource(type).bind(fn, thisArg);
+        }
+    }
+
+    class AsyncLocalStorage {
+        run(store, fn, ...args) {
+            if (typeof fn !== 'function') {
+                throw makeTypeError('The "callback" argument must be of type function', 'ERR_INVALID_ARG_TYPE');
+            }
+            const stores = cloneStores(currentStores);
+            stores.set(this, store);
+            const prevStores = currentStores;
+            currentStores = stores;
+            try {
+                return fn.apply(undefined, args);
+            } finally {
+                currentStores = prevStores;
+            }
+        }
+
+        exit(fn, ...args) {
+            if (typeof fn !== 'function') {
+                throw makeTypeError('The "callback" argument must be of type function', 'ERR_INVALID_ARG_TYPE');
+            }
+            const stores = cloneStores(currentStores);
+            stores.delete(this);
+            const prevStores = currentStores;
+            currentStores = stores;
+            try {
+                return fn.apply(undefined, args);
+            } finally {
+                currentStores = prevStores;
+            }
+        }
+
+        getStore() { return currentStores.get(this); }
+
+        enterWith(store) {
+            currentStores = cloneStores(currentStores);
+            currentStores.set(this, store);
+        }
+
+        disable() {
+            currentStores = cloneStores(currentStores);
+            currentStores.delete(this);
+        }
+
+        _propagate() {}
+
+        static bind(fn) {
+            if (typeof fn !== 'function') {
+                throw makeTypeError('The "fn" argument must be of type function', 'ERR_INVALID_ARG_TYPE');
+            }
+            const stores = cloneStores(currentStores);
+            return function(...args) {
+                const prevStores = currentStores;
+                currentStores = cloneStores(stores);
+                try {
+                    return fn.apply(this, args);
+                } finally {
+                    currentStores = prevStores;
+                }
+            };
+        }
+
+        static snapshot() {
+            const stores = cloneStores(currentStores);
+            return function(fn, ...args) {
+                if (typeof fn !== 'function') {
+                    throw makeTypeError('The "fn" argument must be of type function', 'ERR_INVALID_ARG_TYPE');
+                }
+                const prevStores = currentStores;
+                currentStores = cloneStores(stores);
+                try {
+                    return fn.apply(this, args);
+                } finally {
+                    currentStores = prevStores;
+                }
+            };
+        }
+    }
+
+    function createHook(callbacks) {
+        return new AsyncHook(callbacks);
+    }
+
+    const nativeQueueMicrotask = typeof globalThis.queueMicrotask === 'function'
+        ? globalThis.queueMicrotask.bind(globalThis)
+        : (fn) => NativePromise.resolve().then(fn);
+
+    function queueMicrotaskWithResource(fn, type) {
+        const resource = new AsyncResource(type || 'Microtask');
+        nativeQueueMicrotask(() => {
+            try {
+                resource.runInAsyncScope(fn);
+            } finally {
+                resource.emitDestroy();
+            }
+        });
+    }
+
+    function callPromiseHook(hook, name, args) {
+        const fn = hook && hook[name];
+        if (typeof fn !== 'function') return;
+        try {
+            fn.apply(undefined, args);
+        } catch (err) {
+            reportHookError(err);
+        }
+    }
+
+    function forEachPromiseHook(name, args) {
+        for (const hook of Array.from(promiseHooks)) {
+            callPromiseHook(hook, name, args);
+        }
+    }
+
+    function registerPromise(promise, parent, triggerAsyncId, stores) {
+        let record = promiseRecords.get(promise);
+        if (record) return record;
+        record = newRecord('PROMISE', triggerAsyncId, promise, stores);
+        promiseRecords.set(promise, record);
+        forEachPromiseHook('init', [promise, parent]);
+        return record;
+    }
+
+    const NativePromise = globalThis.Promise;
+    const nativeThen = NativePromise && NativePromise.prototype && NativePromise.prototype.then;
+    const nativeCatch = NativePromise && NativePromise.prototype && NativePromise.prototype.catch;
+    const nativeFinally = NativePromise && NativePromise.prototype && NativePromise.prototype.finally;
+    const nativeResolve = NativePromise && NativePromise.resolve && NativePromise.resolve.bind(NativePromise);
+    const nativeReject = NativePromise && NativePromise.reject && NativePromise.reject.bind(NativePromise);
+
+    function markPromiseSettled(promise, record) {
+        if (!record || record.settled) return;
+        record.settled = true;
+        forEachPromiseHook('settled', [promise]);
+        emitPromiseResolve(record);
+    }
+
+    function trackPromiseSettled(promise, record) {
+        if (!nativeThen || !promise || record.settleTracked) return;
+        record.settleTracked = true;
+        nativeThen.call(
+            promise,
+            () => markPromiseSettled(promise, record),
+            () => markPromiseSettled(promise, record),
+        );
+    }
+
+    function wrapPromiseCallback(fn, getRecord) {
+        if (typeof fn !== 'function') return fn;
+        const stores = cloneStores(currentStores);
+        return function(value) {
+            const record = getRecord();
+            const prevRecord = currentRecord;
+            const prevStores = currentStores;
+            currentRecord = record || currentRecord;
+            currentStores = record ? record.stores : stores;
+            if (record) {
+                forEachHook('before', [record.asyncId]);
+                forEachPromiseHook('before', [record.resource]);
+            }
+            try {
+                return fn.call(this, value);
+            } finally {
+                if (record) {
+                    forEachPromiseHook('after', [record.resource]);
+                    forEachHook('after', [record.asyncId]);
+                }
+                currentRecord = prevRecord;
+                currentStores = prevStores;
+            }
+        };
+    }
+
+    if (NativePromise && nativeThen && !NativePromise.prototype.__kandeloAsyncHooksPatched) {
+        Object.defineProperty(NativePromise.prototype, '__kandeloAsyncHooksPatched', { value: true });
+        NativePromise.prototype.then = function(onFulfilled, onRejected) {
+            const parent = this;
+            const parentRecord = promiseRecords.get(parent);
+            const triggerAsyncId = parentRecord ? parentRecord.asyncId : currentRecord.asyncId;
+            const stores = cloneStores(currentStores);
+            let child;
+            let childRecord;
+            const getRecord = () => childRecord;
+            child = nativeThen.call(
+                parent,
+                wrapPromiseCallback(onFulfilled, getRecord),
+                wrapPromiseCallback(onRejected, getRecord),
+            );
+            childRecord = registerPromise(child, parent, triggerAsyncId, stores);
+            trackPromiseSettled(child, childRecord);
+            return child;
+        };
+        NativePromise.prototype.catch = function(onRejected) {
+            return this.then(undefined, onRejected);
+        };
+        if (nativeFinally) {
+            NativePromise.prototype.finally = function(onFinally) {
+                if (typeof onFinally !== 'function') return nativeFinally.call(this, onFinally);
+                return this.then(
+                    (value) => NativePromise.resolve(onFinally()).then(() => value),
+                    (reason) => NativePromise.resolve(onFinally()).then(() => { throw reason; }),
+                );
+            };
+        }
+    }
+
+    let HookedPromise = NativePromise;
+    if (NativePromise && !globalThis.__kandeloAsyncHooksPromise) {
+        HookedPromise = class Promise extends NativePromise {
+            constructor(executor) {
+                if (typeof executor !== 'function') {
+                    throw makeTypeError('Promise resolver undefined is not a function');
+                }
+                let self;
+                let record;
+                let pendingSettled = false;
+                super((resolve, reject) => {
+                    const settle = (nativeSettle, value) => {
+                        nativeSettle(value);
+                        if (record && self) markPromiseSettled(self, record);
+                        else pendingSettled = true;
+                    };
+                    try {
+                        executor(
+                            (value) => settle(resolve, value),
+                            (reason) => settle(reject, reason),
+                        );
+                    } catch (err) {
+                        settle(reject, err);
+                    }
+                });
+                self = this;
+                record = registerPromise(self, undefined, currentRecord.asyncId, currentStores);
+                if (pendingSettled) markPromiseSettled(self, record);
+                else trackPromiseSettled(self, record);
+            }
+
+            static get [Symbol.species]() { return NativePromise; }
+
+            static resolve(value) {
+                const promise = nativeResolve(value);
+                const record = registerPromise(promise, undefined, currentRecord.asyncId, currentStores);
+                markPromiseSettled(promise, record);
+                return promise;
+            }
+
+            static reject(reason) {
+                const promise = nativeReject(reason);
+                const record = registerPromise(promise, undefined, currentRecord.asyncId, currentStores);
+                markPromiseSettled(promise, record);
+                return promise;
+            }
+
+            static all(iterable) {
+                const promise = NativePromise.all(iterable);
+                const record = registerPromise(promise, undefined, currentRecord.asyncId, currentStores);
+                trackPromiseSettled(promise, record);
+                return promise;
+            }
+
+            static race(iterable) {
+                const promise = NativePromise.race(iterable);
+                const record = registerPromise(promise, undefined, currentRecord.asyncId, currentStores);
+                trackPromiseSettled(promise, record);
+                return promise;
+            }
+
+            static allSettled(iterable) {
+                const promise = NativePromise.allSettled(iterable);
+                const record = registerPromise(promise, undefined, currentRecord.asyncId, currentStores);
+                trackPromiseSettled(promise, record);
+                return promise;
+            }
+
+            static any(iterable) {
+                const promise = NativePromise.any(iterable);
+                const record = registerPromise(promise, undefined, currentRecord.asyncId, currentStores);
+                trackPromiseSettled(promise, record);
+                return promise;
+            }
+
+            static withResolvers() {
+                let resolve;
+                let reject;
+                const promise = new HookedPromise((res, rej) => {
+                    resolve = res;
+                    reject = rej;
+                });
+                return { promise, resolve, reject };
+            }
+        };
+        globalThis.__kandeloAsyncHooksPromise = HookedPromise;
+        globalThis.Promise = HookedPromise;
+    }
+
+    function addPromiseHook(name, fn) {
+        validatePromiseHook(name, fn);
+        const hook = { [name]: fn };
+        promiseHooks.add(hook);
+        return () => { promiseHooks.delete(hook); };
+    }
+
+    const promiseHooksApi = {
+        createHook(callbacks) {
+            callbacks = callbacks || {};
+            const hook = {};
+            if (callbacks.init !== undefined) {
+                validatePromiseHook('init', callbacks.init);
+                hook.init = callbacks.init;
+            }
+            if (callbacks.before !== undefined) {
+                validatePromiseHook('before', callbacks.before);
+                hook.before = callbacks.before;
+            }
+            if (callbacks.after !== undefined) {
+                validatePromiseHook('after', callbacks.after);
+                hook.after = callbacks.after;
+            }
+            if (callbacks.settled !== undefined) {
+                validatePromiseHook('settled', callbacks.settled);
+                hook.settled = callbacks.settled;
+            }
+            promiseHooks.add(hook);
+            return () => { promiseHooks.delete(hook); };
+        },
+        onInit(fn) { return addPromiseHook('init', fn); },
+        onBefore(fn) { return addPromiseHook('before', fn); },
+        onAfter(fn) { return addPromiseHook('after', fn); },
+        onSettled(fn) { return addPromiseHook('settled', fn); },
+    };
+
+    return {
+        AsyncResource,
+        AsyncLocalStorage,
+        executionAsyncId: () => currentRecord.asyncId,
+        triggerAsyncId: () => currentRecord.triggerAsyncId,
+        executionAsyncResource: () => currentRecord.resource,
+        createHook,
+        promiseHooks: promiseHooksApi,
+        _createResource(type) { return new AsyncResource(type); },
+        _queueMicrotask: queueMicrotaskWithResource,
+    };
+})();
+
+if (typeof globalThis.queueMicrotask === 'function') {
+    globalThis.queueMicrotask = (fn) => async_hooks._queueMicrotask(fn, 'Microtask');
+}
+
+if (typeof globalThis.gc === 'function' &&
+    typeof globalThis.drainJobQueue === 'function' &&
+    !globalThis.gc.__kandeloDrainsFinalizers) {
+    const nativeGc = globalThis.gc.bind(globalThis);
+    const gcWithFinalizers = function(...args) {
+        const result = nativeGc(...args);
+        globalThis.drainJobQueue();
+        return result;
+    };
+    Object.defineProperty(gcWithFinalizers, '__kandeloDrainsFinalizers', { value: true });
+    globalThis.gc = gcWithFinalizers;
+}
+
+events.EventEmitterAsyncResource = class EventEmitterAsyncResource extends events.EventEmitter {
+    constructor(options) {
+        super();
+        let name;
+        let resourceOptions = options;
+        if (typeof options === 'string') {
+            name = options;
+            resourceOptions = undefined;
+        } else if (options && typeof options === 'object') {
+            name = options.name;
+        }
+        if (!name) name = this.constructor && this.constructor.name || 'EventEmitterAsyncResource';
+        resourceOptions = Object.assign({}, resourceOptions || {}, { eventEmitter: this });
+        this._asyncResource = new async_hooks.AsyncResource(name, resourceOptions);
+    }
+
+    static _checkThis(value) {
+        if (!(value instanceof events.EventEmitterAsyncResource)) {
+            const err = new TypeError('Value of "this" must be of type EventEmitterAsyncResource');
+            err.code = 'ERR_INVALID_THIS';
+            throw err;
+        }
+    }
+
+    emit(event, ...args) {
+        events.EventEmitterAsyncResource._checkThis(this);
+        return this._asyncResource.runInAsyncScope(() => events.EventEmitter.prototype.emit.call(this, event, ...args));
+    }
+
+    emitDestroy() {
+        events.EventEmitterAsyncResource._checkThis(this);
+        this._asyncResource.emitDestroy();
+    }
+
+    get asyncId() {
+        events.EventEmitterAsyncResource._checkThis(this);
+        return this._asyncResource.asyncId();
+    }
+
+    get triggerAsyncId() {
+        events.EventEmitterAsyncResource._checkThis(this);
+        return this._asyncResource.triggerAsyncId();
+    }
+
+    get asyncResource() {
+        events.EventEmitterAsyncResource._checkThis(this);
+        return this._asyncResource;
+    }
+};
+
+// ============================================================
 // Buffer class
 // ============================================================
 
@@ -1402,8 +2046,8 @@ const process = (() => {
 
         nextTick(fn, ...args) {
             // This compatibility layer does not have a real nextTick queue,
-            // but queueMicrotask preserves the ordering expected here.
-            queueMicrotask(() => fn(...args));
+            // but a microtask preserves the ordering expected here.
+            async_hooks._queueMicrotask(() => fn(...args), 'TickObject');
         },
 
         uptime() {
@@ -5434,26 +6078,39 @@ const timers = (() => {
     // int64 timer id. Node returns an object with .unref()/.refresh(); npm's
     // Display calls both on its spinner timers, so wrap the id in an object.
     // clearAny() unwraps _id when the wrapper is passed back to clear*().
-    const wrap = (id, resourceId) => ({
+    const wrap = (id, resource, resourceId) => ({
         _id: id,
+        _resource: resource,
         _resourceId: resourceId,
+        _destroyed: false,
         unref() { return this; },
         ref() { return this; },
         hasRef() { return true; },
         refresh() { return this; },
+        [Symbol.dispose]() { clearAny(this); },
     });
+    const destroyTimer = (t) => {
+        if (!t || typeof t !== 'object' || t._destroyed) return;
+        t._destroyed = true;
+        _untrackActiveResource(t._resourceId);
+        if (t._resource) t._resource.emitDestroy();
+    };
     const clearAny = (t) => {
         if (t == null) return;
-        if (typeof t === 'object') _untrackActiveResource(t._resourceId);
         os.clearTimeout(typeof t === 'object' ? t._id : t);
+        if (typeof t === 'object') destroyTimer(t);
     };
     return {
         setTimeout: (fn, ms, ...args) => {
+            const resource = async_hooks._createResource('Timeout');
             const resourceId = _trackActiveResource('Timeout');
-            const t = wrap(0, resourceId);
+            const t = wrap(0, resource, resourceId);
             t._id = os.setTimeout(() => {
-                try { fn(...args); }
-                finally { _untrackActiveResource(resourceId); }
+                try {
+                    resource.runInAsyncScope(fn, undefined, ...args);
+                } finally {
+                    destroyTimer(t);
+                }
             }, ms || 0);
             return t;
         },
@@ -5461,19 +6118,28 @@ const timers = (() => {
         setInterval: (fn, ms, ...args) => {
             // _id is rewritten on every tick so the latest live id is what
             // clearInterval cancels.
+            const resource = async_hooks._createResource('Timeout');
             const resourceId = _trackActiveResource('Timeout');
-            const t = wrap(0, resourceId);
-            const tick = () => { fn(...args); t._id = os.setTimeout(tick, ms || 0); };
+            const t = wrap(0, resource, resourceId);
+            const tick = () => {
+                if (t._destroyed) return;
+                resource.runInAsyncScope(fn, undefined, ...args);
+                if (!t._destroyed) t._id = os.setTimeout(tick, ms || 0);
+            };
             t._id = os.setTimeout(tick, ms || 0);
             return t;
         },
         clearInterval: clearAny,
         setImmediate: (fn, ...args) => {
+            const resource = async_hooks._createResource('Immediate');
             const resourceId = _trackActiveResource('Immediate');
-            const t = wrap(0, resourceId);
+            const t = wrap(0, resource, resourceId);
             t._id = os.setTimeout(() => {
-                _untrackActiveResource(resourceId);
-                fn(...args);
+                try {
+                    resource.runInAsyncScope(fn, undefined, ...args);
+                } finally {
+                    destroyTimer(t);
+                }
             }, 0);
             return t;
         },
@@ -5484,7 +6150,27 @@ const timers = (() => {
 // `timers/promises` — @npmcli/agent uses `setTimeout(ms)` as a connection-timeout
 // race against the connect promise. AbortSignal handling isn't needed for that.
 const timersPromises = {
-    setTimeout: (delay, value) => new Promise(r => os.setTimeout(() => r(value), delay || 0)),
+    setTimeout: (delay, value) => new Promise((resolve) => {
+        const resource = async_hooks._createResource('Timeout');
+        const t = os.setTimeout(() => {
+            try {
+                resource.runInAsyncScope(resolve, undefined, value);
+            } finally {
+                resource.emitDestroy();
+            }
+        }, delay || 0);
+        return t;
+    }),
+    setImmediate: (value) => new Promise((resolve) => {
+        const resource = async_hooks._createResource('Immediate');
+        os.setTimeout(() => {
+            try {
+                resource.runInAsyncScope(resolve, undefined, value);
+            } finally {
+                resource.emitDestroy();
+            }
+        }, 0);
+    }),
 };
 
 // ============================================================
@@ -8622,47 +9308,6 @@ function _makeUnsupportedNamespace(moduleName, initial) {
     });
 }
 
-const async_hooks = (() => {
-    let _aid = 1;
-    class AsyncResource {
-        constructor(type, options) {
-            this._type = type;
-            this._aid = ++_aid;
-            this._triggerAid = (options && options.triggerAsyncId) || 0;
-        }
-        runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); }
-        emitDestroy() { return this; }
-        asyncId() { return this._aid; }
-        triggerAsyncId() { return this._triggerAid; }
-        bind(fn) { return fn; }
-        static bind(fn) { return fn; }
-    }
-    class AsyncLocalStorage {
-        constructor() { this._store = undefined; }
-        run(store, fn, ...args) {
-            const prev = this._store;
-            this._store = store;
-            try { return fn(...args); } finally { this._store = prev; }
-        }
-        exit(fn, ...args) {
-            const prev = this._store;
-            this._store = undefined;
-            try { return fn(...args); } finally { this._store = prev; }
-        }
-        getStore() { return this._store; }
-        enterWith(store) { this._store = store; }
-        disable() { this._store = undefined; }
-    }
-    return {
-        AsyncResource,
-        AsyncLocalStorage,
-        executionAsyncId: () => 0,
-        triggerAsyncId: () => 0,
-        executionAsyncResource: () => ({}),
-        createHook: () => ({ enable() { return this; }, disable() { return this; } }),
-    };
-})();
-
 const internalErrors = (() => {
     const classCache = Object.create(null);
     function makeErrorClass(code) {
@@ -9288,8 +9933,6 @@ const _builtinModules = {
         }
         return { Console, default: Console };
     })(),
-    // No async-context tracking. AsyncResource exists so undici and tests can
-    // subclass it; runInAsyncScope and bind are pass-throughs.
     'async_hooks': async_hooks,
     // Undici's request/connect path imports diagnostics_channel at module
     // init for tracing hooks. We're not exporting traces — return inert
@@ -9352,6 +9995,7 @@ const _builtinModules = {
             'trusted_space',
         ];
         return {
+            promiseHooks: async_hooks.promiseHooks,
             // arborist sizes its packument LRU as floor(heap_size_limit * 0.25),
             // so heap_size_limit must be > 0 or lru-cache rejects the config.
             getHeapStatistics() {
