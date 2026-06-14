@@ -285,26 +285,508 @@
     defineAdapterGlobal('__kandeloRunDueTimers', runDueTimers);
     defineAdapterGlobal('__kandeloNextTimerDelay', nextTimerDelay);
 
-    defineAdapterGlobal('__kandeloCreateWorkerThreads', function createWorkerThreads(EventEmitter) {
+    defineAdapterGlobal('__kandeloCreateWorkerThreads', function createWorkerThreads(EventEmitter, asyncHooks) {
+        const inspectCustom = Symbol.for('nodejs.util.inspect.custom');
+        const markedUntransferable = new WeakSet();
+        const broadcastChannels = new Map();
+        let nextThreadId = 1;
+
+        function defer(fn) {
+            if (typeof queueMicrotask === 'function') queueMicrotask(fn);
+            else Promise.resolve().then(fn);
+        }
+
+        function makeCodedTypeError(message, code) {
+            const err = new TypeError(message);
+            err.code = code;
+            return err;
+        }
+
+        function invalidThis(kind) {
+            return makeCodedTypeError(`Value of "this" must be of type ${kind}`, 'ERR_INVALID_THIS');
+        }
+
+        function invalidPortArg() {
+            return makeCodedTypeError('The "port" argument must be a MessagePort instance', 'ERR_INVALID_ARG_TYPE');
+        }
+
+        function dataCloneError(message) {
+            let err;
+            if (typeof globalThis.DOMException === 'function') {
+                err = new globalThis.DOMException(message, 'DataCloneError');
+            } else {
+                err = new Error(message);
+                err.name = 'DataCloneError';
+            }
+            err.code = 25;
+            return err;
+        }
+
+        function createAsyncResource(type, resource) {
+            if (!asyncHooks || typeof asyncHooks.AsyncResource !== 'function') return null;
+            try {
+                return new asyncHooks.AsyncResource(type, { resource });
+            } catch {
+                return null;
+            }
+        }
+
+        function destroyAsyncResource(resource) {
+            if (resource && resource._kandeloAsyncResource &&
+                typeof resource._kandeloAsyncResource.emitDestroy === 'function') {
+                resource._kandeloAsyncResource.emitDestroy();
+            }
+        }
+
+        function invalidTransferList(message) {
+            return makeCodedTypeError(message, 'ERR_INVALID_ARG_TYPE');
+        }
+
+        function iterableToArray(value, message) {
+            if (value == null || typeof value[Symbol.iterator] !== 'function') {
+                throw invalidTransferList(message);
+            }
+            try {
+                return Array.from(value);
+            } catch {
+                throw invalidTransferList(message);
+            }
+        }
+
+        function transferListFrom(options) {
+            if (options == null) return [];
+            if (Array.isArray(options)) return options;
+            if (typeof options === 'object' && Object.prototype.hasOwnProperty.call(options, 'transfer')) {
+                if (options.transfer === undefined) return [];
+                return iterableToArray(options.transfer, 'Optional options.transfer argument must be an iterable');
+            }
+            if (typeof options === 'object' && typeof options[Symbol.iterator] !== 'function') return [];
+            return iterableToArray(options, 'Optional transferList argument must be an iterable');
+        }
+
+        function isObject(value) {
+            return (typeof value === 'object' && value !== null) || typeof value === 'function';
+        }
+
+        function findMessagePort(value, seen) {
+            if (value instanceof MessagePort) return value;
+            if (!isObject(value)) return null;
+            if (!seen) seen = new Set();
+            if (seen.has(value)) return null;
+            seen.add(value);
+            for (const key of Object.keys(value)) {
+                const found = findMessagePort(value[key], seen);
+                if (found) return found;
+            }
+            return null;
+        }
+
+        function assertCloneableForPort(message, transferList) {
+            for (const item of transferList) {
+                if (isObject(item) && markedUntransferable.has(item)) {
+                    throw dataCloneError('Cannot transfer object marked as untransferable');
+                }
+            }
+            const port = findMessagePort(message);
+            if (port && !transferList.includes(port)) {
+                throw dataCloneError('Object that needs transfer was found in message but not listed in transferList');
+            }
+        }
+
+        function cloneMessageForDelivery(message, transferList) {
+            assertCloneableForPort(message, transferList);
+            if (typeof structuredClone !== 'function') return message;
+            try {
+                const transferable = transferList.filter((item) => !(item instanceof MessagePort));
+                return transferable.length ? structuredClone(message, { transfer: transferable }) : structuredClone(message);
+            } catch (error) {
+                if (findMessagePort(message) || transferList.some((item) => item instanceof MessagePort)) return message;
+                throw error;
+            }
+        }
+
+        function assertBroadcastCloneable(message) {
+            if (typeof message === 'symbol') {
+                throw dataCloneError(`${String(message)} could not be cloned`);
+            }
+            if (findMessagePort(message)) {
+                throw dataCloneError('Object that needs transfer was found in message but not listed in transferList');
+            }
+        }
+
+        function makeMessageEvent(type, data, target, ports) {
+            const EventClass = typeof globalThis.MessageEvent === 'function'
+                ? globalThis.MessageEvent
+                : class MessageEvent {
+                    constructor(eventType, init) {
+                        this.type = eventType;
+                        this.data = init && init.data;
+                        this.origin = '';
+                        this.lastEventId = '';
+                        this.source = null;
+                        this.ports = [];
+                    }
+                };
+            const event = new EventClass(type, {
+                data,
+                origin: '',
+                lastEventId: '',
+                source: null,
+                ports: ports || [],
+            });
+            try { event.target = target; } catch {}
+            try { event.currentTarget = target; } catch {}
+            return event;
+        }
+
+        function invokeEventListener(listener, target, event) {
+            if (typeof listener === 'function') listener.call(target, event);
+            else if (listener && typeof listener.handleEvent === 'function') listener.handleEvent(event);
+        }
+
         function unsupportedWorkerMessageApi(member) {
             const err = new Error('SpiderMonkey shell workers expose eval-time workerData/shared memory, not a bidirectional worker_threads message channel');
             err.code = 'ERR_KANDELO_UNSUPPORTED_NODE_API';
             err.api = member;
             return err;
         }
-        class MessagePort extends EventEmitter {
-            postMessage() { throw unsupportedWorkerMessageApi('MessagePort.postMessage'); }
-            start() {}
-            close() { this.emit('close'); }
-            ref() { return this; }
-            unref() { return this; }
-        }
-        class MessageChannel {
+
+        class MessagePortEventTarget extends EventEmitter {
             constructor() {
-                this.port1 = new MessagePort();
-                this.port2 = new MessagePort();
+                super();
+                this._eventListeners = new Map();
+                this._queue = [];
+                this._scheduled = false;
+                this._closed = false;
+                this._closing = false;
+                this._refed = false;
+                this._peer = null;
+                this._kandeloAsyncResource = createAsyncResource('MESSAGEPORT', this);
+            }
+
+            on(event, listener) {
+                const ret = super.on(event, listener);
+                if (event === 'message') {
+                    this.ref();
+                    schedulePortFlush(this);
+                }
+                return ret;
+            }
+
+            once(event, listener) {
+                const ret = super.once(event, listener);
+                if (event === 'message') {
+                    this.ref();
+                    schedulePortFlush(this);
+                }
+                return ret;
+            }
+
+            emit(event, ...args) {
+                const emitted = super.emit(event, ...args);
+                if (event !== 'message') {
+                    const listeners = Array.from(this._eventListeners.get(event) || []);
+                    if (listeners.length) {
+                        const eventObject = args[0] && typeof args[0] === 'object' && args[0].type
+                            ? args[0]
+                            : { type: event, detail: args[0], target: this, currentTarget: this, defaultPrevented: false };
+                        for (const listener of listeners) invokeEventListener(listener, this, eventObject);
+                    }
+                }
+                return emitted;
+            }
+
+            addEventListener(type, listener) {
+                if (!this._eventListeners.has(type)) this._eventListeners.set(type, new Set());
+                this._eventListeners.get(type).add(listener);
+                if (type === 'message') {
+                    this.ref();
+                    schedulePortFlush(this);
+                }
+            }
+
+            removeEventListener(type, listener) {
+                const listeners = this._eventListeners.get(type);
+                if (listeners) listeners.delete(listener);
+            }
+
+            dispatchEvent(event) {
+                const listeners = Array.from(this._eventListeners.get(event.type) || []);
+                for (const listener of listeners) invokeEventListener(listener, this, event);
+                return !event.defaultPrevented;
             }
         }
+
+        function MessagePort() {
+            throw makeCodedTypeError('MessagePort cannot be constructed directly', 'ERR_CONSTRUCT_CALL_INVALID');
+        }
+
+        class MessagePortImpl extends MessagePortEventTarget {
+            constructor() {
+                if (!constructingMessagePort) {
+                    throw makeCodedTypeError('MessagePort cannot be constructed directly', 'ERR_CONSTRUCT_CALL_INVALID');
+                }
+                super();
+            }
+
+            postMessage(message, options) {
+                if (this._closed || !this._peer || this._peer._closed) return;
+                const transferList = transferListFrom(options);
+                const cloned = cloneMessageForDelivery(message, transferList);
+                enqueuePortMessage(this._peer, cloned, transferList.filter((item) => item instanceof MessagePort));
+            }
+
+            start() { schedulePortFlush(this); }
+
+            close(callback) { closePortPair(this, callback); }
+
+            ref() { if (!this._closed) this._refed = true; return this; }
+            unref() { if (!this._closed) this._refed = false; return this; }
+            hasRef() { return this._closed ? false : this._refed; }
+
+            get onmessage() { return this._onmessage || null; }
+            set onmessage(listener) {
+                this._onmessage = listener;
+                if (typeof listener === 'function') {
+                    this.ref();
+                    schedulePortFlush(this);
+                }
+            }
+
+            get onmessageerror() { return this._onmessageerror || null; }
+            set onmessageerror(listener) { this._onmessageerror = listener; }
+        }
+
+        let constructingMessagePort = false;
+        MessagePort.prototype = MessagePortImpl.prototype;
+        Object.defineProperty(MessagePort.prototype, 'constructor', {
+            value: MessagePort,
+            writable: true,
+            configurable: true,
+        });
+
+        function enqueuePortMessage(port, message, ports) {
+            if (port._closed) return;
+            port._queue.push({ message, ports: ports || [] });
+            schedulePortFlush(port);
+        }
+
+        function schedulePortFlush(port) {
+            if (port._scheduled) return;
+            port._scheduled = true;
+            defer(() => {
+                port._scheduled = false;
+                flushPortMessages(port);
+            });
+        }
+
+        function hasPortMessageHandler(port) {
+            return typeof port._onmessage === 'function' ||
+                port.listenerCount('message') > 0 ||
+                (port._eventListeners.get('message') || new Set()).size > 0;
+        }
+
+        function flushPortMessages(port) {
+            while (!port._closed && port._queue.length > 0 && hasPortMessageHandler(port)) {
+                const entry = port._queue.shift();
+                const event = makeMessageEvent('message', entry.message, port, entry.ports);
+                if (typeof port._onmessage === 'function') port._onmessage.call(port, event);
+                if (port.listenerCount('message') > 0) EventEmitter.prototype.emit.call(port, 'message', entry.message);
+                const listeners = Array.from(port._eventListeners.get('message') || []);
+                for (const listener of listeners) invokeEventListener(listener, port, event);
+            }
+        }
+
+        function closePortPair(port, callback) {
+            if (typeof callback === 'function') port.once('close', callback);
+            if (port._closing || port._closed) return;
+            port._closing = true;
+            const peer = port._peer;
+            if (peer && !peer._closing) peer._closing = true;
+            defer(() => {
+                closePort(port);
+                if (peer) closePort(peer);
+            });
+        }
+
+        function closePort(port) {
+            if (!port || port._closed) return;
+            port._closed = true;
+            port._refed = false;
+            port._queue.length = 0;
+            port.emit('close');
+            destroyAsyncResource(port);
+        }
+
+        function MessageChannel() {
+            if (!new.target) {
+                throw makeCodedTypeError('Class constructor MessageChannel cannot be invoked without new', 'ERR_CONSTRUCT_CALL_REQUIRED');
+            }
+            constructingMessagePort = true;
+            try {
+                this.port1 = new MessagePortImpl();
+                this.port2 = new MessagePortImpl();
+            } finally {
+                constructingMessagePort = false;
+            }
+            this.port1._peer = this.port2;
+            this.port2._peer = this.port1;
+        }
+
+        function getBroadcastState(channel) {
+            if (!(channel instanceof BroadcastChannel) || !channel._bcState) throw invalidThis('BroadcastChannel');
+            return channel._bcState;
+        }
+
+        class BroadcastChannel extends EventEmitter {
+            constructor(name) {
+                if (arguments.length === 0) {
+                    throw new TypeError('The "name" argument must be specified');
+                }
+                if (typeof name === 'symbol') {
+                    throw new TypeError('Cannot convert a Symbol value to a string');
+                }
+                super();
+                const stringName = String(name);
+                this._eventListeners = new Map();
+                this._queue = [];
+                this._scheduled = false;
+                this._bcState = { name: stringName, closed: false, refed: true };
+                if (!broadcastChannels.has(stringName)) broadcastChannels.set(stringName, []);
+                broadcastChannels.get(stringName).push(this);
+            }
+
+            get name() { return getBroadcastState(this).name; }
+
+            postMessage(message) {
+                const state = getBroadcastState(this);
+                if (state.closed) throw new Error('BroadcastChannel is closed');
+                if (arguments.length === 0) throw new TypeError('The "message" argument must be specified');
+                assertBroadcastCloneable(message);
+                const peers = (broadcastChannels.get(state.name) || []).slice();
+                for (const peer of peers) {
+                    if (peer === this) continue;
+                    const peerState = getBroadcastState(peer);
+                    if (peerState.closed) continue;
+                    peer._queue.push({ message, ports: [] });
+                    peer._scheduleFlush();
+                }
+            }
+
+            _scheduleFlush() {
+                if (this._scheduled) return;
+                this._scheduled = true;
+                defer(() => {
+                    this._scheduled = false;
+                    this._flushMessages();
+                });
+            }
+
+            _hasMessageHandler() {
+                return typeof this.onmessage === 'function' ||
+                    this.listenerCount('message') > 0 ||
+                    (this._eventListeners.get('message') || new Set()).size > 0;
+            }
+
+            _flushMessages() {
+                const state = getBroadcastState(this);
+                while (!state.closed && this._queue.length > 0 && this._hasMessageHandler()) {
+                    const entry = this._queue.shift();
+                    const event = makeMessageEvent('message', entry.message, this, entry.ports);
+                    if (typeof this.onmessage === 'function') this.onmessage.call(this, event);
+                    if (this.listenerCount('message') > 0) this.emit('message', entry.message);
+                    const listeners = Array.from(this._eventListeners.get('message') || []);
+                    for (const listener of listeners) invokeEventListener(listener, this, event);
+                }
+            }
+
+            on(event, listener) {
+                const ret = super.on(event, listener);
+                if (event === 'message') this._scheduleFlush();
+                return ret;
+            }
+
+            once(event, listener) {
+                const ret = super.once(event, listener);
+                if (event === 'message') this._scheduleFlush();
+                return ret;
+            }
+
+            addEventListener(type, listener) {
+                getBroadcastState(this);
+                if (!this._eventListeners.has(type)) this._eventListeners.set(type, new Set());
+                this._eventListeners.get(type).add(listener);
+                if (type === 'message') this._scheduleFlush();
+            }
+
+            removeEventListener(type, listener) {
+                getBroadcastState(this);
+                const listeners = this._eventListeners.get(type);
+                if (listeners) listeners.delete(listener);
+            }
+
+            dispatchEvent(event) {
+                getBroadcastState(this);
+                const listeners = Array.from(this._eventListeners.get(event.type) || []);
+                for (const listener of listeners) invokeEventListener(listener, this, event);
+                return !event.defaultPrevented;
+            }
+
+            close() {
+                const state = getBroadcastState(this);
+                if (state.closed) return;
+                state.closed = true;
+                state.refed = false;
+                this._queue.length = 0;
+                const peers = broadcastChannels.get(state.name);
+                if (peers) {
+                    const index = peers.indexOf(this);
+                    if (index !== -1) peers.splice(index, 1);
+                    if (peers.length === 0) broadcastChannels.delete(state.name);
+                }
+            }
+
+            ref() { getBroadcastState(this).refed = true; return this; }
+            unref() { getBroadcastState(this).refed = false; return this; }
+            hasRef() { return getBroadcastState(this).refed; }
+
+            [inspectCustom](depth) {
+                const state = getBroadcastState(this);
+                if (depth !== null && depth < 0) return 'BroadcastChannel';
+                return `BroadcastChannel { name: '${state.name}', active: ${!state.closed} }`;
+            }
+        }
+
+        Object.defineProperty(BroadcastChannel.prototype, 'onmessage', {
+            configurable: true,
+            enumerable: true,
+            get() { return this._onmessage || null; },
+            set(listener) {
+                getBroadcastState(this);
+                this._onmessage = listener;
+                if (typeof listener === 'function') this._scheduleFlush();
+            },
+        });
+
+        function receiveMessageOnPort(port) {
+            if (!(port instanceof MessagePort) && !(port instanceof BroadcastChannel)) throw invalidPortArg();
+            const entry = port._queue.shift();
+            return entry ? { message: entry.message } : undefined;
+        }
+
+        function moveMessagePortToContext(port) {
+            if (!(port instanceof MessagePort)) throw invalidPortArg();
+            return port;
+        }
+
+        function markAsUntransferable(value) {
+            if (isObject(value)) markedUntransferable.add(value);
+        }
+
+        function isMarkedAsUntransferable(value) {
+            return isObject(value) && markedUntransferable.has(value);
+        }
+
         function clearSharedWorkerData() {
             if (typeof setSharedObject === 'function') {
                 try { setSharedObject(null); } catch {}
@@ -319,6 +801,12 @@
             constructor(filenameOrSource, options) {
                 super();
                 options = options || {};
+                this.threadId = nextThreadId++;
+                this.resourceLimits = options.resourceLimits ? { ...options.resourceLimits } : {};
+                this._workerRefed = true;
+                this._workerExited = false;
+                this._workerDestroyed = false;
+                this._kandeloAsyncResource = createAsyncResource('WORKER', this);
                 let source = String(filenameOrSource);
                 if (!options.eval) {
                     const loaded = std.loadFile(source);
@@ -329,6 +817,7 @@
                 let workerDataExpression = 'undefined';
                 if (Object.prototype.hasOwnProperty.call(options, 'workerData')) {
                     const data = options.workerData;
+                    assertCloneableForPort(data, Array.isArray(options.transferList) ? options.transferList : []);
                     if (data instanceof SharedArrayBuffer ||
                         (typeof WebAssembly === 'object' && WebAssembly.Memory && data instanceof WebAssembly.Memory)) {
                         if (typeof setSharedObject !== 'function') {
@@ -337,15 +826,19 @@
                         setSharedObject(data);
                         workerDataExpression = 'getSharedObject()';
                     } else {
-                        workerDataExpression = JSON.stringify(data);
+                        try {
+                            workerDataExpression = JSON.stringify(data);
+                        } catch {
+                            workerDataExpression = 'undefined';
+                        }
                     }
                 } else if (typeof setSharedObject === 'function') {
                     setSharedObject(null);
                 }
 
                 const prelude = [
-                    'var workerData = ' + workerDataExpression + ';',
-                    'var parentPort = null;',
+                    'Object.defineProperty(globalThis, "workerData", { value: ' + workerDataExpression + ', configurable: true, writable: true });',
+                    'Object.defineProperty(globalThis, "parentPort", { value: null, configurable: true, writable: true });',
                     'var __kandeloAsyncHooks = {',
                     '  AsyncResource: class AsyncResource { runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); } emitDestroy() { return this; } asyncId() { return 0; } triggerAsyncId() { return 0; } bind(fn) { return fn; } static bind(fn) { return fn; } },',
                     '  AsyncLocalStorage: class AsyncLocalStorage { run(store, fn, ...args) { this._store = store; try { return fn(...args); } finally { this._store = undefined; } } getStore() { return this._store; } enterWith(store) { this._store = store; } disable() { this._store = undefined; } },',
@@ -368,11 +861,14 @@
                 if (typeof evalInWorker !== 'function') {
                     throw new Error('SpiderMonkey evalInWorker is unavailable');
                 }
-                evalInWorker(prelude + '\n' + source + '\n');
+                evalInWorker(prelude + '\n(function(){\n' + source + '\n})();\n');
                 const defer = typeof queueMicrotask === 'function'
                     ? queueMicrotask
                     : (fn) => Promise.resolve().then(fn);
-                defer(() => this.emit('online'));
+                defer(() => {
+                    this.emit('online');
+                    this._emitExit(0);
+                });
             }
             postMessage() {
                 throw unsupportedWorkerMessageApi('Worker.postMessage');
@@ -380,19 +876,39 @@
             terminate() {
                 clearSharedWorkerData();
                 joinShellWorkers();
-                this.emit('exit', 0);
+                this.resourceLimits = {};
+                this._emitExit(0);
                 return Promise.resolve(0);
             }
-            ref() { return this; }
-            unref() { return this; }
+            _emitExit(code) {
+                if (this._workerExited) return;
+                this._workerExited = true;
+                this.emit('exit', code);
+                defer(() => {
+                    this._workerDestroyed = true;
+                    destroyAsyncResource(this);
+                });
+            }
+            ref() { if (!this._workerDestroyed) this._workerRefed = true; return this; }
+            unref() { if (!this._workerDestroyed) this._workerRefed = false; return this; }
+            hasRef() { return this._workerDestroyed ? undefined : this._workerRefed; }
         }
+        if (typeof globalThis.MessagePort === 'undefined') defineAdapterGlobal('MessagePort', MessagePort);
+        if (typeof globalThis.MessageChannel === 'undefined') defineAdapterGlobal('MessageChannel', MessageChannel);
+        if (typeof globalThis.BroadcastChannel === 'undefined') defineAdapterGlobal('BroadcastChannel', BroadcastChannel);
         return {
             isMainThread: true,
             parentPort: null,
             workerData: null,
+            resourceLimits: {},
             Worker,
             MessageChannel,
             MessagePort,
+            BroadcastChannel,
+            receiveMessageOnPort,
+            moveMessagePortToContext,
+            markAsUntransferable,
+            isMarkedAsUntransferable,
             SHARE_ENV: Symbol.for('kandelo.worker_threads.SHARE_ENV'),
         };
     });

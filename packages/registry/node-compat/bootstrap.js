@@ -2683,6 +2683,11 @@ const util = (() => {
         if (typeof obj === 'number' || typeof obj === 'boolean' || typeof obj === 'bigint') return String(obj);
         if (typeof obj === 'symbol') return obj.toString();
         if (typeof obj === 'function') return `[Function: ${obj.name || 'anonymous'}]`;
+        const customInspect = obj && obj[inspect.custom];
+        if (typeof customInspect === 'function' && (!options || options.customInspect !== false)) {
+            const depth = options && Object.prototype.hasOwnProperty.call(options, 'depth') ? options.depth : 2;
+            return customInspect.call(obj, depth, options || {}, inspect);
+        }
         if (obj instanceof Date) return obj.toISOString();
         if (obj instanceof RegExp) return obj.toString();
         if (obj instanceof Error) return `${obj.name}: ${obj.message}`;
@@ -8592,14 +8597,35 @@ function _makeUnsupportedNamespace(moduleName, initial) {
 
 const async_hooks = (() => {
     let _aid = 1;
+    const activeHooks = new Set();
+    function emitInit(asyncId, type, triggerAsyncId, resource) {
+        for (const hook of Array.from(activeHooks)) {
+            const init = hook._callbacks && hook._callbacks.init;
+            if (typeof init === 'function') init.call(hook, asyncId, type, triggerAsyncId, resource);
+        }
+    }
+    function emitDestroy(asyncId) {
+        for (const hook of Array.from(activeHooks)) {
+            const destroy = hook._callbacks && hook._callbacks.destroy;
+            if (typeof destroy === 'function') destroy.call(hook, asyncId);
+        }
+    }
     class AsyncResource {
         constructor(type, options) {
             this._type = type;
             this._aid = ++_aid;
             this._triggerAid = (options && options.triggerAsyncId) || 0;
+            this._destroyed = false;
+            emitInit(this._aid, type, this._triggerAid, (options && options.resource) || this);
         }
         runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); }
-        emitDestroy() { return this; }
+        emitDestroy() {
+            if (!this._destroyed) {
+                this._destroyed = true;
+                emitDestroy(this._aid);
+            }
+            return this;
+        }
         asyncId() { return this._aid; }
         triggerAsyncId() { return this._triggerAid; }
         bind(fn) { return fn; }
@@ -8627,7 +8653,11 @@ const async_hooks = (() => {
         executionAsyncId: () => 0,
         triggerAsyncId: () => 0,
         executionAsyncResource: () => ({}),
-        createHook: () => ({ enable() { return this; }, disable() { return this; } }),
+        createHook: (callbacks) => ({
+            _callbacks: callbacks || {},
+            enable() { activeHooks.add(this); return this; },
+            disable() { activeHooks.delete(this); return this; },
+        }),
     };
 })();
 
@@ -8791,6 +8821,54 @@ const internalEventTarget = (() => {
         kNewListener: Symbol('kNewListener'),
         kRemoveListener: Symbol('kRemoveListener'),
     };
+})();
+
+const internalWorkerIo = (() => {
+    const MESSAGE_EVENT_STATE = new WeakMap();
+    function invalidMessageEventThis() {
+        const err = new TypeError('Value of "this" must be of type MessageEvent');
+        err.code = 'ERR_INVALID_THIS';
+        throw err;
+    }
+    function getMessageEventState(value) {
+        const state = MESSAGE_EVENT_STATE.get(value);
+        if (!state) invalidMessageEventThis();
+        return state;
+    }
+    function invalidPortProperty(name) {
+        const err = new TypeError(`The "${name}" property must be an instance of MessagePort`);
+        err.code = 'ERR_INVALID_ARG_TYPE';
+        throw err;
+    }
+    function validateMessagePort(value, name) {
+        if (value == null) return value;
+        if (typeof globalThis.MessagePort === 'function' && value instanceof globalThis.MessagePort) return value;
+        invalidPortProperty(name);
+    }
+    class MessageEvent extends internalEventTarget.Event {
+        constructor(type, init) {
+            super(type, init);
+            init = init || {};
+            const data = Object.prototype.hasOwnProperty.call(init, 'data') && init.data !== undefined ? init.data : null;
+            const origin = init.origin === undefined ? '' : String(init.origin);
+            const lastEventId = init.lastEventId === undefined ? '' : String(init.lastEventId);
+            const source = validateMessagePort(init.source === undefined ? null : init.source, 'init.source');
+            let ports = [];
+            if (init.ports !== undefined) {
+                if (init.ports == null || typeof init.ports[Symbol.iterator] !== 'function') {
+                    throw new TypeError('ports is not iterable');
+                }
+                ports = Array.from(init.ports, (port, index) => validateMessagePort(port, `init.ports[${index}]`));
+            }
+            MESSAGE_EVENT_STATE.set(this, { data, origin, lastEventId, source, ports });
+        }
+        get data() { return getMessageEventState(this).data; }
+        get origin() { return getMessageEventState(this).origin; }
+        get lastEventId() { return getMessageEventState(this).lastEventId; }
+        get source() { return getMessageEventState(this).source; }
+        get ports() { return getMessageEventState(this).ports; }
+    }
+    return { MessageEvent };
 })();
 
 const domain = (() => {
@@ -9184,7 +9262,7 @@ const _builtinModules = {
         PerformanceObserver: class PerformanceObserver { observe() {} disconnect() {} },
     },
     'worker_threads': typeof globalThis.__kandeloCreateWorkerThreads === 'function'
-        ? globalThis.__kandeloCreateWorkerThreads(events.EventEmitter)
+        ? globalThis.__kandeloCreateWorkerThreads(events.EventEmitter, async_hooks)
         : {
             isMainThread: true,
             parentPort: null,
@@ -9542,7 +9620,7 @@ const _builtinModules = {
     },
     'internal/webstreams/util': _makeUnsupportedNamespace('internal/webstreams/util'),
     'internal/worker': _makeUnsupportedNamespace('internal/worker'),
-    'internal/worker/io': _makeUnsupportedNamespace('internal/worker/io'),
+    'internal/worker/io': internalWorkerIo,
     'internal/worker/js_transferable': _makeUnsupportedNamespace('internal/worker/js_transferable'),
 };
 
@@ -10398,12 +10476,31 @@ function _defineEventHandler(target, name, eventName) {
 
 class KandeloMessageEvent extends KandeloEvent {
     constructor(type, init) {
+        init = init || {};
         super(type, init);
-        this.data = init && init.data;
-        this.origin = (init && init.origin) || '';
-        this.lastEventId = (init && init.lastEventId) || '';
-        this.source = (init && init.source) || null;
-        this.ports = (init && init.ports) || [];
+        const validatePort = (value, name) => {
+            if (value == null) return value;
+            if (typeof globalThis.MessagePort === 'function' && value instanceof globalThis.MessagePort) return value;
+            const err = new TypeError(`The "${name}" property must be an instance of MessagePort`);
+            err.code = 'ERR_INVALID_ARG_TYPE';
+            throw err;
+        };
+        const data = Object.prototype.hasOwnProperty.call(init, 'data') && init.data !== undefined ? init.data : null;
+        const source = validatePort(init.source === undefined ? null : init.source, 'init.source');
+        let ports = [];
+        if (init.ports !== undefined) {
+            if (init.ports == null || typeof init.ports[Symbol.iterator] !== 'function') {
+                throw new TypeError('ports is not iterable');
+            }
+            ports = Array.from(init.ports, (port, index) => validatePort(port, `init.ports[${index}]`));
+        }
+        Object.defineProperties(this, {
+            data: { value: data, enumerable: true },
+            origin: { value: init.origin === undefined ? '' : String(init.origin), enumerable: true },
+            lastEventId: { value: init.lastEventId === undefined ? '' : String(init.lastEventId), enumerable: true },
+            source: { value: source, enumerable: true },
+            ports: { value: ports, enumerable: true },
+        });
     }
 }
 class KandeloCloseEvent extends KandeloEvent {
