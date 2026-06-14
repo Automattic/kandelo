@@ -117,10 +117,16 @@ interface RecordedResult {
   error?: string;
 }
 
+interface NodeHostCleanupTarget {
+  terminateProcess(pid: number, status?: number): Promise<void>;
+  destroy(): Promise<void>;
+}
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaultManifestPath = join(repoRoot, "tests/node-core-official/manifest.json");
 const defaultCacheDir = join(repoRoot, ".cache/node-core-official");
 const textDecoder = new TextDecoder();
+const NODE_HOST_CLEANUP_TIMEOUT_MS = 5_000;
 
 function usage(): never {
   console.error("Usage: scripts/run-node-core-official-tests.sh [--host node|browser] [--fetch-source] [--smoke|--list|--explain]");
@@ -664,7 +670,9 @@ function envForRun(isolation?: TestIsolation): string[] {
 
 export {
   createIsolatedTests,
+  destroyNodeHostBestEffort,
   envForRun,
+  terminateTimedOutNodeHostBestEffort,
 };
 
 export type {
@@ -715,7 +723,7 @@ async function runNodeTest(
     const result = await Promise.race([exitPromise, timeoutPromise]);
     if (result === "timeout") {
       timeout = true;
-      if (pid !== null) await host.terminateProcess(pid, 124).catch(() => {});
+      await terminateTimedOutNodeHostBestEffort(host, pid);
       return {
         exitCode: 124,
         stdout,
@@ -742,8 +750,30 @@ async function runNodeTest(
       error: err instanceof Error ? err.message : String(err),
     };
   } finally {
-    await host.destroy().catch(() => {});
+    await destroyNodeHostBestEffort(host);
   }
+}
+
+async function terminateTimedOutNodeHostBestEffort(
+  host: Pick<NodeHostCleanupTarget, "terminateProcess">,
+  pid: number | null,
+): Promise<void> {
+  if (pid === null) return;
+  await withHostTimeout(
+    host.terminateProcess(pid, 124),
+    NODE_HOST_CLEANUP_TIMEOUT_MS,
+    `node host terminateProcess(${pid}) cleanup timeout after ${NODE_HOST_CLEANUP_TIMEOUT_MS}ms`,
+  ).catch(() => {});
+}
+
+async function destroyNodeHostBestEffort(
+  host: Pick<NodeHostCleanupTarget, "destroy">,
+): Promise<void> {
+  await withHostTimeout(
+    host.destroy(),
+    NODE_HOST_CLEANUP_TIMEOUT_MS,
+    `node host destroy cleanup timeout after ${NODE_HOST_CLEANUP_TIMEOUT_MS}ms`,
+  ).catch(() => {});
 }
 
 function loadBytes(path: string): ArrayBuffer {

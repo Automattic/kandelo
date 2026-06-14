@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { MockWorkerAdapter } from "../src/worker-adapter";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { MockWorkerAdapter, terminateNodeWorker } from "../src/worker-adapter";
 
 describe("MockWorkerAdapter", () => {
   it("should create a worker handle and capture workerData", () => {
@@ -46,5 +46,37 @@ describe("MockWorkerAdapter", () => {
     const handle = adapter.createWorker({});
     handle.postMessage({ type: "terminate" });
     expect(adapter.lastWorker!.sentMessages).toEqual([{ type: "terminate" }]);
+  });
+});
+
+describe("terminateNodeWorker", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns the worker termination result when it settles before the timeout", async () => {
+    const worker = {
+      terminate: vi.fn(() => Promise.resolve(0)),
+      unref: vi.fn(),
+    };
+
+    await expect(terminateNodeWorker(worker, 100)).resolves.toBe(0);
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(worker.unref).not.toHaveBeenCalled();
+  });
+
+  it("unrefs and returns a nonzero code when termination does not settle", async () => {
+    vi.useFakeTimers();
+    const worker = {
+      terminate: vi.fn(() => new Promise<number>(() => {})),
+      unref: vi.fn(),
+    };
+
+    const result = terminateNodeWorker(worker, 100);
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(result).resolves.toBe(1);
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(worker.unref).toHaveBeenCalledOnce();
   });
 });
