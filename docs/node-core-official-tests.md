@@ -39,6 +39,13 @@ Useful controls:
 - `--smoke` and `--manifest-only` use the checked-in manifest rather than the
   generated full-suite list.
 
+Each selected test gets a unique `TEST_SERIAL_ID`/`TEST_THREAD_ID` and
+`NODE_TEST_DIR`. Node-host roots live under the result artifact directory, and
+browser roots live under `/node-v22.0.0/.kandelo-test-roots/` inside each test
+VFS. This keeps upstream `test/common/tmpdir` paths isolated when runner jobs
+execute tests against fresh Kandelo kernels that start user processes at the
+same initial pid.
+
 Browser runs start the Vite test-runner page with `KANDELO_BROWSER_DEMO_INPUTS`
 set to `test-runner` and serve the pinned Node source, generated prelude, and
 runtime wasm through an env-gated same-origin route. This avoids serializing the

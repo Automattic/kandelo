@@ -80,6 +80,18 @@ interface SelectedTest {
   timeoutMs: number;
 }
 
+interface IsolatedTest {
+  test: SelectedTest;
+  isolation: TestIsolation;
+}
+
+interface TestIsolation {
+  serialId: string;
+  nodeTestDir: string;
+  browserTestDir: string;
+  browserMarkerPath: string;
+}
+
 interface RawRunResult {
   exitCode: number | null;
   stdout: string;
@@ -508,25 +520,59 @@ function safeName(path: string): string {
   return path.replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
-function envForRun(): string[] {
-  return [
-    ...Object.entries(process.env)
-      .filter((entry): entry is [string, string] => entry[1] !== undefined)
-      .map(([key, value]) => `${key}=${value}`),
-    "NODE_SKIP_FLAG_CHECK=1",
-    "NODE_DISABLE_COLORS=1",
-    "TERM=dumb",
-    "CI=1",
-  ];
+function createIsolatedTests(tests: SelectedTest[], resultsDir: string): IsolatedTest[] {
+  return tests.map((test, index) => {
+    const serialId = String(index + 1);
+    const testDirName = `${serialId}-${safeName(test.spec.path)}`;
+    const browserTestDir = `/node-v22.0.0/.kandelo-test-roots/${testDirName}`;
+    return {
+      test,
+      isolation: {
+        serialId,
+        nodeTestDir: join(resultsDir, "node-test-roots", testDirName),
+        browserTestDir,
+        browserMarkerPath: `${browserTestDir}/.keep`,
+      },
+    };
+  });
 }
 
+function envForRun(isolation?: TestIsolation): string[] {
+  const env = new Map(
+    Object.entries(process.env)
+      .filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+  env.set("NODE_SKIP_FLAG_CHECK", "1");
+  env.set("NODE_DISABLE_COLORS", "1");
+  env.set("TERM", "dumb");
+  env.set("CI", "1");
+  if (isolation) {
+    env.set("NODE_TEST_DIR", isolation.nodeTestDir);
+    env.set("TEST_SERIAL_ID", isolation.serialId);
+    env.set("TEST_THREAD_ID", isolation.serialId);
+  }
+  return [...env.entries()].map(([key, value]) => `${key}=${value}`);
+}
+
+export {
+  createIsolatedTests,
+  envForRun,
+};
+
+export type {
+  IsolatedTest,
+  SelectedTest,
+  TestIsolation,
+};
+
 async function runNodeTest(
-  test: SelectedTest,
+  isolated: IsolatedTest,
   sourceDir: string,
   preludePath: string,
   runtimePath: string,
   programBytes: ArrayBuffer,
 ): Promise<RawRunResult> {
+  const { test, isolation } = isolated;
   const { NodeKernelHost } = await import("../host/src/node-kernel-host");
   const started = Date.now();
   let stdout = "";
@@ -548,10 +594,11 @@ async function runNodeTest(
   });
 
   try {
+    mkdirSync(isolation.nodeTestDir, { recursive: true });
     await host.init();
     const exitPromise = host.spawn(programBytes, ["node", preludePath, testPath], {
       cwd: sourceDir,
-      env: envForRun(),
+      env: envForRun(isolation),
       onStarted: (startedPid) => { pid = startedPid; },
     });
     const timeoutPromise = new Promise<"timeout">((resolveTimeout) => {
@@ -597,7 +644,7 @@ function loadBytes(path: string): ArrayBuffer {
 }
 
 async function runBrowserTests(
-  tests: SelectedTest[],
+  isolatedTests: IsolatedTest[],
   sourceDir: string,
   preludePath: string,
   runtimePath: string,
@@ -620,17 +667,18 @@ async function runBrowserTests(
     });
     const context = await browser.newContext();
     let next = 0;
-    const browserJobs = Math.max(1, Math.min(jobs, tests.length));
+    const browserJobs = Math.max(1, Math.min(jobs, isolatedTests.length));
     await Promise.all(Array.from({ length: browserJobs }, async (_, workerId) => {
       let page = await createBrowserWorkerPage(context, workerId, baseFiles, consoleLog);
       try {
-        while (next < tests.length) {
+        while (next < isolatedTests.length) {
           const index = next++;
-          const test = tests[index];
+          const { test, isolation } = isolatedTests[index];
           const started = Date.now();
           const testHostPath = join(sourceDir, test.spec.path);
           const dataFiles = [
             dataFileFromSourceUrl(sourceDir, testHostPath, `/node-v22.0.0/${test.spec.path}`),
+            { path: isolation.browserMarkerPath, data: [], mode: 0o644 },
           ];
           try {
             const result = await withHostTimeout(
@@ -652,7 +700,10 @@ async function runBrowserTests(
                   ],
                   timeoutMs: test.timeoutMs,
                   dataFiles,
-                  env: envForRun(),
+                  env: envForRun({
+                    ...isolation,
+                    nodeTestDir: isolation.browserTestDir,
+                  }),
                 },
               ),
               test.timeoutMs + 2_000,
@@ -682,7 +733,7 @@ async function runBrowserTests(
             }
           } finally {
             if (results.size > 0 && results.size % 100 === 0) {
-              appendText(consoleLog, `[progress] completed=${results.size}/${tests.length}\n`);
+              appendText(consoleLog, `[progress] completed=${results.size}/${isolatedTests.length}\n`);
             }
           }
         }
@@ -1103,18 +1154,19 @@ async function main(): Promise<void> {
   const runnable = selected.filter((test) => test.expected !== "SKIP");
   const skipped = selected.filter((test) => test.expected === "SKIP");
   const recorded: RecordedResult[] = skipped.map((test) => skippedResult(test, options.host, resultsDir));
+  const isolatedRunnable = createIsolatedTests(runnable, resultsDir);
 
   if (options.host === "node") {
     const jobs = options.jobs ?? manifest.defaults?.jobs ?? 1;
     const programBytes = loadBytes(runtimePath);
-    const nodeResults = await runWithConcurrency(runnable, jobs, async (test) => {
-      const raw = await runNodeTest(test, source.dir, preludePath, runtimePath, programBytes);
-      return recordResult(test, options.host, raw, resultsDir);
+    const nodeResults = await runWithConcurrency(isolatedRunnable, jobs, async (isolated) => {
+      const raw = await runNodeTest(isolated, source.dir, preludePath, runtimePath, programBytes);
+      return recordResult(isolated.test, options.host, raw, resultsDir);
     });
     recorded.push(...nodeResults);
   } else {
     const jobs = options.jobs ?? manifest.defaults?.jobs ?? 1;
-    const browserResults = await runBrowserTests(runnable, source.dir, preludePath, runtimePath, resultsDir, jobs);
+    const browserResults = await runBrowserTests(isolatedRunnable, source.dir, preludePath, runtimePath, resultsDir, jobs);
     for (const test of runnable) {
       const raw = browserResults.get(test.spec.path) ?? {
         exitCode: null,
@@ -1139,7 +1191,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.stack || err.message : String(err));
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.stack || err.message : String(err));
+    process.exit(1);
+  });
+}
