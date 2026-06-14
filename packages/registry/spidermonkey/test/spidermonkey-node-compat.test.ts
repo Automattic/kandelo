@@ -1273,6 +1273,76 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     expect(result.stdout.trim()).toBe("http-ok");
   }, DEFAULT_TEST_TIMEOUT);
 
+  it("preserves HTTP message internals and socket high water marks", async () => {
+    const result = await runNode(
+      [
+        "const assert = require('assert')",
+        "const http = require('http')",
+        "const net = require('net')",
+        "const { kOutHeaders } = require('internal/http')",
+        "let done = false",
+        "let failure = null",
+        "function fail(err) { failure = err; done = true }",
+        "try {",
+        "  const incoming = new http.IncomingMessage()",
+        "  const dest = {}",
+        "  incoming._addHeaderLine('Content-Type', 'text/plain', dest)",
+        "  incoming._addHeaderLine('content-type', 'application/json', dest)",
+        "  incoming._addHeaderLine('Set-Cookie', 'a=1', dest)",
+        "  incoming._addHeaderLine('set-cookie', 'b=2', dest)",
+        "  incoming._addHeaderLine('Cookie', 'a=1', dest)",
+        "  incoming._addHeaderLine('cookie', 'b=2', dest)",
+        "  incoming._addHeaderLine('X-Test', 'one', dest)",
+        "  incoming._addHeaderLine('x-test', 'two', dest)",
+        "  assert.deepStrictEqual(dest, { 'content-type': 'text/plain', 'set-cookie': ['a=1', 'b=2'], cookie: 'a=1; b=2', 'x-test': 'one, two' })",
+        "  const outgoing = new http.OutgoingMessage()",
+        "  assert.strictEqual(typeof outgoing.flushHeaders, 'function')",
+        "  assert.throws(() => outgoing.pipe(outgoing), { code: 'ERR_STREAM_CANNOT_PIPE' })",
+        "  outgoing[kOutHeaders] = { host: ['host', 'nodejs.org'], origin: ['Origin', 'localhost'] }",
+        "  assert.deepStrictEqual(outgoing._renderHeaders(), { host: 'nodejs.org', Origin: 'localhost' })",
+        "  outgoing.setTimeout(23)",
+        "  let timeoutValue = 0",
+        "  outgoing.emit('socket', { setTimeout(value) { timeoutValue = value } })",
+        "  assert.strictEqual(timeoutValue, 23)",
+        "} catch (err) { fail(err) }",
+        "const server = http.createServer((req, res) => {",
+        "  try {",
+        "    assert.strictEqual(req.socket.readableHighWaterMark, 1024)",
+        "    res.end('ok')",
+        "  } catch (err) { fail(err) }",
+        "})",
+        "server.listen(0, '127.0.0.1', () => {",
+        "  const req = http.request({",
+        "    port: server.address().port,",
+        "    host: '127.0.0.1',",
+        "    createConnection(options) {",
+        "      options.readableHighWaterMark = 1024",
+        "      return net.createConnection(options)",
+        "    },",
+        "  }, (res) => {",
+        "    try {",
+        "      assert.strictEqual(res.socket, req.socket)",
+        "      assert.strictEqual(res.socket.readableHighWaterMark, 1024)",
+        "      assert.strictEqual(res.readableHighWaterMark, 1024)",
+        "      res.resume()",
+        "      res.on('end', () => server.close(() => { console.log('http-message-internals-ok'); done = true }))",
+        "    } catch (err) { fail(err) }",
+        "  })",
+        "  req.on('error', fail)",
+        "  req.end()",
+        "})",
+        "let spins = 0",
+        "while (!done && !failure && typeof drainJobQueue === 'function' && spins++ < 1000) drainJobQueue()",
+        "if (failure) throw failure",
+        "assert.strictEqual(done, true)",
+      ].join("\n"),
+    );
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("http-message-internals-ok");
+  }, DEFAULT_TEST_TIMEOUT);
+
   describe.skipIf(!hasNpm)("npm package installation", () => {
     it("installs cowsay with npm and runs its package bin", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "sm-node-npm-"));
