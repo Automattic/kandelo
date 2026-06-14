@@ -907,6 +907,33 @@ const process = (() => {
             std.exit(134); // SIGABRT
         },
 
+        emitWarning(warning, type, code) {
+            const message = warning instanceof Error ? warning.message : String(warning);
+            const err = warning instanceof Error ? warning : new Error(message);
+            err.name = type || err.name || 'Warning';
+            if (code) err.code = code;
+            if (!proc.emit('warning', err) && proc.env.NODE_NO_WARNINGS !== '1') {
+                proc.stderr.write(`${err.name}${err.code ? ` [${err.code}]` : ''}: ${message}\n`);
+            }
+        },
+
+        _rawDebug(...args) {
+            proc.stderr.write(args.map((arg) =>
+                typeof arg === 'string' ? arg : util.inspect(arg)
+            ).join(' ') + '\n');
+        },
+
+        hasUncaughtExceptionCaptureCallback() {
+            return typeof proc._uncaughtExceptionCaptureCallback === 'function';
+        },
+
+        setUncaughtExceptionCaptureCallback(fn) {
+            if (fn !== null && typeof fn !== 'function') {
+                throw _makeInvalidArgTypeError('fn', 'function or null', fn);
+            }
+            proc._uncaughtExceptionCaptureCallback = fn;
+        },
+
         kill(pid, signal) {
             signal = signal || 'SIGTERM';
             let signum;
@@ -4306,11 +4333,499 @@ const vm = (() => {
 })();
 
 // ============================================================
+// Node core compatibility shims for official-test module loading
+// ============================================================
+
+function _unsupportedNodeApi(moduleName, member) {
+    const suffix = member ? `.${String(member)}` : '';
+    const err = new Error(`${moduleName}${suffix} is outside Kandelo's Node compatibility support boundary`);
+    err.code = 'ERR_KANDELO_UNSUPPORTED_NODE_API';
+    return err;
+}
+
+function _makeUnsupportedFunction(moduleName, member) {
+    const fn = function unsupportedNodeApi() {
+        throw _unsupportedNodeApi(moduleName, member);
+    };
+    return new Proxy(fn, {
+        apply() { throw _unsupportedNodeApi(moduleName, member); },
+        construct() { throw _unsupportedNodeApi(moduleName, member); },
+        get(target, prop) {
+            if (prop === 'name') return member || 'unsupportedNodeApi';
+            if (prop === 'length') return 0;
+            if (prop === 'prototype') return target.prototype;
+            if (prop === 'then') return undefined;
+            if (prop === Symbol.toStringTag) return 'Function';
+            const child = member ? `${String(member)}.${String(prop)}` : String(prop);
+            const value = _makeUnsupportedFunction(moduleName, child);
+            target[prop] = value;
+            return value;
+        },
+    });
+}
+
+function _makeUnsupportedNamespace(moduleName, initial) {
+    const target = Object.assign(Object.create(null), initial || {});
+    return new Proxy(target, {
+        get(obj, prop) {
+            if (prop === Symbol.toStringTag) return moduleName;
+            if (prop === 'then') return undefined;
+            if (prop === '__esModule') return false;
+            if (Object.prototype.hasOwnProperty.call(obj, prop)) return obj[prop];
+            const value = _makeUnsupportedFunction(moduleName, String(prop));
+            obj[prop] = value;
+            return value;
+        },
+    });
+}
+
+const async_hooks = (() => {
+    let _aid = 1;
+    class AsyncResource {
+        constructor(type, options) {
+            this._type = type;
+            this._aid = ++_aid;
+            this._triggerAid = (options && options.triggerAsyncId) || 0;
+        }
+        runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); }
+        emitDestroy() { return this; }
+        asyncId() { return this._aid; }
+        triggerAsyncId() { return this._triggerAid; }
+        bind(fn) { return fn; }
+        static bind(fn) { return fn; }
+    }
+    class AsyncLocalStorage {
+        constructor() { this._store = undefined; }
+        run(store, fn, ...args) {
+            const prev = this._store;
+            this._store = store;
+            try { return fn(...args); } finally { this._store = prev; }
+        }
+        exit(fn, ...args) {
+            const prev = this._store;
+            this._store = undefined;
+            try { return fn(...args); } finally { this._store = prev; }
+        }
+        getStore() { return this._store; }
+        enterWith(store) { this._store = store; }
+        disable() { this._store = undefined; }
+    }
+    return {
+        AsyncResource,
+        AsyncLocalStorage,
+        executionAsyncId: () => 0,
+        triggerAsyncId: () => 0,
+        executionAsyncResource: () => ({}),
+        createHook: () => ({ enable() { return this; }, disable() { return this; } }),
+    };
+})();
+
+const internalErrors = (() => {
+    const classCache = Object.create(null);
+    function makeErrorClass(code) {
+        const Base = code === 'ERR_OUT_OF_RANGE' ? RangeError :
+            code === 'ERR_INVALID_ARG_TYPE' || code === 'ERR_INVALID_ARG_VALUE' ? TypeError :
+            Error;
+        return class NodeCompatError extends Base {
+            constructor(...args) {
+                super(args.length ? args.map((arg) => {
+                    if (typeof arg === 'string') return arg;
+                    try { return util.inspect(arg); } catch (_) { return String(arg); }
+                }).join(' ') : code);
+                this.code = code;
+            }
+        };
+    }
+    const codes = new Proxy(classCache, {
+        get(target, prop) {
+            if (typeof prop === 'symbol') return target[prop];
+            if (!target[prop]) target[prop] = makeErrorClass(String(prop));
+            return target[prop];
+        },
+    });
+    class AbortError extends Error {
+        constructor(message) {
+            super(message || 'The operation was aborted');
+            this.name = 'AbortError';
+            this.code = 'ABORT_ERR';
+        }
+    }
+    class ConnResetException extends Error {
+        constructor(message) {
+            super(message || 'socket hang up');
+            this.code = 'ECONNRESET';
+        }
+    }
+    return {
+        codes,
+        AbortError,
+        ConnResetException,
+        hideStackFrames(fn) { return fn; },
+        aggregateTwoErrors(inner, outer) {
+            if (inner && outer && inner !== outer) {
+                const err = new AggregateError([outer, inner], outer.message || inner.message);
+                err.code = outer.code || inner.code;
+                return err;
+            }
+            return inner || outer;
+        },
+        isErrorStackTraceLimitWritable() { return true; },
+        overrideStackTrace() {},
+        setInternalPrepareStackTrace() {},
+        ErrorPrepareStackTrace(error) { return error && error.stack ? error.stack : String(error); },
+    };
+})();
+
+const internalUtil = (() => {
+    class WeakReference {
+        constructor(value) { this._value = value; this._refs = 0; }
+        get() { return this._value; }
+        incRef() { this._refs++; }
+        decRef() { if (this._refs > 0) this._refs--; }
+    }
+    function spliceOne(list, index) {
+        for (; index + 1 < list.length; index++) list[index] = list[index + 1];
+        list.pop();
+    }
+    function normalizeEncoding(encoding) {
+        const enc = String(encoding || 'utf8').toLowerCase();
+        if (enc === 'utf-8') return 'utf8';
+        if (enc === 'ucs-2') return 'ucs2';
+        if (enc === 'utf-16le') return 'utf16le';
+        if (enc === 'binary') return 'latin1';
+        return enc;
+    }
+    function emitExperimentalWarning(feature) {
+        if (process && typeof process.emitWarning === 'function') {
+            process.emitWarning(`${feature} is an experimental feature`, 'ExperimentalWarning');
+        }
+    }
+    return Object.assign({}, util, {
+        kEmptyObject: Object.freeze({}),
+        customInspectSymbol: Symbol.for('nodejs.util.inspect.custom'),
+        WeakReference,
+        spliceOne,
+        normalizeEncoding,
+        emitExperimentalWarning,
+        filterDuplicateStrings(values) { return Array.from(new Set(values)); },
+        guessHandleType() { return 'UNKNOWN'; },
+        getSystemErrorName(errno) { return _errnoToCode(errno); },
+        isError(value) { return value instanceof Error; },
+        decorateErrorStack() {},
+        lazyDOMExceptionClass() { return globalThis.DOMException || Error; },
+        SideEffectFreeRegExpPrototypeSymbolReplace(rx, str, repl) {
+            return String(str).replace(rx, repl);
+        },
+        SideEffectFreeRegExpPrototypeSymbolSplit(rx, str) {
+            return String(str).split(rx);
+        },
+        createDeferredPromise() {
+            let resolve;
+            let reject;
+            const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+            return { promise, resolve, reject };
+        },
+    });
+})();
+
+const internalValidators = {
+    validateFunction(value, name) {
+        if (typeof value !== 'function') throw _makeInvalidArgTypeError(name || 'value', 'function', value);
+    },
+    validateObject(value, name) {
+        if (value === null || typeof value !== 'object') throw _makeInvalidArgTypeError(name || 'value', 'object', value);
+    },
+    validateString(value, name) { _validateString(value, name || 'value'); },
+    validateNumber(value, name) {
+        if (typeof value !== 'number') throw _makeInvalidArgTypeError(name || 'value', 'number', value);
+    },
+    validateBoolean(value, name) {
+        if (typeof value !== 'boolean') throw _makeInvalidArgTypeError(name || 'value', 'boolean', value);
+    },
+    validateInteger(value, name) {
+        if (!Number.isInteger(value)) throw _makeInvalidArgTypeError(name || 'value', 'integer', value);
+    },
+    validateInt32(value, name) { this.validateInteger(value, name); },
+    validateUint32(value, name) { this.validateInteger(value, name); },
+};
+
+const internalOptions = {
+    getOptionValue(name) {
+        const bools = new Set([
+            '--debug',
+            '--expose-internals',
+            '--experimental-repl-await',
+            '--pending-deprecation',
+            '--test',
+            '--inspect',
+            '--inspect-brk',
+        ]);
+        if (bools.has(name)) return false;
+        return undefined;
+    },
+    getAllowUnauthorized() { return false; },
+};
+
+const internalEventTarget = (() => {
+    const Target = globalThis.EventTarget || class EventTarget {
+        constructor() { this._listeners = new Map(); }
+        addEventListener(type, listener) {
+            if (!this._listeners.has(type)) this._listeners.set(type, new Set());
+            this._listeners.get(type).add(listener);
+        }
+        removeEventListener(type, listener) {
+            const listeners = this._listeners.get(type);
+            if (listeners) listeners.delete(listener);
+        }
+        dispatchEvent(event) {
+            const listeners = this._listeners.get(event.type);
+            if (listeners) for (const listener of listeners) {
+                if (typeof listener === 'function') listener.call(this, event);
+                else if (listener && typeof listener.handleEvent === 'function') listener.handleEvent(event);
+            }
+            return !event.defaultPrevented;
+        }
+    };
+    const EventClass = globalThis.Event || class Event {
+        constructor(type, init) { this.type = type; this.defaultPrevented = false; Object.assign(this, init || {}); }
+        preventDefault() { this.defaultPrevented = true; }
+    };
+    return {
+        Event: EventClass,
+        EventTarget: Target,
+        NodeEventTarget: Target,
+        defineEventHandler() {},
+        initEventTarget() {},
+        kNewListener: Symbol('kNewListener'),
+        kRemoveListener: Symbol('kRemoveListener'),
+    };
+})();
+
+const domain = (() => {
+    let active = null;
+    class Domain extends events.EventEmitter {
+        constructor() {
+            super();
+            this.members = [];
+        }
+        enter() { active = this; process.domain = this; return this; }
+        exit() { if (active === this) active = null; if (process.domain === this) process.domain = null; return this; }
+        run(fn, ...args) {
+            this.enter();
+            try { return fn(...args); } catch (err) { this.emit('error', err); }
+            finally { this.exit(); }
+        }
+        bind(fn) {
+            const self = this;
+            return function(...args) { return self.run(fn.bind(this), ...args); };
+        }
+        intercept(fn) {
+            const self = this;
+            return function(err, ...args) {
+                if (err) return self.emit('error', err);
+                return self.run(fn.bind(this), ...args);
+            };
+        }
+        add(emitter) { if (emitter) { emitter.domain = this; this.members.push(emitter); } return this; }
+        remove(emitter) { if (emitter && emitter.domain === this) emitter.domain = null; return this; }
+        dispose() { return this.exit(); }
+        destroy() { return this.exit(); }
+    }
+    const mod = {
+        Domain,
+        create() { return new Domain(); },
+        createDomain() { return new Domain(); },
+        _stack: [],
+    };
+    Object.defineProperty(mod, 'active', { get() { return active; } });
+    return mod;
+})();
+
+const dgram = (() => {
+    class Socket extends events.EventEmitter {
+        constructor(type, listener) {
+            super();
+            this.type = typeof type === 'string' ? type : (type && type.type) || 'udp4';
+            this._bound = false;
+            this._closed = false;
+            this._address = { address: this.type === 'udp6' ? '::' : '0.0.0.0', family: this.type, port: 0 };
+            if (typeof listener === 'function') this.on('message', listener);
+        }
+        bind(port, address, cb) {
+            if (typeof port === 'object' && port !== null) {
+                cb = address; address = port.address; port = port.port;
+            }
+            if (typeof address === 'function') { cb = address; address = undefined; }
+            this._bound = true;
+            this._address = {
+                address: address || (this.type === 'udp6' ? '::' : '0.0.0.0'),
+                family: this.type,
+                port: port || 0,
+            };
+            if (typeof cb === 'function') this.once('listening', cb);
+            queueMicrotask(() => this.emit('listening'));
+            return this;
+        }
+        connect(port, address, cb) {
+            if (typeof address === 'function') { cb = address; address = undefined; }
+            this.remoteAddress = address || '127.0.0.1';
+            this.remotePort = port;
+            if (typeof cb === 'function') queueMicrotask(cb);
+        }
+        disconnect() { this.remoteAddress = undefined; this.remotePort = undefined; }
+        send(_msg, ...args) {
+            const cb = args.find((arg) => typeof arg === 'function');
+            if (this._closed) {
+                const err = _makeNodeError('Socket is closed', 'ERR_SOCKET_DGRAM_NOT_RUNNING');
+                if (cb) queueMicrotask(() => cb(err));
+                else throw err;
+                return;
+            }
+            if (cb) queueMicrotask(() => cb(null));
+        }
+        close(cb) {
+            this._closed = true;
+            if (typeof cb === 'function') this.once('close', cb);
+            queueMicrotask(() => this.emit('close'));
+        }
+        address() { return this._address; }
+        ref() { return this; }
+        unref() { return this; }
+        addMembership() {}
+        dropMembership() {}
+        setBroadcast() {}
+        setTTL() { return 64; }
+        setMulticastTTL() { return 64; }
+        setMulticastLoopback() {}
+        setMulticastInterface() {}
+        getSendQueueSize() { return 0; }
+        getSendQueueCount() { return 0; }
+    }
+    return {
+        Socket,
+        createSocket(options, listener) { return new Socket(options, listener); },
+    };
+})();
+
+const repl = (() => {
+    class Recoverable extends SyntaxError {}
+    class REPLServer extends events.EventEmitter {
+        constructor(options) {
+            super();
+            this.context = {};
+            this.input = options && options.input || process.stdin;
+            this.output = options && options.output || process.stdout;
+            this.history = [];
+        }
+        close() { this.emit('exit'); this.emit('close'); }
+        displayPrompt() {}
+        clearBufferedCommand() {}
+        setupHistory(_path, cb) { if (cb) queueMicrotask(() => cb(null, this)); }
+    }
+    function start(options) {
+        if (typeof options === 'string') options = { prompt: options };
+        return new REPLServer(options || {});
+    }
+    return {
+        start,
+        REPLServer,
+        Recoverable,
+        REPL_MODE_SLOPPY: Symbol.for('repl.sloppy'),
+        REPL_MODE_STRICT: Symbol.for('repl.strict'),
+        writer: util.inspect,
+    };
+})();
+
+const nodeTest = (() => {
+    class TestContext {
+        constructor(name) { this.name = name; this.signal = new AbortController().signal; }
+        diagnostic(message) { process.stdout.write(`# ${message}\n`); }
+        skip() {}
+        todo() {}
+        timeout() {}
+        mock = { fn: (fn) => fn || function() {} };
+    }
+    function normalizeTestArgs(name, options, fn) {
+        if (typeof name === 'function') return { name: name.name || '<anonymous>', fn: name };
+        if (typeof options === 'function') return { name: String(name || '<anonymous>'), fn: options };
+        return { name: String(name || '<anonymous>'), fn };
+    }
+    function test(name, options, fn) {
+        const args = normalizeTestArgs(name, options, fn);
+        const ctx = new TestContext(args.name);
+        if (typeof args.fn === 'function') {
+            queueMicrotask(() => {
+                try {
+                    const result = args.fn(ctx);
+                    if (result && typeof result.then === 'function') {
+                        result.catch((err) => { throw err; });
+                    }
+                } catch (err) {
+                    throw err;
+                }
+            });
+        }
+        return { name: args.name };
+    }
+    function hook(name, options, fn) {
+        const args = normalizeTestArgs(name, options, fn);
+        if (typeof args.fn === 'function') queueMicrotask(() => args.fn());
+    }
+    function run() {
+        return new events.EventEmitter();
+    }
+    Object.assign(test, {
+        after: hook,
+        afterEach: hook,
+        before: hook,
+        beforeEach: hook,
+        describe: test,
+        it: test,
+        run,
+        suite: test,
+        test,
+        mock: { fn: (fn) => fn || function() {} },
+    });
+    return test;
+})();
+
+const internalTestBinding = {
+    primordials: globalThis,
+    internalBinding(name) {
+        if (name === 'async_wrap') {
+            return {
+                queueDestroyAsyncId() {},
+                registerDestroyHook() {},
+                constants: {},
+            };
+        }
+        if (name === 'tcp_wrap') {
+            class TCP {}
+            return { TCP, constants: { SOCKET: 0, SERVER: 1 } };
+        }
+        if (name === 'js_udp_wrap') {
+            class JSUDPWrap {}
+            return { JSUDPWrap };
+        }
+        if (name === 'constants') {
+            return {
+                os: nodeOs.constants,
+                fs: fs.constants,
+                crypto: {},
+            };
+        }
+        return _makeUnsupportedNamespace(`internalBinding(${name})`);
+    },
+};
+
+// ============================================================
 // Module system (require/module)
 // ============================================================
 
 const _builtinModules = {
     'path': path,
+    'path/posix': path.posix,
+    'path/win32': path.win32,
     'events': events,
     'buffer': {
         Buffer,
@@ -4331,6 +4846,11 @@ const _builtinModules = {
     'string_decoder': string_decoder,
     'timers': timers,
     'timers/promises': timersPromises,
+    'domain': domain,
+    'dgram': dgram,
+    'repl': repl,
+    'node:test': nodeTest,
+    'test': nodeTest,
     // @sigstore/sign reads http2.constants at module init but fetches over
     // make-fetch-happen (http/1) — empty stub satisfies the load.
     'http2': { constants: {} },
@@ -4421,6 +4941,13 @@ const _builtinModules = {
             cb(null, ['127.0.0.1']);
         },
     },
+    'dns/promises': {
+        async lookup(hostname) { return { address: '127.0.0.1', family: 4, hostname }; },
+        async resolve() { return ['127.0.0.1']; },
+        async resolve4() { return ['127.0.0.1']; },
+        async resolve6() { return []; },
+        async reverse(address) { return [address]; },
+    },
     'readline': {
         createInterface(options) {
             const rl = new events.EventEmitter();
@@ -4434,6 +4961,12 @@ const _builtinModules = {
         moveCursor: _moveCursor,
         clearLine: _clearLine,
         clearScreenDown: _clearScreenDown,
+    },
+    'readline/promises': {
+        Interface: class Interface extends events.EventEmitter {},
+        createInterface(options) {
+            return _builtinModules.readline.createInterface(options);
+        },
     },
     'perf_hooks': {
         performance: {
@@ -4520,50 +5053,9 @@ const _builtinModules = {
         }
         return { Console, default: Console };
     })(),
-    // No async-context tracking. AsyncResource exists so undici can subclass
-    // it; runInAsyncScope and bind are pass-throughs. AsyncLocalStorage
-    // works as a synchronous Map using a single mutable cell, sufficient
-    // for libraries that store request context once and read it back.
-    'async_hooks': (() => {
-        let _aid = 1;
-        class AsyncResource {
-            constructor(type, options) {
-                this._type = type;
-                this._aid = ++_aid;
-                this._triggerAid = (options && options.triggerAsyncId) || 0;
-            }
-            runInAsyncScope(fn, thisArg, ...args) { return fn.apply(thisArg, args); }
-            emitDestroy() { return this; }
-            asyncId() { return this._aid; }
-            triggerAsyncId() { return this._triggerAid; }
-            bind(fn) { return fn; }
-            static bind(fn) { return fn; }
-        }
-        class AsyncLocalStorage {
-            constructor() { this._store = undefined; }
-            run(store, fn, ...args) {
-                const prev = this._store;
-                this._store = store;
-                try { return fn(...args); } finally { this._store = prev; }
-            }
-            exit(fn, ...args) {
-                const prev = this._store;
-                this._store = undefined;
-                try { return fn(...args); } finally { this._store = prev; }
-            }
-            getStore() { return this._store; }
-            enterWith(store) { this._store = store; }
-            disable() { this._store = undefined; }
-        }
-        return {
-            AsyncResource,
-            AsyncLocalStorage,
-            executionAsyncId: () => 0,
-            triggerAsyncId: () => 0,
-            executionAsyncResource: () => ({}),
-            createHook: () => ({ enable() {}, disable() {} }),
-        };
-    })(),
+    // No async-context tracking. AsyncResource exists so undici and tests can
+    // subclass it; runInAsyncScope and bind are pass-throughs.
+    'async_hooks': async_hooks,
     // Undici's request/connect path imports diagnostics_channel at module
     // init for tracing hooks. We're not exporting traces — return inert
     // channels whose publish/subscribe/tracingChannel are no-ops.
@@ -4665,6 +5157,182 @@ const _builtinModules = {
             return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
         },
     },
+    'sys': util,
+    'inspector': {
+        open() {},
+        close() {},
+        url() { return undefined; },
+        waitForDebugger() {},
+        Session: class Session extends events.EventEmitter {
+            connect() {}
+            disconnect() {}
+            post(_method, _params, cb) {
+                if (typeof _params === 'function') cb = _params;
+                if (cb) queueMicrotask(() => cb(_unsupportedNodeApi('inspector', 'Session.post')));
+            }
+        },
+    },
+    'trace_events': {
+        createTracing() {
+            return {
+                enable() {},
+                disable() {},
+                get enabled() { return false; },
+                categories: '',
+            };
+        },
+        getEnabledCategories() { return ''; },
+    },
+    '_http_agent': http,
+    '_http_common': {
+        HTTPParser: class HTTPParser {},
+        methods: HTTP_METHODS,
+        STATUS_CODES,
+    },
+    '_http_outgoing': http,
+    '_http_server': http,
+    '_stream_readable': stream,
+    '_stream_wrap': stream,
+
+    // Private Node modules used by the official suite. These entries either
+    // map to the public shim that owns the behavior or expose a support-boundary
+    // namespace for V8/native internals that Kandelo deliberately does not ship.
+    'internal/errors': internalErrors,
+    'internal/util': internalUtil,
+    'internal/util/types': util.types,
+    'internal/util/inspect': {
+        inspect: util.inspect,
+        format: util.format,
+        formatWithOptions: util.formatWithOptions,
+        customInspectSymbol: Symbol.for('nodejs.util.inspect.custom'),
+    },
+    'internal/util/debuglog': {
+        debuglog: util.debuglog,
+        debug: util.debuglog,
+        initializeDebugEnv() {},
+    },
+    'internal/util/inspector': {
+        isUsingInspector() { return false; },
+        sendInspectorCommand(_cb) {
+            const cb = typeof _cb === 'function' ? _cb : arguments[arguments.length - 1];
+            if (typeof cb === 'function') queueMicrotask(() => cb(_unsupportedNodeApi('internal/util/inspector')));
+        },
+        getInspectPort() { return 0; },
+        isInspectorMessage() { return false; },
+    },
+    'internal/util/iterable_weak_map': _makeUnsupportedNamespace('internal/util/iterable_weak_map'),
+    'internal/validators': internalValidators,
+    'internal/options': internalOptions,
+    'internal/assert': assert,
+    'internal/event_target': internalEventTarget,
+    'internal/async_hooks': Object.assign({
+        useDomainTrampoline() {},
+    }, async_hooks),
+    'internal/test/binding': internalTestBinding,
+    'internal/test/transfer': _makeUnsupportedNamespace('internal/test/transfer'),
+    'internal/test_runner/utils': {
+        createDeferredPromise: internalUtil.createDeferredPromise,
+        kEmptyObject: internalUtil.kEmptyObject,
+    },
+    'internal/test_runner/harness': {
+        test: nodeTest,
+        suite: nodeTest,
+        before: nodeTest.before,
+        after: nodeTest.after,
+        beforeEach: nodeTest.beforeEach,
+        afterEach: nodeTest.afterEach,
+    },
+    'internal/test_runner/runner': { run: nodeTest.run },
+    'internal/test_runner/mock/mock': {
+        MockTracker: class MockTracker { fn(fn) { return fn || function() {}; } },
+    },
+    'internal/test_runner/mock/mock_timers': _makeUnsupportedNamespace('internal/test_runner/mock/mock_timers'),
+    'internal/timers': timers,
+    'internal/child_process': child_process,
+    'internal/cluster/round_robin_handle': _makeUnsupportedNamespace('internal/cluster/round_robin_handle'),
+    'internal/console/constructor': {
+        Console: class Console {
+            constructor(options) {
+                options = options || {};
+                this._out = options.stdout || process.stdout;
+                this._err = options.stderr || process.stderr;
+            }
+            log(...args) { this._out.write(args.map((a) => typeof a === 'string' ? a : util.inspect(a)).join(' ') + '\n'); }
+            error(...args) { this._err.write(args.map((a) => typeof a === 'string' ? a : util.inspect(a)).join(' ') + '\n'); }
+            warn(...args) { this.error(...args); }
+            info(...args) { this.log(...args); }
+        },
+    },
+    'internal/dgram': dgram,
+    'internal/encoding': { TextDecoder, TextEncoder },
+    'internal/fixed_queue': {
+        FixedQueue: class FixedQueue {
+            constructor() { this._items = []; }
+            push(value) { this._items.push(value); }
+            shift() { return this._items.shift(); }
+            isEmpty() { return this._items.length === 0; }
+        },
+    },
+    'internal/freelist': {
+        FreeList: class FreeList {
+            constructor(_name, max, ctor) { this.max = max || 0; this.ctor = ctor || Object; this.list = []; }
+            alloc() { return this.list.pop() || new this.ctor(); }
+            free(obj) { if (this.list.length < this.max) this.list.push(obj); }
+        },
+    },
+    'internal/fs/promises': fs.promises,
+    'internal/fs/sync_write_stream': { SyncWriteStream: class SyncWriteStream extends stream.Writable {} },
+    'internal/fs/utils': {
+        stringToFlags(flags) { return typeof flags === 'number' ? flags : 0; },
+        stringToSymlinkType() { return null; },
+        getValidMode(mode, _type, def) { return mode == null ? def : mode; },
+        validatePath: internalValidators.validateString,
+    },
+    'internal/http': http,
+    'internal/http2/util': _makeUnsupportedNamespace('internal/http2/util'),
+    'internal/js_stream_socket': _makeUnsupportedNamespace('internal/js_stream_socket'),
+    'internal/linkedlist': {
+        init(list) { list._idleNext = list; list._idlePrev = list; },
+        isEmpty(list) { return list._idleNext === list; },
+        append(list, item) { item._idleNext = list; item._idlePrev = list._idlePrev; list._idlePrev._idleNext = item; list._idlePrev = item; },
+        remove(item) { if (item._idleNext) item._idleNext._idlePrev = item._idlePrev; if (item._idlePrev) item._idlePrev._idleNext = item._idleNext; item._idleNext = null; item._idlePrev = null; },
+    },
+    'internal/navigator': { navigator: { userAgent: 'Kandelo Node-compatible runtime' } },
+    'internal/net': net,
+    'internal/priority_queue': _makeUnsupportedNamespace('internal/priority_queue'),
+    'internal/readline/utils': {
+        commonPrefix(strings) {
+            if (!strings || strings.length === 0) return '';
+            let prefix = strings[0];
+            for (const s of strings) while (!String(s).startsWith(prefix)) prefix = prefix.slice(0, -1);
+            return prefix;
+        },
+    },
+    'internal/repl': repl,
+    'internal/repl/await': _makeUnsupportedNamespace('internal/repl/await'),
+    'internal/socket_list': _makeUnsupportedNamespace('internal/socket_list'),
+    'internal/socketaddress': {
+        SocketAddress: class SocketAddress {
+            constructor(options) { Object.assign(this, options || {}); }
+        },
+    },
+    'internal/streams/add-abort-signal': {
+        addAbortSignal(_signal, stream) { return stream; },
+    },
+    'internal/streams/compose': { compose: (...streams) => streams[streams.length - 1] },
+    'internal/streams/state': _makeUnsupportedNamespace('internal/streams/state'),
+    'internal/url': url,
+    'internal/v8_prof_polyfill': _makeUnsupportedNamespace('internal/v8_prof_polyfill'),
+    'internal/webidl': _makeUnsupportedNamespace('internal/webidl'),
+    'internal/webstreams/adapters': _makeUnsupportedNamespace('internal/webstreams/adapters'),
+    'internal/webstreams/readablestream': {
+        ReadableStream: class ReadableStream {},
+        ReadableStreamDefaultReader: class ReadableStreamDefaultReader {},
+    },
+    'internal/webstreams/util': _makeUnsupportedNamespace('internal/webstreams/util'),
+    'internal/worker': _makeUnsupportedNamespace('internal/worker'),
+    'internal/worker/io': _makeUnsupportedNamespace('internal/worker/io'),
+    'internal/worker/js_transferable': _makeUnsupportedNamespace('internal/worker/js_transferable'),
 };
 
 // Node exposes `node:module` as the CJS Module class itself: a

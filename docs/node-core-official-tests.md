@@ -71,3 +71,15 @@ only after the complete suite has been attempted and triaged.
 
 See `docs/plans/2026-06-13-node-core-full-suite-kad-nct17.md` for the exact
 commands, artifact paths, root-cause grouping, and follow-up beads.
+
+The SpiderMonkey Node-compatible bootstrap resolves the public modules and
+private helper names that appear in the full `test/parallel/test-*.js` suite,
+including `dgram`, `domain`, `repl`, `node:test`, `internal/errors`,
+`internal/util`, and the `internal/test_runner/*` loader surface. Public modules
+have small JavaScript compatibility shims. V8/native-only internals exposed
+through `internal/test/binding` and low-level `internal/*` helpers resolve to
+namespaces that throw `ERR_KANDELO_UNSUPPORTED_NODE_API` only when used, making
+the boundary explicit instead of surfacing unexplained `Cannot find module`
+failures. SpiderMonkey shell workers similarly expose shared-memory
+`workerData`, but not Node's bidirectional post-start `worker_threads`
+message channel.
