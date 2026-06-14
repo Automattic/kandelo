@@ -14,7 +14,7 @@ import * as _nodeNative from 'qjs:node';
 // ============================================================
 
 if (typeof globalThis.TextEncoder === 'undefined') {
-    globalThis.TextEncoder = class TextEncoder {
+    _defineGlobal('TextEncoder', class TextEncoder {
         get encoding() { return 'utf-8'; }
         encode(str) {
             if (typeof str !== 'string') str = String(str);
@@ -47,7 +47,7 @@ if (typeof globalThis.TextEncoder === 'undefined') {
             dest.set(encoded.subarray(0, len));
             return { read: str.length, written: len };
         }
-    };
+    });
 }
 
 if (typeof globalThis.TextDecoder === 'undefined') {
@@ -60,7 +60,7 @@ if (typeof globalThis.TextDecoder === 'undefined') {
     // Array.prototype.join('') is unsafe — QJS-NG zeros leading parts when
     // joining many large 8-bit strings.
     const _CHUNK = 8192;
-    globalThis.TextDecoder = class TextDecoder {
+    _defineGlobal('TextDecoder', class TextDecoder {
         constructor(encoding) {
             this._encoding = (encoding || 'utf-8').toLowerCase();
         }
@@ -107,7 +107,7 @@ if (typeof globalThis.TextDecoder === 'undefined') {
             if (chunk.length > 0) result += String.fromCharCode.apply(null, chunk);
             return result;
         }
-    };
+    });
 }
 
 // Some JavaScript engine parsers are very slow on multi-MB npm packuments.
@@ -131,7 +131,7 @@ if (typeof globalThis.atob === 'undefined') {
     const _b64lookup = new Uint8Array(256);
     for (let i = 0; i < _b64chars.length; i++) _b64lookup[_b64chars.charCodeAt(i)] = i;
 
-    globalThis.btoa = function(str) {
+    _defineGlobal('btoa', function btoa(str) {
         let result = '';
         const len = str.length;
         for (let i = 0; i < len; i += 3) {
@@ -145,9 +145,9 @@ if (typeof globalThis.atob === 'undefined') {
             result += i + 2 < len ? _b64chars[triple & 0x3F] : '=';
         }
         return result;
-    };
+    });
 
-    globalThis.atob = function(str) {
+    _defineGlobal('atob', function atob(str) {
         str = str.replace(/=+$/, '');
         let result = '';
         let i = 0;
@@ -162,7 +162,7 @@ if (typeof globalThis.atob === 'undefined') {
             if (d !== undefined) result += String.fromCharCode(triple & 0xFF);
         }
         return result;
-    };
+    });
 }
 
 // ============================================================
@@ -6269,32 +6269,32 @@ _defineGlobal('URLSearchParams', url.URLSearchParams);
 // doesn't actually exercise fetch; once it does, swap these for real impls.
 const _streamWeb = _builtinModules['stream/web'];
 if (typeof globalThis.ReadableStream === 'undefined')
-    globalThis.ReadableStream = _streamWeb.ReadableStream;
+    _defineGlobal('ReadableStream', _streamWeb.ReadableStream);
 if (typeof globalThis.WritableStream === 'undefined')
-    globalThis.WritableStream = _streamWeb.WritableStream;
+    _defineGlobal('WritableStream', _streamWeb.WritableStream);
 if (typeof globalThis.TransformStream === 'undefined')
-    globalThis.TransformStream = _streamWeb.TransformStream;
+    _defineGlobal('TransformStream', _streamWeb.TransformStream);
 if (typeof globalThis.ByteLengthQueuingStrategy === 'undefined')
-    globalThis.ByteLengthQueuingStrategy = _streamWeb.ByteLengthQueuingStrategy;
+    _defineGlobal('ByteLengthQueuingStrategy', _streamWeb.ByteLengthQueuingStrategy);
 if (typeof globalThis.CountQueuingStrategy === 'undefined')
-    globalThis.CountQueuingStrategy = _streamWeb.CountQueuingStrategy;
-if (typeof globalThis.Blob === 'undefined') globalThis.Blob = class Blob {};
-if (typeof globalThis.File === 'undefined') globalThis.File = class File {};
-if (typeof globalThis.FormData === 'undefined') globalThis.FormData = class FormData {};
-if (typeof globalThis.Headers === 'undefined') globalThis.Headers = class Headers {};
-if (typeof globalThis.Request === 'undefined') globalThis.Request = class Request {};
-if (typeof globalThis.Response === 'undefined') globalThis.Response = class Response {};
-if (typeof globalThis.MessagePort === 'undefined') globalThis.MessagePort = class MessagePort {};
+    _defineGlobal('CountQueuingStrategy', _streamWeb.CountQueuingStrategy);
+if (typeof globalThis.Blob === 'undefined') _defineGlobal('Blob', class Blob {});
+if (typeof globalThis.File === 'undefined') _defineGlobal('File', class File {});
+if (typeof globalThis.FormData === 'undefined') _defineGlobal('FormData', class FormData {});
+if (typeof globalThis.Headers === 'undefined') _defineGlobal('Headers', class Headers {});
+if (typeof globalThis.Request === 'undefined') _defineGlobal('Request', class Request {});
+if (typeof globalThis.Response === 'undefined') _defineGlobal('Response', class Response {});
+if (typeof globalThis.MessagePort === 'undefined') _defineGlobal('MessagePort', class MessagePort {});
 if (typeof globalThis.MessageChannel === 'undefined')
-    globalThis.MessageChannel = class MessageChannel {
+    _defineGlobal('MessageChannel', class MessageChannel {
         constructor() { this.port1 = new MessagePort(); this.port2 = new MessagePort(); }
-    };
+    });
 if (typeof globalThis.BroadcastChannel === 'undefined')
-    globalThis.BroadcastChannel = class BroadcastChannel {
+    _defineGlobal('BroadcastChannel', class BroadcastChannel {
         constructor(name) { this.name = name; }
         postMessage() {} close() {}
         addEventListener() {} removeEventListener() {}
-    };
+    });
 
 // Web Crypto global. Modern Node (19+) exposes `globalThis.crypto` separately
 // from `require('crypto')`. uuid/dist-node/rng.js and many other packages
@@ -6330,7 +6330,7 @@ if (typeof globalThis.structuredClone === 'undefined') {
 // events through them in real flows here; just need the symbols so class
 // extension works at module init.
 if (typeof globalThis.Event === 'undefined') {
-    globalThis.Event = class Event {
+    _defineGlobal('Event', class Event {
         constructor(type, init) {
             this.type = type;
             this.bubbles = !!(init && init.bubbles);
@@ -6344,10 +6344,10 @@ if (typeof globalThis.Event === 'undefined') {
         preventDefault() { this.defaultPrevented = true; }
         stopPropagation() {}
         stopImmediatePropagation() {}
-    };
+    });
 }
 if (typeof globalThis.EventTarget === 'undefined') {
-    globalThis.EventTarget = class EventTarget {
+    _defineGlobal('EventTarget', class EventTarget {
         constructor() { this._lst = new Map(); }
         addEventListener(type, listener) {
             if (!this._lst.has(type)) this._lst.set(type, new Set());
@@ -6364,37 +6364,37 @@ if (typeof globalThis.EventTarget === 'undefined') {
             }
             return !ev.defaultPrevented;
         }
-    };
+    });
 }
 if (typeof globalThis.MessageEvent === 'undefined')
-    globalThis.MessageEvent = class MessageEvent extends globalThis.Event {
+    _defineGlobal('MessageEvent', class MessageEvent extends globalThis.Event {
         constructor(type, init) { super(type, init); this.data = init && init.data; }
-    };
+    });
 if (typeof globalThis.CloseEvent === 'undefined')
-    globalThis.CloseEvent = class CloseEvent extends globalThis.Event {
+    _defineGlobal('CloseEvent', class CloseEvent extends globalThis.Event {
         constructor(type, init) {
             super(type, init);
             this.code = (init && init.code) || 0;
             this.reason = (init && init.reason) || '';
             this.wasClean = !!(init && init.wasClean);
         }
-    };
+    });
 if (typeof globalThis.ErrorEvent === 'undefined')
-    globalThis.ErrorEvent = class ErrorEvent extends globalThis.Event {
+    _defineGlobal('ErrorEvent', class ErrorEvent extends globalThis.Event {
         constructor(type, init) { super(type, init); this.error = init && init.error; this.message = (init && init.message) || ''; }
-    };
+    });
 if (typeof globalThis.CustomEvent === 'undefined')
-    globalThis.CustomEvent = class CustomEvent extends globalThis.Event {
+    _defineGlobal('CustomEvent', class CustomEvent extends globalThis.Event {
         constructor(type, init) { super(type, init); this.detail = init && init.detail; }
-    };
+    });
 if (typeof globalThis.DOMException === 'undefined') {
-    globalThis.DOMException = class DOMException extends Error {
+    _defineGlobal('DOMException', class DOMException extends Error {
         constructor(message, name) {
             super(message);
             this.name = name || 'Error';
             this.code = 0;
         }
-    };
+    });
 }
 
 if (typeof globalThis.AbortSignal === 'undefined') {
@@ -6450,10 +6450,10 @@ if (typeof globalThis.AbortSignal === 'undefined') {
             return s;
         }
     }
-    globalThis.AbortSignal = AbortSignal;
+    _defineGlobal('AbortSignal', AbortSignal);
 }
 if (typeof globalThis.AbortController === 'undefined') {
-    globalThis.AbortController = class AbortController {
+    _defineGlobal('AbortController', class AbortController {
         constructor() { this.signal = new globalThis.AbortSignal(); }
         abort(reason) {
             const s = this.signal;
@@ -6464,7 +6464,7 @@ if (typeof globalThis.AbortController === 'undefined') {
                 try { l.call(s, { type: 'abort', target: s }); } catch {}
             }
         }
-    };
+    });
 }
 
 // Some engines ship without ECMA-402 (Intl). TUIs use Intl.Segmenter for
