@@ -1,1 +1,0 @@
-exports.allowGlobals = function allowGlobals() {};
