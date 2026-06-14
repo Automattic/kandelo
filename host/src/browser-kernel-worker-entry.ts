@@ -118,6 +118,7 @@ let io: VirtualPlatformIO;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let defaultEnv: string[] = [];
+let execPrograms: Record<string, ArrayBuffer> = {};
 const ENOEXEC = 8;
 
 // Process tracking
@@ -171,8 +172,7 @@ async function resolveExecutableForLaunch(
   depth = 0,
 ): Promise<ResolvedSpawnProgram | { errno: number } | null> {
   if (depth > MAX_SHEBANG_DEPTH) return null;
-  await memfs.ensureMaterialized(path);
-  const bytes = readFileFromFs(path);
+  const bytes = execPrograms[path] ?? (await readExecFileFromFs(path));
   if (!bytes) return null;
 
   const shebang = parseShebang(bytes);
@@ -422,6 +422,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   maxPages = msg.config.maxMemoryPages;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
+  execPrograms = msg.execPrograms ?? {};
 
   // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
   // to the legacy shared-SAB path so the existing demos keep working.
@@ -634,16 +635,21 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     await waitForProcessTeardowns();
 
     let programBytes: ArrayBuffer;
+    let launchArgv = msg.argv;
     if (msg.programBytes) {
       programBytes = msg.programBytes;
     } else if (msg.programPath) {
-      // Read from shared filesystem
-      const bytes = await readExecFileFromFs(msg.programPath);
-      if (!bytes) {
+      const resolved = await resolveExecutableForLaunch(msg.programPath, msg.argv);
+      if (!resolved) {
         respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
         return;
       }
-      programBytes = bytes;
+      if ("errno" in resolved) {
+        respondError(msg.requestId, `ENOEXEC: ${msg.programPath}`);
+        return;
+      }
+      programBytes = resolved.programBytes;
+      launchArgv = resolved.argv;
     } else {
       respondError(msg.requestId, "No programBytes or programPath");
       return;
@@ -668,7 +674,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
 
     kernelWorker.registerProcess(pid, memory, [channelOffset], {
       ptrWidth,
-      argv: msg.argv,
+      argv: launchArgv,
       brkBase: layout.brkBase,
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
@@ -702,7 +708,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       memory,
       channelOffset,
       env: msg.env ?? defaultEnv,
-      argv: msg.argv,
+      argv: launchArgv,
       cwd: msg.cwd,
       ptrWidth,
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
@@ -713,7 +719,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       memory,
       programBytes,
       worker,
-      argv: msg.argv,
+      argv: launchArgv,
       channelOffset,
       ptrWidth,
       layout,

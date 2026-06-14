@@ -40,6 +40,12 @@ export interface BrowserKernelOptions {
   extraMounts?: Array<{ mountPoint: string; backend: { open: Function } }>;
   /** Environment variables for spawned processes */
   env?: string[];
+  /**
+   * Virtual exec path -> immutable program bytes. These are resolved before
+   * the guest VFS for exec/spawn, matching NodeKernelHost's execPrograms
+   * behavior without requiring browser-side host paths.
+   */
+  execPrograms?: Record<string, ArrayBuffer | Uint8Array>;
   /** Called when a process writes to stdout */
   onStdout?: (data: Uint8Array) => void;
   /** Called when a process writes to stderr */
@@ -197,6 +203,38 @@ export class BrowserKernel {
       this.memfs.mkdir("/dev", 0o755);
       this.memfs.mkdir("/etc", 0o755);
     }
+  }
+
+  private cloneExecProgramsForWorker(): {
+    execPrograms?: Record<string, ArrayBuffer>;
+    transfer: ArrayBuffer[];
+  } {
+    const source = this.options.execPrograms;
+    if (!source) return { transfer: [] };
+
+    const execPrograms: Record<string, ArrayBuffer> = {};
+    const transfer: ArrayBuffer[] = [];
+    const clones = new WeakMap<object, ArrayBuffer>();
+
+    for (const [path, bytes] of Object.entries(source)) {
+      const key = bytes as unknown as object;
+      let cloned = clones.get(key);
+      if (!cloned) {
+        cloned = new ArrayBuffer(bytes.byteLength);
+        new Uint8Array(cloned).set(
+          bytes instanceof ArrayBuffer
+            ? new Uint8Array(bytes)
+            : bytes,
+        );
+        clones.set(key, cloned);
+        transfer.push(cloned);
+      }
+      execPrograms[path] = cloned;
+    }
+
+    return Object.keys(execPrograms).length > 0
+      ? { execPrograms, transfer }
+      : { transfer: [] };
   }
 
   /**
@@ -357,6 +395,7 @@ export class BrowserKernel {
 
       // Slice so the caller's ArrayBuffer isn't detached (allows restart)
       const transferBuf = opts.kernelWasmBytes.slice(0);
+      const execProgramBytes = this.cloneExecProgramsForWorker();
       const initMsg: MainToKernelMessage = {
         type: "init",
         kernelWasmBytes: transferBuf,
@@ -364,6 +403,7 @@ export class BrowserKernel {
         vfsImage: opts.vfsImage,
         lazyUrlBase: opts.lazyUrlBase,
         rootfsImage: opts.rootfsImage,
+        execPrograms: execProgramBytes.execPrograms,
         shmSab: this.shmSab,
         workerEntryUrl,
         config: {
@@ -376,7 +416,10 @@ export class BrowserKernel {
           dnsAliases: this.options.dnsAliases,
         },
       };
-      this.kernelWorkerHandle.postMessage(initMsg, [transferBuf]);
+      this.kernelWorkerHandle.postMessage(initMsg, [
+        transferBuf,
+        ...execProgramBytes.transfer,
+      ]);
     });
   }
 
