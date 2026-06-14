@@ -16584,6 +16584,355 @@ Module.isBuiltin = function (id) {
     const builtin = _builtinForSpecifier(id);
     return !!builtin && !builtin.privateAlias && _isPublicBuiltinName(builtin.publicName);
 };
+
+const _sourceMapRegistry = new Map();
+const _sourceMapBase64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function _cloneSourceMapPayload(payload) {
+    return JSON.parse(JSON.stringify(payload));
+}
+
+function _parseModuleSourceMapURL(source) {
+    const text = String(source);
+    let found;
+    const lineRe = /\/\/[#@]\s*sourceMappingURL=([^\s]+)/g;
+    let match;
+    while ((match = lineRe.exec(text))) found = match[1];
+    const blockRe = /\/\*[#@]\s*sourceMappingURL=([^\s*]+)\s*\*\//g;
+    while ((match = blockRe.exec(text))) found = match[1];
+    return found;
+}
+
+function _lineLengthsForSource(source) {
+    return String(source).replace(/\n$/, '').split('\n').map((line) => line.length);
+}
+
+function _decodeSourceMapVLQ(segment, indexRef) {
+    let result = 0;
+    let shift = 0;
+    let continuation = true;
+    while (continuation) {
+        if (indexRef.index >= segment.length) return null;
+        const digit = _sourceMapBase64Chars.indexOf(segment.charAt(indexRef.index++));
+        if (digit < 0) return null;
+        continuation = (digit & 32) !== 0;
+        result += (digit & 31) << shift;
+        shift += 5;
+    }
+    const negative = result & 1;
+    result >>>= 1;
+    return negative ? (-result | (1 << 31)) : result;
+}
+
+function _decodeSourceMapSegment(segment) {
+    const values = [];
+    const indexRef = { index: 0 };
+    while (indexRef.index < segment.length) {
+        const value = _decodeSourceMapVLQ(segment, indexRef);
+        if (value === null) return null;
+        values.push(value);
+    }
+    return values;
+}
+
+function _sourceMapFileURL(filename) {
+    try {
+        return url.pathToFileURL(_moduleRealpath(filename)).href;
+    } catch (_) {
+        return filename;
+    }
+}
+
+function _sourceMapSourceName(source, sourceRoot, context) {
+    source = String(source);
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(source)) return source;
+    sourceRoot = sourceRoot ? String(sourceRoot) : '';
+    if (context && context.resolveSources) {
+        if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(sourceRoot)) {
+            try { return new URL(source, sourceRoot).href; } catch (_) { return sourceRoot + source; }
+        }
+        const rooted = sourceRoot && sourceRoot !== './' ? path.join(sourceRoot, source) : source;
+        const base = context.mapDir || path.dirname(context.generatedFile || process.cwd() + '/repl');
+        return _sourceMapFileURL(path.resolve(base, rooted));
+    }
+    if (!sourceRoot || sourceRoot === './') return source;
+    return path.join(sourceRoot, source);
+}
+
+function _appendSourceMapEntries(payload, context, lineOffset, columnOffset, out) {
+    if (!payload || typeof payload !== 'object') return;
+    if (Array.isArray(payload.sections)) {
+        for (const section of payload.sections) {
+            if (!section || typeof section !== 'object' || !section.map) continue;
+            const offset = section.offset || {};
+            _appendSourceMapEntries(
+                section.map,
+                context,
+                lineOffset + (Number(offset.line) || 0),
+                columnOffset + (Number(offset.column) || 0),
+                out,
+            );
+        }
+        return;
+    }
+
+    if (typeof payload.mappings !== 'string') return;
+    const sources = Array.isArray(payload.sources) ? payload.sources : [];
+    const names = Array.isArray(payload.names) ? payload.names : [];
+    let previousSource = 0;
+    let previousOriginalLine = 0;
+    let previousOriginalColumn = 0;
+    let previousName = 0;
+    const lines = payload.mappings.split(';');
+    for (let generatedLine = 0; generatedLine < lines.length; generatedLine++) {
+        let previousGeneratedColumn = 0;
+        const segments = lines[generatedLine].split(',');
+        for (const segment of segments) {
+            if (!segment) continue;
+            const decoded = _decodeSourceMapSegment(segment);
+            if (!decoded || decoded.length < 4) continue;
+            previousGeneratedColumn += decoded[0];
+            previousSource += decoded[1];
+            previousOriginalLine += decoded[2];
+            previousOriginalColumn += decoded[3];
+            if (decoded.length >= 5) previousName += decoded[4];
+            if (previousSource < 0 || previousSource >= sources.length) continue;
+            const entry = {
+                generatedLine: lineOffset + generatedLine,
+                generatedColumn: previousGeneratedColumn + (generatedLine === 0 ? columnOffset : 0),
+                originalSource: _sourceMapSourceName(sources[previousSource], payload.sourceRoot, context),
+                originalLine: previousOriginalLine,
+                originalColumn: previousOriginalColumn,
+            };
+            if (decoded.length >= 5 && previousName >= 0 && previousName < names.length) {
+                entry.name = names[previousName];
+            }
+            out.push(entry);
+        }
+    }
+}
+
+function _sourceMapEntriesByGeneratedLine(entries) {
+    entries.sort((a, b) => a.generatedLine - b.generatedLine || a.generatedColumn - b.generatedColumn);
+    const byLine = [];
+    for (const entry of entries) {
+        if (!byLine[entry.generatedLine]) byLine[entry.generatedLine] = [];
+        byLine[entry.generatedLine].push(entry);
+    }
+    return byLine;
+}
+
+class SourceMap {
+    constructor(payload, options) {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+            throw _makeInvalidArgTypeError('payload', 'object', payload);
+        }
+        this.payload = _cloneSourceMapPayload(payload);
+        if (options && Array.isArray(options.lineLengths)) {
+            this.lineLengths = options.lineLengths.slice();
+        }
+        const context = {
+            generatedFile: options && options.__kandeloGeneratedFile,
+            mapDir: options && options.__kandeloMapDir,
+            resolveSources: !!(options && options.__kandeloResolveSources),
+        };
+        const entries = [];
+        _appendSourceMapEntries(this.payload, context, 0, 0, entries);
+        this._entriesByGeneratedLine = _sourceMapEntriesByGeneratedLine(entries);
+    }
+    findEntry(generatedLine, generatedColumn) {
+        generatedLine = Number(generatedLine);
+        generatedColumn = Number(generatedColumn);
+        if (!Number.isFinite(generatedLine) || !Number.isFinite(generatedColumn)) return {};
+        generatedLine = Math.trunc(generatedLine);
+        generatedColumn = Math.trunc(generatedColumn);
+        if (generatedLine < 0 || generatedColumn < 0) return {};
+        const entries = this._entriesByGeneratedLine[generatedLine];
+        if (!entries || entries.length === 0 || generatedColumn < entries[0].generatedColumn) return {};
+        let lo = 0;
+        let hi = entries.length - 1;
+        while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (entries[mid].generatedColumn <= generatedColumn) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        const entry = entries[hi];
+        const result = {
+            generatedLine: entry.generatedLine,
+            generatedColumn: entry.generatedColumn,
+            originalSource: entry.originalSource,
+            originalLine: entry.originalLine,
+            originalColumn: entry.originalColumn,
+        };
+        if (Object.prototype.hasOwnProperty.call(entry, 'name')) result.name = entry.name;
+        return result;
+    }
+    findOrigin(lineNumber, columnNumber) {
+        lineNumber = Number(lineNumber);
+        columnNumber = Number(columnNumber);
+        if (!Number.isFinite(lineNumber) || !Number.isFinite(columnNumber)) return {};
+        const generatedLine = Math.trunc(lineNumber) - 1;
+        const generatedColumn = Math.trunc(columnNumber) - 1;
+        const entry = this.findEntry(generatedLine, generatedColumn);
+        if (!entry || !Object.prototype.hasOwnProperty.call(entry, 'originalSource')) return {};
+        const columnDelta = Math.max(0, generatedColumn - entry.generatedColumn);
+        const result = {
+            fileName: entry.originalSource,
+            lineNumber: entry.originalLine + 1,
+            columnNumber: entry.originalColumn + columnDelta + 1,
+        };
+        if (Object.prototype.hasOwnProperty.call(entry, 'name')) result.name = entry.name;
+        return result;
+    }
+}
+
+function _readSourceMapURL(sourceMapURL, filename) {
+    if (!sourceMapURL) return null;
+    if (sourceMapURL.startsWith('data:')) {
+        const comma = sourceMapURL.indexOf(',');
+        if (comma < 0) return null;
+        const meta = sourceMapURL.slice(5, comma);
+        const data = sourceMapURL.slice(comma + 1);
+        try {
+            if (/;base64/i.test(meta)) return Buffer.from(data, 'base64').toString('utf8');
+            return decodeURIComponent(data);
+        } catch (_) {
+            return null;
+        }
+    }
+    let mapPath = sourceMapURL;
+    try {
+        if (mapPath.startsWith('file://')) {
+            mapPath = url.fileURLToPath(mapPath);
+        } else if (!path.isAbsolute(mapPath)) {
+            mapPath = path.resolve(path.dirname(filename), mapPath);
+        }
+    } catch (_) {
+        return null;
+    }
+    const text = std.loadFile(mapPath);
+    if (text === null) return null;
+    return { text, mapPath };
+}
+
+function _registerSourceMapForModule(filename, source) {
+    const sourceMapURL = _parseModuleSourceMapURL(source);
+    if (!sourceMapURL) return;
+    const loaded = _readSourceMapURL(sourceMapURL, filename);
+    if (!loaded) return;
+    let payload;
+    let mapPath = null;
+    try {
+        if (typeof loaded === 'string') payload = JSON.parse(loaded);
+        else {
+            payload = JSON.parse(loaded.text);
+            mapPath = loaded.mapPath;
+        }
+    } catch (_) {
+        return;
+    }
+    const sourceMap = new SourceMap(payload, {
+        lineLengths: _lineLengthsForSource(source),
+        __kandeloGeneratedFile: filename,
+        __kandeloMapDir: mapPath ? path.dirname(mapPath) : path.dirname(filename),
+        __kandeloResolveSources: true,
+    });
+    _sourceMapRegistry.set(filename, sourceMap);
+    const realFilename = _moduleRealpath(filename);
+    _sourceMapRegistry.set(realFilename, sourceMap);
+    _sourceMapRegistry.set(_sourceMapFileURL(realFilename), sourceMap);
+}
+
+function findSourceMap(filename) {
+    if (typeof filename !== 'string' || filename.length === 0) return undefined;
+    let key = filename;
+    try {
+        if (key.startsWith('file://')) key = url.fileURLToPath(key);
+    } catch (_) {}
+    const realFilename = _moduleRealpath(key);
+    return _sourceMapRegistry.get(filename) ||
+        _sourceMapRegistry.get(key) ||
+        _sourceMapRegistry.get(realFilename) ||
+        _sourceMapRegistry.get(_sourceMapFileURL(realFilename));
+}
+
+class _NodeCompatCallSite {
+    constructor(frame) {
+        this._frame = frame;
+    }
+    getFileName() { return this._frame.fileName; }
+    getScriptNameOrSourceURL() { return this._frame.fileName; }
+    getLineNumber() { return this._frame.lineNumber; }
+    getColumnNumber() { return this._frame.columnNumber; }
+    getFunctionName() { return this._frame.functionName || null; }
+    getMethodName() { return null; }
+    getTypeName() { return null; }
+    getThis() { return undefined; }
+    getFunction() { return undefined; }
+    getEvalOrigin() { return undefined; }
+    isToplevel() { return !this._frame.functionName; }
+    isEval() { return false; }
+    isNative() { return false; }
+    isConstructor() { return false; }
+    isAsync() { return false; }
+    isPromiseAll() { return false; }
+    getPromiseIndex() { return null; }
+}
+
+function _parseStackFrameLine(line) {
+    let match = String(line).match(/^\s*at\s+(?:(.*?)\s+\()?(.+):(\d+):(\d+)\)?\s*$/);
+    if (match) {
+        return {
+            functionName: match[1] || '',
+            fileName: match[2],
+            lineNumber: Number(match[3]),
+            columnNumber: Number(match[4]),
+        };
+    }
+    match = String(line).match(/^(?:([^@]*)@)?(.+):(\d+):(\d+)\s*$/);
+    if (!match) return null;
+    return {
+        functionName: match[1] || '',
+        fileName: match[2],
+        lineNumber: Number(match[3]),
+        columnNumber: Number(match[4]),
+    };
+}
+
+function _normalizeCommonJsCallSiteFrame(frame) {
+    if (!frame || typeof frame.fileName !== 'string') return frame;
+    const module = _moduleCache[frame.fileName] || _moduleCache[_moduleRealpath(frame.fileName)];
+    if (module && frame.lineNumber > 1) {
+        frame.lineNumber -= 1;
+    }
+    return frame;
+}
+
+function _prepareErrorStackTraceForModuleLoad(error) {
+    if (!error || typeof Error.prepareStackTrace !== 'function') return;
+    const frames = [];
+    const rawStack = typeof error.stack === 'string' ? error.stack : '';
+    for (const line of rawStack.split('\n')) {
+        const frame = _normalizeCommonJsCallSiteFrame(_parseStackFrameLine(line));
+        if (frame && Number.isFinite(frame.lineNumber) && Number.isFinite(frame.columnNumber)) {
+            frames.push(new _NodeCompatCallSite(frame));
+        }
+    }
+    if (frames.length === 0 && typeof error.fileName === 'string') {
+        frames.push(new _NodeCompatCallSite({
+            functionName: '',
+            fileName: error.fileName,
+            lineNumber: Number(error.lineNumber) || 1,
+            columnNumber: Number(error.columnNumber) || 1,
+        }));
+    }
+    try {
+        error.stack = Error.prepareStackTrace(error, frames);
+    } catch (_) {}
+}
+
+Module.SourceMap = SourceMap;
+Module.findSourceMap = findSourceMap;
 Module.prototype.require = function (id) {
     const filename = this.filename || this.id || process.cwd() + '/repl';
     return _makeRequire(filename, this)(id);
@@ -16817,6 +17166,7 @@ function _makeRequire(filename, parentModule) {
             mod.loaded = true;
             return mod.exports;
         }
+        _registerSourceMapForModule(resolved, source);
 
         // Wrap and execute. Compile via evalScriptAsFunction (not `new Function`)
         // so the wrapped script's [[ScriptOrModule]] carries `resolved` — that's
@@ -16835,6 +17185,7 @@ function _makeRequire(filename, parentModule) {
         try {
             wrappedFn(mod.exports, childRequire, mod, resolved, dirname);
         } catch (e) {
+            _prepareErrorStackTraceForModuleLoad(e);
             delete _moduleCache[resolved];
             throw e;
         }
@@ -17291,6 +17642,7 @@ function _runCommonJsMain(filename) {
     mainModule.require = _makeRequire(filename, mainModule);
     let continueEventLoop = true;
     try {
+        _registerSourceMapForModule(filename, _stripShebang(source));
         const wrappedFn = _nodeNative.evalScriptAsFunction(
             '(function (exports, require, module, __filename, __dirname) {\n' +
                 _stripShebang(source) +
