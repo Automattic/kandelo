@@ -427,6 +427,8 @@ const _SLASH = '/';
 const _DOT = '.';
 const _kEvents = Symbol('kEvents');
 const _kWeakHandler = Symbol('kWeakHandler');
+const _kNodeEventTargetListenerWrapper = Symbol('kNodeEventTargetListenerWrapper');
+let _eventTargetDefaultMaxListeners = 10;
 
 function _defineGlobal(name, value) {
     Object.defineProperty(globalThis, name, {
@@ -698,19 +700,89 @@ path.win32 = { ...path, sep: '\\', delimiter: ';' };
 // ============================================================
 
 const events = (() => {
+    let defaultMaxListeners = 10;
+    let defaultCaptureRejections = false;
+    const captureRejectionSymbol = Symbol.for('nodejs.rejection');
+    const errorMonitor = Symbol.for('events.errorMonitor');
+
+    function validateMaxListeners(n) {
+        n = Number(n);
+        if (!Number.isFinite(n) || n < 0) {
+            const err = new RangeError('The value of "n" is out of range. It must be a non-negative number.');
+            err.code = 'ERR_OUT_OF_RANGE';
+            throw err;
+        }
+        return n;
+    }
+
+    function validateListener(fn) {
+        if (typeof fn !== 'function') throw _makeInvalidArgTypeError('listener', 'function', fn);
+    }
+
+    function listenerTarget(fn) {
+        return fn && fn.listener ? fn.listener : fn;
+    }
+
+    function isEventEmitter(value) {
+        return value instanceof EventEmitter ||
+            !!(value && typeof value.on === 'function' && typeof value.removeListener === 'function');
+    }
+
+    function isEventTarget(value) {
+        return !!(value &&
+            typeof value.addEventListener === 'function' &&
+            typeof value.removeEventListener === 'function');
+    }
+
+    function getEventTargetListeners(target, type) {
+        const map = target && target[_kEvents];
+        const list = map && map.get(String(type));
+        return list ? list.filter((entry) => !entry.removed).map((entry) => {
+            const listener = entry.listener;
+            return listener && listener[_kNodeEventTargetListenerWrapper] ? listener.listener : listener;
+        }) : [];
+    }
+
+    function getAbortError(signal) {
+        if (signal && signal.reason !== undefined) return signal.reason;
+        if (typeof internalErrors !== 'undefined' && internalErrors.AbortError) {
+            return new internalErrors.AbortError();
+        }
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        err.code = 'ABORT_ERR';
+        return err;
+    }
+
     class EventEmitter {
-        constructor() {
+        constructor(options) {
             this._events = Object.create(null);
-            this._maxListeners = EventEmitter.defaultMaxListeners;
+            this._maxListeners = undefined;
+            this._captureRejections = !!(options && options.captureRejections) || EventEmitter.captureRejections;
         }
 
-        static get defaultMaxListeners() { return 10; }
-        static set defaultMaxListeners(n) { /* ignored for now */ }
+        static get defaultMaxListeners() { return defaultMaxListeners; }
+        static set defaultMaxListeners(n) {
+            defaultMaxListeners = validateMaxListeners(n);
+            _eventTargetDefaultMaxListeners = defaultMaxListeners;
+        }
 
-        setMaxListeners(n) { this._maxListeners = n; return this; }
-        getMaxListeners() { return this._maxListeners; }
+        static get captureRejections() { return defaultCaptureRejections; }
+        static set captureRejections(value) { defaultCaptureRejections = !!value; }
+
+        setMaxListeners(n) { this._maxListeners = validateMaxListeners(n); return this; }
+        getMaxListeners() {
+            return this._maxListeners === undefined ? EventEmitter.defaultMaxListeners : this._maxListeners;
+        }
 
         emit(event, ...args) {
+            if (!this._events) this._events = Object.create(null);
+            if (event === 'error') {
+                const monitors = this._events[errorMonitor];
+                if (monitors && monitors.length > 0) {
+                    for (const monitor of monitors.slice()) monitor.apply(this, args);
+                }
+            }
             const listeners = this._events[event];
             if (!listeners || listeners.length === 0) {
                 if (event === 'error') {
@@ -720,67 +792,126 @@ const events = (() => {
                 return false;
             }
             const copy = listeners.slice();
-            for (const { fn, once } of copy) {
-                if (once) this.removeListener(event, fn);
-                fn.apply(this, args);
+            for (const fn of copy) {
+                const result = fn.apply(this, args);
+                if (this._captureRejections && result && typeof result.then === 'function') {
+                    result.then(undefined, (err) => this._emitRejection(event, err, ...args));
+                }
             }
             return true;
         }
 
-        on(event, fn) {
+        _emitRejection(event, err, ...args) {
+            if (typeof this[captureRejectionSymbol] === 'function') {
+                this[captureRejectionSymbol](err, event, ...args);
+            } else {
+                this.emit('error', err);
+            }
+        }
+
+        _addListener(event, fn, prepend, once) {
+            validateListener(fn);
+            if (!this._events) this._events = Object.create(null);
+            let listener = fn;
+            if (once) {
+                const self = this;
+                listener = function onceWrapper(...args) {
+                    self.removeListener(event, onceWrapper);
+                    return fn.apply(this, args);
+                };
+                Object.defineProperty(listener, 'listener', {
+                    value: fn,
+                    configurable: true,
+                });
+            }
+            if (event !== 'newListener' && this._events.newListener && this._events.newListener.length > 0) {
+                this.emit('newListener', event, fn);
+            }
             if (!this._events[event]) this._events[event] = [];
-            this._events[event].push({ fn, once: false });
+            if (prepend) this._events[event].unshift(listener);
+            else this._events[event].push(listener);
             return this;
+        }
+
+        on(event, fn) {
+            return this._addListener(event, fn, false, false);
         }
 
         once(event, fn) {
-            if (!this._events[event]) this._events[event] = [];
-            this._events[event].push({ fn, once: true });
-            return this;
+            return this._addListener(event, fn, false, true);
         }
 
         off(event, fn) {
+            validateListener(fn);
+            if (!this._events) this._events = Object.create(null);
             const list = this._events[event];
             if (!list) return this;
-            this._events[event] = list.filter(l => l.fn !== fn);
+            for (let i = list.length - 1; i >= 0; i--) {
+                const candidate = list[i];
+                if (candidate === fn || candidate.listener === fn) {
+                    list.splice(i, 1);
+                    if (list.length === 0) delete this._events[event];
+                    if (event !== 'removeListener' && this._events.removeListener && this._events.removeListener.length > 0) {
+                        this.emit('removeListener', event, listenerTarget(candidate));
+                    }
+                    break;
+                }
+            }
             return this;
         }
 
         removeAllListeners(event) {
-            if (event) {
+            if (!this._events) this._events = Object.create(null);
+            const hasRemoveListener = this._events.removeListener && this._events.removeListener.length > 0;
+            if (event !== undefined) {
+                const list = this._events[event];
+                if (!list) return this;
                 delete this._events[event];
+                if (hasRemoveListener && event !== 'removeListener') {
+                    for (const fn of list.slice().reverse()) {
+                        this.emit('removeListener', event, listenerTarget(fn));
+                    }
+                }
             } else {
+                const names = Reflect.ownKeys(this._events);
+                for (const name of names) {
+                    if (name === 'removeListener') continue;
+                    this.removeAllListeners(name);
+                }
+                if (this._events.removeListener) delete this._events.removeListener;
                 this._events = Object.create(null);
             }
             return this;
         }
 
         listeners(event) {
-            return (this._events[event] || []).map(l => l.fn);
+            if (!this._events) this._events = Object.create(null);
+            return (this._events[event] || []).map(listenerTarget);
         }
 
         rawListeners(event) {
+            if (!this._events) this._events = Object.create(null);
             return (this._events[event] || []).slice();
         }
 
-        listenerCount(event) {
-            return (this._events[event] || []).length;
+        listenerCount(event, listener) {
+            if (!this._events) this._events = Object.create(null);
+            const list = this._events[event] || [];
+            if (listener === undefined) return list.length;
+            return list.filter((candidate) => candidate === listener || candidate.listener === listener).length;
         }
 
         eventNames() {
+            if (!this._events) this._events = Object.create(null);
             return Reflect.ownKeys(this._events).filter(k => this._events[k].length > 0);
         }
 
         prependListener(event, fn) {
-            if (!this._events[event]) this._events[event] = [];
-            this._events[event].unshift({ fn, once: false });
-            return this;
+            return this._addListener(event, fn, true, false);
         }
 
         prependOnceListener(event, fn) {
-            if (!this._events[event]) this._events[event] = [];
-            this._events[event].unshift({ fn, once: true });
-            return this;
+            return this._addListener(event, fn, true, true);
         }
     }
 
@@ -789,18 +920,92 @@ const events = (() => {
     // the same body — `this.<half>` aliasing would infinite-loop.
     EventEmitter.prototype.addListener = EventEmitter.prototype.on;
     EventEmitter.prototype.removeListener = EventEmitter.prototype.off;
+    EventEmitter.listenerCount = function(emitter, event) {
+        return emitter && typeof emitter.listenerCount === 'function' ? emitter.listenerCount(event) : 0;
+    };
+    EventEmitter.captureRejectionSymbol = captureRejectionSymbol;
+    EventEmitter.errorMonitor = errorMonitor;
 
     // require('events') returns the EventEmitter class itself (Node compat).
     // Subclassing via `class Foo extends require('events')` only works if the
     // export IS the class — extending a function that returns `new EE()` makes
     // super() override `this`, leaving derived methods on an unused prototype.
     EventEmitter.EventEmitter = EventEmitter;
-    EventEmitter.once = function(emitter, event) {
+    EventEmitter.getEventListeners = function(emitterOrTarget, event) {
+        if (isEventEmitter(emitterOrTarget)) return emitterOrTarget.listeners(event);
+        if (isEventTarget(emitterOrTarget)) return getEventTargetListeners(emitterOrTarget, event);
+        throw _makeInvalidArgTypeError('emitter', 'EventEmitter or EventTarget', emitterOrTarget);
+    };
+    EventEmitter.getMaxListeners = function(emitterOrTarget) {
+        if (emitterOrTarget === undefined) return EventEmitter.defaultMaxListeners;
+        if (emitterOrTarget && typeof emitterOrTarget.getMaxListeners === 'function') {
+            return emitterOrTarget.getMaxListeners();
+        }
+        if (isEventTarget(emitterOrTarget)) {
+            return emitterOrTarget._maxListeners === undefined
+                ? _eventTargetDefaultMaxListeners
+                : emitterOrTarget._maxListeners;
+        }
+        throw _makeInvalidArgTypeError('emitter', 'EventEmitter or EventTarget', emitterOrTarget);
+    };
+    EventEmitter.setMaxListeners = function(n, ...eventTargets) {
+        n = validateMaxListeners(n);
+        if (eventTargets.length === 0) {
+            EventEmitter.defaultMaxListeners = n;
+            return;
+        }
+        for (const target of eventTargets) {
+            if (target && typeof target.setMaxListeners === 'function') {
+                target.setMaxListeners(n);
+            } else if (isEventTarget(target)) {
+                target._maxListeners = n;
+            } else {
+                throw _makeInvalidArgTypeError('eventTargets', 'EventEmitter or EventTarget', target);
+            }
+        }
+    };
+    EventEmitter.addAbortListener = function(signal, listener) {
+        validateListener(listener);
+        if (!(signal instanceof globalThis.AbortSignal)) {
+            throw _makeInvalidArgTypeError('signal', 'AbortSignal', signal);
+        }
+        if (signal.aborted) {
+            queueMicrotask(() => listener.call(signal));
+            return { [Symbol.dispose]() {} };
+        }
+        signal.addEventListener('abort', listener, { once: true });
+        return {
+            [Symbol.dispose]() { signal.removeEventListener('abort', listener); },
+        };
+    };
+    EventEmitter.once = function(emitter, event, options) {
         return new Promise((resolve, reject) => {
+            if (options !== undefined && (options === null || typeof options !== 'object')) {
+                reject(_makeInvalidArgTypeError('options', 'object', options));
+                return;
+            }
+            const signal = options && options.signal;
+            if (signal !== undefined && !(signal instanceof globalThis.AbortSignal)) {
+                reject(_makeInvalidArgTypeError('signal', 'AbortSignal', signal));
+                return;
+            }
+            if (!isEventEmitter(emitter) && !isEventTarget(emitter)) {
+                reject(_makeInvalidArgTypeError('emitter', 'EventEmitter or EventTarget', emitter));
+                return;
+            }
+            if (signal && signal.aborted) {
+                reject(getAbortError(signal));
+                return;
+            }
             let settled = false;
             const cleanup = () => {
-                emitter.removeListener(event, onEvent);
-                if (event !== 'error') emitter.removeListener('error', onError);
+                if (isEventEmitter(emitter)) {
+                    emitter.removeListener(event, onEvent);
+                    if (event !== 'error') emitter.removeListener('error', onError);
+                } else {
+                    emitter.removeEventListener(event, onTargetEvent);
+                }
+                if (signal) signal.removeEventListener('abort', onAbort);
             };
             const onEvent = (...args) => {
                 if (settled) return;
@@ -808,19 +1013,119 @@ const events = (() => {
                 cleanup();
                 resolve(args);
             };
+            const onTargetEvent = (ev) => onEvent(ev);
             const onError = (err) => {
                 if (settled) return;
                 settled = true;
                 cleanup();
                 reject(err);
             };
+            const onAbort = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                reject(getAbortError(signal));
+            };
+            if (signal) signal.addEventListener('abort', onAbort, { once: true });
             // Use .on() plus explicit cleanup instead of emitter.once(). Some
             // npm streams cache selected metadata events and replay them from a
             // custom .on() implementation; routing events.once() through .once()
             // misses those replayed events and can leave callers hung forever.
-            if (event !== 'error') emitter.on('error', onError);
-            emitter.on(event, onEvent);
+            if (isEventEmitter(emitter)) {
+                if (event !== 'error') emitter.on('error', onError);
+                emitter.on(event, onEvent);
+            } else {
+                emitter.addEventListener(event, onTargetEvent, { once: true });
+            }
         });
+    };
+    EventEmitter.on = function(emitter, event, options) {
+        if (options !== undefined && (options === null || typeof options !== 'object')) {
+            throw _makeInvalidArgTypeError('options', 'object', options);
+        }
+        if (!isEventEmitter(emitter) && !isEventTarget(emitter)) {
+            throw _makeInvalidArgTypeError('emitter', 'EventEmitter or EventTarget', emitter);
+        }
+        const signal = options && options.signal;
+        if (signal !== undefined && !(signal instanceof globalThis.AbortSignal)) {
+            throw _makeInvalidArgTypeError('signal', 'AbortSignal', signal);
+        }
+        const queue = [];
+        const waiting = [];
+        let error;
+        let finished = false;
+        const settleNext = () => {
+            while (waiting.length > 0 && queue.length > 0) {
+                waiting.shift().resolve({ value: queue.shift(), done: false });
+            }
+            if (finished || error) {
+                while (waiting.length > 0) {
+                    const waiter = waiting.shift();
+                    if (error) waiter.reject(error);
+                    else waiter.resolve({ value: undefined, done: true });
+                }
+            }
+        };
+        const cleanup = () => {
+            if (isEventEmitter(emitter)) {
+                emitter.removeListener(event, onEvent);
+                emitter.removeListener('error', onError);
+            } else {
+                emitter.removeEventListener(event, onTargetEvent);
+            }
+            if (signal) signal.removeEventListener('abort', onAbort);
+        };
+        const close = () => {
+            if (finished) return;
+            finished = true;
+            cleanup();
+            settleNext();
+        };
+        const onEvent = (...args) => {
+            queue.push(args);
+            settleNext();
+        };
+        const onTargetEvent = (ev) => onEvent(ev);
+        const onError = (err) => {
+            error = err;
+            cleanup();
+            settleNext();
+        };
+        const onAbort = () => {
+            error = getAbortError(signal);
+            cleanup();
+            settleNext();
+        };
+        if (signal && signal.aborted) onAbort();
+        else if (isEventEmitter(emitter)) {
+            emitter.on(event, onEvent);
+            if (event !== 'error') emitter.on('error', onError);
+        } else {
+            emitter.addEventListener(event, onTargetEvent);
+        }
+        if (signal && !signal.aborted) signal.addEventListener('abort', onAbort, { once: true });
+        return {
+            [Symbol.asyncIterator]() { return this; },
+            next() {
+                if (queue.length > 0) return Promise.resolve({ value: queue.shift(), done: false });
+                if (error) return Promise.reject(error);
+                if (finished) return Promise.resolve({ value: undefined, done: true });
+                return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+            },
+            return() {
+                close();
+                return Promise.resolve({ value: undefined, done: true });
+            },
+            throw(err) {
+                if (!(err instanceof Error)) {
+                    throw _makeInvalidArgTypeError('EventEmitter.AsyncIterator', 'an instance of Error', err);
+                }
+                error = err;
+                cleanup();
+                settleNext();
+                return Promise.reject(err);
+            },
+        };
     };
     return EventEmitter;
 })();
@@ -14214,12 +14519,27 @@ for (const [name, value] of Object.entries({
 
 class KandeloEventTarget {
     constructor() {
+        const listeners = new Map();
         Object.defineProperty(this, '_eventTargetListeners', {
-            value: new Map(),
+            value: listeners,
+            configurable: true,
+        });
+        Object.defineProperty(this, _kEvents, {
+            value: listeners,
+            configurable: true,
+        });
+        Object.defineProperty(this, '_maxListeners', {
+            value: _eventTargetDefaultMaxListeners,
+            writable: true,
             configurable: true,
         });
     }
     addEventListener(type, listener, options) {
+        if (!(this instanceof KandeloEventTarget)) {
+            const err = new TypeError('Value of "this" must be of type EventTarget');
+            err.code = 'ERR_INVALID_THIS';
+            throw err;
+        }
         if (arguments.length < 2) {
             const err = new TypeError('The "type" and "listener" arguments must be specified');
             err.code = 'ERR_MISSING_ARGS';
@@ -14256,23 +14576,44 @@ class KandeloEventTarget {
             entry.signal.addEventListener('abort', entry.abortHandler, { once: true });
         }
         list.push(entry);
+        const max = this._maxListeners === undefined ? _eventTargetDefaultMaxListeners : this._maxListeners;
+        if (max > 0 && list.length > max && !list.warned) {
+            list.warned = true;
+            _emitEventTargetMemoryWarning(this, type, list.length);
+        }
         return undefined;
     }
     removeEventListener(type, listener, options) {
+        if (!(this instanceof KandeloEventTarget)) {
+            const err = new TypeError('Value of "this" must be of type EventTarget');
+            err.code = 'ERR_INVALID_THIS';
+            throw err;
+        }
         type = String(type);
         if (listener == null) return undefined;
         const capture = _eventListenerOptions(options).capture;
         const list = this._eventTargetListeners.get(type);
         if (!list) return undefined;
         for (const entry of list) {
-            if (!entry.removed && entry.listener === listener && entry.capture === capture) {
+            if (!entry.removed &&
+                (entry.listener === listener ||
+                    (entry.listener &&
+                        entry.listener[_kNodeEventTargetListenerWrapper] &&
+                        entry.listener.listener === listener)) &&
+                entry.capture === capture) {
                 entry.removed = true;
                 if (entry.signal && entry.abortHandler) {
                     entry.signal.removeEventListener('abort', entry.abortHandler);
                 }
             }
         }
-        this._eventTargetListeners.set(type, list.filter((entry) => !entry.removed));
+        const remaining = list.filter((entry) => !entry.removed);
+        if (remaining.length === 0) {
+            this._eventTargetListeners.delete(type);
+        } else {
+            remaining.warned = list.warned;
+            this._eventTargetListeners.set(type, remaining);
+        }
         return undefined;
     }
     dispatchEvent(event) {
@@ -14325,33 +14666,81 @@ class KandeloNodeEventTarget extends KandeloEventTarget {
         super();
         this._maxListeners = KandeloNodeEventTarget.defaultMaxListeners;
     }
-    setMaxListeners(n) { this._maxListeners = n; return this; }
-    getMaxListeners() { return this._maxListeners; }
+    setMaxListeners(n) {
+        _assertNodeEventTargetThis(this);
+        n = Number(n);
+        if (!Number.isFinite(n) || n < 0) {
+            const err = new RangeError('The value of "n" is out of range. It must be a non-negative number.');
+            err.code = 'ERR_OUT_OF_RANGE';
+            throw err;
+        }
+        this._maxListeners = n;
+        return this;
+    }
+    getMaxListeners() {
+        _assertNodeEventTargetThis(this);
+        return this._maxListeners;
+    }
     eventNames() {
+        _assertNodeEventTargetThis(this);
         return Array.from(this._eventTargetListeners.keys())
             .filter((name) => (this._eventTargetListeners.get(name) || []).length > 0);
     }
-    listenerCount(type) {
+    listenerCount(type, listener) {
+        _assertNodeEventTargetThis(this);
         const list = this._eventTargetListeners.get(String(type));
-        return list ? list.filter((entry) => !entry.removed).length : 0;
+        if (!list) return 0;
+        const active = list.filter((entry) => !entry.removed);
+        if (listener === undefined) return active.length;
+        return active.filter((entry) => entry.listener === listener ||
+            (entry.listener &&
+                entry.listener[_kNodeEventTargetListenerWrapper] &&
+                entry.listener.listener === listener)).length;
     }
-    on(type, listener, options) { this.addEventListener(type, listener, options); return this; }
+    _wrapNodeListener(listener) {
+        if (typeof listener !== 'function') return listener;
+        const wrapped = function nodeEventTargetListener(event) {
+            const value = event instanceof KandeloCustomEvent ? event.detail : event;
+            return listener.call(this, value);
+        };
+        Object.defineProperty(wrapped, 'listener', {
+            value: listener,
+            configurable: true,
+        });
+        Object.defineProperty(wrapped, _kNodeEventTargetListenerWrapper, {
+            value: true,
+            configurable: true,
+        });
+        return wrapped;
+    }
+    on(type, listener, options) {
+        _assertNodeEventTargetThis(this);
+        this.addEventListener(type, this._wrapNodeListener(listener), options);
+        return this;
+    }
     addListener(type, listener, options) { return this.on(type, listener, options); }
     once(type, listener, options) {
+        _assertNodeEventTargetThis(this);
         const opts = options && typeof options === 'object'
             ? Object.assign({}, options, { once: true })
             : { once: true };
-        this.addEventListener(type, listener, opts);
+        this.addEventListener(type, this._wrapNodeListener(listener), opts);
         return this;
     }
-    off(type, listener, options) { this.removeEventListener(type, listener, options); return this; }
+    off(type, listener, options) {
+        _assertNodeEventTargetThis(this);
+        this.removeEventListener(type, listener, options);
+        return this;
+    }
     removeListener(type, listener, options) { return this.off(type, listener, options); }
     removeAllListeners(type) {
+        _assertNodeEventTargetThis(this);
         if (type === undefined) this._eventTargetListeners.clear();
         else this._eventTargetListeners.delete(String(type));
         return this;
     }
     emit(type, ...args) {
+        _assertNodeEventTargetThis(this);
         if (arguments.length === 0) throw _makeInvalidArgTypeError('type', 'string', type);
         const event = args[0] instanceof KandeloEvent
             ? args[0]
@@ -14359,7 +14748,18 @@ class KandeloNodeEventTarget extends KandeloEventTarget {
         return this.dispatchEvent(event);
     }
 }
-KandeloNodeEventTarget.defaultMaxListeners = 10;
+function _assertNodeEventTargetThis(value) {
+    if (!(value instanceof KandeloNodeEventTarget)) {
+        const err = new TypeError('Value of "this" must be of type NodeEventTarget');
+        err.code = 'ERR_INVALID_THIS';
+        throw err;
+    }
+}
+Object.defineProperty(KandeloNodeEventTarget, 'defaultMaxListeners', {
+    get() { return _eventTargetDefaultMaxListeners; },
+    set(value) { _eventTargetDefaultMaxListeners = Number(value); },
+    configurable: true,
+});
 Object.defineProperty(KandeloNodeEventTarget, 'name', { value: 'NodeEventTarget' });
 Object.defineProperty(KandeloEvent.prototype, Symbol.toStringTag, {
     value: 'Event',
@@ -14397,6 +14797,20 @@ function _eventListenerOptions(options) {
         passive: !!options.passive,
         signal: options.signal,
     };
+}
+
+function _emitEventTargetMemoryWarning(target, type, count) {
+    if (typeof process === 'undefined' || typeof process.emitWarning !== 'function') return;
+    const targetName = target && target.constructor && target.constructor.name || 'EventTarget';
+    const err = new Error(
+        `Possible EventTarget memory leak detected. ${count} ${type} listeners added to ${targetName}. ` +
+        'Use events.setMaxListeners() to increase limit',
+    );
+    err.name = 'MaxListenersExceededWarning';
+    err.target = target;
+    err.count = count;
+    err.type = type;
+    process.emitWarning(err);
 }
 
 function _defineEventHandler(target, name, eventName) {
@@ -14582,6 +14996,7 @@ function _abortSignal(signal, reason) {
     signal.dispatchEvent(new KandeloEvent('abort'));
     const list = signal._eventTargetListeners.get('abort');
     if (list) list.length = 0;
+    signal._eventTargetListeners.delete('abort');
 }
 
 _defineGlobal('Event', KandeloEvent);

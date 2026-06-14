@@ -257,6 +257,81 @@ if (failures.length) throw new Error(failures.join("\\n"));
 `);
   });
 
+  it("matches Node events listener bookkeeping and EventTarget helper semantics", () => {
+    runBootstrapSmoke(`
+const assert = require("assert");
+const events = require("events");
+const { NodeEventTarget, kEvents } = require("internal/event_target");
+const { EventEmitter, getEventListeners, getMaxListeners, setMaxListeners, once } = events;
+
+const emitter = new EventEmitter();
+const calls = [];
+function handler(value) { calls.push(value); }
+assert.throws(() => emitter.on("bad", {}), { code: "ERR_INVALID_ARG_TYPE" });
+emitter.once("event", handler);
+emitter.on("event", handler);
+assert.strictEqual(emitter.listenerCount("event"), 2);
+assert.strictEqual(emitter.listenerCount("event", handler), 2);
+assert.strictEqual(emitter.rawListeners("event")[0].listener, handler);
+assert.deepStrictEqual(emitter.listeners("event"), [handler, handler]);
+emitter.emit("event", "first");
+assert.deepStrictEqual(calls, ["first", "first"]);
+assert.strictEqual(emitter.listenerCount("event", handler), 1);
+emitter.removeListener("event", handler);
+assert.strictEqual(emitter.listenerCount("event"), 0);
+
+const sideEffects = [];
+function side() {}
+emitter.on("newListener", (name, fn) => sideEffects.push("new:" + String(name) + ":" + (fn === side)));
+emitter.on("removeListener", (name, fn) => sideEffects.push("remove:" + String(name) + ":" + (fn === side)));
+emitter.once("side", side);
+emitter.emit("side");
+assert.deepStrictEqual(sideEffects.slice(-2), ["new:side:true", "remove:side:true"]);
+
+const target = new EventTarget();
+function targetListener() {}
+target.addEventListener("foo", targetListener);
+target.addEventListener("foo", targetListener);
+assert.deepStrictEqual(getEventListeners(target, "foo"), [targetListener]);
+assert.strictEqual(getMaxListeners(target), events.defaultMaxListeners);
+setMaxListeners(101, emitter, target);
+assert.strictEqual(getMaxListeners(emitter), 101);
+assert.strictEqual(getMaxListeners(target), 101);
+
+const ac = new AbortController();
+const aborted = once(emitter, "never", { signal: ac.signal }).catch((err) => err.name);
+assert.strictEqual(ac.signal[kEvents].size, 1);
+ac.abort();
+if (typeof drainJobQueue === "function") drainJobQueue();
+assert.strictEqual(await aborted, "AbortError");
+assert.strictEqual(ac.signal[kEvents].size, 0);
+
+const captured = [];
+const rejecting = new EventEmitter({ captureRejections: true });
+rejecting.on("error", (err) => captured.push(err.message));
+rejecting.on("boom", async () => { throw new Error("captured"); });
+rejecting.emit("boom");
+if (typeof drainJobQueue === "function") drainJobQueue();
+await Promise.resolve();
+if (typeof drainJobQueue === "function") drainJobQueue();
+assert.deepStrictEqual(captured, ["captured"]);
+
+const nodeTarget = new NodeEventTarget();
+const payloads = [];
+function nodeListener(value) { payloads.push(value); }
+nodeTarget.on("foo", nodeListener);
+nodeTarget.addEventListener("foo", (event) => payloads.push(event.detail));
+assert.strictEqual(nodeTarget.listenerCount("foo", nodeListener), 1);
+nodeTarget.emit("foo", "bar", "ignored");
+assert.deepStrictEqual(payloads, ["bar", "bar"]);
+nodeTarget.removeListener("foo", nodeListener);
+assert.strictEqual(nodeTarget.listenerCount("foo", nodeListener), 0);
+assert.throws(() => Reflect.apply(NodeEventTarget.prototype.getMaxListeners, {}, []), {
+  code: "ERR_INVALID_THIS",
+});
+`);
+  });
+
   it("matches supported worker_threads MessagePort semantics", () => {
     runBootstrapSmoke(`
 const assert = require("assert");
