@@ -461,6 +461,13 @@ function _makeNodeError(message, code, errno, syscall, path) {
     return err;
 }
 
+function _makeUnsupportedPlatformError(feature) {
+    return _makeNodeError(
+        `${feature} is not supported in Kandelo's SpiderMonkey Node compatibility runtime`,
+        'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
+    );
+}
+
 function _makeInvalidArgTypeError(name, expected, value) {
     const actual = value === null ? 'null' :
                    Array.isArray(value) ? 'an instance of Array' :
@@ -481,13 +488,6 @@ function _validateString(value, name) {
     if (typeof value !== 'string') {
         throw _makeInvalidArgTypeError(name, 'string', value);
     }
-}
-
-function _makeUnsupportedPlatformError(feature) {
-    return _makeNodeError(
-        `${feature} is not supported in Kandelo's SpiderMonkey Node compatibility runtime`,
-        'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM',
-    );
 }
 
 function _throwErrno(errno, syscall, path) {
@@ -5907,7 +5907,39 @@ const child_process = (() => {
     exec[kPromisify] = makePromisified(exec);
     execFile[kPromisify] = makePromisified(execFile);
 
-    return { ChildProcess, execSync, execFileSync, spawnSync, exec, execFile, spawn };
+    function fork(modulePath, args, options) {
+        _validateString(modulePath, 'modulePath');
+        if (args === undefined) {
+            args = [];
+        } else if (!Array.isArray(args) && options === undefined && args && typeof args === 'object') {
+            options = args;
+            args = [];
+        }
+        if (!Array.isArray(args)) {
+            throw _makeInvalidArgTypeError('args', 'Array', args);
+        }
+        options = options || {};
+        const execPath = options.execPath || process.execPath || 'node';
+        const execArgv = Array.isArray(options.execArgv) ? options.execArgv : process.execArgv || [];
+        const child = spawn(execPath, [...execArgv, modulePath, ...args], options);
+        child.connected = false;
+        child.channel = undefined;
+        child.disconnect = () => {
+            child.connected = false;
+            child.emit('disconnect');
+        };
+        child.send = (_message, _sendHandle, _options, callback) => {
+            if (typeof _sendHandle === 'function') callback = _sendHandle;
+            if (typeof _options === 'function') callback = _options;
+            const err = _makeUnsupportedPlatformError('child_process.fork IPC');
+            if (typeof callback === 'function') queueMicrotask(() => callback(err));
+            else queueMicrotask(() => child.emit('error', err));
+            return false;
+        };
+        return child;
+    }
+
+    return { ChildProcess, execSync, execFileSync, spawnSync, exec, execFile, spawn, fork };
 })();
 
 // ============================================================
