@@ -7706,136 +7706,429 @@ const string_decoder = (() => {
 // ============================================================
 
 const timers = (() => {
-    // js_std_add_helpers installs setTimeout/setInterval that return a raw
-    // int64 timer id. Node returns an object with .unref()/.refresh(); npm's
-    // Display calls both on its spinner timers, so wrap the id in an object.
-    // clearAny() unwraps _id when the wrapper is passed back to clear*().
     const TIMEOUT_MAX = 2147483647;
-    let nextImmediateId = 1;
-    const immediateQueue = [];
-    const normalizeDelay = (ms) => {
-        const value = Number(ms);
-        if (!Number.isFinite(value) || value < 1 || value > TIMEOUT_MAX) return 1;
-        return Math.trunc(value);
-    };
-    const wrap = (id, resource, resourceId) => ({
-        _id: id,
-        _resource: resource,
-        _resourceId: resourceId,
-        _destroyed: false,
-        unref() { return this; },
-        ref() { return this; },
-        hasRef() { return true; },
-        refresh() { return this; },
-        [Symbol.dispose]() { clearAny(this); },
-    });
-    const destroyTimer = (t) => {
-        if (!t || typeof t !== 'object' || t._destroyed) return;
-        t._destroyed = true;
-        _untrackActiveResource(t._resourceId);
-        if (t._resource) t._resource.emitDestroy();
-    };
-    const clearAny = (t) => {
-        if (t == null) return;
-        if (typeof t === 'object') {
-            os.clearTimeout(t._id);
-            destroyTimer(t);
+    const kTimerHandle = Symbol('kandelo.timerHandle');
+    const kLegacyTimerState = Symbol('kandelo.legacyTimerState');
+    const handlesByPrimitiveId = new Map();
+    const liveHandles = new Set();
+    const liveLegacyItems = new Set();
+    const emittedLegacyDeprecations = new Set();
+    let nextPrimitiveId = 1;
+
+    function validateCallback(callback) {
+        if (typeof callback !== 'function') {
+            throw _makeInvalidArgTypeError('callback', 'function', callback);
+        }
+    }
+
+    function timeoutRangeError(value) {
+        const err = new RangeError(
+            'The value of "msecs" is out of range. ' +
+            'It must be a non-negative finite number. ' +
+            `Received ${value}`
+        );
+        err.code = 'ERR_OUT_OF_RANGE';
+        return err;
+    }
+
+    function emitOverflowWarning(value) {
+        process.emitWarning(
+            `${value} does not fit into a 32-bit signed integer.\nTimeout duration was set to 1.`,
+            'TimeoutOverflowWarning'
+        );
+    }
+
+    function emitLegacyOverflowWarning(value) {
+        process.emitWarning(
+            `${value} does not fit into a 32-bit signed integer.\nTimer duration was truncated to ${TIMEOUT_MAX}.`,
+            'TimeoutOverflowWarning'
+        );
+    }
+
+    function emitLegacyDeprecation(code, message) {
+        if (emittedLegacyDeprecations.has(code)) return;
+        emittedLegacyDeprecations.add(code);
+        process.emitWarning(message, 'DeprecationWarning', code);
+    }
+
+    function normalizeDelay(value, options) {
+        const opts = options || {};
+        if (opts.legacyEnroll && typeof value !== 'number') {
+            throw _makeInvalidArgTypeError('msecs', 'number', value);
+        }
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 0) {
+            if (opts.legacyEnroll) throw timeoutRangeError(value);
+            return 1;
+        }
+        if (n > TIMEOUT_MAX) {
+            if (opts.legacyEnroll) {
+                emitLegacyOverflowWarning(value);
+                return TIMEOUT_MAX;
+            }
+            emitOverflowWarning(value);
+            return 1;
+        }
+        if (opts.preserveZero && n === 0) return 0;
+        return n >= 1 ? n : 1;
+    }
+
+    function scheduledDelay(value, preserveZero) {
+        const n = Math.trunc(Number(value) || 0);
+        return preserveZero ? Math.max(0, n) : Math.max(1, n);
+    }
+
+    function markLinked(item) {
+        item._idleStart = Date.now();
+        item._idlePrev = item;
+        item._idleNext = item;
+    }
+
+    function clearNativeId(id) {
+        if (id !== undefined && id !== null && id !== 0) os.clearTimeout(id);
+    }
+
+    function untrackHandle(handle) {
+        if (handle._resourceId) {
+            _untrackActiveResource(handle._resourceId);
+            handle._resourceId = 0;
+        }
+    }
+
+    function destroyHandle(handle, clearCallback) {
+        if (!handle || handle._destroyed) return;
+        clearNativeId(handle._nativeId);
+        handle._nativeId = 0;
+        handle._id = 0;
+        handle._destroyed = true;
+        if (handle._kind === 'Immediate') handle._refed = false;
+        handle._idleTimeout = -1;
+        handle._idlePrev = null;
+        handle._idleNext = null;
+        liveHandles.delete(handle);
+        handlesByPrimitiveId.delete(handle._primitiveId);
+        untrackHandle(handle);
+        if (clearCallback) {
+            if (handle._kind === 'Immediate') handle._onImmediate = null;
+            else handle._onTimeout = null;
+        }
+    }
+
+    function scheduleHandle(handle, delayOverride) {
+        if (!handle || typeof handle._callback !== 'function') return handle;
+        clearNativeId(handle._nativeId);
+        handle._destroyed = false;
+        markLinked(handle);
+        liveHandles.add(handle);
+        handlesByPrimitiveId.set(handle._primitiveId, handle);
+        const delay = delayOverride === undefined
+            ? scheduledDelay(handle._idleTimeout, false)
+            : scheduledDelay(delayOverride, true);
+        const fire = handle._kind === 'Immediate'
+            ? () => fireImmediate(handle)
+            : () => fireTimeout(handle);
+        handle._nativeId = os.setTimeout(fire, delay);
+        handle._id = handle._nativeId;
+        return handle;
+    }
+
+    function callTimerCallback(callback, receiver, args) {
+        try {
+            callback.apply(receiver, args || []);
+        } catch (err) {
+            if (!process._handleUncaughtException(err)) throw err;
+        }
+    }
+
+    function shouldRunHandle(handle) {
+        return !handle || handle._refed !== false || hasRefedHandles();
+    }
+
+    function shouldRunLegacyItem(item) {
+        const state = item && item[kLegacyTimerState];
+        return !state || state.refed !== false || hasRefedHandles();
+    }
+
+    function fireImmediate(handle) {
+        if (!handle || handle._destroyed) return;
+        handle._nativeId = 0;
+        handle._id = 0;
+        if (!shouldRunHandle(handle)) return;
+        const callback = handle._onImmediate;
+        const args = handle._timerArgs || [];
+        destroyHandle(handle, true);
+        if (typeof callback === 'function') callTimerCallback(callback, handle, args);
+    }
+
+    function fireTimeout(handle) {
+        if (!handle || handle._destroyed) return;
+        handle._nativeId = 0;
+        handle._id = 0;
+        if (!shouldRunHandle(handle)) return;
+        const callback = handle._onTimeout;
+        if (typeof callback !== 'function') {
+            destroyHandle(handle, true);
             return;
         }
-        os.clearTimeout(t);
-    };
-    const clearImmediateHandle = (t) => {
-        if (t == null) return;
-        if (typeof t === 'object') destroyTimer(t);
-    };
-    const runImmediateTurn = () => {
-        const turn = immediateQueue.splice(0, immediateQueue.length);
-        let ran = 0;
-        for (const entry of turn) {
-            const t = entry.handle;
-            if (t._destroyed) continue;
-            t._destroyed = true;
-            _untrackActiveResource(t._resourceId);
-            try {
-                t._resource.runInAsyncScope(entry.fn, t, ...entry.args);
-            } finally {
-                if (t._resource) t._resource.emitDestroy();
+        try {
+            callTimerCallback(callback, handle, handle._timerArgs || []);
+        } finally {
+            if (handle._destroyed) return;
+            if (handle._nativeId) return;
+            if (handle._repeat !== null && handle._repeat !== undefined &&
+                handle._idleTimeout >= 0 && typeof handle._onTimeout === 'function') {
+                scheduleHandle(handle, handle._repeat);
+            } else {
+                destroyHandle(handle, true);
             }
-            ran++;
         }
-        return ran;
-    };
-    const hasImmediate = () => immediateQueue.some((entry) => !entry.handle._destroyed);
-    const scheduleInterval = (t, fn, delay, args) => {
-        t._id = os.setTimeout(() => {
-            if (t._destroyed) return;
-            t._resource.runInAsyncScope(fn, t, ...args);
-            if (!t._destroyed) scheduleInterval(t, fn, delay, args);
-        }, delay);
-    };
+    }
+
+    class Timeout {
+        constructor(callback, after, args, isRepeat, isRefed) {
+            validateCallback(callback);
+            const delay = normalizeDelay(after);
+            this._idleTimeout = delay;
+            this._idlePrev = this;
+            this._idleNext = this;
+            this._idleStart = null;
+            this._onTimeout = callback;
+            this._callback = callback;
+            this._timerArgs = args || [];
+            this._repeat = isRepeat ? delay : null;
+            this._destroyed = false;
+            this._refed = isRefed !== false;
+            this._kind = 'Timeout';
+            this._resourceId = _trackActiveResource('Timeout');
+            this._primitiveId = nextPrimitiveId++;
+            this._nativeId = 0;
+            this._id = 0;
+            Object.defineProperty(this, kTimerHandle, { value: true });
+            scheduleHandle(this, delay);
+        }
+
+        unref() { this._refed = false; return this; }
+        ref() { this._refed = true; return this; }
+        hasRef() { return this._refed; }
+        refresh() {
+            if (typeof this._onTimeout === 'function') scheduleHandle(this, this._idleTimeout);
+            return this;
+        }
+        close() { clearAny(this); return this; }
+        [Symbol.toPrimitive]() {
+            handlesByPrimitiveId.set(this._primitiveId, this);
+            return this._primitiveId;
+        }
+        [Symbol.dispose]() { clearAny(this); }
+    }
+
+    class Immediate {
+        constructor(callback, args) {
+            validateCallback(callback);
+            this._idlePrev = null;
+            this._idleNext = null;
+            this._idleStart = null;
+            this._idleTimeout = 0;
+            this._onImmediate = callback;
+            this._callback = callback;
+            this._timerArgs = args || [];
+            this._repeat = null;
+            this._destroyed = false;
+            this._refed = true;
+            this._kind = 'Immediate';
+            this._resourceId = _trackActiveResource('Immediate');
+            this._primitiveId = nextPrimitiveId++;
+            this._nativeId = 0;
+            this._id = 0;
+            Object.defineProperty(this, kTimerHandle, { value: true });
+            scheduleHandle(this, 0);
+        }
+
+        unref() { if (!this._destroyed) this._refed = false; return this; }
+        ref() { if (!this._destroyed) this._refed = true; return this; }
+        hasRef() { return this._refed; }
+        [Symbol.dispose]() { clearAny(this); }
+    }
+
+    function legacyState(item) {
+        let state = item[kLegacyTimerState];
+        if (!state) {
+            state = { nativeId: 0, refed: true, destroyed: false, resourceId: 0 };
+            Object.defineProperty(item, kLegacyTimerState, {
+                value: state,
+                configurable: true,
+            });
+        }
+        return state;
+    }
+
+    function clearLegacyNative(item) {
+        const state = item && item[kLegacyTimerState];
+        if (!state) return;
+        clearNativeId(state.nativeId);
+        state.nativeId = 0;
+        if (state.resourceId) {
+            _untrackActiveResource(state.resourceId);
+            state.resourceId = 0;
+        }
+        liveLegacyItems.delete(item);
+    }
+
+    function unenroll(item) {
+        if (item === null || (typeof item !== 'object' && typeof item !== 'function')) return;
+        emitLegacyDeprecation(
+            'DEP0096',
+            'timers.unenroll() is deprecated. Please use clearTimeout instead.'
+        );
+        if (item[kTimerHandle]) {
+            destroyHandle(item, true);
+            return;
+        }
+        clearLegacyNative(item);
+        const state = legacyState(item);
+        state.destroyed = true;
+        item._destroyed = true;
+        item._idleTimeout = -1;
+        item._idleNext = null;
+        item._idlePrev = null;
+    }
+
+    function enroll(item, msecs) {
+        if (item === null || (typeof item !== 'object' && typeof item !== 'function')) return;
+        emitLegacyDeprecation(
+            'DEP0095',
+            'timers.enroll() is deprecated. Please use setTimeout instead.'
+        );
+        const delay = normalizeDelay(msecs, { legacyEnroll: true, preserveZero: true });
+        if (item._idleNext) unenroll(item);
+        const state = legacyState(item);
+        state.destroyed = false;
+        item._destroyed = false;
+        item._idleTimeout = delay;
+        item._idlePrev = item;
+        item._idleNext = item;
+    }
+
+    function fireLegacy(item) {
+        const state = item && item[kLegacyTimerState];
+        if (!state || state.destroyed) return;
+        state.nativeId = 0;
+        if (!shouldRunLegacyItem(item)) return;
+        const callback = item._onTimeout;
+        if (typeof callback !== 'function' || item._idleTimeout < 0) {
+            unenroll(item);
+            return;
+        }
+        try {
+            callTimerCallback(callback, item, []);
+        } finally {
+            if (!state.destroyed && !state.nativeId) unenroll(item);
+        }
+    }
+
+    function activeItem(item, refed) {
+        if (item === null || (typeof item !== 'object' && typeof item !== 'function')) return;
+        if (item[kTimerHandle]) {
+            if (item._idleTimeout >= 0 && typeof item._onTimeout === 'function') {
+                item._refed = refed !== false;
+                scheduleHandle(item, item._idleTimeout);
+            }
+            return;
+        }
+        const msecs = item._idleTimeout;
+        if (msecs === undefined || msecs < 0) return;
+        markLinked(item);
+        if (typeof item._onTimeout !== 'function') return;
+        const state = legacyState(item);
+        clearNativeId(state.nativeId);
+        if (!state.resourceId) state.resourceId = _trackActiveResource('Timeout');
+        state.refed = refed !== false;
+        state.destroyed = false;
+        item._destroyed = false;
+        liveLegacyItems.add(item);
+        state.nativeId = os.setTimeout(() => fireLegacy(item), scheduledDelay(msecs, true));
+    }
+
+    function active(item) {
+        emitLegacyDeprecation(
+            'DEP0126',
+            'timers.active() is deprecated. Please use timeout.refresh() instead.'
+        );
+        activeItem(item, true);
+    }
+    function unrefActive(item) {
+        emitLegacyDeprecation(
+            'DEP0127',
+            'timers._unrefActive() is deprecated. Please use timeout.refresh() instead.'
+        );
+        activeItem(item, false);
+    }
+
+    function clearAny(timer) {
+        if (timer == null) return;
+        if (typeof timer === 'number' || typeof timer === 'string') {
+            const handle = handlesByPrimitiveId.get(Number(timer));
+            if (handle) destroyHandle(handle, true);
+            return;
+        }
+        if ((typeof timer === 'object' || typeof timer === 'function') && timer[kTimerHandle]) {
+            destroyHandle(timer, true);
+        }
+    }
+
+    function hasRefedHandles() {
+        for (const handle of liveHandles) {
+            if (!handle._destroyed && handle._refed) return true;
+        }
+        for (const item of liveLegacyItems) {
+            const state = item[kLegacyTimerState];
+            if (state && !state.destroyed && state.refed) return true;
+        }
+        return false;
+    }
+
+    function liveHandleCount() {
+        return liveHandles.size + liveLegacyItems.size;
+    }
+
+    function setTimeoutCompat(fn, ms, ...args) {
+        return new Timeout(fn, ms, args, false, true);
+    }
+
+    function setIntervalCompat(fn, ms, ...args) {
+        return new Timeout(fn, ms, args, true, true);
+    }
+
+    function setImmediateCompat(fn, ...args) {
+        return new Immediate(fn, args);
+    }
+
+    function setUnrefTimeout(fn, ms, ...args) {
+        return new Timeout(fn, ms, args, false, false);
+    }
+
     return {
-        setTimeout: (fn, ms, ...args) => {
-            const resource = async_hooks._createResource('Timeout');
-            const resourceId = _trackActiveResource('Timeout');
-            const t = wrap(0, resource, resourceId);
-            t._id = os.setTimeout(() => {
-                if (t._destroyed) return;
-                try {
-                    resource.runInAsyncScope(fn, t, ...args);
-                } finally {
-                    destroyTimer(t);
-                }
-            }, normalizeDelay(ms));
-            return t;
-        },
+        setTimeout: setTimeoutCompat,
         clearTimeout: clearAny,
-        setInterval: (fn, ms, ...args) => {
-            // _id is rewritten on every tick so the latest live id is what
-            // clearInterval cancels.
-            const resource = async_hooks._createResource('Timeout');
-            const resourceId = _trackActiveResource('Timeout');
-            const t = wrap(0, resource, resourceId);
-            scheduleInterval(t, fn, normalizeDelay(ms), args);
-            return t;
-        },
+        setInterval: setIntervalCompat,
         clearInterval: clearAny,
-        setImmediate: (fn, ...args) => {
-            const resource = async_hooks._createResource('Immediate');
-            const resourceId = _trackActiveResource('Immediate');
-            const t = wrap(nextImmediateId++, resource, resourceId);
-            immediateQueue.push({ handle: t, fn, args });
-            return t;
-        },
-        clearImmediate: clearImmediateHandle,
-        _runImmediateTurn: runImmediateTurn,
-        _hasImmediate: hasImmediate,
-        _normalizeDelay: normalizeDelay,
+        setImmediate: setImmediateCompat,
+        clearImmediate: clearAny,
+        enroll,
+        unenroll,
+        active,
+        _unrefActive: unrefActive,
+        setUnrefTimeout,
+        _kandeloHasRefedHandles: hasRefedHandles,
+        _kandeloLiveHandleCount: liveHandleCount,
     };
 })();
 
 // `timers/promises` — @npmcli/agent uses `setTimeout(ms)` as a connection-timeout
 // race against the connect promise. AbortSignal handling isn't needed for that.
 const timersPromises = {
-    setTimeout: (delay, value) => new Promise((resolve) => {
-        const resource = async_hooks._createResource('Timeout');
-        os.setTimeout(() => {
-            try {
-                resource.runInAsyncScope(resolve, undefined, value);
-            } finally {
-                resource.emitDestroy();
-            }
-        }, timers._normalizeDelay(delay));
-    }),
-    setImmediate: (value) => new Promise((resolve) => {
-        const resource = async_hooks._createResource('Immediate');
-        timers.setImmediate(() => {
-            try {
-                resource.runInAsyncScope(resolve, undefined, value);
-            } finally {
-                resource.emitDestroy();
-            }
-        });
-    }),
+    setTimeout: (delay, value) => new Promise(resolve => timers.setTimeout(resolve, delay, value)),
+    setImmediate: (value) => new Promise(resolve => timers.setImmediate(resolve, value)),
 };
 
 // ============================================================
@@ -13560,22 +13853,28 @@ function _drainSpiderMonkeyJobs(maxSpins) {
     for (let i = 0; i < spins; i++) drainJobQueue();
 }
 
-const _eventLoopSleepView =
-    typeof SharedArrayBuffer === 'function' && typeof Atomics === 'object'
-        ? new Int32Array(new SharedArrayBuffer(4))
-        : null;
-
-function _eventLoopSleep(ms) {
-    ms = Math.max(0, Math.min(Number(ms) || 0, 10));
-    if (ms <= 0) return;
-    if (_eventLoopSleepView) {
+let _timerSleepView = null;
+function _sleepForTimerDelay(delayMs) {
+    const delay = Math.max(0, Math.min(Number(delayMs) || 0, 25));
+    if (delay <= 0) return;
+    if (_timerSleepView === null &&
+        typeof SharedArrayBuffer === 'function' &&
+        typeof Atomics === 'object' &&
+        typeof Atomics.wait === 'function') {
         try {
-            Atomics.wait(_eventLoopSleepView, 0, 0, ms);
-            return;
-        } catch {}
+            _timerSleepView = new Int32Array(new SharedArrayBuffer(4));
+        } catch (_) {
+            _timerSleepView = false;
+        }
     }
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) {}
+    if (_timerSleepView) {
+        try {
+            Atomics.wait(_timerSleepView, 0, 0, delay);
+            return;
+        } catch (_) {}
+    }
+    const end = Date.now() + delay;
+    while (Date.now() < end) {}
 }
 
 function _runAdapterDueTimers() {
@@ -13605,32 +13904,34 @@ function _handleTopLevelFailure(err) {
     }
 }
 
-function _runNodeEventLoop() {
-    let turns = 0;
-    while (!process._exiting && _activeResources.size > 0) {
-        let ran = 0;
+function _drainEventLoopBeforeExit() {
+    let emittedBeforeExit = false;
+    let spins = 0;
+    while (!process._exiting) {
         _drainSpiderMonkeyJobs();
-        ran += _runAdapterDueTimers();
-        _drainSpiderMonkeyJobs();
-        ran += timers._runImmediateTurn();
-        _drainSpiderMonkeyJobs();
-
-        if (_activeResources.size === 0 || process._exiting) return;
-        if (ran > 0) {
-            turns++;
-        } else {
-            const delay = _nextAdapterTimerDelay();
-            if (delay === null) {
-                if (!timers._hasImmediate()) return;
-            } else {
-                _eventLoopSleep(delay);
+        if (!timers._kandeloHasRefedHandles()) {
+            if (!emittedBeforeExit) {
+                emittedBeforeExit = true;
+                process.emit('beforeExit', process.exitCode || 0);
+                continue;
             }
-            turns++;
+            break;
         }
-
-        if (turns > 100000) {
-            throw new Error('Kandelo Node event loop did not quiesce after 100000 turns');
+        const ran = _runAdapterDueTimers();
+        _drainSpiderMonkeyJobs();
+        if (ran > 0) {
+            emittedBeforeExit = false;
+            spins = 0;
+            continue;
         }
+        if (++spins > 100000) {
+            console.error('kandelo: timer event loop did not quiesce');
+            process.exitCode = process.exitCode || 1;
+            break;
+        }
+        const delay = _nextAdapterTimerDelay();
+        if (delay === null) break;
+        _sleepForTimerDelay(delay);
     }
 }
 
@@ -13664,14 +13965,7 @@ function _runCommonJsMain(filename) {
         delete _moduleCache[filename];
         continueEventLoop = _handleTopLevelFailure(err);
     }
-    if (continueEventLoop) {
-        try {
-            _runNodeEventLoop();
-        } catch (err) {
-            _handleTopLevelFailure(err);
-        }
-    }
-    _drainSpiderMonkeyJobs();
+    if (continueEventLoop) _drainEventLoopBeforeExit();
     process.exit(process.exitCode || 0);
 }
 
@@ -13729,12 +14023,7 @@ function _runEsmMain(filename, source) {
             process.exit(process.exitCode || 0);
         }
     }
-    try {
-        _runNodeEventLoop();
-    } catch (err) {
-        _handleTopLevelFailure(err);
-    }
-    _drainSpiderMonkeyJobs();
+    _drainEventLoopBeforeExit();
     process.exit(process.exitCode || 0);
 }
 
