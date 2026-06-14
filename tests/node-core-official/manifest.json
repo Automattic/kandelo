@@ -90,6 +90,78 @@
       "area": "timers",
       "expected": "PASS",
       "reason": "Tiny timers API smoke case."
+    },
+    {
+      "path": "test/parallel/test-worker-broadcastchannel.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "The test mixes same-isolate BroadcastChannel behavior with cross-worker delivery. Kandelo models same-isolate BroadcastChannel semantics, but SpiderMonkey shell workers do not share Node's post-start worker_threads message fabric."
+    },
+    {
+      "path": "test/parallel/test-worker-message-channel.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "The test's final case requires Worker.postMessage() to transfer a MessagePort to an already-running worker. SpiderMonkey shell workers in Kandelo expose eval-time workerData/shared memory only, not post-start worker_threads channels."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "The test includes same-isolate MessagePort coverage plus a Worker.postMessage() transfer case. The supported same-isolate API is covered by Kandelo source tests; post-start worker port transfer is an explicit SpiderMonkey shell support boundary."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-message-before-close.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires repeatedly transferring MessagePorts to an already-running worker through Worker.postMessage(), which is outside Kandelo's SpiderMonkey shell worker model."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-move.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires Node's cross-vm MessagePort wrapper identity from moveMessagePortToContext(). Kandelo validates closed-port errors but does not emulate a separate vm-context port wrapper."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-terminate-transfer-list.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires parentPort messaging from a worker plus termination during transfer-list iteration. Kandelo's SpiderMonkey workers do not provide parentPort post-start messaging."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-transfer-terminate.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires Worker.postMessage() races while terminating workers. Kandelo's SpiderMonkey shell worker support is limited to eval-time workerData/shared memory."
+    },
+    {
+      "path": "test/parallel/test-worker-message-channel-sharedarraybuffer.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires Worker.postMessage() and parentPort replies for SharedArrayBuffer exchange after startup; Kandelo only exposes shared memory through workerData at worker creation."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-wasm-module.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires Worker.postMessage() to send a WebAssembly.Module to an already-running worker, which is outside the SpiderMonkey shell worker support boundary."
+    },
+    {
+      "path": "test/parallel/test-worker-message-port-wasm-threads.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Part of the test requires Worker.postMessage() to exchange WebAssembly memory after startup. Same-isolate SharedArrayBuffer MessagePort delivery remains supported separately."
+    },
+    {
+      "path": "test/parallel/test-worker-resource-limits.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires V8 worker heap/resource limit enforcement and ERR_WORKER_OUT_OF_MEMORY. SpiderMonkey shell workers do not expose V8 resource-limit controls."
+    },
+    {
+      "path": "test/parallel/test-worker-workerdata-messageport.js",
+      "area": "worker_threads",
+      "expected": "SKIP",
+      "reason": "Requires transferring live MessagePorts and ArrayBuffers through workerData and then communicating over parentPort. Kandelo supports shared-memory workerData, not live MessagePort ownership in workers."
     }
   ]
 }

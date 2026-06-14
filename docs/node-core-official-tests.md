@@ -127,5 +127,10 @@ through `internal/test/binding` and low-level `internal/*` helpers resolve to
 namespaces that throw `ERR_KANDELO_UNSUPPORTED_NODE_API` only when used, making
 the boundary explicit instead of surfacing unexplained `Cannot find module`
 failures. SpiderMonkey shell workers similarly expose shared-memory
-`workerData`, but not Node's bidirectional post-start `worker_threads`
-message channel.
+`workerData`, same-isolate `MessageChannel`/`MessagePort`, and same-isolate
+`BroadcastChannel`, but not Node's bidirectional post-start `worker_threads`
+message channel. Official tests that require `Worker.postMessage()`/
+`parentPort` after startup, live `MessagePort` ownership inside workers,
+cross-worker `BroadcastChannel` delivery, V8 worker heap-limit enforcement, or
+cross-vm moved-port wrapper identity are manifest `SKIP` entries with explicit
+reasons.

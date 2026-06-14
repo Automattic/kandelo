@@ -338,12 +338,18 @@
             }
         }
 
+        function destroyAsyncHandle(handle) {
+            if (handle && typeof handle.emitDestroy === 'function') handle.emitDestroy();
+        }
+
         function invalidTransferList(message) {
             return makeCodedTypeError(message, 'ERR_INVALID_ARG_TYPE');
         }
 
         function iterableToArray(value, message) {
-            if (value == null || typeof value[Symbol.iterator] !== 'function') {
+            if (value == null ||
+                (typeof value !== 'object' && typeof value !== 'function') ||
+                typeof value[Symbol.iterator] !== 'function') {
                 throw invalidTransferList(message);
             }
             try {
@@ -381,20 +387,33 @@
             return null;
         }
 
-        function assertCloneableForPort(message, transferList) {
+        function assertTransferListValid(sourcePort, transferList) {
+            const seen = new Set();
             for (const item of transferList) {
+                if ((item instanceof MessagePort || item instanceof ArrayBuffer) && seen.has(item)) {
+                    throw dataCloneError(`Transfer list contains duplicate ${item instanceof MessagePort ? 'MessagePort' : 'ArrayBuffer'}`);
+                }
+                seen.add(item);
                 if (isObject(item) && markedUntransferable.has(item)) {
                     throw dataCloneError('Cannot transfer object marked as untransferable');
                 }
+                if (item instanceof MessagePort) {
+                    if (item === sourcePort) throw dataCloneError('Transfer list contains source port');
+                    if (item._closed || item._closing) throw dataCloneError('MessagePort in transfer list is already detached');
+                }
             }
+        }
+
+        function assertCloneableForPort(sourcePort, message, transferList) {
+            assertTransferListValid(sourcePort, transferList);
             const port = findMessagePort(message);
             if (port && !transferList.includes(port)) {
                 throw dataCloneError('Object that needs transfer was found in message but not listed in transferList');
             }
         }
 
-        function cloneMessageForDelivery(message, transferList) {
-            assertCloneableForPort(message, transferList);
+        function cloneMessageForDelivery(sourcePort, message, transferList) {
+            assertCloneableForPort(sourcePort, message, transferList);
             if (typeof structuredClone !== 'function') return message;
             try {
                 const transferable = transferList.filter((item) => !(item instanceof MessagePort));
@@ -532,7 +551,7 @@
             postMessage(message, options) {
                 if (this._closed || !this._peer || this._peer._closed) return;
                 const transferList = transferListFrom(options);
-                const cloned = cloneMessageForDelivery(message, transferList);
+                const cloned = cloneMessageForDelivery(this, message, transferList);
                 enqueuePortMessage(this._peer, cloned, transferList.filter((item) => item instanceof MessagePort));
             }
 
@@ -555,6 +574,10 @@
 
             get onmessageerror() { return this._onmessageerror || null; }
             set onmessageerror(listener) { this._onmessageerror = listener; }
+
+            [inspectCustom]() {
+                return `MessagePort [EventTarget] { active: ${!this._closed && !this._closing}, refed: ${this.hasRef()} }`;
+            }
         }
 
         let constructingMessagePort = false;
@@ -638,6 +661,43 @@
             return channel._bcState;
         }
 
+        let broadcastFlushScheduled = false;
+        function scheduleBroadcastFlush() {
+            if (broadcastFlushScheduled) return;
+            broadcastFlushScheduled = true;
+            defer(() => {
+                broadcastFlushScheduled = false;
+                flushBroadcastMessages();
+            });
+        }
+
+        function flushBroadcastMessages() {
+            let delivered;
+            do {
+                delivered = false;
+                for (const peers of Array.from(broadcastChannels.values())) {
+                    for (const channel of peers.slice()) {
+                        delivered = flushBroadcastChannel(channel) || delivered;
+                    }
+                }
+            } while (delivered);
+        }
+
+        function flushBroadcastChannel(channel) {
+            const state = getBroadcastState(channel);
+            let delivered = false;
+            while (!state.closed && channel._queue.length > 0 && channel._hasMessageHandler()) {
+                const entry = channel._queue.shift();
+                const event = makeMessageEvent('message', entry.message, channel, entry.ports);
+                if (typeof channel.onmessage === 'function') channel.onmessage.call(channel, event);
+                if (channel.listenerCount('message') > 0) channel.emit('message', entry.message);
+                const listeners = Array.from(channel._eventListeners.get('message') || []);
+                for (const listener of listeners) invokeEventListener(listener, channel, event);
+                delivered = true;
+            }
+            return delivered;
+        }
+
         class BroadcastChannel extends EventEmitter {
             constructor(name) {
                 if (arguments.length === 0) {
@@ -669,17 +729,12 @@
                     const peerState = getBroadcastState(peer);
                     if (peerState.closed) continue;
                     peer._queue.push({ message, ports: [] });
-                    peer._scheduleFlush();
+                    scheduleBroadcastFlush();
                 }
             }
 
             _scheduleFlush() {
-                if (this._scheduled) return;
-                this._scheduled = true;
-                defer(() => {
-                    this._scheduled = false;
-                    this._flushMessages();
-                });
+                scheduleBroadcastFlush();
             }
 
             _hasMessageHandler() {
@@ -689,15 +744,7 @@
             }
 
             _flushMessages() {
-                const state = getBroadcastState(this);
-                while (!state.closed && this._queue.length > 0 && this._hasMessageHandler()) {
-                    const entry = this._queue.shift();
-                    const event = makeMessageEvent('message', entry.message, this, entry.ports);
-                    if (typeof this.onmessage === 'function') this.onmessage.call(this, event);
-                    if (this.listenerCount('message') > 0) this.emit('message', entry.message);
-                    const listeners = Array.from(this._eventListeners.get('message') || []);
-                    for (const listener of listeners) invokeEventListener(listener, this, event);
-                }
+                flushBroadcastChannel(this);
             }
 
             on(event, listener) {
@@ -776,6 +823,11 @@
 
         function moveMessagePortToContext(port) {
             if (!(port instanceof MessagePort)) throw invalidPortArg();
+            if (port._closed || port._closing) {
+                const err = new Error('Cannot send data on closed MessagePort');
+                err.code = 'ERR_CLOSED_MESSAGE_PORT';
+                throw err;
+            }
             return port;
         }
 
@@ -807,6 +859,10 @@
                 this._workerExited = false;
                 this._workerDestroyed = false;
                 this._kandeloAsyncResource = createAsyncResource('WORKER', this);
+                this._workerPublicPortRefed = false;
+                this._kandeloPublicPortResource = createAsyncResource('MESSAGEPORT', {
+                    hasRef: () => !this._workerDestroyed && this._workerPublicPortRefed,
+                });
                 let source = String(filenameOrSource);
                 if (!options.eval) {
                     const loaded = std.loadFile(source);
@@ -817,7 +873,7 @@
                 let workerDataExpression = 'undefined';
                 if (Object.prototype.hasOwnProperty.call(options, 'workerData')) {
                     const data = options.workerData;
-                    assertCloneableForPort(data, Array.isArray(options.transferList) ? options.transferList : []);
+                    assertCloneableForPort(null, data, Array.isArray(options.transferList) ? options.transferList : []);
                     if (data instanceof SharedArrayBuffer ||
                         (typeof WebAssembly === 'object' && WebAssembly.Memory && data instanceof WebAssembly.Memory)) {
                         if (typeof setSharedObject !== 'function') {
@@ -883,14 +939,29 @@
             _emitExit(code) {
                 if (this._workerExited) return;
                 this._workerExited = true;
+                this._workerPublicPortRefed = false;
+                destroyAsyncHandle(this._kandeloPublicPortResource);
+                this._kandeloPublicPortResource = null;
                 this.emit('exit', code);
                 defer(() => {
                     this._workerDestroyed = true;
                     destroyAsyncResource(this);
                 });
             }
-            ref() { if (!this._workerDestroyed) this._workerRefed = true; return this; }
-            unref() { if (!this._workerDestroyed) this._workerRefed = false; return this; }
+            ref() {
+                if (!this._workerDestroyed) {
+                    this._workerRefed = true;
+                    this._workerPublicPortRefed = true;
+                }
+                return this;
+            }
+            unref() {
+                if (!this._workerDestroyed) {
+                    this._workerRefed = false;
+                    this._workerPublicPortRefed = false;
+                }
+                return this;
+            }
             hasRef() { return this._workerDestroyed ? undefined : this._workerRefed; }
         }
         if (typeof globalThis.MessagePort === 'undefined') defineAdapterGlobal('MessagePort', MessagePort);
